@@ -267,6 +267,7 @@ export function DatabaseView({
   const [tabMenu, setTabMenu] = useState<{ view: ViewDef; anchor: HTMLElement } | null>(null);
   const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
   const [filterRequest, setFilterRequest] = useState<{ propId: string; token: string } | null>(null);
+  const [formatRequest, setFormatRequest] = useState<{ propId: string; token: string } | null>(null);
 
   const choose = (id: string) => {
     setViewId(id);
@@ -352,6 +353,7 @@ export function DatabaseView({
             rows={allRows}
             editable={canEdit}
             requestedFilter={filterRequest}
+            requestedFormat={formatRequest}
           />
         </div>
         <QuickFilterBar
@@ -370,6 +372,7 @@ export function DatabaseView({
             props={visible}
             editable={canEdit}
             onRequestFilter={(propId) => setFilterRequest({ propId, token: newId() })}
+            onRequestFormat={(propId) => setFormatRequest({ propId, token: newId() })}
           />
         )}
         {view.type === 'board' && (
@@ -780,6 +783,7 @@ function Toolbar({
   rows,
   editable,
   requestedFilter,
+  requestedFormat,
 }: {
   dbId: PageId;
   scopePageId: PageId;
@@ -788,6 +792,7 @@ function Toolbar({
   rows: PageMeta[];
   editable: boolean;
   requestedFilter: { propId: string; token: string } | null;
+  requestedFormat: { propId: string; token: string } | null;
 }) {
   const state = useWorkspace();
   const saveView = useViewUpdater(dbId, view.id);
@@ -808,6 +813,9 @@ function Toolbar({
   const updateGroups = (change: (groups: FilterGroup[]) => FilterGroup[]) =>
     saveView((current) => withFilterGroups(current, change(filterGroupsForView(current))));
   const filterButton = useRef<HTMLButtonElement>(null);
+  const formatButton = useRef<HTMLButtonElement>(null);
+  const handledFormatRequest = useRef<string | null>(null);
+  const [formatDefaultProp, setFormatDefaultProp] = useState(TITLE_PROP);
   const handledFilterRequest = useRef<string | null>(null);
   const updateGroupsRef = useRef(updateGroups);
   useEffect(() => {
@@ -839,6 +847,13 @@ function Toolbar({
     );
     setPanel({ kind: 'filter', anchor });
   }, [database, requestedFilter]);
+  useEffect(() => {
+    if (!requestedFormat || handledFormatRequest.current === requestedFormat.token ||
+      !formatButton.current || !database.properties.some((prop) => prop.id === requestedFormat.propId)) return;
+    handledFormatRequest.current = requestedFormat.token;
+    setFormatDefaultProp(requestedFormat.propId);
+    setPanel({ kind: 'format', anchor: formatButton.current });
+  }, [database, requestedFormat]);
   return (
     <div className="db-tools">
       <button
@@ -869,7 +884,9 @@ function Toolbar({
       <button type="button" className="text-tool" onClick={open('summary')} disabled={!editable}>
         <Calculator size={13} /> {t('database.summary')}
       </button>
-      <button type="button" className="text-tool" onClick={open('format')} disabled={!editable}>
+      <button ref={formatButton} type="button" className="text-tool"
+        onClick={(event) => { setFormatDefaultProp(TITLE_PROP); setPanel({ kind: 'format', anchor: event.currentTarget }); }}
+        disabled={!editable}>
         <Paintbrush size={13} /> {t('database.conditionalFormatting')}
       </button>
       <label className="db-search">
@@ -1596,10 +1613,10 @@ function Toolbar({
                   ...(current.conditionalFormats ?? []),
                   {
                     id: newId(),
-                    prop: TITLE_PROP,
-                    op: 'notEmpty',
+                    prop: formatDefaultProp,
+                    op: formatDefaultProp === TITLE_PROP ? 'notEmpty' : filterOpsFor(propType(database, formatDefaultProp) ?? 'text')[0]!,
                     value: null,
-                    scope: 'row',
+                    scope: formatDefaultProp === TITLE_PROP ? 'row' : 'cell',
                     color: 'yellow',
                   },
                 ],
@@ -2011,14 +2028,15 @@ function InsertColumnPopover({
   );
 }
 
-function TableView({ dbId, database, view, rows, props, editable, onRequestFilter }: ViewProps & {
+function TableView({ dbId, database, view, rows, props, editable, onRequestFilter, onRequestFormat }: ViewProps & {
   onRequestFilter: (propId: string) => void;
+  onRequestFormat: (propId: string) => void;
 }) {
   const saveView = useViewUpdater(dbId, view.id);
   const state = useWorkspace();
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
-  const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
+  const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement; focusSection?: 'formula' } | null>(null);
   const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
   const [adding, setAdding] = useState<HTMLElement | null>(null);
   const [inserting, setInserting] = useState<{
@@ -2305,6 +2323,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
           view={view}
           anchor={header.anchor}
           onClose={() => setHeader(null)}
+          focusSection={header.focusSection}
         />
       )}
       {columnMenu && (
@@ -2318,6 +2337,28 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
               label: t('database.editColumnSettings'),
               icon: Settings2,
               onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
+            },
+            {
+              label: t('database.setDisplayColumn'),
+              icon: Eye,
+              checked: database.displayPropertyId === columnMenu.prop.id,
+              onSelect: () => updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: columnMenu.prop.id })),
+            },
+            ...(database.displayPropertyId === columnMenu.prop.id ? [{
+              label: t('database.useTitleForDisplay'),
+              icon: X,
+              onSelect: () => updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: null })),
+            }] : []),
+            {
+              label: t('database.editColumnFormula'),
+              icon: Calculator,
+              disabled: ['button', 'createdTime', 'lastEditedTime', 'image', 'file', 'richCanvas'].includes(columnMenu.prop.type),
+              onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor, focusSection: 'formula' }),
+            },
+            {
+              label: t('database.formatColumnConditionally'),
+              icon: Paintbrush,
+              onSelect: () => onRequestFormat(columnMenu.prop.id),
             },
             { separator: true },
             {

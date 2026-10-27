@@ -97,6 +97,9 @@ export function planColumnDuplicateUndo(
   const database = state.pages[databaseId]?.database;
   const property = database?.properties.find((item) => item.id === propertyId);
   if (!database || !property || JSON.stringify(property) !== JSON.stringify(snapshot.property)) return null;
+  if (database.displayPropertyId === propertyId || Object.values(state.pages).some((page) =>
+    page.database?.properties.some((item) => item.relation?.targetDatabaseId === databaseId &&
+      item.relation.displayPropertyId === propertyId))) return null;
   const rows = Object.values(state.pages).filter((row) => row.parentId === databaseId);
   for (const row of rows) {
     const value = row.properties[propertyId];

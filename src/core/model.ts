@@ -304,6 +304,8 @@ export interface ViewDef {
 export interface DatabaseDef {
   properties: PropDef[];
   views: ViewDef[];
+  // default row label used by references and relation pickers; an individual relation may override it
+  displayPropertyId?: string | null;
   // opaque future schema entries are kept intact and make the database read-only in this version
   unsupportedProperties?: unknown[];
 }

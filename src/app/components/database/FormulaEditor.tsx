@@ -28,11 +28,13 @@ export function FormulaEditor({
   prop,
   database,
   defaultFormula = false,
+  autoFocus = false,
 }: {
   dbId: PageId;
   prop: PropDef;
   database: DatabaseDef;
   defaultFormula?: boolean;
+  autoFocus?: boolean;
 }) {
   const state = useWorkspace();
   const formula = defaultFormula ? (prop.defaultFormula ?? '') : (prop.formula ?? '');
@@ -65,6 +67,10 @@ export function FormulaEditor({
     textareaRef.current.setSelectionRange(pendingCaret, pendingCaret);
     pendingCaretRef.current = null;
   });
+
+  useLayoutEffect(() => {
+    if (autoFocus) textareaRef.current?.focus();
+  }, [autoFocus]);
 
   const previewBindings = bindFormulaReferences(draft, dbId, state, draftBindings);
   const liveRows = rowsOf(state, dbId);
@@ -234,6 +240,7 @@ export function FormulaEditor({
         <textarea
           id={inputId}
           ref={textareaRef}
+          data-autofocus={autoFocus ? '' : undefined}
           className="text-input small formula-input"
           spellCheck={false}
           value={draft}

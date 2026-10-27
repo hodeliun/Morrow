@@ -433,6 +433,7 @@ function localizedNumber(prop: PropDef, raw: string): number | null {
 
 function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
   return {
+    ...(database.displayPropertyId ? { displayPropertyId: database.displayPropertyId } : {}),
     properties: [
       ...database.properties.map((prop) => ({
         id: prop.id,

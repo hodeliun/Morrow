@@ -1,6 +1,6 @@
 import { displayTitle } from './model';
 import type { PageId, PageMeta, PropDef, PropValue, RelationConfig, WorkspaceState } from './model';
-import { filterOpsFor, formatValue, matchesFilter, rowsOf, valueOf } from './database';
+import { databaseRowLabel, filterOpsFor, matchesFilter, rowsOf, valueOf } from './database';
 import { foldText } from './search';
 import { isEffectivelyTrashed } from './tree';
 
@@ -85,12 +85,7 @@ export function relationOptions(state: WorkspaceState, prop: PropDef, query = ''
 }
 
 export function relationDisplayLabel(state: WorkspaceState, prop: PropDef, row: PageMeta): string {
-  const target = prop.relation?.targetDatabaseId ? state.pages[prop.relation.targetDatabaseId] : undefined;
-  const display = target?.database?.properties.find((item) => item.id === prop.relation?.displayPropertyId);
-  if (!display || !target?.database) return displayTitle(row);
-  const value = valueOf(row, display.id, target.database!, state);
-  const label = formatValue(display, value).trim();
-  return label || displayTitle(row);
+  return databaseRowLabel(state, row, prop.relation?.displayPropertyId);
 }
 
 export function resolveRelationReference(

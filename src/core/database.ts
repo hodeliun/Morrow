@@ -132,6 +132,16 @@ export function findDatabaseOf(state: WorkspaceState, page: PageMeta): PageMeta 
   return parent?.kind === 'database' && parent.database ? parent : null;
 }
 
+export function databaseRowLabel(state: WorkspaceState, row: PageMeta, propertyId?: string | null): string {
+  const database = findDatabaseOf(state, row)?.database;
+  const selected = propertyId ?? database?.displayPropertyId;
+  const property = database?.properties.find((candidate) => candidate.id === selected)
+    ?? database?.properties.find((candidate) => candidate.id === database.displayPropertyId);
+  if (!property || !database) return displayTitle(row);
+  const label = formatValue(property, valueOf(row, property.id, database, state)).trim();
+  return label || displayTitle(row);
+}
+
 export function valueOf(
   page: PageMeta,
   propId: string,
@@ -762,18 +772,18 @@ export function formulaValueText(prop: PropDef, value: FormulaRuntimeValue, stat
   if (value === null) return '';
   if (typeof value === 'object') {
     if (value.formulaKind === 'row')
-      return state?.pages[value.id] ? displayTitle(state.pages[value.id]!) : value.id;
+      return state?.pages[value.id] ? databaseRowLabel(state, state.pages[value.id]!) : value.id;
     const rows =
       value.formulaKind === 'rows'
         ? value.rows.map((row) => state?.pages[row.id]).filter((row): row is PageMeta => Boolean(row))
         : state
           ? rowsOf(state, value.databaseId)
           : [];
-    return rows.map(displayTitle).join(', ');
+    return rows.map((row) => state ? databaseRowLabel(state, row) : displayTitle(row)).join(', ');
   }
   if (prop.type === 'relation' && state && typeof value === 'string') {
     const row = state.pages[value];
-    if (row) return displayTitle(row);
+    if (row) return databaseRowLabel(state, row);
   }
   return formatValue(prop, value);
 }

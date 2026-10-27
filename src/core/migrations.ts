@@ -72,7 +72,7 @@ const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
   8: (data) => data,
   // version 10 adds optional sequential defaults, prose column proportions and full-width note style
   9: (data) => data,
-  // version 11 adds view-local frozen columns and bounded row heights
+  // version 11 adds view-local frozen columns, bounded row heights and database display labels
   10: (data) => data,
 };
 
@@ -592,6 +592,9 @@ export function normalizeDatabase(raw: unknown): DatabaseDef | null {
   }
   return {
     properties,
+    ...(typeof raw.displayPropertyId === 'string' && properties.some((prop) => prop.id === raw.displayPropertyId)
+      ? { displayPropertyId: raw.displayPropertyId }
+      : {}),
     ...(unsupportedProperties.length ? { unsupportedProperties } : {}),
     views: records(raw.views).flatMap((view) => normalizeView(view) ?? []),
   };

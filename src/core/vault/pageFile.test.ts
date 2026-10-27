@@ -119,6 +119,7 @@ describe('saved filter persistence', () => {
   it('keeps each view’s table presentation after Markdown reopen', () => {
     const database: DatabaseDef = {
       properties: [{ id: 'amount', name: 'Amount', type: 'number', options: [] }],
+      displayPropertyId: 'amount',
       views: [
         { id: 'wide', name: 'Wide', type: 'table', filters: [], sorts: [], groupBy: null,
           dateProp: null, hidden: [], widths: { amount: 280 }, frozenThrough: 'amount', rowHeight: 68,
@@ -134,6 +135,7 @@ describe('saved filter persistence', () => {
     const yaml = stringify(composeFrontmatter(managedFrontmatter(page, 'Records', null), {}, null));
     const loaded = readPageText(`---\n${yaml}${yaml.endsWith('\n') ? '' : '\n'}---\n`);
     expect(loaded.error).toBeNull();
+    expect(loaded.database?.displayPropertyId).toBe('amount');
     expect(loaded.database?.views[0]).toMatchObject({
       widths: { amount: 280 }, frozenThrough: 'amount', rowHeight: 68, order: ['amount'],
       wrap: ['amount'], align: { amount: 'right' }, summaries: { amount: 'sum' }, search: 'open',

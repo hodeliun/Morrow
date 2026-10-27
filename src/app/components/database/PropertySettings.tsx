@@ -59,6 +59,7 @@ export function PropertySettings({
   view,
   anchor,
   onClose,
+  focusSection,
 }: {
   dbId: PageId;
   database: DatabaseDef;
@@ -66,6 +67,7 @@ export function PropertySettings({
   view?: ViewDef;
   anchor: HTMLElement;
   onClose: () => void;
+  focusSection?: 'formula';
 }) {
   const state = useWorkspace();
   const linkedUpdate = useContext(ViewChangeContext);
@@ -243,6 +245,14 @@ export function PropertySettings({
           onChange={(type) => changeType(type, Date.now())}
         />
       </div>
+      {focusSection === 'formula' && prop.type !== 'formula' && prop.fillMode !== 'calculated' &&
+        prop.type !== 'button' && prop.type !== 'createdTime' && prop.type !== 'lastEditedTime' &&
+        !isMediaProperty(prop.type) && (
+          <button type="button" className="button small" data-autofocus
+            onClick={() => setFillMode(dbId, prop, 'calculated')}>
+            {t('database.enableColumnFormula')}
+          </button>
+        )}
       <label className="field">
         <span>{t('database.description')}</span>
         <DraftInput
@@ -319,7 +329,7 @@ export function PropertySettings({
         </div>
       )}
       {(prop.fillMode === 'calculated' || prop.type === 'formula') && (
-        <FormulaEditor dbId={dbId} prop={prop} database={database} />
+        <FormulaEditor dbId={dbId} prop={prop} database={database} autoFocus={focusSection === 'formula'} />
       )}
       {prop.type !== 'button' && <PropertyFormatSettings key={`${prop.id}:${prop.type}`} dbId={dbId} prop={prop} />}
       {isMediaProperty(prop.type) && <MediaPropertyOptions prop={prop} dbId={dbId} rows={rowsOf(state, dbId)} />}
@@ -502,6 +512,7 @@ function removePropertyFromView(view: ViewDef, propertyId: string): ViewDef {
     groupBy: view.groupBy === propertyId ? null : view.groupBy,
     dateProp: view.dateProp === propertyId ? null : view.dateProp,
     widths,
+    frozenThrough: view.frozenThrough === propertyId ? undefined : view.frozenThrough,
     order: view.order?.filter((id) => id !== propertyId),
     wrap: view.wrap?.filter((id) => id !== propertyId),
     align,
