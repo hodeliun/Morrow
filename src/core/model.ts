@@ -1,7 +1,7 @@
 // workspace data model, plain json shared by storage, search, export and the editor
 
 // bump when the persisted shape changes and add a migration in migrations.ts
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const MAX_TITLE_LENGTH = 500;
 // includes compact Lucide names and local attachment references; plain emoji remain much shorter
@@ -282,6 +282,10 @@ export interface ViewDef {
   hidden: string[];
   // table column widths in pixels, by property id or title, missing means the default width
   widths?: Record<string, number>;
+  // table view keeps the title and all visible columns through this property fixed while scrolling
+  frozenThrough?: string;
+  // bounded height of table rows in pixels; cells can be expanded for reading/editing
+  rowHeight?: number;
   // Each group combines its rules with AND/OR; the view combines groups with AND/OR.
   filterGroups?: FilterGroup[];
   filterGroupLogic?: 'and' | 'or';

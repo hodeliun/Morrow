@@ -115,4 +115,31 @@ describe('saved filter persistence', () => {
     expect(loaded.database?.views[0]?.filterGroups).toEqual(filterGroups);
     expect(loaded.database?.views[0]?.filterGroupLogic).toBe('or');
   });
+
+  it('keeps each view’s table presentation after Markdown reopen', () => {
+    const database: DatabaseDef = {
+      properties: [{ id: 'amount', name: 'Amount', type: 'number', options: [] }],
+      views: [
+        { id: 'wide', name: 'Wide', type: 'table', filters: [], sorts: [], groupBy: null,
+          dateProp: null, hidden: [], widths: { amount: 280 }, frozenThrough: 'amount', rowHeight: 68,
+          order: ['amount'], wrap: ['amount'], align: { amount: 'right' },
+          summaries: { amount: 'sum' }, search: 'open',
+          conditionalFormats: [{ id: 'rule', prop: 'amount', op: 'gt', value: 10, scope: 'cell', color: 'red' }],
+        },
+        { id: 'plain', name: 'Plain', type: 'table', filters: [], sorts: [], groupBy: null,
+          dateProp: null, hidden: [], rowHeight: 34 },
+      ],
+    };
+    const page = newPageMeta({ id: 'db', parentId: null, title: 'Records', kind: 'database', database });
+    const yaml = stringify(composeFrontmatter(managedFrontmatter(page, 'Records', null), {}, null));
+    const loaded = readPageText(`---\n${yaml}${yaml.endsWith('\n') ? '' : '\n'}---\n`);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.views[0]).toMatchObject({
+      widths: { amount: 280 }, frozenThrough: 'amount', rowHeight: 68, order: ['amount'],
+      wrap: ['amount'], align: { amount: 'right' }, summaries: { amount: 'sum' }, search: 'open',
+      conditionalFormats: [{ id: 'rule', prop: 'amount', op: 'gt', value: 10, scope: 'cell', color: 'red' }],
+    });
+    expect(loaded.database?.views[1]?.rowHeight).toBe(34);
+    expect(loaded.database?.views[1]?.frozenThrough).toBeUndefined();
+  });
 });

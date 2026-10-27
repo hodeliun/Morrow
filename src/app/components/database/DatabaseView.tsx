@@ -2016,6 +2016,8 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
 }) {
   const saveView = useViewUpdater(dbId, view.id);
   const state = useWorkspace();
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [expandedCell, setExpandedCell] = useState<string | null>(null);
   const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
   const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
   const [adding, setAdding] = useState<HTMLElement | null>(null);
@@ -2051,6 +2053,36 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     );
   const total =
     widthOf(TITLE_PROP) + props.reduce((sum, prop) => sum + widthOf(prop.id), 0) + (editable ? 36 : 0);
+  const frozenIndex = props.findIndex((prop) => prop.id === view.frozenThrough);
+  const frozenStyle = (index: number): CSSProperties | undefined => {
+    if (frozenIndex < 0 || index > frozenIndex) return undefined;
+    const left = index < 0
+      ? 0
+      : widthOf(TITLE_PROP) + props.slice(0, index).reduce((sum, prop) => sum + widthOf(prop.id), 0);
+    return { position: 'sticky', left, zIndex: 2 };
+  };
+  const fitColumn = (propId: string) => {
+    const table = tableRef.current;
+    const index = props.findIndex((prop) => prop.id === propId) + 1;
+    if (!table || index < 1) return;
+    const probe = document.createElement('span');
+    probe.style.position = 'fixed';
+    probe.style.visibility = 'hidden';
+    probe.style.whiteSpace = 'nowrap';
+    document.body.appendChild(probe);
+    let widest = 0;
+    for (const row of Array.from(table.rows)) {
+      const cell = row.cells.item(index);
+      if (!cell) continue;
+      const style = getComputedStyle(cell);
+      probe.style.font = style.font;
+      probe.style.letterSpacing = style.letterSpacing;
+      probe.textContent = cell.innerText;
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    }
+    probe.remove();
+    saveWidth(propId, Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.ceil(widest + 48))));
+  };
   const selectedSort = columnMenu ? view.sorts.find((item) => item.prop === columnMenu.prop.id) : undefined;
   const openColumnMenu = (prop: PropDef, anchor: HTMLElement) => {
     setHeader(null);
@@ -2083,7 +2115,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
   };
   return (
     <div className="db-table-wrap">
-      <table className={`db-table${editable ? ' is-filled' : ''}`} style={{ width: total }}>
+      <table ref={tableRef} className={`db-table${editable ? ' is-filled' : ''}`} style={{ width: total }}>
         <colgroup>
           <col style={{ width: widthOf(TITLE_PROP) }} />
           {props.map((prop) => (
@@ -2094,14 +2126,15 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
         </colgroup>
         <thead>
           <tr>
-            <th scope="col" className="db-col-title">
+            <th scope="col" className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`} style={frozenStyle(-1)}>
               {t('database.name')}
               {resizer(TITLE_PROP)}
             </th>
             {props.map((prop) => {
               const description = prop.description?.trim() ? prop.description : null;
               return (
-                <th key={prop.id} scope="col">
+                <th key={prop.id} scope="col" className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
+                  style={frozenStyle(props.indexOf(prop))}>
                   <div className="db-header-row">
                     <button
                       type="button"
@@ -2168,8 +2201,8 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
             return (
               <tr key={row.id} style={rowStyle}>
                 <td
-                  className="db-col-title"
-                  style={{ ...rowStyle, ...(titleRule ? conditionalColorStyle(titleRule.color) : {}) }}
+                  className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`}
+                  style={{ ...rowStyle, ...(titleRule ? conditionalColorStyle(titleRule.color) : {}), ...frozenStyle(-1) }}
                 >
                   <RowTitle row={row} editable={editable} autoFocus={focusNew === row.id} />
                 </td>
@@ -2184,14 +2217,37 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                   return (
                     <td
                       key={prop.id}
+                      className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
                       style={{
                         ...rowStyle,
                         ...(cellRule ? conditionalColorStyle(cellRule.color) : {}),
                         textAlign: view.align?.[prop.id] ?? 'left',
                         whiteSpace: view.wrap?.includes(prop.id) ? 'normal' : 'nowrap',
+                        ...frozenStyle(props.indexOf(prop)),
                       }}
                     >
-                      <PropertyInput dbId={dbId} prop={prop} row={row} editable={editable} />
+                      {view.rowHeight ? (
+                        <div
+                          className={`db-cell-frame${expandedCell === `${row.id}:${prop.id}` ? ' is-expanded' : ''}`}
+                          style={{ maxHeight: expandedCell === `${row.id}:${prop.id}` ? undefined : view.rowHeight }}
+                        >
+                          <PropertyInput dbId={dbId} prop={prop} row={row} editable={editable} />
+                        </div>
+                      ) : (
+                        <PropertyInput dbId={dbId} prop={prop} row={row} editable={editable} />
+                      )}
+                      {view.rowHeight && view.wrap?.includes(prop.id) && (
+                        <button
+                          type="button"
+                          className="db-cell-expand icon-button tiny"
+                          aria-label={t('database.expandCell', { name: prop.name })}
+                          aria-expanded={expandedCell === `${row.id}:${prop.id}`}
+                          title={t('database.expandCell', { name: prop.name })}
+                          onClick={() => setExpandedCell((current) => current === `${row.id}:${prop.id}` ? null : `${row.id}:${prop.id}`)}
+                        >
+                          <Maximize2 size={12} />
+                        </button>
+                      )}
                     </td>
                   );
                 })}
@@ -2203,15 +2259,17 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
         {props.some((prop) => view.summaries?.[prop.id]) && (
           <tfoot>
             <tr>
-              <th scope="row" className="db-col-title">
+              <th scope="row" className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`} style={frozenStyle(-1)}>
                 {t('database.summary')}
               </th>
               {props.map((prop) => {
                 const operation = view.summaries?.[prop.id];
-                if (!operation) return <td key={prop.id} />;
+                if (!operation) return <td key={prop.id} className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined} style={frozenStyle(props.indexOf(prop))} />;
                 const summary = summarizeProperty(rows, prop, operation, database, state);
                 return (
-                  <td key={prop.id} title={summary.error ?? undefined}>
+                  <td key={prop.id} title={summary.error ?? undefined}
+                    className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
+                    style={frozenStyle(props.indexOf(prop))}>
                     {summary.error
                       ? t('database.summaryFormulaError', { error: summary.error })
                       : summary.value === null
@@ -2320,6 +2378,34 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
               onSelect: () =>
                 setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
             },
+            { separator: true },
+            {
+              label: t('database.freezeThroughColumn'),
+              icon: Columns3,
+              checked: view.frozenThrough === columnMenu.prop.id,
+              onSelect: () => saveView((current) => ({ ...current, frozenThrough: columnMenu.prop.id })),
+            },
+            ...(view.frozenThrough ? [{
+              label: t('database.unfreezeColumns'),
+              icon: X,
+              onSelect: () => saveView((current) => ({ ...current, frozenThrough: undefined })),
+            }] : []),
+            {
+              label: t('database.fitColumnToContent'),
+              icon: Maximize2,
+              onSelect: () => fitColumn(columnMenu.prop.id),
+            },
+            { heading: t('database.rowHeight') },
+            ...([
+              [undefined, 'database.rowHeightAutomatic'],
+              [34, 'database.rowHeightCompact'],
+              [68, 'database.rowHeightMedium'],
+              [120, 'database.rowHeightTall'],
+            ] as const).map(([height, label]) => ({
+              label: t(label),
+              checked: view.rowHeight === height,
+              onSelect: () => saveView((current) => ({ ...current, rowHeight: height })),
+            })),
             { separator: true },
             {
               label: t('database.duplicateColumnEmpty'),

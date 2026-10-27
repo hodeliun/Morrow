@@ -72,6 +72,8 @@ const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
   8: (data) => data,
   // version 10 adds optional sequential defaults, prose column proportions and full-width note style
   9: (data) => data,
+  // version 11 adds view-local frozen columns and bounded row heights
+  10: (data) => data,
 };
 
 export function migrate(version: number, data: RawWorkspace): Result<RawWorkspace> {
@@ -531,6 +533,10 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     dateProp: propRef(raw.dateProp),
     hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((id): id is string => propRef(id) !== null) : [],
     ...(isRecord(raw.widths) ? { widths: normalizeWidths(raw.widths) } : {}),
+    ...(propRef(raw.frozenThrough) ? { frozenThrough: propRef(raw.frozenThrough)! } : {}),
+    ...(typeof raw.rowHeight === 'number' && Number.isInteger(raw.rowHeight) && raw.rowHeight >= 34 && raw.rowHeight <= 240
+      ? { rowHeight: raw.rowHeight }
+      : {}),
     ...(filterGroups.length ? { filterGroups } : {}),
     ...(raw.filterGroupLogic === 'and' || raw.filterGroupLogic === 'or'
       ? { filterGroupLogic: raw.filterGroupLogic }

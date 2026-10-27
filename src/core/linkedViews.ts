@@ -105,6 +105,7 @@ export function viewUsesProperty(view: ViewDef, propertyId: string): boolean {
     view.order?.includes(propertyId) === true ||
     view.wrap?.includes(propertyId) === true ||
     Object.prototype.hasOwnProperty.call(view.widths ?? {}, propertyId) ||
+    view.frozenThrough === propertyId ||
     Object.prototype.hasOwnProperty.call(view.align ?? {}, propertyId) ||
     Object.prototype.hasOwnProperty.call(view.summaries ?? {}, propertyId) ||
     view.conditionalFormats?.some((rule) => rule.prop === propertyId) === true ||

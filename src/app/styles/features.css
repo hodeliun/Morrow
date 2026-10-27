@@ -1106,6 +1106,29 @@ textarea.text-input.small {
   vertical-align: middle;
   overflow: hidden;
   text-overflow: ellipsis;
+  position: relative;
+}
+.db-table .db-frozen {
+  background: var(--bg);
+  box-shadow: inset -1px 0 var(--border);
+}
+.db-table thead .db-frozen {
+  z-index: 3 !important;
+}
+.db-cell-frame {
+  overflow: hidden;
+}
+.db-cell-frame.is-expanded,
+.db-cell-frame:focus-within {
+  max-height: none !important;
+  overflow: visible;
+}
+.db-cell-expand {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 1;
+  background: var(--bg);
 }
 .db-table th {
   position: relative;

@@ -261,7 +261,7 @@ describe('reading stored data', () => {
       docs: { old: columns },
     });
     if (!result.ok) throw new Error(result.error);
-    expect(SCHEMA_VERSION).toBe(10);
+    expect(SCHEMA_VERSION).toBe(11);
     expect(result.value.docs.old).toEqual(columns);
   });
 
