@@ -6,6 +6,7 @@ import {
   calendarDayForRow,
   formatDisplayValue,
   formatValue,
+  filterOpsFor,
   groupRows,
   formulaResult,
   summarizeProperty,
@@ -112,6 +113,62 @@ describe('view filters, search and summaries', () => {
     expect(
       visibleRows(rows, view({ filterGroups: groups, filterGroupLogic: 'and' }), database, state),
     ).toEqual([]);
+  });
+
+  it('combines temporary quick filters with saved rules without changing either view', () => {
+    let state = databaseState(properties);
+    state = addRow(state, 'a', { note: 'Record A', status: 'done', score: 5 });
+    state = addRow(state, 'b', { note: 'Record B', status: 'todo', score: 9 });
+    state = addRow(state, 'c', { note: 'Record C', status: 'todo', score: 2 });
+    const rows = childrenOf(state.pages, 'db');
+    const database = state.pages.db!.database!;
+    const savedRules = [{ id: 'saved', prop: 'status', op: 'is' as const, value: 'todo' }];
+    const savedView = view({ filters: savedRules });
+    const quickFilter = { id: 'quick', prop: 'score', op: 'gt' as const, value: 4 };
+
+    expect(visibleRows(rows, savedView, database, state, [quickFilter]).map((row) => row.id)).toEqual(['b']);
+    expect(
+      visibleRows(rows, view(), database, state, [{ ...quickFilter, op: 'lt', value: 6 }]).map((row) => row.id),
+    ).toEqual(['a', 'c']);
+    expect(savedView.filters).toEqual(savedRules);
+    expect(view().filters).toEqual([]);
+  });
+
+  it('offers operators that match number, text, date, select, relation and checkbox properties', () => {
+    expect(filterOpsFor('number')).toEqual(['is', 'isNot', 'gt', 'lt', 'empty', 'notEmpty']);
+    expect(filterOpsFor('text')).toEqual(['contains', 'notContains', 'is', 'isNot', 'empty', 'notEmpty']);
+    expect(filterOpsFor('date')).toEqual(['is', 'isNot', 'gt', 'lt', 'empty', 'notEmpty']);
+    expect(filterOpsFor('select')).toEqual(['is', 'isNot', 'empty', 'notEmpty']);
+    expect(filterOpsFor('relation')).toEqual(['is', 'isNot', 'empty', 'notEmpty']);
+    expect(filterOpsFor('checkbox')).toEqual(['checked', 'unchecked']);
+  });
+
+  it('matches a selected row inside a multiple relation filter', () => {
+    const relation: PropDef = {
+      id: 'people',
+      name: 'People',
+      type: 'relation',
+      options: [],
+      relation: {
+        targetDatabaseId: null,
+        multiple: true,
+        isInverse: false,
+        displayPropertyId: null,
+        inversePropertyId: null,
+        filters: [],
+      },
+    };
+    let state = databaseState([relation]);
+    state = addRow(state, 'a', { people: ['person-1', 'person-2'] });
+    state = addRow(state, 'b', { people: ['person-3'] });
+    const rows = childrenOf(state.pages, 'db');
+    const database = state.pages.db!.database!;
+
+    expect(
+      visibleRows(rows, view(), database, state, [
+        { id: 'person-filter', prop: 'people', op: 'is', value: 'person-2' },
+      ]).map((row) => row.id),
+    ).toEqual(['a']);
   });
 
   it('summarizes visible numeric values and exposes formula failures', () => {

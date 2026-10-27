@@ -476,6 +476,16 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       name: view.name,
       type: view.type,
       ...(view.filters.length ? { filters: view.filters.map((filter) => ({ ...filter })) } : {}),
+      ...(view.filterGroups?.length
+        ? {
+            filterGroups: view.filterGroups.map((group) => ({
+              id: group.id,
+              logic: group.logic,
+              filters: group.filters.map((filter) => ({ ...filter })),
+            })),
+          }
+        : {}),
+      ...(view.filterGroupLogic ? { filterGroupLogic: view.filterGroupLogic } : {}),
       ...(view.sorts.length ? { sorts: view.sorts.map((sort) => ({ ...sort })) } : {}),
       ...(view.groupBy ? { groupBy: view.groupBy } : {}),
       ...(view.dateProp ? { dateProp: view.dateProp } : {}),

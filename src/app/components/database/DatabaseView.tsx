@@ -52,6 +52,7 @@ import type {
   DocNode,
   DatabaseDef,
   FilterOp,
+  FilterRule,
   FilterGroup,
   ConditionalFormatRule,
   ColorName,
@@ -218,6 +219,9 @@ function useViewUpdater(dbId: PageId, viewId: string) {
     linkedUpdate ? linkedUpdate(change) : updateView(dbId, viewId, change);
 }
 
+type QuickFilterDraft = { rule: FilterRule; enabled: boolean };
+const EMPTY_QUICK_FILTERS: QuickFilterDraft[] = [];
+
 export function DatabaseView({
   page,
   editable,
@@ -237,10 +241,21 @@ export function DatabaseView({
   const [viewId, setViewId] = useState<string | null>(() => readViewChoice(page.id));
   const view =
     embeddedView ?? database.views.find((candidate) => candidate.id === viewId) ?? database.views[0] ?? null;
+  const [quickFiltersByView, setQuickFiltersByView] = useState<Record<string, QuickFilterDraft[]>>({});
+  const quickFilters = view ? (quickFiltersByView[view.id] ?? EMPTY_QUICK_FILTERS) : EMPTY_QUICK_FILTERS;
   const allRows = useMemo(() => rowsOf(state, page.id), [state, page.id]);
   const rows = useMemo(
-    () => (view ? visibleRows(allRows, view, database, state) : allRows),
-    [allRows, view, database, state],
+    () =>
+      view
+        ? visibleRows(
+            allRows,
+            view,
+            database,
+            state,
+            quickFilters.filter((draft) => draft.enabled).map((draft) => draft.rule),
+          )
+        : allRows,
+    [allRows, view, database, state, quickFilters],
   );
   const [tabMenu, setTabMenu] = useState<{ view: ViewDef; anchor: HTMLElement } | null>(null);
   const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
@@ -321,8 +336,20 @@ export function DatabaseView({
               )}
             </div>
           )}
-          <Toolbar dbId={page.id} scopePageId={hostPageId ?? page.id} database={database} view={view} rows={allRows} editable={canEdit} />
+          <Toolbar
+            dbId={page.id}
+            scopePageId={hostPageId ?? page.id}
+            database={database}
+            view={view}
+            rows={allRows}
+            editable={canEdit}
+          />
         </div>
+        <QuickFilterBar
+          database={database}
+          drafts={quickFilters}
+          onChange={(drafts) => setQuickFiltersByView((current) => ({ ...current, [view.id]: drafts }))}
+        />
         {!embeddedView && canEdit && <ColumnSuggestion dbId={page.id} database={database} rows={allRows} />}
 
         {view.type === 'table' && (
@@ -343,6 +370,11 @@ export function DatabaseView({
         )}
         {view.type === 'list' && <ListView rows={rows} props={visible} database={database} />}
         {view.type === 'gallery' && <GalleryView rows={rows} database={database} view={view} />}
+        {allRows.length > 0 && rows.length === 0 && (
+          <p className="db-empty-results muted small" role="status">
+            {t('database.noMatchingRows')}
+          </p>
+        )}
         {view.type !== 'table' && canEdit && (
           <button type="button" className="db-new-row" onClick={() => newRowAndOpen(page.id, {})}>
             <Plus size={14} /> {t('database.new')}
@@ -496,6 +528,185 @@ function ViewSettings({
         </button>
       </div>
     </Popover>
+  );
+}
+
+function QuickFilterBar({
+  database,
+  drafts,
+  onChange,
+}: {
+  database: DatabaseDef;
+  drafts: QuickFilterDraft[];
+  onChange: (drafts: QuickFilterDraft[]) => void;
+}) {
+  const state = useWorkspace();
+  const names = [{ id: TITLE_PROP, name: t('database.name') }, ...database.properties];
+  const activeCount = drafts.filter((draft) => draft.enabled).length;
+  const updateDraft = (id: string, change: Partial<FilterRule>, enabled?: boolean) =>
+    onChange(
+      drafts.map((draft) =>
+        draft.rule.id === id
+          ? { ...draft, rule: { ...draft.rule, ...change }, enabled: enabled ?? draft.enabled }
+          : draft,
+      ),
+    );
+
+  return (
+    <section
+      className={`db-quick-filters${activeCount ? ' is-active' : ''}`}
+      aria-label={t('database.quickFilters')}
+    >
+      <header className="db-quick-filters-head">
+        <div className="db-quick-filters-copy">
+          <div className="db-quick-filters-title">
+            <Filter size={14} />
+            <strong>{t('database.quickFilters')}</strong>
+            {activeCount > 0 && (
+              <span className="db-quick-filters-count" role="status">
+                {t('database.activeQuickFilters', { count: activeCount })}
+              </span>
+            )}
+          </div>
+          <span className="muted small">{t('database.quickFiltersHint')}</span>
+        </div>
+        <div className="db-quick-filters-actions">
+          <button
+            type="button"
+            className="button small"
+            onClick={() =>
+              onChange([
+                ...drafts,
+                {
+                  rule: { id: newId(), prop: TITLE_PROP, op: 'contains', value: '' },
+                  enabled: false,
+                },
+              ])
+            }
+          >
+            <Plus size={13} /> {t('database.addQuickFilter')}
+          </button>
+          {drafts.length > 0 && (
+            <button type="button" className="link-button" onClick={() => onChange([])}>
+              {t('database.clearQuickFilters')}
+            </button>
+          )}
+        </div>
+      </header>
+      {drafts.map((draft) => {
+        const { rule } = draft;
+        const type = propType(database, rule.prop) ?? 'text';
+        const prop = database.properties.find((candidate) => candidate.id === rule.prop);
+        const ops = filterOpsFor(type === 'title' ? 'text' : type);
+        const isTimestamp = type === 'createdTime' || type === 'lastEditedTime';
+        const needsValue = !['empty', 'notEmpty', 'checked', 'unchecked'].includes(rule.op);
+        const relationDatabaseId = prop?.type === 'relation' ? prop.relation?.targetDatabaseId : null;
+        const relationDatabase = relationDatabaseId ? state.pages[relationDatabaseId] : undefined;
+        const relationRows = relationDatabase?.database ? rowsOf(state, relationDatabase.id) : [];
+        const noValueOperation = (op: FilterOp) => ['empty', 'notEmpty', 'checked', 'unchecked'].includes(op);
+        return (
+          <div className={`db-quick-filter${draft.enabled ? ' is-active' : ''}`} key={rule.id}>
+            <select
+              className="text-input small"
+              aria-label={t('database.property')}
+              value={rule.prop}
+              onChange={(event) => {
+                const nextType = propType(database, event.target.value) ?? 'text';
+                updateDraft(
+                  rule.id,
+                  {
+                    prop: event.target.value,
+                    op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
+                    value: null,
+                  },
+                  false,
+                );
+              }}
+            >
+              {names.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="text-input small"
+              aria-label={t('database.condition')}
+              value={rule.op}
+              onChange={(event) => {
+                const op = event.target.value as FilterOp;
+                updateDraft(rule.id, { op, value: null }, noValueOperation(op));
+              }}
+            >
+              {ops.map((op) => (
+                <option key={op} value={op}>
+                  {filterLabel(op)}
+                </option>
+              ))}
+            </select>
+            {needsValue &&
+              (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+                <select
+                  className="text-input small"
+                  aria-label={t('database.value')}
+                  value={String(rule.value ?? '')}
+                  onChange={(event) => updateDraft(rule.id, { value: event.target.value }, true)}
+                >
+                  <option value="">{t('database.choose')}</option>
+                  {prop.options.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}
+                    </option>
+                  ))}
+                </select>
+              ) : prop?.type === 'relation' && relationDatabaseId ? (
+                <select
+                  className="text-input small"
+                  aria-label={t('database.value')}
+                  value={String(rule.value ?? '')}
+                  onChange={(event) => updateDraft(rule.id, { value: event.target.value }, true)}
+                >
+                  <option value="">{t('database.choose')}</option>
+                  {relationRows.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {displayTitle(row)}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="text-input small"
+                  aria-label={t('database.value')}
+                  type={
+                    prop && isNumericPropertyType(prop.type)
+                      ? 'number'
+                      : isTimestamp || prop?.type === 'datetime'
+                        ? 'datetime-local'
+                        : prop?.type === 'date' || prop?.type === 'time'
+                          ? prop.type
+                          : 'text'
+                  }
+                  step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
+                  value={ruleValueForInput(rule.value, prop, type)}
+                  onChange={(event) => {
+                    const raw = event.target.value;
+                    const value = raw === '' ? '' : ruleValueFromInput(raw, rule.value, prop, type);
+                    updateDraft(rule.id, { value }, true);
+                  }}
+                />
+              ))}
+            <button
+              type="button"
+              className="icon-button tiny"
+              aria-label={t('database.removeFilter')}
+              onClick={() => onChange(drafts.filter((candidate) => candidate.rule.id !== rule.id))}
+            >
+              <X size={13} />
+            </button>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 

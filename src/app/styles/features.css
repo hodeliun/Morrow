@@ -781,6 +781,70 @@ textarea.text-input.small {
 .db-filter-state .link-button {
   margin-left: auto;
 }
+.db-quick-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 2px 0 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.db-quick-filters.is-active {
+  border-color: var(--accent);
+}
+.db-quick-filters-head,
+.db-quick-filters-title,
+.db-quick-filters-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.db-quick-filters-head {
+  justify-content: space-between;
+}
+.db-quick-filters-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.db-quick-filters-title {
+  color: var(--text);
+}
+.db-quick-filters-title > svg {
+  color: var(--accent-strong);
+}
+.db-quick-filters-count {
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+.db-quick-filters-actions {
+  margin-left: auto;
+}
+.db-quick-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.db-quick-filter > .text-input {
+  flex: 1 1 130px;
+  width: auto;
+  min-width: 100px;
+}
+.db-quick-filter > .icon-button {
+  margin-left: auto;
+}
+.db-empty-results {
+  padding: 14px 10px;
+  text-align: center;
+}
 .db-panel {
   width: min(520px, calc(100vw - 32px));
 }

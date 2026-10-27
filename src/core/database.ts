@@ -68,6 +68,7 @@ export function filterOpsFor(type: PropType | 'title'): FilterOp[] {
       return ['checked', 'unchecked'];
     case 'select':
     case 'multiSelect':
+    case 'relation':
       return ['is', 'isNot', 'empty', 'notEmpty'];
     default:
       return ['contains', 'notContains', 'is', 'isNot', 'empty', 'notEmpty'];
@@ -1632,6 +1633,7 @@ export function visibleRows(
   view: ViewDef,
   database: DatabaseDef,
   state?: WorkspaceState,
+  quickFilters: FilterRule[] = [],
 ): PageMeta[] {
   const query = (view.search ?? '').trim().toLocaleLowerCase();
   const matchesSearch = (row: PageMeta) => {
@@ -1658,7 +1660,12 @@ export function visibleRows(
       ? groupMatches.some(Boolean)
       : groupMatches.every(Boolean);
   };
-  const filtered = rows.filter((row) => matchesGroups(row) && matchesSearch(row));
+  const filtered = rows.filter(
+    (row) =>
+      matchesGroups(row) &&
+      matchesSearch(row) &&
+      quickFilters.every((rule) => matchesFilter(row, rule, database, state)),
+  );
   return sortRows(filtered, view.sorts, database, state);
 }
 

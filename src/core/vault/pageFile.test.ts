@@ -2,7 +2,7 @@ import { stringify } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { bindFormulaReferences } from '../database';
 import { newPageMeta } from '../model';
-import type { DatabaseDef, PropDef, WorkspaceState } from '../model';
+import type { DatabaseDef, FilterGroup, PropDef, WorkspaceState } from '../model';
 import { loadVault } from './load';
 import { composeFrontmatter, managedFrontmatter, readPageText } from './pageFile';
 
@@ -56,5 +56,50 @@ describe('formula reference persistence', () => {
     expect(total.formulaBindings).toEqual([
       { start: 5, end: 13, source: '"Amount"', kind: 'property', databaseId: loadedDatabase.id, propertyId: 'amount' },
     ]);
+  });
+});
+
+describe('saved filter persistence', () => {
+  it('round-trips grouped saved rules and their combination logic through Markdown', () => {
+    const filterGroups: FilterGroup[] = [
+      {
+        id: 'group-a',
+        logic: 'or',
+        filters: [
+          { id: 'filter-a', prop: 'status', op: 'is', value: 'done' },
+          { id: 'filter-b', prop: 'status', op: 'is', value: 'in-progress' },
+        ],
+      },
+      {
+        id: 'group-b',
+        logic: 'and',
+        filters: [{ id: 'filter-c', prop: 'score', op: 'gt', value: 4 }],
+      },
+    ];
+    const database: DatabaseDef = {
+      properties: [],
+      views: [
+        {
+          id: 'view',
+          name: 'Saved rules',
+          type: 'table',
+          filters: [],
+          filterGroups,
+          filterGroupLogic: 'or',
+          sorts: [],
+          groupBy: null,
+          dateProp: null,
+          hidden: [],
+        },
+      ],
+    };
+    const page = newPageMeta({ id: 'db', parentId: null, title: 'Records', kind: 'database', database });
+    const data = composeFrontmatter(managedFrontmatter(page, 'Records', null), {}, null);
+    const yaml = stringify(data);
+    const loaded = readPageText(`---\n${yaml}${yaml.endsWith('\n') ? '' : '\n'}---\n`);
+
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.views[0]?.filterGroups).toEqual(filterGroups);
+    expect(loaded.database?.views[0]?.filterGroupLogic).toBe('or');
   });
 });
