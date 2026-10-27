@@ -39,6 +39,17 @@ export function planDatabaseCopy(
   };
   const copiedSchema = (database: DatabaseDef): DatabaseDef => {
     const copy = remapReferences(structuredClone(database));
+    copy.properties = copy.properties.map((property, index) => {
+      const original = database.properties[index]!;
+      if (
+        original.type !== 'relation' ||
+        !original.relation?.targetDatabaseId ||
+        !ids.has(original.relation.targetDatabaseId) ||
+        original.defaultValue === undefined
+      )
+        return property;
+      return { ...property, defaultValue: remapRelationSelection(original.defaultValue, ids) };
+    });
     copy.views = copy.views.map((view) => ({ ...view, id: nextId() }));
     return copy;
   };
@@ -49,8 +60,7 @@ export function planDatabaseCopy(
       for (const property of sourceParent.database.properties) {
         if (property.type !== 'relation' || !property.relation?.targetDatabaseId || !ids.has(property.relation.targetDatabaseId)) continue;
         const value: PropValue | undefined = values[property.id];
-        if (Array.isArray(value)) values[property.id] = value.map((item) => String(remapId(item)));
-        else if (typeof value === 'string') values[property.id] = String(remapId(value));
+        if (value !== undefined) values[property.id] = remapRelationSelection(value, ids);
       }
     }
     return {
@@ -65,7 +75,20 @@ export function planDatabaseCopy(
       trashedAt: null,
       favorite: false,
       dailyDate: null,
-      controls: remapReferences(structuredClone(original.controls)),
+      controls: original.controls.map((control) => {
+        const copy = remapReferences(structuredClone(control));
+        if (
+          control.type !== 'relation' ||
+          !control.relation?.targetDatabaseId ||
+          !ids.has(control.relation.targetDatabaseId)
+        )
+          return copy;
+        return {
+          ...copy,
+          value: remapRelationSelection(control.value, ids),
+          defaultValue: remapRelationSelection(control.defaultValue, ids),
+        };
+      }),
       properties: values,
       extra: structuredClone(original.extra),
       database: original.database ? copiedSchema(original.database) : null,
@@ -92,4 +115,10 @@ export function planDatabaseCopy(
     docs[ids.get(original.id)!] = visit(document);
   }
   return { databaseId, pages, docs };
+}
+
+function remapRelationSelection(value: PropValue, ids: Map<PageId, PageId>): PropValue {
+  if (typeof value === 'string') return ids.get(value) ?? null;
+  if (Array.isArray(value)) return value.flatMap((id) => (ids.has(id) ? [ids.get(id)!] : []));
+  return value;
 }
