@@ -297,6 +297,67 @@ describe('edits made outside morrow', () => {
     await session.close();
   });
 
+  it('keeps externally changed named control values and defaults through a later save', async () => {
+    const vault = new MemoryVault({
+      'Controls.md': '---\nmorrowControls:\n  - id: amount\n    name: Amount\n    type: number\n    value: 1\n    defaultValue: 2\n    options: []\n---\nBefore.\n',
+    });
+    const session = await open(vault);
+    const page = idOf(session, 'Controls');
+    const external =
+      '---\nexternalNote: keep me\nmorrowControls:\n  - id: amount\n    name: Amount\n    type: number\n    value: 7\n    defaultValue: 9\n    options: []\n---\nBefore.\n';
+    vault.external({ 'Controls.md': external });
+
+    expect(session.getState().pages[page]?.controls).toMatchObject([
+      { id: 'amount', value: 7, defaultValue: 9 },
+    ]);
+    await run(session, { type: 'page.setDoc', id: page, doc: doc('Edited in Morrow.'), now: 10 });
+    expect(vault.text('Controls.md')).toContain('externalNote: keep me');
+
+    const reopened = await open(vault);
+    expect(reopened.getState().pages[page]?.controls).toMatchObject([
+      { id: 'amount', value: 7, defaultValue: 9 },
+    ]);
+    expect(reopened.getState().pages[page]?.extra).toMatchObject({ externalNote: 'keep me' });
+    await reopened.close();
+    await session.close();
+  });
+
+  it('does not restore named controls removed externally after a later save', async () => {
+    const vault = new MemoryVault({
+      'Controls.md': '---\nexternalNote: keep me\nmorrowControls:\n  - id: amount\n    name: Amount\n    type: number\n    value: 1\n    defaultValue: 2\n    options: []\n---\nBefore.\n',
+    });
+    const session = await open(vault);
+    const page = idOf(session, 'Controls');
+    vault.external({ 'Controls.md': '---\nexternalNote: keep me\n---\nBefore.\n' });
+
+    expect(session.getState().pages[page]?.controls).toEqual([]);
+    await run(session, { type: 'page.setDoc', id: page, doc: doc('Edited in Morrow.'), now: 11 });
+    expect(vault.text('Controls.md')).not.toContain('morrowControls:');
+
+    const reopened = await open(vault);
+    expect(reopened.getState().pages[page]?.controls).toEqual([]);
+    expect(reopened.getState().pages[page]?.extra).toMatchObject({ externalNote: 'keep me' });
+    await reopened.close();
+    await session.close();
+  });
+
+  it('leaves externally invalid named control metadata read only', async () => {
+    const original =
+      '---\nexternalNote: keep me\nmorrowControls:\n  - id: amount\n    name: Amount\n    type: number\n    value: 1\n    defaultValue: 2\n    options: []\n---\nBefore.\n';
+    const vault = new MemoryVault({ 'Controls.md': original });
+    const session = await open(vault);
+    const page = idOf(session, 'Controls');
+    const invalid =
+      '---\nexternalNote: changed elsewhere\nmorrowControls:\n  - id: amount\n    name: Amount\n    type: unsupported\n    value: 1\n    defaultValue: 2\n    options: []\n---\nExternal edit.\n';
+    vault.external({ 'Controls.md': invalid });
+
+    expect(session.unreadable.has(page)).toBe(true);
+    session.execute({ type: 'page.setIcon', id: page, icon: '📝', now: 12 });
+    await session.flush();
+    expect(vault.text('Controls.md')).toBe(invalid);
+    await session.close();
+  });
+
   it('keeps a page when the folder of its subpages goes away', async () => {
     const vault = new MemoryVault({ 'Parent.md': 'p\n', 'Parent/A.md': 'a\n', 'Parent/B.md': 'b\n' });
     const session = await open(vault);

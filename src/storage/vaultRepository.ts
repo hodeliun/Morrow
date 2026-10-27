@@ -951,6 +951,7 @@ export class VaultRepository implements WorkspaceRepository {
       cover: read.cover,
       coverPosition: read.coverPosition,
       noteStyle: read.noteStyle,
+      controls: read.controls,
       kind: read.kind ?? 'page',
       tags: read.tags,
       database: read.database,
