@@ -11,6 +11,9 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   version: string;
+  morrowBaseVersion: string;
+  morrowBaseCommit: string;
+  forkVersion: string;
 };
 
 // `vite --mode desktop` builds the electron shell and opens it against the dev server
@@ -87,7 +90,12 @@ export default defineConfig({
     thirdPartyLicenses(['@lobehub/fluent-emoji-3d', 'lucide-react']),
     emojiImages(),
   ],
-  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __MORROW_BASE_VERSION__: JSON.stringify(pkg.morrowBaseVersion),
+    __MORROW_BASE_COMMIT__: JSON.stringify(pkg.morrowBaseCommit),
+    __FORK_VERSION__: JSON.stringify(pkg.forkVersion),
+  },
   // relative base so the build loads from the desktop shell or any static path
   base: './',
   build: {

@@ -220,6 +220,10 @@ export const es: TranslationSchema = {
     about: {
       description: 'Libre y de código abierto bajo la Licencia Apache 2.0.',
       version: 'Morrow {version}',
+      baseVersion: 'Base Morrow {version}',
+      forkVersion: 'Cambios del fork {version}',
+      baseRevision: 'Revisión oficial {commit}',
+      packageVersion: 'Paquete {version}',
       shortcuts: 'Atajos de teclado',
       shortcutsHelp: 'O pulsa {shortcut} en cualquier lugar.',
       shortcutsButton: 'Mostrar',

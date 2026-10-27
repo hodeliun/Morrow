@@ -1,7 +1,7 @@
 # Morrow
 
-Public derivative of Morrow v1.2.0 (Apache-2.0), based on upstream commit
-`0e630ccea927174a655404b7769b793f0a64e403`. Preserve the original license and
+Public derivative of Morrow v1.2.1 (Apache-2.0), integrated through upstream commit
+`5e6392bb6425924abd30eec8a99b42aa8c953577`. Preserve the original license and
 attribution.
 
 ## Migration and upstream policy
@@ -11,7 +11,11 @@ attribution.
   sanitized snapshot based on the public upstream commit above because the
   private history contains personal author metadata. Do not publish that
   history or copy personal files into this repository.
-- The product branch and default branch is `main`.
+- The product branch and default branch is `main`.- Track the official base version and commit separately from `forkVersion` in
+  `package.json`. The package version combines both; `CHANGELOG-FORK.md` records
+  original fork changes and upstream syncs. Do not infer upstream coverage from
+  the package's version alone.
+
 - The upstream remote is `https://github.com/Aarav2709/Morrow.git`. For an
   upstream update, fetch and review upstream changes, then merge the selected
   upstream changes into `main` while preserving enhanced behavior. Never

@@ -216,6 +216,10 @@ export const en = {
     about: {
       description: 'Free and open source under the Apache License 2.0.',
       version: 'Morrow {version}',
+      baseVersion: 'Morrow base {version}',
+      forkVersion: 'Fork changes {version}',
+      baseRevision: 'Upstream revision {commit}',
+      packageVersion: 'Package {version}',
       shortcuts: 'Keyboard shortcuts',
       shortcutsHelp: 'Or press {shortcut} anywhere.',
       shortcutsButton: 'Show',

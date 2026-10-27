@@ -562,7 +562,10 @@ function AboutSettings() {
       <div className="settings-about">
         <Logo size={36} />
         <div>
-          <strong>Morrow {desktop?.version ?? __APP_VERSION__}</strong>
+          <strong>{t('settings.about.baseVersion', { version: __MORROW_BASE_VERSION__ })}</strong>
+          <span>{t('settings.about.forkVersion', { version: __FORK_VERSION__ })}</span>
+          <span>{t('settings.about.baseRevision', { commit: __MORROW_BASE_COMMIT__.slice(0, 7) })}</span>
+          <span>{t('settings.about.packageVersion', { version: desktop?.version ?? __APP_VERSION__ })}</span>
           <span>{t('settings.about.description')}</span>
         </div>
       </div>

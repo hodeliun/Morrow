@@ -1,6 +1,9 @@
 /// <reference types="vite/client" />
 
 declare const __APP_VERSION__: string;
+declare const __MORROW_BASE_VERSION__: string;
+declare const __MORROW_BASE_COMMIT__: string;
+declare const __FORK_VERSION__: string;
 
 declare module 'virtual:morrow-emoji' {
   // file names of the bundled emoji images, lower case code points joined by dashes
