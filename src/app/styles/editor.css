@@ -81,8 +81,9 @@
   font-weight: 650;
   line-height: 1.28;
   letter-spacing: -0.012em;
-  margin-top: calc(var(--note-block-spacing, 0.55em) * 2.7);
-  margin-bottom: 0.15em;
+  /* Keep the heading attached to the following content while honoring each note's spacing setting. */
+  margin-top: calc(var(--note-block-spacing, 0.55em) * 1.8);
+  margin-bottom: calc(var(--note-block-spacing, 0.55em) * 0.7);
 }
 
 .font-sans .prose :is(h1, h2, h3, h4, h5, h6) {

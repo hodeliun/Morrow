@@ -120,6 +120,12 @@ describe('markdown import', () => {
     expect(doc.content![2]!.content).toHaveLength(2);
   });
 
+  it('imports Notion empty and non-breaking-space checkboxes as tasks', () => {
+    const doc = markdownToDoc('- [] Open\n- [\u00a0] Waiting\n- [x] Done');
+    expect(doc.content!.map((node) => node.type)).toEqual(['taskList']);
+    expect(doc.content![0]!.content!.map((item) => item.attrs?.checked)).toEqual([false, false, true]);
+  });
+
   it('handles empty and hostile input', () => {
     expect(markdownToDoc('')).toEqual({ type: 'doc', content: [{ type: 'paragraph' }] });
     expect(() => markdownToDoc('>'.repeat(5000))).not.toThrow();

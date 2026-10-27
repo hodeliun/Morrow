@@ -1660,8 +1660,7 @@ input[type='checkbox']:checked::after {
   text-overflow: ellipsis;
 }
 
-.palette-snippet mark,
-.prose mark {
+.palette-snippet mark {
   background: var(--mark);
   color: var(--text);
   border-radius: 2px;

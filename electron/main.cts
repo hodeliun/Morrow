@@ -80,33 +80,12 @@ const APP_ID = 'app.morrow.desktop';
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
 // matches the height of the app's top bar so the native buttons sit inside it
 const TITLE_BAR_HEIGHT = 46;
+// the window's first colours, before the app paints the title bar to match whatever sits under it
 const THEMES = {
-  light: { background: '#fbfaf7', symbols: '#6b665d' },
-  dark: { background: '#1b1a18', symbols: '#a49e93' },
+  light: { background: '#f8f8f7', symbols: '#5b5b5f' },
+  dark: { background: '#202020', symbols: '#b1b1b1' },
 };
-// the scrim the app lays over everything behind a dialog, matching --scrim in tokens.css
-const SCRIMS = {
-  light: { rgb: [24, 22, 19], alpha: 0.32 },
-  dark: { rgb: [0, 0, 0], alpha: 0.5 },
-};
-
-function dimmed(hex: string, name: 'light' | 'dark'): string {
-  const { rgb, alpha } = SCRIMS[name];
-  const channels = [1, 3, 5].map((start, i) =>
-    Math.round(parseInt(hex.slice(start, start + 2), 16) * (1 - alpha) + rgb[i]! * alpha),
-  );
-  return `#${channels.map((value) => value.toString(16).padStart(2, '0')).join('')}`;
-}
-
-// the native window buttons in the theme's colours, darkened like the rest of the window behind a dialog
-function paintTitleBar(window: BrowserWindow, name: 'light' | 'dark', dim: boolean): void {
-  if (IS_MAC) return;
-  const theme = THEMES[name];
-  window.setTitleBarOverlay({
-    color: dim ? dimmed(theme.background, name) : theme.background,
-    symbolColor: dim ? dimmed(theme.symbols, name) : theme.symbols,
-  });
-}
+const HEX = /^#[0-9a-f]{6}$/i;
 const windowThemes = new WeakMap<BrowserWindow, 'light' | 'dark'>();
 
 // development and test runs can use a throwaway profile, installed copies never can
@@ -352,6 +331,11 @@ async function createWindow(): Promise<void> {
   });
 
   // the renderer writes pending edits and a backup before the window closes
+  // the back and forward buttons on a mouse reach windows and linux as app commands, not clicks
+  window.on('app-command', (_event, command) => {
+    if (command === 'browser-backward') toWindow('morrow:command', 'go.back');
+    if (command === 'browser-forward') toWindow('morrow:command', 'go.forward');
+  });
   window.on('close', (event) => {
     void saveWindowState(window);
     if (readyToClose || window.webContents.isCrashed()) return;
@@ -408,18 +392,20 @@ function registerIpc(): void {
     mainWindow.close();
   });
   // keeps the native window buttons in the same colours as the app theme
+  // the window's background follows the app theme, so a resize never flashes the other colour
   ipcMain.on('morrow:theme', (event, name: unknown) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!fromApp(event) || !window || (name !== 'light' && name !== 'dark')) return;
     window.setBackgroundColor(THEMES[name].background);
     windowThemes.set(window, name);
-    paintTitleBar(window, name, false);
   });
-  ipcMain.on('morrow:dim', (event, dim: unknown) => {
+  // the native window buttons take the colours of the app right under them, dimmed with it behind a dialog
+  ipcMain.on('morrow:title-bar', (event, color: unknown, symbolColor: unknown) => {
     const window = BrowserWindow.fromWebContents(event.sender);
-    if (!fromApp(event) || !window) return;
-    const name = windowThemes.get(window) ?? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
-    paintTitleBar(window, name, dim === true);
+    if (!fromApp(event) || !window || IS_MAC) return;
+    if (typeof color !== 'string' || typeof symbolColor !== 'string') return;
+    if (!HEX.test(color) || !HEX.test(symbolColor)) return;
+    window.setTitleBarOverlay({ color, symbolColor });
   });
   ipcMain.handle('morrow:open-external', (event, url: unknown) => {
     if (fromApp(event) && typeof url === 'string') openExternal(url);
@@ -456,6 +442,8 @@ function registerIpc(): void {
     });
     if (choice.canceled || !choice.filePath) return { ok: false, error: null };
     try {
+      // chromium paints the page margins in the window's own colour, paper is white whatever the theme
+      window.setBackgroundColor('#ffffff');
       const data = await event.sender.printToPDF({
         printBackground: true,
         pageSize: 'A4',
@@ -466,6 +454,9 @@ function registerIpc(): void {
       return { ok: true, path: choice.filePath };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      const name = windowThemes.get(window) ?? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+      window.setBackgroundColor(THEMES[name].background);
     }
   });
   ipcMain.handle('morrow:write-backup', async (event, json: unknown) => {

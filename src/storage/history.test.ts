@@ -56,6 +56,30 @@ describe('page history', () => {
     await session.close();
   });
 
+  it('restores page properties and extra metadata with the document', async () => {
+    const session = await open(freshName());
+    session.execute({ type: 'page.create', id: 'p', parentId: null, now: 1, title: 'Notes' });
+    session.execute({ type: 'page.setDoc', id: 'p', doc: doc('first'), now: 2 });
+    session.execute({
+      type: 'page.setFields', id: 'p', properties: { score: 1 }, extra: { status: 'draft' }, now: 3,
+    });
+    await session.flush();
+    const [original] = await session.listSnapshots('p');
+    expect(original?.properties).toEqual({ score: 1 });
+
+    session.execute({ type: 'page.setDoc', id: 'p', doc: doc('second'), now: 4 });
+    session.execute({
+      type: 'page.setFields', id: 'p', properties: { score: 2 }, extra: { status: 'final' }, now: 5,
+    });
+    await session.flush();
+    const restored = await session.restoreSnapshot(original!);
+    expect(restored.ok).toBe(true);
+    expect(session.getState().docs.p).toEqual(doc('first'));
+    expect(session.getState().pages.p?.properties).toEqual({ score: 1 });
+    expect(session.getState().pages.p?.extra).toEqual({ status: 'draft' });
+    await session.close();
+  });
+
   it('removes history together with a page deleted forever', async () => {
     const name = freshName();
     const session = await open(name);

@@ -166,7 +166,16 @@ export function ensureToday(date = new Date()): PageId | null {
   const state = getState();
   const key = dateKey(date);
   const existing = findDailyNote(state, key);
-  if (existing) return existing.id;
+  if (existing) {
+    // a note still titled with its date as another language writes it takes the app's language
+    const title = dailyTitle(date, dateLocale());
+    const automatic = [undefined, 'en', 'es', 'pt', ...(navigator.languages ?? [])].map((locale) =>
+      dailyTitle(date, locale),
+    );
+    if (existing.title !== title && automatic.includes(existing.title))
+      run({ type: 'page.rename', id: existing.id, title, now: Date.now() });
+    return existing.id;
+  }
   let journal = findJournal(state);
   const now = Date.now();
   if (!journal) {
@@ -511,7 +520,12 @@ export async function exportPagePdf(id: PageId): Promise<void> {
   root.classList.add('is-printing');
   // paper is white, so a dark theme prints in the light one, with dark text
   const theme = root.dataset.theme;
+  const scheme = root.style.colorScheme;
   root.dataset.theme = 'light';
+  root.style.colorScheme = 'light';
+  // nothing selected or focused shows up on paper
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  window.getSelection()?.removeAllRanges();
   try {
     const result = await desktop.exportPdf(displayTitle(page));
     if (result.ok) toast(t('toasts.pdfSaved', { filename: result.path.split(/[\\/]/).pop() ?? 'PDF' }));
@@ -520,6 +534,7 @@ export async function exportPagePdf(id: PageId): Promise<void> {
     root.classList.remove('is-printing');
     delete root.dataset.printPane;
     if (theme) root.dataset.theme = theme;
+    root.style.colorScheme = scheme;
   }
 }
 

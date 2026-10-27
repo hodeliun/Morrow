@@ -114,8 +114,15 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
 ## Status
 
-Version **1.2.4**. Pages stay in a folder you choose as Markdown. Choose a separate folder for
-the synthetic demo vault in [demo/](demo/) and follow [the guide](docs/GUIA.md).
+This fork uses **Morrow 1.2.1** as its official base and tracks its own changes as
+**fork 1.0.0**. The package version `1.2.1-fork.1.0.0` identifies both. The old
+fork label `1.2.4` did not mean that the official 1.2.1 fixes were present.
+See [the fork changelog](CHANGELOG-FORK.md) for the two version histories.
+
+Pages stay in a folder you choose as Markdown. Earlier builds kept them inside
+the app; on first open, the app offers to copy those pages into the folder and
+leaves the original copy untouched. Choose a separate folder for the synthetic
+demo vault in [demo/](demo/) and follow [the guide](docs/GUIA.md).
 
 ## Coming from Obsidian
 

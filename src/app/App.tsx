@@ -17,13 +17,21 @@ import { commitEditors, undoRedo } from './editor/commits';
 import { ensureToday, writeAutoBackup } from './operations';
 import { startAutoSync, syncWith } from './sync';
 import { startUpdateChecks } from './updates';
-import { desktop, isMac } from './platform/desktop';
+import { desktop, isMac, watchTitleBar } from './platform/desktop';
 import { getPreferences, resolvedTheme, setPreferences, usePreferences } from './platform/preferences';
 import { navigate, parseRoute, routeHash, useRoute } from './router';
 import type { Route } from './router';
 import { getUi, setUi, toast, useUi } from './ui';
 import { loadCustomCss } from './customCss';
-import { activateTabAt, goBack, PaneContext, setActivePane, startTabs, useTabs } from './tabs';
+import {
+  activateTabAt,
+  claimNavigation,
+  goBack,
+  PaneContext,
+  setActivePane,
+  startTabs,
+  useTabs,
+} from './tabs';
 import type { PaneId } from './tabs';
 import { getSession } from './workspace';
 
@@ -47,6 +55,7 @@ function useTheme(theme: 'system' | 'light' | 'dark') {
       document.documentElement.style.colorScheme = resolved;
       desktop?.setTheme(resolved);
     };
+    watchTitleBar();
     apply();
     const media = matchMedia('(prefers-color-scheme: dark)');
     media.addEventListener('change', apply);
@@ -115,6 +124,7 @@ function useLifecycle() {
         await writeAutoBackup();
         return;
       }
+      if ((id === 'go.back' || id === 'go.forward') && !claimNavigation()) return;
       if (id === 'edit.undo' || id === 'edit.redo') {
         undoRedo(id === 'edit.undo' ? 'undo' : 'redo');
         return;

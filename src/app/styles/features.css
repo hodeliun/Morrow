@@ -127,7 +127,8 @@
   background: var(--mark);
   color: inherit;
   border-radius: 2px;
-  padding: 0 1px;
+  /* no padding, giving words a background never moves them */
+  padding: 0;
 }
 
 .prose .callout {
@@ -2193,6 +2194,8 @@ td:hover .prop-empty,
 }
 .canvas-page {
   padding: 12px 14px;
+  /* the page runs on for as far as the card is stretched, and fades out where the card ends */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
 }
 .canvas-page-title {
   display: block;
@@ -2360,7 +2363,7 @@ td:hover .prop-empty,
   top: 64px;
   right: 24px;
   width: 210px;
-  padding-left: 18px;
+  padding-left: 4px;
   max-height: calc(100% - 110px);
   overflow-y: auto;
   font: var(--text-sm) var(--font-ui);
@@ -2391,7 +2394,8 @@ td:hover .prop-empty,
   display: block;
   width: 100%;
   text-align: left;
-  padding: 3px 10px;
+  /* room on the left for a fold arrow, kept by every row so the headings line up */
+  padding: 3px 10px 3px 22px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -2410,8 +2414,8 @@ td:hover .prop-empty,
 }
 .outline-fold {
   position: absolute;
-  top: 4px;
-  left: calc((var(--level) - 1) * 12px - 16px);
+  top: 5px;
+  left: calc((var(--level) - 1) * 12px + 4px);
   display: grid;
   place-items: center;
   width: 16px;

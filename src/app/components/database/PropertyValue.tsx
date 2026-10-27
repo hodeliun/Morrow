@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Pencil, Plus, X } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { formatDisplayValue, formulaResult, formulaValueText, valueOf } from '../../../core/database';
 import { displayTitle, TEXT_HEX } from '../../../core/model';
 import { resolveLinkTarget } from '../../../core/search';
@@ -578,6 +578,11 @@ export function DraftInput({
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const canceling = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+  // the values this field saved, so undo inside it steps back through them. the browser's own undo knows
+  // nothing of values set from outside the field and can empty it instead
+  const undone = useRef<Array<{ before: string; after: string }>>([]);
+  const redone = useRef<Array<{ before: string; after: string }>>([]);
   const commit = () => {
     if (canceling.current) {
       canceling.current = false;
@@ -585,12 +590,43 @@ export function DraftInput({
       onDone?.();
       return;
     }
-    if (draft !== null && draft !== value) onCommit(draft);
+    if (draft !== null && draft !== value) {
+      undone.current.push({ before: value, after: draft });
+      redone.current = [];
+      onCommit(draft);
+    }
     setDraft(null);
     onDone?.();
   };
+  const stepHistory = (direction: 'undo' | 'redo') => {
+    // typing that is not saved yet goes first
+    if (direction === 'undo' && draft !== null && draft !== value) return setDraft(null);
+    const [from, to] = direction === 'undo' ? [undone, redone] : [redone, undone];
+    const change = from.current.pop();
+    if (!change || !editable) return;
+    to.current.push(change);
+    setDraft(null);
+    onCommit(direction === 'undo' ? change.before : change.after);
+  };
+  const stepRef = useRef(stepHistory);
+  useEffect(() => {
+    stepRef.current = stepHistory;
+  });
+  // undo and redo from the edit menu arrive as input events rather than keys
+  useEffect(() => {
+    const element = input.current;
+    if (!element) return;
+    const onBeforeInput = (event: InputEvent) => {
+      if (event.inputType !== 'historyUndo' && event.inputType !== 'historyRedo') return;
+      event.preventDefault();
+      stepRef.current(event.inputType === 'historyUndo' ? 'undo' : 'redo');
+    };
+    element.addEventListener('beforeinput', onBeforeInput);
+    return () => element.removeEventListener('beforeinput', onBeforeInput);
+  }, []);
   return (
     <input
+      ref={input}
       type={type}
       autoFocus={autoFocus}
       min={min}
@@ -613,6 +649,11 @@ export function DraftInput({
           canceling.current = true;
           setDraft(null);
           event.currentTarget.blur();
+        }
+        const key = event.key.toLowerCase();
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === 'z' || key === 'y')) {
+          event.preventDefault();
+          stepHistory(key === 'y' || event.shiftKey ? 'redo' : 'undo');
         }
       }}
     />
