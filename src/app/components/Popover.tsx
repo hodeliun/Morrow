@@ -43,7 +43,8 @@ export function Popover({
         element.style.visibility = 'visible';
         if (focused) return;
         focused = true;
-        element.querySelector<HTMLElement>('[data-autofocus], input, select, button')?.focus();
+        (element.querySelector<HTMLElement>('[data-autofocus]') ??
+          element.querySelector<HTMLElement>('input, select, button'))?.focus();
       });
     place();
     const observer = new ResizeObserver(place);

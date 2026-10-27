@@ -3,6 +3,7 @@ import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { CALLOUT_TONES, validBlockBackground } from '../../core/model';
+import { contrastTextForHex } from '../../core/colorContrast';
 import { calloutNodeView } from './Extras';
 
 declare module '@tiptap/core' {
@@ -112,7 +113,9 @@ export const BlockBackground = Extension.create({
               return color
                 ? {
                     'data-block-background': color,
-                    ...(color.startsWith('#') ? { style: `background-color: ${color}` } : {}),
+                    ...(color.startsWith('#')
+                      ? { style: `background-color: ${color}; color: ${contrastTextForHex(color)}` }
+                      : {}),
                   }
                 : {};
             },

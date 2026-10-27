@@ -268,6 +268,10 @@ export const Columns = Node.create({
         }
       };
       paint();
+      // Node views are painted before insertion. Measure again after layout or the handle can land far offscreen.
+      const frame = requestAnimationFrame(paint);
+      const observer = new ResizeObserver(paint);
+      observer.observe(contentDOM);
 
       return {
         dom,
@@ -284,6 +288,8 @@ export const Columns = Node.create({
         ignoreMutation: (mutation) =>
           mutation.type === 'selection' ? false : !contentDOM.contains(mutation.target as HTMLElement),
         destroy() {
+          cancelAnimationFrame(frame);
+          observer.disconnect();
           previewWidths = null;
         },
       };
