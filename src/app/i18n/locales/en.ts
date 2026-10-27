@@ -1335,6 +1335,11 @@ export const en = {
     noImage: 'No image',
     linkedSourceInUse:
       'A database in this page is shown in {count} linked views. Remove or retarget them before deleting this page.',
+    linkedSourceInUsePages: 'This page contains a database used by linked views on {pages}.',
+    linkedSourceInUseMoreReferences: '{count} additional linked view references are not listed.',
+    linkedSourceInUseMoreReferencesOne: '{count} additional linked view reference is not listed.',
+    linkedSourceInUseInstruction:
+      'Remove or retarget those views first; the database and its rows are unchanged.',
     columnUsedByLinkedView:
       'This column is used in the linked view “{name}”. Remove that reference before deleting the column.',
     columnUsedByFormula:

@@ -1350,6 +1350,12 @@ export const es: TranslationSchema = {
     noImage: 'Sin imagen',
     linkedSourceInUse:
       'Una base dentro de esta página aparece en {count} vistas vinculadas. Elimínalas o cambia su origen antes de borrar esta página.',
+    linkedSourceInUsePages: 'Esta página contiene una base de datos usada por vistas vinculadas en {pages}.',
+    linkedSourceInUseMoreReferences: 'Hay {count} referencias adicionales de vistas vinculadas que no se muestran.',
+    linkedSourceInUseMoreReferencesOne:
+      'Hay {count} referencia adicional de vista vinculada que no se muestra.',
+    linkedSourceInUseInstruction:
+      'Elimina o cambia el origen de esas vistas primero; la base de datos y sus filas no han cambiado.',
     columnUsedByLinkedView:
       'Esta columna se usa en la vista vinculada “{name}”. Quita esa referencia antes de borrar la columna.',
     columnUsedByFormula:

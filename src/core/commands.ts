@@ -203,13 +203,11 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       if (page.value.trashedAt !== null) return unchanged(state);
       const references = linkedViewsBlockingTrash(state, page.value.id);
       if (references.length) {
-        const hosts = [
-          ...new Set(references.map((reference) => displayTitle(state.pages[reference.hostPageId]!))),
-        ].slice(0, 3);
-        const more = references.length > hosts.length ? ` and ${references.length - hosts.length} more` : '';
-        return fail(
-          `This page contains a database used by linked views in ${hosts.map((title) => `“${title}”`).join(', ')}${more}. Remove or retarget those views first; the database and its rows are unchanged.`,
-        );
+        return fail('This page is used by linked database views.', {
+          kind: 'linkedViewsBlockingTrash',
+          hostPageIds: [...new Set(references.map((reference) => reference.hostPageId))],
+          referenceCount: references.length,
+        });
       }
       return updatePage(state, { ...page.value, trashedAt: command.now });
     }

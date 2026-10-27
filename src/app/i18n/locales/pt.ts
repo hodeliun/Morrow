@@ -1347,6 +1347,13 @@ export const pt: TranslationSchema = {
     noImage: 'Sem imagem',
     linkedSourceInUse:
       'Um banco dentro desta página aparece em {count} visualizações vinculadas. Remova ou redirecione essas visualizações antes de excluir esta página.',
+    linkedSourceInUsePages: 'Esta página contém um banco de dados usado por visualizações vinculadas em {pages}.',
+    linkedSourceInUseMoreReferences:
+      'Há {count} referências adicionais de visualizações vinculadas que não foram exibidas.',
+    linkedSourceInUseMoreReferencesOne:
+      'Há {count} referência adicional de visualização vinculada que não foi exibida.',
+    linkedSourceInUseInstruction:
+      'Remova ou redirecione essas visualizações primeiro; o banco de dados e seus registros não foram alterados.',
     columnUsedByLinkedView:
       'Esta coluna é usada na visualização vinculada “{name}”. Remova essa referência antes de excluir a coluna.',
     columnUsedByFormula:

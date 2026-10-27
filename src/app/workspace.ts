@@ -1,9 +1,12 @@
 import { useSyncExternalStore } from 'react';
 import type { Command } from '../core/commands';
+import { displayTitle } from '../core/model';
 import type { WorkspaceState } from '../core/model';
 import type { Result } from '../core/result';
 import type { SaveStatus } from '../storage/saveQueue';
 import type { WorkspaceSession } from '../storage/session';
+import { commandErrorMessage } from './commandMessages';
+import { getLocale } from './i18n';
 import { toast } from './ui';
 import { getPreferences, legacyNoteStyle } from './platform/preferences';
 
@@ -25,14 +28,19 @@ export function getState(): WorkspaceState {
 // runs a command and tells the user when it is refused
 export function run(command: Command): Result<WorkspaceState> {
   const result = getSession().execute(withNoteDefaults(command));
-  if (!result.ok) toast(result.error, { tone: 'error' });
+  if (!result.ok) toast(commandErrorMessage(result, pageTitle, getLocale()), { tone: 'error' });
   return result;
 }
 
 export function runAll(commands: Command[]): Result<WorkspaceState> {
   const result = getSession().executeAll(commands.map(withNoteDefaults));
-  if (!result.ok) toast(result.error, { tone: 'error' });
+  if (!result.ok) toast(commandErrorMessage(result, pageTitle, getLocale()), { tone: 'error' });
   return result;
+}
+
+function pageTitle(id: string): string | undefined {
+  const page = getState().pages[id];
+  return page ? displayTitle(page) : undefined;
 }
 
 function withNoteDefaults(command: Command): Command {

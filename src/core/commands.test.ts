@@ -180,6 +180,60 @@ describe('formula defaults', () => {
 describe('trash', () => {
   const base = () => run(emptyWorkspace(), create('a'), create('b', 'a'), create('c', 'b'));
 
+  it('returns structured refusal details and preserves the source when linked views block trash', () => {
+    const source = create('db', null, {
+      title: 'Archive',
+      kind: 'database',
+      database: { properties: [{ id: 'value', name: 'Value', type: 'text', options: [] }], views: [] },
+    } as Partial<Command>);
+    const hostIds = ['host-a', 'host-b', 'host-c', 'host-d'];
+    const linkedView = (hostId: string): DocNode => ({
+      type: 'doc',
+      content: [
+        {
+          type: 'linkedDatabaseView',
+          attrs: {
+            sourceDatabaseId: 'db',
+            blockId: `block-${hostId}`,
+            view: {
+              id: `view-${hostId}`,
+              name: `View ${hostId}`,
+              type: 'table',
+              filters: [],
+              sorts: [],
+              groupBy: null,
+              dateProp: null,
+              hidden: [],
+            },
+          },
+        },
+      ],
+    });
+    let state = run(
+      emptyWorkspace(),
+      source,
+      create('row', 'db', { properties: { value: 'kept' } } as Partial<Command>),
+      ...hostIds.map((id, index) => create(id, null, { title: `Dashboard ${index + 1}` } as Partial<Command>)),
+    );
+    for (const hostId of hostIds) {
+      state = run(state, { type: 'page.setDoc', id: hostId, doc: linkedView(hostId), now: 2 });
+    }
+
+    const blocked = applyCommand(state, { type: 'page.trash', id: 'db', now: 3 });
+
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) {
+      expect(blocked.reason).toEqual({
+        kind: 'linkedViewsBlockingTrash',
+        hostPageIds: hostIds,
+        referenceCount: hostIds.length,
+      });
+    }
+    expect(state.pages.db!.trashedAt).toBeNull();
+    expect(state.pages.row!.properties).toEqual({ value: 'kept' });
+    for (const hostId of hostIds) expect(state.docs[hostId]).toEqual(linkedView(hostId));
+  });
+
   it('hides a trashed page and its subpages', () => {
     const state = run(base(), { type: 'page.trash', id: 'a', now: 5 });
     expect(livePages(state.pages)).toHaveLength(0);

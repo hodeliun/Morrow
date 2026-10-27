@@ -44,7 +44,6 @@ import {
 } from '../core/portability';
 import type { BackupFile } from '../core/portability';
 import { childrenOf, descendantsOf, isEffectivelyTrashed } from '../core/tree';
-import { linkedViewsBlockingTrash } from '../core/linkedViews';
 import { commitEditors } from './editor/commits';
 import { desktop } from './platform/desktop';
 import { newId, pickFiles, saveFile, stamp } from './platform/files';
@@ -354,21 +353,13 @@ export function trashPage(id: PageId): void {
   const state = getState();
   const page = state.pages[id];
   if (!page) return;
-  const linkedViews = linkedViewsBlockingTrash(state, page.id);
-  if (linkedViews.length) {
-    toast(t('database.linkedSourceInUse', { count: linkedViews.length }), { tone: 'error' });
-    return;
-  }
   const affected = panesShowing(
     (route) =>
       route.name === 'page' &&
       (route.id === id || descendantsOf(state.pages, id).some((child) => child.id === route.id)),
   );
   const result = run({ type: 'page.trash', id, now: Date.now() });
-  if (!result.ok) {
-    toast(result.error, { tone: 'error' });
-    return;
-  }
+  if (!result.ok) return;
   for (const pane of affected) {
     if (page.parentId && !isEffectivelyTrashed(result.value.pages, page.parentId))
       navigate({ name: 'page', id: page.parentId, find: null }, { pane });
