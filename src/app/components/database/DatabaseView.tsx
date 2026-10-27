@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns3,
+  Copy,
   Eye,
   EyeOff,
   Filter,
@@ -28,6 +29,7 @@ import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useStat
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { dateKey } from '../../../core/daily';
+import { planColumnDuplicate, planColumnDuplicateUndo, snapshotColumnDuplicate } from '../../../core/columnDuplicate';
 import {
   bindPageFormulaReferences,
   filterOpsFor,
@@ -68,7 +70,7 @@ import type {
 import { fileUrl } from '../../platform/attachments';
 import { newId } from '../../platform/files';
 import { openPage } from '../../router';
-import { run, useWorkspace } from '../../workspace';
+import { getState, run, runAll, useWorkspace } from '../../workspace';
 import { Menu } from '../Menu';
 import { Popover } from '../Popover';
 import { PageGlyph } from '../Emoji';
@@ -2055,6 +2057,30 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     setInserting(null);
     setColumnMenu({ prop, anchor });
   };
+  const duplicateColumn = (propId: string, includeValues: boolean) => {
+    const plan = planColumnDuplicate(state, dbId, propId, newId(), includeValues, Date.now(), t('database.copySuffix'));
+    if (!plan) {
+      toast(t('database.duplicateColumnUnavailable'), { tone: 'error' });
+      return;
+    }
+    if (!runAll(plan.commands).ok) return;
+    const snapshot = snapshotColumnDuplicate(getState(), dbId, plan.property.id);
+    if (!snapshot) return;
+    toast(t('database.columnDuplicated'), {
+      durationMs: 12_000,
+      action: {
+        label: t('toasts.undo'),
+        run: () => {
+          const undo = planColumnDuplicateUndo(getState(), dbId, plan.property.id, snapshot, Date.now());
+          if (!undo) {
+            toast(t('database.duplicateColumnUndoUnavailable'), { tone: 'error' });
+            return;
+          }
+          runAll(undo);
+        },
+      },
+    });
+  };
   return (
     <div className="db-table-wrap">
       <table className={`db-table${editable ? ' is-filled' : ''}`} style={{ width: total }}>
@@ -2293,6 +2319,17 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
               icon: Plus,
               onSelect: () =>
                 setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
+            },
+            { separator: true },
+            {
+              label: t('database.duplicateColumnEmpty'),
+              icon: Copy,
+              onSelect: () => duplicateColumn(columnMenu.prop.id, false),
+            },
+            {
+              label: t('database.duplicateColumnValues'),
+              icon: Copy,
+              onSelect: () => duplicateColumn(columnMenu.prop.id, true),
             },
           ]}
         />
