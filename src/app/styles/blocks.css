@@ -56,7 +56,7 @@
 .columns-reset {
   position: absolute;
   z-index: 3;
-  top: -22px;
+  top: -20px;
   right: 0;
   display: inline-grid;
   width: 24px;
@@ -71,6 +71,8 @@
   pointer-events: none;
 }
 .columns-editor:hover .columns-reset,
+.columns-editor:focus-within .columns-reset,
+.columns-reset:hover,
 .columns-reset:focus-visible {
   opacity: 1;
   pointer-events: auto;

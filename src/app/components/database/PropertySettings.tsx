@@ -946,7 +946,6 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
             label={t('database.step')}
             help={t('database.stepHelp')}
             value={format.step === undefined ? undefined : format.step * constraintMultiplier}
-            min={0.00000001}
             onCommit={(value) => setDisplayConstraint('step', value)}
           />
           {(prop.type === 'number' || prop.type === 'currency') && (

@@ -85,6 +85,7 @@ export const Columns = Node.create({
       contentDOM.setAttribute('data-columns', '');
       dom.append(contentDOM);
       const handles: HTMLDivElement[] = [];
+      const cleanupFns: Array<() => void> = [];
 
       const reset = document.createElement('button');
       reset.type = 'button';
@@ -146,6 +147,17 @@ export const Columns = Node.create({
             (widths[index]! + widths[index + 1]!) / 2,
             (MIN_COLUMN_WIDTH / Math.max(1, availableWidth)) * 100,
           );
+        let isDragging = false;
+        const removeWindowListeners = () => {
+          if (!isDragging) return;
+          isDragging = false;
+          window.removeEventListener('pointermove', moveDrag, true);
+          window.removeEventListener('pointerup', endDrag, true);
+          window.removeEventListener('pointercancel', cancelDrag, true);
+          window.removeEventListener('mouseup', endDrag as EventListener, true);
+        };
+        cleanupFns.push(removeWindowListeners);
+
         const startDrag = (event: PointerEvent) => {
           if (!view.editable || event.button !== 0) return;
           event.preventDefault();
@@ -162,10 +174,15 @@ export const Columns = Node.create({
             availableWidth,
             minimumShare: minimumShare(widths, availableWidth),
           };
+          isDragging = true;
+          window.addEventListener('pointermove', moveDrag, true);
+          window.addEventListener('pointerup', endDrag, true);
+          window.addEventListener('pointercancel', cancelDrag, true);
+          window.addEventListener('mouseup', endDrag as EventListener, true);
           try {
             handle.setPointerCapture(event.pointerId);
           } catch {
-            // some synthetic pointer devices cannot capture; the keyboard handle remains available
+            // some synthetic pointer devices cannot capture; window listeners will handle movement
           }
         };
         const moveDrag = (event: PointerEvent) => {
@@ -180,14 +197,28 @@ export const Columns = Node.create({
           );
           paint();
         };
-        const endDrag = (event: PointerEvent) => {
-          if (!drag || drag.pointerId !== event.pointerId) return;
+        const endDrag = (event: Event) => {
+          if (!drag) return;
+          if (event instanceof PointerEvent && drag.pointerId !== event.pointerId) return;
+          removeWindowListeners();
+          try {
+            if (event instanceof PointerEvent) handle.releasePointerCapture(event.pointerId);
+          } catch {
+            // pointer capture may not be supported by synthetic devices
+          }
           const widths = previewWidths ?? drag.startWidths;
           drag = null;
           commitWidths(widths);
         };
-        const cancelDrag = (event: PointerEvent) => {
-          if (!drag || drag.pointerId !== event.pointerId) return;
+        const cancelDrag = (event: Event) => {
+          if (!drag) return;
+          if (event instanceof PointerEvent && drag.pointerId !== event.pointerId) return;
+          removeWindowListeners();
+          try {
+            if (event instanceof PointerEvent) handle.releasePointerCapture(event.pointerId);
+          } catch {
+            // pointer capture may not be supported by synthetic devices
+          }
           drag = null;
           previewWidths = null;
           paint();
@@ -290,6 +321,7 @@ export const Columns = Node.create({
         destroy() {
           cancelAnimationFrame(frame);
           observer.disconnect();
+          cleanupFns.forEach((fn) => fn());
           previewWidths = null;
         },
       };

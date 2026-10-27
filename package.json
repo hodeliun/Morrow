@@ -2,7 +2,7 @@
   "name": "morrow-polaris",
   "productName": "Morrow Polaris",
   "private": true,
-  "version": "1.2.0-polaris.3",
+  "version": "1.2.0-polaris.4",
   "description": "A Morrow fork with local databases, linked views and Markdown storage.",
   "desktopName": "io.github.hodeliun.morrowpolaris.desktop",
   "license": "Apache-2.0",
