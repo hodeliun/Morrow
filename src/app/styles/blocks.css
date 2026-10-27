@@ -711,10 +711,82 @@ html.is-printing .split-resizer {
   width: min(520px, calc(100vw - 32px));
 }
 .formula-input {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
   min-height: 132px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 9px 10px;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text);
   font-family: var(--font-mono);
   font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 2;
   resize: vertical;
+}
+.formula-source-shell {
+  position: relative;
+  min-height: 132px;
+}
+.formula-highlight {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  min-height: 132px;
+  margin: 0;
+  padding: 9px 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 2;
+  pointer-events: none;
+}
+.formula-input::placeholder {
+  color: var(--text-muted);
+  -webkit-text-fill-color: var(--text-muted);
+}
+.formula-token {
+  border-radius: 3px;
+}
+.formula-token-property {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.formula-token-database {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text-muted) 17%, transparent);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.formula-token-function {
+  color: var(--accent);
+  font-weight: 600;
+}
+.formula-token-context {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.formula-token-ambiguous {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  text-decoration: underline wavy;
+}
+.formula-input::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .formula-assist {
   display: flex;
@@ -728,22 +800,54 @@ html.is-printing .split-resizer {
 }
 .formula-suggestions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 184px;
+  overflow-y: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
 }
 .formula-suggestions button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
-  color: var(--text-muted);
-  padding: 2px 6px;
-  font-size: var(--text-xs);
+  color: var(--text);
+  padding: 5px 8px;
+  text-align: left;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .formula-suggestions button:hover,
-.formula-suggestions button:focus-visible {
-  color: var(--text);
+.formula-suggestions button:focus-visible,
+.formula-suggestions button[aria-selected='true'] {
   border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+.formula-suggestions small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.formula-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.formula-preview-type {
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+.formula-actions {
+  gap: 6px;
 }
 .formula-help summary {
   cursor: pointer;

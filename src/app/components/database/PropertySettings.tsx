@@ -3,9 +3,6 @@ import { useContext, useState } from 'react';
 import type { Command } from '../../../core/commands';
 import {
   filterOpsFor,
-  bindFormulaReferences,
-  formulaValueText,
-  formulaResult,
   formatValue,
   moveSelectOption,
   optionsFromValues,
@@ -24,14 +21,10 @@ import type {
   PropDef,
   PropType,
   PropValue,
-  FormulaReferenceBinding,
   PropertyFormat,
   RelationConfig,
   ViewDef,
 } from '../../../core/model';
-type DatabasePropertyBinding =
-  | { kind: 'database'; databaseId: string }
-  | { kind: 'property'; databaseId: string; propertyId: string };
 import { displayTitle } from '../../../core/model';
 import {
   relationDiagnostics,
@@ -49,13 +42,13 @@ import { Select } from '../Select';
 import { updateDatabase, updateProp, updateView } from './data';
 import { DraftInput, RelationPicker } from './PropertyValue';
 import { t } from '../../i18n';
-import { tr } from '../../i18n/rich';
 import { colorLabel, filterLabel, propLabel } from '../../i18n/labels';
 import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
 import { MediaPropertyDefault, MediaPropertyOptions } from './MediaProperty';
 import { ViewChangeContext } from './viewContext';
 import { linkedViewReferences, viewUsesProperty } from '../../../core/linkedViews';
 import { ButtonActionSettings } from './ButtonActionSettings';
+import { FormulaEditor } from './FormulaEditor';
 
 // rename a property, change its type, options or how it shows. opened from a column, or from a page's
 // properties, where there is no view to sort or hide in
@@ -319,14 +312,14 @@ export function PropertySettings({
               ) : prop.defaultFormula === undefined ? (
                 <DefaultValueField dbId={dbId} prop={prop} />
               ) : (
-                <FormulaField dbId={dbId} prop={prop} database={database} defaultFormula />
+                <FormulaEditor dbId={dbId} prop={prop} database={database} defaultFormula />
               )}
             </>
           )}
         </div>
       )}
       {(prop.fillMode === 'calculated' || prop.type === 'formula') && (
-        <FormulaField dbId={dbId} prop={prop} database={database} />
+        <FormulaEditor dbId={dbId} prop={prop} database={database} />
       )}
       {prop.type !== 'button' && <PropertyFormatSettings key={`${prop.id}:${prop.type}`} dbId={dbId} prop={prop} />}
       {isMediaProperty(prop.type) && <MediaPropertyOptions prop={prop} dbId={dbId} rows={rowsOf(state, dbId)} />}
@@ -1177,357 +1170,6 @@ function toDateTimeLocal(value: string): string {
 }
 
 // the formula language's functions, by their names in formulas, which stay the same in every language
-const FORMULA_FUNCTIONS =
-  'If, Switch, WithName, Contains, Unique, List, Sequence, FormulaMap, ForEach, First, IsBlank, ToNumber, ToText, Round, Floor, Mod, Sum, Average, Count, Min, Max, Filter, Empty, Ceil, Abs, Sqrt, Length, Concat, Join, Upper, Lower, Replace, Slice, Today, Now, DateAdd, DateBetween, Year, Month, Day';
-
-const FORMULA_EXAMPLES = [
-  'thisRow.`Related rows`.Amount',
-  '`Transactions`.Filter(CurrentValue.Status = "Paid").Amount.Sum()',
-  'FormulaMap([1, 2, 3], CurrentValue * 2)',
-  'prop("Price") * prop("Count")',
-  'if(prop("Done"), "✅", "⏳")',
-  'dateBetween(prop("Due"), today(), "days")',
-  'concat(prop("Name"), " · ", prop("Status"))',
-];
-
-function formulaIdentifier(name: string): string {
-  if (
-    /^[\p{L}_][\p{L}\p{N}_]*$/u.test(name) &&
-    !['true', 'false', 'null', 'and', 'or', 'not'].includes(name.toLocaleLowerCase())
-  )
-    return name;
-  return `\`${name.replace(/\\/g, '\\\\').replace(/`/g, '\\`')}\``;
-}
-
-function choiceLabel(name: string, id: string, choices: Array<{ name: string }>): string {
-  return choices.filter((choice) => choice.name.toLocaleLowerCase() === name.toLocaleLowerCase()).length > 1
-    ? `${name} · ${id}`
-    : name;
-}
-
-function adjustFormulaBindings(
-  previous: string,
-  next: string,
-  bindings: FormulaReferenceBinding[],
-): FormulaReferenceBinding[] {
-  let prefix = 0;
-  while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < previous.length - prefix &&
-    suffix < next.length - prefix &&
-    previous[previous.length - suffix - 1] === next[next.length - suffix - 1]
-  )
-    suffix++;
-  const oldEnd = previous.length - suffix;
-  const delta = next.length - suffix - oldEnd;
-  return bindings
-    .flatMap((binding) => {
-      if (binding.end <= prefix) return [binding];
-      if (binding.start >= oldEnd)
-        return [{ ...binding, start: binding.start + delta, end: binding.end + delta }];
-      return [];
-    })
-    .filter((binding) => next.slice(binding.start, binding.end) === binding.source);
-}
-
-// the expression a formula property runs, checked against the first row as you type
-function FormulaField({
-  dbId,
-  prop,
-  database,
-  defaultFormula = false,
-}: {
-  dbId: PageId;
-  prop: PropDef;
-  database: DatabaseDef;
-  defaultFormula?: boolean;
-}) {
-  const formula = defaultFormula ? (prop.defaultFormula ?? '') : (prop.formula ?? '');
-  const [draft, setDraft] = useState(formula);
-  const [draftBindings, setDraftBindings] = useState<FormulaReferenceBinding[]>(
-    defaultFormula ? (prop.defaultFormulaBindings ?? []) : (prop.formulaBindings ?? []),
-  );
-  const [assistTableId, setAssistTableId] = useState(dbId);
-  const state = useWorkspace();
-  const sample = rowsOf(state, dbId)[0];
-  const previewBindings = bindFormulaReferences(draft, dbId, state, draftBindings);
-  const preview = sample
-    ? formulaResult(
-        sample,
-        defaultFormula
-          ? { ...prop, formula: draft, formulaBindings: previewBindings }
-          : { ...prop, formula: draft, formulaBindings: previewBindings },
-        database,
-        0,
-        state,
-      )
-    : null;
-  const tables = Object.values(state.pages)
-    .filter(
-      (page) => page.kind === 'database' && page.database && !isEffectivelyTrashed(state.pages, page.id),
-    )
-    .sort((a, b) => displayTitle(a).localeCompare(displayTitle(b)));
-  const assistTable = state.pages[assistTableId];
-  const assistProperties = assistTable?.database?.properties ?? database.properties;
-  const token = /[\p{L}_][\p{L}\p{N}_]*$/u.exec(draft);
-  const suggestions = token?.[0]
-    ? [
-        ...FORMULA_FUNCTIONS.split(', ').map((name) => ({
-          kind: 'function' as const,
-          label: name,
-          value: name,
-          start: 0,
-        })),
-        ...tables.map((table) => ({
-          kind: 'database' as const,
-          label: choiceLabel(
-            displayTitle(table),
-            table.id,
-            tables.map((item) => ({ name: displayTitle(item) })),
-          ),
-          value: table.id,
-          start: 1,
-        })),
-        ...database.properties.map((field) => ({
-          kind: 'property' as const,
-          label: choiceLabel(
-            field.name,
-            field.id,
-            database.properties.map((item) => ({ name: item.name })),
-          ),
-          value: field.id,
-          start: 2,
-        })),
-      ]
-        .filter((item) => item.label.toLocaleLowerCase().startsWith(token[0].toLocaleLowerCase()))
-        .slice(0, 8)
-    : [];
-  const insert = (
-    text: string,
-    binding?: DatabasePropertyBinding,
-    tokenText = text,
-  ) => {
-    const separator = text.startsWith('.') ? '' : draft && !/\s$/.test(draft) ? ' ' : '';
-    const start = draft.length + separator.length + text.indexOf(tokenText);
-    const next = `${draft}${separator}${text}`;
-    setDraft(next);
-    if (binding)
-      setDraftBindings((current) => [
-        ...current,
-        { ...binding, start, end: start + tokenText.length, source: tokenText },
-      ]);
-  };
-  const insertSuggestion = (item: (typeof suggestions)[number]) => {
-    if (!token) return;
-    const start = draft.length - token[0].length;
-    const text =
-      item.kind === 'function'
-        ? `${item.label}()`
-        : item.kind === 'database'
-          ? formulaIdentifier(tables.find((table) => table.id === item.value)?.title ?? item.label)
-          : formulaIdentifier(
-              database.properties.find((field) => field.id === item.value)?.name ?? item.label,
-            );
-    const next = `${draft.slice(0, start)}${text}`;
-    setDraft(next);
-    if (item.kind !== 'function') {
-      const tokenText = text;
-      const reference: DatabasePropertyBinding = item.kind === 'database'
-        ? { kind: 'database', databaseId: item.value }
-        : { kind: 'property', databaseId: dbId, propertyId: item.value };
-      setDraftBindings((current) => [
-        ...adjustFormulaBindings(draft, next, current),
-        {
-          start,
-          end: start + tokenText.length,
-          source: tokenText,
-          ...reference,
-        },
-      ]);
-    } else setDraftBindings((current) => adjustFormulaBindings(draft, next, current));
-  };
-  const save = () => {
-    const bindings = bindFormulaReferences(draft, dbId, state, draftBindings);
-    if (
-      draft !== formula ||
-      JSON.stringify(bindings) !==
-        JSON.stringify(defaultFormula ? (prop.defaultFormulaBindings ?? []) : (prop.formulaBindings ?? []))
-    )
-      updateProp(dbId, prop.id, (current) =>
-        defaultFormula
-          ? { ...current, defaultFormula: draft, defaultFormulaBindings: bindings }
-          : { ...current, formula: draft, formulaBindings: bindings },
-      );
-  };
-  return (
-    <div className="field formula-field">
-      <span>{defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title')}</span>
-      <textarea
-        className="text-input small formula-input"
-        spellCheck={false}
-        value={draft}
-        placeholder='prop("Price") * prop("Count")'
-        aria-label={defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title')}
-        onChange={(event) => {
-          setDraftBindings((current) => adjustFormulaBindings(draft, event.target.value, current));
-          setDraft(event.target.value);
-        }}
-        onBlur={save}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            save();
-          }
-        }}
-      />
-      <div className="formula-assist" aria-label={t('database.formulaAssist')}>
-        <label className="visually-hidden" htmlFor={`${prop.id}-formula-function`}>
-          {t('database.formulaFunction')}
-        </label>
-        <select
-          id={`${prop.id}-formula-function`}
-          className="text-input small"
-          value=""
-          aria-label={t('database.formulaFunction')}
-          onChange={(event) => {
-            if (event.target.value) insert(`${event.target.value}()`);
-          }}
-        >
-          <option value="">{t('database.formulaFunction')}</option>
-          {FORMULA_FUNCTIONS.split(', ').map((name) => (
-            <option key={name} value={name}>
-              {name}()
-            </option>
-          ))}
-        </select>
-        <label className="visually-hidden" htmlFor={`${prop.id}-formula-field`}>
-          {t('database.formulaField')}
-        </label>
-        <select
-          id={`${prop.id}-formula-field`}
-          className="text-input small"
-          value=""
-          aria-label={t('database.formulaField')}
-          onChange={(event) => {
-            const field = database.properties.find((item) => item.id === event.target.value);
-            if (!field) return;
-            const name = formulaIdentifier(field.name);
-            const text = `thisRow.${name}`;
-            insert(text, { kind: 'property', databaseId: dbId, propertyId: field.id }, name);
-          }}
-        >
-          <option value="">{t('database.formulaField')}</option>
-          {database.properties.map((field) => (
-            <option key={field.id} value={field.id}>
-              {choiceLabel(field.name, field.id, database.properties)}
-            </option>
-          ))}
-        </select>
-        <label className="visually-hidden" htmlFor={`${prop.id}-formula-table`}>
-          {t('database.formulaTable')}
-        </label>
-        <select
-          id={`${prop.id}-formula-table`}
-          className="text-input small"
-          value=""
-          aria-label={t('database.formulaTable')}
-          onChange={(event) => {
-            const table = tables.find((item) => item.id === event.target.value);
-            if (!table) return;
-            setAssistTableId(table.id);
-            const name = formulaIdentifier(displayTitle(table));
-            insert(name, { kind: 'database', databaseId: table.id });
-          }}
-        >
-          <option value="">{t('database.formulaTable')}</option>
-          {tables.map((table) => (
-            <option key={table.id} value={table.id}>
-              {choiceLabel(
-                displayTitle(table),
-                table.id,
-                tables.map((item) => ({ name: displayTitle(item) })),
-              )}
-            </option>
-          ))}
-        </select>
-        {assistTableId !== dbId && (
-          <select
-            className="text-input small"
-            value=""
-            aria-label={t('database.formulaTableField')}
-            onChange={(event) => {
-              const field = assistProperties.find((item) => item.id === event.target.value);
-              if (!field) return;
-              const name = formulaIdentifier(field.name);
-              insert(`.${name}`, { kind: 'property', databaseId: assistTableId, propertyId: field.id }, name);
-            }}
-          >
-            <option value="">{t('database.formulaTableField')}</option>
-            {assistProperties.map((field) => (
-              <option key={field.id} value={field.id}>
-                {choiceLabel(field.name, field.id, assistProperties)}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-      {suggestions.length > 0 && (
-        <div className="formula-suggestions" role="listbox" aria-label={t('database.formulaSuggestions')}>
-          {suggestions.map((item) => (
-            <button
-              type="button"
-              role="option"
-              aria-selected="false"
-              key={`${item.kind}:${item.value}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => insertSuggestion(item)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-      {preview?.error ? (
-        <span className="formula-error">{preview.error}</span>
-      ) : preview && draft.trim() ? (
-        <span className="muted small">
-          {tr('database.firstRow', {
-            value: (
-              <strong>{formulaValueText(prop, preview.value, state) || t('database.emptyValue')}</strong>
-            ),
-          })}
-        </span>
-      ) : draft.trim() ? (
-        <span className="muted small">{t('database.formulaNoRows')}</span>
-      ) : null}
-      <details className="formula-help">
-        <summary>{t('database.howFormulasWork')}</summary>
-        <p className="muted small">
-          {tr('database.formulaHelp', {
-            prop: <code>prop("Name")</code>,
-            maths: <code>+ - * / ^</code>,
-            compare: <code>&gt; == !=</code>,
-            and: <code>and</code>,
-            or: <code>or</code>,
-            not: <code>not</code>,
-            functions: FORMULA_FUNCTIONS,
-          })}
-        </p>
-        <ul className="formula-examples">
-          {FORMULA_EXAMPLES.map((example) => (
-            <li key={example}>
-              <button type="button" className="link-button" onClick={() => setDraft(example)}>
-                <code>{example}</code>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </details>
-    </div>
-  );
-}
-
 function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
   const state = useWorkspace();
   const relation = relationConfig(prop);
