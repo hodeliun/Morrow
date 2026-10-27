@@ -60,8 +60,11 @@ describe('typed scalar values', () => {
       format: { currency: 'BRL', locale: 'pt-BR', precision: 2 },
     });
     const percent = prop('share', 'Share', 'percent', { format: { locale: 'pt-BR', precision: 1 } });
+    const number = prop('count', 'Count', 'number', { format: { locale: 'pt-BR', precision: 2 } });
     expect(formatValue(money, 1234.5).replace(/[\s\u00a0\u202f]/g, '')).toBe('R$1.234,50');
-    expect(formatValue(percent, 0.25).replace(/[\s\u00a0\u202f]/g, '')).toBe('25%');
+    expect(formatValue(percent, 0.25).replace(/[\s\u00a0\u202f]/g, '')).toBe('25,0%');
+    expect(formatValue(number, 2)).toBe('2,00');
+    expect(formatValue(number, 2.345)).toBe('2,35');
     expect(tryConvertValue(prop('n', 'Number', 'number'), percent, 25)).toEqual({ ok: true, value: 0.25 });
     expect(tryConvertValue(percent, prop('n', 'Number', 'number'), 0.25)).toEqual({ ok: true, value: 25 });
     expect(tryConvertValue(prop('raw', 'Raw', 'text'), prop('n', 'Amount', 'number'), 'R$ 1.234,56')).toEqual(

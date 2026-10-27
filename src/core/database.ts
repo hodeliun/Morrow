@@ -1343,7 +1343,9 @@ function formatNumber(prop: PropDef, value: PropValue, style: 'decimal' | 'curre
       style,
       ...(style === 'currency' ? { currency: format?.currency ?? 'BRL' } : {}),
       maximumFractionDigits: precision,
-      ...(style === 'currency' ? { minimumFractionDigits: precision } : {}),
+      ...(format?.precision !== undefined || style === 'currency'
+        ? { minimumFractionDigits: precision }
+        : {}),
     });
     if (format?.negativeFormat === 'parentheses' && value < 0)
       return `(${formatter.format(Math.abs(value))})`;
@@ -1429,6 +1431,9 @@ function formatDuration(prop: PropDef, value: PropValue): string {
       unit: unitNames[unit],
       unitDisplay: 'short',
       maximumFractionDigits: prop.format?.precision ?? 2,
+      ...(prop.format?.precision !== undefined
+        ? { minimumFractionDigits: prop.format.precision }
+        : {}),
     }).format(value / durationUnitFactor(unit));
   } catch {
     return `${value} ${unit}`;

@@ -6,6 +6,7 @@ import {
   bindFormulaReferences,
   formulaValueText,
   formulaResult,
+  formatValue,
   moveSelectOption,
   optionsFromValues,
   rowsOf,
@@ -723,8 +724,21 @@ function DefaultValueField({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
 }
 
 function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
-  const format = prop.format ?? {};
+  const numeric = ['number', 'currency', 'percent', 'slider', 'progress', 'scale', 'duration'].includes(
+    prop.type,
+  );
+  const [draftFormat, setDraftFormat] = useState<PropertyFormat>(prop.format ?? {});
+  const format = numeric ? draftFormat : (prop.format ?? {});
   const setFormat = (key: keyof PropertyFormat, value: PropertyFormat[keyof PropertyFormat] | undefined) => {
+    if (numeric) {
+      setDraftFormat((current) => {
+        const next: PropertyFormat = { ...current };
+        if (value === undefined || value === '') delete next[key];
+        else Object.assign(next, { [key]: value });
+        return next;
+      });
+      return;
+    }
     updateProp(dbId, prop.id, (current) => {
       const next: PropertyFormat = { ...current.format };
       if (value === undefined || value === '') delete next[key];
@@ -733,9 +747,18 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
       return Object.keys(next).length ? { ...rest, format: next } : rest;
     });
   };
-  const numeric = ['number', 'currency', 'percent', 'slider', 'progress', 'scale', 'duration'].includes(
-    prop.type,
-  );
+  const dirty = numeric && JSON.stringify(draftFormat) !== JSON.stringify(prop.format ?? {});
+  const saveNumericFormat = () => {
+    if ((format.min !== undefined && format.max !== undefined && format.min > format.max) ||
+        (format.step !== undefined && format.step <= 0)) {
+      toast(t('database.invalidNumericFormat'), { tone: 'error' });
+      return;
+    }
+    updateProp(dbId, prop.id, (current) => {
+      const { format: _old, ...rest } = current;
+      return Object.keys(draftFormat).length ? { ...rest, format: draftFormat } : rest;
+    });
+  };
   const constraintMultiplier =
     prop.type === 'percent'
       ? 100
@@ -748,7 +771,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
   const linkLike = ['email', 'url', 'phone'].includes(prop.type);
   const localeField = (dateOrNumber: boolean) => (
     <label className="field">
-      <span>{t('database.locale')}</span>
+      <span>{t('database.locale')} {numeric && <span title={t('database.localeHelp')} aria-label={t('database.localeHelp')} tabIndex={0}>ⓘ</span>}</span>
       <DraftInput
         type="text"
         label={t('database.locale')}
@@ -798,6 +821,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
           )}
           <FormatNumberField
             label={t('database.precision')}
+            help={t('database.precisionHelp')}
             value={format.precision}
             min={0}
             max={8}
@@ -805,18 +829,21 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
           />
           <FormatNumberField
             label={t('database.minimum')}
+            help={t('database.boundsHelp')}
             value={format.min === undefined ? undefined : format.min * constraintMultiplier}
             onCommit={(value) => setDisplayConstraint('min', value)}
           />
           <FormatNumberField
             label={t('database.maximum')}
+            help={t('database.boundsHelp')}
             value={format.max === undefined ? undefined : format.max * constraintMultiplier}
             onCommit={(value) => setDisplayConstraint('max', value)}
           />
           <FormatNumberField
             label={t('database.step')}
+            help={t('database.stepHelp')}
             value={format.step === undefined ? undefined : format.step * constraintMultiplier}
-            min={0}
+            min={0.00000001}
             onCommit={(value) => setDisplayConstraint('step', value)}
           />
           {(prop.type === 'number' || prop.type === 'currency') && (
@@ -933,6 +960,16 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
           )}
         </div>
       )}
+      {numeric && (
+        <div className="field">
+          <span>{t('database.numberPreview')}</span>
+          <output>{formatValue({ ...prop, format }, prop.type === 'percent' ? 0.25 : 1234.5)}</output>
+          <div className="field-inline">
+            <button type="button" className="button small" disabled={!dirty} onClick={saveNumericFormat}>{t('common.save')}</button>
+            <button type="button" className="button small" disabled={!dirty} onClick={() => setDraftFormat(prop.format ?? {})}>{t('common.cancel')}</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -963,12 +1000,14 @@ function FormatTextField({
 
 function FormatNumberField({
   label,
+  help,
   value,
   min,
   max,
   onCommit,
 }: {
   label: string;
+  help?: string;
   value?: number;
   min?: number;
   max?: number;
@@ -976,7 +1015,7 @@ function FormatNumberField({
 }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>{label} {help && <span title={help} aria-label={help} tabIndex={0}>ⓘ</span>}</span>
       <DraftInput
         type="number"
         label={label}
