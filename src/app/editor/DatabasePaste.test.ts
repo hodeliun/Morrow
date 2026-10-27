@@ -253,6 +253,138 @@ describe('database paste history', () => {
     }
   });
 
+  it('keeps a copy when another note links to one of its pages', async () => {
+    const session = await open(new MemoryVault());
+    setSession(session);
+    await seed(session);
+    const plan = planDatabaseCopy(session.getState(), 'source', 'host', true, nextId, 10, '(copy)')!;
+    const inserted = session.insertDatabasePaste(plan.databaseId, 'host', plan.pages, plan.docs);
+    expect(inserted.ok).toBe(true);
+    const copiedRow = plan.pages.find((page) => page.parentId === plan.databaseId)!;
+    const externalNote = newPageMeta({ id: 'external-note', parentId: null, title: 'External note' });
+    const externalDoc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'pageLink', attrs: { id: plan.databaseId, label: 'Items (copy)' } },
+            { type: 'text', text: ' and ' },
+            { type: 'pageLink', attrs: { id: copiedRow.id, label: copiedRow.title } },
+          ],
+        },
+      ],
+    };
+    const external = session.execute({
+      type: 'pages.insert',
+      pages: [externalNote],
+      docs: { [externalNote.id]: externalDoc },
+    });
+    expect(external.ok).toBe(true);
+
+    const harness = editorHarness();
+    harness.insertPageLink(plan.databaseId);
+    const unregister = registerCommit(() => {
+      const result = session.execute({
+        type: 'page.setDoc',
+        id: 'host',
+        doc: harness.state().doc.toJSON() as DocNode,
+        now: 20,
+      });
+      if (!result.ok) throw new Error(result.error);
+    });
+    try {
+      expect(undoRedoEditor(harness.editor, 'host', 'undo')).toBe(true);
+      expect(countNode(harness.state().doc.toJSON() as DocNode, 'pageLink', plan.databaseId)).toBe(1);
+      expect(session.getState().pages[plan.databaseId]).toBeDefined();
+      expect(session.getState().pages[copiedRow.id]).toBeDefined();
+      expect(session.getState().docs[externalNote.id]).toEqual(externalDoc);
+    } finally {
+      unregister();
+      await session.close();
+    }
+  });
+
+  it('keeps a copy referenced by a relation from another database', async () => {
+    const session = await open(new MemoryVault());
+    setSession(session);
+    await seed(session);
+    const plan = planDatabaseCopy(session.getState(), 'source', 'host', true, nextId, 10, '(copy)')!;
+    const inserted = session.insertDatabasePaste(plan.databaseId, 'host', plan.pages, plan.docs);
+    expect(inserted.ok).toBe(true);
+    const copiedRow = plan.pages.find((page) => page.parentId === plan.databaseId)!;
+    const externalDatabase = newPageMeta({
+      id: 'external-database',
+      parentId: null,
+      title: 'References',
+      kind: 'database',
+      database: {
+        properties: [
+          {
+            id: 'related',
+            name: 'Related item',
+            type: 'relation',
+            options: [],
+            relation: {
+              targetDatabaseId: plan.databaseId,
+              multiple: false,
+              isInverse: false,
+              displayPropertyId: null,
+              inversePropertyId: null,
+              filters: [],
+            },
+          },
+        ],
+        views: [
+          {
+            id: 'references-view',
+            name: 'All',
+            type: 'table',
+            filters: [],
+            sorts: [],
+            groupBy: null,
+            dateProp: null,
+            hidden: [],
+          },
+        ],
+      },
+    });
+    const externalRow = newPageMeta({
+      id: 'external-row',
+      parentId: externalDatabase.id,
+      title: 'Reference to copied row',
+      properties: { related: copiedRow.id },
+    });
+    const external = session.execute({
+      type: 'pages.insert',
+      pages: [externalDatabase, externalRow],
+      docs: { [externalDatabase.id]: emptyDoc(), [externalRow.id]: emptyDoc() },
+    });
+    expect(external.ok).toBe(true);
+
+    const harness = editorHarness();
+    harness.insertPageLink(plan.databaseId);
+    const unregister = registerCommit(() => {
+      const result = session.execute({
+        type: 'page.setDoc',
+        id: 'host',
+        doc: harness.state().doc.toJSON() as DocNode,
+        now: 20,
+      });
+      if (!result.ok) throw new Error(result.error);
+    });
+    try {
+      expect(undoRedoEditor(harness.editor, 'host', 'undo')).toBe(true);
+      expect(countNode(harness.state().doc.toJSON() as DocNode, 'pageLink', plan.databaseId)).toBe(1);
+      expect(session.getState().pages[plan.databaseId]).toBeDefined();
+      expect(session.getState().pages[copiedRow.id]).toBeDefined();
+      expect(session.getState().pages[externalRow.id]?.properties.related).toBe(copiedRow.id);
+    } finally {
+      unregister();
+      await session.close();
+    }
+  });
+
   it('keeps a copy when redo removes a link that the user deleted manually', async () => {
     const session = await open(new MemoryVault());
     setSession(session);

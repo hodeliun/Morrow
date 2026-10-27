@@ -3,7 +3,16 @@ import type { Command } from '../core/commands';
 import { isDocEmpty } from '../core/doc';
 import { snapshotDue } from '../core/history';
 import { emptyWorkspace } from '../core/model';
-import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
+import type {
+  DocNode,
+  FileId,
+  FileMeta,
+  FormulaReferenceBinding,
+  PageId,
+  PageMeta,
+  Snapshot,
+  WorkspaceState,
+} from '../core/model';
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { descendantsOf, isDescendantOf } from '../core/tree';
@@ -38,6 +47,114 @@ function sameJson(a: unknown, b: unknown): boolean {
 
 function samePageExceptOpenedAt(expected: PageMeta, current: PageMeta): boolean {
   return sameJson(expected, { ...current, lastOpenedAt: expected.lastOpenedAt });
+}
+
+function valueReferencesAnyPage(value: unknown, pageIds: ReadonlySet<PageId>): boolean {
+  if (typeof value === 'string') return pageIds.has(value);
+  return Array.isArray(value) && value.some((item) => typeof item === 'string' && pageIds.has(item));
+}
+
+function bindingsReferenceAnyPage(
+  bindings: FormulaReferenceBinding[] | undefined,
+  pageIds: ReadonlySet<PageId>,
+): boolean {
+  return (
+    bindings?.some((binding) => {
+      if (binding.kind === 'database' || binding.kind === 'property') return pageIds.has(binding.databaseId);
+      return pageIds.has(binding.pageId);
+    }) ?? false
+  );
+}
+
+function docReferencesAnyPage(doc: DocNode, pageIds: ReadonlySet<PageId>): boolean {
+  let found = false;
+  const visit = (node: DocNode) => {
+    if (found) return;
+    if (node.type === 'pageLink' && typeof node.attrs?.id === 'string' && pageIds.has(node.attrs.id)) {
+      found = true;
+      return;
+    }
+    if (
+      node.type === 'linkedDatabaseView' &&
+      typeof node.attrs?.sourceDatabaseId === 'string' &&
+      pageIds.has(node.attrs.sourceDatabaseId)
+    ) {
+      found = true;
+      return;
+    }
+    if (
+      (node.type === 'namedControl' || node.type === 'calculatedResult') &&
+      typeof node.attrs?.pageId === 'string' &&
+      pageIds.has(node.attrs.pageId)
+    ) {
+      found = true;
+      return;
+    }
+    for (const child of node.content ?? []) visit(child);
+  };
+  visit(doc);
+  return found;
+}
+
+function databaseReferencesAnyPage(
+  database: NonNullable<PageMeta['database']>,
+  pageIds: ReadonlySet<PageId>,
+): boolean {
+  for (const property of database.properties) {
+    if (property.relation?.targetDatabaseId && pageIds.has(property.relation.targetDatabaseId)) return true;
+    if (bindingsReferenceAnyPage(property.formulaBindings, pageIds)) return true;
+    if (bindingsReferenceAnyPage(property.defaultFormulaBindings, pageIds)) return true;
+  }
+  for (const view of database.views) {
+    const rules = [
+      ...view.filters,
+      ...(view.filterGroups ?? []).flatMap((group) => group.filters),
+      ...(view.conditionalFormats ?? []),
+    ];
+    if (rules.some((rule) => bindingsReferenceAnyPage(rule.formulaBindings, pageIds))) return true;
+  }
+  return false;
+}
+
+function pageReferencesAnyPage(page: PageMeta, state: WorkspaceState, pageIds: ReadonlySet<PageId>): boolean {
+  if (page.database && databaseReferencesAnyPage(page.database, pageIds)) return true;
+  if (
+    page.controls.some(
+      (control) =>
+        (control.relation?.targetDatabaseId !== null &&
+          control.relation?.targetDatabaseId !== undefined &&
+          pageIds.has(control.relation.targetDatabaseId)) ||
+        valueReferencesAnyPage(control.value, pageIds),
+    )
+  )
+    return true;
+
+  const parentDatabase = page.parentId ? state.pages[page.parentId]?.database : null;
+  if (!parentDatabase) return false;
+  return parentDatabase.properties.some((property) => {
+    if (property.type !== 'relation') return false;
+    return (
+      (property.relation?.targetDatabaseId !== null &&
+        property.relation?.targetDatabaseId !== undefined &&
+        pageIds.has(property.relation.targetDatabaseId)) ||
+      valueReferencesAnyPage(page.properties[property.id], pageIds)
+    );
+  });
+}
+
+function hasExternalReferences(
+  state: WorkspaceState,
+  removedPageIds: ReadonlySet<PageId>,
+  hostPageId: PageId,
+  hostPageAfter: DocNode,
+): boolean {
+  for (const page of Object.values(state.pages)) {
+    if (removedPageIds.has(page.id)) continue;
+    const doc = page.id === hostPageId ? hostPageAfter : state.docs[page.id];
+    if (doc && docReferencesAnyPage(doc, removedPageIds)) return true;
+    if (pageReferencesAnyPage(page, state, removedPageIds)) return true;
+  }
+  return false;
 }
 
 // the single place where commands run, state lives and changes are queued for disk
@@ -305,7 +422,11 @@ export class WorkspaceSession {
   }
 
   // applies all affected copies together, and refuses to delete pages edited or added since the paste
-  transitionDatabasePastes(databaseIds: PageId[], direction: DatabasePasteDirection): Result<WorkspaceState> {
+  transitionDatabasePastes(
+    databaseIds: PageId[],
+    direction: DatabasePasteDirection,
+    hostPageAfter?: DocNode,
+  ): Result<WorkspaceState> {
     const uniqueIds = [...new Set(databaseIds)];
     if (uniqueIds.length === 0) return ok(this.state);
     const records = uniqueIds.map((id) => this.databasePastes.get(id));
@@ -333,6 +454,12 @@ export class WorkspaceSession {
         if (descendants.some((page) => !scheduledPages.has(page.id)))
           return fail('A copied database has new pages that must be kept.');
       }
+
+      const hostPageIds = new Set(pastes.map((paste) => paste.hostPageId));
+      if (hostPageIds.size !== 1 || !hostPageAfter)
+        return fail('The editor state is not available to undo this database paste safely.');
+      if (hasExternalReferences(this.state, scheduledPages, [...hostPageIds][0]!, hostPageAfter))
+        return fail('A copied database is referenced outside the paste.');
 
       const roots = pastes.map((paste) => paste.databaseId);
       for (const rootId of roots) commands.push({ type: 'page.trash', id: rootId, now: Date.now() });

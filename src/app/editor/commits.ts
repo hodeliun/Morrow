@@ -50,7 +50,11 @@ export function undoRedoEditor(editor: Editor, pageId: PageId, direction: 'undo'
     direction,
   );
   if (databaseIds.length > 0) {
-    const result = getSession().transitionDatabasePastes(databaseIds, direction);
+    const result = getSession().transitionDatabasePastes(
+      databaseIds,
+      direction,
+      next.doc.toJSON() as DocNode,
+    );
     if (!result.ok) {
       toast(t('database.pasteUndoBlocked'), { tone: 'error' });
       return true;
@@ -64,6 +68,7 @@ export function undoRedoEditor(editor: Editor, pageId: PageId, direction: 'undo'
       const rollback = getSession().transitionDatabasePastes(
         databaseIds,
         direction === 'undo' ? 'redo' : 'undo',
+        direction === 'redo' ? previous : undefined,
       );
       if (!rollback.ok) toast(t('database.copyUnavailable'), { tone: 'error' });
     }
