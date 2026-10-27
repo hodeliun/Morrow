@@ -318,6 +318,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       placement ? basename(placement.folder) : '',
       parent?.kind === 'database' ? parent.database : null,
+      state,
     );
     return managed.size > 0 || Object.keys(page.extra).length > 0;
   }
@@ -370,6 +371,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       basename(placement.folder),
       parent?.kind === 'database' ? parent.database : null,
+      state,
     );
     const text = renderPageText(composeFrontmatter(managed, page.extra, source), source, body);
     // the next save starts from what this one wrote, so keys added in morrow keep their spelling and order
@@ -947,6 +949,8 @@ export class VaultRepository implements WorkspaceRepository {
       title: read.title ?? impliedTitle(name, dailyDate),
       icon: read.icon,
       cover: read.cover,
+      coverPosition: read.coverPosition,
+      noteStyle: read.noteStyle,
       kind: read.kind ?? 'page',
       tags: read.tags,
       database: read.database,

@@ -2,9 +2,26 @@ import { parse, parseDocument, stringify } from 'yaml';
 import { isRecord } from '../doc';
 
 // frontmatter keys morrow reads and writes, every other key is kept exactly as it was
-export const MANAGED_KEYS = new Set(['title', 'icon', 'kind', 'tags', 'tag', 'database', 'cover']);
+export const MANAGED_KEYS = new Set([
+  'title',
+  'icon',
+  'kind',
+  'tags',
+  'tag',
+  'database',
+  'cover',
+  'morrowCoverPosition',
+  'morrowNoteStyle',
+  'morrowControls',
+]);
 const MAX_KEY_LENGTH = 200;
 const MAX_EXTRA_KEYS = 200;
+
+// These limits are guards, not truncation rules. Unsupported frontmatter is kept read only.
+const MAX_EXTRA_DEPTH = 64;
+const MAX_EXTRA_NODES = 200_000;
+const MAX_EXTRA_ITEMS = 10_000;
+const MAX_EXTRA_VALUE_LENGTH = 10_000_000;
 
 // the frontmatter key matching a property name, its exact spelling first, then ignoring case like obsidian
 export function findKey(data: Record<string, unknown>, name: string): string | undefined {
@@ -13,38 +30,82 @@ export function findKey(data: Record<string, unknown>, name: string): string | u
   return Object.keys(data).find((key) => key.toLowerCase() === lower);
 }
 
-// keeps only plain values under usable keys, so a hostile backup or command can not put anything odd in a file
-export function normalizeExtra(raw: unknown): Record<string, unknown> {
-  if (!isRecord(raw)) return {};
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (Object.keys(out).length >= MAX_EXTRA_KEYS) break;
-    const clean = key.trim();
-    if (!clean || clean !== key || key.length > MAX_KEY_LENGTH || MANAGED_KEYS.has(key)) continue;
-    const plain = plainValue(value, 0);
-    if (plain !== undefined) out[key] = plain;
-  }
-  return out;
-}
-
-function plainValue(value: unknown, depth: number): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (depth >= 8) return undefined;
-  if (Array.isArray(value))
-    return value.slice(0, 1000).flatMap((item) => {
-      const plain = plainValue(item, depth + 1);
-      return plain === undefined ? [] : [plain];
-    });
-  if (isRecord(value)) {
+// Clones frontmatter values. Null means unsupported or oversized; callers must preserve the source or reject the edit.
+export function normalizeExtra(raw: unknown): Record<string, unknown> | null {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) return null;
+  try {
+    const entries = Object.entries(raw);
+    if (entries.length > MAX_EXTRA_KEYS) return null;
     const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      const plain = plainValue(item, depth + 1);
-      if (plain !== undefined) out[key] = plain;
+    const state = { nodes: 0, ancestors: new Set<object>() };
+    for (const [key, value] of entries) {
+      if (key.length > MAX_KEY_LENGTH || MANAGED_KEYS.has(key)) return null;
+      define(out, key, copyPlainValue(value, 0, state));
     }
     return out;
+  } catch {
+    return null;
   }
-  return undefined;
+}
+
+function copyPlainValue(value: unknown, depth: number, state: { nodes: number; ancestors: Set<object> }): unknown {
+  if (++state.nodes > MAX_EXTRA_NODES || depth > MAX_EXTRA_DEPTH) throw new Error('Value is too large.');
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value.length > MAX_EXTRA_VALUE_LENGTH) throw new Error('Text is too long.');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('Number is not finite.');
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_EXTRA_ITEMS || state.ancestors.has(value)) throw new Error('List is not supported.');
+    state.ancestors.add(value);
+    try {
+      return value.map((item) => copyPlainValue(item, depth + 1, state));
+    } finally {
+      state.ancestors.delete(value);
+    }
+  }
+  if (isRecord(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if ((prototype !== Object.prototype && prototype !== null) || state.ancestors.has(value))
+      throw new Error('Object is not supported.');
+    const entries = Object.entries(value);
+    if (entries.length > MAX_EXTRA_ITEMS) throw new Error('Object has too many fields.');
+    state.ancestors.add(value);
+    try {
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of entries) {
+        if (key.length > MAX_KEY_LENGTH) throw new Error('Field name is too long.');
+        define(out, key, copyPlainValue(item, depth + 1, state));
+      }
+      return out;
+    } finally {
+      state.ancestors.delete(value);
+    }
+  }
+  throw new Error('Value is not a supported YAML value.');
+}
+
+function define(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+export function parseStructuredYaml(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  try {
+    const parsed: unknown = parse(text, { maxAliasCount: 100, uniqueKeys: true });
+    const normalized = normalizeExtra({ value: parsed === undefined ? null : parsed });
+    if (!normalized) return { ok: false, error: 'The value exceeds the safe YAML editing limits.' };
+    return { ok: true, value: normalized.value };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message.split('\n')[0]! : String(error),
+    };
+  }
 }
 
 // the frontmatter most notes have, keys with plain values and simple lists, read without the full yaml
@@ -83,7 +144,7 @@ export function parseSimple(yaml: string): Record<string, unknown> | null {
       if (value === UNSURE || value === null) return null;
       const list = out[open.key];
       if (Array.isArray(list)) list.push(value);
-      else out[open.key] = [value];
+      else define(out, open.key, [value]);
       continue;
     }
     open = null;
@@ -95,7 +156,7 @@ export function parseSimple(yaml: string): Record<string, unknown> | null {
     const raw = pair[2] ?? '';
     if (raw === '') {
       // a key alone is null, unless a list follows on the next lines
-      out[key] = null;
+      define(out, key, null);
       open = { key, indent: null };
       continue;
     }
@@ -104,12 +165,12 @@ export function parseSimple(yaml: string): Record<string, unknown> | null {
       const inner = flow[1]!.trim();
       const items = inner ? inner.split(',').map((part) => plainScalar(part.trim(), true)) : [];
       if (items.some((value) => value === UNSURE || value === null)) return null;
-      out[key] = items;
+      define(out, key, items);
       continue;
     }
     const value = plainScalar(raw, false);
     if (value === UNSURE) return null;
-    out[key] = value;
+    define(out, key, value);
   }
   return out;
 }

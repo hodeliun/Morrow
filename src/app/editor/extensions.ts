@@ -7,17 +7,22 @@ import { Placeholder } from '@tiptap/extensions';
 import StarterKit from '@tiptap/starter-kit';
 import { t } from '../i18n';
 import { BlockHandle } from './BlockHandle';
-import { Callout, FindReplace } from './Blocks';
+import { BlockBackground, Callout, FindReplace } from './Blocks';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
 import type { BlockMenuRequest } from './BlockHandle';
 import { MarkdownPaste } from './MarkdownPaste';
+import { DatabasePaste } from './DatabasePaste';
 import { PageLink } from './PageLink';
 import type { PageLinkOptions } from './PageLink';
 import { SlashCommand } from './SlashCommand';
 import { Column, Columns, DateMention, TableOfContents } from './Structure';
+import { LinkedDatabaseView } from './LinkedDatabase';
+import { CalculatedResult, NamedControl } from './NamedData';
+import type { PageId } from '../../core/model';
 
 export interface ExtensionOptions extends PageLinkOptions {
+  pageId?: PageId;
   onBlockMenu: (request: BlockMenuRequest) => void;
   resolvePage: (title: string) => string | null;
   openTag: (tag: string) => void;
@@ -49,6 +54,7 @@ const BlockIds = Extension.create({
 export function createExtensions(options: ExtensionOptions): AnyExtension[] {
   return [
     BlockIds,
+    BlockBackground,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       link: {
@@ -97,7 +103,10 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
       renderEmbed: options.renderEmbed,
       ...(options.mountEmbed ? { mountEmbed: options.mountEmbed } : {}),
     }),
-    SlashCommand.configure({ createChild: options.createChild }),
+    NamedControl.configure({ hostPageId: options.pageId ?? '' }),
+    CalculatedResult.configure({ hostPageId: options.pageId ?? '' }),
+    SlashCommand.configure({ createChild: options.createChild, hostPageId: options.pageId ?? '' }),
+    LinkedDatabaseView.configure({ hostPageId: options.pageId ?? '' }),
     Image,
     FileAttachment,
     FileDrop,
@@ -112,5 +121,6 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     FindReplace,
     BlockHandle.configure({ onMenu: options.onBlockMenu }),
     MarkdownPaste.configure({ resolvePage: options.resolvePage }),
+    DatabasePaste.configure({ hostPageId: options.pageId ?? '' }),
   ];
 }

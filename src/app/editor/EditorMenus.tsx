@@ -38,7 +38,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { pageIdFromHref } from '../../core/links';
-import { COLORS } from '../../core/model';
+import { COLORS, validBlockBackground } from '../../core/model';
 import type { ColorName } from '../../core/model';
 import { formatShortcut } from '../actions';
 import { Menu } from '../components/Menu';
@@ -187,8 +187,21 @@ function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) 
       bg: e.isActive('highlight')
         ? ((e.getAttributes('highlight').color as ColorName | undefined) ?? 'yellow')
         : null,
+      blockBackground: validBlockBackground(e.state.selection.$from.parent.attrs.blockBackground),
+      canSetBlockBackground: e.state.selection.$from.sameParent(e.state.selection.$to),
     }),
   });
+  const setCurrentBlockBackground = (color: ColorName | null) => {
+    const { $from, $to } = editor.state.selection;
+    if (!$from.sameParent($to)) return;
+    const node = $from.node($from.depth);
+    editor.view.dispatch(
+      editor.state.tr.setNodeMarkup($from.before($from.depth), undefined, {
+        ...node.attrs,
+        blockBackground: color,
+      }),
+    );
+  };
   const row = (kind: 'text' | 'bg') => (
     <div
       className="color-row"
@@ -240,6 +253,32 @@ function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) 
       {row('text')}
       <span className="color-panel-label">{t('editor.highlight')}</span>
       {row('bg')}
+      <span className="color-panel-label">{t('editor.blockBackground')}</span>
+      <div className="color-row" role="group" aria-label={t('editor.blockBackground')}>
+        <button
+          type="button"
+          className={`color-dot default${current.blockBackground === null ? ' is-active' : ''}`}
+          title={t('editor.noBlockBackground')}
+          aria-label={t('editor.noBlockBackground')}
+          aria-pressed={current.blockBackground === null}
+          disabled={!current.canSetBlockBackground}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setCurrentBlockBackground(null)}
+        />
+        {COLORS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            className={`color-dot bg-${color}${current.blockBackground === color ? ' is-active' : ''}`}
+            title={t('editor.colourBlockBackground', { colour: colorLabel(color) })}
+            aria-label={t('editor.colourBlockBackground', { colour: colorLabel(color) })}
+            aria-pressed={current.blockBackground === color}
+            disabled={!current.canSetBlockBackground}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setCurrentBlockBackground(color)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -503,6 +542,13 @@ function linkable(editor: Editor, pos: number): boolean {
   );
 }
 
+function setBlockBackground(editor: Editor, pos: number, color: ColorName | null): void {
+  const node = editor.state.doc.nodeAt(pos);
+  if (!node) return;
+  const tr = editor.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, blockBackground: color });
+  editor.view.dispatch(tr.scrollIntoView());
+}
+
 export function BlockMenu({
   editor,
   request,
@@ -523,6 +569,10 @@ export function BlockMenu({
     apply();
   };
   const c = () => editor.chain().focus();
+  const selectedBlock = editor.state.doc.nodeAt(request.pos);
+  const blockType = selectedBlock?.type.name;
+  const textual = selectedBlock?.isTextblock ?? false;
+  const currentBackground = validBlockBackground(selectedBlock?.attrs.blockBackground);
   const entries: MenuEntry[] = [
     { heading: t('editor.turnInto') },
     { label: t('slash.items.text.title'), icon: Pilcrow, onSelect: turn(() => c().clearNodes().run()) },
@@ -566,6 +616,20 @@ export function BlockMenu({
       icon: Code2,
       onSelect: turn(() => c().clearNodes().setCodeBlock().run()),
     },
+    { separator: true },
+    { heading: t('editor.blockBackground') },
+    {
+      label: t('editor.noBlockBackground'),
+      icon: Palette,
+      checked: currentBackground === null,
+      onSelect: () => setBlockBackground(editor, request.pos, null),
+    },
+    ...COLORS.map((color) => ({
+      label: t('editor.colourBlockBackground', { colour: colorLabel(color) }),
+      icon: Palette,
+      checked: currentBackground === color,
+      onSelect: () => setBlockBackground(editor, request.pos, color),
+    })),
     { separator: true },
     {
       label: t('editor.moveUp'),
@@ -616,7 +680,6 @@ export function BlockMenu({
       },
     },
   ];
-  const blockType = editor.state.doc.nodeAt(request.pos)?.type.name;
   const fileId = editor.state.doc.nodeAt(request.pos)?.attrs.fileId as string | null | undefined;
   const vault = desktop?.vault;
   if (blockType === 'image' && fileId) {
@@ -685,7 +748,6 @@ export function BlockMenu({
       },
     );
   }
-  const textual = editor.state.doc.nodeAt(request.pos)?.isTextblock ?? false;
   const firstTurnInto = entries.findIndex(
     (entry) => 'heading' in entry && entry.heading === t('editor.turnInto'),
   );

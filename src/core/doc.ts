@@ -66,6 +66,8 @@ export function inlineText(node: DocNode): string {
   if (node.type === 'pageLink') return String(node.attrs?.alias ?? node.attrs?.label ?? '');
   if (node.type === 'dateMention') return readableDate(String(node.attrs?.date ?? ''));
   if (node.type === 'inlineMath') return String(node.attrs?.latex ?? '');
+  if (node.type === 'namedControl') return String(node.attrs?.label ?? 'Control');
+  if (node.type === 'calculatedResult') return String(node.attrs?.name ?? 'Calculated result');
   return (node.content ?? []).map(inlineText).join('');
 }
 

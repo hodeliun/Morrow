@@ -50,15 +50,6 @@ contextBridge.exposeInMainWorld('morrow', {
       return () => ipcRenderer.removeListener('sync:event', handler);
     },
   },
-  updates: {
-    check: () => ipcRenderer.invoke('update:check'),
-    install: () => ipcRenderer.invoke('update:install'),
-    onProgress(listener: (share: number) => void) {
-      const handler = (_event: unknown, share: number) => listener(share);
-      ipcRenderer.on('update:progress', handler);
-      return () => ipcRenderer.removeListener('update:progress', handler);
-    },
-  },
   assistant: {
     settings: () => ipcRenderer.invoke('ai:settings'),
     configure: (patch: unknown) => ipcRenderer.invoke('ai:configure', patch),

@@ -1,0 +1,7 @@
+# Embedded database title rename — 1.2.0-polaris.2
+
+The title of a full database embedded inside a page now starts inline editing on click. Enter/blur commits through the existing `page.rename` command; Escape discards the draft. The expand button remains the full-page navigation control. A read-only title still opens the page.
+
+Verification used an isolated hidden Electron profile and a disposable fixture. On `Teste.md`, clicking the embedded `Tabela 1` title kept the host URL unchanged. Enter renamed it to `Tabela renomeada`, persisted the renamed Markdown file, and left the host page open. A second edit canceled with Escape. No window was visible. QA evidence remains outside this repository.
+
+The follow-up copy/paste flow adds a copy action to the embedded database header and database page menu. Pasting in a page asks for an independent empty copy, an independent copy with rows and values, or a linked view of the original. A pure planner creates new database, view and row identities; relations between copied rows point to those new rows. Two core tests cover structure and row copies. The hidden Electron smoke test exercised all three dialog choices and reopened the copied page: six embedded tables and one linked view remained, with the linked source still `Tabela 1`. QA evidence: `database-copy-paste-result.json` and `database-copy-paste-smoke.png` in the same QA folder. `npm run check` passed; log: `check-copy-paste.log`.

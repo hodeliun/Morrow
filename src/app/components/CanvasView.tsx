@@ -27,7 +27,7 @@ import { newId } from '../platform/files';
 import { openPage } from '../router';
 import { openDialog } from '../ui';
 import { getState, run, useWorkspace } from '../workspace';
-import { Emoji } from './Emoji';
+import { PageGlyph } from './Emoji';
 import { Popover } from './Popover';
 import { t } from '../i18n';
 
@@ -1406,7 +1406,7 @@ function PageCard({ pageId }: { pageId: PageId }) {
   return (
     <div className="canvas-page">
       <strong className="canvas-page-title">
-        {page.icon && <Emoji emoji={page.icon} />}
+        {page.icon && <PageGlyph icon={page.icon} />}
         {displayTitle(page)}
       </strong>
       <p className="canvas-page-text">{snippet}</p>

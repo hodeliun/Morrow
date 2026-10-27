@@ -29,15 +29,18 @@ import {
   Pilcrow,
   Quote,
   Table,
+  SlidersHorizontal,
+  Calculator,
 } from 'lucide-react';
 import { foldText } from '../../core/search';
 import { t } from '../i18n';
 import type { TranslationKey } from '../i18n';
-import { pickFiles } from '../platform/files';
+import { newId, pickFiles } from '../platform/files';
 import { editMathNear } from './Extras';
 import { insertFiles } from './Media';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
+import { getState, run } from '../workspace';
 
 interface BlockItem extends MenuItem {
   keywords: string;
@@ -47,6 +50,7 @@ interface BlockItem extends MenuItem {
 export interface SlashOptions {
   // makes a subpage of the open page and returns its id, used for databases and canvases
   createChild: (kind: 'database' | 'canvas') => string | null;
+  hostPageId?: string;
 }
 
 const linkChild = (
@@ -275,6 +279,63 @@ export const BLOCK_ITEMS: BlockItem[] = [
     run: (e, r, options) => linkChild(e, r, options, 'canvas'),
   },
   {
+    id: 'linkedDatabaseView',
+    title: 'Linked database view',
+    description: 'Show an existing database here with its own filters and layout',
+    icon: Table2,
+    keywords: 'linked database view inline existing source filter table board gallery list calendar',
+    run: (editor, range, options) =>
+      chain(editor, range)
+        .insertContent({
+          type: 'linkedDatabaseView',
+          attrs: {
+            hostPageId: options.hostPageId ?? '',
+            sourceDatabaseId: null,
+            blockId: newId(),
+            view: null,
+          },
+        })
+        .run(),
+  },
+  {
+    id: 'namedControl',
+    title: 'Named control',
+    description: 'Insert a page control for filters and calculations',
+    icon: SlidersHorizontal,
+    keywords: 'control input variable filter year month select checkbox date relation',
+    run: (editor, range, options) => {
+      const pageId = options.hostPageId;
+      const page = pageId ? getState().pages[pageId] : null;
+      if (!page) return;
+      const id = newId();
+      const name = `Control ${page.controls.length + 1}`;
+      const created = run({
+        type: 'page.control.configure',
+        id: page.id,
+        now: Date.now(),
+        control: { id, name, type: 'text', value: '', defaultValue: '', options: [] },
+      });
+      if (!created.ok) return;
+      chain(editor, range).insertContent({ type: 'namedControl', attrs: { controlId: id, pageId, label: name } }).run();
+    },
+  },
+  {
+    id: 'calculatedResult',
+    title: 'Calculated result',
+    description: 'Insert a formula result that updates with this page',
+    icon: Calculator,
+    keywords: 'calculated result formula total sum finance filter',
+    run: (editor, range, options) => {
+      const page = options.hostPageId ? getState().pages[options.hostPageId] : null;
+      if (!page) return;
+      const id = newId();
+      chain(editor, range).insertContent({
+        type: 'calculatedResult',
+        attrs: { resultId: id, name: 'Result', formula: '', bindings: [], outputType: 'auto', format: {}, pageId: page.id },
+      }).run();
+    },
+  },
+  {
     id: 'inlineDatabase',
     title: 'Inline database',
     description: 'A database shown right on this page',
@@ -404,10 +465,10 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
   ['layout', ['columns2', 'columns3', 'table', 'toc'], 'slash.sections.layout'],
   [
     'pagesAndData',
-    ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas'],
+    ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas', 'namedControl'],
     'slash.sections.pagesAndData',
   ],
-  ['mathsAndDiagrams', ['math', 'inlineMath', 'diagram', 'highlight'], 'slash.sections.mathsAndDiagrams'],
+  ['mathsAndDiagrams', ['math', 'inlineMath', 'calculatedResult', 'diagram', 'highlight'], 'slash.sections.mathsAndDiagrams'],
 ];
 
 function grouped(): BlockItem[] {
@@ -453,7 +514,7 @@ export function filterBlocks(query: string): BlockItem[] {
 export const SlashCommand = Extension.create<SlashOptions>({
   name: 'slashCommand',
   addOptions() {
-    return { createChild: () => null };
+    return { createChild: () => null, hostPageId: '' };
   },
   addProseMirrorPlugins() {
     const options = this.options;

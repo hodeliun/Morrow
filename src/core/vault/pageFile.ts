@@ -2,12 +2,45 @@
 import { dailyTitle, parseDateKey } from '../daily';
 import { isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
-import { COLORS, displayTitle, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, validCover } from '../model';
-import type { DatabaseDef, PageKind, PageMeta, PropDef, PropValue, SelectOption } from '../model';
+import { normalizeNamedControls } from '../controls';
+import { validPageIcon } from '../icons';
+import {
+  COLORS,
+  DEFAULT_COVER_POSITION,
+  displayTitle,
+  MAX_ICON_LENGTH,
+  MAX_TITLE_LENGTH,
+  normalizeCoverPosition,
+  normalizeNoteStyle,
+  validCover,
+} from '../model';
+import type {
+  DatabaseDef,
+  NoteStyle,
+  NamedControlDef,
+  PageKind,
+  PageMeta,
+  PropDef,
+  PropValue,
+  SelectOption,
+  WorkspaceState,
+} from '../model';
+import { relationDisplayLabel, relationIds } from '../relations';
+import {
+  durationUnitFactor,
+  durationUnitFromText,
+  isComputedProperty,
+  scalarValueError,
+  isValidDateKey,
+  isValidDateTime,
+  isValidTime,
+  parseLocalizedNumber,
+} from '../typedValues';
 import {
   findKey,
   joinFrontmatter,
   MANAGED_KEYS,
+  normalizeExtra,
   readTags,
   splitFrontmatter,
   updateFrontmatter,
@@ -37,6 +70,9 @@ export interface ReadPage {
   title: string | null;
   icon: string | null;
   cover: string | null;
+  coverPosition: number;
+  noteStyle: NoteStyle | null;
+  controls: NamedControlDef[];
   kind: PageKind | null;
   tags: string[];
   database: DatabaseDef | null;
@@ -56,11 +92,15 @@ export function readPageText(text: string): ReadPage {
     typeof data.title === 'string' && data.title.trim()
       ? data.title.replace(/[\r\n\t]+/g, ' ').slice(0, MAX_TITLE_LENGTH)
       : null;
-  const icon =
-    typeof data.icon === 'string' && data.icon && [...data.icon].length <= MAX_ICON_LENGTH ? data.icon : null;
+  const icon = validPageIcon(data.icon) && [...data.icon].length <= MAX_ICON_LENGTH ? data.icon : null;
   const kind = FILE_KINDS.has(data.kind as PageKind) ? (data.kind as PageKind) : null;
-  const extra: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(data)) if (!MANAGED_KEYS.has(key)) extra[key] = value;
+  const rawExtra: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data))
+    if (!MANAGED_KEYS.has(key))
+      Object.defineProperty(rawExtra, key, { value, enumerable: true, writable: true, configurable: true });
+  const normalizedExtra = normalizeExtra(rawExtra);
+  const extra = normalizedExtra ?? {};
+  const controls = normalizeNamedControls(data.morrowControls);
   const aliases = (
     Array.isArray(data.aliases) ? data.aliases : typeof data.aliases === 'string' ? [data.aliases] : []
   )
@@ -70,6 +110,12 @@ export function readPageText(text: string): ReadPage {
     title,
     icon,
     cover: validCover(data.cover),
+    coverPosition:
+      validCover(data.cover) === null
+        ? DEFAULT_COVER_POSITION
+        : normalizeCoverPosition(data.morrowCoverPosition),
+    noteStyle: normalizeNoteStyle(data.morrowNoteStyle),
+    controls: controls ?? [],
     kind,
     tags: readTags(data.tags ?? data.tag),
     database: kind === 'database' ? normalizeDatabase(data.database) : null,
@@ -84,7 +130,12 @@ export function readPageText(text: string): ReadPage {
       aliases,
     },
     body: split.body,
-    error: split.error,
+    error:
+      split.error ??
+      (controls === null ? 'Named control metadata could not be read. The file was left read only.' : null) ??
+      (normalizedExtra === null
+        ? 'Some frontmatter values exceed safe editing limits. The file was left read only.'
+        : null),
   };
 }
 
@@ -98,16 +149,21 @@ export function managedFrontmatter(
   page: PageMeta,
   fileBase: string,
   parentDatabase: DatabaseDef | null,
+  state?: WorkspaceState,
 ): Map<string, unknown> {
   const out = new Map<string, unknown>();
   const title = displayTitle(page);
   if (title !== impliedTitle(fileBase, page.dailyDate)) out.set('title', title);
   if (page.icon && page.kind !== 'canvas') out.set('icon', page.icon);
   if (page.cover && page.kind !== 'canvas') out.set('cover', page.cover);
+  if (page.cover && page.kind !== 'canvas' && page.coverPosition !== DEFAULT_COVER_POSITION)
+    out.set('morrowCoverPosition', page.coverPosition);
+  if (page.noteStyle && page.kind !== 'canvas') out.set('morrowNoteStyle', page.noteStyle);
+  if (page.controls.length > 0 && page.kind !== 'canvas') out.set('morrowControls', page.controls);
   if (FILE_KINDS.has(page.kind)) out.set('kind', page.kind);
   if (page.tags.length > 0) out.set('tags', [...page.tags]);
   for (const prop of parentDatabase?.properties ?? []) {
-    const value = writeProperty(prop, page.properties[prop.id]);
+    const value = writeProperty(prop, page.properties[prop.id], state);
     if (value !== undefined) out.set(prop.name, value);
   }
   if (page.kind === 'database' && page.database) out.set('database', databaseToYaml(page.database));
@@ -134,8 +190,17 @@ export function composeFrontmatter(
     named.set(named.has(spelling) ? key : spelling, value);
   }
   const out: Record<string, unknown> = {};
-  for (const key of keyOrder) if (named.has(key)) out[key] = named.get(key);
-  for (const [key, value] of named) if (!Object.hasOwn(out, key)) out[key] = value;
+  for (const key of keyOrder)
+    if (named.has(key))
+      Object.defineProperty(out, key, {
+        value: named.get(key),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+  for (const [key, value] of named)
+    if (!Object.hasOwn(out, key))
+      Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true });
   return out;
 }
 
@@ -153,24 +218,42 @@ export function renderPageText(
   return joinFrontmatter(frontmatter, body);
 }
 
-export function writeProperty(prop: PropDef, value: PropValue | undefined): unknown {
-  if (value === null || value === undefined || value === '') return undefined;
+export function writeProperty(prop: PropDef, value: PropValue | undefined, state?: WorkspaceState): unknown {
+  if (value === null || value === undefined) return undefined;
+  if (isComputedProperty(prop)) return undefined;
   switch (prop.type) {
     case 'number':
+    case 'currency':
+    case 'percent':
+    case 'slider':
+    case 'progress':
+    case 'scale':
+    case 'duration':
       return typeof value === 'number' ? value : undefined;
     case 'checkbox':
-      return value === true ? true : undefined;
+      return typeof value === 'boolean' ? value : undefined;
     case 'select': {
       const option = prop.options.find((candidate) => candidate.id === value);
       return option?.name;
     }
     case 'formula':
-      // computed every time, never written
       return undefined;
     case 'relation': {
-      // links in the frontmatter, the way obsidian writes them, so the related pages show up in its graph too
-      const targets = (Array.isArray(value) ? value : [String(value)]).filter(Boolean);
-      return targets.length ? targets.map((target) => `[[${target}]]`) : undefined;
+      if (prop.relation?.isInverse) return undefined;
+      const targets = relationIds(value);
+      if (prop.relation?.targetDatabaseId) {
+        const refs = targets.map((id) => {
+          const target = state?.pages[id];
+          return {
+            id,
+            title: target && state ? relationDisplayLabel(state, prop, target) : id,
+          };
+        });
+        return refs.length === 0 ? undefined : prop.relation.multiple || refs.length > 1 ? refs : refs[0];
+      }
+      // links in the frontmatter, the way obsidian writes them, so legacy references stay readable
+      const legacy = (Array.isArray(value) ? value : [String(value)]).filter(Boolean);
+      return legacy.length ? legacy.map((target) => `[[${target}]]`) : undefined;
     }
     case 'multiSelect': {
       const names = (Array.isArray(value) ? value : [])
@@ -204,15 +287,35 @@ export function readProperty(
     return option.id;
   };
   switch (prop.type) {
-    case 'number': {
-      const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
-      return { value: Number.isFinite(value) && raw !== '' ? value : null, added };
-    }
-    case 'checkbox':
+    case 'number':
+    case 'currency':
+    case 'percent':
+    case 'slider':
+    case 'progress':
+    case 'scale':
+    case 'duration': {
+      let value =
+        typeof raw === 'number' ? raw : typeof raw === 'string' ? (localizedNumber(prop, raw) ?? NaN) : NaN;
+      if (prop.type === 'percent' && typeof raw === 'string' && raw.trim().endsWith('%')) value /= 100;
+      if (prop.type === 'duration' && typeof raw === 'string') {
+        const unit = durationUnitFromText(raw);
+        if (unit) value *= durationUnitFactor(unit);
+      }
       return {
-        value: raw === true || (typeof raw === 'string' && /^(true|yes|x)$/i.test(raw.trim())),
+        value: Number.isFinite(value) && raw !== '' && scalarValueError(prop, value) === null ? value : null,
         added,
       };
+    }
+    case 'checkbox': {
+      if (typeof raw === 'boolean') return { value: raw, added };
+      const text = typeof raw === 'string' ? raw.trim() : '';
+      if (/^(true|yes|x|1)$/i.test(text)) return { value: true, added };
+      if (/^(false|no|0)$/i.test(text)) return { value: false, added };
+      return {
+        value: null,
+        added,
+      };
+    }
     case 'select': {
       const name = scalarText(Array.isArray(raw) ? raw[0] : raw);
       return { value: name ? optionFor(name) : null, added };
@@ -228,26 +331,61 @@ export function readProperty(
     case 'formula':
       return { value: null, added };
     case 'relation': {
-      const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/,(?![^[]*\]\])/) : [];
-      const targets = list
-        .map(scalarText)
-        .map((text) =>
-          (text ?? '')
-            .replace(/^\[\[|\]\]$/g, '')
-            .split('|')[0]!
-            .trim(),
-        )
-        .filter(Boolean);
-      return { value: targets.length ? [...new Set(targets)].slice(0, 500) : null, added };
+      const list = Array.isArray(raw)
+        ? raw
+        : isRecord(raw)
+          ? [raw]
+          : typeof raw === 'string'
+            ? raw.split(/,(?![^[]*\]\])/)
+            : [];
+      if (list.length > 500) return { value: null, added };
+      const targets: string[] = [];
+      for (const item of list) {
+        if (isRecord(item)) {
+          if (
+            typeof item.id !== 'string' ||
+            !item.id.trim() ||
+            (item.title !== undefined && typeof item.title !== 'string') ||
+            Object.keys(item).some((key) => key !== 'id' && key !== 'title')
+          )
+            return { value: null, added };
+          targets.push(item.id.trim());
+          continue;
+        }
+        const text = scalarText(item);
+        if (text === null) return { value: null, added };
+        const target = text
+          .replace(/^\[\[|\]\]$/g, '')
+          .split('|')[0]!
+          .trim();
+        if (target) targets.push(target);
+        else if (list.length > 1) return { value: null, added };
+      }
+      const unique = [...new Set(targets)];
+      if (unique.length === 0) return { value: null, added };
+      if (prop.relation?.multiple) return { value: unique, added };
+      return { value: unique.length === 1 ? unique[0]! : unique, added };
     }
     case 'date': {
       const text = raw instanceof Date ? raw.toISOString() : scalarText(raw);
-      const match = text ? /^\d{4}-\d{2}-\d{2}/.exec(text) : null;
-      return { value: match ? match[0] : null, added };
+      const key = text?.slice(0, 10) ?? '';
+      return { value: isValidDateKey(key) ? key : null, added };
     }
+    case 'time': {
+      const text = scalarText(raw) ?? '';
+      return { value: isValidTime(text) ? text : null, added };
+    }
+    case 'datetime': {
+      const text = raw instanceof Date ? raw.toISOString() : (scalarText(raw) ?? '');
+      return { value: isValidDateTime(text) ? new Date(text).toISOString() : null, added };
+    }
+    case 'createdTime':
+    case 'lastEditedTime':
+      return { value: null, added };
     default: {
       const text = scalarText(raw);
-      return { value: text || null, added };
+      if (text === null) return { value: null, added };
+      return { value: scalarValueError(prop, text) === null ? text : null, added };
     }
   }
 }
@@ -261,7 +399,7 @@ export function takeProperties(
   newOptionId: () => string,
 ): void {
   for (const prop of database.properties) {
-    if (prop.type === 'formula') continue;
+    if (isComputedProperty(prop) || (prop.type === 'relation' && prop.relation?.isInverse)) continue;
     const key = findKey(extra, prop.name);
     if (key === undefined) continue;
     const raw = extra[key];
@@ -269,7 +407,13 @@ export function takeProperties(
     if (read.added.length) prop.options.push(...read.added);
     if (read.value !== null) properties[prop.id] = read.value;
     // a value the property can not hold, like a date written in words, stays so saving never drops it
-    if (read.value !== null || raw === null || raw === '') delete extra[key];
+    if (
+      read.value !== null ||
+      raw === null ||
+      raw === '' ||
+      (prop.type === 'relation' && Array.isArray(raw) && raw.length === 0)
+    )
+      delete extra[key];
   }
 }
 
@@ -279,17 +423,52 @@ function scalarText(value: unknown): string | null {
   return null;
 }
 
+function localizedNumber(prop: PropDef, raw: string): number | null {
+  const currency = prop.type === 'currency' ? (prop.format?.currency ?? 'BRL') : undefined;
+  const locale =
+    prop.format?.locale ??
+    (/^\s*R\$/i.test(raw) || (prop.type === 'currency' && currency === 'BRL') ? 'pt-BR' : 'en-US');
+  return parseLocalizedNumber(raw, locale, currency, prop.type === 'duration');
+}
+
 function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
   return {
-    properties: database.properties.map((prop) => ({
-      id: prop.id,
-      name: prop.name,
-      type: prop.type,
-      ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
-      ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
-      ...(prop.display === 'bar' ? { display: 'bar' } : {}),
-      ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
-    })),
+    properties: [
+      ...database.properties.map((prop) => ({
+        id: prop.id,
+        name: prop.name,
+        type: prop.type,
+        ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
+        ...(prop.description ? { description: prop.description } : {}),
+        ...(prop.format ? { format: { ...prop.format } } : {}),
+        ...(prop.fillMode ? { fillMode: prop.fillMode } : {}),
+        ...(Object.prototype.hasOwnProperty.call(prop, 'defaultValue')
+          ? { defaultValue: prop.defaultValue }
+          : {}),
+        ...(prop.defaultFormula ? { defaultFormula: prop.defaultFormula } : {}),
+        ...(prop.defaultFormulaBindings?.length ? { defaultFormulaBindings: prop.defaultFormulaBindings.map((binding) => ({ ...binding })) } : {}),
+        ...(prop.formula ? { formula: prop.formula } : {}),
+        ...(prop.formulaBindings?.length ? { formulaBindings: prop.formulaBindings.map((binding) => ({ ...binding })) } : {}),
+        ...(prop.display === 'bar' ? { display: 'bar' } : {}),
+        ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
+        ...(prop.type === 'relation' && prop.relation
+          ? {
+              relation: {
+                targetDatabaseId: prop.relation.targetDatabaseId,
+                multiple: prop.relation.multiple,
+                isInverse: prop.relation.isInverse,
+                displayPropertyId: prop.relation.displayPropertyId,
+                inversePropertyId: prop.relation.inversePropertyId,
+                ...(prop.relation.filters.length
+                  ? { filters: prop.relation.filters.map((filter) => ({ ...filter })) }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(prop.type === 'button' && prop.action ? { action: prop.action } : {}),
+      })),
+      ...(database.unsupportedProperties ?? []),
+    ],
     views: database.views.map((view) => ({
       id: view.id,
       name: view.name,

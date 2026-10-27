@@ -139,20 +139,6 @@ export interface DesktopAssistantApi {
   cancel(id: string): Promise<void>;
 }
 
-export interface UpdateInfo {
-  version: string;
-  notes: string;
-  url: string;
-  // windows installs and linux appimages update themselves, the rest open the release page
-  installable: boolean;
-}
-
-export interface DesktopUpdatesApi {
-  check(): Promise<{ ok: true; update: UpdateInfo | null } | { ok: false; error: string }>;
-  install(): Promise<{ ok: true } | { ok: false; error: string }>;
-  onProgress(listener: (share: number) => void): () => void;
-}
-
 export interface McpLaunch {
   command: string;
   script: string;
@@ -167,7 +153,6 @@ export interface DesktopMcpApi {
 
 export interface DesktopBridge {
   assistant?: DesktopAssistantApi;
-  updates?: DesktopUpdatesApi;
   mcp?: DesktopMcpApi;
   vault?: DesktopVaultApi;
   sync?: DesktopSyncApi;
@@ -223,7 +208,7 @@ export async function copyText(text: string): Promise<boolean> {
 }
 
 export function openExternal(url: string): void {
-  if (!/^(https?:|mailto:)/i.test(url)) return;
+  if (!/^(https?:|mailto:|tel:)/i.test(url)) return;
   if (desktop) void desktop.openExternal(url);
   else window.open(url, '_blank', 'noopener,noreferrer');
 }

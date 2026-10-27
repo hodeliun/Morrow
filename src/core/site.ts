@@ -347,7 +347,7 @@ export function databaseHtml(state: WorkspaceState, page: PageMeta, context: Ren
       const target = context.href(row.id);
       const title = escape(displayTitle(row));
       const cells = database.properties
-        .map((prop) => `<td>${escape(formatValue(prop, valueOf(row, prop.id, database)))}</td>`)
+        .map((prop) => `<td>${escape(formatValue(prop, valueOf(row, prop.id, database, state)))}</td>`)
         .join('');
       return `<tr><td>${target ? `<a href="${target}">${title}</a>` : title}</td>${cells}</tr>`;
     })
@@ -390,7 +390,7 @@ const SITE_CSS = `:root{color-scheme:light dark;--bg:#fbfaf7;--text:#22201c;--mu
 .site-nav ul{list-style:none;margin:0;padding-left:12px}.site-nav>ul{padding:0}.site-nav a{display:block;padding:3px 6px;border-radius:5px;color:var(--muted);text-decoration:none}
 .site-nav a:hover,.site-nav a[aria-current]{background:var(--soft);color:var(--text)}.site-title{font-weight:600;color:var(--text)!important;margin-bottom:12px}
 main{max-width:760px;width:100%;margin:0 auto;padding:56px 32px}h1{font-size:2.2em;line-height:1.2}a{color:var(--accent)}
-.page-link{text-decoration:none;background:var(--soft);border-radius:3px;padding:0 .2em}.page-link.missing{color:var(--muted);background:none}
+.page-link{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}.page-link.missing{color:var(--muted);background:none;text-decoration-style:dotted}
 code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--code);border-radius:5px}code{padding:.1em .3em}pre{padding:14px 16px;overflow:auto}pre code{padding:0;background:none}
 blockquote{margin:0;padding-left:16px;border-left:3px solid var(--line);color:var(--muted)}mark{background:rgba(214,160,40,.3);color:inherit}
 .callout{padding:10px 16px;margin:1em 0;border-left:3px solid #4f7aa8;background:rgba(79,122,168,.09);border-radius:6px}.tone-tip{border-color:#4d8a5c;background:rgba(77,138,92,.1)}.tone-warning{border-color:#b7791f;background:rgba(183,121,31,.11)}.tone-danger{border-color:#b3261e;background:rgba(179,38,30,.08)}.callout-title{font-weight:600;margin:0}

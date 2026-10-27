@@ -6,14 +6,30 @@ import type { TranslationKey } from './types';
 
 const PROP: Record<PropType, TranslationKey> = {
   text: 'database.typeText',
+  email: 'database.typeEmail',
+  url: 'database.typeUrl',
+  phone: 'database.typePhone',
   number: 'database.typeNumber',
+  currency: 'database.typeCurrency',
+  percent: 'database.typePercent',
+  slider: 'database.typeSlider',
+  progress: 'database.typeProgress',
+  scale: 'database.typeScale',
   select: 'database.typeSelect',
   multiSelect: 'database.typeMultiSelect',
   date: 'database.typeDate',
+  time: 'database.typeTime',
+  datetime: 'database.typeDatetime',
+  duration: 'database.typeDuration',
+  createdTime: 'database.typeCreatedTime',
+  lastEditedTime: 'database.typeLastEditedTime',
   checkbox: 'database.typeCheckbox',
-  url: 'database.typeUrl',
   relation: 'database.typeRelation',
   formula: 'database.typeFormula',
+  image: 'database.typeImage',
+  file: 'database.typeFile',
+  richCanvas: 'database.typeRichCanvas',
+  button: 'database.typeButton',
 };
 
 const VIEW: Record<ViewType, TranslationKey> = {

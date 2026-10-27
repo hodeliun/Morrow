@@ -1,18 +1,18 @@
 {
-  "name": "morrow",
-  "productName": "Morrow",
+  "name": "morrow-polaris",
+  "productName": "Morrow Polaris",
   "private": true,
-  "version": "1.2.0",
-  "description": "A free, open source, local first workspace for notes, databases and canvases, kept as plain Markdown files. No account, no cloud, and no AI unless you bring your own.",
-  "desktopName": "morrow.desktop",
+  "version": "1.2.0-polaris.2",
+  "description": "A Morrow fork with local databases, linked views and Markdown storage.",
+  "desktopName": "io.github.hodeliun.morrowpolaris.desktop",
   "license": "Apache-2.0",
   "author": {
     "name": "Aarav Gupta and Morrow contributors"
   },
-  "homepage": "https://github.com/Aarav2709/Morrow",
+  "homepage": "https://github.com/hodeliun/Morrow",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Aarav2709/Morrow.git"
+    "url": "https://github.com/hodeliun/Morrow.git"
   },
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -92,8 +92,8 @@
     "trailingComma": "all"
   },
   "build": {
-    "appId": "app.morrow.desktop",
-    "productName": "Morrow",
+    "appId": "io.github.hodeliun.morrowpolaris",
+    "productName": "Morrow Polaris",
     "copyright": "Copyright 2026 Aarav Gupta and Morrow contributors",
     "directories": {
       "output": "release",
@@ -136,10 +136,10 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+      "artifactName": "Morrow-Polaris-Setup-${version}-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+      "artifactName": "Morrow-Polaris-${version}-portable-${arch}.${ext}"
     },
     "mac": {
       "target": [
@@ -162,7 +162,7 @@
       "icon": "build/icon.png",
       "hardenedRuntime": true,
       "notarize": false,
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "artifactName": "Morrow-Polaris-${version}-mac-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -171,16 +171,10 @@
       ],
       "category": "Office",
       "icon": "build/icon.png",
+      "artifactName": "Morrow-Polaris-${version}.${ext}",
       "synopsis": "A local first workspace for notes and ideas",
       "maintainer": "Aarav Gupta <Aarav2709@users.noreply.github.com>",
       "syncDesktopName": true
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Aarav2709",
-        "repo": "Morrow"
-      }
-    ]
+    }
   }
 }

@@ -84,7 +84,7 @@ export default defineConfig({
     react(),
     desktopShell(),
     // the emoji images are copied as files rather than imported, so their package is named here
-    thirdPartyLicenses(['@lobehub/fluent-emoji-3d']),
+    thirdPartyLicenses(['@lobehub/fluent-emoji-3d', 'lucide-react']),
     emojiImages(),
   ],
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },

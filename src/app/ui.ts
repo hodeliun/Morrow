@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
+import type { DatabasePasteMode } from './editor/DatabasePaste';
 
 export type SettingsSection = 'general' | 'appearance' | 'assistant' | 'sync' | 'vault' | 'about';
 
@@ -31,6 +32,7 @@ export type Dialog =
   | { kind: 'encrypt'; pageId: PageId }
   | { kind: 'pair' }
   | { kind: 'capture' }
+  | { kind: 'pasteDatabase'; title: string; onChoose: (mode: DatabasePasteMode) => void }
   | {
       kind: 'confirm';
       title: string;

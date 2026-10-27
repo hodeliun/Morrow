@@ -1,16 +1,41 @@
 import { cloneDoc, fileIdsInDoc, isRecord } from './doc';
+import { fileIdsInPageProperties, remapPagePropertyFiles, validPropertyFileId } from './propertyMedia';
+import { encodeFileIcon, parsePageIcon } from './icons';
+import {
+  documentFormulaResult,
+  formulaResult,
+  formulaValueText,
+  formatValue,
+  rowsOf,
+  valueOf,
+  visibleRows,
+} from './database';
+import type { ViewDef } from './model';
+import { normalizeDatabase } from './migrations';
+import { parseRichCanvas, propertyMediaLabel, readAttachmentValue } from './propertyMedia';
+import { docToMarkdown } from './markdown/serialize';
 import { findDailyNote, findJournal } from './daily';
 import { readImportedFile } from './importer';
 import { refreshLinkLabels } from './links';
 import { pageToMarkdown } from './markdown/serialize';
-import { displayTitle, newPageMeta, SCHEMA_VERSION } from './model';
-import type { DocNode, FileId, FileMeta, PageId, PageMeta, WorkspaceState } from './model';
+import { displayTitle, newPageMeta, PROP_TYPES, SCHEMA_VERSION } from './model';
+import type {
+  DocNode,
+  FileId,
+  FileMeta,
+  FormulaReferenceBinding,
+  PageId,
+  PageMeta,
+  WorkspaceState,
+} from './model';
+import type { PropDef, PropType, PropertyFormat } from './model';
 import { readWorkspace } from './migrations';
 import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
 import { pageIdByTitle } from './search';
 import { childrenOf, livePages } from './tree';
-import { readPageText } from './vault/pageFile';
+import { composeFrontmatter, managedFrontmatter, readPageText } from './vault/pageFile';
+import { joinFrontmatter } from './vault/frontmatter';
 
 export const BACKUP_FORMAT = 'morrow-backup';
 
@@ -58,7 +83,40 @@ export function createBackup(state: WorkspaceState, now: Date, files: BackupFile
 export function referencedFileIds(state: WorkspaceState): Set<FileId> {
   const ids = new Set<FileId>();
   for (const doc of Object.values(state.docs)) for (const id of fileIdsInDoc(doc)) ids.add(id);
+  for (const page of Object.values(state.pages)) {
+    if (page.cover && !page.cover.startsWith('gradient-')) ids.add(page.cover);
+    const icon = parsePageIcon(page.icon);
+    if (icon?.kind === 'file') ids.add(icon.id);
+    for (const id of fileIdsInPageProperties(page, state.pages)) ids.add(id);
+  }
   return ids;
+}
+
+// Restored files may be assigned new vault paths when their original paths are occupied.
+export function remapPageMediaFiles(
+  pages: PageMeta[],
+  existing: Readonly<Record<PageId, PageMeta>>,
+  ids: ReadonlyMap<string, string>,
+): PageMeta[] {
+  if (ids.size === 0) return pages;
+  const known = { ...existing, ...Object.fromEntries(pages.map((page) => [page.id, page])) };
+  return pages.map((page) => {
+    let remapped = page;
+    if (page.cover && !page.cover.startsWith('gradient-')) {
+      const cover = ids.get(page.cover);
+      if (cover) remapped = { ...remapped, cover };
+    }
+    const icon = parsePageIcon(page.icon);
+    if (icon?.kind === 'file') {
+      const id = ids.get(icon.id);
+      if (id) {
+        const value = encodeFileIcon(id, icon.color);
+        if (value) remapped = { ...remapped, icon: value };
+      }
+    }
+    const database = page.parentId ? known[page.parentId]?.database : page.database;
+    return remapPagePropertyFiles(remapped, database, ids);
+  });
 }
 
 export function parseBackup(text: string): Result<ParsedBackup> {
@@ -83,7 +141,7 @@ export function parseBackup(text: string): Result<ParsedBackup> {
 }
 
 function readBackupFile(raw: unknown): BackupFile | null {
-  if (!isRecord(raw) || typeof raw.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(raw.id)) return null;
+  if (!isRecord(raw) || !validPropertyFileId(raw.id)) return null;
   if (typeof raw.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw.data)) return null;
   return {
     id: raw.id,
@@ -204,15 +262,28 @@ export function pageMarkdown(
   state: WorkspaceState,
   id: PageId,
   filePath?: (fileId: FileId) => string | null,
+  attachmentPath?: (fileId: FileId) => string | null,
 ): string {
   const page = state.pages[id];
   const doc = state.docs[id];
   if (!page || !doc) return '';
   const titleOf = (target: PageId) => (state.pages[target] ? displayTitle(state.pages[target]) : null);
-  return pageToMarkdown(displayTitle(page), refreshLinkLabels(doc, titleOf), {
+  const markdown = pageToMarkdown(displayTitle(page), refreshLinkLabels(doc, titleOf), {
     titleOf,
     ...(filePath ? { filePath } : {}),
   });
+  const frontmatterFiles = new Map<string, string>();
+  for (const fileId of pageFileReferences(page, doc, state)) {
+    const path = attachmentPath?.(fileId) ?? filePath?.(fileId);
+    if (path) frontmatterFiles.set(fileId, path);
+  }
+  const exportedPage = remapPageMediaFiles([page], state.pages, frontmatterFiles)[0]!;
+  const parentDatabase = page.parentId ? (state.pages[page.parentId]?.database ?? null) : null;
+  const managed = managedFrontmatter(exportedPage, safeFileName(displayTitle(page)), parentDatabase, state);
+  managed.set('title', displayTitle(page));
+  const frontmatter = composeFrontmatter(managed, page.extra, null);
+  const body = `${markdown}${dynamicSnapshot(state, page, filePath)}${databaseSnapshot(state, page, filePath)}`;
+  return joinFrontmatter(frontmatter, body);
 }
 
 // attachments share one folder, each file gets a stable unique name
@@ -247,7 +318,11 @@ export function workspaceMarkdownFiles(
   fileMetas: Record<FileId, FileMeta> = {},
 ): { files: ExportFile[]; attachments: Map<FileId, string> } {
   const live = livePages(state.pages).filter((page) => !page.encrypted);
-  const referenced = live.flatMap((page) => (state.docs[page.id] ? fileIdsInDoc(state.docs[page.id]!) : []));
+  const referenced = live.flatMap((page) => [
+    ...(state.docs[page.id] ? fileIdsInDoc(state.docs[page.id]!) : []),
+    ...(state.docs[page.id] ? pageFileReferences(page, state.docs[page.id]!, state) : []),
+    ...fileIdsInPageProperties(page, state.pages),
+  ]);
   const attachments = new Map(
     [...attachmentNames(referenced, fileMetas)].map(([id, name]) => [id, `attachments/${name}`]),
   );
@@ -263,12 +338,202 @@ export function workspaceMarkdownFiles(
         const target = attachments.get(id);
         return target ? `${up}${target}` : null;
       };
-      files.push({ path: `${folder}${name}.md`, content: pageMarkdown(state, page.id, filePath) });
+      files.push({
+        path: `${folder}${name}.md`,
+        content: pageMarkdown(state, page.id, filePath, (id) => attachments.get(id) ?? null),
+      });
       visit(page.id, `${folder}${name}/`, depth + 1);
     }
   };
   visit(null, '', 0);
   return { files, attachments };
+}
+
+function pageFileReferences(page: PageMeta, doc: DocNode, state: WorkspaceState): FileId[] {
+  const ids = new Set<FileId>([...fileIdsInDoc(doc), ...fileIdsInPageProperties(page, state.pages)]);
+  if (page.cover && !page.cover.startsWith('gradient-')) ids.add(page.cover);
+  const icon = parsePageIcon(page.icon);
+  if (icon?.kind === 'file') ids.add(icon.id);
+  return [...ids];
+}
+
+function dynamicSnapshot(
+  state: WorkspaceState,
+  page: PageMeta,
+  filePath?: (fileId: FileId) => string | null,
+): string {
+  const doc = state.docs[page.id];
+  if (!doc) return '';
+  const controls = page.controls.length
+    ? [
+        '## Controls snapshot',
+        '',
+        '| Control | Type | Current value | Default |',
+        '| --- | --- | --- | --- |',
+        ...page.controls.map(
+          (control) =>
+            `| ${cell(control.name)} | ${cell(control.type)} | ${cell(controlValue(control.value, control.options, state))} | ${cell(controlValue(control.defaultValue, control.options, state))} |`,
+        ),
+        '',
+      ].join('\n')
+    : '';
+  const nodes: DocNode[] = [];
+  const stack = [...(doc.content ?? [])].reverse();
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.type === 'calculatedResult' || node.type === 'linkedDatabaseView') nodes.push(node);
+    if (node.content) stack.push(...[...node.content].reverse());
+  }
+  const results = nodes.filter((node) => node.type === 'calculatedResult');
+  const resultSnapshot = results.length
+    ? [
+        '## Calculated results snapshot',
+        '',
+        '| Result | Formula | Current value |',
+        '| --- | --- | --- |',
+        ...results.map((node) => {
+          const attrs = node.attrs ?? {};
+          const source = typeof attrs.formula === 'string' ? attrs.formula : '';
+          const resultId = typeof attrs.resultId === 'string' ? attrs.resultId : '';
+          const bindings = Array.isArray(attrs.bindings) ? (attrs.bindings as FormulaReferenceBinding[]) : [];
+          const evaluated = resultId
+            ? documentFormulaResult(page.id, resultId, source, bindings, state)
+            : { value: null, error: 'Missing result identifier.' };
+          const outputType = typeof attrs.outputType === 'string' ? attrs.outputType : 'formula';
+          const displayProp: PropDef = {
+            id: resultId,
+            name: String(attrs.name ?? 'Result'),
+            type: PROP_TYPES.includes(outputType as PropType) ? (outputType as PropType) : 'formula',
+            options: [],
+            ...(isRecord(attrs.format) ? { format: attrs.format as PropertyFormat } : {}),
+          };
+          const value =
+            evaluated.error ??
+            formulaValueText(displayProp, evaluated.value, state);
+          return `| ${cell(String(attrs.name ?? 'Calculated result'))} | ${cell(source)} | ${cell(value)} |`;
+        }),
+        '',
+      ].join('\n')
+    : '';
+  const linkedViews = nodes.filter((node) => node.type === 'linkedDatabaseView');
+  const linkedViewSnapshots = linkedViews.map((node, index) => {
+    const attrs = node.attrs ?? {};
+    const sourceId = typeof attrs.sourceDatabaseId === 'string' ? attrs.sourceDatabaseId : '';
+    const source = state.pages[sourceId];
+    const title = source ? displayTitle(source) : sourceId || 'Unavailable source';
+    const viewInfo = isRecord(attrs.view) ? attrs.view : {};
+    const name = typeof viewInfo.name === 'string' ? viewInfo.name : `Linked view ${index + 1}`;
+    const type = typeof viewInfo.type === 'string' ? viewInfo.type : 'table';
+    const header = `## Linked view snapshot: ${name}\n\nSource database: **${title}** · View type: ${type}. This is a static snapshot; open the linked view in Morrow to edit shared rows.\n`;
+    if (!source?.database || source.kind !== 'database') return `${header}\n`;
+    const normalized = normalizeDatabase({ properties: source.database.properties, views: [viewInfo] });
+    const view = normalized?.views[0];
+    if (!view) return `${header}\n`;
+    return `${header}\n${databaseTable(state, source, view, filePath)}\n`;
+  });
+  return [controls, resultSnapshot, ...linkedViewSnapshots].filter(Boolean).join('\n');
+}
+
+function databaseSnapshot(
+  state: WorkspaceState,
+  page: PageMeta,
+  filePath?: (fileId: FileId) => string | null,
+): string {
+  if (page.kind !== 'database' || !page.database) return '';
+  const views = page.database.views.length
+    ? ['## Saved views', '', ...page.database.views.map((view) => `- ${viewSummary(view)}`), ''].join('\n')
+    : '';
+  const table = databaseTable(state, page, undefined, filePath);
+  return `\n## Database snapshot\n\n${table}\n${views}`;
+}
+
+function databaseTable(
+  state: WorkspaceState,
+  databasePage: PageMeta,
+  view?: ViewDef,
+  filePath?: (fileId: FileId) => string | null,
+): string {
+  const database = databasePage.database;
+  if (!database) return '';
+  const props = database.properties;
+  const rows = view
+    ? visibleRows(rowsOf(state, databasePage.id), view, database, state)
+    : rowsOf(state, databasePage.id);
+  const headers = ['Title', ...props.map((prop) => prop.name)];
+  const table = [
+    `| ${headers.map(cell).join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map(
+      (row) =>
+        `| ${[
+          displayTitle(row),
+          ...props.map((prop) => {
+            if (prop.type === 'button') return `Action: ${prop.action?.label ?? prop.name}`;
+            if (prop.type === 'formula' || prop.fillMode === 'calculated') {
+              const result = formulaResult(row, prop, database, 0, state);
+              if (result.error) return `Error: ${result.error}`;
+            }
+            const value = valueOf(row, prop.id, database, state);
+            if (prop.type === 'relation') {
+              const refs = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+              return refs.map((id) => (state.pages[id] ? displayTitle(state.pages[id]!) : id)).join(', ');
+            }
+            if ((prop.type === 'image' || prop.type === 'file') && typeof value === 'string') {
+              const files = readAttachmentValue(value) ?? [];
+              return files
+                .map((file) => {
+                  const path = filePath?.(file.id);
+                  return path ? `[${file.name}](${path})` : file.name;
+                })
+                .join(', ');
+            }
+            if (prop.type === 'richCanvas') {
+              const rich = parseRichCanvas(value);
+              return rich
+                ? docToMarkdown(rich, { ...(filePath ? { filePath } : {}) }).trim()
+                : propertyMediaLabel(prop, value);
+            }
+            return formatValue(prop, value);
+          }),
+        ]
+          .map(cell)
+          .join(' | ')} |`,
+    ),
+  ];
+  return table.join('\n');
+}
+
+function viewSummary(view: ViewDef): string {
+  const details = [
+    view.filters.length
+      ? `filters: ${view.filters.map((rule) => `${rule.prop} ${rule.op} ${JSON.stringify(rule.value)}`).join('; ')}`
+      : '',
+    view.sorts.length ? `sorts: ${view.sorts.map((rule) => `${rule.prop} ${rule.dir}`).join(', ')}` : '',
+    view.groupBy ? `grouped by ${view.groupBy}` : '',
+    view.dateProp ? `date field ${view.dateProp}` : '',
+    view.search ? `search: ${view.search}` : '',
+  ].filter(Boolean);
+  return `**${view.name}** (${view.type})${details.length ? ` — ${details.join('; ')}` : ''}`;
+}
+
+function controlValue(
+  value: unknown,
+  options: PageMeta['controls'][number]['options'],
+  state: WorkspaceState,
+): string {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) return value.map((part) => controlValue(part, options, state)).join(', ');
+  if (typeof value !== 'string') return value === null || value === undefined ? '' : String(value);
+  const option = options.find((candidate) => candidate.id === value);
+  if (option) return option.name;
+  return state.pages[value] ? displayTitle(state.pages[value]!) : value;
+}
+
+function cell(value: unknown): string {
+  return String(value ?? '')
+    .replaceAll('|', '\\|')
+    .replace(/\r?\n/g, '<br>')
+    .trim();
 }
 
 export function safeFileName(title: string): string {

@@ -14,7 +14,7 @@ import {
   shell,
 } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -51,7 +51,6 @@ import { cloudStatus } from './cloud.cjs';
 import { getMcpLaunch, isMcpEnabled, setMcpEnabled } from './mcp.cjs';
 import { aiTurn, cancelAiTurn, getAiSettings, listAiModels, setAiSettings } from './ai.cjs';
 import type { TurnRequest } from './ai.cjs';
-import { checkForUpdate, installUpdate } from './updates.cjs';
 import {
   closeSync,
   forgetPeer,
@@ -75,7 +74,8 @@ const DIST_DIR = path.join(__dirname, '..', 'dist');
 const KEEP_BACKUPS = 20;
 const MAX_BACKUP_BYTES = 512 * 1024 * 1024;
 const IS_MAC = process.platform === 'darwin';
-const APP_ID = 'app.morrow.desktop';
+const APP_NAME = 'Morrow Polaris';
+const APP_ID = 'io.github.hodeliun.morrowpolaris';
 // the window and taskbar use morrow's icon even when running on the plain electron binary
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
 // matches the height of the app's top bar so the native buttons sit inside it
@@ -110,7 +110,16 @@ function paintTitleBar(window: BrowserWindow, name: 'light' | 'dark', dim: boole
 const windowThemes = new WeakMap<BrowserWindow, 'light' | 'dark'>();
 
 // development and test runs can use a throwaway profile, installed copies never can
-if (!app.isPackaged && process.env.MORROW_USER_DATA) app.setPath('userData', process.env.MORROW_USER_DATA);
+const USER_DATA_PATH =
+  !app.isPackaged && process.env.MORROW_USER_DATA
+    ? path.resolve(process.env.MORROW_USER_DATA)
+    : path.join(app.getPath('appData'), APP_NAME);
+const SESSION_DATA_PATH = path.join(USER_DATA_PATH, 'Session');
+mkdirSync(USER_DATA_PATH, { recursive: true });
+mkdirSync(SESSION_DATA_PATH, { recursive: true });
+app.setName(APP_NAME);
+app.setPath('userData', USER_DATA_PATH);
+app.setPath('sessionData', SESSION_DATA_PATH);
 // automated test runs can keep their window out of sight
 const HIDDEN = !app.isPackaged && process.env.MORROW_HIDDEN === '1';
 
@@ -263,7 +272,7 @@ async function createWindow(): Promise<void> {
     minWidth: 520,
     minHeight: 420,
     show: false,
-    title: 'Morrow',
+    title: APP_NAME,
     ...(IS_MAC || !existsSync(ICON) ? {} : { icon: ICON }),
     backgroundColor: theme.background,
     titleBarStyle: 'hidden',
@@ -373,7 +382,7 @@ function isAppUrl(url: string): boolean {
 }
 
 function openExternal(url: string): void {
-  if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url);
+  if (/^(https?:|mailto:|tel:)/i.test(url)) void shell.openExternal(url);
 }
 
 // a file watcher or sync can still report something while the window closes, that is dropped
@@ -479,15 +488,6 @@ function registerVaultIpc(): void {
       return fn(...args);
     });
   handle('ai:settings', () => getAiSettings());
-  // errors come back as text, an invoke that throws reaches the page with electron's wording around it
-  const failed = (error: unknown) => ({
-    ok: false,
-    error: error instanceof Error ? error.message : String(error),
-  });
-  handle('update:check', () => checkForUpdate().then((update) => ({ ok: true, update }), failed));
-  handle('update:install', () =>
-    installUpdate((share) => toWindow('update:progress', share)).then(() => ({ ok: true }), failed),
-  );
   handle('ai:configure', (patch) => setAiSettings((patch ?? {}) as Record<string, unknown>));
   handle('ai:models', () => listAiModels());
   handle('ai:turn', (request) => aiTurn(request as TurnRequest));

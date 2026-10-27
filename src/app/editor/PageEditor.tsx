@@ -220,6 +220,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
     const instance = new Editor({
       extensions: [
         ...createExtensions({
+          pageId,
           getTitle: titleOf,
           getIcon: (id) => getState().pages[id]?.icon ?? null,
           subscribe: (listener) => getSession().subscribe(listener),

@@ -2,7 +2,7 @@ import { Extension, mergeAttributes, Node } from '@tiptap/core';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
-import { CALLOUT_TONES } from '../../core/model';
+import { CALLOUT_TONES, validBlockBackground } from '../../core/model';
 import { calloutNodeView } from './Extras';
 
 declare module '@tiptap/core' {
@@ -68,6 +68,53 @@ export const Callout = Node.create({
         ({ commands }) =>
           commands.wrapIn(this.name),
     };
+  },
+});
+
+// block backgrounds are palette values only; the serializer stores them as harmless Markdown comments
+const BACKGROUND_TYPES = [
+  'paragraph',
+  'heading',
+  'blockquote',
+  'bulletList',
+  'orderedList',
+  'listItem',
+  'taskList',
+  'taskItem',
+  'codeBlock',
+  'callout',
+  'details',
+  'detailsSummary',
+  'detailsContent',
+  'table',
+  'tableRow',
+  'tableHeader',
+  'tableCell',
+  'columns',
+  'column',
+  'image',
+  'fileAttachment',
+] as const;
+
+export const BlockBackground = Extension.create({
+  name: 'blockBackground',
+  addGlobalAttributes() {
+    return [
+      {
+        types: [...BACKGROUND_TYPES],
+        attributes: {
+          blockBackground: {
+            default: null,
+            parseHTML: (element: HTMLElement) =>
+              validBlockBackground(element.getAttribute('data-block-background')),
+            renderHTML: (attributes: { blockBackground?: unknown }) => {
+              const color = validBlockBackground(attributes.blockBackground);
+              return color ? { 'data-block-background': color } : {};
+            },
+          },
+        },
+      },
+    ];
   },
 });
 

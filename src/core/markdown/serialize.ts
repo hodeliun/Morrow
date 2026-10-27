@@ -1,4 +1,4 @@
-import { BACKGROUND_HEX, TEXT_HEX } from '../model';
+import { BACKGROUND_HEX, TEXT_HEX, validBlockBackground } from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
 
 export interface SerializeOptions {
@@ -64,6 +64,12 @@ function blocks(nodes: DocNode[], options: SerializeOptions): string {
 }
 
 function block(node: DocNode, options: SerializeOptions): string | null {
+  const text = blockContent(node, options);
+  const background = validBlockBackground(node.attrs?.blockBackground);
+  return text !== null && background ? `<!-- morrow:block-background:${background} -->\n${text}` : text;
+}
+
+function blockContent(node: DocNode, options: SerializeOptions): string | null {
   switch (node.type) {
     case 'paragraph': {
       const text = escapeLineStart(inline(node.content ?? [], options));
@@ -122,6 +128,17 @@ function block(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'tableOfContents':
       return '<!-- toc -->';
+    case 'linkedDatabaseView': {
+      const source = typeof node.attrs?.sourceDatabaseId === 'string' ? node.attrs.sourceDatabaseId : null;
+      const block = typeof node.attrs?.blockId === 'string' ? node.attrs.blockId : null;
+      const view = node.attrs?.view && typeof node.attrs.view === 'object' ? node.attrs.view : null;
+      const attrs = encodeURIComponent(JSON.stringify({ sourceDatabaseId: source, blockId: block, view }));
+      const title = source ? options.titleOf?.(source) : null;
+      const fallback = source
+        ? `**Linked database view:** [[${(title ?? source).replaceAll('[', '').replaceAll(']', '')}]] — open in Morrow to edit shared rows.`
+        : '**Linked database view:** Choose a source database in Morrow.';
+      return `<!-- morrow:linked-view:v1:${attrs} -->\n\n${fallback}`;
+    }
     case 'columns': {
       // plain html wrappers, other markdown apps show the columns one after another
       const columns = (node.content ?? []).map(
@@ -258,6 +275,28 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
       pendingSpace = '';
       continue;
     }
+    if (node.type === 'namedControl') {
+      closeTo(0);
+      const id = String(node.attrs?.controlId ?? '');
+      const label = String(node.attrs?.label ?? 'Control');
+      if (/^[A-Za-z0-9_-]{1,64}$/.test(id))
+        out += `${pendingSpace}<span data-morrow-control="${id}">${escapeHtml(label)}</span>`;
+      else out += `${pendingSpace}${escapeText(label)}`;
+      pendingSpace = '';
+      continue;
+    }
+    if (node.type === 'calculatedResult') {
+      closeTo(0);
+      const attrs = node.attrs ?? {};
+      const id = String(attrs.resultId ?? '');
+      const label = String(attrs.name ?? 'Calculated result');
+      if (/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+        const encoded = encodeURIComponent(JSON.stringify(attrs)).replaceAll("'", '%27');
+        out += `${pendingSpace}<span data-morrow-result="${encoded}">${escapeHtml(label)}</span>`;
+      } else out += `${pendingSpace}${escapeText(label)}`;
+      pendingSpace = '';
+      continue;
+    }
     if (node.type !== 'text' || !node.text) continue;
 
     const marks = sortMarks(node.marks ?? []);
@@ -305,7 +344,7 @@ function codeSpan(text: string): string {
 }
 
 function escapeHtml(text: string): string {
-  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // escapes only what would turn into formatting, so files stay pleasant to read in other editors

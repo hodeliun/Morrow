@@ -1,8 +1,16 @@
 import MarkdownIt from 'markdown-it';
 import type { StateBlock, StateInline, Token } from 'markdown-it';
-import { BACKGROUND_HEX, calloutTone, emptyDoc, nearestColor, TEXT_HEX } from '../model';
+import {
+  BACKGROUND_HEX,
+  calloutTone,
+  emptyDoc,
+  nearestColor,
+  TEXT_HEX,
+  validBlockBackground,
+} from '../model';
 import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
+import { normalizeDatabase } from '../migrations';
 
 export interface ParseOptions {
   // resolves a [[wiki link]] target, a title or a path inside the vault, to a page id
@@ -35,6 +43,7 @@ const TASK_PREFIX = /^\[([ xX])\](?:\s+|$)/;
 // obsidian callouts and github alerts: > [!type]+ optional title
 const CALLOUT = /^\[!([A-Za-z][\w-]{0,30})\]([+-]?)[ \t]*/;
 const WIKI = /^(!?)\[\[([^[\]\n]{0,400}?)\]\]/;
+const LINKED_VIEW = /^<!--\s*morrow:linked-view:v1:([A-Za-z0-9%._~!()*'()-]{1,200000})\s*-->$/i;
 
 // [[target#anchor|alias]] and ![[embed]], before markdown links so the brackets are not read as one
 function wikiLinkRule(state: StateInline, silent: boolean): boolean {
@@ -177,8 +186,15 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   const tokens = md.parse(text.replace(/\r\n?/g, '\n'), {});
   const root: DocNode = { type: 'doc', content: [] };
   const stack: DocNode[] = [root];
+  let pendingBlockBackground: string | null = null;
+  let pendingLinkedView: Record<string, unknown> | null = null;
+  let skipLinkedFallback = false;
   const top = () => stack[stack.length - 1]!;
   const push = (node: DocNode) => {
+    if (pendingBlockBackground) {
+      node.attrs = { ...node.attrs, blockBackground: pendingBlockBackground };
+      pendingBlockBackground = null;
+    }
     (top().content ??= []).push(node);
   };
   const open = (node: DocNode) => {
@@ -190,8 +206,18 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   };
 
   for (const token of tokens) {
+    if (skipLinkedFallback) {
+      if (token.type === 'paragraph_close') skipLinkedFallback = false;
+      continue;
+    }
     switch (token.type) {
       case 'paragraph_open':
+        if (pendingLinkedView) {
+          push({ type: 'linkedDatabaseView', attrs: pendingLinkedView });
+          pendingLinkedView = null;
+          skipLinkedFallback = true;
+          break;
+        }
         open({ type: 'paragraph', content: [] });
         break;
       case 'heading_open':
@@ -242,7 +268,13 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         close();
         break;
       case 'inline':
-        (top().content ??= []).push(...inlineNodes(token.children ?? [], options));
+        {
+          const nodes = inlineNodes(token.children ?? [], options);
+          const marker = nodes.find((node) => node.type === 'blockBackgroundMarker');
+          const color = validBlockBackground(marker?.attrs?.color);
+          if (color) top().attrs = { ...top().attrs, blockBackground: color };
+          (top().content ??= []).push(...nodes.filter((node) => node.type !== 'blockBackgroundMarker'));
+        }
         break;
       case 'fence':
       case 'code_block': {
@@ -262,15 +294,49 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         push({ type: 'horizontalRule' });
         break;
       case 'html_block':
-        htmlBlock(token.content, options, { push, top, close, stack });
+        {
+          const linkedView = parseLinkedViewMarker(token.content.trim());
+          if (linkedView) {
+            pendingLinkedView = linkedView;
+            break;
+          }
+          const marker = /^<!--\s*morrow:block-background:([a-z]+)\s*-->$/i.exec(token.content.trim());
+          const color = validBlockBackground(marker?.[1]);
+          if (color) pendingBlockBackground = color;
+          else htmlBlock(token.content, options, { push, top, close, stack });
+        }
         break;
       default:
         break;
     }
   }
 
+  if (pendingLinkedView) push({ type: 'linkedDatabaseView', attrs: pendingLinkedView });
+
   const doc = normalize(root);
   return (doc.content ?? []).length > 0 ? doc : emptyDoc();
+}
+
+function parseLinkedViewMarker(source: string): Record<string, unknown> | null {
+  const match = LINKED_VIEW.exec(source);
+  if (!match) return null;
+  try {
+    const value = JSON.parse(decodeURIComponent(match[1]!)) as Record<string, unknown>;
+    const validId = (id: unknown) =>
+      id === null || (typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id));
+    if (!value || typeof value !== 'object' || !validId(value.sourceDatabaseId) || !validId(value.blockId))
+      return null;
+    const normalizedView = value.view
+      ? (normalizeDatabase({ properties: [], views: [value.view] })?.views[0] ?? null)
+      : null;
+    return {
+      sourceDatabaseId: value.sourceDatabaseId,
+      blockId: value.blockId,
+      view: normalizedView,
+    };
+  } catch {
+    return null;
+  }
 }
 
 interface Builder {
@@ -386,10 +452,32 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
   };
   let pageTarget: { id: PageId; label: string } | null = null;
 
-  for (const token of tokens) {
+  for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+    const token = tokens[tokenIndex]!;
     if (pageTarget && token.type !== 'link_close') {
       pageTarget.label += token.content;
       continue;
+    }
+    if (token.type === 'html_inline') {
+      const marker = parseNamedDataMarker(token.content);
+      if (marker) {
+        let closing = tokenIndex + 1;
+        while (closing < tokens.length && !(tokens[closing]!.type === 'html_inline' && /^<\/span\s*>$/i.test(tokens[closing]!.content.trim())))
+          closing++;
+        if (closing < tokens.length) {
+          const fallback = tokens.slice(tokenIndex + 1, closing).map((item) => item.content).join('');
+          if (marker.type === 'namedControl') {
+            out.push({
+              type: 'namedControl',
+              attrs: { ...marker.attrs, label: String(marker.attrs.label ?? decodeEntities(fallback)) },
+            });
+          } else {
+            out.push({ type: 'calculatedResult', attrs: marker.attrs });
+          }
+          tokenIndex = closing;
+          continue;
+        }
+      }
     }
     switch (token.type) {
       case 'text':
@@ -461,6 +549,12 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
       }
       case 'html_inline': {
         const tag = token.content.trim().toLowerCase();
+        const blockBackground = /^<!--\s*morrow:block-background:([a-z]+)\s*-->$/.exec(tag);
+        const background = validBlockBackground(blockBackground?.[1]);
+        if (background) {
+          out.push({ type: 'blockBackgroundMarker', attrs: { color: background } });
+          break;
+        }
         const styled =
           /^<(span|mark)\s+style\s*=\s*["']\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3,6})\s*;?\s*["']\s*>$/.exec(
             tag,
@@ -485,6 +579,27 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
     }
   }
   return mergeText(out);
+}
+
+function parseNamedDataMarker(html: string): { type: 'namedControl' | 'calculatedResult'; attrs: Record<string, unknown> } | null {
+  const control = /^<span\s+data-morrow-control=["']([A-Za-z0-9_-]{1,64})["']\s*>$/i.exec(html.trim());
+  if (control) return { type: 'namedControl', attrs: { controlId: control[1] } };
+  const result = /^<span\s+data-morrow-result=["']([^"']{1,100000})["']\s*>$/i.exec(html.trim());
+  if (!result) return null;
+  try {
+    const raw = JSON.parse(decodeURIComponent(result[1]!)) as unknown;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const attrs = raw as Record<string, unknown>;
+    if (
+      typeof attrs.resultId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(attrs.resultId) ||
+      typeof attrs.name !== 'string' || attrs.name.length > 100 ||
+      typeof attrs.formula !== 'string' || attrs.formula.length > 2000 ||
+      !Array.isArray(attrs.bindings)
+    ) return null;
+    return { type: 'calculatedResult', attrs };
+  } catch {
+    return null;
+  }
 }
 
 function wikiNode(link: WikiLink, markup: string, options: ParseOptions, marks: DocMark[]): DocNode[] {

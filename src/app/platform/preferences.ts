@@ -1,6 +1,8 @@
 import { desktop } from './desktop';
 import { useSyncExternalStore } from 'react';
 import type { SupportedLocale } from '../i18n/types';
+import { DEFAULT_NOTE_STYLE, normalizeNoteStyle } from '../../core/model';
+import type { NoteStyle } from '../../core/model';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type WritingFont = 'serif' | 'sans' | 'mono';
@@ -21,6 +23,8 @@ export interface Preferences {
   theme: ThemePreference;
   font: WritingFont;
   width: PageWidth;
+  // captured by notes created after this default is chosen
+  defaultNoteStyle: NoteStyle;
   sidebarOpen: boolean;
   sidebarWidth: number;
   expanded: string[];
@@ -60,6 +64,7 @@ const defaults: Preferences = {
   theme: 'system',
   font: 'sans',
   width: 'comfortable',
+  defaultNoteStyle: DEFAULT_NOTE_STYLE,
   sidebarOpen: true,
   sidebarWidth: 264,
   expanded: [],
@@ -75,6 +80,13 @@ const defaults: Preferences = {
   checkUpdates: false,
   mcpEnabled: false,
 };
+
+// pages created before per-note styling keep the typography they used with the old global controls
+export function legacyNoteStyle(font: WritingFont, width: PageWidth): NoteStyle {
+  if (font === 'serif') return { font, fontSize: 18, lineHeight: 1.7, blockSpacing: 10, width };
+  if (font === 'mono') return { font, fontSize: 14.5, lineHeight: 1.75, blockSpacing: 8, width };
+  return { font, fontSize: 16, lineHeight: 1.68, blockSpacing: 9, width };
+}
 
 // view preferences only, losing them never loses work
 let current: Preferences = read();
@@ -95,13 +107,17 @@ function read(): Preferences {
     const raw = localStorage.getItem(KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw) as Partial<Preferences>;
+    const font = ['serif', 'sans', 'mono'].includes(parsed.font as string) ? parsed.font! : defaults.font;
+    const width = parsed.width === 'wide' ? 'wide' : 'comfortable';
+    const legacyStyle = legacyNoteStyle(font, width);
     return {
       locale: ['en', 'es', 'pt'].includes(parsed.locale as SupportedLocale)
         ? (parsed.locale as SupportedLocale)
         : defaults.locale,
       theme: ['system', 'light', 'dark'].includes(parsed.theme as string) ? parsed.theme! : defaults.theme,
-      font: ['serif', 'sans', 'mono'].includes(parsed.font as string) ? parsed.font! : defaults.font,
-      width: parsed.width === 'wide' ? 'wide' : 'comfortable',
+      font,
+      width,
+      defaultNoteStyle: normalizeNoteStyle(parsed.defaultNoteStyle, legacyStyle) ?? legacyStyle,
       sidebarOpen: parsed.sidebarOpen !== false,
       accent: ACCENTS.includes(parsed.accent as Accent) ? parsed.accent! : defaults.accent,
       colorful: parsed.colorful !== false,

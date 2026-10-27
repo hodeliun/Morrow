@@ -2,9 +2,10 @@
 import { canvasDoc, readCanvas } from '../canvas';
 import { isEncryptedText } from '../crypto';
 import { validateDoc, isRecord } from '../doc';
+import { validPageIcon } from '../icons';
 import { markdownToDoc } from '../markdown/parse';
 import type { ParseOptions } from '../markdown/parse';
-import { newPageMeta } from '../model';
+import { displayTitle, MAX_ICON_LENGTH, newPageMeta } from '../model';
 import type { DocNode, PageId, PageMeta, WorkspaceState } from '../model';
 import { foldText } from '../search';
 import { compareSiblings } from '../tree';
@@ -12,6 +13,7 @@ import type { Layout, Placement } from './layout';
 import { readPageText, takeProperties } from './pageFile';
 import type { PageSource } from './pageFile';
 import { impliedTitle } from './pageFile';
+import { bindFormulaReferences } from '../database';
 import {
   ATTACHMENTS_DIR,
   basename,
@@ -99,7 +101,7 @@ export function readRegistry(raw: unknown): Map<string, RegistryEntry> {
     if (value.favorite === true) entry.favorite = true;
     if (num(value.trashed) !== undefined) entry.trashed = num(value.trashed)!;
     if (typeof value.parent === 'string' && ID_PATTERN.test(value.parent)) entry.parent = value.parent;
-    if (typeof value.icon === 'string' && value.icon.length <= 32) entry.icon = value.icon;
+    if (validPageIcon(value.icon) && value.icon.length <= MAX_ICON_LENGTH) entry.icon = value.icon;
     result.set(path, entry);
   }
   return result;
@@ -262,6 +264,9 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     if (read.title) page.title = read.title;
     if (read.icon) page.icon = read.icon;
     page.cover = read.cover;
+    page.coverPosition = read.coverPosition;
+    page.noteStyle = read.noteStyle;
+    page.controls = read.controls;
     if (read.kind) page.kind = read.kind;
     page.tags = read.tags;
     page.database = read.database;
@@ -286,6 +291,26 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     const parent = page.parentId ? pages.get(page.parentId) : undefined;
     if (parent?.kind === 'database' && parent.database)
       takeProperties(parent.database, page.extra, page.properties, newId);
+  }
+  problems.push(...migrateLoadedRelations([...pages.values()]));
+
+  // Bind legacy name-based formulas while every table schema is available. The binding lives in
+  // database metadata and is written with the next ordinary page save.
+  const formulaState: WorkspaceState = { pages: Object.fromEntries(pages), docs: {} };
+  for (const page of pages.values()) {
+    if (!page.database) continue;
+    page.database = {
+      ...page.database,
+      properties: page.database.properties.map((prop) => ({
+        ...prop,
+        ...(prop.formula !== undefined
+          ? { formulaBindings: bindFormulaReferences(prop.formula, page.id, formulaState, prop.formulaBindings ?? []) }
+          : {}),
+        ...(prop.defaultFormula !== undefined
+          ? { defaultFormulaBindings: bindFormulaReferences(prop.defaultFormula, page.id, formulaState, prop.defaultFormulaBindings ?? []) }
+          : {}),
+      })),
+    };
   }
 
   // siblings keep the order the registry remembers, the rest follow by name, newest first in the journal
@@ -355,6 +380,85 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     reserved,
     registryChanged,
   };
+}
+
+function migrateLoadedRelations(pages: PageMeta[]): string[] {
+  const byId = new Map(pages.map((page) => [page.id, page]));
+  const diagnostics: string[] = [];
+  for (const database of pages) {
+    if (database.kind !== 'database' || !database.database) continue;
+    const rows = pages.filter((page) => page.parentId === database.id);
+    for (const prop of database.database.properties.filter((candidate) => candidate.type === 'relation')) {
+      if (prop.relation?.isInverse) {
+        if (
+          rows.some((row) =>
+            Object.keys(row.extra).some((key) => key.toLocaleLowerCase() === prop.name.toLocaleLowerCase()),
+          )
+        )
+          diagnostics.push(
+            `Inverse relation "${prop.name}" in "${database.title || 'Untitled'}" had stored values; the source field remains authoritative.`,
+          );
+        continue;
+      }
+      const rawValues = rows.flatMap((row) => {
+        const value = row.properties[prop.id];
+        return Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+      });
+      if (rawValues.length === 0) continue;
+      const relation = prop.relation;
+      const targetId = relation?.targetDatabaseId;
+      if (!targetId) {
+        diagnostics.push(
+          `Relation "${prop.name}" in "${database.title || 'Untitled'}" has legacy title references. Choose a target database to migrate unambiguous titles; ambiguous or missing values remain available for manual repair.`,
+        );
+        continue;
+      }
+      const target = byId.get(targetId);
+      if (target?.kind !== 'database' || !target.database) {
+        diagnostics.push(
+          `Relation "${prop.name}" in "${database.title || 'Untitled'}" has a missing target database.`,
+        );
+        continue;
+      }
+      const targetRows = pages.filter((page) => page.parentId === targetId);
+      let unresolved = 0;
+      for (const row of rows) {
+        const stored = row.properties[prop.id];
+        const tokens = Array.isArray(stored) ? stored : typeof stored === 'string' ? [stored] : [];
+        if (tokens.length === 0) continue;
+        if (!relation!.multiple && tokens.length > 1) {
+          unresolved++;
+          continue;
+        }
+        const converted: string[] = [];
+        let complete = true;
+        for (const token of tokens) {
+          if (byId.get(token)?.parentId === targetId) {
+            converted.push(token);
+            continue;
+          }
+          const wanted = foldText(token.trim());
+          const candidates = targetRows.filter((candidate) => foldText(displayTitle(candidate)) === wanted);
+          if (candidates.length !== 1) {
+            complete = false;
+            unresolved++;
+            break;
+          }
+          converted.push(candidates[0]!.id);
+        }
+        if (!complete) continue;
+        row.properties = {
+          ...row.properties,
+          [prop.id]: relation!.multiple ? [...new Set(converted)] : converted[0]!,
+        };
+      }
+      if (unresolved > 0)
+        diagnostics.push(
+          `Relation "${prop.name}" in "${database.title || 'Untitled'}" has ${unresolved} unresolved, ambiguous, or cardinality-conflicting reference(s).`,
+        );
+    }
+  }
+  return diagnostics;
 }
 
 export function parseOptions(

@@ -42,6 +42,7 @@ import { childrenOf } from '../../core/tree';
 import { getSession, getState } from '../workspace';
 import { t } from '../i18n';
 import type { MenuEntry } from './Menu';
+import { copyDatabase } from '../databaseClipboard';
 
 // one menu definition for the sidebar row and the page header
 export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[] {
@@ -64,6 +65,9 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
       ? { label: t('pageMenu.removeFromFavorites'), icon: StarOff, onSelect: () => toggleFavorite(pageId) }
       : { label: t('pageMenu.addToFavorites'), icon: Star, onSelect: () => toggleFavorite(pageId) },
     { label: t('pageMenu.duplicate'), icon: Copy, onSelect: () => duplicatePage(pageId) },
+    ...(page.kind === 'database'
+      ? [{ label: t('database.copyDatabase'), icon: Copy, onSelect: () => void copyDatabase(pageId) }]
+      : []),
     {
       label: t('pageMenu.moveTo'),
       icon: ArrowRightLeft,

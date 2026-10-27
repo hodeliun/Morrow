@@ -504,6 +504,48 @@
 .cover-picker {
   width: 320px;
 }
+.cover-draft-preview {
+  height: 88px;
+  margin: 0 0 10px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background-size: cover;
+  background-position: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+  touch-action: none;
+  user-select: none;
+}
+.cover-draft-preview.cover-image {
+  border-style: solid;
+  cursor: ns-resize;
+}
+.cover-position-control {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 1fr) 36px;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0 4px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.cover-position-control input {
+  min-width: 0;
+  accent-color: var(--accent);
+}
+.cover-position-control output {
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cover-save-actions {
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
 .cover-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1132,12 +1174,99 @@ button.home-stat:hover {
 .emoji-dialog {
   width: min(560px, calc(100vw - 32px));
 }
+.icon-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.icon-tabs [role='tab'] {
+  padding: 7px 10px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.icon-tabs [role='tab'].is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.icon-upload {
+  margin-left: auto;
+  margin-bottom: 4px;
+}
 .emoji-top {
   display: flex;
   gap: 6px;
 }
 .emoji-top .text-input {
   flex: 1;
+}
+.icon-color-section {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.icon-color-options {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.icon-color-choice,
+.icon-color-custom {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+}
+.icon-color-choice.is-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.icon-color-auto {
+  background: linear-gradient(135deg, var(--text) 0 45%, transparent 46% 54%, var(--text) 55%);
+}
+.icon-color-custom {
+  overflow: hidden;
+  appearance: none;
+  background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+.icon-color-custom::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.icon-color-custom::-webkit-color-swatch {
+  border: 0;
+  border-radius: 50%;
+}
+.icon-license-note {
+  margin: 8px 0 0;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+.icon-license-note a {
+  color: inherit;
+  text-decoration: underline;
+}
+.icon-catalog-grid {
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+}
+.load-icon-more {
+  display: block;
+  margin: 9px auto 0;
+}
+.icon-picker-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  margin-top: 8px;
+  color: var(--text-muted);
 }
 .emoji-groups {
   display: flex;
@@ -1200,19 +1329,45 @@ button.home-stat:hover {
   vertical-align: -0.22em;
   user-select: none;
 }
+.page-glyph {
+  flex: none;
+  object-fit: contain;
+  vertical-align: middle;
+}
+.custom-svg-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.custom-svg-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.icon-image {
+  display: inline-block;
+}
+.icon-loading,
+.icon-unavailable {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  opacity: 0.55;
+}
 .emoji-text {
   font-family: var(--font-emoji), sans-serif;
   line-height: 1;
 }
-.tree-icon .emoji-img {
+.tree-icon .page-glyph {
   width: 17px;
   height: 17px;
   vertical-align: middle;
 }
-.page-icon .emoji-img {
+.page-icon .page-glyph {
   width: 68px;
   height: 68px;
 }
+.emoji-choice .page-glyph,
 .emoji-choice .emoji-img {
   width: 28px;
   height: 28px;
@@ -1221,13 +1376,33 @@ button.home-stat:hover {
   width: 20px;
   height: 20px;
 }
-.home-card-icon .emoji-img {
+.home-card-icon .page-glyph {
   width: 22px;
   height: 22px;
 }
-.callout-icon .emoji-img {
+.callout-icon .page-glyph {
   width: 18px;
   height: 18px;
+}
+.page-link .page-link-icon,
+.relation-chip .page-glyph,
+.relation-chip .emoji-img {
+  width: 13px;
+  height: 13px;
+  vertical-align: -0.15em;
+}
+.page-link-icon-container {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+  vertical-align: -0.15em;
+}
+.page-link-icon-container[hidden] {
+  display: none;
+}
+.page-link .custom-svg-icon svg {
+  width: 1.05em;
+  height: 1.05em;
 }
 
 /* canvas drawing */

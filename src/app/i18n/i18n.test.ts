@@ -50,5 +50,7 @@ describe('i18n locales', () => {
     expect(t('sidebar.today', undefined, 'pt')).toBe('Hoje');
     expect(t('settings.title', undefined, 'pt')).toBe('Configurações');
     expect(t('settings.sections.appearance', undefined, 'pt')).toBe('Aparência');
+    expect(t('database.styleShort', undefined, 'pt')).toBe('Curto');
+    expect(t('database.styleFull', undefined, 'pt')).toBe('Completo');
   });
 });

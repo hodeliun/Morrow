@@ -1,4 +1,13 @@
+import { icons } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { parsePageIcon, sanitizeSvg } from '../../core/icons';
+import { fileUrl } from '../platform/attachments';
+import { getSession } from '../workspace';
 import { EMOJI_FILES } from 'virtual:morrow-emoji';
+
+const LUCIDE_ICONS = icons as Record<string, LucideIcon>;
+export const LUCIDE_ICON_NAMES = Object.keys(LUCIDE_ICONS).sort((a, b) => a.localeCompare(b));
 
 // the image for an emoji, trying the spellings the image set uses for variation selectors and keycaps
 export function emojiSrc(emoji: string): string | null {
@@ -28,6 +37,78 @@ export function Emoji({ emoji, className }: { emoji: string; className?: string 
       decoding="async"
     />
   );
+}
+
+// one renderer for emoji, the bundled Lucide catalog, and sanitized local icon uploads
+export function PageGlyph({ icon, className }: { icon: string; className?: string }) {
+  const parsed = parsePageIcon(icon);
+  const fileId = parsed?.kind === 'file' ? parsed.id : null;
+  const fileColor = parsed?.kind === 'file' ? parsed.color : null;
+  const [asset, setAsset] = useState<{ id: string; url?: string; svg?: string } | null>(null);
+
+  useEffect(() => {
+    if (!fileId) return;
+    let live = true;
+    if (/\.svg$/i.test(fileId)) {
+      void getSession()
+        .getFile(fileId)
+        .then((file) => {
+          if (!live) return;
+          if (!file) {
+            setAsset({ id: fileId });
+            return;
+          }
+          const source = new TextDecoder().decode(file.data);
+          setAsset({ id: fileId, svg: sanitizeSvg(source, fileColor) ?? undefined });
+        })
+        .catch(() => live && setAsset({ id: fileId }));
+    } else {
+      void fileUrl(fileId).then((url) => live && setAsset({ id: fileId, url: url ?? undefined }));
+    }
+    return () => {
+      live = false;
+    };
+  }, [fileId, fileColor]);
+
+  if (!parsed) return <span className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`} />;
+  if (parsed.kind === 'emoji') return <Emoji emoji={parsed.value} className={className} />;
+  if (parsed.kind === 'lucide') {
+    const Icon = LUCIDE_ICONS[parsed.name];
+    return Icon ? (
+      <Icon
+        className={`page-glyph${className ? ` ${className}` : ''}`}
+        size="1.2em"
+        strokeWidth={1.75}
+        style={parsed.color ? { color: parsed.color } : undefined}
+        aria-hidden="true"
+      />
+    ) : (
+      <span className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`} />
+    );
+  }
+
+  if (!asset || asset.id !== parsed.id)
+    return <span className={`page-glyph icon-loading${className ? ` ${className}` : ''}`} />;
+  if (asset.svg)
+    return (
+      <span
+        className={`page-glyph custom-svg-icon${className ? ` ${className}` : ''}`}
+        style={parsed.color ? { color: parsed.color } : undefined}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: asset.svg }}
+      />
+    );
+  if (asset.url)
+    return (
+      <img
+        className={`page-glyph icon-image${className ? ` ${className}` : ''}`}
+        src={asset.url}
+        alt=""
+        draggable={false}
+        aria-hidden="true"
+      />
+    );
+  return <span className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`} />;
 }
 
 // the same for code that builds dom by hand, such as editor node views

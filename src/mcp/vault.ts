@@ -435,7 +435,7 @@ export class McpVaultManager {
     const parent = page.parentId ? this.state.pages[page.parentId] : undefined;
     const parentDatabase = parent?.kind === 'database' ? parent.database : null;
 
-    const managed = managedFrontmatter(page, basename(placement.folder), parentDatabase);
+    const managed = managedFrontmatter(page, basename(placement.folder), parentDatabase, this.state);
     const source = this.sources.get(pageId) ?? null;
     const frontmatter = composeFrontmatter(managed, page.extra, source);
 

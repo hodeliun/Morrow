@@ -1,6 +1,6 @@
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { parseSimple } from './frontmatter';
+import { normalizeExtra, parseSimple, parseStructuredYaml } from './frontmatter';
 
 // whenever the quick reader answers, it must read exactly what yaml itself reads
 const VALUES = [
@@ -123,5 +123,45 @@ describe('the quick frontmatter reader', () => {
       aliases: ['One', 'Two'],
       empty: null,
     });
+  });
+});
+
+describe('structured metadata values', () => {
+  it('parses and preserves arrays of source objects and nested fields', () => {
+    const parsed = parseStructuredYaml(
+      [
+        'sources:',
+        '  - id: handbook',
+        '    resource: /references/handbook.md',
+        '    title: "Reference handbook, edition A"',
+        '    signals:',
+        '      usage_count: 0',
+        '      active: false',
+      ].join('\n'),
+    );
+
+    expect(parsed).toEqual({
+      ok: true,
+      value: {
+        sources: [
+          {
+            id: 'handbook',
+            resource: '/references/handbook.md',
+            title: 'Reference handbook, edition A',
+            signals: { usage_count: 0, active: false },
+          },
+        ],
+      },
+    });
+    if (parsed.ok) expect(normalizeExtra(parsed.value)).toEqual(parsed.value);
+  });
+
+  it('rejects values beyond editing limits instead of shortening them', () => {
+    let nested: unknown = 'kept';
+    for (let index = 0; index < 66; index++) nested = [nested];
+    expect(normalizeExtra({ nested })).toBeNull();
+    expect(normalizeExtra({ values: Array.from({ length: 10_001 }, (_, index) => index) })).toBeNull();
+    expect(parseStructuredYaml('sources: [')).toMatchObject({ ok: false });
+    expect(parseStructuredYaml('field: first\nfield: second')).toMatchObject({ ok: false });
   });
 });

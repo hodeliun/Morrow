@@ -224,6 +224,11 @@
   justify-content: space-between;
   margin-bottom: 4px;
 }
+.inline-database-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .inline-database-title {
   display: inline-flex;
   align-items: center;
@@ -237,6 +242,42 @@
 }
 .inline-database-title:hover {
   background: var(--hover);
+}
+.inline-database-rename {
+  min-width: 8ch;
+  max-width: min(60ch, 70vw);
+  field-sizing: content;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.database-paste-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.database-paste-option {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+.database-paste-option:hover,
+.database-paste-option:focus-visible {
+  background: var(--hover);
+  border-color: var(--accent);
+}
+.database-paste-option span {
+  color: var(--muted);
+  font-size: 0.9em;
 }
 
 /* canvases inside pages */
@@ -583,12 +624,12 @@ html.is-printing .split-resizer {
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  padding: 0 6px 0 4px;
-  border-radius: 5px;
+  padding: 0;
+  border-radius: 0;
   font-size: var(--text-sm);
   line-height: 1.6;
   color: var(--text);
-  background: var(--active);
+  background: transparent;
   text-decoration: underline;
   text-decoration-color: var(--border-strong);
   text-underline-offset: 2px;
@@ -604,11 +645,19 @@ html.is-printing .split-resizer {
   flex: none;
 }
 .relation-chip:hover {
-  background: var(--accent-soft);
+  color: var(--accent-strong);
+  background: transparent;
+  text-decoration-color: var(--accent);
 }
 .relation-chip.is-missing {
   color: var(--text-faint);
   cursor: default;
+  text-decoration-style: dotted;
+}
+.relation-chip:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .relation-list {
   list-style: none;
@@ -666,6 +715,35 @@ html.is-printing .split-resizer {
   font-family: var(--font-mono);
   font-size: 12.5px;
   resize: vertical;
+}
+.formula-assist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.formula-assist .text-input {
+  flex: 1 1 120px;
+  min-width: 100px;
+  max-width: 190px;
+}
+.formula-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.formula-suggestions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.formula-suggestions button:hover,
+.formula-suggestions button:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
 }
 .formula-help summary {
   cursor: pointer;

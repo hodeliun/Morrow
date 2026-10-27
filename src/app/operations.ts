@@ -9,6 +9,8 @@ import {
   JOURNAL_TITLE,
 } from '../core/daily';
 import { fileIdsInDoc, remapFileIds } from '../core/doc';
+import { fileIdsInPageProperties } from '../core/propertyMedia';
+import { parsePageIcon } from '../core/icons';
 import { planArchiveImport } from '../core/importer';
 import type { ArchiveEntry } from '../core/importer';
 import { canvasDoc, emptyCanvas } from '../core/canvas';
@@ -36,11 +38,13 @@ import {
   planMarkdownImport,
   planRestore,
   referencedFileIds,
+  remapPageMediaFiles,
   safeFileName,
   workspaceMarkdownFiles,
 } from '../core/portability';
 import type { BackupFile } from '../core/portability';
 import { childrenOf, descendantsOf, isEffectivelyTrashed } from '../core/tree';
+import { linkedViewsBlockingTrash } from '../core/linkedViews';
 import { commitEditors } from './editor/commits';
 import { desktop } from './platform/desktop';
 import { newId, pickFiles, saveFile, stamp } from './platform/files';
@@ -88,7 +92,8 @@ export function createPage(
 // moves a page under a new parent, carrying its values into or out of a database as frontmatter
 export function movePage(id: PageId, parentId: PageId | null, index?: number): boolean {
   const now = Date.now();
-  const plan = fieldsForMove(getState().pages, id, parentId, newId);
+  const state = getState();
+  const plan = fieldsForMove(state.pages, id, parentId, newId, state);
   const commands: Command[] = [];
   if (plan?.database)
     commands.push({ type: 'database.set', id: plan.database.id, database: plan.database.database, now });
@@ -150,7 +155,7 @@ export function turnIntoPage(id: PageId): void {
       type: 'page.setFields',
       id: row.id,
       properties: {},
-      extra: releaseRow(row, database),
+      extra: releaseRow(row, database, state),
       now,
     })),
     { type: 'page.setKind', id, kind: 'page', now },
@@ -349,13 +354,21 @@ export function trashPage(id: PageId): void {
   const state = getState();
   const page = state.pages[id];
   if (!page) return;
+  const linkedViews = linkedViewsBlockingTrash(state, page.id);
+  if (linkedViews.length) {
+    toast(t('database.linkedSourceInUse', { count: linkedViews.length }), { tone: 'error' });
+    return;
+  }
   const affected = panesShowing(
     (route) =>
       route.name === 'page' &&
       (route.id === id || descendantsOf(state.pages, id).some((child) => child.id === route.id)),
   );
   const result = run({ type: 'page.trash', id, now: Date.now() });
-  if (!result.ok) return;
+  if (!result.ok) {
+    toast(result.error, { tone: 'error' });
+    return;
+  }
   for (const pane of affected) {
     if (page.parentId && !isEffectivelyTrashed(result.value.pages, page.parentId))
       navigate({ name: 'page', id: page.parentId, find: null }, { pane });
@@ -462,7 +475,15 @@ export async function exportPageMarkdown(id: PageId): Promise<void> {
     return;
   }
   const name = safeFileName(displayTitle(page));
-  const ids = fileIdsInDoc(doc);
+  const icon = parsePageIcon(page.icon);
+  const ids = [
+    ...new Set([
+      ...fileIdsInDoc(doc),
+      ...fileIdsInPageProperties(page, state.pages),
+      ...(page.cover && !page.cover.startsWith('gradient-') ? [page.cover] : []),
+      ...(icon?.kind === 'file' ? [icon.id] : []),
+    ]),
+  ];
   if (ids.length === 0) {
     saveFile(`${name}.md`, pageMarkdown(state, id), 'text/markdown;charset=utf-8');
     return;
@@ -470,7 +491,14 @@ export async function exportPageMarkdown(id: PageId): Promise<void> {
   const names = attachmentNames(ids, await fileIndex());
   const paths = new Map([...names].map(([fileId, file]) => [fileId, `attachments/${file}`]));
   const entries: Record<string, Uint8Array> = {
-    [`${name}/${name}.md`]: strToU8(pageMarkdown(state, id, (fileId) => paths.get(fileId) ?? null)),
+    [`${name}/${name}.md`]: strToU8(
+      pageMarkdown(
+        state,
+        id,
+        (fileId) => paths.get(fileId) ?? null,
+        (fileId) => paths.get(fileId) ?? null,
+      ),
+    ),
   };
   await zipAttachments(paths, entries, `${name}/`);
   saveFile(`${name}.zip`, zipBytes(entries), 'application/zip');
@@ -633,7 +661,11 @@ export async function importMarkdown(parentId: PageId | null = null): Promise<vo
       if (!stored.ok) throw new Error(stored.error);
       archive.files.forEach((file, index) => fileIds.set(file.meta.id, stored.value[index]!.id));
     }
-    const pages = [...(archive?.pages ?? []), ...(loose?.pages ?? [])];
+    const pages = remapPageMediaFiles(
+      [...(archive?.pages ?? []), ...(loose?.pages ?? [])],
+      state.pages,
+      fileIds,
+    );
     if (pages.length === 0) throw new Error(t('toasts.noMarkdownFound'));
     const docs = Object.fromEntries(
       Object.entries({ ...archive?.docs, ...loose?.docs }).map(([id, doc]) => [
@@ -688,10 +720,11 @@ export async function restoreBackup(): Promise<void> {
       missing.forEach((backupFile, index) => fileIds.set(backupFile.id, stored.value[index]!.id));
     }
     if (plan.pages.length > 0) {
+      const pages = remapPageMediaFiles(plan.pages, getState().pages, fileIds);
       const docs = Object.fromEntries(
         Object.entries(plan.docs).map(([id, doc]) => [id, remapFileIds(doc, fileIds)]),
       );
-      const result = run({ type: 'pages.insert', pages: plan.pages, docs });
+      const result = run({ type: 'pages.insert', pages, docs });
       if (!result.ok) return;
     }
     const notes = [

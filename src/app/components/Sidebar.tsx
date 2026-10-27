@@ -55,7 +55,7 @@ import { openDialog, setUi, useUi } from '../ui';
 import { run, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
 import { pageMenuEntries } from './pageMenu';
-import { Emoji } from './Emoji';
+import { PageGlyph } from './Emoji';
 import { Logo } from './primitives';
 import { PAGE_DRAG_TYPE } from '../editor/PageLink';
 
@@ -72,7 +72,7 @@ export function pageIcon(page: PageMeta): LucideIcon {
 
 export function PageIcon({ page }: { page: PageMeta }) {
   if (page.encrypted) return <Lock size={15} strokeWidth={1.75} className="icon-kind-locked" />;
-  if (page.icon) return <Emoji emoji={page.icon} />;
+  if (page.icon) return <PageGlyph icon={page.icon} />;
   // each kind of page has its own colour when colourful pages are on
   const kind = page.dailyDate ? 'daily' : page.kind;
   const props = { size: 15, strokeWidth: 1.75, className: `icon-kind-${kind}` };
@@ -215,7 +215,7 @@ export function Sidebar() {
             aria-label={t('sidebar.morrowHome')}
           >
             <Logo size={20} />
-            <span className="brand-name">Morrow</span>
+            <span className="brand-name">Morrow Polaris</span>
           </button>
         )}
         <button

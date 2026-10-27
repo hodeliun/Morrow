@@ -1,13 +1,18 @@
-# Morrow
+# Morrow Polaris
 
-Morrow is a free, open source, local first workspace for your notes, databases
-and ideas. Every page is a plain Markdown file in a folder you choose. No
-account, no subscription and no cloud, and no AI unless you bring your own. Just
-a calm place to write and think, on your own computer.
+Morrow Polaris is a public fork of [Morrow](https://github.com/Aarav2709/Morrow),
+originally created by Aarav Gupta and its contributors. This independent build
+is not affiliated with Notion or Coda. It keeps the upstream
+Apache-2.0 license and attribution notices.
+
+This edition adds local typed databases, linked views, controls and explicit
+table actions for RPG, entertainment and finance workflows. Pages stay in a
+folder you choose as Markdown. Its app profile and initial vault are separate
+from the upstream Morrow installation.
 
 https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
-## Why Morrow
+## Why Polaris
 
 - **Yours.** Your notes are a folder of Markdown files. Open them in any app,
   sync them with Syncthing, iCloud, Dropbox or git, and keep them forever. Edits
@@ -99,8 +104,6 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
   the setup it shows into the app. It runs on your computer, started by that app
 - **In your language**: English, Spanish and Portuguese, chosen in Settings, General
 - **Export as PDF**, and **edit as Markdown** to work on a page's source directly
-- **Updates when you want them**: turn on update checks in Settings, About. Windows
-  and Linux AppImage copies download, verify and install the new version themselves
 - **Custom CSS** kept in the vault as `.morrow/style.css`
 - A full emoji picker for page icons, drawn the same on every system
 - Find and replace, Markdown shortcuts, Markdown paste, an outline of each page, focus mode
@@ -112,10 +115,9 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
 ## Status
 
-Version **1.2.0**. Pages are files in a folder you choose. Earlier builds kept
-them inside the app; the first time this version opens it offers to copy those
-pages into the folder and leaves the original copy untouched. Releases are built
-for Windows (x64 and ARM64), macOS (Apple silicon and Intel) and Linux (x64).
+Version **1.2.0-polaris.2**. This fork targets Windows x64 and uses
+its own application profile and default vault. Choose a separate folder for
+the synthetic demo vault in [demo/](demo/) and follow [the guide](docs/GUIA.md).
 
 ## Coming from Obsidian
 
@@ -156,15 +158,13 @@ closes when the system has none).
 Bug reports, ideas and code are all welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
 explains how to set up and what to check before a pull request, and [ARCHITECTURE.md](ARCHITECTURE.md) is a map of the code.
 
-## How Morrow was made
+## Relationship to upstream
 
-Morrow is built with the **help** of AI coding tools. I laid the foundation and
-did most of the frontend, while AI helped research features, wrote most of the
-backend and the code connecting it to the interface, built larger features such
-as databases, canvas drawing and the welcome guide, and handled most debugging
-and optimisation. I decide what goes into Morrow and test every change myself.
-Morrow itself has no AI and sends nothing anywhere. The optional assistant only
-runs when you turn it on and add your own key.
+Morrow Polaris keeps the original application's license and contributor
+attribution. The original project is maintained independently; this fork does
+not represent its maintainers or promise compatibility with every upstream
+release. Its icon catalog is licensed Lucide and accepts user uploads. The exact
+Notion icon set is omitted because redistribution permission was not confirmed.
 
 ## Licence
 

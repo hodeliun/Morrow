@@ -2,6 +2,7 @@
 import { displayTitle } from '../model';
 import type { PageId, PageMeta, WorkspaceState } from '../model';
 import { compareSiblings, effectiveParent } from '../tree';
+import { isOkfPath } from './okf';
 import { basename, isInTrash, joinPath, safeFileName, TRASH_DIR } from './paths';
 
 export interface Placement {
@@ -31,6 +32,7 @@ export function placePages(
   // lower case paths of folders and files that belong to something other than a page
   reserved: ReadonlySet<string> = new Set(),
 ): Map<PageId, Placement> {
+  const previousPathOf = (id: PageId) => previous.get(id)?.file ?? null;
   const result = new Map<PageId, Placement>();
   const groups = new Map<string, PageMeta[]>();
   const byParent = new Map<PageId | null, PageMeta[]>();
@@ -83,6 +85,11 @@ export function placePages(
       const before = previous.get(page.id);
       const name = before ? basename(before.folder) : null;
       const wanted = desiredName(page);
+      const previousPath = before?.file ?? before?.folder ?? null;
+      if (name !== null && isOkfPath(state, previousPath, previousPathOf) && isFree(name)) {
+        place(page, name);
+        continue;
+      }
       const fits =
         name !== null &&
         before !== undefined &&

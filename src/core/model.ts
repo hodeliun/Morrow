@@ -1,10 +1,11 @@
 // workspace data model, plain json shared by storage, search, export and the editor
 
 // bump when the persisted shape changes and add a migration in migrations.ts
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 9;
 
 export const MAX_TITLE_LENGTH = 500;
-export const MAX_ICON_LENGTH = 16;
+// includes compact Lucide names and local attachment references; plain emoji remain much shorter
+export const MAX_ICON_LENGTH = 512;
 // limits that keep hostile or corrupted documents from hanging the app
 export const MAX_DOC_DEPTH = 64;
 export const MAX_DOC_NODES = 200_000;
@@ -17,17 +18,57 @@ export type PageKind = 'page' | 'journal' | 'templates' | 'database' | 'canvas';
 export const PAGE_KINDS: readonly PageKind[] = ['page', 'journal', 'templates', 'database', 'canvas'];
 
 export type PropType =
-  'text' | 'number' | 'select' | 'multiSelect' | 'date' | 'checkbox' | 'url' | 'relation' | 'formula';
+  | 'text'
+  | 'email'
+  | 'url'
+  | 'phone'
+  | 'number'
+  | 'currency'
+  | 'percent'
+  | 'slider'
+  | 'progress'
+  | 'scale'
+  | 'select'
+  | 'multiSelect'
+  | 'date'
+  | 'time'
+  | 'datetime'
+  | 'duration'
+  | 'createdTime'
+  | 'lastEditedTime'
+  | 'checkbox'
+  | 'relation'
+  | 'formula'
+  | 'image'
+  | 'file'
+  | 'richCanvas'
+  | 'button';
 export const PROP_TYPES: readonly PropType[] = [
   'text',
+  'email',
+  'url',
+  'phone',
   'number',
+  'currency',
+  'percent',
+  'slider',
+  'progress',
+  'scale',
   'select',
   'multiSelect',
   'date',
+  'time',
+  'datetime',
+  'duration',
+  'createdTime',
+  'lastEditedTime',
   'checkbox',
-  'url',
   'relation',
   'formula',
+  'image',
+  'file',
+  'richCanvas',
+  'button',
 ];
 export const COLORS = [
   'gray',
@@ -42,6 +83,10 @@ export const COLORS = [
 ] as const;
 export type ColorName = (typeof COLORS)[number];
 
+export function validBlockBackground(value: unknown): ColorName | null {
+  return COLORS.includes(value as ColorName) ? (value as ColorName) : null;
+}
+
 export interface SelectOption {
   id: string;
   name: string;
@@ -53,11 +98,126 @@ export interface PropDef {
   name: string;
   type: PropType;
   options: SelectOption[];
+  description?: string;
+  // how scalar values are displayed and constrained; storage values remain locale independent
+  format?: PropertyFormat;
+  // manual is the legacy default; defaults are materialized once when a row is created
+  fillMode?: 'manual' | 'default' | 'calculated';
+  defaultValue?: PropValue;
+  defaultFormula?: string;
+  // source spans point into the corresponding formula source and keep references attached to stable IDs
+  defaultFormulaBindings?: FormulaReferenceBinding[];
   // the expression a formula property computes, see core/formula
   formula?: string;
+  formulaBindings?: FormulaReferenceBinding[];
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;
+  // relation values are row ids in the selected database; missing config preserves legacy title values
+  relation?: RelationConfig;
+  // local media properties can keep one or many stable file references
+  media?: { multiple: boolean };
+  // button columns run a bounded, explicitly configured sequence through workspace commands
+  action?: TableActionDef;
+}
+
+export type TableActionIcon = 'play' | 'plus' | 'check' | 'refresh';
+
+export interface ActionFormulaDef {
+  source: string;
+  bindings: FormulaReferenceBinding[];
+}
+
+export type TableActionStep =
+  | {
+      id: string;
+      type: 'addRows';
+      count: ActionFormulaDef;
+      title: ActionFormulaDef;
+      values: Record<string, ActionFormulaDef>;
+    }
+  | {
+      id: string;
+      type: 'modifyRows';
+      target: 'currentRow' | 'matchingRows';
+      where?: ActionFormulaDef;
+      values: Record<string, ActionFormulaDef>;
+    }
+  | {
+      id: string;
+      type: 'resetControls';
+      controlIds: string[];
+    };
+
+export interface TableActionDef {
+  label: string;
+  icon: TableActionIcon;
+  color: ColorName;
+  disabled?: ActionFormulaDef;
+  steps: TableActionStep[];
+}
+
+interface FormulaBindingSpan {
+  start: number;
+  end: number;
+  source: string;
+}
+
+export type FormulaReferenceBinding =
+  | (FormulaBindingSpan & { kind: 'database'; databaseId: PageId })
+  | (FormulaBindingSpan & { kind: 'property'; databaseId: PageId; propertyId: string })
+  | (FormulaBindingSpan & { kind: 'control'; pageId: PageId; controlId: string })
+  | (FormulaBindingSpan & { kind: 'result'; pageId: PageId; resultId: string })
+  | (FormulaBindingSpan & { kind: 'ambiguous'; pageId: PageId });
+
+export type NamedControlType = 'text' | 'number' | 'slider' | 'select' | 'checkbox' | 'date' | 'relation';
+
+export interface NamedControlDef {
+  id: string;
+  name: string;
+  type: NamedControlType;
+  value: PropValue;
+  defaultValue: PropValue;
+  options: SelectOption[];
+  format?: PropertyFormat;
+  relation?: {
+    targetDatabaseId: PageId | null;
+    multiple: boolean;
+  };
+}
+
+export interface ControlReference {
+  pageId: PageId;
+  controlId: string;
+}
+
+export interface PropertyFormat {
+  locale?: string;
+  linkLabel?: string;
+  currency?: string;
+  precision?: number;
+  negativeFormat?: 'minus' | 'parentheses';
+  min?: number;
+  max?: number;
+  step?: number;
+  dateStyle?: 'short' | 'medium' | 'long' | 'full';
+  timeStyle?: 'short' | 'medium' | 'long' | 'full';
+  timeZone?: string;
+  // display unit only; stored durations are seconds and the default display unit is minutes
+  durationUnit?: 'seconds' | 'minutes' | 'hours' | 'days';
+  scaleIcon?: 'star' | 'number';
+  color?: ColorName;
+  showValue?: boolean;
+}
+
+export interface RelationConfig {
+  targetDatabaseId: PageId | null;
+  multiple: boolean;
+  // inverse fields are projections; only the owning field stores row ids
+  isInverse: boolean;
+  displayPropertyId: string | null;
+  inversePropertyId: string | null;
+  filters: FilterRule[];
 }
 
 export type FilterOp =
@@ -69,6 +229,22 @@ export interface FilterRule {
   prop: string;
   op: FilterOp;
   value: PropValue;
+  controlRef?: ControlReference;
+  formula?: string;
+  formulaBindings?: FormulaReferenceBinding[];
+}
+
+export interface FilterGroup {
+  id: string;
+  logic: 'and' | 'or';
+  filters: FilterRule[];
+}
+
+export type SummaryOperation = 'sum' | 'average' | 'count' | 'min' | 'max';
+
+export interface ConditionalFormatRule extends FilterRule {
+  scope: 'row' | 'cell';
+  color: ColorName;
 }
 
 export interface SortRule {
@@ -91,11 +267,26 @@ export interface ViewDef {
   hidden: string[];
   // table column widths in pixels, by property id or title, missing means the default width
   widths?: Record<string, number>;
+  // Each group combines its rules with AND/OR; the view combines groups with AND/OR.
+  filterGroups?: FilterGroup[];
+  filterGroupLogic?: 'and' | 'or';
+  // visible text search is scoped to this view and applies before sorting and layout rendering
+  search?: string;
+  // view-local property order; missing properties follow the database schema order
+  order?: string[];
+  wrap?: string[];
+  align?: Record<string, 'left' | 'center' | 'right'>;
+  summaries?: Record<string, SummaryOperation>;
+  conditionalFormats?: ConditionalFormatRule[];
+  cardProperties?: string[];
+  cardImageProp?: string | null;
 }
 
 export interface DatabaseDef {
   properties: PropDef[];
   views: ViewDef[];
+  // opaque future schema entries are kept intact and make the database read-only in this version
+  unsupportedProperties?: unknown[];
 }
 
 // option ids for selects, yyyy mm dd for dates
@@ -116,6 +307,8 @@ export interface PageMeta {
   dailyDate: string | null;
   lastOpenedAt: number | null;
   tags: string[];
+  // named, page-scoped inputs used by document formulas and view filters
+  controls: NamedControlDef[];
   // values for the properties of the database this page is a row of, keyed by property id
   properties: Record<string, PropValue>;
   // frontmatter keys morrow gives no meaning to, such as obsidian properties, shown and edited as they are
@@ -123,11 +316,84 @@ export interface PageMeta {
   database: DatabaseDef | null;
   // a gradient such as gradient-3, or the path of an image in the vault
   cover: string | null;
+  // vertical focal point of the cover, as a percentage from top to bottom
+  coverPosition: number;
+  // a saved override; null keeps the appearance this page had before per-note styles
+  noteStyle: NoteStyle | null;
   // the page file is encrypted with a password, its content is only in memory while it is unlocked
   encrypted: boolean;
 }
 
 export const COVER_GRADIENTS = 12;
+export const DEFAULT_COVER_POSITION = 50;
+
+export type NoteFont = 'serif' | 'sans' | 'mono';
+export type NoteWidth = 'comfortable' | 'wide';
+
+export interface NoteStyle {
+  font: NoteFont;
+  fontSize: number;
+  lineHeight: number;
+  blockSpacing: number;
+  width: NoteWidth;
+}
+
+export const DEFAULT_NOTE_STYLE: NoteStyle = {
+  font: 'sans',
+  fontSize: 16,
+  lineHeight: 1.68,
+  blockSpacing: 9,
+  width: 'comfortable',
+};
+
+export function validCoverPosition(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
+export function normalizeCoverPosition(value: unknown): number {
+  return validCoverPosition(value) ? Math.round(value) : DEFAULT_COVER_POSITION;
+}
+
+export function validNoteStyle(value: unknown): value is NoteStyle {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const style = value as Record<string, unknown>;
+  return (
+    ['serif', 'sans', 'mono'].includes(style.font as string) &&
+    typeof style.fontSize === 'number' &&
+    Number.isFinite(style.fontSize) &&
+    style.fontSize >= 12 &&
+    style.fontSize <= 32 &&
+    typeof style.lineHeight === 'number' &&
+    Number.isFinite(style.lineHeight) &&
+    style.lineHeight >= 1.2 &&
+    style.lineHeight <= 2.4 &&
+    typeof style.blockSpacing === 'number' &&
+    Number.isFinite(style.blockSpacing) &&
+    style.blockSpacing >= 0 &&
+    style.blockSpacing <= 40 &&
+    ['comfortable', 'wide'].includes(style.width as string)
+  );
+}
+
+// persisted styles are normalized so an invalid or older value cannot break page layout
+export function normalizeNoteStyle(
+  value: unknown,
+  fallback: NoteStyle = DEFAULT_NOTE_STYLE,
+): NoteStyle | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const style = value as Record<string, unknown>;
+  const bounded = (item: unknown, min: number, max: number, otherwise: number) =>
+    typeof item === 'number' && Number.isFinite(item) && item >= min && item <= max ? item : otherwise;
+  return {
+    font: ['serif', 'sans', 'mono'].includes(style.font as string) ? (style.font as NoteFont) : fallback.font,
+    fontSize: bounded(style.fontSize, 12, 32, fallback.fontSize),
+    lineHeight: bounded(style.lineHeight, 1.2, 2.4, fallback.lineHeight),
+    blockSpacing: bounded(style.blockSpacing, 0, 40, fallback.blockSpacing),
+    width: ['comfortable', 'wide'].includes(style.width as string)
+      ? (style.width as NoteWidth)
+      : fallback.width,
+  };
+}
 
 export function validCover(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -190,6 +456,9 @@ export const KNOWN_NODE_TYPES = new Set([
   'column',
   'tableOfContents',
   'dateMention',
+  'linkedDatabaseView',
+  'namedControl',
+  'calculatedResult',
 ]);
 
 export const KNOWN_MARK_TYPES = new Set([
@@ -328,10 +597,13 @@ export function newPageMeta(fields: Pick<PageMeta, 'id' | 'parentId'> & Partial<
     dailyDate: null,
     lastOpenedAt: null,
     tags: [],
+    controls: [],
     properties: {},
     extra: {},
     database: null,
     cover: null,
+    coverPosition: DEFAULT_COVER_POSITION,
+    noteStyle: null,
     encrypted: false,
     ...fields,
   };

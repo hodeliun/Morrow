@@ -22,8 +22,9 @@ you time.
 You need [Node.js](https://nodejs.org) 20.19 or newer.
 
 ```sh
-git clone https://github.com/Aarav2709/Morrow.git
+git clone https://github.com/hodeliun/Morrow.git
 cd Morrow
+git remote add upstream https://github.com/Aarav2709/Morrow.git
 npm install
 npm run dev        # the desktop app with live reload
 ```

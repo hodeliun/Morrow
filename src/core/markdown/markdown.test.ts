@@ -91,6 +91,16 @@ describe('markdown import', () => {
     expect(markdownToPage('Just text', 'fallback').title).toBe('fallback');
   });
 
+  it('reads full-block backgrounds from harmless Markdown comments', () => {
+    const source =
+      '<!-- morrow:block-background:blue -->\n## Character\n\n<!-- morrow:block-background:yellow -->\nA paragraph in the character column.';
+    const doc = markdownToDoc(source);
+    expect(doc.content?.map((node) => node.attrs?.blockBackground)).toEqual(['blue', 'yellow']);
+    const reopened = markdownToDoc(docToMarkdown(doc));
+    expect(reopened.content?.map((node) => node.attrs?.blockBackground)).toEqual(['blue', 'yellow']);
+    expect(reopened.content?.map((node) => node.type)).toEqual(['heading', 'paragraph']);
+  });
+
   it('resolves wiki links and keeps links to pages that do not exist yet', () => {
     const doc = markdownToDoc('See [[Garden]] and [[Nowhere]].', {
       resolvePage: (title) => (title === 'Garden' ? 'g1' : null),
@@ -113,6 +123,70 @@ describe('markdown import', () => {
     expect(markdownToDoc('')).toEqual({ type: 'doc', content: [{ type: 'paragraph' }] });
     expect(() => markdownToDoc('>'.repeat(5000))).not.toThrow();
     expect(() => markdownToDoc('['.repeat(10000))).not.toThrow();
+  });
+});
+
+describe('linked database view markdown persistence', () => {
+  it('round trips the source and view configuration while leaving a readable fallback', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'linkedDatabaseView',
+          attrs: {
+            hostPageId: 'host',
+            sourceDatabaseId: 'records',
+            blockId: 'linked-block',
+            view: {
+              id: 'linked-view',
+              name: 'Open tasks',
+              type: 'board',
+              filters: [],
+              filterGroups: [
+                {
+                  id: 'group',
+                  logic: 'or',
+                  filters: [{ id: 'rule', prop: 'status', op: 'is', value: 'open' }],
+                },
+              ],
+              filterGroupLogic: 'and',
+              sorts: [{ prop: 'title', dir: 'asc' }],
+              groupBy: 'status',
+              dateProp: null,
+              hidden: [],
+              search: 'alpha',
+              order: ['status'],
+              wrap: ['status'],
+              align: { status: 'center' },
+              summaries: { points: 'sum' },
+              conditionalFormats: [
+                { id: 'color', prop: 'status', op: 'is', value: 'open', scope: 'row', color: 'green' },
+              ],
+              cardProperties: ['points'],
+              cardImageProp: null,
+            },
+          },
+        },
+      ],
+    };
+    const markdown = docToMarkdown(doc, { titleOf: (id) => (id === 'records' ? 'Records' : null) });
+    expect(markdown).toContain('[[Records]] — open in Morrow to edit shared rows.');
+    expect(markdown).toContain('morrow:linked-view:v1:');
+    const restored = markdownToDoc(markdown);
+    expect(restored.content).toHaveLength(1);
+    expect(restored.content![0]!.type).toBe('linkedDatabaseView');
+    expect(restored.content![0]!.attrs).toMatchObject({
+      sourceDatabaseId: 'records',
+      blockId: 'linked-block',
+      view: {
+        id: 'linked-view',
+        search: 'alpha',
+        filterGroupLogic: 'and',
+        filterGroups: [{ logic: 'or' }],
+        summaries: { points: 'sum' },
+        cardImageProp: null,
+      },
+    });
   });
 });
 
@@ -263,7 +337,16 @@ describe('layout blocks', () => {
         {
           type: 'columns',
           content: [
-            { type: 'column', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Left' }] }] },
+            {
+              type: 'column',
+              content: [
+                {
+                  type: 'paragraph',
+                  attrs: { blockBackground: 'blue' },
+                  content: [{ type: 'text', text: 'Left' }],
+                },
+              ],
+            },
             {
               type: 'column',
               content: [

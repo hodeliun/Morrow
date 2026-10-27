@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   ListPlus,
   RotateCcw,
+  SlidersHorizontal,
   Smile,
   Trash2,
   ChevronRight,
@@ -24,13 +25,14 @@ import { basename, conflictOriginal, stripExtension } from '../../core/vault/pat
 import { PageEditor } from '../editor/PageEditor';
 import { SourceEditor } from './SourceEditor';
 import { CoverBanner, CoverPicker } from './Cover';
+import { NoteStylePopover } from './NoteStylePopover';
 import { DailyNav, MadeThisDay } from './DailyNav';
-import { Emoji } from './Emoji';
+import { PageGlyph } from './Emoji';
 import { LockedPage } from './EncryptDialog';
 import { PageProperties } from './PageProperties';
 import { PageTags } from './TagsView';
 import { deleteForever, restorePage, trashPage } from '../operations';
-import { usePreferences } from '../platform/preferences';
+import { legacyNoteStyle, usePreferences } from '../platform/preferences';
 import { navigate, openPage, routeHash } from '../router';
 import { openSide } from '../tabs';
 import { getUi, openDialog, setUi, useUi } from '../ui';
@@ -75,6 +77,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const page = state.pages[id];
   const [editing, setEditing] = useState(false);
   const [coverPicker, setCoverPicker] = useState<HTMLElement | null>(null);
+  const [stylePicker, setStylePicker] = useState<HTMLElement | null>(null);
   // the page whose header asked for a first property, so the request does not follow to another page
   const [addingFor, setAddingFor] = useState<PageId | null>(null);
   // a database with text of its own keeps showing it above its views, even once that text is cleared
@@ -109,6 +112,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   }
 
   const trashed = isEffectivelyTrashed(state.pages, id);
+  const noteStyle = page.noteStyle ?? legacyNoteStyle(prefs.font, prefs.width);
   const unreadable = getSession().unreadable.has(id);
   const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
   const doc = state.docs[id] ?? EMPTY_DOC;
@@ -192,7 +196,16 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         )}
         {page.kind !== 'database' && !unreadable && <Outline doc={doc} />}
         <CoverBanner page={page} editable={!trashed} />
-        <article className={`page font-${prefs.font} width-${prefs.width}${page.cover ? ' has-cover' : ''}`}>
+        <article
+          className={`page font-${noteStyle.font} width-${noteStyle.width}${page.cover ? ' has-cover' : ''}`}
+          style={
+            {
+              '--note-font-size': `${noteStyle.fontSize}px`,
+              '--note-line-height': noteStyle.lineHeight,
+              '--note-block-spacing': `${noteStyle.blockSpacing}px`,
+            } as React.CSSProperties
+          }
+        >
           {!trashed && <ConflictBanner id={id} />}
           {page.icon && (
             <div className="page-icon-row">
@@ -203,7 +216,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                 disabled={trashed}
                 onClick={() => openDialog({ kind: 'icon', pageId: id })}
               >
-                <Emoji emoji={page.icon} />
+                <PageGlyph icon={page.icon} />
               </button>
             </div>
           )}
@@ -251,12 +264,34 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               }}
             />
           </h1>
+          {!trashed && !unreadable && (
+            <div className="page-style-action">
+              <button
+                type="button"
+                className="button small"
+                aria-label={t('page.style.title')}
+                onClick={(event) => setStylePicker(event.currentTarget)}
+              >
+                <SlidersHorizontal size={14} /> {t('page.style.title')}
+              </button>
+              {stylePicker && (
+                <NoteStylePopover
+                  page={page}
+                  style={noteStyle}
+                  defaults={prefs.defaultNoteStyle}
+                  anchor={stylePicker}
+                  onClose={() => setStylePicker(null)}
+                />
+              )}
+            </div>
+          )}
           {page.kind !== 'database' && <PageTags page={page} editable={!trashed && !unreadable} />}
           {isTemplate && <RepeatBar page={page} editable={!trashed && !unreadable} />}
           {!unreadable && (
             <PageProperties
               page={page}
               database={database?.database ? { id: database.id, database: database.database } : null}
+              doc={doc}
               editable={!trashed}
               adding={addingFor === id}
               onAdded={() => setAddingFor(null)}

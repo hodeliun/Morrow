@@ -5,6 +5,7 @@ import type { Result } from '../core/result';
 import type { SaveStatus } from '../storage/saveQueue';
 import type { WorkspaceSession } from '../storage/session';
 import { toast } from './ui';
+import { getPreferences, legacyNoteStyle } from './platform/preferences';
 
 let session: WorkspaceSession | null = null;
 
@@ -23,20 +24,36 @@ export function getState(): WorkspaceState {
 
 // runs a command and tells the user when it is refused
 export function run(command: Command): Result<WorkspaceState> {
-  const result = getSession().execute(command);
+  const result = getSession().execute(withNoteDefaults(command));
   if (!result.ok) toast(result.error, { tone: 'error' });
   return result;
 }
 
 export function runAll(commands: Command[]): Result<WorkspaceState> {
-  const result = getSession().executeAll(commands);
+  const result = getSession().executeAll(commands.map(withNoteDefaults));
   if (!result.ok) toast(result.error, { tone: 'error' });
   return result;
 }
 
+function withNoteDefaults(command: Command): Command {
+  if (
+    command.type !== 'page.create' ||
+    command.noteStyle !== undefined ||
+    command.kind === 'database' ||
+    command.kind === 'canvas'
+  )
+    return command;
+  const preferences = getPreferences();
+  const style = preferences.defaultNoteStyle;
+  // the legacy appearance is now fixed for existing pages, so its matching default needs no frontmatter
+  if (JSON.stringify(style) === JSON.stringify(legacyNoteStyle(preferences.font, preferences.width)))
+    return command;
+  return { ...command, noteStyle: style };
+}
+
 export function useWorkspace(): WorkspaceState {
   const current = getSession();
-  return useSyncExternalStore(current.subscribe, current.getState);
+  return useSyncExternalStore(current.subscribe, current.getState, current.getState);
 }
 
 export function useSaveStatus(): SaveStatus {

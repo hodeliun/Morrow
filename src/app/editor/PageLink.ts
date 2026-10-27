@@ -1,11 +1,14 @@
 import { InputRule, mergeAttributes, Node } from '@tiptap/core';
+import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import Suggestion from '@tiptap/suggestion';
 import { FilePlus2, FileText } from 'lucide-react';
 import { parseWikiLink } from '../../core/markdown/parse';
 import type { WikiLink } from '../../core/markdown/parse';
 import type { PageId } from '../../core/model';
-import { emojiElement } from '../components/Emoji';
+import { PageGlyph } from '../components/Emoji';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
 import { t } from '../i18n';
@@ -13,7 +16,7 @@ import { t } from '../i18n';
 export interface PageLinkOptions {
   // live title or null when the page is missing or trashed
   getTitle: (id: PageId) => string | null;
-  // the linked page's emoji, shown in front of its name like notion does
+  // the linked page's icon, drawn by the same renderer as the page chrome
   getIcon?: (id: PageId) => string | null;
   subscribe: (listener: () => void) => () => void;
   // the anchor is what follows # in the link: a heading, or ^id for a single block
@@ -123,6 +126,13 @@ export const PageLink = Node.create<PageLinkOptions>({
       const body = embedded ? document.createElement('span') : null;
       let lastHtml: string | null = null;
       let mounted: { id: PageId; unmount: () => void } | null = null;
+      const iconHost = document.createElement('span');
+      iconHost.className = 'page-link-icon-container';
+      iconHost.setAttribute('aria-hidden', 'true');
+      iconHost.hidden = true;
+      const labelNode = document.createTextNode('');
+      dom.append(iconHost, labelNode);
+      let iconRoot: Root | null = null;
       if (wrapper && body) {
         wrapper.className = 'page-embed';
         wrapper.contentEditable = 'false';
@@ -141,12 +151,16 @@ export const PageLink = Node.create<PageLinkOptions>({
         const alias = typeof current.attrs.alias === 'string' ? current.attrs.alias : null;
         const anchor = typeof current.attrs.anchor === 'string' ? current.attrs.anchor : null;
         const name = title ?? String(current.attrs.label || target() || 'Missing page');
-        dom.textContent = alias ?? (anchor ? `${name} › ${anchor}` : name);
+        labelNode.data = alias ?? (anchor ? `${name} › ${anchor}` : name);
         const icon = id ? (this.options.getIcon?.(id) ?? null) : null;
         if (icon) {
-          const image = emojiElement(icon);
-          image.classList.add('page-link-icon');
-          dom.prepend(image);
+          iconHost.hidden = false;
+          iconRoot ??= createRoot(iconHost);
+          iconRoot.render(createElement(PageGlyph, { icon, className: 'page-link-icon' }));
+        } else if (iconRoot) {
+          iconRoot.unmount();
+          iconRoot = null;
+          iconHost.hidden = true;
         }
         dom.href = id ? `#/page/${id}` : '#';
         dom.dataset.pageId = id ?? '';
@@ -221,6 +235,7 @@ export const PageLink = Node.create<PageLinkOptions>({
         destroy: () => {
           unsubscribe();
           mounted?.unmount();
+          iconRoot?.unmount();
         },
       };
     };

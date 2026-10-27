@@ -19,17 +19,20 @@ import {
 import { formatBytes } from '../platform/attachments';
 import { desktop } from '../platform/desktop';
 import { ACCENTS, setPreferences, usePreferences } from '../platform/preferences';
-import type { PageWidth, StartPage, ThemePreference, WritingFont } from '../platform/preferences';
+import type { StartPage, ThemePreference } from '../platform/preferences';
 import { closeDialog, openDialog, toast } from '../ui';
 import type { SettingsSection } from '../ui';
 import { chooseVaultFolder } from '../vaults';
-import { checkForUpdate, installUpdate, useUpdateState } from '../updates';
-import { getSession } from '../workspace';
+import { getSession, runAll, useWorkspace } from '../workspace';
 import { Dialog, Logo, Switch } from './primitives';
 import { Select } from './Select';
 import { SettingRow, SettingsGroup } from './SettingsRows';
 import { CloudSettings, NetworkSettings } from './SyncSettings';
 import { t } from '../i18n';
+import { displayTitle } from '../../core/model';
+import type { NoteStyle, PageId } from '../../core/model';
+import { isEffectivelyTrashed } from '../../core/tree';
+import { NoteStyleControls } from './NoteStyleControls';
 
 interface SectionDef {
   id: SettingsSection;
@@ -185,6 +188,71 @@ function GeneralSettings() {
 function AppearanceSettings() {
   const { t } = useTranslation();
   const prefs = usePreferences();
+  const workspace = useWorkspace();
+  const [batchMode, setBatchMode] = useState<'preserve' | 'overwrite'>('preserve');
+  const [preview, setPreview] = useState<{
+    mode: 'preserve' | 'overwrite';
+    ids: PageId[];
+    titles: string[];
+    style: NoteStyle;
+    applied?: boolean;
+  } | null>(null);
+  const [undo, setUndo] = useState<{
+    entries: Array<{ id: PageId; style: NoteStyle | null }>;
+    appliedStyle: NoteStyle;
+  } | null>(null);
+  const eligiblePages = Object.values(workspace.pages).filter(
+    (page) =>
+      ['page', 'journal', 'templates'].includes(page.kind) &&
+      !isEffectivelyTrashed(workspace.pages, page.id) &&
+      !page.encrypted &&
+      !getSession().unreadable.has(page.id),
+  );
+  const makePreview = () => {
+    const targets = eligiblePages.filter((page) => batchMode === 'overwrite' || page.noteStyle === null);
+    setPreview({
+      mode: batchMode,
+      ids: targets.map((page) => page.id),
+      titles: targets.slice(0, 4).map(displayTitle),
+      style: { ...prefs.defaultNoteStyle },
+    });
+  };
+  const applyBatch = () => {
+    if (!preview) return;
+    const before: Array<{ id: PageId; style: NoteStyle | null }> = [];
+    const commands = preview.ids.flatMap((id) => {
+      const page = workspace.pages[id];
+      if (
+        !page ||
+        isEffectivelyTrashed(workspace.pages, id) ||
+        !['page', 'journal', 'templates'].includes(page.kind) ||
+        page.encrypted ||
+        getSession().unreadable.has(id) ||
+        (preview.mode === 'preserve' && page.noteStyle !== null) ||
+        JSON.stringify(page.noteStyle) === JSON.stringify(preview.style)
+      )
+        return [];
+      before.push({ id, style: page.noteStyle });
+      return [{ type: 'page.setNoteStyle' as const, id, style: preview.style, now: Date.now() }];
+    });
+    const result = runAll(commands);
+    if (!result.ok) return;
+    setUndo(before.length ? { entries: before, appliedStyle: preview.style } : null);
+    setPreview({ ...preview, applied: true });
+  };
+  const undoBatch = () => {
+    if (!undo) return;
+    const commands = undo.entries.flatMap(({ id, style }) => {
+      const page = workspace.pages[id];
+      return page && JSON.stringify(page.noteStyle) === JSON.stringify(undo.appliedStyle)
+        ? [{ type: 'page.setNoteStyle' as const, id, style, now: Date.now() }]
+        : [];
+    });
+    if (runAll(commands).ok) {
+      setUndo(null);
+      setPreview(null);
+    }
+  };
   return (
     <>
       <SettingsGroup>
@@ -234,30 +302,72 @@ function AppearanceSettings() {
           />
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title={t('settings.appearance.writingTitle')}>
-        <SettingRow label={t('settings.appearance.font')}>
-          <Segmented<WritingFont>
-            label={t('settings.appearance.font')}
-            value={prefs.font}
+      <SettingsGroup title={t('settings.appearance.writingTitle')} help={t('page.style.defaultsHelp')}>
+        <NoteStyleControls
+          style={prefs.defaultNoteStyle}
+          onChange={(defaultNoteStyle) => {
+            setPreferences({ defaultNoteStyle });
+            setPreview(null);
+          }}
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t('page.style.applyExistingTitle')} help={t('page.style.applyExistingHelp')}>
+        <SettingRow label={t('page.style.overrideBehavior')}>
+          <Segmented<'preserve' | 'overwrite'>
+            label={t('page.style.overrideBehavior')}
+            value={batchMode}
             options={[
-              ['serif', t('settings.appearance.fonts.serif')],
-              ['sans', t('settings.appearance.fonts.sans')],
-              ['mono', t('settings.appearance.fonts.mono')],
+              ['preserve', t('page.style.preserveOverrides')],
+              ['overwrite', t('page.style.overwriteOverrides')],
             ]}
-            onChange={(font) => setPreferences({ font })}
+            onChange={(mode) => {
+              setBatchMode(mode);
+              setPreview(null);
+            }}
           />
         </SettingRow>
-        <SettingRow label={t('settings.appearance.pageWidth')}>
-          <Segmented<PageWidth>
-            label={t('settings.appearance.pageWidth')}
-            value={prefs.width}
-            options={[
-              ['comfortable', t('settings.appearance.widths.comfortable')],
-              ['wide', t('settings.appearance.widths.wide')],
-            ]}
-            onChange={(width) => setPreferences({ width })}
-          />
-        </SettingRow>
+        <div className="settings-actions">
+          <button type="button" className="button small" onClick={makePreview}>
+            {t('page.style.previewBatch')}
+          </button>
+          {preview && !preview.applied && (
+            <button
+              type="button"
+              className="button small"
+              disabled={preview.ids.length === 0}
+              onClick={applyBatch}
+            >
+              {t('page.style.applyToCount', { count: preview.ids.length })}
+            </button>
+          )}
+          {undo && (
+            <button type="button" className="button small" onClick={undoBatch}>
+              {t('page.style.undoBatch')}
+            </button>
+          )}
+        </div>
+        {preview && (
+          <div className="style-batch-preview" role="status">
+            <strong>
+              {t(preview.applied ? 'page.style.batchApplied' : 'page.style.batchPreviewCount', {
+                count: preview.ids.length,
+              })}
+            </strong>
+            {preview.titles.length > 0 && <span>{preview.titles.join(' · ')}</span>}
+            <div
+              className={`note-style-preview font-${preview.style.font}`}
+              style={
+                {
+                  '--note-font-size': `${preview.style.fontSize}px`,
+                  '--note-line-height': preview.style.lineHeight,
+                } as React.CSSProperties
+              }
+            >
+              <strong>{t('page.style.previewHeading')}</strong>
+              <span>{t('page.style.previewBody')}</span>
+            </div>
+          </div>
+        )}
       </SettingsGroup>
       <CustomCss />
     </>
@@ -436,67 +546,11 @@ function VaultSettings() {
   );
 }
 
-// checking asks github's release list for the latest version and sends nothing about you or your notes
+// this private build does not query a remote update service
 function UpdateSettings() {
-  const prefs = usePreferences();
-  const update = useUpdateState();
-  if (!desktop?.updates) return null;
-  const found = update.kind === 'available' || update.kind === 'installing' ? update.update : null;
-  const status =
-    update.kind === 'checking'
-      ? t('updates.checking')
-      : update.kind === 'current'
-        ? t('updates.upToDate')
-        : update.kind === 'error'
-          ? update.message
-          : found
-            ? t('updates.available', { version: found.version })
-            : t('updates.help');
   return (
     <SettingsGroup>
-      <SettingRow label={t('updates.check')} help={status}>
-        <div className="settings-actions">
-          <button
-            type="button"
-            className="button small"
-            disabled={update.kind === 'checking' || update.kind === 'installing'}
-            onClick={() => void checkForUpdate()}
-          >
-            {t('updates.checkNow')}
-          </button>
-          <Switch
-            label={t('updates.checkAutomatically')}
-            checked={prefs.checkUpdates}
-            onChange={(checkUpdates) => setPreferences({ checkUpdates })}
-          />
-        </div>
-      </SettingRow>
-      {found && (
-        <SettingRow
-          label={t('settings.about.version', { version: found.version })}
-          help={
-            update.kind === 'installing'
-              ? t('updates.downloading', { percent: Math.round(update.share * 100) })
-              : found.installable
-                ? t('updates.restartsInto')
-                : t('updates.downloadManually')
-          }
-        >
-          <div className="settings-actions">
-            <button type="button" className="button small" onClick={() => openHref(found.url)}>
-              {t('updates.whatsNew')}
-            </button>
-            <button
-              type="button"
-              className="button small primary"
-              disabled={update.kind === 'installing'}
-              onClick={() => void installUpdate(found)}
-            >
-              {found.installable ? t('updates.installAndRestart') : t('updates.download')}
-            </button>
-          </div>
-        </SettingRow>
-      )}
+      <SettingRow label={t('updates.title')} help={t('updates.disabledPrivateBuild')} />
     </SettingsGroup>
   );
 }
@@ -508,7 +562,7 @@ function AboutSettings() {
       <div className="settings-about">
         <Logo size={36} />
         <div>
-          <strong>Morrow {desktop?.version ?? __APP_VERSION__}</strong>
+          <strong>Morrow Polaris {desktop?.version ?? __APP_VERSION__}</strong>
           <span>{t('settings.about.description')}</span>
         </div>
       </div>
@@ -526,7 +580,7 @@ function AboutSettings() {
           <button
             type="button"
             className="button small"
-            onClick={() => openHref('https://github.com/Aarav2709/Morrow')}
+            onClick={() => openHref('https://github.com/hodeliun/Morrow')}
           >
             {t('settings.about.gitHubButton')}
           </button>

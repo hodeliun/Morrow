@@ -25,6 +25,7 @@ import { newId } from './app/platform/files';
 import { desktopVaultBridge } from './app/platform/vault';
 import { resolvedTheme, getPreferences } from './app/platform/preferences';
 import { toast } from './app/ui';
+import { tp } from './app/i18n';
 import { setSession } from './app/workspace';
 
 type BootState =
@@ -71,14 +72,13 @@ async function openWorkspace(): Promise<BootState> {
   setSession(session);
   startRecurring();
   if (session.problems.length > 0) {
-    console.warn('Morrow could not read some stored records:', session.problems);
-    toast(
-      `${session.problems.length} item${session.problems.length === 1 ? '' : 's'} could not be read and ${session.problems.length === 1 ? 'was' : 'were'} left untouched.`,
-      {
-        tone: 'error',
-        durationMs: 12_000,
-      },
-    );
+    console.warn('Morrow found vault diagnostics:', session.problems);
+    const unreadable = session.unreadable.size;
+    const warnings = Math.max(0, session.problems.length - unreadable);
+    if (unreadable > 0)
+      toast(tp('toasts.vaultUnreadable', unreadable), { tone: 'error', durationMs: 12_000 });
+    if (warnings > 0)
+      toast(tp('toasts.vaultWarnings', warnings), { durationMs: 12_000 });
   }
   return { kind: 'ready' };
 }

@@ -61,7 +61,11 @@ function PageCard({ page }: { page: PageMeta }) {
     <button type="button" className="home-card" onClick={() => openPage(page.id)}>
       <span
         className={`home-card-cover ${page.cover ? className : cardGradient(page)}`}
-        style={image ? { backgroundImage: `url("${image}")` } : undefined}
+        style={
+          image
+            ? { backgroundImage: `url("${image}")`, backgroundPosition: `center ${page.coverPosition}%` }
+            : undefined
+        }
       >
         <span className="home-card-icon">
           <PageIcon page={page} />

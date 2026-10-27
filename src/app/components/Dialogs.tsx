@@ -66,6 +66,28 @@ export function Dialogs() {
       return <PairDialog />;
     case 'capture':
       return <CaptureDialog />;
+    case 'pasteDatabase':
+      return (
+        <Dialog title={t('database.pasteTitle', { title: dialog.title })} onClose={closeDialog} size="small">
+          <p className="muted">{t('database.pasteHint')}</p>
+          <div className="database-paste-options">
+            {(['structure', 'rows', 'view'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className="database-paste-option"
+                onClick={() => {
+                  closeDialog();
+                  dialog.onChoose(mode);
+                }}
+              >
+                <strong>{t(`database.paste${mode === 'structure' ? 'Structure' : mode === 'rows' ? 'Rows' : 'View'}`)}</strong>
+                <span>{t(`database.paste${mode === 'structure' ? 'StructureHint' : mode === 'rows' ? 'RowsHint' : 'ViewHint'}`)}</span>
+              </button>
+            ))}
+          </div>
+        </Dialog>
+      );
     case 'confirm':
       return (
         <Dialog

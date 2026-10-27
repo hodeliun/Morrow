@@ -196,6 +196,19 @@ describe('backup and restore', () => {
 });
 
 describe('reading stored data', () => {
+  it('opens format 3 pages with the new optional presentation fields defaulted', () => {
+    const result = readWorkspace(3, {
+      pages: [{ id: 'old', title: 'Old page', cover: 'gradient-4' }],
+      docs: { old: doc('kept') },
+    });
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.pages[0]).toMatchObject({
+      coverPosition: 50,
+      noteStyle: null,
+    });
+    expect(result.value.docs.old).toEqual(doc('kept'));
+  });
+
   it('skips unreadable records and flags unreadable content without dropping the page', () => {
     const result = readWorkspace(1, {
       pages: [
@@ -309,7 +322,9 @@ describe('markdown files', () => {
       'Garden 2026/Raised beds.md',
       'Monday.md',
     ]);
-    expect(pageMarkdown(state, 'journal')).toBe('# Monday\n\nWorked on [[Garden: 2026]]\n');
+    expect(pageMarkdown(state, 'journal')).toBe(
+      '---\ntitle: Monday\n---\n# Monday\n\nWorked on [[Garden: 2026]]\n',
+    );
   });
 
   it('produces safe file names', () => {
@@ -333,6 +348,7 @@ describe('sample workspace', () => {
     const { sampleCommands } = await import('./sample');
     const { markdownToPage } = await import('./markdown/parse');
     const { findUnknownTypes } = await import('./doc');
+    const { readPageText } = await import('./vault/pageFile');
     let n = 0;
     const state = run(emptyWorkspace(), ...sampleCommands(() => `s${n++}`, 1000));
     expect(Object.keys(state.pages)).toHaveLength(17);
@@ -340,11 +356,26 @@ describe('sample workspace', () => {
     for (const page of Object.values(state.pages).filter((candidate) => candidate.kind !== 'canvas')) {
       const doc = state.docs[page.id]!;
       expect(findUnknownTypes(doc)).toEqual([]);
-      const parsed = markdownToPage(pageMarkdown(state, page.id), 'x', {
+      const parsed = markdownToPage(readPageText(pageMarkdown(state, page.id)).body, 'x', {
         resolvePage: (title) => Object.values(state.pages).find((p) => p.title === title)?.id ?? null,
       });
       expect(parsed.title).toBe(page.title);
-      expect(parsed.doc).toEqual(doc);
+      const originalBlocks = (doc.content ?? []).filter(
+        (node) => node.type !== 'paragraph' || (node.content ?? []).length > 0,
+      );
+      if (originalBlocks.length)
+        expect(parsed.doc.content?.slice(0, originalBlocks.length)).toEqual(originalBlocks);
+      if (page.kind === 'database') {
+        const snapshotIndex =
+          parsed.doc.content?.findIndex((node) => JSON.stringify(node).includes('Database snapshot')) ?? -1;
+        expect(snapshotIndex).toBeGreaterThanOrEqual(originalBlocks.length);
+        expect(parsed.doc.content?.slice(snapshotIndex).map((node) => node.type)).toEqual([
+          'heading',
+          'table',
+          'heading',
+          'bulletList',
+        ]);
+      } else if (!originalBlocks.length) expect(parsed.doc).toEqual(doc);
     }
   });
 });

@@ -2,8 +2,11 @@ import type { Command } from '../../../core/commands';
 import { newOption, rowsOf } from '../../../core/database';
 import type { DatabaseDef, PageId, PropDef, PropValue, SelectOption, ViewDef } from '../../../core/model';
 import { adoptRows } from '../../../core/properties';
+import { findKey } from '../../../core/vault/frontmatter';
+import { writeProperty } from '../../../core/vault/pageFile';
 import { newId } from '../../platform/files';
 import { getState, run, runAll } from '../../workspace';
+import { toast } from '../../ui';
 
 export function databaseOf(id: PageId): DatabaseDef | null {
   return getState().pages[id]?.database ?? null;
@@ -18,18 +21,43 @@ export function updateDatabase(
 ): boolean {
   const current = databaseOf(id);
   if (!current) return false;
-  const adopted = adoptRows(change(current), rowsOf(getState(), id), newId, addKeys);
+  const state = getState();
+  const nextDatabase = change(current);
+  const removed = current.properties.filter(
+    (property) => !nextDatabase.properties.some((candidate) => candidate.id === property.id),
+  );
+  const adopted = adoptRows(nextDatabase, rowsOf(state, id), newId, addKeys);
+  const rows = adopted.rows.map((row) => {
+    const properties = { ...row.properties };
+    const extra = { ...row.extra };
+    for (const property of removed) {
+      if (!Object.prototype.hasOwnProperty.call(properties, property.id)) continue;
+      const value = writeProperty(property, properties[property.id] ?? null, state);
+      if (value !== undefined) {
+        let key = findKey(extra, property.name) ?? property.name;
+        if (findKey(extra, property.name) !== undefined) key = `${property.name} (removed ${property.id})`;
+        let suffix = 2;
+        while (findKey(extra, key) !== undefined)
+          key = `${property.name} (removed ${property.id} ${suffix++})`;
+        extra[key] = value;
+      }
+      delete properties[property.id];
+    }
+    return { ...row, properties, extra };
+  });
   const now = Date.now();
-  return runAll([
+  const result = runAll([
     { type: 'database.set', id, database: adopted.database, now },
-    ...adopted.rows.map((row): Command => ({
+    ...rows.map((row): Command => ({
       type: 'page.setFields',
       id: row.id,
       properties: row.properties,
       extra: row.extra,
       now,
     })),
-  ]).ok;
+  ]);
+  if (!result.ok) toast(result.error, { tone: 'error' });
+  return result.ok;
 }
 
 // turns frontmatter keys the rows already have into columns, with a type that fits their values
@@ -37,8 +65,8 @@ export function addColumnsFromPages(id: PageId, keys: string[]): boolean {
   return updateDatabase(id, (database) => database, keys);
 }
 
-export function updateProp(dbId: PageId, propId: string, change: (prop: PropDef) => PropDef): void {
-  updateDatabase(dbId, (database) => ({
+export function updateProp(dbId: PageId, propId: string, change: (prop: PropDef) => PropDef): boolean {
+  return updateDatabase(dbId, (database) => ({
     ...database,
     properties: database.properties.map((prop) => (prop.id === propId ? change(prop) : prop)),
   }));
@@ -51,8 +79,16 @@ export function updateView(dbId: PageId, viewId: string, change: (view: ViewDef)
   }));
 }
 
-export function setValue(rowId: PageId, propId: string, value: PropValue): void {
-  run({ type: 'page.setProperties', id: rowId, values: { [propId]: value }, now: Date.now() });
+export function setValue(rowId: PageId, propId: string, value: PropValue): boolean {
+  const state = getState();
+  const row = state.pages[rowId];
+  const database = row?.parentId ? state.pages[row.parentId]?.database : undefined;
+  const prop = database?.properties.find((candidate) => candidate.id === propId);
+  if (prop?.type === 'relation') {
+    return run({ type: 'relation.set', id: rowId, propertyId: propId, value, now: Date.now() }).ok;
+  } else {
+    return run({ type: 'page.setProperties', id: rowId, values: { [propId]: value }, now: Date.now() }).ok;
+  }
 }
 
 // adds an option to a select property and returns it, or the existing one with that name

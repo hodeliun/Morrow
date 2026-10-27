@@ -1,0 +1,41 @@
+{
+  "repository": "https://github.com/hodeliun/Morrow",
+  "issues": [
+    {
+      "number": 1,
+      "id": 6049180100,
+      "title": "00 — Migrar a base Polaris para o fork público",
+      "url": "https://github.com/hodeliun/Morrow/issues/1"
+    },
+    {
+      "number": 2,
+      "id": 6049185481,
+      "title": "[P1] Preservar controles alterados fora do Morrow",
+      "url": "https://github.com/hodeliun/Morrow/issues/2"
+    },
+    {
+      "number": 3,
+      "id": 6049187882,
+      "title": "[P1] Remapear controles de relação ao duplicar tabelas",
+      "url": "https://github.com/hodeliun/Morrow/issues/3"
+    },
+    {
+      "number": 4,
+      "id": 6049190338,
+      "title": "[P2] Desfazer a colagem sem deixar tabelas órfãs",
+      "url": "https://github.com/hodeliun/Morrow/issues/4"
+    },
+    {
+      "number": 5,
+      "id": 6049192470,
+      "title": "[P2] Traduzir a recusa de exclusão de tabela vinculada",
+      "url": "https://github.com/hodeliun/Morrow/issues/5"
+    },
+    {
+      "number": 6,
+      "id": 6049194793,
+      "title": "[P2] Medir fórmulas e filtros com mil registros",
+      "url": "https://github.com/hodeliun/Morrow/issues/6"
+    }
+  ]
+}

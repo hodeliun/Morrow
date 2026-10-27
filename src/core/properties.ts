@@ -1,6 +1,6 @@
 // pages keep their frontmatter when they join or leave a database: values become columns and back again
 import { newView } from './database';
-import type { DatabaseDef, PageId, PageMeta, PropDef, PropType, PropValue } from './model';
+import type { DatabaseDef, PageId, PageMeta, PropDef, PropType, PropValue, WorkspaceState } from './model';
 import { childrenOf } from './tree';
 import { findKey } from './vault/frontmatter';
 import { reservedPropertyName, takeProperties, writeProperty } from './vault/pageFile';
@@ -96,10 +96,11 @@ export function adoptRows(
 export function releaseRow(
   page: Pick<PageMeta, 'properties' | 'extra'>,
   database: DatabaseDef,
+  state?: WorkspaceState,
 ): Record<string, unknown> {
   const extra = { ...page.extra };
   for (const prop of database.properties) {
-    const value = writeProperty(prop, page.properties[prop.id]);
+    const value = writeProperty(prop, page.properties[prop.id], state);
     if (value !== undefined && findKey(extra, prop.name) === undefined) extra[prop.name] = value;
   }
   return extra;
@@ -111,6 +112,7 @@ export function fieldsForMove(
   id: PageId,
   parentId: PageId | null,
   newId: () => string,
+  state?: WorkspaceState,
 ): { fields: RowFields; database: { id: PageId; database: DatabaseDef } | null } | null {
   const page = pages[id];
   if (!page || page.parentId === parentId) return null;
@@ -119,7 +121,11 @@ export function fieldsForMove(
   const fromDb = from?.kind === 'database' ? from.database : null;
   const toDb = to?.kind === 'database' ? to.database : null;
   if (!fromDb && !toDb) return null;
-  const released = { id, properties: {}, extra: fromDb ? releaseRow(page, fromDb) : { ...page.extra } };
+  const released = {
+    id,
+    properties: {},
+    extra: fromDb ? releaseRow(page, fromDb, state) : { ...page.extra },
+  };
   if (!toDb) return { fields: released, database: null };
   const adopted = adoptRows(toDb, [released], newId, unclaimedKeys(toDb, [released]));
   return {

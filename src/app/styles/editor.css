@@ -13,8 +13,8 @@
 .prose {
   outline: none;
   font-family: var(--font-serif);
-  font-size: 18px;
-  line-height: 1.7;
+  font-size: var(--note-font-size, 18px);
+  line-height: var(--note-line-height, 1.7);
   color: var(--text);
   min-height: 40vh;
   caret-color: var(--accent);
@@ -25,18 +25,52 @@
 
 .font-sans .prose {
   font-family: var(--font-ui);
-  font-size: 16px;
-  line-height: 1.68;
+  font-size: var(--note-font-size, 16px);
+  line-height: var(--note-line-height, 1.68);
 }
 
 .font-mono .prose {
   font-family: var(--font-mono);
-  font-size: 14.5px;
-  line-height: 1.75;
+  font-size: var(--note-font-size, 14.5px);
+  line-height: var(--note-line-height, 1.75);
 }
 
 .prose > * + * {
-  margin-top: 0.55em;
+  margin-top: var(--note-block-spacing, 0.55em);
+}
+
+.prose [data-block-background] {
+  box-sizing: border-box;
+  border-radius: 8px;
+  padding: 0.38em 0.68em;
+  color: inherit;
+}
+.prose [data-block-background='gray'] {
+  background: var(--c-gray);
+}
+.prose [data-block-background='brown'] {
+  background: var(--c-brown);
+}
+.prose [data-block-background='orange'] {
+  background: var(--c-orange);
+}
+.prose [data-block-background='yellow'] {
+  background: var(--c-yellow);
+}
+.prose [data-block-background='green'] {
+  background: var(--c-green);
+}
+.prose [data-block-background='blue'] {
+  background: var(--c-blue);
+}
+.prose [data-block-background='purple'] {
+  background: var(--c-purple);
+}
+.prose [data-block-background='pink'] {
+  background: var(--c-pink);
+}
+.prose [data-block-background='red'] {
+  background: var(--c-red);
 }
 
 .prose p {
@@ -47,7 +81,7 @@
   font-weight: 650;
   line-height: 1.28;
   letter-spacing: -0.012em;
-  margin-top: 1.5em;
+  margin-top: calc(var(--note-block-spacing, 0.55em) * 2.7);
   margin-bottom: 0.15em;
 }
 
@@ -103,24 +137,33 @@
 }
 
 .prose a.page-link {
-  color: var(--accent-strong);
-  text-decoration: none;
-  background: var(--accent-soft);
-  border-radius: 3px;
-  padding: 0 0.22em;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
   cursor: pointer;
   font-weight: 500;
 }
 
 .prose a.page-link:hover {
-  background: var(--accent-line);
+  text-decoration-color: var(--accent);
 }
 
 .prose a.page-link.is-missing {
   color: var(--text-faint);
-  background: var(--hover);
-  text-decoration: line-through;
+  background: transparent;
+  text-decoration-style: dotted;
   cursor: default;
+}
+
+.prose a.page-link:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .prose code {

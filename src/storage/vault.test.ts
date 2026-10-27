@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { canvasFromDoc } from '../core/canvas';
 import type { Command } from '../core/commands';
 import type { DocNode, PageId } from '../core/model';
+import { encodeFileIcon, encodeLucideIcon, sanitizeSvg } from '../core/icons';
 import { sampleCommands } from '../core/sample';
 import { MemoryVault } from './memoryVault';
 import { WorkspaceSession } from './session';
@@ -96,6 +97,49 @@ describe('opening a folder of markdown files', () => {
     expect(text).toContain('icon: 📝');
     expect(text).toContain('cssclasses: wide');
     await session.close();
+  });
+
+  it('persists colored catalog icons through the existing frontmatter field and reopening', async () => {
+    const vault = new MemoryVault(OBSIDIAN);
+    const session = await open(vault);
+    const welcome = idOf(session, 'Welcome');
+    const icon = encodeLucideIcon('BookOpen', '#22c55e')!;
+    await run(session, { type: 'page.setIcon', id: welcome, icon, now: 5 });
+    expect(vault.text('Welcome.md')).toContain(icon);
+    await session.close();
+
+    const reopened = await open(vault);
+    expect(reopened.getState().pages[welcome]?.icon).toBe(icon);
+    await reopened.close();
+  });
+
+  it('persists a sanitized SVG attachment icon and its local file through reopening', async () => {
+    const vault = new MemoryVault(OBSIDIAN);
+    const session = await open(vault);
+    const welcome = idOf(session, 'Welcome');
+    const svg = sanitizeSvg('<svg viewBox="0 0 24 24" onload="alert(1)"><path d="M1 1L23 23"/></svg>')!;
+    const bytes = new TextEncoder().encode(svg);
+    const stored = await session.addFiles([
+      {
+        meta: { id: 'icon-svg', name: 'character.svg', type: 'image/svg+xml', size: bytes.byteLength, createdAt: 5 },
+        data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      },
+    ]);
+    if (!stored.ok) throw new Error(stored.error);
+    const fileId = stored.value[0]!.id;
+    const icon = encodeFileIcon(fileId)!;
+    await run(session, { type: 'page.setIcon', id: welcome, icon, now: 6 });
+    expect(vault.text('Welcome.md')).toContain(icon);
+    const attachment = vault.files.get(fileId);
+    expect(attachment).toBeInstanceOf(ArrayBuffer);
+    expect(new TextDecoder().decode(attachment as ArrayBuffer)).toBe(svg);
+    await session.close();
+
+    const reopened = await open(vault);
+    expect(reopened.getState().pages[welcome]?.icon).toBe(icon);
+    const file = await reopened.getFile(fileId);
+    expect(file && new TextDecoder().decode(file.data)).toBe(svg);
+    await reopened.close();
   });
 
   it('renames the file and updates links in other files without touching the rest of them', async () => {
