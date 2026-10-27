@@ -52,7 +52,16 @@ export function EmbeddedDatabase({ pageId, editable }: { pageId: PageId; editabl
           <button
             type="button"
             className="inline-database-title"
-            title={editable ? t('pageMenu.rename') : t('database.openAsAFullPage')}
+            title={
+              editable
+                ? t('database.renameInlineDatabase', { title: displayTitle(page) })
+                : t('database.openAsAFullPage')
+            }
+            aria-label={
+              editable
+                ? t('database.renameInlineDatabase', { title: displayTitle(page) })
+                : t('database.openAsAFullPage')
+            }
             onClick={() => {
               if (!editable) return openPage(page.id);
               setDraft(page.title);

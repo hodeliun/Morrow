@@ -45,7 +45,7 @@ import {
   summarizeProperty,
   valueOf,
 } from '../../../core/database';
-import { BACKGROUND_HEX, COLORS, displayTitle, VIEW_TYPES } from '../../../core/model';
+import { BACKGROUND_HEX, COLORS, displayTitle, PROP_TYPES, VIEW_TYPES } from '../../../core/model';
 import { unclaimedKeys } from '../../../core/properties';
 import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from '../../../core/migrations';
 import type {
@@ -59,6 +59,7 @@ import type {
   PageId,
   PageMeta,
   PropDef,
+  PropType,
   PropValue,
   ViewDef,
   ViewType,
@@ -82,6 +83,10 @@ import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedVa
 import { linkedViewReferences } from '../../../core/linkedViews';
 import { namedControlIdentifier } from '../../../core/controls';
 import { ViewChangeContext } from './viewContext';
+import { insertPropertyNear } from './columnActions';
+import type { ColumnInsertPosition } from './columnActions';
+import { reservedPropertyName } from '../../../core/vault/pageFile';
+import { toast } from '../../ui';
 
 const VIEW_ICONS: Record<ViewType, LucideIcon> = {
   table: Table2,
@@ -259,6 +264,7 @@ export function DatabaseView({
   );
   const [tabMenu, setTabMenu] = useState<{ view: ViewDef; anchor: HTMLElement } | null>(null);
   const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
+  const [filterRequest, setFilterRequest] = useState<{ propId: string; token: string } | null>(null);
 
   const choose = (id: string) => {
     setViewId(id);
@@ -343,6 +349,7 @@ export function DatabaseView({
             view={view}
             rows={allRows}
             editable={canEdit}
+            requestedFilter={filterRequest}
           />
         </div>
         <QuickFilterBar
@@ -360,6 +367,7 @@ export function DatabaseView({
             rows={rows}
             props={visible}
             editable={canEdit}
+            onRequestFilter={(propId) => setFilterRequest({ propId, token: newId() })}
           />
         )}
         {view.type === 'board' && (
@@ -769,6 +777,7 @@ function Toolbar({
   view,
   rows,
   editable,
+  requestedFilter,
 }: {
   dbId: PageId;
   scopePageId: PageId;
@@ -776,6 +785,7 @@ function Toolbar({
   view: ViewDef;
   rows: PageMeta[];
   editable: boolean;
+  requestedFilter: { propId: string; token: string } | null;
 }) {
   const state = useWorkspace();
   const saveView = useViewUpdater(dbId, view.id);
@@ -795,9 +805,42 @@ function Toolbar({
   const activeCount = filterCount + (view.search?.trim() ? 1 : 0);
   const updateGroups = (change: (groups: FilterGroup[]) => FilterGroup[]) =>
     saveView((current) => withFilterGroups(current, change(filterGroupsForView(current))));
+  const filterButton = useRef<HTMLButtonElement>(null);
+  const handledFilterRequest = useRef<string | null>(null);
+  const updateGroupsRef = useRef(updateGroups);
+  useEffect(() => {
+    updateGroupsRef.current = updateGroups;
+  });
+  useEffect(() => {
+    const anchor = filterButton.current;
+    if (
+      !requestedFilter ||
+      handledFilterRequest.current === requestedFilter.token ||
+      !anchor ||
+      !database.properties.some((prop) => prop.id === requestedFilter.propId)
+    )
+      return;
+    handledFilterRequest.current = requestedFilter.token;
+    const type = propType(database, requestedFilter.propId) ?? 'text';
+    const rule: FilterRule = {
+      id: newId(),
+      prop: requestedFilter.propId,
+      op: filterOpsFor(type === 'title' ? 'text' : type)[0] ?? 'contains',
+      value: null,
+    };
+    updateGroupsRef.current((current) =>
+      current.length
+        ? current.map((group, index) =>
+            index === 0 ? { ...group, filters: [...group.filters, rule] } : group,
+          )
+        : [{ id: newId(), logic: 'and', filters: [rule] }],
+    );
+    setPanel({ kind: 'filter', anchor });
+  }, [database, requestedFilter]);
   return (
     <div className="db-tools">
       <button
+        ref={filterButton}
         type="button"
         className={`text-tool${filterCount ? ' is-active' : ''}`}
         onClick={open('filter')}
@@ -1878,11 +1921,107 @@ function ColumnDescription({ description }: { description: string }) {
   );
 }
 
-function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
+function InsertColumnPopover({
+  dbId,
+  database,
+  view,
+  anchor,
+  anchorPropId,
+  position,
+  onClose,
+}: {
+  dbId: PageId;
+  database: DatabaseDef;
+  view: ViewDef;
+  anchor: HTMLElement;
+  anchorPropId: string;
+  position: ColumnInsertPosition;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [type, setType] = useState<PropType>('text');
+  const saveView = useViewUpdater(dbId, view.id);
+  const add = () => {
+    const clean = name.trim();
+    if (!clean) return;
+    if (
+      reservedPropertyName(clean) ||
+      database.properties.some((prop) => prop.name.toLowerCase() === clean.toLowerCase())
+    ) {
+      toast(t('toasts.propNameDuplicate', { name: clean }), { tone: 'error' });
+      return;
+    }
+
+    const property: PropDef = {
+      id: newId(),
+      name: clean,
+      type,
+      options: [],
+      ...(type === 'button'
+        ? { action: { label: clean, icon: 'play' as const, color: 'blue' as const, steps: [] } }
+        : {}),
+      ...(type === 'image' || type === 'file' ? { media: { multiple: false } } : {}),
+    };
+    const insertion = insertPropertyNear(database, view, property, anchorPropId, position);
+    if (!insertion) return;
+    const added = updateDatabase(dbId, (current) =>
+      insertPropertyNear(current, view, property, anchorPropId, position)?.database ?? current,
+    );
+    if (!added) return;
+    saveView((current) => ({ ...current, order: insertion.view.order }));
+    onClose();
+  };
+
+  return (
+    <Popover anchor={anchor} onClose={onClose} label={t('database.newProperty')} className="db-panel">
+      <form
+        className="db-rule"
+        onSubmit={(event) => {
+          event.preventDefault();
+          add();
+        }}
+      >
+        <input
+          className="text-input small"
+          data-autofocus
+          placeholder={t('database.newProperty')}
+          aria-label={t('page.newPropertyNameAria')}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+        <select
+          className="text-input small"
+          aria-label={t('database.type')}
+          value={type}
+          onChange={(event) => setType(event.target.value as PropType)}
+        >
+          {PROP_TYPES.map((item) => (
+            <option key={item} value={item}>
+              {propLabel(item)}
+            </option>
+          ))}
+        </select>
+        <button type="submit" className="button small" disabled={!name.trim()}>
+          {t('common.add')}
+        </button>
+      </form>
+    </Popover>
+  );
+}
+
+function TableView({ dbId, database, view, rows, props, editable, onRequestFilter }: ViewProps & {
+  onRequestFilter: (propId: string) => void;
+}) {
   const saveView = useViewUpdater(dbId, view.id);
   const state = useWorkspace();
   const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
+  const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
   const [adding, setAdding] = useState<HTMLElement | null>(null);
+  const [inserting, setInserting] = useState<{
+    prop: PropDef;
+    anchor: HTMLElement;
+    position: ColumnInsertPosition;
+  } | null>(null);
   const [focusNew, setFocusNew] = useState<string | null>(null);
   // the width being dragged, saved to the view once the drag ends
   const [dragging, setDragging] = useState<{ key: string; width: number } | null>(null);
@@ -1910,6 +2049,12 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
     );
   const total =
     widthOf(TITLE_PROP) + props.reduce((sum, prop) => sum + widthOf(prop.id), 0) + (editable ? 36 : 0);
+  const selectedSort = columnMenu ? view.sorts.find((item) => item.prop === columnMenu.prop.id) : undefined;
+  const openColumnMenu = (prop: PropDef, anchor: HTMLElement) => {
+    setHeader(null);
+    setInserting(null);
+    setColumnMenu({ prop, anchor });
+  };
   return (
     <div className="db-table-wrap">
       <table className={`db-table${editable ? ' is-filled' : ''}`} style={{ width: total }}>
@@ -1936,7 +2081,26 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
                       type="button"
                       className="db-header"
                       disabled={!editable}
-                      onClick={(event) => setHeader({ prop, anchor: event.currentTarget })}
+                      aria-haspopup={editable ? 'menu' : undefined}
+                      aria-expanded={columnMenu?.prop.id === prop.id}
+                      aria-keyshortcuts="Shift+F10 ContextMenu"
+                      title={editable ? t('database.columnMenuHint') : undefined}
+                      onClick={(event) => {
+                        setColumnMenu(null);
+                        setInserting(null);
+                        setHeader({ prop, anchor: event.currentTarget });
+                      }}
+                      onContextMenu={(event) => {
+                        if (!editable) return;
+                        event.preventDefault();
+                        openColumnMenu(prop, event.currentTarget);
+                      }}
+                      onKeyDown={(event) => {
+                        if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+                          event.preventDefault();
+                          openColumnMenu(prop, event.currentTarget);
+                        }
+                      }}
                     >
                       <span className="db-header-name">{prop.name}</span>
                     </button>
@@ -2059,6 +2223,80 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
           onClose={() => setHeader(null)}
         />
       )}
+      {columnMenu && (
+        <Menu
+          anchor={columnMenu.anchor}
+          label={t('database.columnMenuAria', { name: columnMenu.prop.name })}
+          onClose={() => setColumnMenu(null)}
+          entries={[
+            { heading: columnMenu.prop.name },
+            {
+              label: t('database.editColumnSettings'),
+              icon: Settings2,
+              onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
+            },
+            { separator: true },
+            {
+              label: t('database.sortAscending'),
+              icon: ArrowUp,
+              checked: selectedSort?.dir === 'asc',
+              onSelect: () =>
+                saveView((current) => ({
+                  ...current,
+                  sorts: [
+                    { prop: columnMenu.prop.id, dir: 'asc' },
+                    ...current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
+                  ],
+                })),
+            },
+            {
+              label: t('database.sortDescending'),
+              icon: ArrowDown,
+              checked: selectedSort?.dir === 'desc',
+              onSelect: () =>
+                saveView((current) => ({
+                  ...current,
+                  sorts: [
+                    { prop: columnMenu.prop.id, dir: 'desc' },
+                    ...current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
+                  ],
+                })),
+            },
+            ...(selectedSort
+              ? [
+                  {
+                    label: t('database.removeSort'),
+                    icon: X,
+                    onSelect: () =>
+                      saveView((current) => ({
+                        ...current,
+                        sorts: current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
+                      })),
+                  },
+                ]
+              : []),
+            { separator: true },
+            {
+              label: t('database.filterColumn'),
+              icon: Filter,
+              onSelect: () => onRequestFilter(columnMenu.prop.id),
+            },
+            { separator: true },
+            {
+              label: t('database.insertColumnBefore'),
+              icon: Plus,
+              onSelect: () =>
+                setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'before' }),
+            },
+            {
+              label: t('database.insertColumnAfter'),
+              icon: Plus,
+              onSelect: () =>
+                setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
+            },
+          ]}
+        />
+      )}
       {adding && (
         <Popover
           anchor={adding}
@@ -2068,6 +2306,17 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
         >
           <NewProperty dbId={dbId} database={database} onDone={() => setAdding(null)} />
         </Popover>
+      )}
+      {inserting && (
+        <InsertColumnPopover
+          dbId={dbId}
+          database={database}
+          view={view}
+          anchor={inserting.anchor}
+          anchorPropId={inserting.prop.id}
+          position={inserting.position}
+          onClose={() => setInserting(null)}
+        />
       )}
     </div>
   );
