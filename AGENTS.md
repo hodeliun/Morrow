@@ -11,7 +11,8 @@ attribution.
   sanitized snapshot based on the public upstream commit above because the
   private history contains personal author metadata. Do not publish that
   history or copy personal files into this repository.
-- The product branch and default branch is `main`.- Track the official base version and commit separately from `forkVersion` in
+- The product branch and default branch is `main`.
+- Track the official base version and commit separately from `forkVersion` in
   `package.json`. The package version combines both; `CHANGELOG-FORK.md` records
   original fork changes and upstream syncs. Do not infer upstream coverage from
   the package's version alone.
