@@ -320,7 +320,7 @@ export function PropertySettings({
       {(prop.fillMode === 'calculated' || prop.type === 'formula') && (
         <FormulaField dbId={dbId} prop={prop} database={database} />
       )}
-      {prop.type !== 'button' && <PropertyFormatSettings dbId={dbId} prop={prop} />}
+      {prop.type !== 'button' && <PropertyFormatSettings key={`${prop.id}:${prop.type}`} dbId={dbId} prop={prop} />}
       {isMediaProperty(prop.type) && <MediaPropertyOptions prop={prop} dbId={dbId} rows={rowsOf(state, dbId)} />}
       {(
         ['number', 'currency', 'percent', 'slider', 'progress', 'scale', 'duration', 'formula'] as PropType[]
