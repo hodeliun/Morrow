@@ -232,7 +232,7 @@ export function parseFormula(source: string): Expr {
 
 export interface FormulaEvaluationContext {
   resolveIdentifier?: (name: string, span: FormulaSpan) => FormulaRuntimeValue;
-  resolveMember?: (receiver: FormulaRuntimeValue, name: string, span: FormulaSpan) => FormulaRuntimeValue;
+  resolveMember?: (receiver: FormulaRuntimeValue, name: string, span: FormulaSpan, receiverExpression?: Expr) => FormulaRuntimeValue;
   invokeMethod?: (
     receiver: FormulaRuntimeValue,
     name: string,
@@ -375,7 +375,7 @@ export function evaluateRuntimeFormula(
       case 'member': {
         const receiver = run(node.object, scope);
         if (!context.resolveMember) throw new Error(`Cannot read “${node.name}” from ${describeType(receiver)}`);
-        return context.resolveMember(receiver, node.name, { start: node.nameStart, end: node.nameEnd });
+        return context.resolveMember(receiver, node.name, { start: node.nameStart, end: node.nameEnd }, node.object);
       }
       case 'unary': {
         const value = run(node.arg, scope);
@@ -444,6 +444,17 @@ export function evaluateRuntimeFormula(
           const locals = new Map(scope.locals);
           locals.set(alias, value);
           return run(node.args[2]!, { ...scope, locals });
+        }
+        if (name === 'iferror') {
+          if (node.args.length !== 2) throw new Error('IfError() expects two arguments');
+          try {
+            const value = run(node.args[0]!, scope);
+            if (typeof value === 'number' && !Number.isFinite(value))
+              throw new Error('This formula produced a number outside the supported range');
+            return value;
+          } catch {
+            return run(node.args[1]!, scope);
+          }
         }
         if (name === 'if') {
           if (node.args.length < 2 || node.args.length > 3) throw new Error('If() expects two or three arguments');

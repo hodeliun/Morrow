@@ -60,6 +60,65 @@ describe('relational formulas', () => {
     expect(formulaResult(summaryRow, filtered, summaryDb.database!, 0, state)).toEqual({ value: 12.5, error: null });
   });
 
+  it('projects blank, single and multiple relations while preserving typed values and diagnostics', () => {
+    const target = database('target', 'Targets', [
+      property('value', 'Value', 'number'),
+      property('enabled', 'Enabled', 'checkbox'),
+    ]);
+    const single = property('single', 'Single', 'relation', {
+      relation: {
+        targetDatabaseId: 'target', multiple: false, isInverse: false,
+        displayPropertyId: null, inversePropertyId: null, filters: [],
+      },
+    });
+    const multiple = property('multiple', 'Multiple', 'relation', {
+      relation: {
+        targetDatabaseId: 'target', multiple: true, isInverse: false,
+        displayPropertyId: null, inversePropertyId: null, filters: [],
+      },
+    });
+    const owner = database('owner', 'Owner', [single, multiple]);
+    const blankRow = row('blank-row', 'owner', { single: null, multiple: [] });
+    const linkedRow = row('linked-row', 'owner', { single: 'false-row', multiple: ['zero-target', 'false-row'] });
+    const zeroRow = row('zero-row', 'owner', { single: 'zero-target', multiple: [] });
+    const falseTarget = row('false-row', 'target', { value: null, enabled: false });
+    const zeroTarget = row('zero-target', 'target', { value: 0, enabled: true });
+    const state = workspace(target, owner, blankRow, linkedRow, zeroRow, falseTarget, zeroTarget);
+    const blankSingle = boundFormula('thisRow.Single.Value', 'owner', state, 'blank-single');
+    const blankMultiple = boundFormula('thisRow.Multiple.Value', 'owner', state, 'blank-multiple');
+    const singleFormula = boundFormula('thisRow.Single.Value', 'owner', state, 'single-value');
+    const multipleFormula = boundFormula('thisRow.Multiple.Value', 'owner', state, 'multiple-value');
+    const singleBooleanFormula = boundFormula('thisRow.Single.Enabled', 'owner', state, 'single-boolean');
+    const multipleBooleanFormula = boundFormula('thisRow.Multiple.Enabled', 'owner', state, 'multiple-boolean');
+
+    expect(formulaResult(blankRow, blankSingle, owner.database!, 0, state)).toEqual({ value: null, error: null });
+    expect(formulaResult(blankRow, blankMultiple, owner.database!, 0, state)).toEqual({ value: [], error: null });
+    expect(formulaResult(linkedRow, singleBooleanFormula, owner.database!, 0, state)).toEqual({ value: false, error: null });
+    expect(formulaResult(linkedRow, multipleFormula, owner.database!, 0, state)).toEqual({ value: [0, null], error: null });
+    expect(formulaResult(linkedRow, multipleBooleanFormula, owner.database!, 0, state)).toEqual({ value: [true, false], error: null });
+    expect(formulaResult(zeroRow, singleFormula, owner.database!, 0, state)).toEqual({ value: 0, error: null });
+
+    const invalid = property('invalid', 'Invalid', 'formula', { formula: 'thisRow.Single.Missing' });
+    const boundInvalid = {
+      ...invalid,
+      formulaBindings: bindFormulaReferences(invalid.formula!, 'owner', state),
+    };
+    expect(formulaResult(blankRow, boundInvalid, owner.database!, 0, state).error)
+      .toContain('no column called “Missing”');
+
+    const renamedTarget = database('target', 'Renamed targets', [
+      property('value', 'Renamed value', 'number'),
+      property('enabled', 'Renamed enabled', 'checkbox'),
+    ]);
+    const renamedState = workspace(renamedTarget, owner, blankRow, linkedRow, zeroRow, falseTarget, zeroTarget);
+    expect(formulaResult(linkedRow, singleBooleanFormula, owner.database!, 0, renamedState))
+      .toEqual({ value: false, error: null });
+
+    const missingTargetState = workspace(owner, blankRow);
+    expect(formulaResult(blankRow, blankSingle, owner.database!, 0, missingTargetState).error)
+      .toContain('Relation target “target” no longer exists');
+  });
+
   it('keeps table and column bindings stable across renames, including empty schemas', () => {
     const target = database('target', 'Old table', [property('amount', 'Old amount', 'number')]);
     const owner = database('owner', 'Owner', []);

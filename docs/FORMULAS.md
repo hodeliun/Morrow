@@ -6,7 +6,7 @@ Formula columns and formula defaults use the same bounded expression language. F
 
 - `prop("Price")` remains supported for existing same-row formulas.
 - `thisRow.Amount` reads a field from the current row. Bracket access such as `thisRow["Valor total"]` supports names with spaces or punctuation; backtick-quoted identifiers are also supported.
-- A related row can be projected with `thisRow.Customer.Balance`. A multi-row relation produces a typed row list.
+- A related row can be projected with `thisRow.Customer.Balance`. A blank single relation projects to blank, while a blank multi-row relation projects to an empty list. Single and multiple relations keep their typed projected values; missing targets, unavailable rows and invalid columns still produce diagnostics. Stable bindings keep the projection working after a table or column rename.
 - A table can be queried by name: `Transactions.Filter(CurrentValue.Status = "Paid").Amount.Sum()`.
 - Identifiers support Unicode. Backticks quote names containing spaces. Bracket access such as `thisRow["Valor total"]` is also supported.
 - Lists use `[1, 2, 3]` or `List(1, 2, 3)`. `FormulaMap(list, expression)` and `ForEach(list, expression)` evaluate the expression with each item as `CurrentValue`.
@@ -15,10 +15,11 @@ The formula editor offers function, field, and table selectors plus name suggest
 
 ## Functions
 
-`If(test, yes, no)` evaluates only the selected branch. `Switch(value, case1, result1, case2, result2, default)` compares in order; the final argument is an optional default. `WithName(value, name, expression)` binds `name` for the expression; the name can be an identifier (`WithName(5, amount, amount * 2)`) or quoted text. Nested scopes can refer to outer names.
+`If(test, yes, no)` evaluates only the selected branch. `IfError(expression, fallback)` evaluates the fallback only when evaluating the first expression raises an error, for example `IfError(thisRow.Amount / thisRow.Count, 0)`. Blank, `false` and `0` are returned unchanged, and an error in the fallback remains visible. `Switch(value, case1, result1, case2, result2, default)` compares in order; the final argument is an optional default. `WithName(value, name, expression)` binds `name` for the expression; the name can be an identifier (`WithName(5, amount, amount * 2)`) or quoted text. Nested scopes can refer to outer names.
 
 | Function | Meaning |
 | --- | --- |
+| `IfError(expression, fallback)` | Uses the fallback only for an evaluation error in the first expression; blank, `false` and zero are ordinary results. |
 | `Contains(text, part)` / `Contains(list, value)` | Case-insensitive text search, or typed list membership. |
 | `Unique(list)` | Keeps the first occurrence of each typed value. |
 | `List(value, ...)` | Creates a list. |

@@ -293,6 +293,38 @@ function evaluateFormulaForRow(
   const active = new Set(stack);
   active.add(key);
   const bindings = prop.formulaBindings ?? [];
+  const relationTargetForExpression = (expr: Expr): string | null => {
+    if (expr.kind === 'identifier') {
+      if (expr.name.toLocaleLowerCase() === 'thisrow') return page.parentId;
+      const binding = matchingFormulaBinding(bindings, source, expr);
+      if (binding?.kind !== 'property') return null;
+      const schema = state?.pages[binding.databaseId]?.database ??
+        (binding.databaseId === page.parentId ? database : undefined);
+      if (!schema) return null;
+      const property = resolveProperty(schema, expr.name, binding, binding.databaseId);
+      return property.type === 'relation' ? (property.relation?.targetDatabaseId ?? null) : null;
+    }
+    if (expr.kind === 'member') {
+      const span = { start: expr.nameStart, end: expr.nameEnd };
+      const binding = matchingFormulaBinding(bindings, source, span);
+      const databaseId = binding?.kind === 'property'
+        ? binding.databaseId
+        : relationTargetForExpression(expr.object);
+      if (!databaseId) return null;
+      const schema = state?.pages[databaseId]?.database ??
+        (databaseId === page.parentId ? database : undefined);
+      if (!schema) return null;
+      const property = resolveProperty(schema, expr.name, binding, databaseId);
+      return property.type === 'relation' ? (property.relation?.targetDatabaseId ?? null) : null;
+    }
+    if (
+      expr.kind === 'call' &&
+      expr.callee.kind === 'identifier' &&
+      ['first', 'unique'].includes(expr.callee.name.toLocaleLowerCase()) &&
+      expr.args[0]
+    ) return relationTargetForExpression(expr.args[0]);
+    return null;
+  };
   const result = computeRuntimeFormula(source, {
     resolveIdentifier(name, span) {
       const folded = name.trim().toLocaleLowerCase();
@@ -412,8 +444,26 @@ function evaluateFormulaForRow(
       if (['updated', 'edited'].includes(folded)) return page.updatedAt;
       throw new Error(`There is no property or table called “${name}”`);
     },
-    resolveMember(receiver, name, span) {
-      if (receiver === null || typeof receiver !== 'object')
+    resolveMember(receiver, name, span, receiverExpression) {
+      if (receiver === null) {
+        const targetDatabaseId = receiverExpression
+          ? relationTargetForExpression(receiverExpression)
+          : null;
+        if (targetDatabaseId) {
+          const target = state?.pages[targetDatabaseId];
+          if (!target?.database)
+            throw new Error(`Relation target “${targetDatabaseId}” is unavailable`);
+          resolveProperty(
+            target.database,
+            name,
+            matchingFormulaBinding(bindings, source, span),
+            targetDatabaseId,
+          );
+          return null;
+        }
+        throw new Error(`Cannot read “${name}” from ${formulaType(receiver)}`);
+      }
+      if (typeof receiver !== 'object')
         throw new Error(`Cannot read “${name}” from ${formulaType(receiver)}`);
       const binding = matchingFormulaBinding(bindings, source, span);
       if (Array.isArray(receiver)) {

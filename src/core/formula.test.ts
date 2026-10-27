@@ -51,6 +51,16 @@ describe('formulas', () => {
     expect(run('ToNumber("no")').error).toContain('Expected a number');
   });
 
+  it('handles evaluation errors lazily without treating blank, false or zero as errors', () => {
+    expect(runRuntime('IfError(1 / 0, "fallback")')).toEqual({ value: 'fallback', error: null });
+    expect(runRuntime('List(IfError(null, 1 / 0), IfError(false, 1 / 0), IfError(0, 1 / 0))').value)
+      .toEqual([null, false, 0]);
+    expect(runRuntime('IfError(MissingValue, 4)').value).toBe(4);
+    expect(runRuntime('IfError(1 / 0, 2 / 0)').error).toContain('Division by zero');
+    expect(runRuntime('1 / 0').error).toContain('Division by zero');
+    expect(runRuntime('IfError(1 / 0)').error).toContain('two arguments');
+  });
+
   it('reports mistakes instead of throwing', () => {
     expect(run('prop("Price" *').error).toBeTruthy();
     expect(run('nope(1)').error).toContain('nope');
