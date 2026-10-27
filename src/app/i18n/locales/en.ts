@@ -1280,6 +1280,7 @@ export const en = {
     copyReady: 'Database copied. Paste it into a page to choose how to add it.',
     copyFailed: 'Could not copy the database to the clipboard.',
     copyUnavailable: 'This database cannot be copied here.',
+    pasteUndoBlocked: 'This copied database has changed or is in use, so undo was stopped to keep its data safe.',
     copySuffix: '(copy)',
     pasteTitle: 'Paste database: {title}',
     pasteHint: 'Choose whether this is a separate database or a view of the original.',

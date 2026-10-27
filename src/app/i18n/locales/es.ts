@@ -1295,6 +1295,7 @@ export const es: TranslationSchema = {
     copyReady: 'Base copiada. Pégala en una página para elegir cómo añadirla.',
     copyFailed: 'No se pudo copiar la base al portapapeles.',
     copyUnavailable: 'Esta base no se puede copiar aquí.',
+    pasteUndoBlocked: 'La base copiada cambió o está en uso; se detuvo el deshacer para conservar sus datos.',
     copySuffix: '(copia)',
     pasteTitle: 'Pegar base de datos: {title}',
     pasteHint: 'Elige entre una base independiente o una vista de la original.',

@@ -3,13 +3,42 @@ import type { Command } from '../core/commands';
 import { isDocEmpty } from '../core/doc';
 import { snapshotDue } from '../core/history';
 import { emptyWorkspace } from '../core/model';
-import type { DocNode, FileId, FileMeta, PageId, Snapshot, WorkspaceState } from '../core/model';
+import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
+import { descendantsOf, isDescendantOf } from '../core/tree';
 import { openRepository } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository } from './repository';
 import { SaveQueue } from './saveQueue';
 import type { SaveQueueOptions, SaveStatus } from './saveQueue';
+
+type DatabasePasteDirection = 'undo' | 'redo';
+
+interface DatabasePasteRecord {
+  databaseId: PageId;
+  hostPageId: PageId;
+  pages: PageMeta[];
+  docs: Record<PageId, DocNode>;
+  active: boolean;
+}
+
+function countPageLinks(doc: DocNode, id: PageId): number {
+  let count = 0;
+  const visit = (node: DocNode) => {
+    if (node.type === 'pageLink' && node.attrs?.id === id) count++;
+    for (const child of node.content ?? []) visit(child);
+  };
+  visit(doc);
+  return count;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function samePageExceptOpenedAt(expected: PageMeta, current: PageMeta): boolean {
+  return sameJson(expected, { ...current, lastOpenedAt: expected.lastOpenedAt });
+}
 
 // the single place where commands run, state lives and changes are queued for disk
 export class WorkspaceSession {
@@ -17,6 +46,7 @@ export class WorkspaceSession {
   private readonly listeners = new Set<() => void>();
   private readonly lastSnapshot = new Map<PageId, number>();
   private readonly externalListeners = new Set<(patch: ExternalPatch, accepted: PageId[]) => void>();
+  private readonly databasePastes = new Map<PageId, DatabasePasteRecord>();
   // runs before edits made elsewhere are applied, the app saves open editors here
   beforeExternal: () => void = () => {};
   readonly queue: SaveQueue;
@@ -225,6 +255,128 @@ export class WorkspaceSession {
     this.queue.enqueue(all);
     for (const listener of this.listeners) listener();
     return ok(draft);
+  }
+
+  // database paste creates ordinary pages, while its visible link lives in an editor history event
+  insertDatabasePaste(
+    databaseId: PageId,
+    hostPageId: PageId,
+    pages: PageMeta[],
+    docs: Record<PageId, DocNode>,
+  ): Result<WorkspaceState> {
+    if (this.databasePastes.has(databaseId)) return fail('This database paste is already being tracked.');
+    const root = pages.find((page) => page.id === databaseId);
+    if (!this.state.pages[hostPageId] || root?.parentId !== hostPageId)
+      return fail('The database paste destination is no longer available.');
+
+    const inserted = this.execute({ type: 'pages.insert', pages, docs });
+    if (!inserted.ok) return inserted;
+    const insertedPages = pages.map((page) => structuredClone(inserted.value.pages[page.id]!));
+    const insertedDocs = Object.fromEntries(
+      insertedPages.map((page) => [page.id, structuredClone(inserted.value.docs[page.id]!)]),
+    );
+    this.databasePastes.set(databaseId, {
+      databaseId,
+      hostPageId,
+      pages: insertedPages,
+      docs: insertedDocs,
+      active: true,
+    });
+    return inserted;
+  }
+
+  databasePastesForHistory(
+    hostPageId: PageId,
+    before: DocNode,
+    after: DocNode,
+    direction: DatabasePasteDirection,
+  ): PageId[] {
+    const changed: PageId[] = [];
+    for (const [databaseId, paste] of this.databasePastes) {
+      if (paste.hostPageId !== hostPageId) continue;
+      const beforeCount = countPageLinks(before, databaseId);
+      const afterCount = countPageLinks(after, databaseId);
+      if (direction === 'undo' && paste.active && beforeCount > 0 && afterCount === 0)
+        changed.push(databaseId);
+      if (direction === 'redo' && !paste.active && beforeCount === 0 && afterCount > 0)
+        changed.push(databaseId);
+    }
+    return changed;
+  }
+
+  // applies all affected copies together, and refuses to delete pages edited or added since the paste
+  transitionDatabasePastes(databaseIds: PageId[], direction: DatabasePasteDirection): Result<WorkspaceState> {
+    const uniqueIds = [...new Set(databaseIds)];
+    if (uniqueIds.length === 0) return ok(this.state);
+    const records = uniqueIds.map((id) => this.databasePastes.get(id));
+    if (records.some((record) => !record)) return fail('The database paste can no longer be restored.');
+    const pastes = records as DatabasePasteRecord[];
+    if (pastes.some((paste) => paste.active !== (direction === 'undo')))
+      return fail('The database paste has already changed history state.');
+
+    const commands: Command[] = [];
+    if (direction === 'undo') {
+      const scheduledPages = new Set(pastes.flatMap((paste) => paste.pages.map((page) => page.id)));
+      for (const paste of pastes) {
+        if (!this.state.pages[paste.databaseId])
+          return fail('A copied database page is no longer available.');
+        for (const expected of paste.pages) {
+          const current = this.state.pages[expected.id];
+          if (!current || !samePageExceptOpenedAt(expected, current))
+            return fail('A copied database has changed since it was pasted.');
+          const expectedDoc = paste.docs[expected.id];
+          const currentDoc = this.state.docs[expected.id];
+          if (expectedDoc ? !currentDoc || !sameJson(expectedDoc, currentDoc) : currentDoc !== undefined)
+            return fail('A copied database has changed since it was pasted.');
+        }
+        const descendants = descendantsOf(this.state.pages, paste.databaseId);
+        if (descendants.some((page) => !scheduledPages.has(page.id)))
+          return fail('A copied database has new pages that must be kept.');
+      }
+
+      const roots = pastes.map((paste) => paste.databaseId);
+      for (const rootId of roots) commands.push({ type: 'page.trash', id: rootId, now: Date.now() });
+      for (const rootId of roots) {
+        if (roots.some((other) => other !== rootId && isDescendantOf(this.state.pages, rootId, other)))
+          continue;
+        commands.push({ type: 'page.deleteForever', id: rootId });
+      }
+    } else {
+      const pending = [...pastes];
+      const ordered: DatabasePasteRecord[] = [];
+      while (pending.length > 0) {
+        const ready = pending.filter((paste) =>
+          paste.pages.every(
+            (page) =>
+              !page.parentId ||
+              !pending.some(
+                (other) => other !== paste && other.pages.some((parent) => parent.id === page.parentId),
+              ),
+          ),
+        );
+        if (ready.length === 0) return fail('The copied database pages cannot be restored safely.');
+        for (const paste of ready) {
+          ordered.push(paste);
+          pending.splice(pending.indexOf(paste), 1);
+        }
+      }
+      for (const paste of ordered) {
+        if (paste.pages.some((page) => this.state.pages[page.id]))
+          return fail('A copied database page ID is already in use.');
+        commands.push({ type: 'pages.insert', pages: paste.pages, docs: paste.docs });
+      }
+    }
+
+    let draft = this.state;
+    for (const command of commands) {
+      const result = applyCommand(draft, command);
+      if (!result.ok) return result;
+      draft = result.value.state;
+    }
+    const applied = this.executeAll(commands);
+    if (!applied.ok) return applied;
+    for (const paste of pastes) paste.active = direction === 'redo';
+    return applied;
   }
 
   flush(): Promise<boolean> {

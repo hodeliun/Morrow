@@ -1292,6 +1292,7 @@ export const pt: TranslationSchema = {
     copyReady: 'Banco copiado. Cole em uma página para escolher como adicioná-lo.',
     copyFailed: 'Não foi possível copiar o banco para a área de transferência.',
     copyUnavailable: 'Este banco não pode ser copiado aqui.',
+    pasteUndoBlocked: 'O banco copiado mudou ou está em uso; o desfazer foi interrompido para preservar os dados.',
     copySuffix: '(cópia)',
     pasteTitle: 'Colar banco de dados: {title}',
     pasteHint: 'Escolha entre um banco separado ou uma visualização do original.',

@@ -19,7 +19,7 @@ import { navigate, openPage } from '../router';
 import { targetPane, usePane } from '../tabs';
 import { getSession, getState, run } from '../workspace';
 import type { BlockMenuRequest } from './BlockHandle';
-import { registerCommit, setFocusedEditor } from './commits';
+import { registerCommit, setFocusedEditor, undoRedoEditor } from './commits';
 import { BlockMenu, FormattingMenu, LinkMenu, openHref, TableMenu } from './EditorMenus';
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
@@ -174,8 +174,12 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
 
     const shortcuts = Extension.create({
       name: 'morrowShortcuts',
+      priority: 1000,
       addKeyboardShortcuts() {
         return {
+          'Mod-z': ({ editor: current }) => undoRedoEditor(current, pageId, 'undo'),
+          'Mod-Shift-z': ({ editor: current }) => undoRedoEditor(current, pageId, 'redo'),
+          'Mod-y': ({ editor: current }) => undoRedoEditor(current, pageId, 'redo'),
           'Mod-k': ({ editor: current }) => {
             if (current.state.selection.empty) return false;
             current.view.dom.dispatchEvent(new Event('morrow:edit-link'));
@@ -291,7 +295,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       },
     });
 
-    instance.on('focus', () => setFocusedEditor(instance));
+    instance.on('focus', () => setFocusedEditor(instance, pageId));
     const unregister = registerCommit(commit);
     setEditor(instance);
     callbacks.current.onReady?.(instance);
