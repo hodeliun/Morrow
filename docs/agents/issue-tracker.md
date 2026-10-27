@@ -13,5 +13,5 @@ historical implementation notes and is not a competing active tracker. Verify
 acceptance evidence before closing an issue.
 
 Interaction improvement round, 27 October 2026: specification #7 and tickets
-#8–#19. `docs/SPEC-INTERACTION-2026-10.md` is the additive spec and
+#8–#20. `docs/SPEC-INTERACTION-2026-10.md` is the additive spec and
 `docs/tickets/interaction-*.md` mirrors the published acceptance criteria.

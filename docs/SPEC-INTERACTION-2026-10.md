@@ -50,6 +50,10 @@ Adicionar escolhas de cor personalizadas junto às cores rápidas; ampliar a ár
 - `IfError` captura somente erro de avaliação da primeira expressão, avalia a alternativa de modo preguiçoso e não converte vazio, `false` ou zero em erro. A função não permite efeitos colaterais.
 - Conteúdo da demonstração pessoal não é fixture. Usar banco sintético de duas tabelas para aceitação.
 
+## Addendum — coluna de exibição e atalhos do menu
+
+A revisão do primeiro menu contextual mostrou que a história 8 ainda não estava coberta e que fórmula/formatação condicional só eram alcançadas pelo painel genérico. O ticket complementar `interaction-13-display-and-shortcuts.md` estabelece uma coluna de exibição padrão por banco, sem reescrever o título armazenado. A escolha explícita em uma relação continua prevalecendo sobre o padrão do banco. O mesmo ticket leva as ações de fórmula e formatação condicional ao menu existente, reutilizando os painéis já implementados.
+
 ## Testing Decisions
 
 - Verificar comportamento no limite comando/sessão/reabertura, não detalhes de componentes. Casos: cor personalizada, larguras e proporções, menus por teclado, sequência com valor explícito/remoção/reabertura, formatação decimal, filtros isolados, duplicação, projeção de relação vazia/única/múltipla, `IfError` e erros reais.
