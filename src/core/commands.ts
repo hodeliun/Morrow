@@ -1,5 +1,5 @@
 // every workspace change goes through here, pure and never throwing
-import { validateDoc } from './doc';
+import { isRecord, validateDoc } from './doc';
 import { findKey, normalizeExtra, normalizeTag } from './vault/frontmatter';
 import { writeProperty } from './vault/pageFile';
 import { validPageIcon } from './icons';
@@ -35,7 +35,7 @@ import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
 import { relationIds } from './relations';
 import { bindFormulaReferences, formulaResult } from './database';
-import { propertyValueError, scalarValueError } from './typedValues';
+import { isNumericPropertyType, propertyValueError, scalarValueError } from './typedValues';
 import { MAX_ATTACHMENT_VALUE_LENGTH, MAX_RICH_CANVAS_BYTES } from './propertyMedia';
 import type { FormulaRuntimeValue, FormulaValue } from './formula';
 import { foldText } from './search';
@@ -316,6 +316,7 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       if (page.value.kind !== 'database') return fail('That page is not a database.');
       if (page.value.database?.unsupportedProperties?.length)
         return fail('This database contains column types from a newer version and is read only.');
+      if (hasInvalidSequenceDefinition(command.database)) return fail('Invalid numeric sequence configuration.');
       const database = normalizeDatabase(command.database);
       if (!database) return fail('Invalid database.');
       const removed = (page.value.database?.properties ?? []).filter(
@@ -980,6 +981,52 @@ function deletePageControl(state: WorkspaceState, id: PageId, controlId: string,
   });
 }
 
+function nextAvailableSequenceValue(
+  prop: PropDef,
+  start: number,
+  increment: number,
+  rows: PageMeta[],
+): number | null {
+  let candidate = start;
+  for (let attempt = 0; attempt <= rows.length; attempt++) {
+    if (!Number.isFinite(candidate)) return null;
+    if (!rows.some((row) => row.properties[prop.id] === candidate)) return candidate;
+    const next = candidate + increment;
+    if (!Number.isFinite(next) || next <= candidate) return null;
+    candidate = next;
+  }
+  return null;
+}
+
+function hasInvalidSequenceDefinition(database: unknown): boolean {
+  if (!isRecord(database) || !Array.isArray(database.properties)) return false;
+  return database.properties.some((property) => {
+    if (!isRecord(property)) return false;
+    if (
+      property.sequenceNext !== undefined &&
+      (typeof property.sequenceNext !== 'number' || !Number.isFinite(property.sequenceNext))
+    )
+      return true;
+    if (property.defaultSequence === undefined) return false;
+    const sequence = property.defaultSequence;
+    return (
+      !isRecord(sequence) ||
+      typeof sequence.start !== 'number' ||
+      !Number.isFinite(sequence.start) ||
+      typeof sequence.increment !== 'number' ||
+      !Number.isFinite(sequence.increment) ||
+      sequence.increment <= 0 ||
+      !Number.isFinite(sequence.start + sequence.increment) ||
+      sequence.start + sequence.increment <= sequence.start ||
+      (typeof property.sequenceNext === 'number' &&
+        (!Number.isFinite(property.sequenceNext + sequence.increment) ||
+          property.sequenceNext + sequence.increment <= property.sequenceNext)) ||
+      !isNumericPropertyType(property.type as PropDef['type']) ||
+      property.defaultFormula !== undefined
+    );
+  });
+}
+
 function createPage(
   state: WorkspaceState,
   command: Extract<Command, { type: 'page.create' }>,
@@ -997,9 +1044,12 @@ function createPage(
   const doc = validateDoc(command.doc ?? emptyDoc());
   if (!doc.ok) return doc;
   const kind = command.kind && PAGE_KINDS.includes(command.kind) ? command.kind : 'page';
+  if (kind === 'database' && hasInvalidSequenceDefinition(command.database))
+    return fail('Invalid numeric sequence configuration.');
   const properties = { ...(command.properties ?? {}) };
   const parentPage = command.parentId ? state.pages[command.parentId] : undefined;
   const rowDatabase = parentPage?.kind === 'database' ? parentPage.database : null;
+  const sequenceNext = new Map<string, number>();
   for (const [propertyId, value] of Object.entries(properties)) {
     const prop = rowDatabase?.properties.find((candidate) => candidate.id === propertyId);
     if (!ID_PATTERN.test(propertyId) || (value !== null && !validValue(value, maxPropertyValueLength(prop))))
@@ -1029,8 +1079,28 @@ function createPage(
       kind === 'database' ? (normalizeDatabase(command.database) ?? { properties: [], views: [] }) : null,
   });
   if (rowDatabase) {
+    const occupiedRows = childrenOf(state.pages, command.parentId!, true);
+    for (const prop of rowDatabase.properties) {
+      const sequence = prop.defaultSequence;
+      if (prop.fillMode !== 'default' || !sequence || !isNumericPropertyType(prop.type)) continue;
+      const explicit = Object.prototype.hasOwnProperty.call(properties, prop.id);
+      const start = Math.max(prop.sequenceNext ?? sequence.start, sequence.start);
+      const candidate = nextAvailableSequenceValue(prop, start, sequence.increment, occupiedRows);
+      if (candidate === null) return fail(`The sequence for ${prop.name} has exceeded the supported numeric range.`);
+      if (!explicit) {
+        const error = propertyValueError(prop, candidate);
+        if (error) return fail(`Default for ${prop.name}: ${error}`);
+        properties[prop.id] = candidate;
+      }
+      const consumesCandidate = !explicit || properties[prop.id] === candidate;
+      const next = consumesCandidate ? candidate + sequence.increment : candidate;
+      if (!Number.isFinite(next) || (consumesCandidate && next <= candidate))
+        return fail(`The sequence for ${prop.name} has exceeded the supported numeric range.`);
+      sequenceNext.set(prop.id, next);
+    }
     for (const prop of rowDatabase.properties) {
       if (Object.prototype.hasOwnProperty.call(properties, prop.id) || prop.fillMode !== 'default') continue;
+      if (prop.defaultSequence) continue;
       if (prop.defaultFormula || !Object.prototype.hasOwnProperty.call(prop, 'defaultValue')) continue;
       const error = propertyValueError(prop, prop.defaultValue ?? null);
       if (error) return fail(`Default for ${prop.name}: ${error}`);
@@ -1042,6 +1112,7 @@ function createPage(
           (prop) =>
             !Object.prototype.hasOwnProperty.call(properties, prop.id) &&
             prop.fillMode === 'default' &&
+            !prop.defaultSequence &&
             Boolean(prop.defaultFormula),
         )
         .map((prop) => [prop.id, prop]),
@@ -1103,7 +1174,22 @@ function createPage(
   }
   const siblings = childrenOf(state.pages, command.parentId);
   const placed = placeAmong(siblings, page, command.index);
-  let applied = withChanges(state, { pages: placed });
+  const nextDatabase = rowDatabase
+    ? {
+        ...rowDatabase,
+        properties: rowDatabase.properties.map((prop) => {
+          const next = sequenceNext.get(prop.id);
+          return next === undefined || next === prop.sequenceNext ? prop : { ...prop, sequenceNext: next };
+        }),
+      }
+    : null;
+  const databaseChanged = Boolean(
+    nextDatabase && nextDatabase.properties.some((prop, index) => prop !== rowDatabase!.properties[index]),
+  );
+  const pagesToWrite = databaseChanged && parentPage && nextDatabase
+    ? [...placed, { ...parentPage, database: nextDatabase, updatedAt: command.now }]
+    : placed;
+  let applied = withChanges(state, { pages: pagesToWrite });
   if (rowDatabase) {
     for (const prop of rowDatabase.properties) {
       if (prop.type !== 'relation' || !prop.relation?.targetDatabaseId) continue;

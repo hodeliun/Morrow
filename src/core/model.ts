@@ -1,7 +1,7 @@
 // workspace data model, plain json shared by storage, search, export and the editor
 
 // bump when the persisted shape changes and add a migration in migrations.ts
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const MAX_TITLE_LENGTH = 500;
 // includes compact Lucide names and local attachment references; plain emoji remain much shorter
@@ -116,6 +116,10 @@ export interface PropDef {
   fillMode?: 'manual' | 'default' | 'calculated';
   defaultValue?: PropValue;
   defaultFormula?: string;
+  // sequential defaults are separate from format.step, which only validates entered values
+  defaultSequence?: { start: number; increment: number };
+  // persisted on the database schema so deleting or undoing a row never rewinds the sequence
+  sequenceNext?: number;
   // source spans point into the corresponding formula source and keep references attached to stable IDs
   defaultFormulaBindings?: FormulaReferenceBinding[];
   // the expression a formula property computes, see core/formula

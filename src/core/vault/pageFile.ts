@@ -446,6 +446,8 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
           ? { defaultValue: prop.defaultValue }
           : {}),
         ...(prop.defaultFormula ? { defaultFormula: prop.defaultFormula } : {}),
+        ...(prop.defaultSequence ? { defaultSequence: { ...prop.defaultSequence } } : {}),
+        ...(prop.sequenceNext !== undefined ? { sequenceNext: prop.sequenceNext } : {}),
         ...(prop.defaultFormulaBindings?.length ? { defaultFormulaBindings: prop.defaultFormulaBindings.map((binding) => ({ ...binding })) } : {}),
         ...(prop.formula ? { formula: prop.formula } : {}),
         ...(prop.formulaBindings?.length ? { formulaBindings: prop.formulaBindings.map((binding) => ({ ...binding })) } : {}),

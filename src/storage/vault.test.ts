@@ -260,6 +260,77 @@ describe('opening a folder of markdown files', () => {
     expect(vault.text('Untitled/Child.md')).toBe('');
     await session.close();
   });
+
+  it('persists sequential counters across grouped creation, deletion and vault reopening', async () => {
+    const vault = new MemoryVault();
+    let session = await open(vault);
+    await run(session, {
+      type: 'page.create',
+      id: 'sequence-db',
+      parentId: null,
+      now: 1,
+      title: 'Numbers',
+      kind: 'database',
+      database: {
+        properties: [
+          {
+            id: 'number',
+            name: 'Number',
+            type: 'number',
+            options: [],
+            fillMode: 'default',
+            defaultSequence: { start: 0, increment: 1 },
+          },
+        ],
+        views: [],
+      },
+    });
+    await run(session, {
+      type: 'page.create',
+      id: 'sequence-first',
+      parentId: 'sequence-db',
+      now: 2,
+      title: 'First',
+    });
+    expect(session.getState().pages['sequence-first']!.properties.number).toBe(0);
+
+    const grouped = session.executeAll([
+      {
+        type: 'page.create',
+        id: 'sequence-second',
+        parentId: 'sequence-db',
+        now: 3,
+        title: 'Second',
+      },
+      {
+        type: 'page.create',
+        id: 'sequence-third',
+        parentId: 'sequence-db',
+        now: 4,
+        title: 'Third',
+      },
+    ]);
+    if (!grouped.ok) throw new Error(grouped.error);
+    expect(grouped.value.pages['sequence-second']!.properties.number).toBe(1);
+    expect(grouped.value.pages['sequence-third']!.properties.number).toBe(2);
+    await session.flush();
+
+    await run(session, { type: 'page.trash', id: 'sequence-first', now: 5 });
+    await run(session, { type: 'page.deleteForever', id: 'sequence-first' });
+    await session.close();
+
+    expect(vault.text('Numbers.md')).toContain('sequenceNext: 3');
+    session = await open(vault);
+    await run(session, {
+      type: 'page.create',
+      id: 'sequence-fourth',
+      parentId: 'sequence-db',
+      now: 6,
+      title: 'Fourth',
+    });
+    expect(session.getState().pages['sequence-fourth']!.properties.number).toBe(3);
+    await session.close();
+  });
 });
 
 describe('edits made outside morrow', () => {

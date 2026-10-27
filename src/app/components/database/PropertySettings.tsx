@@ -51,7 +51,7 @@ import { DraftInput, RelationPicker } from './PropertyValue';
 import { t } from '../../i18n';
 import { tr } from '../../i18n/rich';
 import { colorLabel, filterLabel, propLabel } from '../../i18n/labels';
-import { durationUnitFactor } from '../../../core/typedValues';
+import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
 import { MediaPropertyDefault, MediaPropertyOptions } from './MediaProperty';
 import { ViewChangeContext } from './viewContext';
 import { linkedViewReferences, viewUsesProperty } from '../../../core/linkedViews';
@@ -165,6 +165,10 @@ export function PropertySettings({
       };
     } else if (prop.type === 'image' || prop.type === 'file') {
       const { media: _media, ...rest } = next;
+      next = rest;
+    }
+    if (!isNumericPropertyType(type) && next.defaultSequence) {
+      const { defaultSequence: _defaultSequence, ...rest } = next;
       next = rest;
     }
     const conversions = rows.map((row) => ({
@@ -289,11 +293,13 @@ export function PropertySettings({
             <>
               <span>{t('database.defaultSource')}</span>
               <div className="segmented" role="radiogroup" aria-label={t('database.defaultSource')}>
-                {(['literal', 'formula'] as const).map((source) => {
+                {(['literal', 'formula', ...(isNumericPropertyType(prop.type) ? ['sequence' as const] : [])] as const).map((source) => {
                   const selected =
                     source === 'formula'
                       ? prop.defaultFormula !== undefined
-                      : prop.defaultFormula === undefined;
+                      : source === 'sequence'
+                        ? prop.defaultSequence !== undefined
+                        : prop.defaultFormula === undefined && prop.defaultSequence === undefined;
                   return (
                     <button
                       key={source}
@@ -303,12 +309,14 @@ export function PropertySettings({
                       className={selected ? 'is-active' : ''}
                       onClick={() => setDefaultSource(dbId, prop, source)}
                     >
-                      {t(source === 'formula' ? 'database.typeFormula' : 'database.literal')}
+                      {t(source === 'formula' ? 'database.typeFormula' : source === 'sequence' ? 'database.sequence' : 'database.literal')}
                     </button>
                   );
                 })}
               </div>
-              {prop.defaultFormula === undefined ? (
+              {prop.defaultSequence ? (
+                <DefaultSequenceFields dbId={dbId} prop={prop} />
+              ) : prop.defaultFormula === undefined ? (
                 <DefaultValueField dbId={dbId} prop={prop} />
               ) : (
                 <FormulaField dbId={dbId} prop={prop} database={database} defaultFormula />
@@ -526,15 +534,35 @@ function setFillMode(dbId: PageId, prop: PropDef, mode: 'manual' | 'default' | '
   });
 }
 
-function setDefaultSource(dbId: PageId, prop: PropDef, source: 'literal' | 'formula') {
+function setDefaultSource(dbId: PageId, prop: PropDef, source: 'literal' | 'formula' | 'sequence') {
+  if (source === 'sequence') {
+    updateProp(dbId, prop.id, (current) => {
+      const {
+        defaultValue: _defaultValue,
+        defaultFormula: _defaultFormula,
+        defaultFormulaBindings: _defaultFormulaBindings,
+        ...rest
+      } = current;
+      return {
+        ...rest,
+        fillMode: 'default',
+        defaultSequence: current.defaultSequence ?? {
+          start: current.sequenceNext ?? 0,
+          increment: 1,
+        },
+      };
+    });
+    return;
+  }
   updateProp(dbId, prop.id, (current) => {
     if (source === 'formula') {
-      const { defaultValue: _defaultValue, ...rest } = current;
+      const { defaultValue: _defaultValue, defaultSequence: _defaultSequence, ...rest } = current;
       return { ...rest, fillMode: 'default', defaultFormula: current.defaultFormula ?? '' };
     }
     const {
       defaultFormula: _defaultFormula,
       defaultFormulaBindings: _defaultFormulaBindings,
+      defaultSequence: _defaultSequence,
       ...rest
     } = current;
     return { ...rest, fillMode: 'default' };
@@ -717,6 +745,77 @@ function DefaultValueField({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
           const number = Number(text);
           if (!Number.isFinite(number)) return;
           set(number / multiplier);
+        }}
+      />
+    </label>
+  );
+}
+
+function DefaultSequenceFields({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
+  const sequence = prop.defaultSequence ?? { start: 0, increment: 1 };
+  const multiplier =
+    prop.type === 'percent'
+      ? 100
+      : prop.type === 'duration'
+        ? 1 / durationUnitFactor(prop.format?.durationUnit ?? 'minutes')
+        : 1;
+  const set = (key: 'start' | 'increment', value: number) =>
+    updateProp(dbId, prop.id, (current) => ({
+      ...current,
+      fillMode: 'default',
+      defaultSequence: {
+        ...(current.defaultSequence ?? { start: current.sequenceNext ?? 0, increment: 1 }),
+        [key]: value / multiplier,
+      },
+    }));
+  return (
+    <div className="field-grid">
+      <SequenceNumberField
+        label={t('database.sequenceStart')}
+        value={sequence.start * multiplier}
+        help={t('database.sequenceHelp')}
+        onCommit={(value) => set('start', value)}
+      />
+      <SequenceNumberField
+        label={t('database.sequenceIncrement')}
+        value={sequence.increment * multiplier}
+        min={Number.MIN_VALUE}
+        help={t('database.sequenceHelp')}
+        onCommit={(value) => set('increment', value)}
+      />
+    </div>
+  );
+}
+
+function SequenceNumberField({
+  label,
+  value,
+  min,
+  help,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  help: string;
+  onCommit: (value: number) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{label} <span title={help} aria-label={help} tabIndex={0}>ⓘ</span></span>
+      <DraftInput
+        type="number"
+        label={label}
+        className="text-input small"
+        value={String(value)}
+        editable
+        onCommit={(text) => {
+          const number = Number(text);
+          if (!text.trim() || !Number.isFinite(number) || (min !== undefined && number < min)) {
+            toast(t('database.invalidSequence'), { tone: 'error' });
+            return;
+          }
+          onCommit(number);
         }}
       />
     </label>

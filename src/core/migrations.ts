@@ -34,6 +34,7 @@ import type {
   SummaryOperation,
 } from './model';
 import { normalizeNamedControls } from './controls';
+import { isNumericPropertyType } from './typedValues';
 import { fail, ok } from './result';
 import type { Result } from './result';
 
@@ -69,6 +70,8 @@ const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
   7: (data) => data,
   // version 9 adds persisted table action configurations; older values remain unchanged
   8: (data) => data,
+  // version 10 adds optional sequential defaults; old property definitions remain unchanged
+  9: (data) => data,
 };
 
 export function migrate(version: number, data: RawWorkspace): Result<RawWorkspace> {
@@ -173,10 +176,20 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
   if (!validId(raw.id) || !PROP_TYPES.includes(raw.type as PropType)) return null;
   const action = raw.type === 'button' ? normalizeTableAction(raw.action, nameOf(raw.name, 'Action')) : null;
   if (raw.type === 'button' && !action) return null;
+  const defaultSequence = normalizeDefaultSequence(raw.defaultSequence);
+  if (
+    (raw.defaultSequence !== undefined &&
+      (!defaultSequence || !isNumericPropertyType(raw.type as PropType) || raw.defaultFormula !== undefined)) ||
+    (raw.sequenceNext !== undefined &&
+      (typeof raw.sequenceNext !== 'number' || !Number.isFinite(raw.sequenceNext)))
+  )
+    return null;
   const defaultValue = normalizeValue(raw.defaultValue);
   const fillMode = ['manual', 'default', 'calculated'].includes(raw.fillMode as string)
     ? (raw.fillMode as PropDef['fillMode'])
-    : undefined;
+    : defaultSequence
+      ? 'default'
+      : undefined;
   return {
     id: raw.id,
     name: nameOf(raw.name, ''),
@@ -196,6 +209,8 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
     ...(raw.type !== 'button' && fillMode ? { fillMode } : {}),
     ...(raw.type !== 'button' && defaultValue !== undefined ? { defaultValue } : {}),
     ...(raw.type !== 'button' && typeof raw.defaultFormula === 'string' ? { defaultFormula: raw.defaultFormula.slice(0, 2000) } : {}),
+    ...(defaultSequence ? { defaultSequence } : {}),
+    ...(raw.sequenceNext !== undefined ? { sequenceNext: raw.sequenceNext as number } : {}),
     ...(raw.type !== 'button' && typeof raw.defaultFormula === 'string'
       ? { defaultFormulaBindings: normalizeFormulaBindings(raw.defaultFormula, raw.defaultFormulaBindings) }
       : {}),
@@ -213,6 +228,21 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
       : {}),
     ...(action ? { action } : {}),
   };
+}
+
+function normalizeDefaultSequence(raw: unknown): PropDef['defaultSequence'] | null {
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.start !== 'number' ||
+    !Number.isFinite(raw.start) ||
+    typeof raw.increment !== 'number' ||
+    !Number.isFinite(raw.increment) ||
+    raw.increment <= 0 ||
+    !Number.isFinite(raw.start + raw.increment) ||
+    raw.start + raw.increment <= raw.start
+  )
+    return null;
+  return { start: raw.start, increment: raw.increment };
 }
 
 function defaultTableAction(label: string): NonNullable<PropDef['action']> {
