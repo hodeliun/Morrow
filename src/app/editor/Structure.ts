@@ -3,6 +3,12 @@ import type { Editor } from '@tiptap/core';
 import { PluginKey, TextSelection } from '@tiptap/pm/state';
 import Suggestion from '@tiptap/suggestion';
 import { CalendarDays, FileText } from 'lucide-react';
+import {
+  formatColumnWidths,
+  normalizeColumnWidths,
+  parseColumnWidths,
+  resizeColumnWidths,
+} from '../../core/model';
 import { dateKey, parseDateKey } from '../../core/daily';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
@@ -16,6 +22,13 @@ declare module '@tiptap/core' {
   }
 }
 
+const MIN_COLUMN_WIDTH = 160;
+const COLUMN_GAP = 28;
+
+function columnTrackTemplate(widths: number[]): string {
+  return widths.map((width) => `minmax(${MIN_COLUMN_WIDTH}px, ${width}fr)`).join(' ');
+}
+
 // side by side blocks, each column holds any blocks
 export const Columns = Node.create({
   name: 'columns',
@@ -24,20 +37,257 @@ export const Columns = Node.create({
   defining: true,
   isolating: true,
 
+  addAttributes() {
+    return {
+      widths: {
+        default: null,
+        rendered: false,
+      },
+    };
+  },
+
   parseHTML() {
-    return [{ tag: 'div[data-columns]' }];
+    return [
+      {
+        tag: 'div[data-columns]',
+        getAttrs: (element) => {
+          const html = element as HTMLElement;
+          const count = Array.from(html.children).filter((child) => child.matches('[data-column]')).length;
+          return { widths: parseColumnWidths(html.getAttribute('data-widths'), count) };
+        },
+      },
+    ];
   },
 
   renderHTML({ node, HTMLAttributes }) {
+    const widths = normalizeColumnWidths(node.attrs.widths, node.childCount);
+    const encoded = formatColumnWidths(node.attrs.widths, node.childCount);
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
         'data-columns': '',
+        ...(encoded ? { 'data-widths': encoded } : {}),
         class: 'columns',
-        style: `--columns: ${node.childCount}`,
+        style: `--columns: ${node.childCount}; --column-widths: ${columnTrackTemplate(widths)}`,
       }),
       0,
     ];
+  },
+
+  addNodeView() {
+    return ({ node, view, getPos }) => {
+      let currentNode = node;
+      let previewWidths: number[] | null = null;
+      const dom = document.createElement('div');
+      dom.className = 'columns-editor';
+      const contentDOM = document.createElement('div');
+      contentDOM.className = 'columns';
+      contentDOM.setAttribute('data-columns', '');
+      dom.append(contentDOM);
+      const handles: HTMLDivElement[] = [];
+
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'columns-reset';
+      reset.setAttribute('aria-label', t('editor.resetColumnWidths'));
+      reset.title = t('editor.resetColumnWidths');
+      const resetIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      resetIcon.setAttribute('viewBox', '0 0 24 24');
+      resetIcon.setAttribute('width', '14');
+      resetIcon.setAttribute('height', '14');
+      resetIcon.setAttribute('fill', 'none');
+      resetIcon.setAttribute('stroke', 'currentColor');
+      resetIcon.setAttribute('stroke-width', '2');
+      resetIcon.setAttribute('stroke-linecap', 'round');
+      resetIcon.setAttribute('stroke-linejoin', 'round');
+      resetIcon.innerHTML = '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>';
+      reset.append(resetIcon);
+      reset.addEventListener('click', () => {
+        previewWidths = null;
+        const position = getPos();
+        if (typeof position !== 'number') return;
+        view.dispatch(
+          view.state.tr.setNodeMarkup(position, undefined, { ...currentNode.attrs, widths: null }),
+        );
+      });
+      dom.append(reset);
+
+      const commitWidths = (widths: number[]) => {
+        const position = getPos();
+        if (typeof position !== 'number') return;
+        const encoded = formatColumnWidths(widths, currentNode.childCount);
+        const normalized = normalizeColumnWidths(widths, currentNode.childCount);
+        previewWidths = null;
+        view.dispatch(
+          view.state.tr.setNodeMarkup(position, undefined, {
+            ...currentNode.attrs,
+            widths: encoded ? normalized : null,
+          }),
+        );
+      };
+
+      const makeHandle = (index: number) => {
+        const handle = document.createElement('div');
+        handle.className = 'column-resize-handle';
+        handle.setAttribute('role', 'separator');
+        handle.setAttribute('aria-orientation', 'vertical');
+        handle.contentEditable = 'false';
+        handle.tabIndex = 0;
+        let drag: {
+          pointerId: number;
+          startX: number;
+          startWidths: number[];
+          availableWidth: number;
+          minimumShare: number;
+        } | null = null;
+
+        const minimumShare = (widths: number[], availableWidth: number) =>
+          Math.min(
+            (widths[index]! + widths[index + 1]!) / 2,
+            (MIN_COLUMN_WIDTH / Math.max(1, availableWidth)) * 100,
+          );
+        const startDrag = (event: PointerEvent) => {
+          if (!view.editable || event.button !== 0) return;
+          event.preventDefault();
+          handle.focus({ preventScroll: true });
+          const widths = normalizeColumnWidths(currentNode.attrs.widths, currentNode.childCount);
+          const availableWidth = Math.max(
+            1,
+            contentDOM.getBoundingClientRect().width - COLUMN_GAP * (currentNode.childCount - 1),
+          );
+          drag = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startWidths: widths,
+            availableWidth,
+            minimumShare: minimumShare(widths, availableWidth),
+          };
+          try {
+            handle.setPointerCapture(event.pointerId);
+          } catch {
+            // some synthetic pointer devices cannot capture; the keyboard handle remains available
+          }
+        };
+        const moveDrag = (event: PointerEvent) => {
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          const delta = ((event.clientX - drag.startX) / drag.availableWidth) * 100;
+          previewWidths = resizeColumnWidths(
+            drag.startWidths,
+            currentNode.childCount,
+            index,
+            delta,
+            drag.minimumShare,
+          );
+          paint();
+        };
+        const endDrag = (event: PointerEvent) => {
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          const widths = previewWidths ?? drag.startWidths;
+          drag = null;
+          commitWidths(widths);
+        };
+        const cancelDrag = (event: PointerEvent) => {
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          drag = null;
+          previewWidths = null;
+          paint();
+        };
+        handle.addEventListener('pointerdown', startDrag);
+        handle.addEventListener('pointermove', moveDrag);
+        handle.addEventListener('pointerup', endDrag);
+        handle.addEventListener('pointercancel', cancelDrag);
+        handle.addEventListener('keydown', (event) => {
+          if (!view.editable) return;
+          const widths = normalizeColumnWidths(currentNode.attrs.widths, currentNode.childCount);
+          const availableWidth = Math.max(
+            1,
+            contentDOM.getBoundingClientRect().width - COLUMN_GAP * (currentNode.childCount - 1),
+          );
+          const minShare = minimumShare(widths, availableWidth);
+          if (event.key === 'Home') {
+            event.preventDefault();
+            commitWidths(resizeColumnWidths(widths, currentNode.childCount, index, -100, minShare));
+          } else if (event.key === 'End') {
+            event.preventDefault();
+            commitWidths(resizeColumnWidths(widths, currentNode.childCount, index, 100, minShare));
+          } else if (['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'].includes(event.key)) {
+            event.preventDefault();
+            const delta = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 2 : -2;
+            commitWidths(resizeColumnWidths(widths, currentNode.childCount, index, delta, minShare));
+          } else if (event.key.toLowerCase() === 'r' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            event.preventDefault();
+            previewWidths = null;
+            const position = getPos();
+            if (typeof position === 'number')
+              view.dispatch(
+                view.state.tr.setNodeMarkup(position, undefined, { ...currentNode.attrs, widths: null }),
+              );
+          }
+        });
+        handle.dataset.separator = String(index + 1);
+        handle.dataset.columnPair = `${index + 1}-${index + 2}`;
+        return handle;
+      };
+
+      const initialCount = node.childCount;
+      for (let index = 0; index < initialCount - 1; index++) handles.push(makeHandle(index));
+      dom.append(...handles);
+
+      const paint = () => {
+        const count = currentNode.childCount;
+        const widths = previewWidths ?? normalizeColumnWidths(currentNode.attrs.widths, count);
+        contentDOM.style.setProperty('--columns', String(count));
+        contentDOM.style.setProperty('--column-widths', columnTrackTemplate(widths));
+        const editable = view.editable;
+        const hasCustomWidths = !!formatColumnWidths(currentNode.attrs.widths, count);
+        reset.hidden = !editable || !hasCustomWidths;
+        for (let index = 0; index < handles.length; index++) {
+          const handle = handles[index]!;
+          const leftShare = widths.slice(0, index + 1).reduce((sum, width) => sum + width, 0);
+          const pairShare = widths[index]! + widths[index + 1]!;
+          const contentWidth = Math.max(1, contentDOM.getBoundingClientRect().width);
+          const availableWidth = Math.max(
+            1,
+            contentWidth - COLUMN_GAP * (count - 1),
+          );
+          const minShare = Math.min(pairShare / 2, (MIN_COLUMN_WIDTH / availableWidth) * 100);
+          const boundary = (leftShare / 100) * availableWidth + COLUMN_GAP * (index + 1);
+          handle.style.left = `${(boundary / contentWidth) * 100}%`;
+          handle.hidden = !editable;
+          handle.setAttribute(
+            'aria-label',
+            t('editor.resizeColumnPair', { left: index + 1, right: index + 2 }),
+          );
+          handle.setAttribute('aria-valuemin', String(Number(minShare.toFixed(1))));
+          handle.setAttribute('aria-valuemax', String(Number((pairShare - minShare).toFixed(1))));
+          handle.setAttribute('aria-valuenow', String(Number(widths[index]!.toFixed(1))));
+          handle.setAttribute(
+            'aria-valuetext',
+            t('editor.columnWidthValue', { value: Math.round(widths[index]!) }),
+          );
+        }
+      };
+      paint();
+
+      return {
+        dom,
+        contentDOM,
+        update(updated) {
+          if (updated.type !== currentNode.type || updated.childCount !== handles.length + 1) return false;
+          currentNode = updated;
+          previewWidths = null;
+          paint();
+          return true;
+        },
+        stopEvent: (event) =>
+          dom !== event.target && !(event.target instanceof Element && contentDOM.contains(event.target)),
+        ignoreMutation: (mutation) =>
+          mutation.type === 'selection' ? false : !contentDOM.contains(mutation.target as HTMLElement),
+        destroy() {
+          previewWidths = null;
+        },
+      };
+    };
   },
 
   addCommands() {

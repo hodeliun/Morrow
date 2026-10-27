@@ -343,7 +343,7 @@ export const COVER_GRADIENTS = 12;
 export const DEFAULT_COVER_POSITION = 50;
 
 export type NoteFont = 'serif' | 'sans' | 'mono';
-export type NoteWidth = 'comfortable' | 'wide';
+export type NoteWidth = 'comfortable' | 'wide' | 'full';
 
 export interface NoteStyle {
   font: NoteFont;
@@ -386,7 +386,7 @@ export function validNoteStyle(value: unknown): value is NoteStyle {
     Number.isFinite(style.blockSpacing) &&
     style.blockSpacing >= 0 &&
     style.blockSpacing <= 40 &&
-    ['comfortable', 'wide'].includes(style.width as string)
+    ['comfortable', 'wide', 'full'].includes(style.width as string)
   );
 }
 
@@ -404,10 +404,72 @@ export function normalizeNoteStyle(
     fontSize: bounded(style.fontSize, 12, 32, fallback.fontSize),
     lineHeight: bounded(style.lineHeight, 1.2, 2.4, fallback.lineHeight),
     blockSpacing: bounded(style.blockSpacing, 0, 40, fallback.blockSpacing),
-    width: ['comfortable', 'wide'].includes(style.width as string)
+    width: ['comfortable', 'wide', 'full'].includes(style.width as string)
       ? (style.width as NoteWidth)
       : fallback.width,
   };
+}
+
+// Column proportions are stored as percentages on the columns block itself. Invalid or
+// mismatched values fall back to equal tracks, so hand-edited Markdown stays safe to open.
+export function normalizeColumnWidths(value: unknown, count: number): number[] {
+  if (!Number.isInteger(count) || count < 2 || count > 4) return [];
+  const equal = Array.from({ length: count }, () => 100 / count);
+  if (!Array.isArray(value) || value.length !== count) return equal;
+  if (
+    !value.every((width) => typeof width === 'number' && Number.isFinite(width) && width > 0 && width <= 1000)
+  )
+    return equal;
+  const total = value.reduce((sum: number, width: number) => sum + width, 0);
+  if (!Number.isFinite(total) || total <= 0) return equal;
+  const rounded = value.map((width: number) => Math.round((width / total) * 1000) / 10);
+  rounded[rounded.length - 1] =
+    Math.round((100 - rounded.slice(0, -1).reduce((sum, width) => sum + width, 0)) * 10) / 10;
+  return rounded;
+}
+
+export function parseColumnWidths(value: string | null, count?: number): number[] | null {
+  if (!value || value.length > 32) return null;
+  const parts = value.split(',');
+  const expected = count ?? parts.length;
+  if (parts.length !== expected || expected < 2 || expected > 4) return null;
+  const widths = parts.map((part) => (/^\d+(?:\.\d{1,2})?$/.test(part.trim()) ? Number(part) : NaN));
+  if (widths.some((width) => !Number.isFinite(width) || width <= 0 || width > 1000)) return null;
+  return normalizeColumnWidths(widths, expected);
+}
+
+export function formatColumnWidths(value: unknown, count: number): string | null {
+  if (!Array.isArray(value)) return null;
+  const widths = normalizeColumnWidths(value, count);
+  if (widths.some((width) => Math.abs(width - 100 / count) > 0.15))
+    return widths.map((width) => String(Number(width.toFixed(1)))).join(',');
+  return null;
+}
+
+export function resizeColumnWidths(
+  value: unknown,
+  count: number,
+  separator: number,
+  deltaShare: number,
+  minimumShare: number,
+): number[] {
+  const widths = normalizeColumnWidths(value, count);
+  const leftIndex = Math.floor(separator);
+  if (
+    widths.length !== count ||
+    leftIndex < 0 ||
+    leftIndex >= count - 1 ||
+    !Number.isFinite(deltaShare) ||
+    !Number.isFinite(minimumShare)
+  )
+    return widths;
+  const pair = widths[leftIndex]! + widths[leftIndex + 1]!;
+  const minimum = Math.min(pair / 2, Math.max(0, minimumShare));
+  const left =
+    Math.round(Math.min(pair - minimum, Math.max(minimum, widths[leftIndex]! + deltaShare)) * 10) / 10;
+  widths[leftIndex] = left;
+  widths[leftIndex + 1] = Math.round((pair - left) * 10) / 10;
+  return widths;
 }
 
 export function validCover(value: unknown): string | null {

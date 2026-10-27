@@ -242,6 +242,29 @@ describe('reading stored data', () => {
     expect(result.value.docs.old).toEqual(doc('kept'));
   });
 
+  it('upgrades format 9 documents without dropping prose column proportions', () => {
+    const columns: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          attrs: { widths: [35, 65] },
+          content: [
+            { type: 'column', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Left' }] }] },
+            { type: 'column', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Right' }] }] },
+          ],
+        },
+      ],
+    };
+    const result = readWorkspace(9, {
+      pages: [{ id: 'old', parentId: null, title: 'Old' }],
+      docs: { old: columns },
+    });
+    if (!result.ok) throw new Error(result.error);
+    expect(SCHEMA_VERSION).toBe(10);
+    expect(result.value.docs.old).toEqual(columns);
+  });
+
   it('keeps valid database fields and drops malformed parts', () => {
     const result = readWorkspace(SCHEMA_VERSION, {
       pages: [

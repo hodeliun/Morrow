@@ -2,13 +2,82 @@
 
 .prose .columns {
   display: grid;
-  grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
+  grid-template-columns: var(--column-widths, repeat(var(--columns, 2), minmax(160px, 1fr)));
   gap: 28px;
   margin: 8px 0;
+}
+.prose .columns-editor {
+  position: relative;
+  margin: 8px 0;
+}
+.prose .columns-editor > .columns {
+  grid-template-columns: var(--column-widths, repeat(var(--columns, 2), minmax(160px, 1fr)));
+  margin: 0;
 }
 .prose .column {
   min-width: 0;
   position: relative;
+}
+.prose .columns-editor > .column-resize-handle[hidden],
+.prose .columns-editor > .columns-reset[hidden] {
+  display: none;
+}
+.column-resize-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  transform: translateX(-50%);
+}
+.column-resize-handle::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 50%;
+  border-left: 2px solid var(--accent);
+  border-radius: 2px;
+  content: '';
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.column-resize-handle:hover::before,
+.column-resize-handle:focus-visible::before {
+  opacity: 1;
+}
+.column-resize-handle:focus-visible {
+  outline: none;
+}
+.columns-reset {
+  position: absolute;
+  z-index: 3;
+  top: -22px;
+  right: 0;
+  display: inline-grid;
+  width: 24px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+}
+.columns-editor:hover .columns-reset,
+.columns-reset:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.columns-reset:hover {
+  color: var(--text);
+  background: var(--hover);
 }
 .ProseMirror[contenteditable='true'] .column {
   border-radius: var(--radius-sm);
@@ -24,9 +93,17 @@
 }
 
 @media (max-width: 720px) {
-  .prose .columns {
+  .prose .columns,
+  .prose .columns-editor > .columns {
     grid-template-columns: 1fr;
   }
+  .column-resize-handle {
+    display: none;
+  }
+}
+
+.pane[data-size='narrow'] .prose .column-resize-handle {
+  display: none;
 }
 
 /* table of contents */

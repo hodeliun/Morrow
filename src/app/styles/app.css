@@ -847,6 +847,11 @@ button.crumb:hover {
   --page-width: 980px;
 }
 
+.page.width-full {
+  width: 100%;
+  max-width: none;
+}
+
 .page-title-heading {
   margin: 0;
   font: inherit;
@@ -896,17 +901,32 @@ button.crumb:hover {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.note-style-preview-frame {
+  margin-top: 14px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sidebar);
+}
+.note-style-preview-label {
+  display: block;
+  margin: 0 0 6px 2px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
 .note-style-preview {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-top: 14px;
+  min-height: 76px;
+  margin: 0 auto;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-size: var(--note-font-size);
   line-height: var(--note-line-height);
+  transition: width 180ms var(--ease);
 }
 .note-style-preview.font-serif {
   font-family: var(--font-serif);

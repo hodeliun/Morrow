@@ -74,6 +74,7 @@ export function NoteStyleControls({
         >
           <option value="comfortable">{t('settings.appearance.widths.comfortable')}</option>
           <option value="wide">{t('settings.appearance.widths.wide')}</option>
+          <option value="full">{t('settings.appearance.widths.full')}</option>
         </select>
       </label>
     </div>

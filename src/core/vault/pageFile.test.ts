@@ -1,7 +1,7 @@
 import { stringify } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { bindFormulaReferences } from '../database';
-import { newPageMeta } from '../model';
+import { DEFAULT_NOTE_STYLE, newPageMeta } from '../model';
 import type { DatabaseDef, FilterGroup, PropDef, WorkspaceState } from '../model';
 import { loadVault } from './load';
 import { composeFrontmatter, managedFrontmatter, readPageText } from './pageFile';
@@ -22,6 +22,19 @@ describe('formula reference persistence', () => {
     const loaded = readPageText(text);
     expect(loaded.error).toBeNull();
     expect(loaded.database?.properties[1]?.formulaBindings).toEqual(formula.formulaBindings);
+  });
+
+  it('round trips the full-width note style through Markdown frontmatter', () => {
+    const style = { ...DEFAULT_NOTE_STYLE, width: 'full' } as const;
+    const page = {
+      ...newPageMeta({ id: 'layout', parentId: null, title: 'Layout', kind: 'page' }),
+      noteStyle: style,
+    };
+    const managed = managedFrontmatter(page, 'Layout', null);
+    const yaml = stringify(composeFrontmatter(managed, {}, null));
+    const loaded = readPageText(`---\n${yaml}${yaml.endsWith('\n') ? '' : '\n'}---\n`);
+    expect(loaded.error).toBeNull();
+    expect(loaded.noteStyle).toEqual(style);
   });
 
   it('binds legacy formulas during a vault reopen while all table schemas are available', () => {

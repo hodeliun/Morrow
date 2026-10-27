@@ -716,11 +716,14 @@ describe('page presentation', () => {
     const style = { font: 'serif', fontSize: 20, lineHeight: 1.8, blockSpacing: 14, width: 'wide' } as const;
     const styled = run(covered, { type: 'page.setNoteStyle', id: 'a', style, now: 3 });
     expect(styled.pages.a!.noteStyle).toEqual(style);
+    const fullStyle = { ...style, width: 'full' } as const;
+    const full = run(styled, { type: 'page.setNoteStyle', id: 'a', style: fullStyle, now: 4 });
+    expect(full.pages.a!.noteStyle).toEqual(fullStyle);
     expect(
-      applyCommand(styled, { type: 'page.setNoteStyle', id: 'a', style: { ...style, fontSize: 80 }, now: 4 })
+      applyCommand(full, { type: 'page.setNoteStyle', id: 'a', style: { ...fullStyle, fontSize: 80 }, now: 5 })
         .ok,
     ).toBe(false);
-    const reset = run(styled, { type: 'page.setNoteStyle', id: 'a', style: null, now: 5 });
+    const reset = run(full, { type: 'page.setNoteStyle', id: 'a', style: null, now: 6 });
     expect(reset.pages.a!.noteStyle).toBeNull();
   });
 });

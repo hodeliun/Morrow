@@ -3,7 +3,7 @@ import { canvasFromDoc } from './canvas';
 import { formatValue, rowsOf, valueOf } from './database';
 import { docToPlainText, inlineText } from './doc';
 import { linksInDoc } from './links';
-import { displayTitle } from './model';
+import { displayTitle, normalizeColumnWidths } from './model';
 import type { DocMark, DocNode, FileId, PageId, PageMeta, WorkspaceState } from './model';
 import { childrenOf, descendantsOf, livePages } from './tree';
 import { safeFileName } from './vault/paths';
@@ -278,8 +278,12 @@ export function docToHtml(doc: DocNode, context: RenderContext): string {
             : '';
         return `<aside class="callout tone-${escape(String(node.attrs?.tone ?? 'note'))}">${title}${children()}</aside>`;
       }
-      case 'columns':
-        return `<div class="columns" style="--columns:${(node.content ?? []).length}">${children()}</div>`;
+      case 'columns': {
+        const count = node.content?.length ?? 0;
+        const widths = normalizeColumnWidths(node.attrs?.widths, count);
+        const tracks = widths.map((width) => `minmax(160px, ${width}fr)`).join(' ');
+        return `<div class="columns" style="--columns:${count};--column-widths:${tracks}">${children()}</div>`;
+      }
       case 'column':
         return `<div class="column">${children()}</div>`;
       case 'tableOfContents': {
@@ -396,8 +400,10 @@ blockquote{margin:0;padding-left:16px;border-left:3px solid var(--line);color:va
 .callout{padding:10px 16px;margin:1em 0;border-left:3px solid #4f7aa8;background:rgba(79,122,168,.09);border-radius:6px}.tone-tip{border-color:#4d8a5c;background:rgba(77,138,92,.1)}.tone-warning{border-color:#b7791f;background:rgba(183,121,31,.11)}.tone-danger{border-color:#b3261e;background:rgba(179,38,30,.08)}.callout-title{font-weight:600;margin:0}
 .table{overflow:auto}table{border-collapse:collapse;font:15px/1.5 system-ui,sans-serif}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left}th{color:var(--muted);font-weight:500}
 ul.tasks{list-style:none;padding-left:4px}img{max-width:100%;border-radius:6px}figure{margin:1em 0}.math-block{overflow:auto;text-align:center}
+.columns{display:grid;grid-template-columns:var(--column-widths,repeat(var(--columns),minmax(160px,1fr)));gap:28px}.column{min-width:0}
 .tags span{font:13px system-ui,sans-serif;color:var(--accent);background:var(--soft);padding:2px 8px;border-radius:99px}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}.card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:15px/1.5 system-ui,sans-serif}.card p{margin:0}
 .subpages,.backlinks{margin-top:3em;padding-top:1em;border-top:1px solid var(--line);font:15px/1.6 system-ui,sans-serif}.subpages h2,.backlinks h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 @media (max-width:800px){body{display:block}.site-nav{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}main{padding:32px 20px}}
+@media (max-width:720px){.columns{grid-template-columns:1fr!important}}
 `;

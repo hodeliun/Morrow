@@ -70,7 +70,7 @@ const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
   7: (data) => data,
   // version 9 adds persisted table action configurations; older values remain unchanged
   8: (data) => data,
-  // version 10 adds optional sequential defaults; old property definitions remain unchanged
+  // version 10 adds optional sequential defaults, prose column proportions and full-width note style
   9: (data) => data,
 };
 

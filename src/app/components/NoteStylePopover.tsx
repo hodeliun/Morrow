@@ -24,6 +24,7 @@ export function NoteStylePopover({
     '--note-line-height': draft.lineHeight,
     '--note-block-spacing': `${draft.blockSpacing}px`,
   } as React.CSSProperties;
+  const previewWidths = { comfortable: '68%', wide: '84%', full: '100%' } as const;
   const save = (next: NoteStyle) => {
     const result = run({ type: 'page.setNoteStyle', id: page.id, style: next, now: Date.now() });
     if (result.ok) onClose();
@@ -31,9 +32,15 @@ export function NoteStylePopover({
   return (
     <Popover anchor={anchor} onClose={onClose} label={t('page.style.title')} className="note-style-popover">
       <NoteStyleControls style={draft} onChange={setDraft} />
-      <div className={`note-style-preview font-${draft.font}`} style={sampleStyle}>
-        <strong>{t('page.style.previewHeading')}</strong>
-        <span>{t('page.style.previewBody')}</span>
+      <div className="note-style-preview-frame">
+        <span className="note-style-preview-label">{t('page.style.previewWidth')}</span>
+        <div
+          className={`note-style-preview font-${draft.font}`}
+          style={{ ...sampleStyle, width: previewWidths[draft.width] }}
+        >
+          <strong>{t('page.style.previewHeading')}</strong>
+          <span>{t('page.style.previewBody')}</span>
+        </div>
       </div>
       <div className="popover-actions">
         <button type="button" className="button small" onClick={() => save(draft)}>

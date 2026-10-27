@@ -1,4 +1,10 @@
-import { BACKGROUND_HEX, TEXT_HEX, validBlockBackground, validColor } from '../model';
+import {
+  BACKGROUND_HEX,
+  TEXT_HEX,
+  formatColumnWidths,
+  validBlockBackground,
+  validColor,
+} from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
 
 export interface SerializeOptions {
@@ -143,10 +149,11 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'columns': {
       // plain html wrappers, other markdown apps show the columns one after another
+      const widths = formatColumnWidths(node.attrs?.widths, node.content?.length ?? 0);
       const columns = (node.content ?? []).map(
         (column) => `<div data-column>\n\n${blocks(column.content ?? [], options)}\n\n</div>`,
       );
-      return `<div data-columns>\n${columns.join('\n')}\n</div>`;
+      return `<div data-columns${widths ? ` data-widths="${widths}"` : ''}>\n${columns.join('\n')}\n</div>`;
     }
     case 'details': {
       const [summary, content] = node.content ?? [];

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { anchorSlice } from '../anchors';
+import { resizeColumnWidths } from '../model';
 import type { DocNode } from '../model';
 import { markdownToDoc, markdownToPage } from './parse';
 import { docToMarkdown } from './serialize';
@@ -443,6 +444,51 @@ describe('layout blocks', () => {
     expect(markdown).toContain('<!-- toc -->');
     expect(markdown).toContain('[[2026-10-20]]');
     expect(markdownToDoc(markdown)).toEqual(doc);
+  });
+
+  it('round trips per-block prose column proportions and clamps separator resizing', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          attrs: { widths: [20, 50, 30] },
+          content: [
+            { type: 'column', content: [p(text('Left'))] },
+            { type: 'column', content: [p(text('Middle'))] },
+            { type: 'column', content: [p(text('Right'))] },
+          ],
+        },
+      ],
+    };
+    const markdown = docToMarkdown(doc);
+    expect(markdown).toContain('<div data-columns data-widths="20,50,30">');
+    expect(markdownToDoc(markdown)).toEqual(doc);
+    expect(resizeColumnWidths([50, 30, 20], 3, 0, 45, 12)).toEqual([68, 12, 20]);
+    expect(resizeColumnWidths([50, 30, 20], 3, 1, 45, 12)).toEqual([50, 38, 12]);
+  });
+
+  it('ignores malformed or default prose column proportions', () => {
+    const equal: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          content: [
+            { type: 'column', content: [p(text('Left'))] },
+            { type: 'column', content: [p(text('Right'))] },
+          ],
+        },
+      ],
+    };
+    const markdown = docToMarkdown(equal);
+    expect(markdown).not.toContain('data-widths');
+    expect(markdownToDoc(markdown)).toEqual(equal);
+
+    const malformed = markdown.replace('<div data-columns>', '<div data-columns data-widths="0,100">');
+    expect(markdownToDoc(malformed)).toEqual(equal);
+    const mismatched = markdown.replace('<div data-columns>', '<div data-columns data-widths="25,50,25">');
+    expect(markdownToDoc(mismatched)).toEqual(equal);
   });
 });
 

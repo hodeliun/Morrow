@@ -5,6 +5,7 @@ import {
   calloutTone,
   emptyDoc,
   nearestColor,
+  parseColumnWidths,
   TEXT_HEX,
   validBlockBackground,
   validHexColor,
@@ -372,22 +373,44 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
     b.push({ type: 'tableOfContents' });
     return;
   }
-  // column wrappers come as runs of bare tags, each one opens or closes a level
-  const layoutTags = html.match(/<div data-columns>|<div data-column>|<\/div>/gi);
-  if (layoutTags && html.replace(/<div data-columns>|<div data-column>|<\/div>/gi, '').trim() === '') {
+  // column wrappers come as runs of tags; the root may also carry saved track proportions
+  const layoutTags = html.match(/<div\b[^>]*>|<\/div>/gi);
+  const isLayoutTag = (tag: string) =>
+    /^<\/div/i.test(tag) || /^<div\b[^>]*\bdata-(?:columns|column)\b/i.test(tag);
+  if (
+    layoutTags?.length &&
+    layoutTags.every(isLayoutTag) &&
+    html.replace(/<div\b[^>]*>|<\/div>/gi, '').trim() === ''
+  ) {
     const inLayout = b.stack.some((node) => node.type === 'columns');
-    if (inLayout || /<div data-columns>/i.test(html)) {
+    if (inLayout || layoutTags.some((tag) => /^<div\b[^>]*\bdata-columns\b/i.test(tag))) {
       for (const tag of layoutTags) {
-        if (/data-columns/i.test(tag)) {
-          const node: DocNode = { type: 'columns', content: [] };
+        if (/^<div\b[^>]*\bdata-columns\b/i.test(tag)) {
+          const encoded = /\bdata-widths\s*=\s*["']([^"']{1,32})["']/i.exec(tag)?.[1] ?? null;
+          const widths = parseColumnWidths(encoded);
+          const node: DocNode = {
+            type: 'columns',
+            ...(widths ? { attrs: { widths } } : {}),
+            content: [],
+          };
           b.push(node);
           b.stack.push(node);
-        } else if (/data-column/i.test(tag)) {
+        } else if (/^<div\b[^>]*\bdata-column\b/i.test(tag)) {
           if (b.top().type !== 'columns') continue;
           const node: DocNode = { type: 'column', content: [] };
           b.push(node);
           b.stack.push(node);
-        } else if (b.top().type === 'column' || b.top().type === 'columns') b.close();
+        } else if (b.top().type === 'column' || b.top().type === 'columns') {
+          const closing = b.top();
+          const widths = closing.type === 'columns' ? closing.attrs?.widths : null;
+          if (Array.isArray(widths) && widths.length !== closing.content?.length) {
+            if (closing.attrs) {
+              delete closing.attrs.widths;
+              if (!Object.keys(closing.attrs).length) delete closing.attrs;
+            }
+          }
+          b.close();
+        }
       }
       return;
     }
