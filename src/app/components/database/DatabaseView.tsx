@@ -11,6 +11,7 @@ import {
   EyeOff,
   Filter,
   GalleryVerticalEnd,
+  Info,
   LayoutList,
   Maximize2,
   Plus,
@@ -21,9 +22,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { computePosition, flip, offset, shift } from '@floating-ui/dom';
 import type { LucideIcon } from 'lucide-react';
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { dateKey } from '../../../core/daily';
 import {
   bindPageFormulaReferences,
@@ -1588,6 +1591,82 @@ function ColumnResizer({
   );
 }
 
+function ColumnDescription({ description }: { description: string }) {
+  const descriptionId = useId();
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const visible = hovered || focused;
+
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current;
+    const tooltip = tooltipRef.current;
+    if (!visible || !trigger || !tooltip) return;
+
+    let cancelled = false;
+    const place = () => {
+      void computePosition(trigger, tooltip, {
+        placement: 'top-start',
+        strategy: 'fixed',
+        middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+      }).then(({ x, y }) => {
+        if (cancelled || !tooltip.isConnected) return;
+        tooltip.style.left = `${x}px`;
+        tooltip.style.top = `${y}px`;
+        tooltip.style.visibility = 'visible';
+      });
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(tooltip);
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [visible]);
+
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        className="db-header-info"
+        tabIndex={0}
+        role="img"
+        aria-label={t('database.description')}
+        aria-describedby={descriptionId}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+      >
+        <Info size={14} aria-hidden="true" />
+      </span>
+      <span id={descriptionId} className="db-header-description-text" role="tooltip">
+        {description}
+      </span>
+      {visible &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <span
+            ref={tooltipRef}
+            className="db-header-tooltip"
+            role="tooltip"
+            aria-hidden="true"
+            style={{ visibility: 'hidden' }}
+          >
+            {description}
+          </span>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
   const saveView = useViewUpdater(dbId, view.id);
   const state = useWorkspace();
@@ -1637,19 +1716,29 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
               {t('database.name')}
               {resizer(TITLE_PROP)}
             </th>
-            {props.map((prop) => (
-              <th key={prop.id} scope="col">
-                <button
-                  type="button"
-                  className="db-header"
-                  disabled={!editable}
-                  onClick={(event) => setHeader({ prop, anchor: event.currentTarget })}
-                >
-                  {prop.name}
-                </button>
-                {resizer(prop.id)}
-              </th>
-            ))}
+            {props.map((prop) => {
+              const description = prop.description?.trim() ? prop.description : null;
+              return (
+                <th key={prop.id} scope="col">
+                  <div className="db-header-row">
+                    <button
+                      type="button"
+                      className="db-header"
+                      disabled={!editable}
+                      onClick={(event) => setHeader({ prop, anchor: event.currentTarget })}
+                    >
+                      <span className="db-header-name">{prop.name}</span>
+                    </button>
+                    {description && (
+                      <span className="db-header-info-wrap">
+                        <ColumnDescription description={description} />
+                      </span>
+                    )}
+                  </div>
+                  {resizer(prop.id)}
+                </th>
+              );
+            })}
             {editable && (
               <th className="db-col-add">
                 <button
