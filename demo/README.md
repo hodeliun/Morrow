@@ -1,8 +1,8 @@
-# Morrow Polaris — cofre de demonstração
+# Morrow — cofre de demonstração
 
 ## Abrir
 
-1. Inicie o Morrow Polaris.
+1. Inicie o Morrow.
 2. Escolha **Abrir uma pasta** e selecione demo/vault/ neste repositório.
 3. Abra a página favorita **Comece aqui — demonstração** na barra lateral.
 4. Siga os percursos. As páginas, tabelas e assets já estão no cofre; o gerador não é necessário para abrir.

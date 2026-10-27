@@ -215,7 +215,7 @@ export function Sidebar() {
             aria-label={t('sidebar.morrowHome')}
           >
             <Logo size={20} />
-            <span className="brand-name">Morrow Polaris</span>
+            <span className="brand-name">Morrow</span>
           </button>
         )}
         <button

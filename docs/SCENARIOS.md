@@ -49,4 +49,4 @@ Attach one generated local image to two records; removing it from the first must
 
 ## Packaging gate
 
-The executable must identify itself as Morrow Polaris and use its own app data and initial vault. Deliver a separate Windows artifact and demo directory, not an overwrite of Morrow or the user's pilot. Record build commit, test results, exact license exception for Notion icons and remaining limitations in the guide.
+The executable must identify itself as Morrow and use its own app data and initial vault. Deliver a separate Windows artifact and demo directory, not an overwrite of upstream Morrow or the user's pilot. Record build commit, test results, exact license exception for Notion icons and remaining limitations in the guide.

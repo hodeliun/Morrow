@@ -369,7 +369,7 @@ export const en = {
     legacyNotice: 'Copy my {count} existing pages into this folder. The original copy stays where it is.',
     legacyNoticeOne: 'Copy my {count} existing page into this folder. The original copy stays where it is.',
     createNewVault: 'Create a new vault',
-    createNewVaultHelp: 'A new folder called Morrow Polaris in your documents.',
+    createNewVaultHelp: 'A new folder called Morrow in your documents.',
     openFolder: 'Open a folder',
     openFolderHelp: 'Any folder, including an existing vault or a folder of Markdown files.',
     recentlyOpened: 'Recently opened',

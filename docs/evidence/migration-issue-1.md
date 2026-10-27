@@ -4,17 +4,17 @@ Verified on 2026-10-26.
 
 ## Source and branch
 
-- The published Polaris tree was prepared from private source commit
+- The published source tree was prepared from private source commit
   `9c96ed85cee9962a12867d6da3bdee2fe0fcb905`; its source tree matched when
   fetched into an isolated public-fork checkout.
-- The private Polaris history contains personal author metadata. To avoid
+- The private history contains personal author metadata. To avoid
   publishing it, the migration uses one sanitized snapshot commit,
   `3457e822436e682371b713998c1c89bfb4479d5d`, directly on public upstream
   commit `0e630ccea927174a655404b7769b793f0a64e403`. The private commits are not
   ancestors of the published branch.
-- `polaris` was pushed to
-  https://github.com/hodeliun/Morrow/tree/polaris. After verifying the tree and
-  documentation, GitHub's default branch was set to `polaris`. The original
+- `main` was pushed to
+  https://github.com/hodeliun/Morrow/tree/main. After verifying the tree and
+  documentation, GitHub's default branch was set to `main`. The original
   `main` remains at `0e630ccea927174a655404b7769b793f0a64e403`.
 - The upstream source remains https://github.com/Aarav2709/Morrow. No pull
   request was opened upstream, and issues #2–#6 were not edited.

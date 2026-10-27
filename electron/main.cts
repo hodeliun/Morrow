@@ -74,8 +74,8 @@ const DIST_DIR = path.join(__dirname, '..', 'dist');
 const KEEP_BACKUPS = 20;
 const MAX_BACKUP_BYTES = 512 * 1024 * 1024;
 const IS_MAC = process.platform === 'darwin';
-const APP_NAME = 'Morrow Polaris';
-const APP_ID = 'io.github.hodeliun.morrowpolaris';
+const APP_NAME = 'Morrow';
+const APP_ID = 'app.morrow.desktop';
 // the window and taskbar use morrow's icon even when running on the plain electron binary
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
 // matches the height of the app's top bar so the native buttons sit inside it

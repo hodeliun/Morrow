@@ -1,4 +1,4 @@
-# Morrow Polaris
+# Morrow
 
 Public derivative of Morrow v1.2.0 (Apache-2.0), based on upstream commit
 `0e630ccea927174a655404b7769b793f0a64e403`. Preserve the original license and
@@ -6,17 +6,16 @@ attribution.
 
 ## Migration and upstream policy
 
-- The reviewed Polaris source tree came from private source commit
+- The reviewed source tree came from private source commit
   `9c96ed85cee9962a12867d6da3bdee2fe0fcb905`. It is published here as one
   sanitized snapshot based on the public upstream commit above because the
   private history contains personal author metadata. Do not publish that
   history or copy personal files into this repository.
-- The fork's `main` branch retains the original Morrow baseline. `polaris` is
-  the product branch and default branch.
+- The product branch and default branch is `main`.
 - The upstream remote is `https://github.com/Aarav2709/Morrow.git`. For an
   upstream update, fetch and review upstream changes, then merge the selected
-  upstream changes into `polaris` while preserving Polaris behavior. Never
-  replace `polaris` with upstream `main` or force-push over collaborators'
+  upstream changes into `main` while preserving enhanced behavior. Never
+  force-push over collaborators'
   work. Run `npm run check` after resolving an update.
 
 ## Authority and scope

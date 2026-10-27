@@ -173,8 +173,8 @@ export async function copyVaultInto(
   return { ok: true, path: target };
 }
 
-// a fresh Polaris folder in documents, separate from the original Morrow default vault
-const DEFAULT_VAULT_NAME = 'Morrow Polaris';
+// default vault folder in documents
+const DEFAULT_VAULT_NAME = 'Morrow';
 export async function createDefaultVault(): Promise<string> {
   const documents = app.getPath('documents');
   let candidate = path.join(documents, DEFAULT_VAULT_NAME);

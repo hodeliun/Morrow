@@ -1,4 +1,4 @@
-# Guia do Morrow Polaris
+# Guia do Morrow
 
 Este guia acompanha o cofre sintético `demo/vault/`. Os nomes, valores e artes
 foram criados para demonstração; não representam registros pessoais. Abra esse

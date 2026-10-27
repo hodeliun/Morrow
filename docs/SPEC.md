@@ -1,6 +1,6 @@
-# Morrow Polaris — local documents and relational databases
+# Morrow — local documents and relational databases
 
-Status: implementation specification for the public Morrow Polaris fork. This supersedes the earlier planning-only proposals. Morrow Polaris is not affiliated with Coda or Notion; the upstream license and attribution are preserved.
+Status: implementation specification for the public Morrow fork. This supersedes the earlier planning-only proposals. Morrow is not affiliated with Coda or Notion; the upstream license and attribution are preserved.
 
 ## Problem
 

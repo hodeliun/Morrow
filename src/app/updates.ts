@@ -1,4 +1,4 @@
-// The private Polaris build has no update service configured.
+// This fork build has no remote update service configured.
 export function startUpdateChecks(): () => void {
   return () => undefined;
 }

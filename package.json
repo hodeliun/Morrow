@@ -1,10 +1,10 @@
 {
-  "name": "morrow-polaris",
-  "productName": "Morrow Polaris",
+  "name": "morrow",
+  "productName": "Morrow",
   "private": true,
-  "version": "1.2.0-polaris.4",
+  "version": "1.2.4",
   "description": "A Morrow fork with local databases, linked views and Markdown storage.",
-  "desktopName": "io.github.hodeliun.morrowpolaris.desktop",
+  "desktopName": "morrow.desktop",
   "license": "Apache-2.0",
   "author": {
     "name": "Aarav Gupta and Morrow contributors"
@@ -92,8 +92,8 @@
     "trailingComma": "all"
   },
   "build": {
-    "appId": "io.github.hodeliun.morrowpolaris",
-    "productName": "Morrow Polaris",
+    "appId": "app.morrow.desktop",
+    "productName": "Morrow",
     "copyright": "Copyright 2026 Aarav Gupta and Morrow contributors",
     "directories": {
       "output": "release",
@@ -136,10 +136,10 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "Morrow-Polaris-Setup-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "Morrow-Polaris-${version}-portable-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
     },
     "mac": {
       "target": [
@@ -162,7 +162,7 @@
       "icon": "build/icon.png",
       "hardenedRuntime": true,
       "notarize": false,
-      "artifactName": "Morrow-Polaris-${version}-mac-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -171,7 +171,7 @@
       ],
       "category": "Office",
       "icon": "build/icon.png",
-      "artifactName": "Morrow-Polaris-${version}.${ext}",
+      "artifactName": "${productName}-${version}.${ext}",
       "synopsis": "A local first workspace for notes and ideas",
       "maintainer": "Aarav Gupta <Aarav2709@users.noreply.github.com>",
       "syncDesktopName": true

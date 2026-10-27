@@ -562,7 +562,7 @@ function AboutSettings() {
       <div className="settings-about">
         <Logo size={36} />
         <div>
-          <strong>Morrow Polaris {desktop?.version ?? __APP_VERSION__}</strong>
+          <strong>Morrow {desktop?.version ?? __APP_VERSION__}</strong>
           <span>{t('settings.about.description')}</span>
         </div>
       </div>

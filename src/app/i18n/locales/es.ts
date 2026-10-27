@@ -375,7 +375,7 @@ export const es: TranslationSchema = {
     legacyNoticeOne:
       'Copiar mi {count} página existente en esta carpeta. La copia original se queda donde está.',
     createNewVault: 'Crear una nueva bóveda',
-    createNewVaultHelp: 'Una nueva carpeta llamada Morrow Polaris en tus documentos.',
+    createNewVaultHelp: 'Una nueva carpeta llamada Morrow en tus documentos.',
     openFolder: 'Abrir una carpeta',
     openFolderHelp: 'Cualquier carpeta, incluida una bóveda existente o una carpeta con archivos Markdown.',
     recentlyOpened: 'Abiertas recientemente',

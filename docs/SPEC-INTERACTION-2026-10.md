@@ -1,4 +1,4 @@
-# Morrow Polaris — interação com páginas, tabelas e fórmulas
+# Morrow — interação com páginas, tabelas e fórmulas
 
 Status: especificação incremental, 27/10/2026. Complementa `SPEC.md`; não substitui contratos de dados existentes. Referência: demonstração local do usuário de 27/10/2026 (vídeo privado, não publicado no repositório).
 

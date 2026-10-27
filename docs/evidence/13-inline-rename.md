@@ -1,4 +1,4 @@
-# Embedded database title rename — 1.2.0-polaris.2
+# Embedded database title rename — 1.2.2
 
 The title of a full database embedded inside a page now starts inline editing on click. Enter/blur commits through the existing `page.rename` command; Escape discards the draft. The expand button remains the full-page navigation control. A read-only title still opens the page.
 

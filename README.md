@@ -1,18 +1,17 @@
-# Morrow Polaris
+# Morrow
 
-Morrow Polaris is a public fork of [Morrow](https://github.com/Aarav2709/Morrow),
+Morrow is a public fork of [Morrow](https://github.com/Aarav2709/Morrow),
 originally created by Aarav Gupta and its contributors. This independent build
 is not affiliated with Notion or Coda. It keeps the upstream
 Apache-2.0 license and attribution notices.
 
 This edition adds local typed databases, linked views, controls and explicit
 table actions for RPG, entertainment and finance workflows. Pages stay in a
-folder you choose as Markdown. Its app profile and initial vault are separate
-from the upstream Morrow installation.
+folder you choose as Markdown.
 
 https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
-## Why Polaris
+## Why Morrow
 
 - **Yours.** Your notes are a folder of Markdown files. Open them in any app,
   sync them with Syncthing, iCloud, Dropbox or git, and keep them forever. Edits
@@ -45,7 +44,7 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 - **Links**: `[[` to link pages, with aliases and headings, live titles,
   backlinks, links to pages that do not exist yet, and links that follow renames.
   Link to one block with `[[Page#^id]]` or a section with `[[Page#Heading]]`,
-  or show just that part with `![[…]]`, the same way Obsidian does. **Copy link
+  or show just that part with `![[â€¦]]`, the same way Obsidian does. **Copy link
   to block** in a block's menu makes one
 - **Databases**: table, board, calendar, list and gallery views of pages, with
   text, number, select, multi-select, date, checkbox, link, relation and
@@ -90,7 +89,7 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
   day" and a page to rediscover
 - **Publish** a page or the whole vault as a static website, free
 - Page history with a view of what changed since each version
-- **Tabs and split panes**: back and forward in every tab (Alt + ← and →, or
+- **Tabs and split panes**: back and forward in every tab (Alt + â† and â†’, or
   Cmd + [ and ] on a Mac, or the mouse's side buttons), Ctrl/Cmd + click to open
   a page in a new tab, Alt + click to open it beside the page you are on,
   Ctrl/Cmd + Shift + T to reopen a closed tab and Ctrl/Cmd + 1 to 9 to jump
@@ -115,8 +114,7 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
 ## Status
 
-Version **1.2.0-polaris.2**. This fork targets Windows x64 and uses
-its own application profile and default vault. Choose a separate folder for
+Version **1.2.4**. Pages stay in a folder you choose as Markdown. Choose a separate folder for
 the synthetic demo vault in [demo/](demo/) and follow [the guide](docs/GUIA.md).
 
 ## Coming from Obsidian
@@ -160,7 +158,7 @@ explains how to set up and what to check before a pull request, and [ARCHITECTUR
 
 ## Relationship to upstream
 
-Morrow Polaris keeps the original application's license and contributor
+Morrow keeps the original application's license and contributor
 attribution. The original project is maintained independently; this fork does
 not represent its maintainers or promise compatibility with every upstream
 release. Its icon catalog is licensed Lucide and accepts user uploads. The exact

@@ -375,7 +375,7 @@ export const pt: TranslationSchema = {
     legacyNoticeOne:
       'Copiar minha {count} página existente para esta pasta. A cópia original fica onde está.',
     createNewVault: 'Criar um novo cofre',
-    createNewVaultHelp: 'Uma nova pasta chamada Morrow Polaris em seus documentos.',
+    createNewVaultHelp: 'Uma nova pasta chamada Morrow em seus documentos.',
     openFolder: 'Abrir uma pasta',
     openFolderHelp: 'Qualquer pasta, incluindo um cofre existente ou uma pasta de arquivos Markdown.',
     recentlyOpened: 'Abertos recentemente',
