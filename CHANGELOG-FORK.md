@@ -2,6 +2,12 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Modificações do fork 1.0.1 — base Morrow 1.2.1 (27/10/2026)
+
+- A exportação em PDF deixa de incluir o botão **Estilo da página** na folha impressa.
+- Validação de interface em perfil oculto: importação de ZIP sintético no formato Notion, edição e restauração pelo histórico, e exportação de PDF pelo menu da página.
+- Nenhum dado pessoal ou instalação do usuário foi usado nessa validação.
+
 ## Modificações do fork 1.0.0 — base Morrow 1.2.1 (27/10/2026)
 
 Base oficial: [Morrow 1.2.1](https://github.com/Aarav2709/Morrow/releases/tag/v1.2.1), commit [`5e6392b`](https://github.com/Aarav2709/Morrow/commit/5e6392bb6425924abd30eec8a99b42aa8c953577). Identificador do pacote: `1.2.1-fork.1.0.0`.
