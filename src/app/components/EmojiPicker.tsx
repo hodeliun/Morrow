@@ -1,4 +1,4 @@
-import { icons } from 'lucide-react';
+import { icons, Palette } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { encodeFileIcon, encodeLucideIcon, parsePageIcon, sanitizeSvg } from '../../core/icons';
@@ -307,13 +307,23 @@ export function EmojiPicker({ pageId, onPick }: { pageId: PageId; onPick: (icon:
                 onClick={() => updateColor(item.color)}
               />
             ))}
-            <input
-              type="color"
-              className="icon-color-custom"
-              aria-label={t('emoji.customColor')}
-              value={color ?? '#FFFFFF'}
-              onChange={(event) => updateColor(event.target.value)}
-            />
+            <label className="icon-color-picker" title={t('emoji.customColor')}>
+              <Palette size={13} aria-hidden="true" />
+              {color && (
+                <span
+                  className="icon-color-custom-sample"
+                  style={{ backgroundColor: color }}
+                  aria-hidden="true"
+                />
+              )}
+              <input
+                type="color"
+                className="icon-color-custom-input"
+                aria-label={t('emoji.customColor')}
+                value={color ?? '#FFFFFF'}
+                onChange={(event) => updateColor(event.target.value)}
+              />
+            </label>
           </div>
         </section>
       )}

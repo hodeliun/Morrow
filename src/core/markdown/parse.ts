@@ -7,8 +7,9 @@ import {
   nearestColor,
   TEXT_HEX,
   validBlockBackground,
+  validHexColor,
 } from '../model';
-import type { DocMark, DocNode, PageId } from '../model';
+import type { ColorName, ColorValue, DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
 import { normalizeDatabase } from '../migrations';
 
@@ -31,6 +32,13 @@ export interface WikiLink {
 }
 
 const md = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
+
+function markdownColor(hex: string, palette: Record<ColorName, string>): ColorValue | null {
+  const custom = validHexColor(hex);
+  if (!custom) return nearestColor(hex, palette);
+  const preset = Object.entries(palette).find(([, value]) => value.toLowerCase() === custom)?.[0];
+  return (preset as ColorValue | undefined) ?? custom;
+}
 md.inline.ruler.before('link', 'wikilink', wikiLinkRule);
 md.inline.ruler.after('backticks', 'math_inline', mathInlineRule);
 md.inline.ruler.after('strikethrough', 'highlight', highlightRule);
@@ -300,7 +308,9 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
             pendingLinkedView = linkedView;
             break;
           }
-          const marker = /^<!--\s*morrow:block-background:([a-z]+)\s*-->$/i.exec(token.content.trim());
+          const marker = /^<!--\s*morrow:block-background:([a-z]+|#[0-9a-f]{6})\s*-->$/i.exec(
+            token.content.trim(),
+          );
           const color = validBlockBackground(marker?.[1]);
           if (color) pendingBlockBackground = color;
           else htmlBlock(token.content, options, { push, top, close, stack });
@@ -549,18 +559,18 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
       }
       case 'html_inline': {
         const tag = token.content.trim().toLowerCase();
-        const blockBackground = /^<!--\s*morrow:block-background:([a-z]+)\s*-->$/.exec(tag);
+        const blockBackground = /^<!--\s*morrow:block-background:([a-z]+|#[0-9a-f]{6})\s*-->$/.exec(tag);
         const background = validBlockBackground(blockBackground?.[1]);
         if (background) {
           out.push({ type: 'blockBackgroundMarker', attrs: { color: background } });
           break;
         }
         const styled =
-          /^<(span|mark)\s+style\s*=\s*["']\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3,6})\s*;?\s*["']\s*>$/.exec(
+          /^<(span|mark)\s+style\s*=\s*["']\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3}(?:[0-9a-f]{3})?)\s*;?\s*["']\s*>$/.exec(
             tag,
           );
         const color = styled
-          ? nearestColor(styled[3]!, styled[2] === 'color' ? TEXT_HEX : BACKGROUND_HEX)
+          ? markdownColor(styled[3]!, styled[2] === 'color' ? TEXT_HEX : BACKGROUND_HEX)
           : null;
         if (styled && color && styled[1] === 'span' && styled[2] === 'color')
           marks.push({ type: 'textColor', attrs: { color } });

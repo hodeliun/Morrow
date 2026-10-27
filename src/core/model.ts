@@ -82,9 +82,20 @@ export const COLORS = [
   'red',
 ] as const;
 export type ColorName = (typeof COLORS)[number];
+export type HexColor = `#${string}`;
+export type ColorValue = ColorName | HexColor;
 
-export function validBlockBackground(value: unknown): ColorName | null {
-  return COLORS.includes(value as ColorName) ? (value as ColorName) : null;
+export function validHexColor(value: unknown): HexColor | null {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? (value.toLowerCase() as HexColor) : null;
+}
+
+export function validColor(value: unknown): ColorValue | null {
+  if (COLORS.includes(value as ColorName)) return value as ColorName;
+  return validHexColor(value);
+}
+
+export function validBlockBackground(value: unknown): ColorValue | null {
+  return validColor(value);
 }
 
 export interface SelectOption {

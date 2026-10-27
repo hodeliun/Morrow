@@ -36,10 +36,10 @@ import {
   Underline,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { pageIdFromHref } from '../../core/links';
-import { COLORS, validBlockBackground } from '../../core/model';
-import type { ColorName } from '../../core/model';
+import { BACKGROUND_HEX, COLORS, TEXT_HEX, validBlockBackground, validColor, validHexColor } from '../../core/model';
+import type { ColorName, ColorValue, HexColor } from '../../core/model';
 import { formatShortcut } from '../actions';
 import { Menu } from '../components/Menu';
 import { t } from '../i18n';
@@ -178,20 +178,78 @@ function useMarks(editor: Editor) {
   });
 }
 
-// the nine colours for text and for highlighting, the same set notion, affine and select options use
+function CustomColorPicker({
+  value,
+  palette,
+  fallback,
+  label,
+  disabled = false,
+  onChange,
+}: {
+  value: ColorValue | null;
+  palette: Record<ColorName, string>;
+  fallback: string;
+  label: string;
+  disabled?: boolean;
+  onChange: (color: HexColor) => void;
+}) {
+  const currentHex = value ? (validHexColor(value) ?? palette[value as ColorName]) : fallback;
+  const [draft, setDraft] = useState(currentHex);
+  const errorId = useId();
+  const validDraft = validHexColor(draft);
+  const selectedCustom = validHexColor(value) !== null;
+
+  const apply = (raw: string) => {
+    setDraft(raw);
+    const color = validHexColor(raw);
+    if (color) onChange(color);
+  };
+
+  return (
+    <span className={`color-custom-control${selectedCustom ? ' is-active' : ''}${disabled ? ' is-disabled' : ''}`}>
+      <label className="color-custom-picker" title={label}>
+        <Palette size={14} aria-hidden="true" />
+        <input
+          type="color"
+          aria-label={label}
+          disabled={disabled}
+          value={validDraft ?? currentHex}
+          onChange={(event) => apply(event.target.value)}
+        />
+      </label>
+      <input
+        className="color-hex-input"
+        type="text"
+        aria-label={t('editor.hexColorFor', { target: label })}
+        aria-invalid={validDraft === null}
+        aria-describedby={validDraft === null ? errorId : undefined}
+        disabled={disabled}
+        value={draft}
+        placeholder="#RRGGBB"
+        maxLength={7}
+        spellCheck={false}
+        onChange={(event) => apply(event.target.value)}
+      />
+      <span className="visually-hidden" id={errorId}>
+        {t('editor.invalidHexColor')}
+      </span>
+    </span>
+  );
+}
+
 function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) {
   const current = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
-      text: (e.getAttributes('textColor').color as ColorName | undefined) ?? null,
+      text: validColor(e.getAttributes('textColor').color),
       bg: e.isActive('highlight')
-        ? ((e.getAttributes('highlight').color as ColorName | undefined) ?? 'yellow')
+        ? (validColor(e.getAttributes('highlight').color) ?? 'yellow')
         : null,
       blockBackground: validBlockBackground(e.state.selection.$from.parent.attrs.blockBackground),
       canSetBlockBackground: e.state.selection.$from.sameParent(e.state.selection.$to),
     }),
   });
-  const setCurrentBlockBackground = (color: ColorName | null) => {
+  const setCurrentBlockBackground = (color: ColorValue | null) => {
     const { $from, $to } = editor.state.selection;
     if (!$from.sameParent($to)) return;
     const node = $from.node($from.depth);
@@ -202,51 +260,67 @@ function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) 
       }),
     );
   };
-  const row = (kind: 'text' | 'bg') => (
-    <div
-      className="color-row"
-      role="group"
-      aria-label={kind === 'text' ? t('editor.textColour') : t('editor.highlight')}
-    >
-      <button
-        type="button"
-        className={`color-dot default${(kind === 'text' ? current.text : current.bg) === null ? ' is-active' : ''}`}
-        title={kind === 'text' ? t('editor.defaultTextColor') : t('editor.noHighlight')}
-        aria-label={kind === 'text' ? t('editor.defaultTextColor') : t('editor.noHighlight')}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={() =>
-          kind === 'text'
-            ? editor.chain().focus().setTextColor(null).run()
-            : editor.chain().focus().setHighlightColor(null).run()
-        }
+  const row = (kind: 'text' | 'bg') => {
+    const value = kind === 'text' ? current.text : current.bg;
+    const customLabel = t(kind === 'text' ? 'editor.customTextColor' : 'editor.customHighlightColor');
+    return (
+      <div
+        className="color-row"
+        role="group"
+        aria-label={kind === 'text' ? t('editor.textColour') : t('editor.highlight')}
       >
-        {kind === 'text' ? 'A' : ''}
-      </button>
-      {COLORS.map((color) => (
         <button
-          key={color}
           type="button"
-          className={`color-dot ${kind}-${color}${(kind === 'text' ? current.text : current.bg) === color ? ' is-active' : ''}`}
-          title={
-            kind === 'bg' ? t('editor.colourHighlight', { colour: colorLabel(color) }) : colorLabel(color)
-          }
-          aria-label={
-            kind === 'bg'
-              ? t('editor.colourHighlight', { colour: colorLabel(color) })
-              : t('editor.colourText', { colour: colorLabel(color) })
-          }
+          className={`color-dot default${value === null ? ' is-active' : ''}`}
+          title={kind === 'text' ? t('editor.defaultTextColor') : t('editor.noHighlight')}
+          aria-label={kind === 'text' ? t('editor.defaultTextColor') : t('editor.noHighlight')}
+          aria-pressed={value === null}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() =>
             kind === 'text'
-              ? editor.chain().focus().setTextColor(color).run()
-              : editor.chain().focus().setHighlightColor(color).run()
+              ? editor.chain().focus().setTextColor(null).run()
+              : editor.chain().focus().setHighlightColor(null).run()
           }
         >
           {kind === 'text' ? 'A' : ''}
         </button>
-      ))}
-    </div>
-  );
+        {COLORS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            className={`color-dot ${kind}-${color}${value === color ? ' is-active' : ''}`}
+            title={kind === 'bg' ? t('editor.colourHighlight', { colour: colorLabel(color) }) : colorLabel(color)}
+            aria-label={
+              kind === 'bg'
+                ? t('editor.colourHighlight', { colour: colorLabel(color) })
+                : t('editor.colourText', { colour: colorLabel(color) })
+            }
+            aria-pressed={value === color}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() =>
+              kind === 'text'
+                ? editor.chain().focus().setTextColor(color).run()
+                : editor.chain().focus().setHighlightColor(color).run()
+            }
+          >
+            {kind === 'text' ? 'A' : ''}
+          </button>
+        ))}
+        <CustomColorPicker
+          key={`${kind}-${value ?? 'default'}`}
+          value={value}
+          palette={kind === 'text' ? TEXT_HEX : BACKGROUND_HEX}
+          fallback={kind === 'text' ? TEXT_HEX.gray : BACKGROUND_HEX.yellow}
+          label={customLabel}
+          onChange={(hex) =>
+            kind === 'text'
+              ? editor.chain().focus().setTextColor(hex).run()
+              : editor.chain().focus().setHighlightColor(hex).run()
+          }
+        />
+      </div>
+    );
+  };
   return (
     <div className="color-panel" onKeyDown={(event) => event.key === 'Escape' && onDone()}>
       <span className="color-panel-label">{t('slash.items.text.title')}</span>
@@ -278,6 +352,15 @@ function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) 
             onClick={() => setCurrentBlockBackground(color)}
           />
         ))}
+        <CustomColorPicker
+          key={`block-${current.blockBackground ?? 'default'}`}
+          value={current.blockBackground}
+          palette={BACKGROUND_HEX}
+          fallback={BACKGROUND_HEX.yellow}
+          label={t('editor.customBlockBackgroundColor')}
+          disabled={!current.canSetBlockBackground}
+          onChange={setCurrentBlockBackground}
+        />
       </div>
     </div>
   );

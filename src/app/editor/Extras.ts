@@ -16,8 +16,8 @@ import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import type { EditorView } from '@tiptap/pm/view';
 import { common, createLowlight } from 'lowlight';
-import { CALLOUT_TONES, calloutTone, COLORS } from '../../core/model';
-import type { CalloutTone, ColorName } from '../../core/model';
+import { CALLOUT_TONES, calloutTone, validColor } from '../../core/model';
+import type { CalloutTone, ColorValue } from '../../core/model';
 import { tagColor } from '../../core/tags';
 import { emojiElement } from '../components/Emoji';
 import { openDialog } from '../ui';
@@ -28,10 +28,10 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     highlight: {
       toggleHighlight: () => ReturnType;
-      setHighlightColor: (color: ColorName | null) => ReturnType;
+      setHighlightColor: (color: ColorValue | null) => ReturnType;
     };
     textColor: {
-      setTextColor: (color: ColorName | null) => ReturnType;
+      setTextColor: (color: ColorValue | null) => ReturnType;
     };
   }
 }
@@ -39,18 +39,22 @@ declare module '@tiptap/core' {
 const colorAttribute = (prefix: 'text' | 'bg') => ({
   color: {
     default: null,
-    parseHTML: (element: HTMLElement) => {
-      const value = element.getAttribute('data-color');
-      return COLORS.includes(value as ColorName) ? value : null;
+    parseHTML: (element: HTMLElement) => validColor(element.getAttribute('data-color')),
+    renderHTML: (attributes: Record<string, unknown>) => {
+      const color = validColor(attributes.color);
+      if (!color) return {};
+      if (color.startsWith('#')) {
+        return {
+          'data-color': color,
+          style: `${prefix === 'text' ? 'color' : 'background-color'}: ${color}`,
+        };
+      }
+      return { 'data-color': color, class: `${prefix}-${color}` };
     },
-    renderHTML: (attributes: Record<string, unknown>) =>
-      attributes.color
-        ? { 'data-color': attributes.color, class: `${prefix}-${String(attributes.color)}` }
-        : {},
   },
 });
 
-// ==text== in markdown, <mark> on the page, optionally in one of the nine colours
+// ==text== in markdown, <mark> on the page, optionally in a preset or validated custom colour
 export const Highlight = Mark.create({
   name: 'highlight',
   addAttributes() {

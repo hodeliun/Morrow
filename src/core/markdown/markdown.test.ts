@@ -321,9 +321,75 @@ describe('colours', () => {
     expect(markdownToDoc(out)).toEqual(doc);
   });
 
-  it('snaps other colours to the nearest one in the palette', () => {
-    const doc = markdownToDoc('<span style="color: #ff0000">alarm</span>');
-    expect(doc.content![0]!.content![0]!.marks).toEqual([{ type: 'textColor', attrs: { color: 'red' } }]);
+  it('round trips custom text, highlight and block colours as six-digit hex', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { blockBackground: '#a1b2c3' },
+          content: [
+            { type: 'text', text: 'Signal', marks: [{ type: 'textColor', attrs: { color: '#124abc' } }] },
+            text(' and '),
+            { type: 'text', text: 'attention', marks: [{ type: 'highlight', attrs: { color: '#f0a5d2' } }] },
+          ],
+        },
+      ],
+    };
+    const out = docToMarkdown(doc);
+    expect(out).toBe(
+      '<!-- morrow:block-background:#a1b2c3 -->\n' +
+        '<span style="color: #124abc">Signal</span> and <mark style="background: #f0a5d2">attention</mark>\n',
+    );
+    expect(markdownToDoc(out)).toEqual(doc);
+  });
+
+  it('keeps custom six-digit colours and reads legacy shorthand into the nearest preset', () => {
+    const custom = markdownToDoc('<span style="color: #ff0000">alarm</span>');
+    expect(custom.content![0]!.content![0]!.marks).toEqual([
+      { type: 'textColor', attrs: { color: '#ff0000' } },
+    ]);
+    const presetHex = markdownToDoc('<span style="color: #d44c47">alarm</span>');
+    expect(presetHex.content![0]!.content![0]!.marks).toEqual([
+      { type: 'textColor', attrs: { color: 'red' } },
+    ]);
+    const shorthand = markdownToDoc('<span style="color: #f00">alarm</span>');
+    expect(shorthand.content![0]!.content![0]!.marks).toEqual([
+      { type: 'textColor', attrs: { color: 'red' } },
+    ]);
+  });
+
+  it('does not serialize unsupported or malicious colour values as CSS or HTML', () => {
+    const payload = 'red; background-image: url(javascript:alert(1))';
+    const unsafe: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { blockBackground: payload },
+          content: [
+            {
+              type: 'text',
+              text: 'unsafe',
+              marks: [
+                { type: 'textColor', attrs: { color: payload } },
+                { type: 'highlight', attrs: { color: payload } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const out = docToMarkdown(unsafe);
+    expect(out).toBe('==unsafe==\n');
+    expect(out).not.toContain(payload);
+
+    const malformedHtml = markdownToDoc(
+      '<span style="color: #123456; background-image: url(javascript:alert(1))">unsafe</span>',
+    );
+    const escaped = docToMarkdown(malformedHtml);
+    expect(escaped).toContain('\\<span style=');
+    expect(escaped).not.toMatch(/(?<!\\)<span style=/);
   });
 });
 

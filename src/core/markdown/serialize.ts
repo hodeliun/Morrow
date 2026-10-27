@@ -1,4 +1,4 @@
-import { BACKGROUND_HEX, TEXT_HEX, validBlockBackground } from '../model';
+import { BACKGROUND_HEX, TEXT_HEX, validBlockBackground, validColor } from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
 
 export interface SerializeOptions {
@@ -11,8 +11,10 @@ export interface SerializeOptions {
 }
 
 const MARK_ORDER = ['link', 'bold', 'italic', 'strike', 'underline', 'highlight', 'textColor'];
-const hexOf = (palette: Record<ColorName, string>, mark: DocMark) =>
-  typeof mark.attrs?.color === 'string' ? (palette[mark.attrs.color as ColorName] ?? null) : null;
+const hexOf = (palette: Record<ColorName, string>, mark: DocMark) => {
+  const color = validColor(mark.attrs?.color);
+  return color ? (color.startsWith('#') ? color : palette[color as ColorName]) : null;
+};
 const MARK_OPEN: Record<string, (mark: DocMark) => string> = {
   link: () => '[',
   bold: () => '**',
@@ -325,7 +327,11 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
 
 function sortMarks(marks: DocMark[]): DocMark[] {
   return marks
-    .filter((mark) => mark.type === 'code' || MARK_ORDER.includes(mark.type))
+    .filter(
+      (mark) =>
+        (mark.type === 'code' || MARK_ORDER.includes(mark.type)) &&
+        (mark.type !== 'textColor' || hexOf(TEXT_HEX, mark) !== null),
+    )
     .sort((a, b) => MARK_ORDER.indexOf(a.type) - MARK_ORDER.indexOf(b.type));
 }
 

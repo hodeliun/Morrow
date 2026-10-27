@@ -84,6 +84,37 @@ describe('opening a folder of markdown files', () => {
     await session.close();
   });
 
+  it('persists and reopens custom text, highlight and block colours from Markdown', async () => {
+    const vault = new MemoryVault(OBSIDIAN);
+    const session = await open(vault);
+    const welcome = idOf(session, 'Welcome');
+    const customDoc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { blockBackground: '#a1b2c3' },
+          content: [
+            { type: 'text', text: 'Signal', marks: [{ type: 'textColor', attrs: { color: '#124abc' } }] },
+            { type: 'text', text: ' and ' },
+            { type: 'text', text: 'attention', marks: [{ type: 'highlight', attrs: { color: '#f0a5d2' } }] },
+          ],
+        },
+      ],
+    };
+
+    await run(session, { type: 'page.setDoc', id: welcome, doc: customDoc, now: 5 });
+    const saved = vault.text('Welcome.md')!;
+    expect(saved).toContain('<!-- morrow:block-background:#a1b2c3 -->');
+    expect(saved).toContain('<span style="color: #124abc">Signal</span>');
+    expect(saved).toContain('<mark style="background: #f0a5d2">attention</mark>');
+    await session.close();
+
+    const reopened = await open(vault);
+    expect(reopened.getState().docs[welcome]).toEqual(customDoc);
+    await reopened.close();
+  });
+
   it('changes only the frontmatter when only an icon or tags change', async () => {
     const vault = new MemoryVault(OBSIDIAN);
     const session = await open(vault);

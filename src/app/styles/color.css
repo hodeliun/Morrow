@@ -439,7 +439,8 @@
 
 .color-panel {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
+  max-width: min(92vw, 500px);
   align-items: center;
   gap: 6px 10px;
   padding: 6px 8px;
@@ -450,6 +451,8 @@
 }
 .color-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
 }
 .color-dot {
@@ -470,6 +473,67 @@
 }
 .color-dot:hover {
   border-color: var(--border-strong);
+}
+.color-custom-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.color-custom-control.is-disabled {
+  opacity: 0.5;
+}
+.color-custom-picker {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  cursor: pointer;
+}
+.color-custom-picker svg {
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 65%));
+  pointer-events: none;
+}
+.color-custom-picker input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.color-custom-picker:focus-within,
+.color-custom-control.is-active .color-custom-picker {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.color-hex-input {
+  box-sizing: border-box;
+  width: 82px;
+  height: 24px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: 10px var(--font-mono);
+}
+.color-hex-input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+.color-hex-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.color-custom-control.is-disabled .color-hex-input {
+  cursor: not-allowed;
 }
 
 .page-cover {
@@ -1217,7 +1281,7 @@ button.home-stat:hover {
   gap: 5px;
 }
 .icon-color-choice,
-.icon-color-custom {
+.icon-color-picker {
   width: 22px;
   height: 22px;
   border: 1px solid var(--border-strong);
@@ -1232,17 +1296,40 @@ button.home-stat:hover {
 .icon-color-auto {
   background: linear-gradient(135deg, var(--text) 0 45%, transparent 46% 54%, var(--text) 55%);
 }
-.icon-color-custom {
-  overflow: hidden;
-  appearance: none;
+.icon-color-picker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: white;
   background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
 }
-.icon-color-custom::-webkit-color-swatch-wrapper {
-  padding: 0;
+.icon-color-picker svg {
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 65%));
+  pointer-events: none;
 }
-.icon-color-custom::-webkit-color-swatch {
+.icon-color-custom-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
   border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.icon-color-picker:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.icon-color-custom-sample {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--surface);
   border-radius: 50%;
+  pointer-events: none;
 }
 .icon-license-note {
   margin: 8px 0 0;

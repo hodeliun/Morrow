@@ -109,7 +109,12 @@ export const BlockBackground = Extension.create({
               validBlockBackground(element.getAttribute('data-block-background')),
             renderHTML: (attributes: { blockBackground?: unknown }) => {
               const color = validBlockBackground(attributes.blockBackground);
-              return color ? { 'data-block-background': color } : {};
+              return color
+                ? {
+                    'data-block-background': color,
+                    ...(color.startsWith('#') ? { style: `background-color: ${color}` } : {}),
+                  }
+                : {};
             },
           },
         },
