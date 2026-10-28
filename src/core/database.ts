@@ -1680,7 +1680,7 @@ export function visibleRows(
 }
 
 export interface PropertySummary {
-  value: number | null;
+  value: number | string | null;
   error: string | null;
 }
 
@@ -1700,26 +1700,120 @@ export function summarizeProperty(
       values.push(toPropertyValue(result.value, prop, state));
     } else values.push(valueOf(row, prop.id, database, state));
   }
-  if (operation === 'count')
-    return {
-      value: values.filter(
-        (value) => value !== null && value !== '' && !(Array.isArray(value) && !value.length),
-      ).length,
-      error: null,
-    };
+
+  const isValEmpty = (value: PropValue): boolean => {
+    if (value === null || value === undefined || value === '') return true;
+    if (Array.isArray(value) && value.length === 0) return true;
+    return false;
+  };
+
+  const filledValues = values.filter((val) => !isValEmpty(val));
+
+  if (operation === 'count') {
+    return { value: rows.length, error: null };
+  }
+  if (operation === 'countValues' || operation === 'countNotEmpty') {
+    return { value: filledValues.length, error: null };
+  }
+  if (operation === 'countEmpty') {
+    return { value: rows.length - filledValues.length, error: null };
+  }
+  if (operation === 'percentEmpty') {
+    if (rows.length === 0) return { value: null, error: null };
+    return { value: ((rows.length - filledValues.length) / rows.length) * 100, error: null };
+  }
+  if (operation === 'percentNotEmpty') {
+    if (rows.length === 0) return { value: null, error: null };
+    return { value: (filledValues.length / rows.length) * 100, error: null };
+  }
+  if (operation === 'countUnique') {
+    const uniqueSet = new Set<string>();
+    for (const val of filledValues) {
+      if (Array.isArray(val)) {
+        for (const item of val) uniqueSet.add(String(item));
+      } else {
+        uniqueSet.add(String(val));
+      }
+    }
+    return { value: uniqueSet.size, error: null };
+  }
+
+  // Checkbox specific summaries
+  if (operation === 'checked') {
+    return { value: values.filter((val) => val === true).length, error: null };
+  }
+  if (operation === 'unchecked') {
+    return { value: values.filter((val) => val !== true).length, error: null };
+  }
+  if (operation === 'percentChecked') {
+    if (rows.length === 0) return { value: null, error: null };
+    return { value: (values.filter((val) => val === true).length / rows.length) * 100, error: null };
+  }
+
+  // Date specific summaries for date/datetime/createdTime/lastEditedTime
+  const isDateProp = prop.type === 'date' || prop.type === 'datetime' || prop.type === 'createdTime' || prop.type === 'lastEditedTime';
+  if (isDateProp && (operation === 'min' || operation === 'max' || operation === 'range')) {
+    if (filledValues.length === 0) return { value: null, error: null };
+    const dateEntries: { raw: PropValue; time: number }[] = [];
+    for (const val of filledValues) {
+      let time: number;
+      if (typeof val === 'number') {
+        time = val;
+      } else if (typeof val === 'string' && isValidDateKey(val)) {
+        const [y, m, d] = val.split('-').map(Number);
+        const dt = new Date(0);
+        dt.setUTCFullYear(y!, m! - 1, d!);
+        time = dt.getTime();
+      } else {
+        time = Date.parse(String(val));
+      }
+      if (!Number.isFinite(time)) {
+        return { value: null, error: `“${prop.name}” contains an invalid date value.` };
+      }
+      dateEntries.push({ raw: val, time });
+    }
+    if (dateEntries.length === 0) return { value: null, error: null };
+    if (operation === 'min') {
+      const earliest = dateEntries.reduce((prev, curr) => (curr.time < prev.time ? curr : prev));
+      return { value: earliest.raw as (number | string), error: null };
+    }
+    if (operation === 'max') {
+      const latest = dateEntries.reduce((prev, curr) => (curr.time > prev.time ? curr : prev));
+      return { value: latest.raw as (number | string), error: null };
+    }
+    if (operation === 'range') {
+      const times = dateEntries.map((e) => e.time);
+      const minTime = Math.min(...times);
+      const maxTime = Math.max(...times);
+      const days = Math.round((maxTime - minTime) / (1000 * 60 * 60 * 24));
+      return { value: days, error: null };
+    }
+  }
+
+  // Numeric summaries
   const numbers: number[] = [];
   for (const value of values) {
-    if (value === null || value === '') continue;
+    if (isValEmpty(value)) continue;
     if (typeof value !== 'number' || !Number.isFinite(value))
       return { value: null, error: `“${prop.name}” contains a non-numeric value.` };
     numbers.push(value);
   }
-  if (operation === 'sum') return { value: numbers.reduce((total, value) => total + value, 0), error: null };
   if (numbers.length === 0) return { value: null, error: null };
+
+  if (operation === 'sum') return { value: numbers.reduce((total, value) => total + value, 0), error: null };
   if (operation === 'average')
     return { value: numbers.reduce((total, value) => total + value, 0) / numbers.length, error: null };
   if (operation === 'min') return { value: Math.min(...numbers), error: null };
-  return { value: Math.max(...numbers), error: null };
+  if (operation === 'max') return { value: Math.max(...numbers), error: null };
+  if (operation === 'range') return { value: Math.max(...numbers) - Math.min(...numbers), error: null };
+  if (operation === 'median') {
+    const sorted = [...numbers].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const medianVal = sorted.length % 2 !== 0 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+    return { value: medianVal, error: null };
+  }
+
+  return { value: null, error: null };
 }
 
 export function conditionalFormatForRow(
@@ -1728,7 +1822,15 @@ export function conditionalFormatForRow(
   database: DatabaseDef,
   state?: WorkspaceState,
 ): ConditionalFormatRule | null {
-  return rules?.find((rule) => rule.scope === 'row' && matchesFilter(row, rule, database, state)) ?? null;
+  if (!rules || rules.length === 0) return null;
+  return rules.find((rule) => {
+    if (rule.scope !== 'row') return false;
+    if (rule.mode === 'formula') {
+      if (!rule.formula || !rule.formula.trim()) return false;
+      return matchesFilter(row, rule, database, state);
+    }
+    return matchesFilter(row, rule, database, state);
+  }) ?? null;
 }
 
 export function conditionalFormatForCell(
@@ -1738,11 +1840,16 @@ export function conditionalFormatForCell(
   database: DatabaseDef,
   state?: WorkspaceState,
 ): ConditionalFormatRule | null {
-  return (
-    rules?.find(
-      (rule) => rule.scope === 'cell' && rule.prop === propId && matchesFilter(row, rule, database, state),
-    ) ?? null
-  );
+  if (!rules || rules.length === 0) return null;
+  return rules.find((rule) => {
+    if (rule.scope !== 'cell') return false;
+    if (rule.prop !== propId) return false;
+    if (rule.mode === 'formula') {
+      if (!rule.formula || !rule.formula.trim()) return false;
+      return matchesFilter(row, rule, database, state);
+    }
+    return matchesFilter(row, rule, database, state);
+  }) ?? null;
 }
 
 export interface RowGroup {

@@ -1,4 +1,4 @@
-import { Copy, Maximize2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Eye, Maximize2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { displayTitle } from '../../../core/model';
 import type { PageId } from '../../../core/model';
@@ -6,6 +6,7 @@ import { openPage } from '../../router';
 import { run, useWorkspace } from '../../workspace';
 import { PageIcon } from '../Sidebar';
 import { DatabaseView } from './DatabaseView';
+import { updateView } from './data';
 import { t } from '../../i18n';
 import { copyDatabase } from '../../databaseClipboard';
 
@@ -17,16 +18,56 @@ export function EmbeddedDatabase({ pageId, editable }: { pageId: PageId; editabl
   const [draft, setDraft] = useState('');
   const canceling = useRef(false);
   if (!page?.database) return null;
+
+  const primaryView = page.database.views[0];
+  const hideTitle = primaryView?.hideTitle === true;
+  const collapsed = primaryView?.collapsed === true;
+
   const finishRename = () => {
     if (!canceling.current && draft !== page.title)
       run({ type: 'page.rename', id: page.id, title: draft, now: Date.now() });
     canceling.current = false;
     setRenaming(false);
   };
+
+  const toggleCollapsed = () => {
+    if (primaryView) {
+      updateView(page.id, primaryView.id, (v) => ({ ...v, collapsed: !collapsed }));
+    }
+  };
+
+  const showTitle = () => {
+    if (primaryView) {
+      updateView(page.id, primaryView.id, (v) => ({ ...v, hideTitle: false }));
+    }
+  };
+
   return (
     <div className="inline-database">
       <div className="inline-database-head">
-        {renaming && editable ? (
+        {primaryView && (
+          <button
+            type="button"
+            className="icon-button tiny"
+            aria-label={collapsed ? t('database.expandDatabase') : t('database.collapseDatabase')}
+            title={collapsed ? t('database.expandDatabase') : t('database.collapseDatabase')}
+            onClick={toggleCollapsed}
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        )}
+        {hideTitle ? (
+          <button
+            type="button"
+            className="inline-database-hidden-title-trigger"
+            onClick={showTitle}
+            title={t('database.showTitle')}
+            aria-label={t('database.showTitle')}
+          >
+            <Eye size={13} />
+            <span>{t('database.showTitle')}</span>
+          </button>
+        ) : renaming && editable ? (
           <span className="inline-database-title">
             <PageIcon page={page} />
             <input
@@ -74,7 +115,13 @@ export function EmbeddedDatabase({ pageId, editable }: { pageId: PageId; editabl
         )}
         <div className="inline-database-actions">
           {editable && (
-            <button type="button" className="icon-button" title={t('database.copyDatabase')} aria-label={t('database.copyDatabase')} onClick={() => void copyDatabase(page.id)}>
+            <button
+              type="button"
+              className="icon-button"
+              title={t('database.copyDatabase')}
+              aria-label={t('database.copyDatabase')}
+              onClick={() => void copyDatabase(page.id)}
+            >
               <Copy size={14} />
             </button>
           )}
@@ -89,7 +136,7 @@ export function EmbeddedDatabase({ pageId, editable }: { pageId: PageId; editabl
           </button>
         </div>
       </div>
-      <DatabaseView page={page} editable={editable} />
+      {!collapsed && <DatabaseView page={page} editable={editable} />}
     </div>
   );
 }

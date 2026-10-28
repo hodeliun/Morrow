@@ -11,6 +11,7 @@ import {
   normalizeCoverPosition,
   normalizeNoteStyle,
   validCover,
+  validColor,
   VIEW_TYPES,
 } from './model';
 import type {
@@ -478,7 +479,7 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
       if (!validId(group.id) || (group.logic !== 'and' && group.logic !== 'or')) return [];
       return [{ id: group.id, logic: group.logic, filters: filtersOf(group.filters).slice(0, 100) }];
     });
-  const summaryOps = new Set<SummaryOperation>(['sum', 'average', 'count', 'min', 'max']);
+  const summaryOps = new Set<SummaryOperation>(['sum', 'average', 'median', 'min', 'max', 'range', 'count', 'countValues', 'countUnique', 'countEmpty', 'countNotEmpty', 'percentEmpty', 'percentNotEmpty', 'checked', 'unchecked', 'percentChecked']);
   const summaries = isRecord(raw.summaries)
     ? (Object.fromEntries(
         Object.entries(raw.summaries)
@@ -491,23 +492,29 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     .flatMap((rule) => {
       const prop = propRef(rule.prop);
       const value = normalizeValue(rule.value);
+      const color = validColor(rule.color);
+      const mode = rule.mode === 'formula' ? ('formula' as const) : ('simple' as const);
+      const formula = typeof rule.formula === 'string' ? rule.formula.slice(0, 2000) : '';
       if (
         !validId(rule.id) ||
         !prop ||
-        !FILTER_OPS.has(rule.op as FilterOp) ||
-        value === undefined ||
+        !color ||
         (rule.scope !== 'row' && rule.scope !== 'cell') ||
-        !COLORS.includes(rule.color as ColorName)
+        (mode === 'simple' && (!FILTER_OPS.has(rule.op as FilterOp) || value === undefined))
       )
         return [];
       return [
         {
           id: rule.id,
           prop,
-          op: rule.op as FilterOp,
-          value,
+          op: (FILTER_OPS.has(rule.op as FilterOp) ? rule.op : 'is') as FilterOp,
+          value: value ?? null,
           scope: rule.scope as 'row' | 'cell',
-          color: rule.color as ColorName,
+          color,
+          mode,
+          ...(formula
+            ? { formula, formulaBindings: normalizeFormulaBindings(formula, rule.formulaBindings) }
+            : { formula: '' }),
         },
       ];
     });
@@ -537,6 +544,8 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     ...(typeof raw.rowHeight === 'number' && Number.isInteger(raw.rowHeight) && raw.rowHeight >= 34 && raw.rowHeight <= 240
       ? { rowHeight: raw.rowHeight }
       : {}),
+    ...(raw.hideTitle === true ? { hideTitle: true } : {}),
+    ...(raw.collapsed === true ? { collapsed: true } : {}),
     ...(filterGroups.length ? { filterGroups } : {}),
     ...(raw.filterGroupLogic === 'and' || raw.filterGroupLogic === 'or'
       ? { filterGroupLogic: raw.filterGroupLogic }

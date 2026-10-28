@@ -255,11 +255,12 @@ export interface FilterGroup {
   filters: FilterRule[];
 }
 
-export type SummaryOperation = 'sum' | 'average' | 'count' | 'min' | 'max';
+export type SummaryOperation = 'sum' | 'average' | 'median' | 'min' | 'max' | 'range' | 'count' | 'countValues' | 'countUnique' | 'countEmpty' | 'countNotEmpty' | 'percentEmpty' | 'percentNotEmpty' | 'checked' | 'unchecked' | 'percentChecked';
 
 export interface ConditionalFormatRule extends FilterRule {
   scope: 'row' | 'cell';
-  color: ColorName;
+  color: ColorValue;
+  mode?: 'simple' | 'formula';
 }
 
 export interface SortRule {
@@ -286,6 +287,8 @@ export interface ViewDef {
   frozenThrough?: string;
   // bounded height of table rows in pixels; cells can be expanded for reading/editing
   rowHeight?: number;
+  hideTitle?: boolean;
+  collapsed?: boolean;
   // Each group combines its rules with AND/OR; the view combines groups with AND/OR.
   filterGroups?: FilterGroup[];
   filterGroupLogic?: 'and' | 'or';

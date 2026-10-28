@@ -1,6 +1,8 @@
 import {
   ArrowDownUp,
   ArrowDown,
+  Link as LinkIcon,
+  SlidersHorizontal,
   ArrowUp,
   Calculator,
   Calendar,
@@ -46,8 +48,10 @@ import {
   newView,
   summarizeProperty,
   valueOf,
+  formulaResult,
 } from '../../../core/database';
-import { BACKGROUND_HEX, COLORS, displayTitle, PROP_TYPES, VIEW_TYPES } from '../../../core/model';
+import { BACKGROUND_HEX,
+  validHexColor, COLORS, displayTitle, PROP_TYPES, VIEW_TYPES } from '../../../core/model';
 import { unclaimedKeys } from '../../../core/properties';
 import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from '../../../core/migrations';
 import type {
@@ -58,6 +62,7 @@ import type {
   FilterGroup,
   ConditionalFormatRule,
   ColorName,
+  ColorValue,
   PageId,
   PageMeta,
   PropDef,
@@ -102,11 +107,38 @@ function summaryLabel(operation: SummaryOperation): string {
   const keys: Record<SummaryOperation, Parameters<typeof t>[0]> = {
     sum: 'database.summarySum',
     average: 'database.summaryAverage',
-    count: 'database.summaryCount',
+    median: 'database.summaryMedian',
     min: 'database.summaryMinimum',
     max: 'database.summaryMaximum',
+    range: 'database.summaryRange',
+    count: 'database.summaryCountAll',
+    countValues: 'database.summaryCountValues',
+    countUnique: 'database.summaryCountUnique',
+    countEmpty: 'database.summaryCountEmpty',
+    countNotEmpty: 'database.summaryCountNotEmpty',
+    percentEmpty: 'database.summaryPercentEmpty',
+    percentNotEmpty: 'database.summaryPercentNotEmpty',
+    checked: 'database.summaryChecked',
+    unchecked: 'database.summaryUnchecked',
+    percentChecked: 'database.summaryPercentChecked',
   };
   return t(keys[operation]);
+}
+
+function operationsForProp(prop: PropDef | undefined): SummaryOperation[] {
+  if (!prop) {
+    return ['count', 'countValues', 'countUnique', 'countEmpty', 'percentEmpty', 'percentNotEmpty'];
+  }
+  if (prop.type === 'checkbox') {
+    return ['checked', 'unchecked', 'percentChecked', 'count', 'countEmpty', 'percentEmpty'];
+  }
+  if (prop.type === 'date' || prop.type === 'datetime' || prop.type === 'createdTime' || prop.type === 'lastEditedTime') {
+    return ['min', 'max', 'range', 'count', 'countValues', 'countUnique', 'countEmpty', 'percentEmpty', 'percentNotEmpty'];
+  }
+  if (isNumericPropertyType(prop.type) || prop.type === 'formula' || prop.fillMode === 'calculated') {
+    return ['sum', 'average', 'median', 'min', 'max', 'range', 'count', 'countValues', 'countUnique', 'countEmpty', 'percentEmpty', 'percentNotEmpty'];
+  }
+  return ['count', 'countValues', 'countUnique', 'countEmpty', 'countNotEmpty', 'percentEmpty', 'percentNotEmpty'];
 }
 
 const viewKey = (id: PageId) => `morrow.view.${id}`;
@@ -196,8 +228,8 @@ function orderedProperties(database: DatabaseDef, view: ViewDef): PropDef[] {
     .map(({ prop }) => prop);
 }
 
-function contrastText(color: ColorName): string {
-  const hex = BACKGROUND_HEX[color];
+function contrastText(color: ColorValue): string {
+  const hex = validHexColor(color) ? color : BACKGROUND_HEX[color as ColorName] ?? '#f3f4f6';
   const channels = hex.match(/[0-9a-f]{2}/gi)?.map((channel) => parseInt(channel, 16) / 255) ?? [1, 1, 1];
   const weights = [0.2126, 0.7152, 0.0722];
   const luminance = channels.reduce((total, channel, index) => {
@@ -207,12 +239,11 @@ function contrastText(color: ColorName): string {
   return luminance > 0.45 ? '#202124' : '#ffffff';
 }
 
-function conditionalColorStyle(color: ColorName): CSSProperties {
+function conditionalColorStyle(color: ColorValue): CSSProperties {
   const foreground = contrastText(color);
-  // Cell editors and display controls use theme variables rather than inherited color.
-  // Scope those variables to the colored cell/card so dark-mode text stays readable.
+  const bg = validHexColor(color) ? color : BACKGROUND_HEX[color as ColorName] ?? color;
   return {
-    backgroundColor: BACKGROUND_HEX[color],
+    backgroundColor: bg,
     color: foreground,
     '--text': foreground,
     '--text-muted': foreground,
@@ -555,7 +586,8 @@ function QuickFilterBar({
 }) {
   const state = useWorkspace();
   const names = [{ id: TITLE_PROP, name: t('database.name') }, ...database.properties];
-  const activeCount = drafts.filter((draft) => draft.enabled).length;
+  const [activePopover, setActivePopover] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+
   const updateDraft = (id: string, change: Partial<FilterRule>, enabled?: boolean) =>
     onChange(
       drafts.map((draft) =>
@@ -565,165 +597,226 @@ function QuickFilterBar({
       ),
     );
 
+  const addQuickFilter = () => {
+    const id = newId();
+    onChange([
+      ...drafts,
+      {
+        rule: { id, prop: TITLE_PROP, op: 'contains', value: '' },
+        enabled: true,
+      },
+    ]);
+  };
+
+  if (drafts.length === 0) {
+    return (
+      <div className="db-filter-bar" role="region" aria-label={t('database.filterBar')}>
+        <button
+          type="button"
+          className="db-filter-chip-add"
+          onClick={addQuickFilter}
+          title={t('database.addFilterChip')}
+        >
+          <Plus size={12} /> {t('database.addFilterChip')}
+        </button>
+      </div>
+    );
+  }
+
+  const activeDraft = drafts.find((d) => d.rule.id === activePopover?.id);
+  const activeProp = activeDraft ? database.properties.find((p) => p.id === activeDraft.rule.prop) : undefined;
+  const activeType = activeDraft ? propType(database, activeDraft.rule.prop) ?? 'text' : 'text';
+  const activeOps = filterOpsFor(activeType === 'title' ? 'text' : activeType);
+  const isTimestamp = activeType === 'createdTime' || activeType === 'lastEditedTime';
+  const needsValue = activeDraft ? !['empty', 'notEmpty', 'checked', 'unchecked'].includes(activeDraft.rule.op) : false;
+  const relationDatabaseId = activeProp?.type === 'relation' ? activeProp.relation?.targetDatabaseId : null;
+  const relationDatabase = relationDatabaseId ? state.pages[relationDatabaseId] : undefined;
+  const relationRows = relationDatabase?.database ? rowsOf(state, relationDatabase.id) : [];
+
   return (
-    <section
-      className={`db-quick-filters${activeCount ? ' is-active' : ''}`}
-      aria-label={t('database.quickFilters')}
-    >
-      <header className="db-quick-filters-head">
-        <div className="db-quick-filters-copy">
-          <div className="db-quick-filters-title">
-            <Filter size={14} />
-            <strong>{t('database.quickFilters')}</strong>
-            {activeCount > 0 && (
-              <span className="db-quick-filters-count" role="status">
-                {t('database.activeQuickFilters', { count: activeCount })}
-              </span>
-            )}
-          </div>
-          <span className="muted small">{t('database.quickFiltersHint')}</span>
-        </div>
-        <div className="db-quick-filters-actions">
-          <button
-            type="button"
-            className="button small"
-            onClick={() =>
-              onChange([
-                ...drafts,
-                {
-                  rule: { id: newId(), prop: TITLE_PROP, op: 'contains', value: '' },
-                  enabled: false,
-                },
-              ])
-            }
-          >
-            <Plus size={13} /> {t('database.addQuickFilter')}
-          </button>
-          {drafts.length > 0 && (
-            <button type="button" className="link-button" onClick={() => onChange([])}>
-              {t('database.clearQuickFilters')}
-            </button>
-          )}
-        </div>
-      </header>
+    <div className="db-filter-bar" role="region" aria-label={t('database.filterBar')}>
       {drafts.map((draft) => {
         const { rule } = draft;
-        const type = propType(database, rule.prop) ?? 'text';
         const prop = database.properties.find((candidate) => candidate.id === rule.prop);
-        const ops = filterOpsFor(type === 'title' ? 'text' : type);
-        const isTimestamp = type === 'createdTime' || type === 'lastEditedTime';
-        const needsValue = !['empty', 'notEmpty', 'checked', 'unchecked'].includes(rule.op);
-        const relationDatabaseId = prop?.type === 'relation' ? prop.relation?.targetDatabaseId : null;
-        const relationDatabase = relationDatabaseId ? state.pages[relationDatabaseId] : undefined;
-        const relationRows = relationDatabase?.database ? rowsOf(state, relationDatabase.id) : [];
-        const noValueOperation = (op: FilterOp) => ['empty', 'notEmpty', 'checked', 'unchecked'].includes(op);
+        const propName = prop ? prop.name : t('database.name');
+        const opLabel = filterLabel(rule.op);
+        const hasValue = rule.value !== null && rule.value !== '' && rule.value !== undefined;
+        let valueText = '';
+        if (hasValue) {
+          if (prop && (prop.type === 'select' || prop.type === 'multiSelect')) {
+            valueText = prop.options.find((o) => o.id === rule.value)?.name ?? String(rule.value);
+          } else if (prop?.type === 'relation' && relationDatabase) {
+            const relRow = state.pages[String(rule.value)];
+            valueText = relRow ? displayTitle(relRow) : String(rule.value);
+          } else {
+            valueText = String(rule.value);
+          }
+        }
         return (
-          <div className={`db-quick-filter${draft.enabled ? ' is-active' : ''}`} key={rule.id}>
-            <select
-              className="text-input small"
-              aria-label={t('database.property')}
-              value={rule.prop}
-              onChange={(event) => {
-                const nextType = propType(database, event.target.value) ?? 'text';
-                updateDraft(
-                  rule.id,
-                  {
-                    prop: event.target.value,
-                    op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
-                    value: null,
-                  },
-                  false,
-                );
-              }}
-            >
-              {names.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-            <select
-              className="text-input small"
-              aria-label={t('database.condition')}
-              value={rule.op}
-              onChange={(event) => {
-                const op = event.target.value as FilterOp;
-                updateDraft(rule.id, { op, value: null }, noValueOperation(op));
-              }}
-            >
-              {ops.map((op) => (
-                <option key={op} value={op}>
-                  {filterLabel(op)}
-                </option>
-              ))}
-            </select>
-            {needsValue &&
-              (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
-                <select
-                  className="text-input small"
-                  aria-label={t('database.value')}
-                  value={String(rule.value ?? '')}
-                  onChange={(event) => updateDraft(rule.id, { value: event.target.value }, true)}
-                >
-                  <option value="">{t('database.choose')}</option>
-                  {prop.options.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-              ) : prop?.type === 'relation' && relationDatabaseId ? (
-                <select
-                  className="text-input small"
-                  aria-label={t('database.value')}
-                  value={String(rule.value ?? '')}
-                  onChange={(event) => updateDraft(rule.id, { value: event.target.value }, true)}
-                >
-                  <option value="">{t('database.choose')}</option>
-                  {relationRows.map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {displayTitle(row)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  className="text-input small"
-                  aria-label={t('database.value')}
-                  type={
-                    prop && isNumericPropertyType(prop.type)
-                      ? 'number'
-                      : isTimestamp || prop?.type === 'datetime'
-                        ? 'datetime-local'
-                        : prop?.type === 'date' || prop?.type === 'time'
-                          ? prop.type
-                          : 'text'
-                  }
-                  step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
-                  value={ruleValueForInput(rule.value, prop, type)}
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    const value = raw === '' ? '' : ruleValueFromInput(raw, rule.value, prop, type);
-                    updateDraft(rule.id, { value }, true);
-                  }}
-                />
-              ))}
+          <div
+            key={rule.id}
+            className={`db-filter-chip${draft.enabled ? ' is-active' : ''}`}
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest('.db-filter-chip-remove')) return;
+              setActivePopover({ id: rule.id, anchor: event.currentTarget });
+            }}
+          >
+            <span className="db-filter-chip-prop">{propName}</span>
+            <span className="db-filter-chip-op muted">{opLabel}</span>
+            {valueText && <span className="db-filter-chip-val">{valueText}</span>}
             <button
               type="button"
-              className="icon-button tiny"
+              className="db-filter-chip-remove"
               aria-label={t('database.removeFilter')}
-              onClick={() => onChange(drafts.filter((candidate) => candidate.rule.id !== rule.id))}
+              title={t('database.removeFilter')}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (activePopover?.id === rule.id) setActivePopover(null);
+                onChange(drafts.filter((candidate) => candidate.rule.id !== rule.id));
+              }}
             >
-              <X size={13} />
+              <X size={11} />
             </button>
           </div>
         );
       })}
-    </section>
+      <button
+        type="button"
+        className="db-filter-chip-add"
+        onClick={addQuickFilter}
+        title={t('database.addFilterChip')}
+      >
+        <Plus size={12} /> {t('database.addFilterChip')}
+      </button>
+      <button
+        type="button"
+        className="link-button db-filter-reset"
+        onClick={() => {
+          setActivePopover(null);
+          onChange([]);
+        }}
+      >
+        {t('database.resetFilters')}
+      </button>
+
+      {activePopover && activeDraft && (
+        <Popover
+          anchor={activePopover.anchor}
+          onClose={() => setActivePopover(null)}
+          label={t('database.compactFilter')}
+          className="db-panel"
+        >
+          <div className="db-filter-popover-content">
+            <label className="field">
+              <span>{t('database.property')}</span>
+              <select
+                className="text-input small"
+                value={activeDraft.rule.prop}
+                onChange={(event) => {
+                  const nextType = propType(database, event.target.value) ?? 'text';
+                  updateDraft(
+                    activeDraft.rule.id,
+                    {
+                      prop: event.target.value,
+                      op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
+                      value: null,
+                    },
+                    true,
+                  );
+                }}
+              >
+                {names.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>{t('database.condition')}</span>
+              <select
+                className="text-input small"
+                value={activeDraft.rule.op}
+                onChange={(event) => {
+                  const op = event.target.value as FilterOp;
+                  updateDraft(activeDraft.rule.id, { op, value: null }, true);
+                }}
+              >
+                {activeOps.map((op) => (
+                  <option key={op} value={op}>
+                    {filterLabel(op)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {needsValue && (
+              <label className="field">
+                <span>{t('database.value')}</span>
+                {activeProp && (activeProp.type === 'select' || activeProp.type === 'multiSelect') ? (
+                  <select
+                    className="text-input small"
+                    value={String(activeDraft.rule.value ?? '')}
+                    onChange={(event) => updateDraft(activeDraft.rule.id, { value: event.target.value }, true)}
+                  >
+                    <option value="">{t('database.choose')}</option>
+                    {activeProp.options.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : activeProp?.type === 'relation' && relationDatabaseId ? (
+                  <select
+                    className="text-input small"
+                    value={String(activeDraft.rule.value ?? '')}
+                    onChange={(event) => updateDraft(activeDraft.rule.id, { value: event.target.value }, true)}
+                  >
+                    <option value="">{t('database.choose')}</option>
+                    {relationRows.map((row) => (
+                      <option key={row.id} value={row.id}>
+                        {displayTitle(row)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="text-input small"
+                    type={
+                      activeProp && isNumericPropertyType(activeProp.type)
+                        ? 'number'
+                        : isTimestamp || activeProp?.type === 'datetime'
+                          ? 'datetime-local'
+                          : activeProp?.type === 'date' || activeProp?.type === 'time'
+                            ? activeProp.type
+                            : 'text'
+                    }
+                    step={activeProp && isNumericPropertyType(activeProp.type) ? 'any' : undefined}
+                    value={ruleValueForInput(activeDraft.rule.value, activeProp, activeType)}
+                    onChange={(event) => {
+                      const raw = event.target.value;
+                      const value = raw === '' ? '' : ruleValueFromInput(raw, activeDraft.rule.value, activeProp, activeType);
+                      updateDraft(activeDraft.rule.id, { value }, true);
+                    }}
+                  />
+                )}
+              </label>
+            )}
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={activeDraft.enabled}
+                onChange={(event) => updateDraft(activeDraft.rule.id, {}, event.target.checked)}
+              />
+              <span>{t('database.activeQuickFilters', { count: 1 })}</span>
+            </label>
+          </div>
+        </Popover>
+      )}
+    </div>
   );
 }
 
-type ToolPanel = 'filter' | 'sort' | 'properties' | 'layout' | 'summary' | 'format';
+type ToolPanel = 'options' | 'filter' | 'sort' | 'properties' | 'layout' | 'summary' | 'format';
 
 // the frontmatter keys rows already have but no column shows yet, such as the properties of notes that
 // came from obsidian, offered once until they are added or dismissed
@@ -813,6 +906,7 @@ function Toolbar({
   const updateGroups = (change: (groups: FilterGroup[]) => FilterGroup[]) =>
     saveView((current) => withFilterGroups(current, change(filterGroupsForView(current))));
   const filterButton = useRef<HTMLButtonElement>(null);
+  const optionsButton = useRef<HTMLButtonElement>(null);
   const formatButton = useRef<HTMLButtonElement>(null);
   const handledFormatRequest = useRef<string | null>(null);
   const [formatDefaultProp, setFormatDefaultProp] = useState(TITLE_PROP);
@@ -889,6 +983,17 @@ function Toolbar({
         disabled={!editable}>
         <Paintbrush size={13} /> {t('database.conditionalFormatting')}
       </button>
+      <button
+        ref={optionsButton}
+        type="button"
+        className={`text-tool db-options-button${panel?.kind === 'options' ? ' is-active' : ''}`}
+        onClick={open('options')}
+        disabled={!editable}
+        title={t('database.tableOptions')}
+        aria-label={t('database.tableOptions')}
+      >
+        <SlidersHorizontal size={13} /> {t('database.options')}
+      </button>
       <label className="db-search">
         <Search size={13} aria-hidden="true" />
         <input
@@ -915,6 +1020,123 @@ function Toolbar({
             {t('database.clearFilters')}
           </button>
         </div>
+      )}
+      {panel?.kind === 'options' && (
+        <Popover
+          anchor={panel.anchor}
+          onClose={() => setPanel(null)}
+          label={t('database.tableOptions')}
+          className="db-panel"
+        >
+          <div className="db-options-menu">
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => setPanel({ kind: 'filter', anchor: panel.anchor })}
+            >
+              <Filter size={14} />
+              <span>{t('database.filter')}</span>
+              {filterCount > 0 && <span className="db-options-item-badge">{filterCount}</span>}
+            </button>
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => setPanel({ kind: 'sort', anchor: panel.anchor })}
+            >
+              <ArrowDownUp size={14} />
+              <span>{t('database.sort')}</span>
+              {view.sorts.length > 0 && <span className="db-options-item-badge">{view.sorts.length}</span>}
+            </button>
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => setPanel({ kind: 'layout', anchor: panel.anchor })}
+            >
+              <Settings2 size={14} />
+              <span>{t('slash.sections.layout')}</span>
+            </button>
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => setPanel({ kind: 'properties', anchor: panel.anchor })}
+            >
+              <Eye size={14} />
+              <span>{t('database.properties')}</span>
+            </button>
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => setPanel({ kind: 'summary', anchor: panel.anchor })}
+            >
+              <Calculator size={14} />
+              <span>{t('database.calculate')}</span>
+            </button>
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => {
+                setFormatDefaultProp(TITLE_PROP);
+                setPanel({ kind: 'format', anchor: panel.anchor });
+              }}
+            >
+              <Paintbrush size={14} />
+              <span>{t('database.conditionalFormatting')}</span>
+              {(view.conditionalFormats?.length ?? 0) > 0 && (
+                <span className="db-options-item-badge">{view.conditionalFormats!.length}</span>
+              )}
+            </button>
+
+            <div className="db-options-separator" />
+
+            <label className="db-options-toggle">
+              <span>{t('database.hideTitle')}</span>
+              <input
+                type="checkbox"
+                checked={view.hideTitle === true}
+                onChange={(event) =>
+                  saveView((current) => ({ ...current, hideTitle: event.target.checked }))
+                }
+              />
+            </label>
+            <label className="db-options-toggle">
+              <span>{t('database.collapseDatabase')}</span>
+              <input
+                type="checkbox"
+                checked={view.collapsed === true}
+                onChange={(event) =>
+                  saveView((current) => ({ ...current, collapsed: event.target.checked }))
+                }
+              />
+            </label>
+
+            <div className="db-options-separator" />
+
+            <div style={{ padding: '4px 10px' }}>
+              <span className="muted small" style={{ fontWeight: 600 }}>{t('database.linkedViewsMap')}</span>
+              {(() => {
+                const links = linkedViewReferences(state, dbId);
+                if (links.length === 0) {
+                  return <p className="muted small" style={{ margin: '4px 0' }}>{t('database.noLinkedViews')}</p>;
+                }
+                return links.map((ref, idx) => {
+                  const host = state.pages[ref.hostPageId];
+                  return host ? (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="db-options-item"
+                      style={{ padding: '4px 0' }}
+                      onClick={() => openPage(host.id)}
+                    >
+                      <LinkIcon size={12} />
+                      <span>{displayTitle(host)} · {ref.viewName || t('database.linkedView')}</span>
+                    </button>
+                  ) : null;
+                });
+              })()}
+            </div>
+          </div>
+        </Popover>
       )}
       {panel?.kind === 'filter' && (
         <Popover
@@ -1444,23 +1666,20 @@ function Toolbar({
           label={t('database.summary')}
           className="db-panel"
         >
-          {database.properties.map((prop) => {
-            const numeric =
-              isNumericPropertyType(prop.type) || prop.type === 'formula' || prop.fillMode === 'calculated';
-            const operations: SummaryOperation[] = numeric
-              ? ['sum', 'average', 'count', 'min', 'max']
-              : ['count'];
+          {names.map((item) => {
+            const prop = database.properties.find((candidate) => candidate.id === item.id);
+            const operations = operationsForProp(prop);
             return (
-              <label key={prop.id} className="field">
-                <span>{prop.name}</span>
+              <label key={item.id} className="field">
+                <span>{item.name}</span>
                 <select
                   className="text-input small"
-                  value={view.summaries?.[prop.id] ?? ''}
+                  value={view.summaries?.[item.id] ?? ''}
                   onChange={(event) =>
                     saveView((current) => {
                       const summaries = { ...current.summaries };
-                      if (event.target.value) summaries[prop.id] = event.target.value as SummaryOperation;
-                      else delete summaries[prop.id];
+                      if (event.target.value) summaries[item.id] = event.target.value as SummaryOperation;
+                      else delete summaries[item.id];
                       return { ...current, summaries };
                     })
                   }
@@ -1484,7 +1703,7 @@ function Toolbar({
           label={t('database.conditionalFormatting')}
           className="db-panel"
         >
-          {(view.conditionalFormats ?? []).map((rule) => {
+          {(view.conditionalFormats ?? []).map((rule, ruleIndex) => {
             const prop = database.properties.find((candidate) => candidate.id === rule.prop);
             const type = propType(database, rule.prop) ?? 'text';
             const value = ruleValueForInput(rule.value, prop, type);
@@ -1496,110 +1715,290 @@ function Toolbar({
                   candidate.id === rule.id ? { ...candidate, ...patch } : candidate,
                 ),
               }));
+
+            // Formula real-time diagnostics
+            let formulaError: string | null = null;
+            let formulaNonBoolean = false;
+            if (rule.mode === 'formula' && rule.formula?.trim()) {
+              const sampleRow = rows[0] ?? ({ id: 'sample', properties: {} } as PageMeta);
+              const testResult = formulaResult(
+                sampleRow,
+                {
+                  id: `test-${rule.id}`,
+                  name: 'test',
+                  type: 'formula',
+                  options: [],
+                  formula: rule.formula,
+                  formulaBindings: rule.formulaBindings,
+                },
+                database,
+                0,
+                state,
+              );
+              if (testResult.error) {
+                formulaError = testResult.error;
+              } else if (typeof testResult.value !== 'boolean') {
+                formulaNonBoolean = true;
+              }
+            }
+
             return (
-              <div key={rule.id} className="db-conditional-rule">
-                    <select
-                  className="text-input small"
-                  aria-label={t('database.property')}
-                  value={rule.prop}
-                  onChange={(event) => {
-                    const nextType = propType(database, event.target.value) ?? 'text';
-                    editRule({
-                      prop: event.target.value,
-                      op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
-                      value: null,
-                    });
-                  }}
-                >
-                  {names.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="text-input small"
-                  aria-label={t('database.conditionScope')}
-                  value={rule.scope}
-                  onChange={(event) => editRule({ scope: event.target.value === 'cell' ? 'cell' : 'row' })}
-                >
-                  <option value="row">{t('database.entireRow')}</option>
-                  <option value="cell">{t('database.matchingCell')}</option>
-                </select>
-                <select
-                  className="text-input small"
-                  aria-label={t('database.condition')}
-                  value={rule.op}
-                  onChange={(event) => editRule({ op: event.target.value as FilterOp, value: null })}
-                >
-                  {filterOpsFor(type === 'title' ? 'text' : type).map((op) => (
-                    <option key={op} value={op}>
-                      {filterLabel(op)}
-                    </option>
-                  ))}
-                </select>
-                {needsValue &&
-                  (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+              <div key={rule.id} className="db-conditional-rule" style={{ marginBottom: '10px' }}>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '4px' }}>
+                  <span
+                    className="muted small"
+                    style={{
+                      fontWeight: 600,
+                      minWidth: '22px',
+                      fontSize: '11px',
+                      padding: '1px 4px',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-subtle, rgba(128,128,128,0.1))',
+                      textAlign: 'center',
+                    }}
+                    title={t('database.rulePreview')}
+                  >
+                    #{ruleIndex + 1}
+                  </span>
+                  <select
+                    className="text-input small"
+                    aria-label={t('database.ruleMode')}
+                    value={rule.mode ?? 'simple'}
+                    onChange={(event) =>
+                      editRule({
+                        mode: event.target.value === 'formula' ? 'formula' : 'simple',
+                        formula: rule.formula ?? '',
+                      })
+                    }
+                  >
+                    <option value="simple">{t('database.simpleCondition')}</option>
+                    <option value="formula">{t('database.formulaCondition')}</option>
+                  </select>
+
+                  <select
+                    className="text-input small"
+                    aria-label={t('database.conditionScope')}
+                    value={rule.scope}
+                    onChange={(event) => editRule({ scope: event.target.value === 'cell' ? 'cell' : 'row' })}
+                  >
+                    <option value="row">{t('database.entireRow')}</option>
+                    <option value="cell">{t('database.matchingCell')}</option>
+                  </select>
+
+                  {rule.scope === 'cell' && (
                     <select
                       className="text-input small"
-                      aria-label={t('database.value')}
-                      value={String(rule.value ?? '')}
-                      onChange={(event) => editRule({ value: event.target.value || null })}
+                      aria-label={t('database.property')}
+                      value={rule.prop}
+                      onChange={(event) => editRule({ prop: event.target.value })}
                     >
-                      <option value="">{t('database.choose')}</option>
-                      {prop.options.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.name}
+                      {names.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
                         </option>
                       ))}
                     </select>
-                  ) : (
+                  )}
+
+                  <button
+                    type="button"
+                    className="icon-button tiny"
+                    aria-label={t('database.removeFilter')}
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() =>
+                      saveView((current) => ({
+                        ...current,
+                        conditionalFormats: (current.conditionalFormats ?? []).filter(
+                          (candidate) => candidate.id !== rule.id,
+                        ),
+                      }))
+                    }
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+
+                {rule.mode === 'formula' ? (
+                  <div style={{ marginBottom: '4px' }}>
                     <input
+                      type="text"
                       className="text-input small"
-                      aria-label={t('database.value')}
-                      type={
-                        prop && isNumericPropertyType(prop.type)
-                          ? 'number'
-                          : type === 'datetime' || type === 'createdTime' || type === 'lastEditedTime'
-                            ? 'datetime-local'
-                            : prop?.type === 'date' || prop?.type === 'time'
-                              ? prop.type
-                              : 'text'
-                      }
-                      step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
-                      value={value}
-                      onChange={(event) =>
-                        editRule({ value: ruleValueFromInput(event.target.value, rule.value, prop, type) })
-                      }
+                      style={{ width: '100%' }}
+                      placeholder="e.g. Score >= 50 and Status = 'Done'"
+                      aria-label={t('database.ruleFormula')}
+                      value={rule.formula ?? ''}
+                      onChange={(event) => {
+                        const formula = event.target.value;
+                        const formulaBindings = bindPageFormulaReferences(
+                          formula,
+                          scopePageId,
+                          state,
+                          dbId,
+                          rule.formulaBindings ?? [],
+                        );
+                        editRule({ formula, formulaBindings });
+                      }}
                     />
-                  ))}
-                <select
-                  className="text-input small"
-                  aria-label={t('database.backgroundColor')}
-                  value={rule.color}
-                  onChange={(event) => editRule({ color: event.target.value as ColorName })}
-                >
-                  {COLORS.map((color) => (
-                    <option key={color} value={color}>
-                      {colorLabel(color)}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="icon-button tiny"
-                  aria-label={t('database.removeFilter')}
-                  onClick={() =>
-                    saveView((current) => ({
-                      ...current,
-                      conditionalFormats: (current.conditionalFormats ?? []).filter(
-                        (candidate) => candidate.id !== rule.id,
-                      ),
-                    }))
-                  }
-                >
-                  <X size={13} />
-                </button>
+                    {formulaError && (
+                      <div className="db-formula-diagnostic error">{formulaError}</div>
+                    )}
+                    {formulaNonBoolean && (
+                      <div className="db-formula-diagnostic warning">
+                        {t('database.formulaMustReturnBoolean')}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '4px' }}>
+                    {rule.scope !== 'cell' && (
+                      <select
+                        className="text-input small"
+                        aria-label={t('database.property')}
+                        value={rule.prop}
+                        onChange={(event) => {
+                          const nextType = propType(database, event.target.value) ?? 'text';
+                          editRule({
+                            prop: event.target.value,
+                            op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
+                            value: null,
+                          });
+                        }}
+                      >
+                        {names.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <select
+                      className="text-input small"
+                      aria-label={t('database.condition')}
+                      value={rule.op}
+                      onChange={(event) => editRule({ op: event.target.value as FilterOp, value: null })}
+                    >
+                      {filterOpsFor(type === 'title' ? 'text' : type).map((op) => (
+                        <option key={op} value={op}>
+                          {filterLabel(op)}
+                        </option>
+                      ))}
+                    </select>
+                    {needsValue &&
+                      (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+                        <select
+                          className="text-input small"
+                          aria-label={t('database.value')}
+                          value={String(rule.value ?? '')}
+                          onChange={(event) => editRule({ value: event.target.value || null })}
+                        >
+                          <option value="">{t('database.choose')}</option>
+                          {prop.options.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className="text-input small"
+                          aria-label={t('database.value')}
+                          type={
+                            prop && isNumericPropertyType(prop.type)
+                              ? 'number'
+                              : type === 'datetime' || type === 'createdTime' || type === 'lastEditedTime'
+                                ? 'datetime-local'
+                                : prop?.type === 'date' || prop?.type === 'time'
+                                  ? prop.type
+                                  : 'text'
+                          }
+                          step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
+                          value={value}
+                          onChange={(event) =>
+                            editRule({ value: ruleValueFromInput(event.target.value, rule.value, prop, type) })
+                          }
+                        />
+                      ))}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', margin: '4px 0', flexWrap: 'wrap' }}>
+                  <select
+                    className="text-input small"
+                    aria-label={t('database.backgroundColor')}
+                    value={validHexColor(rule.color) ? 'custom' : rule.color}
+                    onChange={(event) => {
+                      if (event.target.value !== 'custom') {
+                        editRule({ color: event.target.value as ColorName });
+                      }
+                    }}
+                  >
+                    {COLORS.map((color) => (
+                      <option key={color} value={color}>
+                        {colorLabel(color)}
+                      </option>
+                    ))}
+                    <option value="custom">{t('database.customHexColor')}</option>
+                  </select>
+
+                  <input
+                    type="text"
+                    className="text-input small"
+                    style={{ width: '85px' }}
+                    placeholder="#RRGGBB"
+                    value={validHexColor(rule.color) ?? ''}
+                    onChange={(event) => {
+                      const hex = validHexColor(event.target.value);
+                      if (hex) editRule({ color: hex });
+                    }}
+                  />
+
+                  <input
+                    type="color"
+                    aria-label={t('database.customHexColor')}
+                    value={validHexColor(rule.color) ?? (BACKGROUND_HEX[rule.color as ColorName] || '#fbf3db')}
+                    onChange={(event) => {
+                      const hex = validHexColor(event.target.value);
+                      if (hex) editRule({ color: hex });
+                    }}
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      padding: 0,
+                      border: '1px solid var(--border-subtle, #ccc)',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      background: 'none',
+                    }}
+                  />
+
+                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    {COLORS.map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        aria-label={colorLabel(color)}
+                        title={colorLabel(color)}
+                        onClick={() => editRule({ color })}
+                        style={{
+                          width: '18px',
+                          height: '18px',
+                          borderRadius: '50%',
+                          border: rule.color === color ? '2px solid var(--text, #333)' : '1px solid var(--border-subtle, #ccc)',
+                          backgroundColor: BACKGROUND_HEX[color] || '#eee',
+                          cursor: 'pointer',
+                          padding: 0,
+                          outline: 'none',
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="db-format-preview" style={conditionalColorStyle(rule.color)}>
+                  <span>
+                    {t('database.rulePreview')}: {rule.scope === 'row' ? t('database.entireRow') : t('database.matchingCell')}
+                  </span>
+                </div>
               </div>
             );
           })}
@@ -1618,6 +2017,8 @@ function Toolbar({
                     value: null,
                     scope: formatDefaultProp === TITLE_PROP ? 'row' : 'cell',
                     color: 'yellow',
+                    mode: 'simple',
+                    formula: '',
                   },
                 ],
               }))
@@ -2036,6 +2437,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
   const state = useWorkspace();
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
+  const [summaryAnchor, setSummaryAnchor] = useState<{ propId: string; anchor: HTMLElement } | null>(null);
   const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement; focusSection?: 'formula' } | null>(null);
   const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
   const [adding, setAdding] = useState<HTMLElement | null>(null);
@@ -2274,35 +2676,129 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
             );
           })}
         </tbody>
-        {props.some((prop) => view.summaries?.[prop.id]) && (
-          <tfoot>
+        <tfoot>
             <tr>
-              <th scope="row" className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`} style={frozenStyle(-1)}>
-                {t('database.summary')}
+              <th scope="row" className={`db-col-title db-footer-cell${frozenIndex === -1 ? '' : ' db-frozen'}`} style={frozenStyle(-1)}>
+                {view.summaries?.['title'] ? (
+                  <button
+                    type="button"
+                    className="db-footer-summary"
+                    onClick={(event) => setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })}
+                    title={summaryLabel(view.summaries['title'])}
+                  >
+                    {(() => {
+                      const s = summarizeProperty(rows, { id: 'title', name: t('database.name'), type: 'text', options: [] }, view.summaries['title'], database, state);
+                      return s.error ? '!' : s.value === null ? '—' : String(s.value);
+                    })()}
+                  </button>
+                ) : editable ? (
+                  <button
+                    type="button"
+                    className="db-calc-trigger"
+                    onClick={(event) => setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })}
+                  >
+                    {t('database.calculate')}
+                  </button>
+                ) : null}
               </th>
               {props.map((prop) => {
                 const operation = view.summaries?.[prop.id];
-                if (!operation) return <td key={prop.id} className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined} style={frozenStyle(props.indexOf(prop))} />;
-                const summary = summarizeProperty(rows, prop, operation, database, state);
+                const cellIndex = props.indexOf(prop);
                 return (
-                  <td key={prop.id} title={summary.error ?? undefined}
-                    className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
-                    style={frozenStyle(props.indexOf(prop))}>
-                    {summary.error
-                      ? t('database.summaryFormulaError', { error: summary.error })
-                      : summary.value === null
-                        ? ''
-                        : operation === 'count'
-                          ? String(summary.value)
-                          : formatDisplayValue(prop, summary.value, getLocale())}
+                  <td
+                    key={prop.id}
+                    className={`db-footer-cell${cellIndex <= frozenIndex ? ' db-frozen' : ''}`}
+                    style={{
+                      ...frozenStyle(cellIndex),
+                      textAlign: view.align?.[prop.id] ?? (isNumericPropertyType(prop.type) ? 'right' : 'left'),
+                    }}
+                  >
+                    {operation ? (
+                      (() => {
+                        const summary = summarizeProperty(rows, prop, operation, database, state);
+                        const isCountOp = ['count', 'countValues', 'countUnique', 'countEmpty', 'countNotEmpty', 'checked', 'unchecked'].includes(operation);
+                        const isPercentOp = ['percentEmpty', 'percentNotEmpty', 'percentChecked'].includes(operation);
+                        const isDateRange = operation === 'range' && (prop.type === 'date' || prop.type === 'datetime' || prop.type === 'createdTime' || prop.type === 'lastEditedTime');
+                        const formatted = summary.error
+                          ? t('database.summaryFormulaError', { error: summary.error })
+                          : summary.value === null
+                            ? '—'
+                            : isCountOp
+                              ? String(summary.value)
+                              : isPercentOp
+                                ? `${Math.round(summary.value as number)}%`
+                                : isDateRange
+                                  ? `${summary.value} ${t('database.days')}`
+                                  : formatDisplayValue(prop, summary.value, getLocale());
+                        return (
+                          <button
+                            type="button"
+                            className={`db-footer-summary${summary.error ? ' has-error' : ''}`}
+                            onClick={(event) => setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })}
+                            title={summary.error ?? summaryLabel(operation)}
+                          >
+                            {formatted}
+                          </button>
+                        );
+                      })()
+                    ) : editable ? (
+                      <button
+                        type="button"
+                        className="db-calc-trigger"
+                        onClick={(event) => setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })}
+                      >
+                        {t('database.calculate')}
+                      </button>
+                    ) : null}
                   </td>
                 );
               })}
               {editable && <td />}
             </tr>
           </tfoot>
-        )}
       </table>
+      {summaryAnchor && (
+        <Popover
+          anchor={summaryAnchor.anchor}
+          onClose={() => setSummaryAnchor(null)}
+          label={t('database.calculate')}
+        >
+          <div className="db-options-menu">
+            <button
+              type="button"
+              className="db-options-item"
+              onClick={() => {
+                saveView((current) => {
+                  const summaries = { ...current.summaries };
+                  delete summaries[summaryAnchor.propId];
+                  return { ...current, summaries };
+                });
+                setSummaryAnchor(null);
+              }}
+            >
+              {t('database.summaryNone')}
+            </button>
+            {operationsForProp(
+              summaryAnchor.propId === 'title' ? undefined : props.find((p) => p.id === summaryAnchor.propId),
+            ).map((op) => (
+              <button
+                key={op}
+                type="button"
+                className="db-options-item"
+                onClick={() => {
+                  saveView((current) => ({
+                    ...current,
+                    summaries: { ...current.summaries, [summaryAnchor.propId]: op },
+                  }));
+                  setSummaryAnchor(null);
+                }}
+              >
+                {summaryLabel(op)}
+              </button>
+            ))}
+          </div>
+        </Popover>
+      )}
       {editable && (
         <button
           type="button"

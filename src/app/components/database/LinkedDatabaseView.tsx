@@ -1,4 +1,4 @@
-import { ArrowUpRight, Trash2 } from 'lucide-react';
+import { ArrowUpRight, ChevronDown, ChevronRight, Eye, Trash2 } from 'lucide-react';
 import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
 import { newView } from '../../../core/database';
@@ -33,6 +33,9 @@ export function LinkedDatabaseViewNode({
   const sourceId = typeof node.attrs.sourceDatabaseId === 'string' ? node.attrs.sourceDatabaseId : null;
   const source = sourceId ? state.pages[sourceId] : undefined;
   const view = node.attrs.view && typeof node.attrs.view === 'object' ? (node.attrs.view as ViewDef) : null;
+  const hideTitle = view?.hideTitle === true;
+  const collapsed = view?.collapsed === true;
+
   const candidates = Object.values(state.pages).filter(
     (page) =>
       page.kind === 'database' &&
@@ -59,11 +62,45 @@ export function LinkedDatabaseViewNode({
     });
   };
 
+  const toggleCollapsed = () => {
+    if (view) {
+      updateAttributes({ view: { ...view, collapsed: !collapsed } });
+    }
+  };
+
+  const showTitle = () => {
+    if (view) {
+      updateAttributes({ view: { ...view, hideTitle: false } });
+    }
+  };
+
   return (
     <NodeViewWrapper className="linked-database-block" contentEditable={false}>
       <section className="linked-database-view" aria-label={t('database.linkedView')}>
         <header className="linked-database-head">
-          {source ? (
+          {view && (
+            <button
+              type="button"
+              className="icon-button tiny"
+              aria-label={collapsed ? t('database.expandDatabase') : t('database.collapseDatabase')}
+              title={collapsed ? t('database.expandDatabase') : t('database.collapseDatabase')}
+              onClick={toggleCollapsed}
+            >
+              {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            </button>
+          )}
+          {hideTitle ? (
+            <button
+              type="button"
+              className="inline-database-hidden-title-trigger"
+              onClick={showTitle}
+              title={t('database.showTitle')}
+              aria-label={t('database.showTitle')}
+            >
+              <Eye size={13} />
+              <span>{source ? displayTitle(source) : t('database.linkedView')}</span>
+            </button>
+          ) : source ? (
             <button type="button" className="linked-database-source" onClick={() => openPage(source.id)}>
               <PageIcon page={source} />
               <span>{displayTitle(source)}</span>
@@ -72,7 +109,7 @@ export function LinkedDatabaseViewNode({
           ) : (
             <strong>{t('database.linkedView')}</strong>
           )}
-          {source && view && editor.isEditable && (
+          {!hideTitle && source && view && editor.isEditable && (
             <DraftInput
               type="text"
               label={t('database.viewName')}
@@ -118,7 +155,7 @@ export function LinkedDatabaseViewNode({
           <p className="db-readonly-note" role="status">
             {readableIssue}
           </p>
-        ) : source?.database && view ? (
+        ) : source?.database && view && !collapsed ? (
           <DatabaseView
             page={source}
             editable={editor.isEditable}
@@ -126,9 +163,9 @@ export function LinkedDatabaseViewNode({
             embeddedView={view}
             onEmbeddedViewChange={(change) => updateAttributes({ view: change(view) })}
           />
-        ) : (
+        ) : !source?.database && !issue ? (
           <p className="muted db-hint">{t('database.chooseSourceHint')}</p>
-        )}
+        ) : null}
       </section>
     </NodeViewWrapper>
   );

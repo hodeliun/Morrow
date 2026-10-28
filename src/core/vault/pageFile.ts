@@ -494,6 +494,8 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(view.widths && Object.keys(view.widths).length ? { widths: { ...view.widths } } : {}),
       ...(view.frozenThrough ? { frozenThrough: view.frozenThrough } : {}),
       ...(view.rowHeight ? { rowHeight: view.rowHeight } : {}),
+      ...(view.hideTitle ? { hideTitle: true } : {}),
+      ...(view.collapsed ? { collapsed: true } : {}),
       ...(view.search ? { search: view.search } : {}),
       ...(view.order?.length ? { order: [...view.order] } : {}),
       ...(view.wrap?.length ? { wrap: [...view.wrap] } : {}),
