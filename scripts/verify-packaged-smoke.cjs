@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { preflightPackagedArtifact } = require('./packaged-smoke-preflight.cjs');
 
 const SMOKE_SWITCH = '--smoke-test';
 const NOTE_TITLE = 'Packaged smoke note';
@@ -74,18 +75,6 @@ function isWithinPath(parent, candidate) {
     relative !== '..' &&
     !relative.startsWith(`..${path.sep}`)
   );
-}
-
-function validateExecutable(executablePath) {
-  const stat = fs.lstatSync(executablePath);
-  assert.ok(!stat.isSymbolicLink() && stat.isFile(), 'The supplied packaged executable must be a regular file.');
-  assert.equal(path.basename(executablePath).toLowerCase(), 'morrow.exe', 'Expected Morrow.exe.');
-  assert.equal(
-    path.basename(path.dirname(executablePath)).toLowerCase(),
-    'win-unpacked',
-    'Supply the Morrow.exe located directly in a win-unpacked folder.',
-  );
-  fs.realpathSync(executablePath);
 }
 
 function loadElectronHarness() {
@@ -172,7 +161,24 @@ function attachPageListeners(runtime, page) {
   page.on('crash', () => recordRuntimeError(runtime, 'renderer-crash', 'PageCrash'));
 }
 
-async function launchPackaged(_electron, executablePath, profilePath, runtimeErrors) {
+async function launchPackaged(
+  _electron,
+  executablePath,
+  profilePath,
+  runtimeErrors,
+  preflightOptions,
+  expectedPreflight,
+  preflightDependencies = {},
+) {
+  const currentPreflight = preflightPackagedArtifact(
+    { ...preflightOptions, executablePath },
+    preflightDependencies,
+  );
+  assert.deepEqual(
+    currentPreflight,
+    expectedPreflight,
+    'The packaged executable or app.asar changed after preflight.',
+  );
   const app = await _electron.launch({
     executablePath,
     args: [SMOKE_SWITCH],
@@ -388,6 +394,7 @@ async function main() {
       editedDiskContentConfirmedAfterReopen: false,
     },
     launchCount: 0,
+    artifactPreflight: null,
     runtimeErrors: [],
     appCloseCount: 0,
     cleanupVerified: false,
@@ -397,9 +404,19 @@ async function main() {
   let failure = null;
   let evidencePath = null;
   let fixture = null;
+  let preflightOptions = null;
+  let expectedPreflight = null;
 
   try {
-    validateExecutable(options.executablePath);
+    stage = 'artifact-preflight';
+    preflightOptions = {
+      executablePath: options.executablePath,
+      expectedVersion: options.expectedVersion,
+      projectRoot: path.resolve(__dirname, '..'),
+    };
+    expectedPreflight = preflightPackagedArtifact(preflightOptions);
+    evidence.artifactPreflight = { ...expectedPreflight, recheckedBeforeLaunches: [] };
+
     const _electron = loadElectronHarness();
 
     stage = 'synthetic-fixture';
@@ -408,8 +425,17 @@ async function main() {
     fixture = makeFixture(rootPath);
 
     for (let launchIndex = 0; launchIndex < 2; launchIndex++) {
+      stage = launchIndex === 0 ? 'first-launch-preflight' : 'reopen-launch-preflight';
+      const runtime = await launchPackaged(
+        _electron,
+        options.executablePath,
+        fixture.profilePath,
+        runtimes,
+        preflightOptions,
+        expectedPreflight,
+      );
+      evidence.artifactPreflight.recheckedBeforeLaunches.push(launchIndex + 1);
       stage = launchIndex === 0 ? 'first-launch' : 'reopen-launch';
-      const runtime = await launchPackaged(_electron, options.executablePath, fixture.profilePath, runtimes);
       evidence.launchCount = runtimes.launches;
       await runtime.page.waitForLoadState('domcontentloaded');
       await runtime.page.waitForFunction(() => document.querySelector('.tree-row, .link-row') !== null);
@@ -539,7 +565,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(`Packaged smoke harness error: ${errorName(error)}: ${safeErrorMessage(error, [])}`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`Packaged smoke harness error: ${errorName(error)}: ${safeErrorMessage(error, [])}`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { launchPackaged };

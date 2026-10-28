@@ -2,6 +2,44 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Modificações do fork 1.1.1 — base Morrow 1.2.1 (28/10/2026)
+
+Pacote: `1.2.1-fork.1.1.1`. A base oficial continua no commit
+[`5e6392b`](https://github.com/Aarav2709/Morrow/commit/5e6392bb6425924abd30eec8a99b42aa8c953577),
+sem nova sincronização upstream. Este download reúne as melhorias da versão
+interna 1.1.0 e a estabilização abaixo, comparado à última release baixável 1.0.1.
+Os downloads, hashes e resultados dos artefatos ficam na [release](https://github.com/hodeliun/Morrow/releases/tag/v1.2.1-fork.1.1.1).
+
+### Estabilização do fork
+
+- Criar uma relação inversa pela coluna passa a salvar o novo campo e os vínculos de retorno. Configurações inválidas, IDs repetidos e o limite de 200 colunas são rejeitados sem alterar parcialmente os bancos.
+- Desfazer uma inserção continua funcionando após reabrir uma linha sem título. A recuperação reconhece o nome padrão salvo e continua protegendo edições reais.
+- Menus e diálogos compartilham a ordem de camadas: seletor de ícones e Canvas rico aparecem acima das configurações; Escape e retorno de foco agem na camada correta.
+- Ícones de colunas enviados como PNG ou SVG respeitam o tamanho do cabeçalho e do controle, inclusive após mudar o tipo, restaurar ou reabrir. Ícones de páginas permanecem preservados.
+- Recolher visualizações vinculadas preserva a seleção do documento; ocultar o título também oculta o nome da origem, com controles para restaurar e abrir o banco.
+- A alça de seis pontos seleciona linhas e abre suas ações, preservando atalhos, seleção múltipla e arraste.
+- A barra concentra as configurações em **Opções**, com indicadores acessíveis de filtros e ordenação. **Propriedades** permanece acessível em modo de leitura, com alterações bloqueadas.
+- Tabelas embutidas e vinculadas compartilham estilos de tabela, cabeçalho, células e rodapé. Cálculos seguem o alinhamento das células com os padrões e alinhamentos escolhidos, inclusive ao redimensionar, rolar ou congelar colunas.
+
+### Recursos novos desde o último download
+
+Os recursos preparados em 1.1.0 incluem fundos de bloco personalizados, recorte e
+substituição de imagens, títulos recolhíveis, até sete colunas de conteúdo,
+filtros e cálculos por visualização, formatação condicional, tipos e ícones
+pesquisáveis, sugestões e formato de resultado de fórmulas, edição e seleção de
+intervalos, preenchimento por arraste e operações de linhas com recuperação.
+As [notas ilustradas](docs/releases/1.1.1/NOTES.md) apresentam os fluxos e exemplos.
+
+### Verificação do candidato
+
+`npm run check` passou na versão candidata com **473 testes em 61 arquivos**,
+typecheck, lint e builds do renderer, Electron e MCP. A comparação dos 258
+arquivos de entrada antes e depois confirmou fontes estáveis; o registro está em
+[check-candidate.json](docs/evidence/stabilization-1.1.1/check-candidate.json).
+A auditoria dos vinte itens e as demonstrações estão vinculadas nas notas.
+A CI do commit final e a prova dos artefatos são registradas na release pela issue #49. A política durável está em
+[RELEASE-POLICY.md](docs/RELEASE-POLICY.md).
+
 ## Modificações do fork 1.1.0 — base Morrow 1.2.1 (28/10/2026, ainda não lançado)
 
 Identificação do pacote: `1.2.1-fork.1.1.0`; base oficial: commit

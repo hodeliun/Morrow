@@ -90,7 +90,7 @@ const THEMES = {
 const HEX = /^#[0-9a-f]{6}$/i;
 const windowThemes = new WeakMap<BrowserWindow, 'light' | 'dark'>();
 
-// Resolve and validate every profile before writing, setting paths, or acquiring the single-instance lock.
+// validate profiles before side effects so rejected smoke runs cannot touch personal state
 let STARTUP: ReturnType<typeof startup.initializeStartup>;
 try {
   STARTUP = startup.initializeStartup(

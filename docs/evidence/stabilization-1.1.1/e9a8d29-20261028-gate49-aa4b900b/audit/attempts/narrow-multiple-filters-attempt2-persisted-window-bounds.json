@@ -1,0 +1,41 @@
+{
+  "audit": "Narrow viewport quick-filter interaction with two simultaneous filters",
+  "runAt": "2026-10-28T17:37:12.899Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixture": "synthetic-only",
+  "viewport": {
+    "width": 800,
+    "height": 600
+  },
+  "checks": {
+    "theme": {
+      "initialTheme": "light",
+      "finalTheme": "light",
+      "changedByUi": false
+    },
+    "buildUnchanged": true,
+    "rendererPageErrorsVerified": true
+  },
+  "rendererPageErrors": [],
+  "error": {
+    "stage": "open-table-and-first-filter",
+    "message": "locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.tree-row, .link-row').nth(1)\u001b[22m\n\u001b[2m    - locator resolved to <div tabindex=\"-1\" aria-level=\"1\" role=\"treeitem\" class=\"tree-row\" draggable=\"true\" aria-selected=\"false\" aria-expanded=\"false\" aria-label=\"Financeiro\" data-page-id=\"finance-db\">…</div>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - element is outside of the viewport\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - element is outside of the viewport\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    58 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is visible, enabled and stable\u001b[22m\n\u001b[2m       - scrolling into view if needed\u001b[22m\n\u001b[2m       - done scrolling\u001b[22m\n\u001b[2m       - element is outside of the viewport\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at openPage (C:\\Users\\clove\\Projetos\\Morrow Public Fork\\scripts\\verify-narrow-multiple-filters-smoke.cjs:50:15)\n    at async main (C:\\Users\\clove\\Projetos\\Morrow Public Fork\\scripts\\verify-narrow-multiple-filters-smoke.cjs:113:5)"
+  },
+  "buildBefore": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildAfter": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildUnchanged": true,
+  "rendererPageErrorsVerified": true,
+  "status": "partial",
+  "evidencePath": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/narrow-multiple-filters-smoke.json"
+}

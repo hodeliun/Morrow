@@ -1,0 +1,733 @@
+{
+  "audit": "Gate #49 UI verification of prior delivery behavior",
+  "startedAt": "2026-10-28T17:05:21.251Z",
+  "finishedAt": "2026-10-28T17:05:51.751Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "group": "delivery3",
+  "outcome": "passed",
+  "hiddenWindows": true,
+  "pageErrorCount": 0,
+  "compiledBuildStable": true,
+  "compiledArtifactStable": true,
+  "buildFingerprint": {
+    "commitAtSnapshot": null,
+    "sourceInputsSha256": null,
+    "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b",
+    "artifactFileCount": 3596
+  },
+  "evidence": {
+    "runAt": "2026-10-28T17:05:21.252Z",
+    "group": "delivery3",
+    "projectHead": "e9a8d29",
+    "buildSnapshotHead": null,
+    "buildInputFingerprint": null,
+    "buildInputState": "The compiled snapshot includes uncommitted worktree edits; this is validation evidence, not the final release candidate.",
+    "compiledApp": "[local path omitted] Public Fork\\dist-electron\\main.cjs",
+    "compiledAppModifiedAt": "2026-10-28T16:49:21.403Z",
+    "hiddenMode": true,
+    "syntheticFixturesRoot": "morrow-delivery3-ui-dELFTM",
+    "editorEvidenceRoot": "morrow-delivery3-ui-dELFTM",
+    "editorEvidencePrefix": null,
+    "editorEvidencePath": null,
+    "hiddenChecks": {
+      "#37": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      },
+      "#41": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      },
+      "#42": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      },
+      "#43": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      }
+    },
+    "fatalFailures": [],
+    "tickets": {
+      "#37": {
+        "status": "passed",
+        "checks": {
+          "iconDialogLayerOrder": {
+            "dialogOrder": 2,
+            "propertyPanelOrder": 1,
+            "sharedPortalRoot": true
+          },
+          "iconTriggerStateAfterPointerClick": {
+            "dialogs": [
+              {
+                "className": "popover floating-layer panel-popover db-panel",
+                "visible": true,
+                "text": "NomeTipoTextoDescriçãoPreenchimentoManualPadrãoCalculadoOrdem crescente Ocultar Excluir"
+              },
+              {
+                "className": "dialog dialog-medium emoji-dialog",
+                "visible": true,
+                "text": "Ícone de “Value type test”EmojiLucideEnviar íconeAleatórioTodos"
+              }
+            ],
+            "bodyTail": "Calcular\tCalcular\t\nNovo\n\n2 linhas\n\nBuscar páginas que mencionam “Livros” sem vincular\nNome\nTipo\nTexto\nDescrição\nPreenchimento\nManual\nPadrão\nCalculado\nOrdem crescente\nOcultar\nExcluir\nÍcone de “Value type test”\nEmoji\nLucide\nEnviar ícone\nAleatório\nTodos",
+            "triggerEvents": [
+              {
+                "type": "pointerdown",
+                "target": {},
+                "defaultPrevented": false
+              },
+              {
+                "type": "click",
+                "target": {},
+                "defaultPrevented": false
+              }
+            ],
+            "triggerReactHandler": true
+          },
+          "uploadedIcons": {
+            "rasterFileChooser": {
+              "mechanism": "Playwright filechooser",
+              "inputType": "file",
+              "nativeDialogOpened": false
+            },
+            "rasterHeaderMetrics": {
+              "styleWidth": "14px",
+              "styleHeight": "14px",
+              "objectFit": "contain",
+              "renderedWidth": 14,
+              "renderedHeight": 14,
+              "naturalWidth": 200,
+              "naturalHeight": 400,
+              "svgViewBox": null
+            },
+            "rasterSettingsMetrics": {
+              "styleWidth": "14px",
+              "styleHeight": "14px",
+              "objectFit": "contain",
+              "renderedWidth": 14,
+              "renderedHeight": 14,
+              "naturalWidth": 200,
+              "naturalHeight": 400,
+              "svgViewBox": null
+            },
+            "rasterSettingsSlot": {
+              "width": "32px",
+              "height": "32px"
+            },
+            "rasterPreservedAfterTypeChange": true,
+            "svgFileChooser": {
+              "mechanism": "Playwright filechooser",
+              "inputType": "file",
+              "nativeDialogOpened": false
+            },
+            "svgHeaderMetrics": {
+              "styleWidth": "14px",
+              "styleHeight": "14px",
+              "objectFit": "contain",
+              "renderedWidth": 14,
+              "renderedHeight": 14,
+              "naturalWidth": null,
+              "naturalHeight": null,
+              "svgViewBox": "0 0 200 400"
+            },
+            "svgSettingsMetrics": {
+              "styleWidth": "14px",
+              "styleHeight": "14px",
+              "objectFit": "contain",
+              "renderedWidth": 14,
+              "renderedHeight": 14,
+              "naturalWidth": null,
+              "naturalHeight": null,
+              "svgViewBox": "0 0 200 400"
+            },
+            "svgSettingsSlot": {
+              "width": "32px",
+              "height": "32px"
+            },
+            "pageIconBefore": {
+              "domValue": "📚",
+              "frontmatterValue": "\"📚\""
+            },
+            "pageIconAfterUploads": {
+              "domValue": "📚",
+              "frontmatterValue": "\"📚\""
+            }
+          },
+          "richCanvasLayer": {
+            "layerOrder": {
+              "dialogOrder": 2,
+              "propertyPanelOrder": 1,
+              "sharedPortalRoot": true
+            },
+            "escapeClosesRichCanvasBeforePropertySettings": true,
+            "escapeRestoresPreviewFocus": true,
+            "cancelDoesNotPersistDraft": true,
+            "savePersistsContent": true
+          },
+          "portugueseSearch": [
+            "Moeda"
+          ],
+          "englishSearch": [
+            "Moeda"
+          ],
+          "changedRasterPropertyType": "currency",
+          "rasterPreservedAfterTypeChange": true,
+          "uploadedRasterHeader14pxAndSettings32px": true,
+          "uploadedSvgHeader14pxAndSettings32px": true,
+          "svgPersistedForReopen": true,
+          "pageIconPreserved": true,
+          "richCanvasEscapeAndCancelSave": {
+            "layerOrder": {
+              "dialogOrder": 2,
+              "propertyPanelOrder": 1,
+              "sharedPortalRoot": true
+            },
+            "escapeClosesRichCanvasBeforePropertySettings": true,
+            "escapeRestoresPreviewFocus": true,
+            "cancelDoesNotPersistDraft": true,
+            "savePersistsContent": true
+          },
+          "rasterTypeAndIconAfterReopen": {
+            "type": "currency",
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": 200,
+            "naturalHeight": 400,
+            "svgViewBox": null
+          },
+          "svgIconAfterReopen": {
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": null,
+            "naturalHeight": null,
+            "svgViewBox": "0 0 200 400"
+          },
+          "settingsSlotAfterReopen": {
+            "slot": {
+              "width": "32px",
+              "height": "32px"
+            },
+            "glyph": {
+              "styleWidth": "14px",
+              "styleHeight": "14px",
+              "objectFit": "contain",
+              "renderedWidth": 14,
+              "renderedHeight": 14,
+              "naturalWidth": 200,
+              "naturalHeight": 400,
+              "svgViewBox": null
+            }
+          },
+          "resetClearedOnlyRasterPropertyIcon": true,
+          "svgPropertyIconRetainedAfterOtherReset": true,
+          "pageIconBeforeAndAfterReset": {
+            "before": {
+              "domValue": "📚",
+              "frontmatterValue": "\"📚\""
+            },
+            "after": {
+              "domValue": "📚",
+              "frontmatterValue": "\"📚\""
+            }
+          },
+          "markdownAfterResetContainsNoRasterPropertyIcon": true
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      },
+      "#41": {
+        "status": "passed",
+        "checks": {
+          "arrowDownSecondSuggestion": {
+            "active": "Livros escritos\nInserir campo da tabela selecionada",
+            "keyState": {
+              "events": [
+                {
+                  "key": "ArrowDown",
+                  "defaultPrevented": false
+                }
+              ],
+              "bubbleEvents": [
+                {
+                  "key": "ArrowDown",
+                  "defaultPrevented": true,
+                  "target": "text-input small formula-input"
+                }
+              ],
+              "value": "Autor.",
+              "caret": 6
+            }
+          },
+          "keyboardSuggestionSelection": {
+            "suggestionTexts": [
+              "Biography Long\nInserir campo da tabela selecionada",
+              "Livros escritos\nInserir campo da tabela selecionada"
+            ],
+            "activeBeforeTab": "Livros escritos\nInserir campo da tabela selecionada",
+            "tabValueImmediately": "Autor.`Livros escritos`",
+            "tabValueAfterWait": "Autor.`Livros escritos`",
+            "tabCaret": {
+              "start": 23,
+              "end": 23,
+              "focused": true
+            },
+            "activeBeforeEnter": "Livros escritos\nInserir campo da tabela selecionada",
+            "enterValue": "Autor.`Livros escritos`",
+            "enterCaret": {
+              "start": 23,
+              "end": 23
+            },
+            "keyEvents": {
+              "events": [
+                {
+                  "key": "ArrowDown",
+                  "defaultPrevented": false
+                },
+                {
+                  "key": "Tab",
+                  "defaultPrevented": false
+                },
+                {
+                  "key": "ArrowDown",
+                  "defaultPrevented": false
+                },
+                {
+                  "key": "Enter",
+                  "defaultPrevented": false
+                }
+              ],
+              "bubbleEvents": [
+                {
+                  "key": "ArrowDown",
+                  "defaultPrevented": true,
+                  "target": "text-input small formula-input"
+                },
+                {
+                  "key": "Tab",
+                  "defaultPrevented": true,
+                  "target": "text-input small formula-input"
+                },
+                {
+                  "key": "ArrowDown",
+                  "defaultPrevented": true,
+                  "target": "text-input small formula-input"
+                },
+                {
+                  "key": "Enter",
+                  "defaultPrevented": true,
+                  "target": "text-input small formula-input"
+                }
+              ],
+              "activeElementClass": "text-input small formula-input"
+            }
+          },
+          "suggestionsAfterRelationDot": [
+            "Biography Long\nInserir campo da tabela selecionada",
+            "Livros escritos\nInserir campo da tabela selecionada"
+          ],
+          "tabInsertedSecondSuggestion": "Autor.`Livros escritos`",
+          "enterInsertedSecondSuggestion": "Autor.`Livros escritos`",
+          "caretVerifiedForTabAndEnter": true,
+          "selectedPropertyBindingPersisted": true,
+          "formulaSaved": true,
+          "reopenedFormula": "Autor.`Livros escritos`",
+          "renderedReferenceTokens": [
+            "Autor",
+            "`Livros escritos`"
+          ],
+          "relationPropertyBindingReopened": true
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      },
+      "#42": {
+        "status": "passed",
+        "checks": {
+          "currencyDisplay": {
+            "resultType": "currency",
+            "currency": "BRL",
+            "locale": "pt-BR",
+            "precision": 2,
+            "renderedRow": "\t\nLivro Alfa\n\t\nAsha\n\t\nVazio\n\t\nR$ 150,50\n\t\n0\n\t\nDisponível calculado\n\t\nVazio\n\t\n100\n\t\nVazio\n\t\nAbra o editor para adicionar conteúdo\n\t",
+            "markdownFormatSaved": true
+          },
+          "formulaValuesByRow": [
+            {
+              "price": "R$ 150,50",
+              "zero": "0",
+              "available": {
+                "role": "checkbox",
+                "checked": "false",
+                "label": "Disponível calculado",
+                "visible": true,
+                "foreground": "rgb(91, 91, 95)",
+                "background": "rgb(255, 255, 255)",
+                "contrastRatio": 6.760001560549389,
+                "width": 136.859375,
+                "height": 18.125,
+                "iconWidth": 12,
+                "iconHeight": 12
+              },
+              "availableBlank": {
+                "cellPresent": true,
+                "text": "Vazio",
+                "checkboxPresent": false
+              }
+            },
+            {
+              "price": "R$ 150,50",
+              "zero": "0",
+              "available": {
+                "role": "checkbox",
+                "checked": "false",
+                "label": "Disponível calculado",
+                "visible": true,
+                "foreground": "rgb(91, 91, 95)",
+                "background": "rgb(255, 255, 255)",
+                "contrastRatio": 6.760001560549389,
+                "width": 136.859375,
+                "height": 18.125,
+                "iconWidth": 12,
+                "iconHeight": 12
+              },
+              "availableBlank": {
+                "cellPresent": true,
+                "text": "Vazio",
+                "checkboxPresent": false
+              }
+            }
+          ],
+          "resultType": "currency",
+          "currency": "BRL",
+          "locale": "pt-BR",
+          "precision": 2,
+          "renderedCurrency": "\t\nLivro Alfa\n\t\nAsha\n\t\nVazio\n\t\nR$ 150,50\n\t\n0\n\t\nDisponível calculado\n\t\nVazio\n\t\n100\n\t\nVazio\n\t\nAbra o editor para adicionar conteúdo\n\t",
+          "formulaExpressionPreserved": true,
+          "zeroAndFalseRemainDistinct": [
+            {
+              "price": "R$ 150,50",
+              "zero": "0",
+              "available": {
+                "role": "checkbox",
+                "checked": "false",
+                "label": "Disponível calculado",
+                "visible": true,
+                "foreground": "rgb(91, 91, 95)",
+                "background": "rgb(255, 255, 255)",
+                "contrastRatio": 6.760001560549389,
+                "width": 136.859375,
+                "height": 18.125,
+                "iconWidth": 12,
+                "iconHeight": 12
+              },
+              "availableBlank": {
+                "cellPresent": true,
+                "text": "Vazio",
+                "checkboxPresent": false
+              }
+            },
+            {
+              "price": "R$ 150,50",
+              "zero": "0",
+              "available": {
+                "role": "checkbox",
+                "checked": "false",
+                "label": "Disponível calculado",
+                "visible": true,
+                "foreground": "rgb(91, 91, 95)",
+                "background": "rgb(255, 255, 255)",
+                "contrastRatio": 6.760001560549389,
+                "width": 136.859375,
+                "height": 18.125,
+                "iconWidth": 12,
+                "iconHeight": 12
+              },
+              "availableBlank": {
+                "cellPresent": true,
+                "text": "Vazio",
+                "checkboxPresent": false
+              }
+            }
+          ],
+          "reopenedCurrencyRows": [
+            "\t\nLivro Alfa\n\t\nAsha\n\t\nVazio\n\t\nR$ 150,50\n\t\n0\n\t\nDisponível calculado\n\t\nVazio\n\t\n100\n\t\nVazio\n\t\nAbra o editor para adicionar conteúdo\n\t",
+            "\t\nLivro Beta\n\t\nAsha\n\t\nVazio\n\t\nR$ 150,50\n\t\n0\n\t\nDisponível calculado\n\t\nVazio\n\t\n200\n\t\nVazio\n\t\nAbra o editor para adicionar conteúdo\n\t"
+          ],
+          "zeroAndFalseStillDistinct": [
+            {
+              "price": "R$ 150,50",
+              "zero": "0",
+              "available": {
+                "role": "checkbox",
+                "checked": "false",
+                "label": "Disponível calculado",
+                "visible": true,
+                "foreground": "rgb(91, 91, 95)",
+                "background": "rgb(255, 255, 255)",
+                "contrastRatio": 6.760001560549389,
+                "width": 136.859375,
+                "height": 18.125,
+                "iconWidth": 12,
+                "iconHeight": 12
+              },
+              "availableBlank": {
+                "cellPresent": true,
+                "text": "Vazio",
+                "checkboxPresent": false
+              }
+            },
+            {
+              "price": "R$ 150,50",
+              "zero": "0",
+              "available": {
+                "role": "checkbox",
+                "checked": "false",
+                "label": "Disponível calculado",
+                "visible": true,
+                "foreground": "rgb(91, 91, 95)",
+                "background": "rgb(255, 255, 255)",
+                "contrastRatio": 6.760001560549389,
+                "width": 136.859375,
+                "height": 18.125,
+                "iconWidth": 12,
+                "iconHeight": 12
+              },
+              "availableBlank": {
+                "cellPresent": true,
+                "text": "Vazio",
+                "checkboxPresent": false
+              }
+            }
+          ]
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      },
+      "#43": {
+        "status": "passed",
+        "checks": {
+          "previewText": "2 vínculo(s) único(s) serão unificados (2 desta tabela, 1 do destino).\n\nVincular e unificar dados",
+          "previewCountedExistingPairs": true,
+          "clickedMergeAction": true,
+          "ownerRelationPersisted": true,
+          "targetMarkedAsInverse": true,
+          "relationMetadataReopened": true,
+          "projectedBooksForAsha": "\t\nAsha\n\t\nVazio\n\t\nLivro Alfa\nLivro Beta\n\t"
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      }
+    },
+    "compiledBuildStableAcrossLaunches": true,
+    "compiledArtifactStableAcrossLaunches": true,
+    "buildFingerprint": {
+      "commitAtSnapshot": null,
+      "sourceInputsSha256": null,
+      "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b",
+      "artifactFileCount": 3596
+    },
+    "allWindowsStayedHidden": true,
+    "pageErrors": [],
+    "pageErrorsByLaunch": {
+      "initial": [],
+      "reopen": []
+    },
+    "overall": "passed"
+  }
+}

@@ -519,7 +519,7 @@ async function launchHidden({ profileDir }) {
   const buildBeforeLaunch = compiledBuildIdentity();
   const app = await _electron.launch({
     executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-    args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+    args: [projectRoot],
     cwd: projectRoot,
     env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
   });

@@ -9,7 +9,7 @@ Every release must describe the usable product shipped to users, with two distin
 
 For material interface changes, include genuine screenshots and, where interaction matters, short GIFs or videos demonstrating the feature in the actual application. Use synthetic data and isolated profiles only. Do not publish personal vaults, screenshots, attachments or account information.
 
-Keep compact media under `docs/releases/<fork-version>/assets/` or as release assets. Record the tested version/build and reproducible scenario. Include captions or alt text and a textual explanation so the notes remain useful without media. Link media using the immutable release tag or release asset URL. Do not use mockups or generated images as evidence of implemented behavior.
+Keep compact media under `docs/releases/<fork-version>/assets/` or as release assets. Record the tested version/build and reproducible scenario. Include captions or alt text and a textual explanation so the notes remain useful without media. State when a GIF uses captured interaction states rather than a continuous recording. Link media using the immutable release tag or release asset URL. Do not use mockups or generated images as evidence of implemented behavior.
 
 ## Publication gate
 

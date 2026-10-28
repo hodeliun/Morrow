@@ -334,7 +334,7 @@ describe('Delivery 3 — Inverse Relations Union & Unlink (#43)', () => {
       valueOf(next.pages['author-1']!, 'author-books', next.pages.authors!.database!, next),
     ).toEqual(['book-1']);
 
-    // Failed or successful configuration must not mutate the input state.
+    // preserve the input state so a rejected configuration cannot leave partial edits
     expect(
       state.pages.authors!.database!.properties.some((prop) => prop.id === 'author-books'),
     ).toBe(false);

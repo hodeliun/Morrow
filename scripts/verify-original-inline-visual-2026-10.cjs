@@ -5,14 +5,24 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const YAML = require('yaml');
+const { projectRelative, removeOwnedTempRoot, runPath } = require('./stabilization-1.1.1-audit-paths.cjs');
 
 const projectRoot = path.resolve(__dirname, '..');
-const fixtureSource = path.join(os.tmpdir(), 'morrow-delivery1-ui-c9C3eD', 'ticket-30');
-const screenshotDir = path.join(projectRoot, 'docs', 'evidence', 'original-scope-inline-2026-10-28');
-const evidencePath = path.join(projectRoot, 'docs', 'evidence', 'original-scope-inline-2026-10-28.json');
+const fixtureSource = process.env.MORROW_AUDIT_FIXTURE_SOURCE
+  ? path.resolve(process.env.MORROW_AUDIT_FIXTURE_SOURCE)
+  : path.join(os.tmpdir(), 'morrow-delivery1-ui-c9C3eD', 'ticket-30');
+const screenshotDir = runPath(
+  path.join('screenshots', 'original-scope-inline'),
+  path.join(projectRoot, 'docs', 'evidence', 'original-scope-inline-2026-10-28'),
+);
+const evidencePath = runPath(
+  path.join('audit', 'original-scope-inline.json'),
+  path.join(projectRoot, 'docs', 'evidence', 'original-scope-inline-2026-10-28.json'),
+);
 const screenshotNames = [];
 
 function saveEvidence(evidence) {
+  fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
   fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 }
 
@@ -242,7 +252,7 @@ async function main() {
   try {
     app = await _electron.launch({
       executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-      args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+      args: [projectRoot],
       cwd: projectRoot,
       env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
     });
@@ -279,7 +289,7 @@ async function main() {
       evidence.execution.buildUnchanged = JSON.stringify(evidence.execution.buildBefore) === JSON.stringify(evidence.execution.buildAfter);
       evidence.execution.hiddenWindowsVerified = evidence.execution.visibleWindowChecks.every((check) => check.visible === 0);
       saveEvidence(evidence);
-      console.log(`Inline embed unresolved; item 11 visual result not verified. Evidence: ${evidencePath}`);
+      console.log(`Inline embed unresolved; item 11 visual result not verified. Evidence: ${projectRelative(evidencePath)}`);
       return;
     }
 
@@ -368,11 +378,13 @@ async function main() {
     evidence.execution.visibleWindowCountMax = Math.max(0, ...evidence.execution.visibleWindowChecks.map((check) => check.visible));
     evidence.execution.screenshots = [...screenshotNames];
     evidence.finishedAt = new Date().toISOString();
+    if (process.env.MORROW_STABILIZATION_RUN_DIR)
+      evidence.execution.syntheticFixtureRemoved = removeOwnedTempRoot(fixtureRoot, 'morrow-inline-item11-');
     saveEvidence(evidence);
   }
   console.log(`Item 11 focused visual comparison: ${evidence.status}`);
   console.log(`Computed table/header/cell styles match: ${evidence.comparison?.computedTableCellStylesMatch ?? 'not measured'}`);
-  console.log(`Evidence: ${evidencePath}`);
+  console.log(`Evidence: ${projectRelative(evidencePath)}`);
 }
 
 main().catch((error) => {

@@ -1,0 +1,372 @@
+{
+  "audit": "Gate #49 UI verification of prior delivery behavior",
+  "startedAt": "2026-10-28T17:04:50.173Z",
+  "finishedAt": "2026-10-28T17:05:14.904Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "group": "delivery2",
+  "outcome": "passed",
+  "hiddenWindows": true,
+  "pageErrorCount": 0,
+  "compiledBuildStable": true,
+  "compiledArtifactStable": true,
+  "buildFingerprint": {
+    "commitAtSnapshot": null,
+    "sourceInputsSha256": null,
+    "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b",
+    "artifactFileCount": 3596
+  },
+  "evidence": {
+    "runAt": "2026-10-28T17:04:50.173Z",
+    "group": "delivery2",
+    "projectHead": "e9a8d29",
+    "buildSnapshotHead": null,
+    "buildInputFingerprint": null,
+    "buildInputState": "The compiled snapshot includes uncommitted worktree edits; this is validation evidence, not the final release candidate.",
+    "compiledApp": "[local path omitted] Public Fork\\dist-electron\\main.cjs",
+    "compiledAppModifiedAt": "2026-10-28T16:49:21.403Z",
+    "hiddenMode": true,
+    "syntheticFixturesRoot": "morrow-delivery2-ui-5LXf0k",
+    "editorEvidenceRoot": "morrow-delivery2-ui-5LXf0k",
+    "editorEvidencePrefix": null,
+    "editorEvidencePath": null,
+    "hiddenChecks": {
+      "#28": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      },
+      "#29": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      },
+      "#38": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      },
+      "#39": {
+        "initialLaunch": true,
+        "afterInitialActions": true,
+        "reopenedLaunch": true,
+        "afterReopenActions": true
+      }
+    },
+    "fatalFailures": [],
+    "tickets": {
+      "#28": {
+        "status": "passed",
+        "checks": {
+          "filteredRows": [
+            "Alfa",
+            "Gama"
+          ],
+          "resetRestoredThreeRows": true,
+          "optionsSections": [
+            "Filtrar",
+            "Ordenar",
+            "Layout",
+            "Propriedades",
+            "Calcular",
+            "Formatação condicional",
+            "Painel · Visão Alfa",
+            "Painel · Visão Beta"
+          ],
+          "filterSectionOpened": true,
+          "quickFilterRemainsTemporary": true
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true
+      },
+      "#29": {
+        "status": "passed",
+        "checks": {
+          "localNames": [
+            "Visão somente Alfa",
+            "Visão somente Beta"
+          ],
+          "independentSearches": [
+            "Alfa",
+            "Beta"
+          ],
+          "searchProducedOneRowPerView": true,
+          "collapseSequence": [
+            true,
+            false,
+            true,
+            false,
+            true
+          ],
+          "collapsedOneViewOnly": true,
+          "sourceListsBothViews": [
+            "Painel · Visão somente Alfa",
+            "Painel · Visão somente Beta"
+          ],
+          "reopenedNames": [
+            "Visão somente Alfa",
+            "Visão somente Beta"
+          ],
+          "collapsedStateIndependent": true,
+          "sourceLinkMapSaved": true
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      },
+      "#38": {
+        "status": "passed",
+        "checks": {
+          "formula": "Valor >= 200",
+          "customColor": "#3157C8",
+          "matchingCells": [
+            {
+              "text": "200",
+              "background": "rgb(49, 87, 200)"
+            },
+            {
+              "text": "300",
+              "background": "rgb(49, 87, 200)"
+            }
+          ],
+          "nonMatchingCell": {
+            "text": "100",
+            "background": "rgba(0, 0, 0, 0)"
+          },
+          "markdownStoresRule": true,
+          "reopenedRuleStillColorsOnlyMatches": [
+            {
+              "value": "100",
+              "color": "rgba(0, 0, 0, 0)"
+            },
+            {
+              "value": "200",
+              "color": "rgb(49, 87, 200)"
+            },
+            {
+              "value": "300",
+              "color": "rgb(49, 87, 200)"
+            }
+          ]
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      },
+      "#39": {
+        "status": "passed",
+        "checks": {
+          "primaryView": {
+            "amount": "sum = 600",
+            "category": "count values = 3",
+            "searchReducedAmountTo": 100
+          },
+          "reviewView": {
+            "amount": "maximum = 300"
+          },
+          "distinctViewSummariesSaved": true,
+          "reopenedPrimaryView": "\tCalcular\t600\tCalcular\tCalcular\t3\t",
+          "reopenedReviewView": "\tCalcular\t300\tCalcular\tCalcular\tCalcular\t",
+          "configurationsIndependent": true
+        },
+        "fixture": {
+          "syntheticProfile": "[local path omitted]",
+          "syntheticVault": "[local path omitted]",
+          "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+          "syntheticRasterIcon": "[local path omitted]",
+          "syntheticSvgIcon": "[local path omitted]"
+        },
+        "compiledBuildIdentity": {
+          "initialLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          },
+          "reopenedLaunch": {
+            "beforeLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            },
+            "afterLaunch": {
+              "mainMtime": "2026-10-28T16:49:21.403Z",
+              "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+              "rendererAssetCount": 197,
+              "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6",
+              "artifactFileCount": 3596,
+              "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b"
+            }
+          }
+        },
+        "actionVerified": true,
+        "reopenVerified": true
+      }
+    },
+    "compiledBuildStableAcrossLaunches": true,
+    "compiledArtifactStableAcrossLaunches": true,
+    "buildFingerprint": {
+      "commitAtSnapshot": null,
+      "sourceInputsSha256": null,
+      "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b",
+      "artifactFileCount": 3596
+    },
+    "allWindowsStayedHidden": true,
+    "pageErrors": [],
+    "pageErrorsByLaunch": {
+      "initial": [],
+      "reopen": []
+    },
+    "overall": "passed"
+  }
+}

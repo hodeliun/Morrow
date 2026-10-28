@@ -1,0 +1,49 @@
+{
+  "audit": "Original item 6 focused cell keyboard, edit, clipboard and undo smoke",
+  "runAt": "2026-10-28T17:42:27.612Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixture": "synthetic-only",
+  "fixtureRoot": "morrow-cell-keyboard-clipboard-R0xC0f",
+  "rendererPageErrors": [],
+  "checks": {
+    "keyboardNavigation": {
+      "arrowDownMovedToNextRow": true,
+      "tabMovedToNextCell": true
+    },
+    "cellEdit": {
+      "enteredEditMode": true,
+      "committedWithTab": true,
+      "tabMovedToNextCell": true,
+      "markdownSaved": true
+    },
+    "cellClipboard": {
+      "copyProducedValue": true,
+      "pastedValue": "111",
+      "destinationSaveConfirmed": true,
+      "rowsPreserved": true,
+      "undoRestoredDestination": true,
+      "sourceValuePreserved": true,
+      "status": "pass"
+    },
+    "reopenPersistedEditAndUndo": true
+  },
+  "buildBefore": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildAfter": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildUnchanged": true,
+  "hiddenWindowsVerified": true,
+  "rendererPageErrorsVerified": true,
+  "syntheticFixtureRemoved": true,
+  "status": "pass",
+  "evidencePath": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/item6-cell-keyboard-clipboard.json"
+}

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert');
+const { runPath } = require('./stabilization-1.1.1-audit-paths.cjs');
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-delivery4-verify-'));
@@ -217,7 +218,7 @@ Prazo: "${r.date}"
   console.log('1. Launching hidden Electron app...');
   const app = await _electron.launch({
     executablePath: path.resolve('node_modules/electron/dist/electron.exe'),
-    args: ['dist-electron/main.cjs'],
+    args: [path.resolve('.')],
     cwd: path.resolve('.'),
     env: {
       ...process.env,
@@ -778,11 +779,16 @@ Prazo: "${r.date}"
     await page.keyboard.up('Shift');
     await page.keyboard.press('Alt+Shift+ArrowDown');
     await page.locator('.db-fill-toolbar').waitFor({ state: 'visible' });
+    await page.waitForFunction(() => {
+      const firstAction = document.querySelector('.db-fill-actions button');
+      return firstAction instanceof HTMLButtonElement && document.activeElement === firstAction;
+    });
     assert.strictEqual(await qtyCellRow3.getAttribute('data-fill-preview'), '10', 'Keyboard fill previews a repeated copy by default');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     const cancelFillChoice = page.locator('.db-fill-actions button').filter({ hasText: /Cancel|Cancelar/ });
+    assert.strictEqual(await cancelFillChoice.count(), 1, `Keyboard fill actions: ${JSON.stringify(await page.locator('.db-fill-actions button').allInnerTexts())}`);
     assert.strictEqual(await cancelFillChoice.evaluate((el) => document.activeElement === el), true, 'Tab reaches the Cancel fill action');
     await page.keyboard.press('Enter');
     await page.waitForTimeout(100);
@@ -804,7 +810,8 @@ Prazo: "${r.date}"
     await page.locator('.menu .menu-item').filter({ hasText: /Freeze through this column|Fijar hasta esta columna|Congelar hasta esta columna|Congelar até esta coluna/ }).click();
     assert.strictEqual(await cell(0, 'quantity').evaluate((el) => el.classList.contains('db-frozen')), true, 'Frozen columns remain marked in the grid');
 
-    await page.locator('.db-tools .text-tool').filter({ hasText: /Properties|Propiedades|Propriedades/ }).click();
+    await page.locator('.db-options-button').click();
+    await page.locator('.db-panel').last().locator('.db-options-item').filter({ hasText: /Properties|Propiedades|Propriedades/ }).click();
     const quantityPropertyRow = page.locator('.db-prop-list li').filter({ hasText: 'Quantidade' }).first();
     await quantityPropertyRow.locator('button').last().click();
     await page.waitForFunction(() => document.querySelectorAll('.db-table tbody td[data-col-id="quantity"]').length === 0);
@@ -854,7 +861,10 @@ Prazo: "${r.date}"
     evidence.rendererPageErrorsVerified = true;
 
     // Save sanitized evidence in the repository; temporary profile and vault paths stay private.
-    evidencePath = path.join(process.cwd(), 'docs', 'evidence', 'interaction-expansion-delivery4-ui.json');
+    evidencePath = runPath(
+      path.join('audit', 'delivery4-ui.json'),
+      path.join(process.cwd(), 'docs', 'evidence', 'interaction-expansion-delivery4-ui.json'),
+    );
     fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
     const evidenceJson = JSON.stringify(evidence, null, 2);
     assert.ok(!evidenceJson.includes(root), 'durable evidence must not disclose temporary profile or vault paths');

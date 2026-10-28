@@ -1,0 +1,44 @@
+{
+  "runAt": "2026-10-28T17:13:08.943Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixtureRoot": "morrow-original-scope-14-mouse-scMTD6",
+  "syntheticDataOnly": true,
+  "hiddenWindowsVerified": true,
+  "rendererPageErrors": [],
+  "outcome": "pass",
+  "checks": {
+    "fixtureValuesLoaded": true,
+    "mouseRangeSelection": {
+      "selectedCells": [
+        {
+          "property": "amount",
+          "rowIndex": 0
+        },
+        {
+          "property": "amount2",
+          "rowIndex": 0
+        },
+        {
+          "property": "amount",
+          "rowIndex": 1
+        },
+        {
+          "property": "amount2",
+          "rowIndex": 1
+        }
+      ],
+      "selectedCount": 4,
+      "exactTwoByTwo": true
+    },
+    "deleteClearedSelectedFourAndKeptRows": true,
+    "undoRestoredFourValues": true
+  },
+  "compiledBuildStable": true,
+  "syntheticFocusedFixtureRemoved": true,
+  "rendererPageErrorsVerified": true,
+  "screenshots": [
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-14-mouse-range-selected.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-14-mouse-range-deleted.png"
+  ]
+}

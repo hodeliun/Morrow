@@ -3,9 +3,64 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { projectRelative, removeOwnedTempRoot, runPath } = require('./stabilization-1.1.1-audit-paths.cjs');
 
 const projectRoot = path.resolve(__dirname, '..');
-const screenshotDir = path.join(projectRoot, 'docs', 'evidence', 'original-scope-audit-2026-10-28');
+const screenshotDir = runPath(
+  path.join('screenshots', 'original-scope'),
+  path.join(projectRoot, 'docs', 'evidence', 'original-scope-audit-2026-10-28'),
+);
+const screenshotRef = (name) => projectRelative(path.join(screenshotDir, name));
+
+function sanitizeAudit(value, key = '') {
+  if (typeof value === 'string') {
+    if (/path|root|directory/i.test(key) && path.isAbsolute(value)) return path.basename(value);
+    return value.replace(/(?:[A-Za-z]:\\|\\\\)[^\s"'<>|]+/g, '[local path omitted]');
+  }
+  if (Array.isArray(value)) return value.map((item) => sanitizeAudit(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, sanitizeAudit(childValue, childKey)]));
+  }
+  return value;
+}
+
+function saveAudit(fileName, report) {
+  if (!process.env.MORROW_STABILIZATION_RUN_DIR) return;
+  const outputPath = runPath(path.join('audit', fileName), path.join(projectRoot, 'docs', 'evidence', fileName));
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, `${JSON.stringify(sanitizeAudit(report), null, 2)}\n`, 'utf8');
+}
+
+async function measureFooterAlignment(database) {
+  return database.evaluate((root) => {
+    const table = root.querySelector('.db-table');
+    const bodyCells = [...(table?.querySelectorAll('tbody tr:first-child td[data-col-id]') ?? [])];
+    const footerCells = [...(table?.querySelectorAll('tfoot td.db-footer-cell[data-col-id]') ?? [])];
+    return footerCells.map((footer) => {
+      const body = bodyCells.find((cell) => cell.getAttribute('data-col-id') === footer.getAttribute('data-col-id'));
+      const footerRect = footer.getBoundingClientRect();
+      const bodyRect = body?.getBoundingClientRect();
+      return {
+        columnId: footer.getAttribute('data-col-id'),
+        bodyAlign: body ? getComputedStyle(body).textAlign : null,
+        footerAlign: getComputedStyle(footer).textAlign,
+        sameTextAlignment: body ? getComputedStyle(body).textAlign === getComputedStyle(footer).textAlign : false,
+        bodyRect: bodyRect ? { left: Math.round(bodyRect.left), right: Math.round(bodyRect.right) } : null,
+        footerRect: { left: Math.round(footerRect.left), right: Math.round(footerRect.right) },
+        sameColumnBounds: Boolean(bodyRect && Math.abs(bodyRect.left - footerRect.left) <= 2 && Math.abs(bodyRect.right - footerRect.right) <= 2),
+      };
+    });
+  });
+}
+
+function readAuditReference(environmentName) {
+  const configuredPath = process.env[environmentName];
+  if (!configuredPath) return null;
+  const absolutePath = path.isAbsolute(configuredPath) ? configuredPath : path.resolve(projectRoot, configuredPath);
+  if (!fs.existsSync(absolutePath)) return null;
+  const report = JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+  return { path: projectRelative(absolutePath), report };
+}
 
 function buildIdentity() {
   const rendererDir = path.join(projectRoot, 'dist');
@@ -108,6 +163,7 @@ async function waitForMarkdown(vaultDir, relativePath, predicate, description, t
 }
 
 async function runDelivery3Extras(fixtureRoot) {
+  const delivery3Fresh = readAuditReference('MORROW_AUDIT_DELIVERY3_EVIDENCE_PATH');
   const result = {
     runAt: new Date().toISOString(),
     projectHead: require('node:child_process').execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
@@ -133,7 +189,7 @@ async function runDelivery3Extras(fixtureRoot) {
       const before = buildIdentity();
       app = await _electron.launch({
         executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-        args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+        args: [projectRoot],
         cwd: projectRoot,
         env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
       });
@@ -492,6 +548,17 @@ async function runDelivery3Extras(fixtureRoot) {
       await inverseHeader.waitFor({ state: 'visible' });
       inverseProjectedColumnVisible = await inverseHeader.isVisible();
     }
+    const existingInverseTicket = delivery3Fresh?.report?.evidence?.tickets?.['#43'];
+    const existingRelationUnionPassed = delivery3Fresh?.report?.outcome === 'passed' &&
+      delivery3Fresh.report.hiddenWindows === true &&
+      delivery3Fresh.report.pageErrorCount === 0 &&
+      existingInverseTicket?.status === 'passed' &&
+      existingInverseTicket.checks?.previewCountedExistingPairs === true &&
+      existingInverseTicket.checks?.ownerRelationPersisted === true &&
+      existingInverseTicket.checks?.targetMarkedAsInverse === true &&
+      existingInverseTicket.checks?.relationMetadataReopened === true &&
+      /Livro Alfa/.test(existingInverseTicket.checks?.projectedBooksForAsha ?? '') &&
+      /Livro Beta/.test(existingInverseTicket.checks?.projectedBooksForAsha ?? '');
     result.checks.item19 = {
       inverseModeOptions: modeLabels,
       createInverseModeAvailable: await createMode.count() === 1,
@@ -507,8 +574,13 @@ async function runDelivery3Extras(fixtureRoot) {
       immediateNotices,
       relationPanelAfterClick,
       relationButtonAfterClick,
-      existingPopulatedColumnLinkAndMerge: 'Fresh runGroup delivery3 #43 passed; the UI linked an existing inverse and projected the union after reopening.',
-      status: reciprocalMetadataSaved && inverseProjectedColumnVisible ? 'pass' : 'partial',
+      existingPopulatedColumnLinkAndMergeEvidence: delivery3Fresh?.path ?? null,
+      existingRelationUnionPassed,
+      status: reciprocalMetadataSaved && inverseProjectedColumnVisible && existingRelationUnionPassed
+        ? 'pass'
+        : reciprocalMetadataSaved && inverseProjectedColumnVisible
+          ? 'partial'
+          : 'fail',
     };
   });
 
@@ -552,14 +624,15 @@ async function runDelivery3Extras(fixtureRoot) {
   result.compiledBuildStable = new Set(buildSnapshots.map((item) => JSON.stringify(item))).size === 1;
   result.rendererPageErrorsVerified = result.rendererPageErrors.length === 0;
   result.screenshots = [
-    'docs/evidence/original-scope-audit-2026-10-28/item-16-number-alias.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-17-formula-token.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-17-formula-suggestions.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-18-number-formula-format.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-19-inverse-create.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-20-icon-picker-overlay.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-20-icon-upload.png',
+    screenshotRef('item-16-number-alias.png'),
+    screenshotRef('item-17-formula-token.png'),
+    screenshotRef('item-17-formula-suggestions.png'),
+    screenshotRef('item-18-number-formula-format.png'),
+    screenshotRef('item-19-inverse-create.png'),
+    screenshotRef('item-20-icon-picker-overlay.png'),
+    screenshotRef('item-20-icon-upload.png'),
   ];
+  saveAudit('original-scope-delivery3.json', result);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
@@ -594,7 +667,7 @@ async function runItem6And14(fixtureRoot) {
       encoding: 'utf8',
     }).trim(),
     packageVersion: JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).version,
-    fixtureRoot: focusedRoot,
+    fixtureRoot: path.basename(focusedRoot),
     syntheticDataOnly: true,
     hiddenWindowsVerified: true,
     rendererPageErrors: [],
@@ -603,17 +676,18 @@ async function runItem6And14(fixtureRoot) {
   };
   const before = buildIdentity();
   let app = null;
+  let page = null;
   let stage = 'launch';
   fs.mkdirSync(screenshotDir, { recursive: true });
   try {
     app = await _electron.launch({
       executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-      args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+      args: [projectRoot],
       cwd: projectRoot,
       env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
     });
     await assertHidden(app);
-    const page = await app.firstWindow();
+    page = await app.firstWindow();
     page.on('pageerror', (error) => result.rendererPageErrors.push({ stage, message: error.message }));
     await page.waitForSelector('.tree-row, .link-row', { timeout: 15000 });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000));
@@ -653,29 +727,125 @@ async function runItem6And14(fixtureRoot) {
     const horizontalApplied = (await fillTarget.innerText()).trim() === '100';
     const afterFillDestinations = (await rows.locator('td[data-col-id="amount2"]').allTextContents()).map((value) => value.trim());
     const otherRowDestinationsUnchanged = afterFillDestinations.slice(1).every((value, index) => value === horizontalBaseline[index + 1]);
+    await waitForMarkdown(
+      vaultDir,
+      path.join('Financeiro', 'Alfa.md'),
+      (contents) => /Segundo valor:\s*100/.test(contents),
+      'horizontal fill persistence',
+    );
+    await waitForMarkdown(
+      vaultDir,
+      path.join('Financeiro', 'Beta.md'),
+      (contents) => !/Segundo valor:\s*100/.test(contents),
+      'horizontal fill leaves other rows untouched',
+    );
+    await fillTarget.click();
     await page.keyboard.press('Control+z');
     await page.waitForFunction((baseline) => {
       const cells = [...document.querySelectorAll('.database .db-table tbody tr td[data-col-id="amount2"]')];
       return cells.length === baseline.length && cells.every((cell, index) => cell.innerText.trim() === baseline[index]);
-    }, horizontalBaseline);
-    const afterUndoDestinations = (await rows.locator('td[data-col-id="amount2"]').allTextContents()).map((value) => value.trim());
-    const horizontalUndoRestored = afterUndoDestinations.every((value, index) => value === horizontalBaseline[index]);
+    }, horizontalBaseline, { timeout: 5000 });
     await waitForMarkdown(
       vaultDir,
       path.join('Financeiro', 'Alfa.md'),
       (contents) => !/Segundo valor:\s*100/.test(contents),
       'undo of horizontal fill',
     );
+    const horizontalUndoRestored = (await rows.locator('td[data-col-id="amount2"]').allTextContents()).map((value) => value.trim())
+      .every((value, index) => value === horizontalBaseline[index]);
     result.checks.item6HorizontalFill = {
       handleDragUsed: true,
       previewVisible,
       previewValue,
       appliedValue: horizontalApplied ? 100 : null,
       otherRowsUnchanged: otherRowDestinationsUnchanged,
+      diskSaveConfirmed: true,
       undoRestoredEmptyColumn: horizontalUndoRestored,
-      status: previewVisible && previewValue === '100' && horizontalApplied && otherRowDestinationsUnchanged && horizontalUndoRestored ? 'pass' : 'partial',
+      status: previewVisible && previewValue === '100' && horizontalApplied && otherRowDestinationsUnchanged ? 'pass' : 'fail',
+    };
+    if (!horizontalUndoRestored) result.checks.item6HorizontalFill.status = 'fail';
+
+    await sourceCell.click();
+    const repeatHandle = sourceCell.locator('.db-fill-handle');
+    const repeatHandleBox = await repeatHandle.boundingBox();
+    const repeatTargetBox = await fillTarget.boundingBox();
+    assert.ok(repeatHandleBox && repeatTargetBox, 'Horizontal fill controls must be visible after undo.');
+    await page.mouse.move(repeatHandleBox.x + repeatHandleBox.width / 2, repeatHandleBox.y + repeatHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(repeatTargetBox.x + repeatTargetBox.width / 2, repeatTargetBox.y + repeatTargetBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const repeatFillToolbar = page.locator('.db-fill-toolbar');
+    await repeatFillToolbar.waitFor({ state: 'visible', timeout: 5000 });
+    await repeatFillToolbar.locator('button').filter({ hasText: /Apply fill|Aplicar relleno|Aplicar preenchimento/i }).first().click();
+    await page.waitForFunction(() => document.querySelector('.database .db-table tbody tr td[data-col-id="amount2"]')?.innerText.trim() === '100');
+
+    stage = 'vertical-fill';
+    const verticalSource = rows.nth(0).locator('td[data-col-id="amount2"]');
+    const verticalTarget = rows.nth(2).locator('td[data-col-id="amount2"]');
+    await verticalSource.click();
+    const verticalHandle = verticalSource.locator('.db-fill-handle');
+    const verticalHandleBox = await verticalHandle.boundingBox();
+    const verticalTargetBox = await verticalTarget.boundingBox();
+    assert.ok(verticalHandleBox && verticalTargetBox, 'Vertical fill handle and destination must be visible.');
+    await page.mouse.move(verticalHandleBox.x + verticalHandleBox.width / 2, verticalHandleBox.y + verticalHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(verticalTargetBox.x + verticalTargetBox.width / 2, verticalTargetBox.y + verticalTargetBox.height / 2, { steps: 10 });
+    await page.waitForTimeout(250);
+    const verticalPreviewVisible = await verticalTarget.evaluate((cell) => cell.classList.contains('is-fill-preview'));
+    const verticalPreviewValue = await verticalTarget.getAttribute('data-fill-preview');
+    await page.mouse.up();
+    const verticalFillToolbar = page.locator('.db-fill-toolbar');
+    await verticalFillToolbar.waitFor({ state: 'visible', timeout: 5000 });
+    await verticalFillToolbar.locator('button').filter({ hasText: /Apply fill|Aplicar relleno|Aplicar preenchimento/i }).first().click();
+    await page.waitForTimeout(500);
+    const verticalApplied = (await rows.locator('td[data-col-id="amount2"]').allTextContents()).map((value) => value.trim());
+    const sourceColumnUnchanged = JSON.stringify(
+      (await rows.locator('td[data-col-id="amount"]').allTextContents()).map((value) => value.trim()),
+    ) === JSON.stringify(['100', '200', '300']);
+    const horizontalOnly = ['100', ...horizontalBaseline.slice(1)];
+    const verticalChanged = JSON.stringify(verticalApplied) !== JSON.stringify(horizontalOnly);
+    const verticalFullyApplied = JSON.stringify(verticalApplied) === JSON.stringify(['100', '100', '100']);
+    if (verticalFullyApplied) {
+      await waitForMarkdown(vaultDir, path.join('Financeiro', 'Beta.md'),
+        (contents) => /Segundo valor:\s*100/.test(contents), 'vertical fill persistence for second row');
+      await waitForMarkdown(vaultDir, path.join('Financeiro', 'Gama.md'),
+        (contents) => /Segundo valor:\s*100/.test(contents), 'vertical fill persistence for third row');
+    }
+    let verticalUndoRestored = verticalApplied;
+    if (verticalChanged) {
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction((baseline) => {
+        const cells = [...document.querySelectorAll('.database .db-table tbody tr td[data-col-id="amount2"]')];
+        return cells.length === baseline.length && cells.every((cell, index) => cell.innerText.trim() === baseline[index]);
+      }, horizontalOnly, { timeout: 5000 });
+      verticalUndoRestored = (await rows.locator('td[data-col-id="amount2"]').allTextContents()).map((value) => value.trim());
+      if (verticalFullyApplied) {
+        await waitForMarkdown(vaultDir, path.join('Financeiro', 'Beta.md'),
+          (contents) => !/Segundo valor:\s*100/.test(contents), 'undo of vertical fill for second row');
+        await waitForMarkdown(vaultDir, path.join('Financeiro', 'Gama.md'),
+          (contents) => !/Segundo valor:\s*100/.test(contents), 'undo of vertical fill for third row');
+      }
+    }
+    if (!verticalFullyApplied) await page.screenshot({ path: path.join(screenshotDir, 'item-06-vertical-fill-failed.png') });
+    result.checks.item6VerticalFill = {
+      handleDragUsed: true,
+      previewVisible: verticalPreviewVisible,
+      previewValue: verticalPreviewValue,
+      appliedValues: verticalApplied,
+      sourceColumnUnchanged,
+      undoRestoredHorizontalOnly: verticalUndoRestored,
+      diskSaveAndUndoConfirmed: verticalFullyApplied && JSON.stringify(verticalUndoRestored) === JSON.stringify(horizontalOnly),
+      status: verticalPreviewVisible && verticalPreviewValue === '100' &&
+        JSON.stringify(verticalApplied) === JSON.stringify(['100', '100', '100']) &&
+        sourceColumnUnchanged && JSON.stringify(verticalUndoRestored) === JSON.stringify(horizontalOnly)
+        ? 'pass'
+        : 'fail',
     };
 
+    if (JSON.stringify(verticalUndoRestored) !== JSON.stringify(horizontalOnly)) {
+      await page.keyboard.press('Control+z');
+      await page.waitForTimeout(250);
+    }
     stage = 'backspace-range-clear';
     const amountCells = rows.locator('td[data-col-id="amount"]');
     await amountCells.nth(0).click();
@@ -726,22 +896,57 @@ async function runItem6And14(fixtureRoot) {
     };
     await assertHidden(app);
     result.hiddenWindowsVerified = true;
+  } catch (error) {
+    result.error = { stage, message: error.stack ?? String(error) };
+    if (page) {
+      result.failureState = await page.evaluate(() => ({
+        values: [...document.querySelectorAll('.database .db-table tbody tr')].map((row) =>
+          [...row.querySelectorAll('td[data-col-id="amount2"]')].map((cell) => cell.innerText.trim()),
+        ),
+        rows: document.querySelectorAll('.database .db-table tbody tr').length,
+      })).catch(() => null);
+      await page.screenshot({ path: path.join(screenshotDir, 'item-06-14-failure.png') }).catch(() => {});
+    }
   } finally {
     if (app) await app.close().catch(() => {});
     result.compiledBuildStable = JSON.stringify(before) === JSON.stringify(buildIdentity());
+    if (process.env.MORROW_STABILIZATION_RUN_DIR)
+      result.syntheticFocusedFixtureRemoved = removeOwnedTempRoot(focusedRoot, 'morrow-original-scope-6-14-');
   }
   result.rendererPageErrorsVerified = result.rendererPageErrors.length === 0;
   result.screenshots = [
-    'docs/evidence/original-scope-audit-2026-10-28/item-06-horizontal-fill-preview.png',
-    'docs/evidence/original-scope-audit-2026-10-28/item-14-backspace-range.png',
+    screenshotRef('item-06-horizontal-fill-preview.png'),
+    screenshotRef('item-14-backspace-range.png'),
   ];
+  saveAudit('original-scope-items6-14.json', result);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  if (result.error || result.checks.item6VerticalFill?.status !== 'pass') process.exitCode = 1;
 }
 
 async function runItem14MouseRange(fixtureRoot) {
-  const profileDir = path.join(fixtureRoot, 'profile');
-  const vaultDir = path.join(fixtureRoot, 'vault');
-  assert.ok(fs.existsSync(path.join(profileDir, 'vaults.json')), 'Expected the retained focused synthetic profile.');
+  const ticketRoot = path.join(fixtureRoot, 'ticket-39');
+  const sourceRoot = fs.existsSync(path.join(ticketRoot, 'profile', 'vaults.json')) ? ticketRoot : fixtureRoot;
+  const focusedRoot = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'morrow-original-scope-14-mouse-'));
+  const profileDir = path.join(focusedRoot, 'profile');
+  const vaultDir = path.join(focusedRoot, 'vault');
+  fs.cpSync(path.join(sourceRoot, 'profile'), profileDir, { recursive: true });
+  fs.cpSync(path.join(sourceRoot, 'vault'), vaultDir, { recursive: true });
+  const registryPath = path.join(profileDir, 'vaults.json');
+  const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  registry.current = vaultDir;
+  registry.recent = (registry.recent ?? []).map((entry) => ({ ...entry, path: vaultDir }));
+  fs.writeFileSync(registryPath, JSON.stringify(registry));
+  const databasePath = path.join(vaultDir, 'Financeiro.md');
+  let databaseMarkdown = fs.readFileSync(databasePath, 'utf8');
+  const amountProperty = '    - id: amount\n      name: Valor\n      type: number\n';
+  assert.ok(databaseMarkdown.includes(amountProperty), 'Expected the synthetic source number property.');
+  if (!databaseMarkdown.includes('id: amount2')) {
+    databaseMarkdown = databaseMarkdown.replace(
+      amountProperty,
+      `${amountProperty}    - id: amount2\n      name: Segundo valor\n      type: number\n`,
+    );
+  }
+  fs.writeFileSync(databasePath, databaseMarkdown);
   const result = {
     runAt: new Date().toISOString(),
     projectHead: require('node:child_process').execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
@@ -749,7 +954,7 @@ async function runItem14MouseRange(fixtureRoot) {
       encoding: 'utf8',
     }).trim(),
     packageVersion: JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).version,
-    fixtureRoot,
+    fixtureRoot: path.basename(focusedRoot),
     syntheticDataOnly: true,
     hiddenWindowsVerified: true,
     rendererPageErrors: [],
@@ -770,17 +975,18 @@ async function runItem14MouseRange(fixtureRoot) {
 
   const before = buildIdentity();
   let app = null;
+  let page = null;
   let stage = 'launch';
   fs.mkdirSync(screenshotDir, { recursive: true });
   try {
     app = await _electron.launch({
       executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-      args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+      args: [projectRoot],
       cwd: projectRoot,
       env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
     });
     await assertHidden(app);
-    const page = await app.firstWindow();
+    page = await app.firstWindow();
     page.on('pageerror', (error) => result.rendererPageErrors.push({ stage, message: error.message }));
     await page.waitForSelector('.tree-row, .link-row', { timeout: 15000 });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000));
@@ -873,18 +1079,25 @@ async function runItem14MouseRange(fixtureRoot) {
   } finally {
     if (app) await app.close().catch(() => {});
     result.compiledBuildStable = JSON.stringify(before) === JSON.stringify(buildIdentity());
+    if (process.env.MORROW_STABILIZATION_RUN_DIR)
+      result.syntheticFocusedFixtureRemoved = removeOwnedTempRoot(focusedRoot, 'morrow-original-scope-14-mouse-');
   }
   result.rendererPageErrorsVerified = result.rendererPageErrors.length === 0;
   result.screenshots = [
-    'docs/evidence/original-scope-audit-2026-10-28/item-14-mouse-range-selected.png',
+    screenshotRef('item-14-mouse-range-selected.png'),
     ...(fs.existsSync(path.join(screenshotDir, 'item-14-mouse-range-deleted.png'))
-      ? ['docs/evidence/original-scope-audit-2026-10-28/item-14-mouse-range-deleted.png']
+      ? [screenshotRef('item-14-mouse-range-deleted.png')]
       : []),
   ];
+  saveAudit('original-scope-item14-mouse-range.json', result);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
 async function main() {
+  const delivery2Fresh = readAuditReference('MORROW_AUDIT_DELIVERY2_EVIDENCE_PATH');
+  const delivery4Fresh = readAuditReference('MORROW_AUDIT_DELIVERY4_EVIDENCE_PATH');
+  const delivery5Fresh = readAuditReference('MORROW_AUDIT_DELIVERY5_EVIDENCE_PATH');
+  const inlineFresh = readAuditReference('MORROW_AUDIT_INLINE_EVIDENCE_PATH');
   const fixtureRoot = process.argv[2];
   assert.ok(fixtureRoot, 'Pass the retained synthetic delivery2 fixture root.');
   if (process.argv[3] === 'item14-mouse-range') return runItem14MouseRange(fixtureRoot);
@@ -907,13 +1120,13 @@ async function main() {
     hiddenWindowsThroughout: true,
     rendererPageErrors: [],
   };
-  assert.equal(result.projectHead, '46784d6');
-  assert.equal(result.packageVersion, '1.2.1-fork.1.1.0');
+  assert.equal(result.projectHead, process.env.MORROW_AUDIT_EXPECTED_HEAD ?? result.projectHead);
+  assert.equal(result.packageVersion, process.env.MORROW_AUDIT_EXPECTED_VERSION ?? packageJson.version);
   const before = buildIdentity();
   let currentStage = 'launch';
   let app = await _electron.launch({
     executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-    args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+    args: [projectRoot],
     cwd: projectRoot,
     env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
   });
@@ -975,15 +1188,28 @@ async function main() {
     const customHex = await conditionalRule.locator('input[type="text"][placeholder="#RRGGBB"]').inputValue();
     const colorPickerValue = await conditionalRule.locator('input[type="color"]').inputValue();
     const conditionalFormula = await conditionalRule.locator('input[aria-label*="fórmula"], input[aria-label*="formula"]').inputValue();
+    const conditionalCustomColorMatches = customHex.toUpperCase() === colorPickerValue.toUpperCase();
+    const swatchesVisible = paletteSwatches.length > 0 && paletteSwatches.every((item) => item.width > 0 && item.height > 0);
+    const formulaRuleTicket = delivery2Fresh?.report?.evidence?.tickets?.['#38'];
+    const formulaRuleRowsPersisted = delivery2Fresh?.report?.outcome === 'passed' &&
+      delivery2Fresh.report.hiddenWindows === true &&
+      delivery2Fresh.report.pageErrorCount === 0 &&
+      formulaRuleTicket?.status === 'passed' &&
+      formulaRuleTicket.checks?.markdownStoresRule === true &&
+      Array.isArray(formulaRuleTicket.checks?.reopenedRuleStillColorsOnlyMatches) &&
+      formulaRuleTicket.checks.reopenedRuleStillColorsOnlyMatches.length === 3;
+    const conditionalPaletteAndInputPass = Boolean(conditionalFormula) && conditionalCustomColorMatches && swatchesVisible;
     result.checks.item8 = {
       formula: conditionalFormula,
       customHex,
       nativeColorPickerPreview: colorPickerValue,
-      customHexAndColorPickerMatch: customHex.toUpperCase() === colorPickerValue.toUpperCase(),
+      customHexAndColorPickerMatch: conditionalCustomColorMatches,
       paletteSwatches,
-      everySwatchHasVisibleArea: paletteSwatches.length > 0 && paletteSwatches.every((item) => item.width > 0 && item.height > 0),
-      formulaRuleStillColorsMatchesOnly: 'Fresh runGroup delivery2 #38 passed: Valor >= 200 colors 200 and 300, not 100, after reopening.',
-      status: 'pass',
+      everySwatchHasVisibleArea: swatchesVisible,
+      formulaRuleEvidence: delivery2Fresh?.path ?? null,
+      formulaRuleRowsPersisted,
+      matchingRowsAfterReopen: formulaRuleTicket?.checks?.reopenedRuleStillColorsOnlyMatches ?? null,
+      status: conditionalPaletteAndInputPass && formulaRuleRowsPersisted ? 'pass' : conditionalPaletteAndInputPass ? 'partial' : 'fail',
     };
     await page.screenshot({ path: path.join(screenshotDir, 'item-08-conditional-swatches.png') });
     await page.keyboard.press('Escape');
@@ -992,22 +1218,26 @@ async function main() {
     const primaryTableStyles = await databaseStyleSummary(primaryDatabase);
     const primaryScreenshot = await primaryDatabase.screenshot();
     const summaryProfileDir = path.join(fixtureRoot, 'ticket-39', 'profile');
+    const summaryVaultDir = path.join(fixtureRoot, 'ticket-39', 'vault');
     const summaryBuildBefore = buildIdentity();
     const summaryApp = await _electron.launch({
       executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-      args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+      args: [projectRoot],
       cwd: projectRoot,
       env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: summaryProfileDir },
     });
     let summaryFooter;
+    const summaryLayoutChecks = { defaultAlignment: [], explicitAlignment: [], resizedAlignment: [], horizontalScroll: null, frozen: null, reopened: null };
+    let summaryPage = null;
+    let summaryDatabase = null;
     try {
       await assertHidden(summaryApp);
-      const summaryPage = await summaryApp.firstWindow();
+      summaryPage = await summaryApp.firstWindow();
       summaryPage.on('pageerror', (error) => result.rendererPageErrors.push({ stage: 'summary-multi-column-default-alignment', message: error.message }));
       await summaryPage.waitForSelector('.tree-row, .link-row', { timeout: 15000 });
       await openPage(summaryPage, 'Financeiro');
       await summaryPage.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 3);
-      const summaryDatabase = summaryPage.locator('.database').first();
+      summaryDatabase = summaryPage.locator('.database').first();
       await summaryDatabase.waitFor({ state: 'visible' });
       summaryFooter = await summaryDatabase.evaluate((root) => {
       const table = root.querySelector('.db-table');
@@ -1035,10 +1265,128 @@ async function main() {
       return { headers, rows, bodyRows };
       });
       await summaryPage.screenshot({ path: path.join(screenshotDir, 'item-12-summary-footer.png') });
+      summaryLayoutChecks.defaultAlignment = await measureFooterAlignment(summaryDatabase);
+      try {
+        await summaryDatabase.locator('.db-options-button').click();
+        const propertiesMenu = summaryPage.locator('.db-panel').last();
+        await propertiesMenu.waitFor({ state: 'visible' });
+        await propertiesMenu.locator('.db-options-item').filter({ hasText: /Propriedades|Properties/i }).click();
+        const propertiesPanel = summaryPage.locator('.db-panel').last();
+        await propertiesPanel.waitFor({ state: 'visible' });
+        const propertyNames = await propertiesPanel.locator('.db-prop-name').allInnerTexts();
+        const amountIndex = propertyNames.findIndex((name) => name.trim() === 'Valor');
+        const dueIndex = propertyNames.findIndex((name) => name.trim() === 'Vencimento');
+        const alignmentSelects = propertiesPanel.locator('select[aria-label*="Alinh"]');
+        assert.ok(amountIndex >= 0 && dueIndex >= 0 && await alignmentSelects.count() === propertyNames.length,
+          `Expected alignment controls for Valor and Vencimento; properties=${propertyNames.join(', ')}`);
+        await alignmentSelects.nth(amountIndex).selectOption('right');
+        await alignmentSelects.nth(dueIndex).selectOption('center');
+        summaryLayoutChecks.explicitAlignmentSelection = {
+          amount: await alignmentSelects.nth(amountIndex).inputValue(),
+          due: await alignmentSelects.nth(dueIndex).inputValue(),
+        };
+        await summaryPage.keyboard.press('Escape');
+        await summaryPage.waitForTimeout(180);
+        summaryLayoutChecks.explicitAlignment = await measureFooterAlignment(summaryDatabase);
+
+        const amountHeader = summaryDatabase.locator('.db-table thead th').filter({ hasText: 'Valor' }).first();
+        const widthBefore = await amountHeader.evaluate((header) => Math.round(header.getBoundingClientRect().width));
+        const resizeHandle = amountHeader.locator('.db-resize');
+        const resizeBox = await resizeHandle.boundingBox();
+        assert.ok(resizeBox, 'The Valor column resize handle must be visible.');
+        await summaryPage.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
+        await summaryPage.mouse.down();
+        await summaryPage.mouse.move(resizeBox.x + resizeBox.width / 2 + 42, resizeBox.y + resizeBox.height / 2, { steps: 8 });
+        await summaryPage.mouse.up();
+        await summaryPage.waitForTimeout(180);
+        const widthAfter = await amountHeader.evaluate((header) => Math.round(header.getBoundingClientRect().width));
+        summaryLayoutChecks.resize = { widthBefore, widthAfter, increasedBy: widthAfter - widthBefore };
+        summaryLayoutChecks.resizedAlignment = await measureFooterAlignment(summaryDatabase);
+
+        await amountHeader.locator('button.db-header').click({ button: 'right' });
+        const freezeMenu = summaryPage.locator('[role="menu"]:visible').last();
+        await freezeMenu.waitFor({ state: 'visible' });
+        await freezeMenu.locator('[role^="menuitem"]').filter({ hasText: /Congelar até esta coluna|Freeze through this column/i }).click();
+        await summaryApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 650));
+        await assertHidden(summaryApp);
+        const frozenHeaderBeforeScroll = await amountHeader.evaluate((header) => ({
+          frozen: header.classList.contains('db-frozen'),
+          position: getComputedStyle(header).position,
+          left: Math.round(header.getBoundingClientRect().left),
+        }));
+        const scrollInfo = await summaryDatabase.locator('.db-table-wrap').evaluate((wrap) => {
+          const maximum = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+          wrap.scrollLeft = maximum;
+          return { maximum, scrollLeft: wrap.scrollLeft, clientWidth: wrap.clientWidth, scrollWidth: wrap.scrollWidth };
+        });
+        await summaryPage.waitForTimeout(180);
+        const frozenHeaderAfterScroll = await amountHeader.evaluate((header) => ({
+          frozen: header.classList.contains('db-frozen'),
+          position: getComputedStyle(header).position,
+          left: Math.round(header.getBoundingClientRect().left),
+        }));
+        const amountBodyCell = summaryDatabase.locator('.db-table tbody td[data-col-id="amount"]').first();
+        const amountFooterCell = summaryDatabase.locator('.db-table tfoot td.db-footer-cell[data-col-id="amount"]');
+        const frozenBodyAndFooter = {
+          bodyFrozen: await amountBodyCell.evaluate((cell) => cell.classList.contains('db-frozen')),
+          footerFrozen: await amountFooterCell.evaluate((cell) => cell.classList.contains('db-frozen')),
+          bodyLeft: await amountBodyCell.evaluate((cell) => Math.round(cell.getBoundingClientRect().left)),
+          footerLeft: await amountFooterCell.evaluate((cell) => Math.round(cell.getBoundingClientRect().left)),
+        };
+        summaryLayoutChecks.frozen = { beforeScroll: frozenHeaderBeforeScroll, afterScroll: frozenHeaderAfterScroll, bodyAndFooter: frozenBodyAndFooter };
+        summaryLayoutChecks.horizontalScroll = {
+          ...scrollInfo,
+          stickyColumnStayedInPlace: Math.abs(frozenHeaderBeforeScroll.left - frozenHeaderAfterScroll.left) <= 2,
+          footerBodyStayedAligned: Math.abs(frozenBodyAndFooter.bodyLeft - frozenBodyAndFooter.footerLeft) <= 2,
+          footerAlignment: await measureFooterAlignment(summaryDatabase),
+        };
+        await summaryPage.screenshot({ path: path.join(screenshotDir, 'item-12-footer-horizontal-scroll-frozen.png') });
+      } catch (error) {
+        summaryLayoutChecks.error = error.stack ?? String(error);
+      }
       await assertHidden(summaryApp);
       assert.deepEqual(buildIdentity(), summaryBuildBefore, 'Compiled build changed during summary inspection.');
     } finally {
       await summaryApp.close().catch(() => {});
+    }
+    const summaryReopenApp = await _electron.launch({
+      executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
+      args: [projectRoot],
+      cwd: projectRoot,
+      env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: summaryProfileDir },
+    });
+    try {
+      await assertHidden(summaryReopenApp);
+      const summaryReopenPage = await summaryReopenApp.firstWindow();
+      summaryReopenPage.on('pageerror', (error) => result.rendererPageErrors.push({ stage: 'summary-multi-column-reopen', message: error.message }));
+      await summaryReopenPage.waitForSelector('.tree-row, .link-row', { timeout: 15000 });
+      await summaryReopenApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 650));
+      await assertHidden(summaryReopenApp);
+      await openPage(summaryReopenPage, 'Financeiro');
+      const reopenedDatabase = summaryReopenPage.locator('.database').first();
+      await reopenedDatabase.waitFor({ state: 'visible' });
+      const reopenedAmountHeader = reopenedDatabase.locator('.db-table thead th').filter({ hasText: 'Valor' }).first();
+      const reopenedWidth = await reopenedAmountHeader.evaluate((header) => Math.round(header.getBoundingClientRect().width));
+      const reopenedScroll = await reopenedDatabase.locator('.db-table-wrap').evaluate((wrap) => {
+        const maximum = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+        wrap.scrollLeft = maximum;
+        return { maximum, scrollLeft: wrap.scrollLeft };
+      });
+      await summaryReopenPage.waitForTimeout(180);
+      summaryLayoutChecks.reopened = {
+        amountWidth: reopenedWidth,
+        widthPersisted: summaryLayoutChecks.resize ? Math.abs(reopenedWidth - summaryLayoutChecks.resize.widthAfter) <= 2 : false,
+        frozenHeader: await reopenedAmountHeader.evaluate((header) => ({
+          frozen: header.classList.contains('db-frozen'),
+          position: getComputedStyle(header).position,
+        })),
+        horizontalScroll: reopenedScroll,
+        alignment: await measureFooterAlignment(reopenedDatabase),
+      };
+      await assertHidden(summaryReopenApp);
+      assert.deepEqual(buildIdentity(), summaryBuildBefore, 'Compiled build changed during summary reopen inspection.');
+    } finally {
+      await summaryReopenApp.close().catch(() => {});
     }
     const footerAlignmentComparison = summaryFooter.rows.flat().map((footerCell) => {
       const bodyCell = summaryFooter.bodyRows.flat().find((candidate) => Math.abs(candidate.rect.left - footerCell.rect.left) <= 2);
@@ -1051,43 +1399,128 @@ async function main() {
         sameTextAlignment: bodyCell.align === footerCell.align,
       } : null;
     }).filter(Boolean);
+    const summaryGroup39 = delivery2Fresh?.report?.evidence?.tickets?.['#39'];
+    const persistedPerViewSummaries = delivery2Fresh?.report?.outcome === 'passed' &&
+      delivery2Fresh.report.hiddenWindows === true &&
+      delivery2Fresh.report.pageErrorCount === 0 &&
+      summaryGroup39?.status === 'passed' &&
+      summaryGroup39.checks?.distinctViewSummariesSaved === true &&
+      summaryGroup39.checks?.reopenedPrimaryView &&
+      summaryGroup39.checks?.reopenedReviewView &&
+      summaryGroup39.checks?.configurationsIndependent === true;
+    const comparisonsMatch = (comparisons) => Array.isArray(comparisons) && comparisons.length > 0 &&
+      comparisons.every((comparison) => comparison.sameTextAlignment && comparison.sameColumnBounds);
+    const layoutChecksPass = comparisonsMatch(summaryLayoutChecks.defaultAlignment) &&
+      summaryLayoutChecks.explicitAlignmentSelection?.amount === 'right' &&
+      summaryLayoutChecks.explicitAlignmentSelection?.due === 'center' &&
+      comparisonsMatch(summaryLayoutChecks.explicitAlignment) &&
+      summaryLayoutChecks.resize?.increasedBy >= 20 &&
+      comparisonsMatch(summaryLayoutChecks.resizedAlignment) &&
+      summaryLayoutChecks.frozen?.beforeScroll.frozen === true &&
+      summaryLayoutChecks.frozen?.beforeScroll.position === 'sticky' &&
+      summaryLayoutChecks.frozen?.bodyAndFooter.bodyFrozen === true &&
+      summaryLayoutChecks.frozen?.bodyAndFooter.footerFrozen === true &&
+      summaryLayoutChecks.horizontalScroll?.maximum > 0 &&
+      summaryLayoutChecks.horizontalScroll?.stickyColumnStayedInPlace === true &&
+      summaryLayoutChecks.horizontalScroll?.footerBodyStayedAligned === true &&
+      comparisonsMatch(summaryLayoutChecks.horizontalScroll?.footerAlignment) &&
+      summaryLayoutChecks.reopened?.widthPersisted === true &&
+      summaryLayoutChecks.reopened?.frozenHeader.frozen === true &&
+      summaryLayoutChecks.reopened?.frozenHeader.position === 'sticky' &&
+      comparisonsMatch(summaryLayoutChecks.reopened?.alignment);
+    const item12Status = persistedPerViewSummaries && layoutChecksPass
+      ? 'pass'
+      : summaryLayoutChecks.error && !summaryLayoutChecks.defaultAlignment.length
+        ? 'fail'
+        : 'partial';
+    const item12Gaps = [];
+    if (!persistedPerViewSummaries) item12Gaps.push('per-view summary persistence/reopen evidence');
+    if (!comparisonsMatch(summaryLayoutChecks.defaultAlignment)) item12Gaps.push('default body/footer alignment');
+    if (summaryLayoutChecks.explicitAlignmentSelection?.amount !== 'right' || summaryLayoutChecks.explicitAlignmentSelection?.due !== 'center' ||
+      !comparisonsMatch(summaryLayoutChecks.explicitAlignment)) item12Gaps.push('explicit body/footer alignment');
+    if (!(summaryLayoutChecks.resize?.increasedBy >= 20)) item12Gaps.push('column resize');
+    if (!comparisonsMatch(summaryLayoutChecks.resizedAlignment)) item12Gaps.push('body/footer alignment after resize');
+    if (summaryLayoutChecks.frozen?.beforeScroll.frozen !== true || summaryLayoutChecks.frozen?.beforeScroll.position !== 'sticky' ||
+      summaryLayoutChecks.frozen?.bodyAndFooter.bodyFrozen !== true || summaryLayoutChecks.frozen?.bodyAndFooter.footerFrozen !== true ||
+      !(summaryLayoutChecks.horizontalScroll?.maximum > 0) || summaryLayoutChecks.horizontalScroll?.stickyColumnStayedInPlace !== true ||
+      summaryLayoutChecks.horizontalScroll?.footerBodyStayedAligned !== true || !comparisonsMatch(summaryLayoutChecks.horizontalScroll?.footerAlignment)) {
+      item12Gaps.push('frozen column and body/footer alignment during horizontal scroll');
+    }
+    if (summaryLayoutChecks.reopened?.widthPersisted !== true || summaryLayoutChecks.reopened?.frozenHeader.frozen !== true ||
+      summaryLayoutChecks.reopened?.frozenHeader.position !== 'sticky' || !comparisonsMatch(summaryLayoutChecks.reopened?.alignment)) {
+      item12Gaps.push('reopened resize, frozen column and alignment');
+    }
     result.checks.item12 = {
       summaryFooter,
       footerAlignmentComparison,
       footerAlignmentMismatches: footerAlignmentComparison.filter((item) => !item.sameTextAlignment),
+      layoutChecks: summaryLayoutChecks,
       visibleCalculatePrompts: summaryFooter.rows.flat().filter((cell) => /calcular/i.test(cell.text)).length,
       selectedSummaryValues: summaryFooter.rows.flat().map((cell) => cell.text).filter((text) => /600|3/.test(text)),
-      perViewConfiguredValues: { primarySum: '600', primaryCount: '3', reviewMaximum: '300' },
-      perViewSummaryConfigFreshRun: 'Measured from the reopened synthetic ticket #39 profile: primary sum 600 and count 3, review maximum 300; separate from the first-run #38 style inspection.',
-      status: 'partial',
-      reason: footerAlignmentComparison.some((item) => !item.sameTextAlignment)
-        ? 'The configured totals persist, but default footer text alignment differs from one or more body columns; Calcular prompts remain visible in unset cells, and hover-only behavior still requires direct comparison.'
-        : 'The configured totals persist; the measured alignment is currently consistent, but Calcular prompts remain visible in unset cells and hover-only behavior still requires direct comparison.',
+      perViewConfiguredValues: { primarySum: summaryGroup39?.checks?.primaryView?.amount ?? null, primaryCount: summaryGroup39?.checks?.primaryView?.category ?? null, reviewMaximum: summaryGroup39?.checks?.reviewView?.amount ?? null },
+      perViewSummaryEvidence: delivery2Fresh?.path ?? null,
+      persistedPerViewSummaries,
+      status: item12Status,
+      reason: item12Status === 'pass' ? 'Per-view summaries and body/footer alignment persisted under defaults, explicit alignments, resize, horizontal scroll and frozen columns, including after reopening.' : `Unverified or failed checks: ${item12Gaps.join('; ') || 'summary layout measurements'}.`,
     };
 
     const primaryOptions = page.locator('.database .db-options-button').first();
     const toolbarButtons = await page.locator('.database .db-tools > button').allInnerTexts();
     await primaryOptions.click();
+    let controlsPanel = page.locator('.db-panel').last();
+    await controlsPanel.waitFor({ state: 'visible' });
+    await controlsPanel.locator('.db-options-item').filter({ hasText: /Filtrar|Filter/i }).click();
+    const filterPanel = page.locator('.db-panel').last();
+    await filterPanel.waitFor({ state: 'visible' });
+    await filterPanel.locator('.link-button').filter({ hasText: /Adicionar grupo de filtros|Add filter group/i }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.database .db-table tbody tr').length === 3);
+    const activeFilterChipVisible = await page.locator('.database .db-filter-state').isVisible();
+    const activeFilterText = activeFilterChipVisible ? await page.locator('.database .db-filter-state').innerText() : '';
+    await page.keyboard.press('Escape');
+    const amountHeaderForSort = primaryDatabase.locator('thead th').filter({ hasText: 'Valor' }).first();
+    await amountHeaderForSort.locator('button.db-header').click({ button: 'right' });
+    const sortMenu = page.locator('[role="menu"]:visible').last();
+    await sortMenu.waitFor({ state: 'visible' });
+    await sortMenu.locator('[role^="menuitem"]').filter({ hasText: /Ordem crescente|Sort ascending/i }).click();
+    await page.waitForTimeout(120);
+    const activeFilterSortLabel = await primaryOptions.getAttribute('aria-label');
+    const activeFilterSortBadges = await primaryOptions.locator('.db-options-count').allInnerTexts();
+    const visibleRowsAfterFilterAndSort = await page.locator('.database .db-table tbody tr').count();
+    await primaryOptions.click();
     const optionsPanel = page.locator('.db-panel').last();
     await optionsPanel.waitFor({ state: 'visible' });
     const panelText = await optionsPanel.innerText();
     const toggleLabels = await optionsPanel.locator('.db-options-toggle > span').allInnerTexts();
+    const toggleValues = await optionsPanel.locator('.db-options-toggle input[type="checkbox"]').evaluateAll((inputs) => inputs.map((input) => input.checked));
     const linkedViewLabels = await optionsPanel.locator('.db-options-menu button.db-options-item').allInnerTexts();
     const linkedViewEntries = linkedViewLabels.filter((label) => /Painel/i.test(label));
     const settingsAllFields = /propriedade|properties/i.test(panelText);
     const linkedViewsListed = /views?\s+vinculadas?|linked views/i.test(panelText) && linkedViewEntries.length >= 2;
+    const optionSections = ['Filtrar', 'Ordenar', 'Layout', 'Propriedades', 'Calcular', 'Formatação condicional'];
+    const optionSectionsPresent = optionSections.every((section) => panelText.includes(section));
+    const activeFilterAndSortShown = activeFilterChipVisible && visibleRowsAfterFilterAndSort === 3 &&
+      activeFilterSortBadges.length === 2 && activeFilterSortBadges.every((badge) => /1/.test(badge)) &&
+      /1/.test(activeFilterSortLabel ?? '') && /1/.test(activeFilterText);
     result.checks.item10 = {
       optionsPanelVisible: true,
       panelText,
+      optionSections,
+      optionSectionsPresent,
       toggleLabels,
+      toggleValues,
       toolbarButtons,
       directToolbarButtonCount: toolbarButtons.length,
       settingsAllFieldsEntry: settingsAllFields,
       linkedViewsListed,
       linkedViewEntries,
       linkedViewsHeader: panelText.match(/Views vinculadas|Linked views/i)?.[0] ?? null,
-      status: 'partial',
-      reason: 'The options panel exposes table settings, but the toolbar keeps its direct controls alongside Options.',
+      activeFilterSortLabel,
+      activeFilterSortBadges,
+      activeFilterText,
+      activeFilterChipVisible,
+      visibleRowsAfterFilterAndSort,
+      activeFilterAndSortShown,
+      status: 'notverified',
     };
     await page.screenshot({ path: path.join(screenshotDir, 'item-10-options-panel.png') });
     await optionsPanel.locator('.db-options-item').filter({ hasText: /Propriedades|Properties/i }).click();
@@ -1098,7 +1531,28 @@ async function main() {
     result.checks.item10.allUserDefinedPropertiesShown = result.checks.item10.propertyCount === 4;
     result.checks.item10.visibleTableHeaders = await page.locator('.db-table thead th').allInnerTexts();
     result.checks.item10.titleColumnIncludedInPropertyPanel = result.checks.item10.propertyNames.some((name) => /^(nome|name)$/i.test(name));
-    result.checks.item10.reason += ' The properties list shows all 4 user-defined fields, while the title column is not listed there.';
+    const readOnlyPropertiesAccessible = delivery4Fresh?.report?.pagePropertiesTabVerified === true &&
+      delivery4Fresh.report.ticket32?.pagePropertiesTabVerified === true;
+    const readOnlyMutationProtected = delivery4Fresh?.report?.ticket33?.readOnlyMutationProtectionVerified === true;
+    result.checks.item10.readOnlyPropertiesAccessible = readOnlyPropertiesAccessible;
+    result.checks.item10.readOnlyMutationProtected = readOnlyMutationProtected;
+    const item10Pass = toolbarButtons.length === 1 && optionSectionsPresent && activeFilterAndSortShown &&
+      toggleLabels.length === 2 && toggleValues.length === 2 && linkedViewsListed &&
+      result.checks.item10.allUserDefinedPropertiesShown && !result.checks.item10.titleColumnIncludedInPropertyPanel &&
+      readOnlyPropertiesAccessible && readOnlyMutationProtected;
+    const item10Evidence = {
+      compactToolbar: toolbarButtons.length === 1,
+      optionSectionsPresent,
+      activeFilterAndSortShown,
+      stateToggles: toggleLabels.length === 2 && toggleValues.length === 2,
+      linkedViewsListed,
+      allUserDefinedPropertiesShown: result.checks.item10.allUserDefinedPropertiesShown,
+      titleColumnExcludedFromPropertyList: !result.checks.item10.titleColumnIncludedInPropertyPanel,
+      readOnlyPropertiesAccessible,
+      readOnlyMutationProtected,
+    };
+    result.checks.item10.status = Object.values(item10Evidence).every(Boolean) ? 'pass' : 'partial';
+    result.checks.item10.reason = Object.entries(item10Evidence).filter(([, passed]) => !passed).map(([key]) => key);
     await page.keyboard.press('Escape');
 
     currentStage = 'navigate-linked-view-page';
@@ -1116,11 +1570,11 @@ async function main() {
       linkedShell: linkedStyles,
       linkedTableStyles,
       comparisonStatus: 'not verified',
-      comparisonNote: 'The synthetic fixture contains a full-page source database, not an inline database component; the screenshot compares the primary page view with its linked view.',
+      comparisonNote: 'This fixture compares a full-page source database with its linked view. The canonical inline embed is verified separately by the focused item 11 visual report.',
       styleMismatchOnPrimaryVsLinked: primaryTableStyles.headerCell?.backgroundColor !== linkedTableStyles.headerCell?.backgroundColor || primaryTableStyles.headerCell?.borderColor !== linkedTableStyles.headerCell?.borderColor,
       observedPrimaryHeader: primaryTableStyles.headerCell,
       observedLinkedHeader: linkedTableStyles.headerCell,
-      status: 'partial',
+      status: 'notverified',
       linkedViewBaseName: await firstView.locator('.linked-database-name').inputValue(),
     };
 
@@ -1135,8 +1589,6 @@ async function main() {
     await firstView.locator('.database').waitFor({ state: 'visible' });
     result.checks.item9 = {
       linkedViewCanCollapseAndExpand: linkedDatabaseHiddenWhenCollapsed,
-      status: 'partial',
-      reason: 'Collapsing works, but hiding the linked view title still leaves the source database title visible.',
     };
 
     currentStage = 'linked-view-hide-title';
@@ -1148,13 +1600,25 @@ async function main() {
     await linkedToggles.nth(0).check();
     const linkedHiddenTitle = firstView.locator('.inline-database-hidden-title-trigger');
     await linkedHiddenTitle.waitFor({ state: 'visible' });
-    const leakedLinkedTitle = await linkedHiddenTitle.innerText();
+    const hiddenTitleControlText = await linkedHiddenTitle.innerText();
+    const sourceTitleButtonAbsent = await firstView.locator('.linked-database-source').count() === 0;
+    const linkedOpenSource = firstView.locator('.linked-database-open-source');
+    const linkedOpenSourceVisible = await linkedOpenSource.isVisible();
     result.checks.item9.linkedHideTitle = {
       controlVisible: true,
-      sourceTitleStillVisible: leakedLinkedTitle,
-      requirementPassed: !/Financeiro/i.test(leakedLinkedTitle),
+      sourceTitleButtonAbsent,
+      restoreTitleControl: hiddenTitleControlText,
+      sourceAccessControlVisible: linkedOpenSourceVisible,
+      requirementPassed: sourceTitleButtonAbsent && /^Mostrar título$/i.test(hiddenTitleControlText.trim()) && linkedOpenSourceVisible,
     };
+    currentStage = 'linked-view-hidden-title-source-access';
+    await linkedOpenSource.click();
+    await openPage(page, 'Financeiro');
+    const sourceAccessWorks = await page.locator('main .database').first().isVisible();
+    await openPage(page, 'Painel');
     await linkedHiddenTitle.click();
+    await firstView.locator('.linked-database-name').waitFor({ state: 'visible' });
+    result.checks.item9.sourceAccessBeforeReopen = sourceAccessWorks;
 
     const firstName = firstView.locator('.linked-database-name');
     const secondName = secondView.locator('.linked-database-name');
@@ -1187,12 +1651,22 @@ async function main() {
     await page.screenshot({ path: path.join(screenshotDir, 'item-11-primary-vs-linked.png') });
     await page.evaluate(() => document.querySelector('#original-scope-side-by-side')?.remove());
 
+    currentStage = 'linked-view-hide-title-before-reopen';
+    await linkedOptions.click();
+    const hideAgainPanel = page.locator('.db-panel').last();
+    await hideAgainPanel.waitFor({ state: 'visible' });
+    await hideAgainPanel.locator('.db-options-toggle input[type="checkbox"]').nth(0).check();
+    await firstView.locator('.inline-database-hidden-title-trigger').waitFor({ state: 'visible' });
+    await linkedCollapseButton.click();
+    await firstView.locator('.database').waitFor({ state: 'detached' });
+    result.checks.item9.collapsedBeforeReopen = await firstView.locator('.database').count() === 0;
+
     await app.close();
     app = null;
     currentStage = 'reopen-after-rename';
     app = await _electron.launch({
       executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-      args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+      args: [projectRoot],
       cwd: projectRoot,
       env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
     });
@@ -1202,6 +1676,32 @@ async function main() {
     await page.waitForSelector('.tree-row, .link-row', { timeout: 15000 });
     await openPage(page, 'Painel');
     const reopenedViews = page.locator('.linked-database-view');
+    const reopenedFirstView = reopenedViews.nth(0);
+    const collapsedAfterReopen = await reopenedFirstView.locator('.database').count() === 0;
+    const hiddenTitleAfterReopen = reopenedFirstView.locator('.inline-database-hidden-title-trigger');
+    const titleRestoreControlPersisted = await hiddenTitleAfterReopen.isVisible();
+    const sourceTitleStillHiddenAfterReopen = await reopenedFirstView.locator('.linked-database-source').count() === 0;
+    const sourceAccessAfterReopen = await reopenedFirstView.locator('.linked-database-open-source').isVisible();
+    result.checks.item9.linkedHideTitleAfterReopen = {
+      collapsedAfterReopen,
+      titleRestoreControlPersisted,
+      sourceTitleStillHidden: sourceTitleStillHiddenAfterReopen,
+      sourceAccessControlVisible: sourceAccessAfterReopen,
+      sourceAccessBeforeReopen: sourceAccessWorks,
+    };
+    result.checks.item9.status = result.checks.item9.linkedViewCanCollapseAndExpand &&
+      result.checks.item9.collapsedBeforeReopen && collapsedAfterReopen && titleRestoreControlPersisted &&
+      sourceTitleStillHiddenAfterReopen && sourceAccessAfterReopen && sourceAccessWorks
+      ? 'pass'
+      : 'fail';
+    if (collapsedAfterReopen) {
+      await reopenedFirstView.locator('.linked-database-head button').first().click();
+      await reopenedFirstView.locator('.database').waitFor({ state: 'visible' });
+    }
+    if (titleRestoreControlPersisted) {
+      await hiddenTitleAfterReopen.click();
+      await reopenedFirstView.locator('.linked-database-name').waitFor({ state: 'visible' });
+    }
     const persistedFirstName = await reopenedViews.nth(0).locator('.linked-database-name').inputValue();
     const persistedSecondName = await reopenedViews.nth(1).locator('.linked-database-name').inputValue();
     assert.equal(persistedFirstName, renamedName);
@@ -1211,6 +1711,28 @@ async function main() {
       siblingView: persistedSecondName,
       persisted: true,
     };
+    const inlineComparisonPassed = inlineFresh?.report?.status === 'pass' &&
+      inlineFresh.report.execution?.hiddenWindowsVerified === true &&
+      inlineFresh.report.execution?.rendererPageErrors?.length === 0 &&
+      inlineFresh.report.execution?.buildUnchanged === true &&
+      inlineFresh.report.fixture?.canonicalWikiEmbedPresent === true &&
+      inlineFresh.report.fixture?.linkedViewConfigMatchesEmbeddedPrimary === true &&
+      inlineFresh.report.comparison?.sameViewport === true &&
+      inlineFresh.report.comparison?.sameTableWidth === true &&
+      inlineFresh.report.comparison?.sameViewConfig === true &&
+      inlineFresh.report.comparison?.tableContentMatches === true &&
+      inlineFresh.report.comparison?.computedTableCellStylesMatch === true &&
+      inlineFresh.report.comparison?.canonicalEmbedPersistedAfterRender === true &&
+      inlineFresh.report.execution?.syntheticFixtureRemoved === true;
+    const independentRenamePersisted = result.checks.item11.independentRenameAfterReopen.persisted === true;
+    result.checks.item11.inlineVisualEvidence = inlineFresh?.path ?? null;
+    result.checks.item11.inlineComparisonPassed = inlineComparisonPassed;
+    result.checks.item11.independentRenamePersisted = independentRenamePersisted;
+    result.checks.item11.status = inlineComparisonPassed && independentRenamePersisted ? 'pass' : 'partial';
+    result.checks.item11.reason = [
+      ...(!inlineComparisonPassed ? ['canonical inline versus linked visual comparison'] : []),
+      ...(!independentRenamePersisted ? ['independent rename persistence'] : []),
+    ];
 
     currentStage = 'row-handle-and-selection';
     await openPage(page, 'Financeiro');
@@ -1239,6 +1761,43 @@ async function main() {
     const selectedAll = await page.locator('.db-table tbody tr.is-row-selected').count();
     await headerSelect.uncheck();
     const selectedAfterClear = await page.locator('.db-table tbody tr.is-row-selected').count();
+    const ticket35 = delivery5Fresh?.report?.ticket35;
+    const ticket35Checks = [
+      'filteredSelectionClearsWhenVisibleRowsChange',
+      'shiftRangeSelectionVerified',
+      'keyboardSelectAllVerified',
+      'visibleSelectAllAndTriStateVerified',
+      'rowMenuActionsAndKeyboardCloseVerified',
+      'insertBeforeAfterAndUndoVerified',
+      'manualReorderVerified',
+      'duplicatePreservesRowsAndUndoVerified',
+      'keyboardTrashConfirmAndUndoVerified',
+    ];
+    const filteredMultiRowDragKeyboardCoverage = Boolean(ticket35Checks.length) &&
+      ticket35Checks.every((key) => ticket35?.[key] === true);
+    const delivery5RunVerified = delivery5Fresh?.report?.hiddenWindowVerified === true &&
+      Array.isArray(delivery5Fresh.report.rendererPageErrors) && delivery5Fresh.report.rendererPageErrors.length === 0 &&
+      delivery5Fresh.report.cleanupVerified === true;
+    const menuLabelsCoverExpectedActions = [
+      /Expandir linha/i,
+      /Inserir linha antes/i,
+      /Inserir linha depois/i,
+      /Duplicar linhas/i,
+      /Copiar linhas/i,
+      /Colar linhas/i,
+      /Mover para outra tabela/i,
+      /Mover para a lixeira/i,
+    ].every((pattern) => separateMenuLabels.some((label) => pattern.test(label)));
+    const item15Evidence = {
+      gripClickSelectsRow: clickSelectedRow,
+      gripRightClickOpensActions: contextOpenedMenu,
+      separateMenuHasAllRowActions: menuLabelsCoverExpectedActions,
+      individualSelection: selectedOne === 1,
+      selectAllVisibleRows: selectedAll === 3,
+      clearAllVisibleSelection: selectedAfterClear === 0,
+      filteredMultiRowDragKeyboardCoverage,
+      delivery5RunVerified,
+    };
     result.checks.item15 = {
       gripClickOpenedMenu: clickOpenedMenu,
       gripClickSelectedRow: clickSelectedRow,
@@ -1247,8 +1806,11 @@ async function main() {
       selectOneRowCheckbox: selectedOne === 1,
       headerSelectAllRows: selectedAll === 3,
       headerDeselectAllRows: selectedAfterClear === 0,
-      status: 'partial',
-      reason: 'Row selection and Coda-style actions are available, while the six-dot drag handle itself does not select the row or open its menu.',
+      broaderTicket35Coverage: Object.fromEntries(ticket35Checks.map((key) => [key, ticket35?.[key] === true])),
+      delivery5Evidence: delivery5Fresh?.path ?? null,
+      delivery5RunVerified,
+      status: Object.values(item15Evidence).every(Boolean) ? 'pass' : 'partial',
+      reason: Object.entries(item15Evidence).filter(([, passed]) => !passed).map(([key]) => key),
     };
     await page.keyboard.press('Escape').catch(() => {});
     await firstRow.hover();
@@ -1259,12 +1821,13 @@ async function main() {
     result.hiddenWindowsThroughout = true;
     result.rendererPageErrorsVerified = result.rendererPageErrors.length === 0;
     result.screenshots = [
-      'docs/evidence/original-scope-audit-2026-10-28/item-08-conditional-swatches.png',
-      'docs/evidence/original-scope-audit-2026-10-28/item-10-options-panel.png',
-      'docs/evidence/original-scope-audit-2026-10-28/item-12-summary-footer.png',
-      'docs/evidence/original-scope-audit-2026-10-28/item-11-primary-vs-linked.png',
-      'docs/evidence/original-scope-audit-2026-10-28/item-15-row-handle.png',
+      screenshotRef('item-08-conditional-swatches.png'),
+      screenshotRef('item-10-options-panel.png'),
+      screenshotRef('item-12-summary-footer.png'),
+      screenshotRef('item-11-primary-vs-linked.png'),
+      screenshotRef('item-15-row-handle.png'),
     ];
+    saveAudit('original-scope-database.json', result);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally {
     if (app) await app.close().catch(() => {});

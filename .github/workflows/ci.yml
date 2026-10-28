@@ -26,3 +26,4 @@ jobs:
           # the desktop shell is type checked and built, its binary is not needed to run the tests
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm run check
+      - run: node --test scripts/packaged-smoke-preflight.test.cjs

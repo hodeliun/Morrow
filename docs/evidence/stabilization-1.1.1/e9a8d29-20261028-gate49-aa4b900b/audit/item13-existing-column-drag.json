@@ -1,0 +1,223 @@
+{
+  "audit": "Original scope functional UI verification",
+  "startedAt": "2026-10-28T17:03:56.003Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "execution": {
+    "mode": "hidden Electron, fresh stabilization candidate run",
+    "syntheticDataOnly": true,
+    "buildUnchanged": null,
+    "pageErrors": [],
+    "visibleWindowChecks": [
+      {
+        "stage": "item13-focused-drag-first-run:launch",
+        "visible": 0
+      },
+      {
+        "stage": "item13-focused-drag-first-run:content-size",
+        "visible": 0
+      },
+      {
+        "stage": "item13-focused-drag:first-run-complete",
+        "visible": 0
+      },
+      {
+        "stage": "item13-focused-drag-reopen:launch",
+        "visible": 0
+      },
+      {
+        "stage": "item13-focused-drag-reopen:content-size",
+        "visible": 0
+      },
+      {
+        "stage": "item13-focused-drag:reopen-verified",
+        "visible": 0
+      }
+    ],
+    "visibleWindowCountMax": 0,
+    "hiddenWindowsVerified": true,
+    "sourceNoteCopied": false,
+    "nativePicker": "Playwright file chooser interception; no OS dialog opened",
+    "dragMode": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch",
+    "fixtureSource": "Fresh synthetic fixtures from this run",
+    "screenshots": [
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/item13-existing-column-drag/page-item13-existing-column-drop-indicator.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/item13-existing-column-drag/page-item13-existing-column-after-drop.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/item13-existing-column-drag/page-item13-existing-column-reopened.png"
+    ],
+    "focusedItem13ExistingColumnDrag": {
+      "status": "pass",
+      "startedAt": "2026-10-28T17:03:56.004Z",
+      "syntheticDataOnly": true,
+      "fixtureRoot": "morrow-item13-existing-column-drag-8u5HVz",
+      "beforeBuild": {
+        "mainMtime": "2026-10-28T16:49:21.403Z",
+        "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+        "rendererAssetCount": 197,
+        "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+      },
+      "finishedAt": "2026-10-28T17:03:59.475Z",
+      "drag": {
+        "initialColumnCount": 6,
+        "afterDragColumnCount": 7,
+        "indicatorVisible": true,
+        "indicatorState": {
+          "display": "block",
+          "width": 4,
+          "height": 81,
+          "left": 1283,
+          "top": 363
+        },
+        "seventhColumnText": "Parágrafo externo para mover à sétima coluna.",
+        "sourceParagraphStillOutsideColumns": false,
+        "sourceParagraphRemovedFromOutside": true,
+        "modality": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch"
+      },
+      "reopen": {
+        "columnCount": 7,
+        "seventhColumnText": "Parágrafo externo para mover à sétima coluna.",
+        "sourceParagraphStillOutsideColumns": false,
+        "sourceParagraphRemovedFromOutside": true
+      },
+      "pageErrors": [],
+      "syntheticFixtureRemoved": true,
+      "buildAfter": {
+        "mainMtime": "2026-10-28T16:49:21.403Z",
+        "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+        "rendererAssetCount": 197,
+        "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+      },
+      "buildUnchanged": true
+    }
+  },
+  "items": {
+    "1": {
+      "status": "notverified",
+      "subitems": {
+        "standardPaletteSwatchesMatchOptions": {
+          "status": "notverified"
+        },
+        "customHexCanBeApplied": {
+          "status": "notverified"
+        },
+        "customColorPersistsAfterReopen": {
+          "status": "notverified"
+        }
+      }
+    },
+    "3": {
+      "status": "notverified",
+      "subitems": {
+        "rightClickOpensImageMenu": {
+          "status": "notverified"
+        },
+        "menuIncludesReplaceCaptionThreeAlignmentsAndCrop": {
+          "status": "notverified"
+        },
+        "leftCenterRightAlignmentCanBeApplied": {
+          "status": "notverified"
+        },
+        "captionCanBeApplied": {
+          "status": "notverified"
+        },
+        "cropCanBeApplied": {
+          "status": "notverified"
+        },
+        "replacementCanBeCanceledWithoutChangingOriginal": {
+          "status": "notverified"
+        },
+        "replacementCanBeApplied": {
+          "status": "notverified"
+        },
+        "presentationPersistsAfterReopen": {
+          "status": "notverified"
+        }
+      }
+    },
+    "4": {
+      "status": "notverified",
+      "subitems": {
+        "fullWidthCanBeEnabledInPageStyle": {
+          "status": "notverified"
+        },
+        "menusRemainUnclippedAndUnobstructedAt1600x1000": {
+          "status": "notverified"
+        },
+        "menusRemainUnclippedAndUnobstructedAt800x600": {
+          "status": "notverified"
+        },
+        "focusAndEscapeWork": {
+          "status": "notverified"
+        }
+      }
+    },
+    "5": {
+      "status": "notverified",
+      "subitems": {
+        "collapseIsOptInPerHeading": {
+          "status": "notverified"
+        },
+        "headingHidesFollowingContentByHierarchy": {
+          "status": "notverified"
+        },
+        "nestedHeadingDoesNotCrossSectionBoundary": {
+          "status": "notverified"
+        },
+        "disablingRemovesFoldControlAndRestoresContent": {
+          "status": "notverified"
+        },
+        "collapsedStateAndContentPersistAfterReopen": {
+          "status": "notverified"
+        }
+      }
+    },
+    "13": {
+      "status": "partial",
+      "subitems": {
+        "sevenContentColumnsCanBeCreated": {
+          "status": "notverified"
+        },
+        "eighthContentColumnIsRejected": {
+          "status": "notverified"
+        },
+        "contentOrderPersistsAfterReopen": {
+          "status": "notverified"
+        },
+        "sideBySideContentGroupCanBeCreatedByDraggingWithVisibleIndicator": {
+          "status": "notverified"
+        },
+        "externalParagraphCanBeDraggedIntoExistingColumnAsSeventh": {
+          "status": "pass",
+          "exactAcceptance": "Drag an external block to the side of an existing content column group; insert it as a new column in that same group.",
+          "focusedFixtureRoot": "morrow-item13-existing-column-drag-8u5HVz",
+          "drag": {
+            "initialColumnCount": 6,
+            "afterDragColumnCount": 7,
+            "indicatorVisible": true,
+            "indicatorState": {
+              "display": "block",
+              "width": 4,
+              "height": 81,
+              "left": 1283,
+              "top": 363
+            },
+            "seventhColumnText": "Parágrafo externo para mover à sétima coluna.",
+            "sourceParagraphStillOutsideColumns": false,
+            "sourceParagraphRemovedFromOutside": true,
+            "modality": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch"
+          },
+          "reopen": {
+            "columnCount": 7,
+            "seventhColumnText": "Parágrafo externo para mover à sétima coluna.",
+            "sourceParagraphStillOutsideColumns": false,
+            "sourceParagraphRemovedFromOutside": true
+          },
+          "buildUnchanged": true,
+          "pageErrors": [],
+          "syntheticFixtureRemoved": true,
+          "note": "This focused run checks app input into an existing six-column group. The earlier menu-created seven-column group and separate two-column drag group remain separately recorded."
+        }
+      }
+    }
+  }
+}

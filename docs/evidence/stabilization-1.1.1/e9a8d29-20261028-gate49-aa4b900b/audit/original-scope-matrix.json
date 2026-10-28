@@ -1,0 +1,309 @@
+{
+  "audit": "Gate #49 original 20-item UI audit",
+  "recordedOn": "2026-10-28",
+  "status": "pass",
+  "candidate": {
+    "commit": "e9a8d29cabd1356645eb871f62304c249526034f",
+    "packageVersion": "1.2.1-fork.1.1.1",
+    "workingTreeState": "The compiled snapshot included uncommitted worktree edits; this is validation evidence, not the final release candidate.",
+    "sourceTree": {
+      "sha256": "c3aa1d4ae55438b084a24cdb4a63bb641a2126c872ea30b84047b120402d0257",
+      "fileCount": 258,
+      "unchangedBeforeAfter": true,
+      "evidence": "../../check-candidate.json"
+    }
+  },
+  "execution": {
+    "syntheticDataOnly": true,
+    "hiddenWindows": true,
+    "maximumVisibleWindows": 0,
+    "rendererPageErrors": 0,
+    "compiledBuildUnchanged": true,
+    "npmRunCheck": {
+      "status": "pass",
+      "testFiles": 61,
+      "tests": 473,
+      "evidence": "../../check-candidate.json"
+    }
+  },
+  "summary": {
+    "pass": 20,
+    "partial": 0,
+    "fail": 0,
+    "notVerified": 0,
+    "scope": "Original-scope UI acceptance plus local candidate test suite; packaged release gate is outside this result."
+  },
+  "items": [
+    {
+      "number": 1,
+      "status": "pass",
+      "result": "Standard palette colors and custom HEX applied to the intended block and persisted.",
+      "evidence": [
+        "original-scope-pages.json",
+        "../screenshots/original-scope-pages/page-item01-palette-menu.png",
+        "../screenshots/original-scope-pages/page-item01-custom-hex-applied.png"
+      ]
+    },
+    {
+      "number": 2,
+      "status": "pass",
+      "result": "Quick filters returned expected rows and reset correctly; two simultaneous filters and controls fit at 800x600.",
+      "evidence": [
+        "delivery2-ui-final.json",
+        "narrow-multiple-filters-smoke.json"
+      ]
+    },
+    {
+      "number": 3,
+      "status": "pass",
+      "result": "Image menu, caption, three alignments, recrop of an existing crop, canceled replacement, applied replacement, persistence, and original synthetic source integrity verified.",
+      "evidence": [
+        "original-scope-pages.json",
+        "../screenshots/original-scope-pages/page-item03-right-click-menu.png",
+        "../screenshots/original-scope-pages/page-item03-crop-overlay.png",
+        "../screenshots/original-scope-pages/page-item03-replacement-applied.png"
+      ]
+    },
+    {
+      "number": 4,
+      "status": "pass",
+      "result": "Full width and page menus fit wide and narrow viewports; nested icon dialog layers above settings, Escape closes the top layer and restores focus.",
+      "evidence": [
+        "original-scope-pages.json",
+        "delivery3-ui.json",
+        "../screenshots/original-scope-pages/page-item04-style-panel-800x600.png"
+      ]
+    },
+    {
+      "number": 5,
+      "status": "pass",
+      "result": "Opt-in hierarchical collapse, disable/restore behavior, and reopen persistence verified.",
+      "evidence": [
+        "original-scope-pages.json",
+        "../screenshots/original-scope-pages/page-item05-collapsed-heading.png"
+      ]
+    },
+    {
+      "number": 6,
+      "status": "pass",
+      "result": "Keyboard focus/edit/commit, clipboard, vertical and horizontal fill, preservation of other cells, and undo verified.",
+      "evidence": [
+        "item6-cell-keyboard-clipboard.json",
+        "original-scope-items6-14.json",
+        "delivery4-ui.json"
+      ]
+    },
+    {
+      "number": 7,
+      "status": "pass",
+      "result": "Portuguese Editar coluna action opened the intended settings.",
+      "evidence": [
+        "original-scope-database.json"
+      ]
+    },
+    {
+      "number": 8,
+      "status": "pass",
+      "result": "Conditional palette/custom HEX and Valor >= 200 formula colored only matching rows after reopen.",
+      "evidence": [
+        "original-scope-database.json",
+        "delivery2-ui-final.json"
+      ]
+    },
+    {
+      "number": 9,
+      "status": "pass",
+      "result": "Linked view collapse/expand and title hiding persisted without renderer errors while source access remained available.",
+      "evidence": [
+        "original-scope-database.json"
+      ]
+    },
+    {
+      "number": 10,
+      "status": "pass",
+      "result": "Compact options and active filter/sort state verified. The current snapshot directly verified the Options > Properties path for a trashed database: Protected field visible, five mutation controls disabled, row mutation controls absent, and Markdown unchanged.",
+      "evidence": [
+        "original-scope-database.json",
+        "delivery4-ui.json",
+        "stabilization-tables-ui-current-e9-item10-readonly.json"
+      ]
+    },
+    {
+      "number": 11,
+      "status": "pass",
+      "result": "Canonical inline embed and linked view matched table/header/cell styles under identical source, view configuration, viewport, and width; independent rename persisted.",
+      "evidence": [
+        "original-scope-inline.json",
+        "original-scope-database.json"
+      ]
+    },
+    {
+      "number": 12,
+      "status": "pass",
+      "result": "Per-view calculations persisted; body/footer alignment held under default and explicit alignment, resize, horizontal scroll, and frozen columns.",
+      "evidence": [
+        "original-scope-database.json",
+        "delivery2-ui-final.json"
+      ]
+    },
+    {
+      "number": 13,
+      "status": "pass",
+      "result": "Actual drag into a six-column group showed an indicator, moved content into column seven, persisted, and rejected column eight.",
+      "evidence": [
+        "original-scope-pages.json",
+        "item13-existing-column-drag.json"
+      ]
+    },
+    {
+      "number": 14,
+      "status": "pass",
+      "result": "Mouse/keyboard range selection, Delete, Backspace, row preservation, and undo verified.",
+      "evidence": [
+        "original-scope-item14-mouse-range.json",
+        "original-scope-items6-14.json"
+      ]
+    },
+    {
+      "number": 15,
+      "status": "pass",
+      "result": "Grip click selected a row, right-click opened row actions, and filtered/multi-row/keyboard selection plus insert/undo/duplicate/trash/recovery flows passed.",
+      "evidence": [
+        "original-scope-database.json",
+        "delivery5-ui-2026-10-28T17-17-10-052Z-38064.json"
+      ]
+    },
+    {
+      "number": 16,
+      "status": "pass",
+      "result": "All 25 property types had icons and localized name/alias search worked.",
+      "evidence": [
+        "original-scope-delivery3.json",
+        "delivery3-ui.json"
+      ]
+    },
+    {
+      "number": 17,
+      "status": "pass",
+      "result": "Formula relation tokens, suggestions, keyboard insertion, and persisted binding verified.",
+      "evidence": [
+        "original-scope-delivery3.json",
+        "delivery3-ui.json"
+      ]
+    },
+    {
+      "number": 18,
+      "status": "pass",
+      "result": "Applicable formula result formatting matched Number controls; zero and false remained distinct from empty.",
+      "evidence": [
+        "original-scope-delivery3.json"
+      ]
+    },
+    {
+      "number": 19,
+      "status": "pass",
+      "result": "New inverse creation and populated existing-relation linking/merge persisted; candidate suite passed.",
+      "evidence": [
+        "original-scope-delivery3.json",
+        "delivery3-ui.json",
+        "../../check-candidate.json"
+      ]
+    },
+    {
+      "number": 20,
+      "status": "pass",
+      "result": "Raster/SVG property icons rendered at 14px in header and settings slots, persisted across supported changes/reopen, and preserved page icon.",
+      "evidence": [
+        "original-scope-delivery3.json",
+        "delivery3-ui.json"
+      ]
+    }
+  ],
+  "limitations": [
+    "No win-unpacked executable or installer was launched; packaged smoke is not covered by this matrix.",
+    "Final Windows packaging, NSIS payload inspection, signing, artifact hashes, CI on publication commit, and publication remain pending.",
+    "The aggregate full-page-source versus linked-view comparison for item 11 was not verified because it is not the canonical inline-embed comparison; the focused canonical inline-versus-linked comparison passed.",
+    "The compiled UI snapshot included uncommitted worktree edits according to the run report; repeat validation on the final integrated release build."
+  ],
+  "auditNotes": [
+    "delivery5-ui-2026-10-28T17-17-10-052Z-38064.json records maxPropertyGuardIncludedInTestedBuild=false, but the harness reads this opt-in field from MORROW_DELIVERY5_PROPERTY_LIMIT_GUARD_BUILT and defaults it to false; it is metadata, not an app assertion and is not used to score item 19. Candidate source contains the 200-property guard, and delivery3.test.ts covers cardinality conflict, limit, invalid ID, and duplicate ID without partial relation changes. npm run check passed.",
+    "Source provenance is the check-candidate before/after tree fingerprint C3aa... over 258 files. The delivery2 run carries a separate 3,596-file compiled snapshot identity: bundle manifest fingerprint 3580... and artifact content fingerprint 0db..., computed by distinct methods. The raw sourceInputsSha256 field in delivery2-ui-final.json is not used as the source-tree hash."
+  ],
+  "additionalValidation": {
+    "status": "pass",
+    "mode": "integrated-only-diagnostic",
+    "packageVersion": "1.2.1-fork.1.1.1",
+    "sourceRevision": "e9a8d29cabd1356645eb871f62304c249526034f",
+    "sourceHash": "401610996bedb920d3b3df4ff5b585b4ddadb3d964b413e9d8c21ee74bd064da",
+    "sourceStable": true,
+    "bundleFingerprint": "09e65c934335952051b27386c7f21ce02015ddf8a102ebae94239fad26280d68",
+    "bundleStable": true,
+    "hiddenWindowVerified": true,
+    "rendererPageErrors": 0,
+    "locales": [
+      "en",
+      "es",
+      "pt"
+    ],
+    "integratedPagePersistedAfterReopen": true,
+    "pdf": {
+      "status": "pass",
+      "pages": 3,
+      "bytes": 197074,
+      "embeddedImages": 1,
+      "allRequiredTextExtracted": true,
+      "visuallyReviewed": true,
+      "secondLinkedViewContinuesOnPage3": true,
+      "previews": [
+        "../screenshots/interaction-final-page1.png",
+        "../screenshots/interaction-expansion-final-page2.png",
+        "../screenshots/interaction-expansion-final-page3.png"
+      ]
+    },
+    "scale": {
+      "renderedRows": 1000,
+      "selectedCells": 1000,
+      "pasteMs": 444,
+      "persistPasteMs": 18957,
+      "undoMs": 595,
+      "persistUndoMs": 17920,
+      "redoMs": 655,
+      "persistRedoMs": 21207,
+      "rejected1001CellAction": true,
+      "rowsAndDataUnchangedOnRejection": true,
+      "reopenPersistenceVerified": true
+    },
+    "timingQualification": "Observed harness timings; no latency threshold was specified.",
+    "cleanupVerified": true,
+    "evidence": "interaction-final-integrated.json"
+  },
+  "compiledSnapshot": {
+    "bundleManifestSha256": "3580c8ac3ce5cfe74924a2abf6979923cca5a93231316597053dabb8c7b8f541",
+    "artifactContentSha256": "0db322d906a61e149a0e5c59aac33f4ee7e4b02c40a4afe1e8a062010066b93b",
+    "fileCount": 3596,
+    "directories": [
+      "dist",
+      "dist-electron"
+    ],
+    "fingerprintAlgorithmsDistinct": true,
+    "report": "delivery2-ui-final.json",
+    "provenanceNote": "The raw delivery2 JSON labels 3580... as sourceInputsSha256; this matrix treats it as the compiled-bundle fingerprint for the 3,596-file snapshot, not the check-candidate source-tree hash."
+  },
+  "readOnlyValidation": {
+    "runAt": "2026-10-28T18:07:59.551Z",
+    "sourceRevision": "e9a8d29cabd1356645eb871f62304c249526034f",
+    "packageVersion": "1.2.1-fork.1.1.1",
+    "path": "Options > Properties",
+    "databaseInTrash": true,
+    "propertiesActionAvailable": true,
+    "protectedFieldVisible": true,
+    "disabledMutationControlCount": 5,
+    "rowMutationControlsAbsent": true,
+    "markdownUnchanged": true,
+    "hiddenWindowsThroughout": true,
+    "rendererPageErrors": 0,
+    "compiledBuildIdentity": "8c4a0b3442d9ebe2cdb1f2e12e29b66511d3a9ec9b9cf5a3bd07b47418247851",
+    "evidence": "stabilization-tables-ui-current-e9-item10-readonly.json",
+    "status": "pass"
+  }
+}

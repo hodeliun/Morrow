@@ -1,0 +1,645 @@
+{
+  "runAt": "2026-10-28T17:06:17.692Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "source": "fresh synthetic delivery3 fixtures",
+  "checks": {
+    "item16": {
+      "englishNumberResults": [
+        "Número"
+      ],
+      "portugueseNumberResults": [
+        "Telefone",
+        "Número"
+      ],
+      "englishNumberAliasWorks": true,
+      "portugueseNameSearchWorks": true,
+      "propertyTypeIcons": [
+        {
+          "title": "Texto",
+          "iconPresent": true
+        },
+        {
+          "title": "E-mail",
+          "iconPresent": true
+        },
+        {
+          "title": "Link",
+          "iconPresent": true
+        },
+        {
+          "title": "Telefone",
+          "iconPresent": true
+        },
+        {
+          "title": "Número",
+          "iconPresent": true
+        },
+        {
+          "title": "Moeda",
+          "iconPresent": true
+        },
+        {
+          "title": "Percentual",
+          "iconPresent": true
+        },
+        {
+          "title": "Controle deslizante",
+          "iconPresent": true
+        },
+        {
+          "title": "Progresso",
+          "iconPresent": true
+        },
+        {
+          "title": "Escala",
+          "iconPresent": true
+        },
+        {
+          "title": "Seleção",
+          "iconPresent": true
+        },
+        {
+          "title": "Seleção múltipla",
+          "iconPresent": true
+        },
+        {
+          "title": "Data",
+          "iconPresent": true
+        },
+        {
+          "title": "Hora",
+          "iconPresent": true
+        },
+        {
+          "title": "Data e hora",
+          "iconPresent": true
+        },
+        {
+          "title": "Duração",
+          "iconPresent": true
+        },
+        {
+          "title": "Data de criação",
+          "iconPresent": true
+        },
+        {
+          "title": "Última edição",
+          "iconPresent": true
+        },
+        {
+          "title": "Caixa de seleção",
+          "iconPresent": true
+        },
+        {
+          "title": "Relação",
+          "iconPresent": true
+        },
+        {
+          "title": "Fórmula",
+          "iconPresent": true
+        },
+        {
+          "title": "Imagem",
+          "iconPresent": true
+        },
+        {
+          "title": "Arquivo",
+          "iconPresent": true
+        },
+        {
+          "title": "Canvas rico",
+          "iconPresent": true
+        },
+        {
+          "title": "Botão de ação",
+          "iconPresent": true
+        }
+      ],
+      "everyTypeHasRepresentativeIcon": true
+    },
+    "item20": {
+      "propertyTypePickerIcons": [
+        {
+          "title": "Texto",
+          "iconPresent": true
+        },
+        {
+          "title": "E-mail",
+          "iconPresent": true
+        },
+        {
+          "title": "Link",
+          "iconPresent": true
+        },
+        {
+          "title": "Telefone",
+          "iconPresent": true
+        },
+        {
+          "title": "Número",
+          "iconPresent": true
+        },
+        {
+          "title": "Moeda",
+          "iconPresent": true
+        },
+        {
+          "title": "Percentual",
+          "iconPresent": true
+        },
+        {
+          "title": "Controle deslizante",
+          "iconPresent": true
+        },
+        {
+          "title": "Progresso",
+          "iconPresent": true
+        },
+        {
+          "title": "Escala",
+          "iconPresent": true
+        },
+        {
+          "title": "Seleção",
+          "iconPresent": true
+        },
+        {
+          "title": "Seleção múltipla",
+          "iconPresent": true
+        },
+        {
+          "title": "Data",
+          "iconPresent": true
+        },
+        {
+          "title": "Hora",
+          "iconPresent": true
+        },
+        {
+          "title": "Data e hora",
+          "iconPresent": true
+        },
+        {
+          "title": "Duração",
+          "iconPresent": true
+        },
+        {
+          "title": "Data de criação",
+          "iconPresent": true
+        },
+        {
+          "title": "Última edição",
+          "iconPresent": true
+        },
+        {
+          "title": "Caixa de seleção",
+          "iconPresent": true
+        },
+        {
+          "title": "Relação",
+          "iconPresent": true
+        },
+        {
+          "title": "Fórmula",
+          "iconPresent": true
+        },
+        {
+          "title": "Imagem",
+          "iconPresent": true
+        },
+        {
+          "title": "Arquivo",
+          "iconPresent": true
+        },
+        {
+          "title": "Canvas rico",
+          "iconPresent": true
+        },
+        {
+          "title": "Botão de ação",
+          "iconPresent": true
+        }
+      ],
+      "propertyTypeIconsPass": true,
+      "uploadButtonVisible": true,
+      "nativeFilePicker": "Intercepted through Playwright filechooser; the app creates an HTML input[type=file], so no OS picker is opened.",
+      "mouseClickBlocked": false,
+      "uploadCenterHitTest": {
+        "rect": {
+          "left": 954,
+          "top": 162,
+          "right": 1047,
+          "bottom": 188
+        },
+        "buttonClass": "button small icon-upload",
+        "buttonZIndex": "auto",
+        "hitElement": "Enviar ícone",
+        "hitClass": "button small icon-upload",
+        "hitZIndex": "auto",
+        "hitPosition": "static"
+      },
+      "keyboard": {
+        "initialFocus": {
+          "tag": "button",
+          "className": "is-active",
+          "isEmojiSearch": false
+        },
+        "keyboardFocusPath": [],
+        "reachedUploadButton": false,
+        "fileSelectedByKeyboard": false
+      },
+      "uploadMethod": "mouse",
+      "upload": {
+        "filechooserAcceptedSyntheticIcon": true,
+        "noSystemPickerOpened": true,
+        "customIconSchemaSaved": false,
+        "customIconRendered": true,
+        "customIconMetrics": {
+          "tag": "img",
+          "naturalWidth": 200,
+          "naturalHeight": 400,
+          "cssWidth": "14px",
+          "cssHeight": "14px",
+          "renderedWidth": 14,
+          "renderedHeight": 14,
+          "slotWidth": 14,
+          "slotHeight": 14,
+          "headerNameHeight": 18,
+          "expectedIconSize": 14,
+          "overflowsSlot": false,
+          "overflowsExpectedIconSize": false
+        },
+        "iconPropertyBlock": "    - id: type_test\n      name: Value type test\n      type: currency"
+      },
+      "reopened": {
+        "customIconSchemaSaved": true,
+        "iconRenderedAfterReopen": true,
+        "customIconMetrics": {
+          "tag": "img",
+          "naturalWidth": 200,
+          "naturalHeight": 400,
+          "cssWidth": "14px",
+          "cssHeight": "14px",
+          "renderedWidth": 14,
+          "renderedHeight": 14,
+          "slotWidth": 14,
+          "slotHeight": 14,
+          "headerWidth": 180,
+          "headerHeight": 34,
+          "headerNameHeight": 18,
+          "expectedIconSize": 14,
+          "imageLoaded": true,
+          "overflowsSlot": false,
+          "overflowsExpectedIconSize": false
+        },
+        "iconPropertyBlock": "    - id: type_test\n      name: Value type test\n      type: currency\n      icon: morrow-icon:file:attachments%2Freplacement.png"
+      },
+      "status": "pass",
+      "reason": "The custom PNG saves and renders again after reopen; the upload button was reachable by pointer in this run."
+    },
+    "item17": {
+      "savedFormula": "Autor.`Livros escritos`",
+      "renderedTokens": [
+        {
+          "text": "Autor",
+          "border": "1px solid color(srgb 0.117647 0.533333 0.847059 / 0.3)",
+          "borderRadius": "9999px",
+          "backgroundColor": "color(srgb 0.117647 0.533333 0.847059 / 0.15)",
+          "color": "rgb(30, 136, 216)"
+        },
+        {
+          "text": "`Livros escritos`",
+          "border": "1px solid color(srgb 0.117647 0.533333 0.847059 / 0.3)",
+          "borderRadius": "9999px",
+          "backgroundColor": "color(srgb 0.117647 0.533333 0.847059 / 0.15)",
+          "color": "rgb(30, 136, 216)"
+        }
+      ],
+      "tokenHasRoundOutline": true,
+      "configurationPanelInsideViewport": true,
+      "panelRect": {
+        "left": 1014,
+        "top": 231,
+        "right": 1534,
+        "bottom": 873,
+        "width": 520,
+        "height": 643,
+        "viewportWidth": 1600,
+        "viewportHeight": 1000,
+        "inside": true
+      },
+      "relationSuggestions": [
+        "Biography Long\nInserir campo da tabela selecionada",
+        "Livros escritos\nInserir campo da tabela selecionada"
+      ],
+      "relationSuggestionStyles": [
+        {
+          "text": "Biography LongInserir campo da tabela selecionada",
+          "color": "rgb(29, 29, 31)",
+          "backgroundColor": "color(srgb 0.920588 0.958 0.986235)",
+          "border": "1px solid rgb(30, 136, 216)"
+        },
+        {
+          "text": "Livros escritosInserir campo da tabela selecionada",
+          "color": "rgb(29, 29, 31)",
+          "backgroundColor": "rgb(255, 255, 255)",
+          "border": "1px solid rgb(236, 236, 235)"
+        }
+      ],
+      "tabInsertedSuggestion": "Autor.`Livros escritos`",
+      "formulaBindingPersisted": true
+    },
+    "item19": {
+      "inverseModeOptions": [
+        "Unidirecional (sem inversa)",
+        "Criar nova coluna no destino",
+        "Vincular a coluna existente"
+      ],
+      "createInverseModeAvailable": false,
+      "sourceRelationName": "Auditoria limpa",
+      "sourceTargetDatabase": "Financeiro",
+      "nameSuggestedByDefault": "Livros",
+      "createButtonInitiallyEnabled": true,
+      "createButtonEnabledAfterName": true,
+      "committedInverseName": "Livros de auditoria",
+      "createdInverseName": "Livros de auditoria",
+      "reciprocalMetadataSaved": true,
+      "inverseProjectedColumnVisible": true,
+      "immediateNotices": [],
+      "relationPanelAfterClick": "Nome\nTipo\nRelação\nDescrição\nPreenchimento\nManual\nPadrão\nCalculado\nTabela relacionada\nFinanceiro\nCardinalidade\nUma linha\nVárias linhas\nColuna de exibição\nTítulo da linha\nRelação inversa\nUnidirecional (sem inversa)\nCriar nova coluna no destino\nVincular a coluna existente\nNome da nova coluna\nCriar e vincular\nFiltros das opções\nAdicionar um filtro\nOrdem crescente\nOcultar\nExcluir",
+      "relationButtonAfterClick": true,
+      "existingPopulatedColumnLinkAndMergeEvidence": null,
+      "status": "pass"
+    },
+    "item18": {
+      "formulaResultTypeOptions": [
+        {
+          "label": "Nome",
+          "inputType": "text",
+          "value": "Preço calculado",
+          "selectValue": null
+        },
+        {
+          "label": "Tipo",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        },
+        {
+          "label": "Descrição",
+          "inputType": "text",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Fórmula",
+          "inputType": null,
+          "value": null,
+          "selectValue": ""
+        },
+        {
+          "label": "Formato do resultado",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        },
+        {
+          "label": "Localidade ⓘ",
+          "inputType": "text",
+          "value": "pt-BR",
+          "selectValue": null
+        },
+        {
+          "label": "Casas decimais ⓘ",
+          "inputType": "number",
+          "value": "2",
+          "selectValue": null
+        },
+        {
+          "label": "Mínimo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Máximo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Passo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Números negativos",
+          "inputType": null,
+          "value": null,
+          "selectValue": "minus"
+        },
+        {
+          "label": "Prévia do formato",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        },
+        {
+          "label": "Mostrar como",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        }
+      ],
+      "standardNumberPropertyOptions": [
+        {
+          "label": "Nome",
+          "inputType": "text",
+          "value": "Valor",
+          "selectValue": null
+        },
+        {
+          "label": "Tipo",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        },
+        {
+          "label": "Descrição",
+          "inputType": "text",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Preenchimento",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        },
+        {
+          "label": "Localidade ⓘ",
+          "inputType": "text",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Casas decimais ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Mínimo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Máximo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Passo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Números negativos",
+          "inputType": null,
+          "value": null,
+          "selectValue": "minus"
+        },
+        {
+          "label": "Prévia do formato",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        },
+        {
+          "label": "Mostrar como",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        }
+      ],
+      "applicableFormulaFormattingControls": [
+        {
+          "label": "Localidade ⓘ",
+          "inputType": "text",
+          "value": "pt-BR",
+          "selectValue": null
+        },
+        {
+          "label": "Casas decimais ⓘ",
+          "inputType": "number",
+          "value": "2",
+          "selectValue": null
+        },
+        {
+          "label": "Mínimo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Máximo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Passo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Números negativos",
+          "inputType": null,
+          "value": null,
+          "selectValue": "minus"
+        },
+        {
+          "label": "Mostrar como",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        }
+      ],
+      "applicableNumberFormattingControls": [
+        {
+          "label": "Localidade ⓘ",
+          "inputType": "text",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Casas decimais ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Mínimo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Máximo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Passo ⓘ",
+          "inputType": "number",
+          "value": "",
+          "selectValue": null
+        },
+        {
+          "label": "Números negativos",
+          "inputType": null,
+          "value": null,
+          "selectValue": "minus"
+        },
+        {
+          "label": "Mostrar como",
+          "inputType": null,
+          "value": null,
+          "selectValue": null
+        }
+      ],
+      "matchingDisplayControls": [
+        "Localidade ⓘ",
+        "Casas decimais ⓘ",
+        "Mínimo ⓘ",
+        "Máximo ⓘ",
+        "Passo ⓘ",
+        "Números negativos",
+        "Mostrar como"
+      ],
+      "status": "pass",
+      "reason": "All seven Number display controls applicable to formula results match those in a standard Number column; manual filling controls were excluded for a derived value."
+    }
+  },
+  "rendererPageErrors": [],
+  "caseFailures": [],
+  "hiddenWindowsThroughout": true,
+  "compiledBuildStable": true,
+  "rendererPageErrorsVerified": true,
+  "screenshots": [
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-16-number-alias.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-17-formula-token.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-17-formula-suggestions.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-18-number-formula-format.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-19-inverse-create.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-20-icon-picker-overlay.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-20-icon-upload.png"
+  ]
+}

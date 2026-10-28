@@ -1,0 +1,1053 @@
+{
+  "runAt": "2026-10-28T17:30:34.806Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "source": "reopened synthetic profile created by delivery2 runGroup",
+  "checks": {
+    "item7": {
+      "columnMenuLabels": [
+        "Editar coluna",
+        "Editar fórmula da coluna",
+        "Formatação condicional desta coluna",
+        "Filtrar por esta coluna",
+        "Inserir coluna antes",
+        "Inserir coluna depois",
+        "Ajustar largura ao conteúdo",
+        "Duplicar coluna sem valores",
+        "Duplicar coluna com valores"
+      ],
+      "editColumnAction": "Editar coluna",
+      "editColumnActionPresent": true,
+      "status": "pass",
+      "editActionOpenedSettings": true
+    },
+    "item8": {
+      "formula": "Valor >= 200",
+      "customHex": "#3157c8",
+      "nativeColorPickerPreview": "#3157c8",
+      "customHexAndColorPickerMatch": true,
+      "paletteSwatches": [
+        {
+          "label": "Cinza",
+          "backgroundColor": "rgb(241, 241, 239)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Marrom",
+          "backgroundColor": "rgb(244, 238, 238)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Laranja",
+          "backgroundColor": "rgb(251, 236, 221)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Amarelo",
+          "backgroundColor": "rgb(251, 243, 219)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Verde",
+          "backgroundColor": "rgb(237, 243, 236)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Azul",
+          "backgroundColor": "rgb(231, 243, 248)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Roxo",
+          "backgroundColor": "rgb(246, 243, 249)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Rosa",
+          "backgroundColor": "rgb(250, 241, 245)",
+          "width": 18,
+          "height": 18
+        },
+        {
+          "label": "Vermelho",
+          "backgroundColor": "rgb(253, 235, 236)",
+          "width": 18,
+          "height": 18
+        }
+      ],
+      "everySwatchHasVisibleArea": true,
+      "formulaRuleEvidence": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/delivery2-ui-final.json",
+      "formulaRuleRowsPersisted": true,
+      "matchingRowsAfterReopen": [
+        {
+          "value": "100",
+          "color": "rgba(0, 0, 0, 0)"
+        },
+        {
+          "value": "200",
+          "color": "rgb(49, 87, 200)"
+        },
+        {
+          "value": "300",
+          "color": "rgb(49, 87, 200)"
+        }
+      ],
+      "status": "pass"
+    },
+    "item12": {
+      "summaryFooter": {
+        "headers": [
+          {
+            "text": "",
+            "columnId": null,
+            "align": "center",
+            "rect": {
+              "left": 567,
+              "right": 635,
+              "top": 782
+            }
+          },
+          {
+            "text": "Nome",
+            "columnId": null,
+            "align": "left",
+            "rect": {
+              "left": 635,
+              "right": 825,
+              "top": 782
+            }
+          },
+          {
+            "text": "Valor",
+            "columnId": null,
+            "align": "left",
+            "rect": {
+              "left": 825,
+              "right": 955,
+              "top": 782
+            }
+          },
+          {
+            "text": "Vencimento",
+            "columnId": null,
+            "align": "left",
+            "rect": {
+              "left": 955,
+              "right": 1085,
+              "top": 782
+            }
+          },
+          {
+            "text": "Concluído",
+            "columnId": null,
+            "align": "left",
+            "rect": {
+              "left": 1085,
+              "right": 1175,
+              "top": 782
+            }
+          },
+          {
+            "text": "Categoria",
+            "columnId": null,
+            "align": "left",
+            "rect": {
+              "left": 1175,
+              "right": 1305,
+              "top": 782
+            }
+          },
+          {
+            "text": "",
+            "columnId": null,
+            "align": "left",
+            "rect": {
+              "left": 1305,
+              "right": 1341,
+              "top": 782
+            }
+          }
+        ],
+        "rows": [
+          [
+            {
+              "text": "",
+              "columnId": null,
+              "align": "center",
+              "color": "rgb(29, 29, 31)",
+              "backgroundColor": "rgb(255, 255, 255)",
+              "opacity": "1",
+              "rect": {
+                "left": 567,
+                "right": 635,
+                "top": 922
+              }
+            },
+            {
+              "text": "300",
+              "columnId": "amount",
+              "align": "left",
+              "color": "rgb(29, 29, 31)",
+              "backgroundColor": "rgb(255, 255, 255)",
+              "opacity": "1",
+              "rect": {
+                "left": 825,
+                "right": 955,
+                "top": 922
+              }
+            },
+            {
+              "text": "Calcular",
+              "columnId": "due",
+              "align": "left",
+              "color": "rgb(29, 29, 31)",
+              "backgroundColor": "rgb(255, 255, 255)",
+              "opacity": "1",
+              "rect": {
+                "left": 955,
+                "right": 1085,
+                "top": 922
+              }
+            },
+            {
+              "text": "Calcular",
+              "columnId": "done",
+              "align": "left",
+              "color": "rgb(29, 29, 31)",
+              "backgroundColor": "rgb(255, 255, 255)",
+              "opacity": "1",
+              "rect": {
+                "left": 1085,
+                "right": 1175,
+                "top": 922
+              }
+            },
+            {
+              "text": "Calcular",
+              "columnId": "category",
+              "align": "left",
+              "color": "rgb(29, 29, 31)",
+              "backgroundColor": "rgb(255, 255, 255)",
+              "opacity": "1",
+              "rect": {
+                "left": 1175,
+                "right": 1305,
+                "top": 922
+              }
+            }
+          ]
+        ],
+        "bodyRows": [
+          [
+            {
+              "text": "Alfa",
+              "columnId": "title",
+              "align": "left",
+              "rect": {
+                "left": 635,
+                "right": 825,
+                "top": 816
+              }
+            },
+            {
+              "text": "100",
+              "columnId": "amount",
+              "align": "left",
+              "rect": {
+                "left": 825,
+                "right": 955,
+                "top": 816
+              }
+            },
+            {
+              "text": "2 de nov. de 2026",
+              "columnId": "due",
+              "align": "left",
+              "rect": {
+                "left": 955,
+                "right": 1085,
+                "top": 816
+              }
+            },
+            {
+              "text": "",
+              "columnId": "done",
+              "align": "left",
+              "rect": {
+                "left": 1085,
+                "right": 1175,
+                "top": 816
+              }
+            },
+            {
+              "text": "Infra",
+              "columnId": "category",
+              "align": "left",
+              "rect": {
+                "left": 1175,
+                "right": 1305,
+                "top": 816
+              }
+            }
+          ],
+          [
+            {
+              "text": "Beta",
+              "columnId": "title",
+              "align": "left",
+              "rect": {
+                "left": 635,
+                "right": 825,
+                "top": 851
+              }
+            },
+            {
+              "text": "200",
+              "columnId": "amount",
+              "align": "left",
+              "rect": {
+                "left": 825,
+                "right": 955,
+                "top": 851
+              }
+            },
+            {
+              "text": "12 de nov. de 2026",
+              "columnId": "due",
+              "align": "left",
+              "rect": {
+                "left": 955,
+                "right": 1085,
+                "top": 851
+              }
+            },
+            {
+              "text": "",
+              "columnId": "done",
+              "align": "left",
+              "rect": {
+                "left": 1085,
+                "right": 1175,
+                "top": 851
+              }
+            },
+            {
+              "text": "Desenvolvimento",
+              "columnId": "category",
+              "align": "left",
+              "rect": {
+                "left": 1175,
+                "right": 1305,
+                "top": 851
+              }
+            }
+          ],
+          [
+            {
+              "text": "Gama",
+              "columnId": "title",
+              "align": "left",
+              "rect": {
+                "left": 635,
+                "right": 825,
+                "top": 886
+              }
+            },
+            {
+              "text": "300",
+              "columnId": "amount",
+              "align": "left",
+              "rect": {
+                "left": 825,
+                "right": 955,
+                "top": 886
+              }
+            },
+            {
+              "text": "22 de nov. de 2026",
+              "columnId": "due",
+              "align": "left",
+              "rect": {
+                "left": 955,
+                "right": 1085,
+                "top": 886
+              }
+            },
+            {
+              "text": "",
+              "columnId": "done",
+              "align": "left",
+              "rect": {
+                "left": 1085,
+                "right": 1175,
+                "top": 886
+              }
+            },
+            {
+              "text": "Infra",
+              "columnId": "category",
+              "align": "left",
+              "rect": {
+                "left": 1175,
+                "right": 1305,
+                "top": 886
+              }
+            }
+          ]
+        ]
+      },
+      "footerAlignmentComparison": [
+        {
+          "columnId": "amount",
+          "bodyText": "100",
+          "bodyAlign": "left",
+          "footerText": "300",
+          "footerAlign": "left",
+          "sameTextAlignment": true
+        },
+        {
+          "columnId": "due",
+          "bodyText": "2 de nov. de 2026",
+          "bodyAlign": "left",
+          "footerText": "Calcular",
+          "footerAlign": "left",
+          "sameTextAlignment": true
+        },
+        {
+          "columnId": "done",
+          "bodyText": "",
+          "bodyAlign": "left",
+          "footerText": "Calcular",
+          "footerAlign": "left",
+          "sameTextAlignment": true
+        },
+        {
+          "columnId": "category",
+          "bodyText": "Infra",
+          "bodyAlign": "left",
+          "footerText": "Calcular",
+          "footerAlign": "left",
+          "sameTextAlignment": true
+        }
+      ],
+      "footerAlignmentMismatches": [],
+      "layoutChecks": {
+        "defaultAlignment": [
+          {
+            "columnId": "amount",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 825,
+              "right": 955
+            },
+            "footerRect": {
+              "left": 825,
+              "right": 955
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "due",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 955,
+              "right": 1085
+            },
+            "footerRect": {
+              "left": 955,
+              "right": 1085
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "done",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 1085,
+              "right": 1175
+            },
+            "footerRect": {
+              "left": 1085,
+              "right": 1175
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "category",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 1175,
+              "right": 1305
+            },
+            "footerRect": {
+              "left": 1175,
+              "right": 1305
+            },
+            "sameColumnBounds": true
+          }
+        ],
+        "explicitAlignment": [
+          {
+            "columnId": "amount",
+            "bodyAlign": "right",
+            "footerAlign": "right",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 825,
+              "right": 955
+            },
+            "footerRect": {
+              "left": 825,
+              "right": 955
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "due",
+            "bodyAlign": "center",
+            "footerAlign": "center",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 955,
+              "right": 1085
+            },
+            "footerRect": {
+              "left": 955,
+              "right": 1085
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "done",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 1085,
+              "right": 1175
+            },
+            "footerRect": {
+              "left": 1085,
+              "right": 1175
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "category",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 1175,
+              "right": 1305
+            },
+            "footerRect": {
+              "left": 1175,
+              "right": 1305
+            },
+            "sameColumnBounds": true
+          }
+        ],
+        "resizedAlignment": [
+          {
+            "columnId": "amount",
+            "bodyAlign": "right",
+            "footerAlign": "right",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 825,
+              "right": 997
+            },
+            "footerRect": {
+              "left": 825,
+              "right": 997
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "due",
+            "bodyAlign": "center",
+            "footerAlign": "center",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 997,
+              "right": 1127
+            },
+            "footerRect": {
+              "left": 997,
+              "right": 1127
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "done",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 1127,
+              "right": 1217
+            },
+            "footerRect": {
+              "left": 1127,
+              "right": 1217
+            },
+            "sameColumnBounds": true
+          },
+          {
+            "columnId": "category",
+            "bodyAlign": "left",
+            "footerAlign": "left",
+            "sameTextAlignment": true,
+            "bodyRect": {
+              "left": 1217,
+              "right": 1347
+            },
+            "footerRect": {
+              "left": 1217,
+              "right": 1347
+            },
+            "sameColumnBounds": true
+          }
+        ],
+        "horizontalScroll": {
+          "maximum": 302,
+          "scrollLeft": 302,
+          "clientWidth": 514,
+          "scrollWidth": 816,
+          "stickyColumnStayedInPlace": true,
+          "footerBodyStayedAligned": true,
+          "footerAlignment": [
+            {
+              "columnId": "amount",
+              "bodyAlign": "right",
+              "footerAlign": "right",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 578,
+                "right": 750
+              },
+              "footerRect": {
+                "left": 578,
+                "right": 750
+              },
+              "sameColumnBounds": true
+            },
+            {
+              "columnId": "due",
+              "bodyAlign": "center",
+              "footerAlign": "center",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 448,
+                "right": 578
+              },
+              "footerRect": {
+                "left": 448,
+                "right": 578
+              },
+              "sameColumnBounds": true
+            },
+            {
+              "columnId": "done",
+              "bodyAlign": "left",
+              "footerAlign": "left",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 578,
+                "right": 668
+              },
+              "footerRect": {
+                "left": 578,
+                "right": 668
+              },
+              "sameColumnBounds": true
+            },
+            {
+              "columnId": "category",
+              "bodyAlign": "left",
+              "footerAlign": "left",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 668,
+                "right": 798
+              },
+              "footerRect": {
+                "left": 668,
+                "right": 798
+              },
+              "sameColumnBounds": true
+            }
+          ]
+        },
+        "frozen": {
+          "beforeScroll": {
+            "frozen": true,
+            "position": "sticky",
+            "left": 578
+          },
+          "afterScroll": {
+            "frozen": true,
+            "position": "sticky",
+            "left": 578
+          },
+          "bodyAndFooter": {
+            "bodyFrozen": true,
+            "footerFrozen": true,
+            "bodyLeft": 578,
+            "footerLeft": 578
+          }
+        },
+        "reopened": {
+          "amountWidth": 172,
+          "widthPersisted": true,
+          "frozenHeader": {
+            "frozen": true,
+            "position": "sticky"
+          },
+          "horizontalScroll": {
+            "maximum": 302,
+            "scrollLeft": 302
+          },
+          "alignment": [
+            {
+              "columnId": "amount",
+              "bodyAlign": "right",
+              "footerAlign": "right",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 578,
+                "right": 750
+              },
+              "footerRect": {
+                "left": 578,
+                "right": 750
+              },
+              "sameColumnBounds": true
+            },
+            {
+              "columnId": "due",
+              "bodyAlign": "center",
+              "footerAlign": "center",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 448,
+                "right": 578
+              },
+              "footerRect": {
+                "left": 448,
+                "right": 578
+              },
+              "sameColumnBounds": true
+            },
+            {
+              "columnId": "done",
+              "bodyAlign": "left",
+              "footerAlign": "left",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 578,
+                "right": 668
+              },
+              "footerRect": {
+                "left": 578,
+                "right": 668
+              },
+              "sameColumnBounds": true
+            },
+            {
+              "columnId": "category",
+              "bodyAlign": "left",
+              "footerAlign": "left",
+              "sameTextAlignment": true,
+              "bodyRect": {
+                "left": 668,
+                "right": 798
+              },
+              "footerRect": {
+                "left": 668,
+                "right": 798
+              },
+              "sameColumnBounds": true
+            }
+          ]
+        },
+        "explicitAlignmentSelection": {
+          "amount": "right",
+          "due": "center"
+        },
+        "resize": {
+          "widthBefore": 130,
+          "widthAfter": 172,
+          "increasedBy": 42
+        }
+      },
+      "visibleCalculatePrompts": 3,
+      "selectedSummaryValues": [
+        "300"
+      ],
+      "perViewConfiguredValues": {
+        "primarySum": "sum = 600",
+        "primaryCount": "count values = 3",
+        "reviewMaximum": "maximum = 300"
+      },
+      "perViewSummaryEvidence": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/delivery2-ui-final.json",
+      "persistedPerViewSummaries": true,
+      "status": "pass",
+      "reason": "Per-view summaries and body/footer alignment persisted under defaults, explicit alignments, resize, horizontal scroll and frozen columns, including after reopening."
+    },
+    "item10": {
+      "optionsPanelVisible": true,
+      "panelText": "Filtrar\n1\nOrdenar\n1\nLayout\nPropriedades\nCalcular\nFormatação condicional\n1\nOcultar título\nRecolher tabela\nViews vinculadas\nPainel · Visão Alfa\nPainel · Visão Beta",
+      "optionSections": [
+        "Filtrar",
+        "Ordenar",
+        "Layout",
+        "Propriedades",
+        "Calcular",
+        "Formatação condicional"
+      ],
+      "optionSectionsPresent": true,
+      "toggleLabels": [
+        "Ocultar título",
+        "Recolher tabela"
+      ],
+      "toggleValues": [
+        false,
+        false
+      ],
+      "toolbarButtons": [
+        "Opções"
+      ],
+      "directToolbarButtonCount": 1,
+      "settingsAllFieldsEntry": true,
+      "linkedViewsListed": true,
+      "linkedViewEntries": [
+        "Painel · Visão Alfa",
+        "Painel · Visão Beta"
+      ],
+      "linkedViewsHeader": "Views vinculadas",
+      "activeFilterSortLabel": "Opções da tabela. Filtros: 1; ordenações: 1; busca inativa",
+      "activeFilterSortBadges": [
+        "1",
+        "1"
+      ],
+      "activeFilterText": "1 ativos\nAs linhas ocultas desta visualização continuam no banco de origem.\nLimpar filtros",
+      "activeFilterChipVisible": true,
+      "visibleRowsAfterFilterAndSort": 3,
+      "activeFilterAndSortShown": true,
+      "status": "pass",
+      "propertyNames": [
+        "Valor",
+        "Vencimento",
+        "Concluído",
+        "Categoria"
+      ],
+      "propertyCount": 4,
+      "allUserDefinedPropertiesShown": true,
+      "visibleTableHeaders": [
+        "",
+        "Nome",
+        "Valor",
+        "Vencimento",
+        "Concluído",
+        "Categoria",
+        ""
+      ],
+      "titleColumnIncludedInPropertyPanel": false,
+      "readOnlyPropertiesAccessible": true,
+      "readOnlyMutationProtected": true,
+      "reason": []
+    },
+    "item11": {
+      "primaryViewShell": {
+        "tag": "section",
+        "className": "database",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "border": "0px none rgb(29, 29, 31)",
+        "boxShadow": "none",
+        "borderRadius": "0px",
+        "padding": "0px",
+        "width": 720,
+        "height": 368
+      },
+      "primaryTableStyles": {
+        "root": {
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderColor": "rgb(29, 29, 31)",
+          "color": "rgb(29, 29, 31)"
+        },
+        "table": {
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderColor": "rgb(29, 29, 31)",
+          "color": "rgb(29, 29, 31)"
+        },
+        "headerCell": {
+          "backgroundColor": "rgb(255, 255, 255)",
+          "borderColor": "rgb(91, 91, 95) rgb(236, 236, 235) rgb(236, 236, 235) rgb(91, 91, 95)",
+          "color": "rgb(91, 91, 95)"
+        },
+        "bodyCell": {
+          "backgroundColor": "rgb(255, 255, 255)",
+          "borderColor": "rgb(29, 29, 31) rgb(236, 236, 235) rgb(236, 236, 235) rgb(29, 29, 31)",
+          "color": "rgb(29, 29, 31)"
+        }
+      },
+      "linkedShell": {
+        "tag": "section",
+        "className": "linked-database-view",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "border": "0px none rgb(29, 29, 31)",
+        "boxShadow": "none",
+        "borderRadius": "0px",
+        "padding": "0px",
+        "width": 720,
+        "height": 384
+      },
+      "linkedTableStyles": {
+        "root": {
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderColor": "rgb(29, 29, 31)",
+          "color": "rgb(29, 29, 31)"
+        },
+        "table": {
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderColor": "rgb(29, 29, 31)",
+          "color": "rgb(29, 29, 31)"
+        },
+        "headerCell": {
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderColor": "rgb(91, 91, 95) rgb(236, 236, 235) rgb(236, 236, 235) rgb(91, 91, 95)",
+          "color": "rgb(91, 91, 95)"
+        },
+        "bodyCell": {
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "borderColor": "rgb(29, 29, 31) rgb(236, 236, 235) rgb(236, 236, 235) rgb(29, 29, 31)",
+          "color": "rgb(29, 29, 31)"
+        }
+      },
+      "comparisonStatus": "not verified",
+      "comparisonNote": "This fixture compares a full-page source database with its linked view. The canonical inline embed is verified separately by the focused item 11 visual report.",
+      "styleMismatchOnPrimaryVsLinked": true,
+      "observedPrimaryHeader": {
+        "backgroundColor": "rgb(255, 255, 255)",
+        "borderColor": "rgb(91, 91, 95) rgb(236, 236, 235) rgb(236, 236, 235) rgb(91, 91, 95)",
+        "color": "rgb(91, 91, 95)"
+      },
+      "observedLinkedHeader": {
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "borderColor": "rgb(91, 91, 95) rgb(236, 236, 235) rgb(236, 236, 235) rgb(91, 91, 95)",
+        "color": "rgb(91, 91, 95)"
+      },
+      "status": "pass",
+      "linkedViewBaseName": "Visão Alfa",
+      "independentRenameBeforeReopen": {
+        "renamedView": "Visão Auditada",
+        "originalViewName": "Visão Alfa",
+        "siblingView": "Visão Beta",
+        "sourceTitle": "Financeiro"
+      },
+      "independentRenameAfterReopen": {
+        "renamedView": "Visão Auditada",
+        "siblingView": "Visão Beta",
+        "persisted": true
+      },
+      "inlineVisualEvidence": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/original-scope-inline.json",
+      "inlineComparisonPassed": true,
+      "independentRenamePersisted": true,
+      "reason": []
+    },
+    "item9": {
+      "linkedViewCanCollapseAndExpand": true,
+      "linkedHideTitle": {
+        "controlVisible": true,
+        "sourceTitleButtonAbsent": true,
+        "restoreTitleControl": "Mostrar título",
+        "sourceAccessControlVisible": true,
+        "requirementPassed": true
+      },
+      "sourceAccessBeforeReopen": true,
+      "collapsedBeforeReopen": true,
+      "linkedHideTitleAfterReopen": {
+        "collapsedAfterReopen": true,
+        "titleRestoreControlPersisted": true,
+        "sourceTitleStillHidden": true,
+        "sourceAccessControlVisible": true,
+        "sourceAccessBeforeReopen": true
+      },
+      "status": "pass"
+    },
+    "item15": {
+      "gripClickOpenedMenu": false,
+      "gripClickSelectedRow": true,
+      "gripRightClickOpenedMenu": true,
+      "separateMoreMenuLabels": [
+        "Expandir linha",
+        "Inserir linha antes",
+        "Inserir linha depois",
+        "Duplicar linhas",
+        "Copiar linhas",
+        "Colar linhas",
+        "Mover para outra tabela…",
+        "Mover para a lixeira"
+      ],
+      "selectOneRowCheckbox": true,
+      "headerSelectAllRows": true,
+      "headerDeselectAllRows": true,
+      "broaderTicket35Coverage": {
+        "filteredSelectionClearsWhenVisibleRowsChange": true,
+        "shiftRangeSelectionVerified": true,
+        "keyboardSelectAllVerified": true,
+        "visibleSelectAllAndTriStateVerified": true,
+        "rowMenuActionsAndKeyboardCloseVerified": true,
+        "insertBeforeAfterAndUndoVerified": true,
+        "manualReorderVerified": true,
+        "duplicatePreservesRowsAndUndoVerified": true,
+        "keyboardTrashConfirmAndUndoVerified": true
+      },
+      "delivery5Evidence": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/delivery5-ui-2026-10-28T17-17-10-052Z-38064.json",
+      "delivery5RunVerified": true,
+      "status": "pass",
+      "reason": []
+    }
+  },
+  "hiddenWindowsThroughout": true,
+  "rendererPageErrors": [],
+  "compiledBuildIdentity": {
+    "before": {
+      "mainMtime": "2026-10-28T16:49:21.403Z",
+      "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+      "rendererAssetCount": 197,
+      "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+    },
+    "after": {
+      "mainMtime": "2026-10-28T16:49:21.403Z",
+      "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+      "rendererAssetCount": 197,
+      "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+    }
+  },
+  "rendererPageErrorsVerified": true,
+  "screenshots": [
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-08-conditional-swatches.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-10-options-panel.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-12-summary-footer.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-11-primary-vs-linked.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-15-row-handle.png"
+  ]
+}

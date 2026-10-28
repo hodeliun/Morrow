@@ -1,0 +1,16 @@
+{
+  "createdAt": "2026-10-28T18:13:03.449Z",
+  "version": "1.2.1-fork.1.1.1",
+  "sourceCommentOnlyChange": true,
+  "candidateCommit": "e9a8d29cabd1356645eb871f62304c249526034f",
+  "fileCount": 3598,
+  "changed": [],
+  "removed": [],
+  "compiledBytesIdentical": true,
+  "check": {
+    "exitCode": 0,
+    "testFiles": 61,
+    "tests": 473,
+    "scope": "typecheck, lint, unit, renderer/Electron/MCP build"
+  }
+}

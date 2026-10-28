@@ -873,7 +873,7 @@ function configureRelation(
     if (current?.inversePropertyId && current.inversePropertyId !== propertyId)
       return fail('That inverse field is already linked to another relation.');
 
-    // Preview against staged schemas so a newly-created inverse property is visible to validation.
+    // use staged schemas so validation can see a newly created inverse property
     const candidatePages = { ...state.pages };
     for (const [schemaId, schema] of schemas) {
       const page = candidatePages[schemaId];
@@ -882,7 +882,7 @@ function configureRelation(
     }
     const candidateState: WorkspaceState = { ...state, pages: candidatePages };
 
-    // Calculate union preview and check conflicts against the complete candidate state.
+    // include both schemas so conflict checks cannot accept a partial inverse configuration
     unionPreview = previewRelationPairUnion(
       candidateState,
       databaseId,

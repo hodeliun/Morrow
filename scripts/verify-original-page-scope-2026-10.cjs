@@ -5,14 +5,63 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runGroup } = require('./verify-prior-deliveries-ui.cjs');
+const { removeOwnedTempRoot, runPath } = require('./stabilization-1.1.1-audit-paths.cjs');
 
 const projectRoot = path.resolve(__dirname, '..');
-const evidencePath = path.join(projectRoot, 'docs', 'evidence', 'original-scope-pages-2026-10-28.json');
-const screenshotDir = path.join(projectRoot, 'docs', 'evidence', 'original-scope-pages-2026-10-28');
+const focusedItem13Mode = process.argv.includes('--item13-existing-column-drag');
+const historicalEvidencePath = path.join(projectRoot, 'docs', 'evidence', 'original-scope-pages-2026-10-28.json');
+const evidencePath = runPath(
+  focusedItem13Mode ? 'audit/item13-existing-column-drag.json' : 'audit/original-scope-pages.json',
+  focusedItem13Mode
+    ? path.join(projectRoot, 'docs', 'evidence', 'original-scope-item13-existing-column-drag-2026-10-28.json')
+    : historicalEvidencePath,
+);
+const screenshotDir = runPath(
+  path.join('screenshots', focusedItem13Mode ? 'item13-existing-column-drag' : 'original-scope-pages'),
+  focusedItem13Mode
+    ? path.join(projectRoot, 'docs', 'evidence', 'original-scope-item13-existing-column-drag-2026-10-28')
+    : path.join(projectRoot, 'docs', 'evidence', 'original-scope-pages-2026-10-28'),
+);
 const statusValues = new Set(['pass', 'partial', 'fail', 'notverified']);
-const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+let activeFocusedFixtureRoot = null;
+function freshEvidence() {
+  const template = JSON.parse(fs.readFileSync(historicalEvidencePath, 'utf8'));
+  const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  const projectHead = require('node:child_process').execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  }).trim();
+  return {
+    audit: template.audit,
+    startedAt: new Date().toISOString(),
+    projectHead,
+    packageVersion: packageJson.version,
+    execution: {
+      mode: 'hidden Electron, fresh stabilization candidate run',
+      syntheticDataOnly: true,
+      buildUnchanged: null,
+      pageErrors: [],
+      visibleWindowChecks: [],
+      visibleWindowCountMax: 0,
+      hiddenWindowsVerified: true,
+      sourceNoteCopied: false,
+      nativePicker: 'Playwright file chooser interception; no OS dialog opened',
+      dragMode: 'Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch',
+      fixtureSource: 'Fresh synthetic fixtures from this run',
+      screenshots: [],
+    },
+    items: Object.fromEntries(Object.entries(template.items).map(([id, item]) => [id, {
+      status: 'notverified',
+      subitems: Object.fromEntries(Object.keys(item.subitems ?? {}).map((key) => [key, { status: 'notverified' }])),
+    }])),
+  };
+}
+const evidence = process.env.MORROW_STABILIZATION_RUN_DIR
+  ? freshEvidence()
+  : JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
 
 function saveEvidence() {
+  fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
   fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 }
 
@@ -43,6 +92,7 @@ async function auditItem13ExistingColumnDrag() {
   saveEvidence();
 
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-item13-existing-column-drag-'));
+  activeFocusedFixtureRoot = fixtureRoot;
   const profileDir = path.join(fixtureRoot, 'profile');
   const vaultDir = path.join(fixtureRoot, 'vault');
   fs.mkdirSync(profileDir, { recursive: true });
@@ -152,6 +202,9 @@ ${sourceText}
 
   const afterBuild = buildIdentity();
   const buildUnchanged = JSON.stringify(beforeBuild) === JSON.stringify(afterBuild);
+  const fixtureRemoved = process.env.MORROW_STABILIZATION_RUN_DIR
+    ? removeOwnedTempRoot(fixtureRoot, 'morrow-item13-existing-column-drag-')
+    : false;
   const passed = dragState?.initialColumnCount === 6 &&
     dragState.afterDragColumnCount === 7 &&
     dragState.indicatorVisible &&
@@ -170,6 +223,7 @@ ${sourceText}
     reopen: reopenedState,
     buildUnchanged,
     pageErrors,
+    syntheticFixtureRemoved: fixtureRemoved,
     note: 'This focused run checks app input into an existing six-column group. The earlier menu-created seven-column group and separate two-column drag group remain separately recorded.',
   });
   evidence.execution.focusedItem13ExistingColumnDrag = {
@@ -179,6 +233,7 @@ ${sourceText}
     drag: dragState,
     reopen: reopenedState,
     pageErrors,
+    syntheticFixtureRemoved: fixtureRemoved,
     buildAfter: afterBuild,
     buildUnchanged,
   };
@@ -186,6 +241,35 @@ ${sourceText}
   evidence.execution.visibleWindowCountMax = Math.max(evidence.execution.visibleWindowCountMax, ...evidence.execution.visibleWindowChecks.map((check) => check.visible));
   evidence.execution.hiddenWindowsVerified = evidence.execution.hiddenWindowsVerified && evidence.execution.visibleWindowCountMax === 0 && evidence.execution.visibleWindowChecks.every((check) => check.visible === 0);
   saveEvidence();
+  if (process.env.MORROW_STABILIZATION_RUN_DIR) {
+    const aggregatePath = runPath('audit/original-scope-pages.json', path.join(projectRoot, 'docs', 'evidence', 'original-scope-pages-2026-10-28.json'));
+    if (fs.existsSync(aggregatePath)) {
+      const aggregate = JSON.parse(fs.readFileSync(aggregatePath, 'utf8'));
+      const itemKey = 'externalParagraphCanBeDraggedIntoExistingColumnAsSeventh';
+      aggregate.items['13'].subitems[itemKey] = {
+        status: passed ? 'pass' : 'fail',
+        evidence: path.relative(projectRoot, evidencePath).replaceAll('\\', '/'),
+        drag: dragState,
+        reopen: reopenedState,
+        buildUnchanged,
+        pageErrors,
+        syntheticFixtureRemoved: fixtureRemoved,
+      };
+      const statuses = Object.values(aggregate.items['13'].subitems).map((item) => item.status);
+      aggregate.items['13'].status = statuses.every((status) => status === 'pass')
+        ? 'pass'
+        : statuses.some((status) => status === 'fail') && statuses.every((status) => status === 'pass' || status === 'fail')
+          ? 'fail'
+          : 'partial';
+      aggregate.execution.focusedItem13ExistingColumnDrag = {
+        status: passed ? 'pass' : 'fail',
+        evidence: path.relative(projectRoot, evidencePath).replaceAll('\\', '/'),
+        syntheticDataOnly: true,
+        syntheticFixtureRemoved: fixtureRemoved,
+      };
+      fs.writeFileSync(aggregatePath, `${JSON.stringify(aggregate, null, 2)}\n`, 'utf8');
+    }
+  }
   console.log(`Focused item 13 gesture: ${passed ? 'pass' : 'fail'}`);
   console.log(`Initial group: ${dragState?.initialColumnCount}; after drag: ${dragState?.afterDragColumnCount}; reopened: ${reopenedState?.columnCount}`);
   console.log(`Evidence JSON: ${evidencePath}`);
@@ -263,7 +347,7 @@ async function assertHidden(app, stage) {
 async function launchHidden(profileDir, pageErrors, stage) {
   const app = await _electron.launch({
     executablePath: path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
-    args: [path.join(projectRoot, 'dist-electron', 'main.cjs')],
+    args: [projectRoot],
     cwd: projectRoot,
     env: { ...process.env, MORROW_HIDDEN: '1', MORROW_USER_DATA: profileDir },
   });
@@ -376,7 +460,7 @@ async function main() {
   const originalHash = sha256(originalImage);
   const beforeBuild = buildIdentity();
   evidence.projectHead = baseline.projectHead;
-  evidence.packageVersion = baseline.tickets['#30'].compiledBuildIdentity?.initialLaunch?.beforeLaunch ? '1.2.1-fork.1.1.0' : evidence.packageVersion;
+  evidence.packageVersion = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).version;
   evidence.execution.fixtureRoot = `${path.basename(path.dirname(fixtureRoot))}/${path.basename(fixtureRoot)}`;
   evidence.execution.fixtureSource = 'fresh synthetic fixture from runGroup(delivery1, #30)';
   evidence.execution.cropBaseline = baseline.tickets['#30'].status;
@@ -896,11 +980,16 @@ async function main() {
   if (!evidence.execution.hiddenWindowsVerified || !evidence.execution.buildUnchanged || evidence.execution.pageErrors.length) process.exitCode = 1;
 }
 
-const selectedRun = process.argv.includes('--item13-existing-column-drag')
+const selectedRun = focusedItem13Mode
   ? auditItem13ExistingColumnDrag
   : main;
 
 selectedRun().catch((error) => {
+  if (activeFocusedFixtureRoot && process.env.MORROW_STABILIZATION_RUN_DIR)
+    evidence.execution.focusedItem13ExistingColumnDrag = {
+      ...(evidence.execution.focusedItem13ExistingColumnDrag ?? {}),
+      syntheticFixtureRemoved: removeOwnedTempRoot(activeFocusedFixtureRoot, 'morrow-item13-existing-column-drag-'),
+    };
   evidence.execution.fatalError = error.stack ?? String(error);
   evidence.execution.finishedAt = new Date().toISOString();
   saveEvidence();

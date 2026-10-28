@@ -1,0 +1,83 @@
+{
+  "audit": "Representative dark theme UI smoke on the frozen stabilization candidate",
+  "runAt": "2026-10-28T17:33:43.833Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixture": "synthetic-only",
+  "checks": {
+    "initialTheme": "light",
+    "darkThemeThroughUi": true,
+    "themeActionUsed": true,
+    "optionsPanel": {
+      "role": "dialog",
+      "label": "Opções da tabela",
+      "background": "rgb(40, 40, 40)",
+      "color": "rgb(236, 236, 236)",
+      "width": 520,
+      "height": 388,
+      "text": "Filtrar\n1\nOrdenar\n1\nLayout\nPropriedades\nCalcular\nFormatação condicional\n1\nOcultar título\nRecolher tabela\nViews vinculadas\nPainel · Visão Auditada\nPainel · Visão Beta"
+    },
+    "optionsPanelSectionsAccessible": true,
+    "columnMenu": {
+      "label": "Opções da coluna Valor",
+      "background": "rgb(40, 40, 40)",
+      "color": "rgb(236, 236, 236)",
+      "width": 290,
+      "height": 652,
+      "text": "Valor\nEditar coluna\nUsar como coluna de exibição\nEditar fórmula da coluna\nFormatação condicional desta coluna\nOrdem crescente\n✓\nOrdenar em ordem decrescente\nRemover a ordenação\nFiltrar por esta coluna\nInserir coluna antes\nInserir coluna depois\nCongelar até esta coluna\nAjustar largura ao conteúdo\nAltura das linhas\nAutomática\n✓\nCompacta (34 px)\nMédia (68 px)\nAlta (120 px)\nDuplicar coluna sem valores\nDuplicar coluna com valores",
+      "itemCount": 18
+    },
+    "columnMenuAccessible": true,
+    "darkStyles": {
+      "theme": "dark",
+      "colorScheme": "dark",
+      "tokens": {
+        "bg": "#191919",
+        "surface": "#232323",
+        "popover": "#282828",
+        "text": "#ececec"
+      },
+      "body": {
+        "color": "rgb(236, 236, 236)",
+        "background": "rgb(25, 25, 25)"
+      },
+      "database": {
+        "color": "rgb(236, 236, 236)",
+        "background": "rgba(0, 0, 0, 0)"
+      },
+      "cell": {
+        "visible": true,
+        "color": "rgb(236, 236, 236)",
+        "background": "rgba(0, 0, 0, 0)"
+      }
+    },
+    "contrastRatios": {
+      "body": 14.882466426878254,
+      "optionsPanel": 12.479800084953311,
+      "columnMenu": 12.479800084953311,
+      "tableCell": 14.882466426878254
+    },
+    "darkTokensVerified": true,
+    "layerColorsMatchDarkPopover": true,
+    "tableCellReadable": true,
+    "layerTextReadable": true,
+    "hiddenWindowsVerified": true
+  },
+  "rendererPageErrors": [],
+  "buildBefore": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildAfter": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildUnchanged": true,
+  "rendererPageErrorsVerified": true,
+  "status": "fail",
+  "evidencePath": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/dark-theme-smoke.json"
+}

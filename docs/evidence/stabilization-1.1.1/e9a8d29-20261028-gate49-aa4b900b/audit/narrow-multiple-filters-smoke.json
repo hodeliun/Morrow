@@ -1,0 +1,92 @@
+{
+  "audit": "Narrow viewport quick-filter interaction with two simultaneous filters",
+  "runAt": "2026-10-28T17:38:58.837Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixture": "synthetic-only",
+  "viewport": {
+    "width": 800,
+    "height": 600
+  },
+  "checks": {
+    "theme": {
+      "initialTheme": "light",
+      "finalTheme": "light",
+      "changedByUi": false
+    },
+    "viewport": {
+      "width": 800,
+      "height": 600
+    },
+    "activeOptionsLabel": "Opções da tabela. Filtros: 1; ordenações: 1; busca inativa",
+    "twoQuickFiltersMatchExpectedRows": true,
+    "narrowFilterControls": {
+      "filterCount": 2,
+      "filterBar": {
+        "x": 20,
+        "y": 551,
+        "right": 770,
+        "width": 750,
+        "scrollWidth": 750,
+        "clientWidth": 750,
+        "chips": [
+          {
+            "text": "Categoria\né\nInfra",
+            "x": 20,
+            "y": 555,
+            "right": 155,
+            "bottom": 580,
+            "insideBar": true
+          },
+          {
+            "text": "Nome\ncontém\nGama",
+            "x": 161,
+            "y": 555,
+            "right": 318,
+            "bottom": 580,
+            "insideBar": true
+          }
+        ],
+        "filterStateVisible": true,
+        "filterStateText": "1 ativos\nAs linhas ocultas desta visualização continuam no banco de origem.\nLimpar filtros"
+      },
+      "secondPopover": {
+        "role": "dialog",
+        "label": "Filtro",
+        "x": 161,
+        "y": 335,
+        "right": 681,
+        "bottom": 549,
+        "width": 520,
+        "height": 214,
+        "insideViewport": true
+      },
+      "rowsAfterOneFilter": 2,
+      "rowsAfterTwoFilters": 1,
+      "filtersFitWithoutOverflow": true,
+      "filterStateVisible": true,
+      "filterPopoverInsideViewport": true
+    },
+    "filterResetRestoresAllRows": true,
+    "hiddenWindowsVerified": true,
+    "buildUnchanged": true,
+    "rendererPageErrorsVerified": true
+  },
+  "rendererPageErrors": [],
+  "buildBefore": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildAfter": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildUnchanged": true,
+  "rendererPageErrorsVerified": true,
+  "status": "pass",
+  "evidencePath": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/narrow-multiple-filters-smoke.json"
+}

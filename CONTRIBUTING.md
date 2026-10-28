@@ -43,13 +43,18 @@ are welcome; consolidate unpublished WIP and development fixups before pushing.
 See [Commit and publication policy](docs/COMMIT-POLICY.md) for grouping,
 validation, correction batches and preservation of published/upstream history.
 
+For releases, follow [Release policy](docs/RELEASE-POLICY.md): separate official
+base changes from fork changes, describe behavior since the last downloadable
+release, include genuine synthetic visual demonstrations, and verify the final
+artifacts before publication.
+
 ```sh
 npm run check      # type check, lint, tests and build
 npm run format     # prettier, if the check complains about formatting
 ```
 
-`npm run check` is what CI runs on every pull request, on Windows, macOS and
-Linux.
+`npm run check` is the primary CI gate for this fork on Windows and Linux.
+Release-specific verification is described in the release policy.
 
 For anything you can see, try it in the running app as well, in both light and
 dark themes, and in a narrow split pane if it is part of a page. Screenshots in

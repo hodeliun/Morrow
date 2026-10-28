@@ -146,7 +146,7 @@ function sourceRow({ title, amount, notes, active, secret }) {
 async function launchHidden(profileDir) {
   return _electron.launch({
     executablePath: path.resolve('node_modules/electron/dist/electron.exe'),
-    args: ['dist-electron/main.cjs'],
+    args: [path.resolve('.')],
     cwd: path.resolve('.'),
     env: {
       ...process.env,

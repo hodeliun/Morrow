@@ -1,0 +1,20 @@
+{
+  "runAt": "2026-10-28T17:12:12.739Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixtureRoot": "ticket-39",
+  "syntheticDataOnly": true,
+  "hiddenWindowsVerified": true,
+  "rendererPageErrors": [],
+  "outcome": "inconclusive",
+  "checks": {},
+  "error": {
+    "stage": "launch",
+    "message": "locator.innerText: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.database .db-table').first().locator('tbody tr').first().locator('td[data-col-id=\"amount2\"]')\u001b[22m\n\n    at [local path omitted] Public Fork\\scripts\\verify-original-scope-2026-10.cjs:937:67\n    at async runItem14MouseRange ([local path omitted] Public Fork\\scripts\\verify-original-scope-2026-10.cjs:935:26)"
+  },
+  "compiledBuildStable": true,
+  "rendererPageErrorsVerified": true,
+  "screenshots": [
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-14-mouse-range-selected.png"
+  ]
+}

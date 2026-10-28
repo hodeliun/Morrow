@@ -1,0 +1,691 @@
+{
+  "audit": "Original scope functional UI verification",
+  "startedAt": "2026-10-28T17:02:23.606Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "execution": {
+    "mode": "hidden Electron, fresh stabilization candidate run",
+    "syntheticDataOnly": true,
+    "buildUnchanged": true,
+    "pageErrors": [],
+    "visibleWindowChecks": [
+      {
+        "stage": "first-run:launch",
+        "visible": 0
+      },
+      {
+        "stage": "first-run:content-size",
+        "visible": 0
+      },
+      {
+        "stage": "full-width:1600x1000",
+        "visible": 0
+      },
+      {
+        "stage": "full-width:800x600",
+        "visible": 0
+      },
+      {
+        "stage": "post-item4:1600x1000",
+        "visible": 0
+      },
+      {
+        "stage": "first-run:all-actions",
+        "visible": 0
+      },
+      {
+        "stage": "reopen:launch",
+        "visible": 0
+      },
+      {
+        "stage": "reopen:content-size",
+        "visible": 0
+      },
+      {
+        "stage": "reopen:verified",
+        "visible": 0
+      }
+    ],
+    "sourceNoteCopied": false,
+    "nativePicker": "Playwright file chooser interception; no OS dialog opened",
+    "dragMode": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch",
+    "fixtureSource": "fresh synthetic fixture from runGroup(delivery1, #30)",
+    "screenshots": [
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item01-palette-menu.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item01-custom-hex-applied.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item03-right-click-menu.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item03-crop-overlay.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item03-replacement-applied.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item04-style-panel-1600x1000.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item04-edge-menu-1600x1000.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item04-style-panel-800x600.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item04-edge-menu-800x600.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item05-collapsed-heading.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item13-seven-columns-limit.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item13-drop-indicator.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item13-side-columns-created.png",
+      "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope-pages/page-item-reopened-state.png"
+    ],
+    "visibleWindowCountMax": 0,
+    "hiddenWindowsVerified": true,
+    "fixtureRoot": "morrow-delivery1-ui-sAFP5J/ticket-30",
+    "cropBaseline": "passed",
+    "buildBefore": {
+      "mainMtime": "2026-10-28T16:49:21.403Z",
+      "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+      "rendererAssetCount": 197,
+      "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+    },
+    "buildAfter": {
+      "mainMtime": "2026-10-28T16:49:21.403Z",
+      "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+      "rendererAssetCount": 197,
+      "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+    },
+    "originalImageHashUnchanged": true,
+    "finishedAt": "2026-10-28T17:02:45.481Z",
+    "focusedItem13ExistingColumnDrag": {
+      "status": "pass",
+      "evidence": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/item13-existing-column-drag.json",
+      "syntheticDataOnly": true,
+      "syntheticFixtureRemoved": true
+    }
+  },
+  "items": {
+    "1": {
+      "status": "pass",
+      "subitems": {
+        "standardPaletteSwatchesMatchOptions": {
+          "status": "pass",
+          "palette": [
+            {
+              "label": "Fundo do bloco Cinza",
+              "swatchColor": "rgb(241, 241, 239)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Marrom",
+              "swatchColor": "rgb(244, 238, 238)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Laranja",
+              "swatchColor": "rgb(251, 236, 221)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Amarelo",
+              "swatchColor": "rgb(251, 243, 219)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Verde",
+              "swatchColor": "rgb(237, 243, 236)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Azul",
+              "swatchColor": "rgb(231, 243, 248)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Roxo",
+              "swatchColor": "rgb(246, 243, 249)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Rosa",
+              "swatchColor": "rgb(250, 241, 245)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            },
+            {
+              "label": "Fundo do bloco Vermelho",
+              "swatchColor": "rgb(253, 235, 236)",
+              "swatchSize": {
+                "width": 14,
+                "height": 14
+              }
+            }
+          ],
+          "comparisons": [
+            {
+              "label": "Fundo do bloco Cinza",
+              "swatchColor": "rgb(241, 241, 239)",
+              "appliedColorKey": "gray",
+              "renderedColor": "rgba(120, 116, 108, 0.16)",
+              "expectedColorKey": "gray",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Marrom",
+              "swatchColor": "rgb(244, 238, 238)",
+              "appliedColorKey": "brown",
+              "renderedColor": "rgba(150, 100, 60, 0.16)",
+              "expectedColorKey": "brown",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Laranja",
+              "swatchColor": "rgb(251, 236, 221)",
+              "appliedColorKey": "orange",
+              "renderedColor": "rgba(214, 120, 40, 0.16)",
+              "expectedColorKey": "orange",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Amarelo",
+              "swatchColor": "rgb(251, 243, 219)",
+              "appliedColorKey": "yellow",
+              "renderedColor": "rgba(214, 170, 40, 0.22)",
+              "expectedColorKey": "yellow",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Verde",
+              "swatchColor": "rgb(237, 243, 236)",
+              "appliedColorKey": "green",
+              "renderedColor": "rgba(77, 138, 92, 0.16)",
+              "expectedColorKey": "green",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Azul",
+              "swatchColor": "rgb(231, 243, 248)",
+              "appliedColorKey": "blue",
+              "renderedColor": "rgba(79, 122, 168, 0.16)",
+              "expectedColorKey": "blue",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Roxo",
+              "swatchColor": "rgb(246, 243, 249)",
+              "appliedColorKey": "purple",
+              "renderedColor": "rgba(130, 94, 170, 0.16)",
+              "expectedColorKey": "purple",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Rosa",
+              "swatchColor": "rgb(250, 241, 245)",
+              "appliedColorKey": "pink",
+              "renderedColor": "rgba(196, 84, 140, 0.15)",
+              "expectedColorKey": "pink",
+              "matchesOption": true
+            },
+            {
+              "label": "Fundo do bloco Vermelho",
+              "swatchColor": "rgb(253, 235, 236)",
+              "appliedColorKey": "red",
+              "renderedColor": "rgba(179, 38, 30, 0.13)",
+              "expectedColorKey": "red",
+              "matchesOption": true
+            }
+          ],
+          "note": "Each standard option was applied and its stored palette key matched the labeled swatch. The block background is translucent, so its raw RGBA was recorded separately rather than compared directly with the opaque swatch pixel."
+        },
+        "customHexCanBeApplied": {
+          "status": "pass",
+          "inputPresent": true,
+          "attemptedHex": "#123456",
+          "appliedBeforeClose": "#123456",
+          "appliedAfterClose": "#123456",
+          "note": "Committed by entering a valid HEX and clicking outside the custom-color row; Escape is reserved for cancellation."
+        },
+        "customColorPersistsAfterReopen": {
+          "status": "pass",
+          "markdownSaved": true,
+          "note": "Reopen verification is completed after all interactions.",
+          "savedColor": "#123456",
+          "expected": "#123456"
+        }
+      }
+    },
+    "3": {
+      "status": "pass",
+      "subitems": {
+        "rightClickOpensImageMenu": {
+          "status": "pass",
+          "menuOpened": true,
+          "requiredCommandsFound": [
+            "Substituir imagem",
+            "Editar legenda",
+            "Alinhar à esquerda",
+            "Alinhar ao centro",
+            "Alinhar à direita",
+            "Recortar imagem"
+          ],
+          "menuLabels": [
+            "Substituir imagem",
+            "Editar legenda",
+            "Alinhar à esquerda",
+            "Alinhar ao centro\n✓",
+            "Alinhar à direita",
+            "Recortar imagem",
+            "Copiar imagem",
+            "Salvar uma cópia",
+            "Abrir no app padrão",
+            "Mostrar na pasta",
+            "Sem fundo no bloco\n✓",
+            "Fundo do bloco Cinza",
+            "Fundo do bloco Marrom",
+            "Fundo do bloco Laranja",
+            "Fundo do bloco Amarelo",
+            "Fundo do bloco Verde",
+            "Fundo do bloco Azul",
+            "Fundo do bloco Roxo",
+            "Fundo do bloco Rosa",
+            "Fundo do bloco Vermelho",
+            "Mover para cima\nAlt+Shift+↑",
+            "Mover para baixo\nAlt+Shift+↓",
+            "Duplicar",
+            "Excluir",
+            "Dividir em colunas"
+          ]
+        },
+        "menuIncludesReplaceCaptionThreeAlignmentsAndCrop": {
+          "status": "pass",
+          "requiredCommands": [
+            "Substituir imagem",
+            "Editar legenda",
+            "Alinhar à esquerda",
+            "Alinhar ao centro",
+            "Alinhar à direita",
+            "Recortar imagem"
+          ],
+          "menuLabels": [
+            "Substituir imagem",
+            "Editar legenda",
+            "Alinhar à esquerda",
+            "Alinhar ao centro\n✓",
+            "Alinhar à direita",
+            "Recortar imagem",
+            "Copiar imagem",
+            "Salvar uma cópia",
+            "Abrir no app padrão",
+            "Mostrar na pasta",
+            "Sem fundo no bloco\n✓",
+            "Fundo do bloco Cinza",
+            "Fundo do bloco Marrom",
+            "Fundo do bloco Laranja",
+            "Fundo do bloco Amarelo",
+            "Fundo do bloco Verde",
+            "Fundo do bloco Azul",
+            "Fundo do bloco Roxo",
+            "Fundo do bloco Rosa",
+            "Fundo do bloco Vermelho",
+            "Mover para cima\nAlt+Shift+↑",
+            "Mover para baixo\nAlt+Shift+↓",
+            "Duplicar",
+            "Excluir",
+            "Dividir em colunas"
+          ]
+        },
+        "leftCenterRightAlignmentCanBeApplied": {
+          "status": "pass",
+          "results": [
+            {
+              "requested": "left",
+              "actual": "left"
+            },
+            {
+              "requested": "center",
+              "actual": "center"
+            },
+            {
+              "requested": "right",
+              "actual": "right"
+            }
+          ]
+        },
+        "captionCanBeApplied": {
+          "status": "pass",
+          "caption": "Legenda funcional sintética"
+        },
+        "cropCanBeApplied": {
+          "status": "pass",
+          "cropDraft": {
+            "width": "90%",
+            "height": "90%",
+            "left": "5%",
+            "top": "5%"
+          },
+          "markdownHasCropMarker": true
+        },
+        "replacementCanBeCanceledWithoutChangingOriginal": {
+          "status": "pass",
+          "before": {
+            "src": "morrow-file://vault/original.png",
+            "align": "right",
+            "caption": "Legenda funcional sintética",
+            "crop": true
+          },
+          "after": {
+            "src": "morrow-file://vault/original.png",
+            "align": "right",
+            "caption": "Legenda funcional sintética",
+            "crop": true
+          },
+          "originalFileHashUnchanged": true,
+          "chooserReturnedEmptySelection": true
+        },
+        "replacementCanBeApplied": {
+          "status": "pass",
+          "presentation": {
+            "src": "morrow-file://vault/attachments/replacement%202.png",
+            "align": "right",
+            "caption": "Legenda funcional sintética",
+            "crop": false,
+            "naturalWidth": 200,
+            "naturalHeight": 400
+          },
+          "replacementFileWasSynthetic": true
+        },
+        "presentationPersistsAfterReopen": {
+          "status": "pass",
+          "note": "Reopen verification is completed after all interactions.",
+          "presentation": {
+            "src": "morrow-file://vault/attachments/replacement%202.png",
+            "align": "right",
+            "caption": "Legenda funcional sintética",
+            "crop": false
+          },
+          "expectedAlignment": "right"
+        }
+      }
+    },
+    "4": {
+      "status": "pass",
+      "subitems": {
+        "fullWidthCanBeEnabledInPageStyle": {
+          "status": "pass",
+          "selectedValue": "full",
+          "contentWidthBefore": 720,
+          "contentWidthAfter": 1214
+        },
+        "menusRemainUnclippedAndUnobstructedAt1600x1000": {
+          "status": "pass",
+          "width": 1600,
+          "height": 1000,
+          "viewport": {
+            "width": 1600,
+            "height": 1000
+          },
+          "stylePanelBounds": {
+            "x": 1174,
+            "y": 282,
+            "width": 360,
+            "height": 380.671875,
+            "right": 1534,
+            "bottom": 662.671875
+          },
+          "stylePanelInside": true,
+          "triggerFocusedWhileOpen": false,
+          "focusInsidePanel": true,
+          "panelClosed": true,
+          "focusRestored": true,
+          "nearEdge": true,
+          "editorBounds": {
+            "x": 320,
+            "y": 320.125,
+            "width": 1214,
+            "height": 984.546875
+          },
+          "menuBounds": {
+            "x": 1301.6875,
+            "y": 86,
+            "width": 260.3125,
+            "height": 596.671875,
+            "right": 1562,
+            "bottom": 682.671875
+          },
+          "menuInside": true,
+          "menuOverlapsEditor": true,
+          "singlePopup": true,
+          "menuFocused": true,
+          "menuClosed": true,
+          "menuFocusRestored": true,
+          "menuError": null,
+          "placementNote": "The floating page menu covers the editor underneath as expected; only one popup is open, and neither the menu nor style panel is clipped or covered by another panel."
+        },
+        "menusRemainUnclippedAndUnobstructedAt800x600": {
+          "status": "pass",
+          "width": 800,
+          "height": 600,
+          "viewport": {
+            "width": 800,
+            "height": 600
+          },
+          "stylePanelBounds": {
+            "x": 410,
+            "y": 182,
+            "width": 360,
+            "height": 380.671875,
+            "right": 770,
+            "bottom": 562.671875
+          },
+          "stylePanelInside": true,
+          "triggerFocusedWhileOpen": false,
+          "focusInsidePanel": true,
+          "panelClosed": true,
+          "focusRestored": true,
+          "nearEdge": true,
+          "editorBounds": {
+            "x": 20,
+            "y": 220.125,
+            "width": 750,
+            "height": 1011.421875
+          },
+          "menuBounds": {
+            "x": 380.6875,
+            "y": 40,
+            "width": 270.3125,
+            "height": 552,
+            "right": 651,
+            "bottom": 592
+          },
+          "menuInside": true,
+          "menuOverlapsEditor": true,
+          "singlePopup": true,
+          "menuFocused": true,
+          "menuClosed": true,
+          "menuFocusRestored": true,
+          "menuError": null,
+          "placementNote": "The floating page menu covers the editor underneath as expected; only one popup is open, and neither the menu nor style panel is clipped or covered by another panel."
+        },
+        "focusAndEscapeWork": {
+          "status": "pass",
+          "checks": [
+            {
+              "width": 1600,
+              "triggerFocusedWhileOpen": false,
+              "focusInsidePanel": true,
+              "panelClosed": true,
+              "focusRestored": true,
+              "menuClosed": true,
+              "menuFocusRestored": true
+            },
+            {
+              "width": 800,
+              "triggerFocusedWhileOpen": false,
+              "focusInsidePanel": true,
+              "panelClosed": true,
+              "focusRestored": true,
+              "menuClosed": true,
+              "menuFocusRestored": true
+            }
+          ],
+          "note": "The style panel closes with Escape and restores focus at both sizes; the page options menu remains visible after Escape. This is recorded as an extra usability observation; viewport fit and panel overlap are reported separately."
+        }
+      }
+    },
+    "5": {
+      "status": "pass",
+      "subitems": {
+        "collapseIsOptInPerHeading": {
+          "status": "pass",
+          "selectedHeadingHasArrow": true,
+          "nextHeadingArrowCount": 0,
+          "nestedHeadingArrowCount": 0
+        },
+        "headingHidesFollowingContentByHierarchy": {
+          "status": "pass",
+          "mainContentHidden": true,
+          "nestedContentHidden": true,
+          "followingSectionVisible": true
+        },
+        "nestedHeadingDoesNotCrossSectionBoundary": {
+          "status": "pass",
+          "nestedContentHidden": true,
+          "nextSectionVisible": true
+        },
+        "disablingRemovesFoldControlAndRestoresContent": {
+          "status": "pass",
+          "menuCommand": "Desativar recolhimento",
+          "arrowRemoved": true,
+          "contentRestored": true
+        },
+        "collapsedStateAndContentPersistAfterReopen": {
+          "status": "pass",
+          "collapsedBeforeReopen": true,
+          "markdownContainsFoldMetadata": true,
+          "note": "Reopen verification is completed after all interactions.",
+          "collapsedAfterReopen": true,
+          "collapsedContentHidden": true,
+          "followingSectionVisible": true
+        }
+      }
+    },
+    "13": {
+      "status": "pass",
+      "subitems": {
+        "sevenContentColumnsCanBeCreated": {
+          "status": "pass",
+          "initialColumnCount": 6,
+          "finalColumnCount": 7,
+          "populatedColumnCount": 6,
+          "emptyColumnIndexes": [
+            7
+          ],
+          "seventhColumnIsBlankPlaceholder": true,
+          "contentColumnsOnly": true,
+          "creation": "Add column right menu action",
+          "reopenedColumnCount": 7,
+          "persisted": true
+        },
+        "eighthContentColumnIsRejected": {
+          "status": "pass",
+          "actionWasAvailable": true,
+          "columnCountAfterAttempt": 7,
+          "toastText": [
+            "Limite máximo de 7 colunas atingido"
+          ]
+        },
+        "contentOrderPersistsAfterReopen": {
+          "status": "pass",
+          "sourceBeforeTargetBeforeReopen": true,
+          "markdownSaved": true,
+          "note": "The drag created a separate two-column content group; it did not append a column to the seven-column group.",
+          "sideColumnTexts": [
+            "Texto sintético para arrastar à lateral.",
+            "Alvo lateral da coluna."
+          ],
+          "sourceBeforeTarget": true,
+          "sevenColumnLayoutPersisted": true,
+          "separateGroupColumnCount": 2
+        },
+        "sideBySideContentGroupCanBeCreatedByDraggingWithVisibleIndicator": {
+          "status": "pass",
+          "indicatorVisibleDuringDrag": true,
+          "indicatorState": {
+            "display": "block",
+            "width": 4,
+            "height": 27,
+            "left": 320,
+            "top": 689
+          },
+          "sideColumnTexts": [
+            "Texto sintético para arrastar à lateral.",
+            "Alvo lateral da coluna."
+          ],
+          "separateTwoColumnGroup": true,
+          "appendedToExistingSevenColumnGroup": false,
+          "dragMode": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch"
+        },
+        "externalParagraphCanBeDraggedIntoExistingColumnAsSeventh": {
+          "status": "pass",
+          "evidence": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/item13-existing-column-drag.json",
+          "drag": {
+            "initialColumnCount": 6,
+            "afterDragColumnCount": 7,
+            "indicatorVisible": true,
+            "indicatorState": {
+              "display": "block",
+              "width": 4,
+              "height": 81,
+              "left": 1283,
+              "top": 363
+            },
+            "seventhColumnText": "Parágrafo externo para mover à sétima coluna.",
+            "sourceParagraphStillOutsideColumns": false,
+            "sourceParagraphRemovedFromOutside": true,
+            "modality": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch"
+          },
+          "reopen": {
+            "columnCount": 7,
+            "seventhColumnText": "Parágrafo externo para mover à sétima coluna.",
+            "sourceParagraphStillOutsideColumns": false,
+            "sourceParagraphRemovedFromOutside": true
+          },
+          "buildUnchanged": true,
+          "pageErrors": [],
+          "syntheticFixtureRemoved": true
+        }
+      },
+      "dragMode": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch",
+      "layoutBreakdown": {
+        "menuCreatedContentGroup": {
+          "columns": 7,
+          "populatedColumns": 6,
+          "emptyColumnIndexes": [
+            7
+          ],
+          "seventhColumnIsBlankPlaceholder": true
+        },
+        "dragCreatedSeparateContentGroup": {
+          "columns": 2,
+          "populatedColumns": 2,
+          "contentsInOrder": [
+            "Texto sintético para arrastar à lateral.",
+            "Alvo lateral da coluna."
+          ],
+          "appendedToSevenColumnGroup": false,
+          "modality": "Playwright mouse movement through Electron/Chromium input; no direct DOM drag-event dispatch"
+        }
+      }
+    }
+  }
+}

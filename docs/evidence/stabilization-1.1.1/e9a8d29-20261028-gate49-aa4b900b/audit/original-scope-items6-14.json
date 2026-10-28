@@ -1,0 +1,54 @@
+{
+  "runAt": "2026-10-28T17:12:04.368Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixtureRoot": "morrow-original-scope-6-14-BypXPR",
+  "syntheticDataOnly": true,
+  "hiddenWindowsVerified": true,
+  "rendererPageErrors": [],
+  "compiledBuildStable": true,
+  "checks": {
+    "item6HorizontalFill": {
+      "handleDragUsed": true,
+      "previewVisible": true,
+      "previewValue": "100",
+      "appliedValue": 100,
+      "otherRowsUnchanged": true,
+      "diskSaveConfirmed": true,
+      "undoRestoredEmptyColumn": true,
+      "status": "pass"
+    },
+    "item6VerticalFill": {
+      "handleDragUsed": true,
+      "previewVisible": true,
+      "previewValue": "100",
+      "appliedValues": [
+        "100",
+        "100",
+        "100"
+      ],
+      "sourceColumnUnchanged": true,
+      "undoRestoredHorizontalOnly": [
+        "100",
+        "Vazio",
+        "Vazio"
+      ],
+      "diskSaveAndUndoConfirmed": true,
+      "status": "pass"
+    },
+    "item14Backspace": {
+      "selectedCells": 2,
+      "firstTwoCleared": true,
+      "thirdUnchanged": true,
+      "rowCountUnchanged": true,
+      "undoRestoredValues": true,
+      "status": "pass"
+    }
+  },
+  "syntheticFocusedFixtureRemoved": true,
+  "rendererPageErrorsVerified": true,
+  "screenshots": [
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-06-horizontal-fill-preview.png",
+    "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/screenshots/original-scope/item-14-backspace-range.png"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-10-28T17:16:42.333Z",
+  "fixture": "synthetic-only",
+  "hiddenWindowVerified": true,
+  "ticket32": {
+    "rovingFocusVerified": true,
+    "openButtonTabIndexVerified": true,
+    "arrowNavigationVerified": true,
+    "boundariesVerified": true,
+    "tabShiftTabVerified": true,
+    "enterCommitAndMoveDownVerified": true,
+    "escapeCancelsDraftVerified": true,
+    "multilineCommitVerified": true,
+    "textareaTabCommitVerified": true,
+    "checkboxDraftAndCancelVerified": true,
+    "temporalDraftCancelVerified": true,
+    "scaleDraftCancelAndTabCommitVerified": true,
+    "urlDraftCancelAndTabCommitVerified": true,
+    "pickerTriggerEscapeAndTabVerified": true,
+    "selectPickerFocusVerified": true,
+    "relationPickerFocusVerified": true,
+    "pagePropertiesTabVerified": true
+  },
+  "ticket33": {
+    "rectangularSelectionVerified": true,
+    "batchClearVerified": true,
+    "batchUndoVerified": true,
+    "copyPasteVerified": true,
+    "externalClipboardWinsOverCacheVerified": true,
+    "leadingZeroTextPreservedVerified": true,
+    "typedClipboardAcrossViewsVerified": true,
+    "readOnlyColumnProtectionVerified": true,
+    "readOnlyMutationProtectionVerified": true
+  },
+  "ticket34": {
+    "fillHandleRenderedVerified": true,
+    "fillPreviewVerified": true,
+    "arithmeticSequenceVerified": true,
+    "explicitFillModeVerified": true,
+    "keyboardFillAlternativeVerified": true,
+    "fillCancelVerified": true,
+    "hiddenWindowVerified": true,
+    "frozenColumnVerified": true,
+    "hiddenColumnFocusRevalidationVerified": true,
+    "sortedAndFilteredFocusRevalidationVerified": true
+  },
+  "pagePropertiesTabVerified": true,
+  "rendererPageErrorsVerified": true,
+  "cleanupVerified": true
+}

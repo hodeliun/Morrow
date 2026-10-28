@@ -6,13 +6,24 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const { projectRelative, runPath } = require('./stabilization-1.1.1-audit-paths.cjs');
 
 const projectRoot = path.resolve(__dirname, '..');
-const evidencePath = path.join(projectRoot, 'docs', 'evidence', 'interaction-expansion-final-ui.json');
+const evidencePath = runPath(
+  path.join('audit', 'interaction-final-ui.json'),
+  path.join(projectRoot, 'docs', 'evidence', 'interaction-expansion-final-ui.json'),
+);
 const rowCount = 1000;
 const workspacePython = 'C:/Users/clove/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe';
 const popplerBin = 'C:/Users/clove/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/poppler/Library/bin';
-const pdfPreviewRelativePath = 'docs/evidence/interaction-expansion-final-page1.png';
+const pdfPreviewRelativePath = projectRelative(runPath(
+  path.join('screenshots', 'interaction-final-page1.png'),
+  path.join(projectRoot, 'docs', 'evidence', 'interaction-expansion-final-page1.png'),
+));
+const integratedEvidencePath = runPath(
+  path.join('audit', 'interaction-final-integrated.json'),
+  path.join(projectRoot, 'docs', 'evidence', 'interaction-expansion-integrated-diagnostic.json'),
+);
 
 function sanitizeDiagnostic(value) {
   const rootPrefix = `${projectRoot.replaceAll('\\', '/').replace(/\/+$/, '')}/`.toLocaleLowerCase();
@@ -394,9 +405,9 @@ async function verifyAboutVersions(page, observations) {
     observations.push(observed);
     const diagnostic = `Observed About text: ${JSON.stringify(observed.aboutText)}; renderer bridge version: ${JSON.stringify(rendererVersion)}.`;
     assert.ok(aboutText.includes('1.2.1'), `${locale.id}: About must show base version 1.2.1. ${diagnostic}`);
-    assert.ok(aboutText.includes('1.1.0'), `${locale.id}: About must show fork version 1.1.0. ${diagnostic}`);
+    assert.ok(aboutText.includes('1.1.1'), `${locale.id}: About must show fork version 1.1.1. ${diagnostic}`);
     assert.ok(aboutText.includes('5e6392b'), `${locale.id}: About must show official base revision 5e6392b. ${diagnostic}`);
-    assert.ok(aboutText.includes('1.2.1-fork.1.1.0'), `${locale.id}: About must show package version 1.2.1-fork.1.1.0. ${diagnostic}`);
+    assert.ok(aboutText.includes('1.2.1-fork.1.1.1'), `${locale.id}: About must show package version 1.2.1-fork.1.1.1. ${diagnostic}`);
     assert.ok(aboutText.includes(locale.forkLabel), `${locale.id}: fork-version label must be localized. ${diagnostic}`);
     assert.equal(aboutHeading, locale.about, `${locale.id}: About heading must be localized.`);
     versions.push({ ...observed, settingsTitle: locale.title });
@@ -924,8 +935,8 @@ async function main() {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
   assert.equal(pkg.morrowBaseVersion, '1.2.1');
   assert.equal(pkg.morrowBaseCommit, '5e6392bb6425924abd30eec8a99b42aa8c953577');
-  assert.equal(pkg.forkVersion, '1.1.0');
-  assert.equal(pkg.version, '1.2.1-fork.1.1.0');
+  assert.equal(pkg.forkVersion, '1.1.1');
+  assert.equal(pkg.version, '1.2.1-fork.1.1.1');
   const revision = gitRevision();
   const source = sourceFingerprint();
   const initialBundle = bundleFingerprint();
@@ -994,6 +1005,9 @@ if (process.argv.includes('--integrated-only-diagnostic')) {
       bundleStable: bundleBefore.sha256 === bundleAfter.sha256,
       integratedUi,
     };
+    fs.mkdirSync(path.dirname(integratedEvidencePath), { recursive: true });
+    fs.writeFileSync(integratedEvidencePath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    console.log(`Evidence JSON: ${path.relative(projectRoot, integratedEvidencePath).replaceAll(path.sep, '/')}`);
     console.log(JSON.stringify(report, null, 2));
     if (!report.sourceStable || !report.bundleStable || integratedUi.result !== 'passed' || !integratedUi.integratedFixtureCleanupVerified)
       process.exitCode = 1;

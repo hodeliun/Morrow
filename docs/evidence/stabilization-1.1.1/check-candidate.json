@@ -1,0 +1,26 @@
+{
+  "candidateCommit": "e9a8d29cabd1356645eb871f62304c249526034f",
+  "version": "1.2.1-fork.1.1.1",
+  "baseVersion": "1.2.1",
+  "forkVersion": "1.1.1",
+  "startedAt": "2026-10-28T16:48:20.1296300Z",
+  "finishedAt": "2026-10-28T16:49:22.5124291Z",
+  "elapsedSeconds": 62.25,
+  "command": "npm run check",
+  "exitCode": 0,
+  "sourceBefore": {
+    "fileCount": 258,
+    "sha256": "c3aa1d4ae55438b084a24cdb4a63bb641a2126c872ea30b84047b120402d0257"
+  },
+  "sourceAfter": {
+    "fileCount": 258,
+    "sha256": "c3aa1d4ae55438b084a24cdb4a63bb641a2126c872ea30b84047b120402d0257"
+  },
+  "sourceUnchanged": true,
+  "testSummary": [
+    "Test Files  61 passed (61)",
+    "Tests  473 passed (473)"
+  ],
+  "logPublished": false,
+  "scope": "typecheck, lint, unit tests, renderer/Electron/MCP builds; no packaged executable or installer launch"
+}

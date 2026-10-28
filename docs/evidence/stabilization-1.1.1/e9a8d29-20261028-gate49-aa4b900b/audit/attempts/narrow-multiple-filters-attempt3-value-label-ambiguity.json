@@ -1,0 +1,45 @@
+{
+  "audit": "Narrow viewport quick-filter interaction with two simultaneous filters",
+  "runAt": "2026-10-28T17:38:07.672Z",
+  "projectHead": "e9a8d29",
+  "packageVersion": "1.2.1-fork.1.1.1",
+  "fixture": "synthetic-only",
+  "viewport": {
+    "width": 800,
+    "height": 600
+  },
+  "checks": {
+    "theme": {
+      "initialTheme": "light",
+      "finalTheme": "light",
+      "changedByUi": false
+    },
+    "viewport": {
+      "width": 800,
+      "height": 600
+    },
+    "buildUnchanged": true,
+    "rendererPageErrorsVerified": true
+  },
+  "rendererPageErrors": [],
+  "error": {
+    "stage": "open-table-and-first-filter",
+    "message": "locator.selectOption: Error: strict mode violation: locator('.db-panel').last().getByLabel(/Valor|Value/i) resolved to 2 elements:\n    1) <select class=\"text-input small\">…</select> aka getByLabel('PropriedadeNomeValorVencimentoConcluídoCategoria')\n    2) <select class=\"text-input small\">…</select> aka getByLabel('ValorEscolherInfraDesenvolvimento')\n\nCall log:\n\u001b[2m  - waiting for locator('.db-panel').last().getByLabel(/Valor|Value/i)\u001b[22m\n\n    at main (C:\\Users\\clove\\Projetos\\Morrow Public Fork\\scripts\\verify-narrow-multiple-filters-smoke.cjs:126:46)"
+  },
+  "buildBefore": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildAfter": {
+    "mainMtime": "2026-10-28T16:49:21.403Z",
+    "rendererIndexMtime": "2026-10-28T16:49:20.829Z",
+    "rendererAssetCount": 197,
+    "rendererAssetManifestSha256": "aefdcb4a695e663a8119c31e6010420fc3c9ecb99d31a67e1ce39e149d3ef7b6"
+  },
+  "buildUnchanged": true,
+  "rendererPageErrorsVerified": true,
+  "status": "partial",
+  "evidencePath": "docs/evidence/stabilization-1.1.1/e9a8d29-20261028-gate49-aa4b900b/audit/narrow-multiple-filters-smoke.json"
+}
