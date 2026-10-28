@@ -62,8 +62,19 @@ version in page history.
 
 ## Testing
 
-`npm test` runs Vitest on `src/**/*.test.ts`. Storage tests run a real session
-against `MemoryVault`, an in-memory folder that can also fake edits from other
-apps. For interface changes, run the app and look: `MORROW_USER_DATA` points it
-at a throwaway profile, and in development `MORROW_HIDDEN=1` keeps the window
-out of sight for scripted checks over the Chrome DevTools Protocol.
+`npm test` runs Vitest on `src/**/*.test.ts` and the startup unit tests under
+`electron/`. Storage tests run a real session against `MemoryVault`, an in-memory
+folder that can also fake edits from other apps. For interface changes, run the
+app and look: in development, `MORROW_USER_DATA` points it at a throwaway
+profile, and `MORROW_HIDDEN=1` keeps the window out of sight for scripted checks
+over the Chrome DevTools Protocol.
+
+Packaged smoke checks use a separate opt-in mode: `--smoke-test`,
+`MORROW_HIDDEN=1`, and an absolute synthetic profile at
+`<os.tmpdir>/morrow-smoke-<id>/profile`. The main process validates that profile
+and its filesystem resolution before making directories, configuring Electron
+paths or acquiring the single-instance lock. Invalid combinations fail closed;
+they never fall back to the installed profile. Do not launch packaged smoke
+builds until the release harness proves the profile is isolated and the window
+stays hidden. This mode skips the global capture shortcut and the normal
+second-instance focus behavior.

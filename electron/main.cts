@@ -14,10 +14,12 @@ import {
   shell,
 } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import startup = require('./startup.cjs');
 import {
   applyOps,
   chooseFolder,
@@ -88,19 +90,25 @@ const THEMES = {
 const HEX = /^#[0-9a-f]{6}$/i;
 const windowThemes = new WeakMap<BrowserWindow, 'light' | 'dark'>();
 
-// development and test runs can use a throwaway profile, installed copies never can
-const USER_DATA_PATH =
-  !app.isPackaged && process.env.MORROW_USER_DATA
-    ? path.resolve(process.env.MORROW_USER_DATA)
-    : path.join(app.getPath('appData'), APP_NAME);
-const SESSION_DATA_PATH = path.join(USER_DATA_PATH, 'Session');
-mkdirSync(USER_DATA_PATH, { recursive: true });
-mkdirSync(SESSION_DATA_PATH, { recursive: true });
-app.setName(APP_NAME);
-app.setPath('userData', USER_DATA_PATH);
-app.setPath('sessionData', SESSION_DATA_PATH);
-// automated test runs can keep their window out of sight
-const HIDDEN = !app.isPackaged && process.env.MORROW_HIDDEN === '1';
+// Resolve and validate every profile before writing, setting paths, or acquiring the single-instance lock.
+let STARTUP: ReturnType<typeof startup.initializeStartup>;
+try {
+  STARTUP = startup.initializeStartup(
+    {
+      isPackaged: app.isPackaged,
+      argv: process.argv,
+      env: process.env,
+      appDataPath: app.getPath('appData'),
+      tempDir: tmpdir(),
+    },
+    { app },
+  );
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  app.exit(1);
+  throw error;
+}
+const HIDDEN = STARTUP.hidden;
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -136,13 +144,16 @@ function applySpelling(): void {
 if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 if (!app.requestSingleInstanceLock()) {
-  app.quit();
+  if (STARTUP.mode === 'packaged-smoke') app.exit(1);
+  else app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  });
+  if (STARTUP.mode !== 'packaged-smoke') {
+    app.on('second-instance', () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    });
+  }
 
   app.whenReady().then(async () => {
     protocol.handle(SCHEME, serveApp);
@@ -158,20 +169,22 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(IS_MAC ? buildMacMenu() : null);
     await createWindow();
     // quick capture from any app: the window comes forward with a small box for a note
-    globalShortcut.register('CommandOrControl+Alt+M', () => {
-      if (!mainWindow) return;
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      if (!HIDDEN) mainWindow.show();
-      mainWindow.focus();
-      mainWindow.webContents.send('morrow:command', 'capture');
-    });
+    if (STARTUP.mode !== 'packaged-smoke') {
+      globalShortcut.register('CommandOrControl+Alt+M', () => {
+        if (!mainWindow) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        if (!HIDDEN) mainWindow.show();
+        mainWindow.focus();
+        mainWindow.webContents.send('morrow:command', 'capture');
+      });
+    }
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) void createWindow();
     });
   });
 
   app.on('will-quit', () => {
-    globalShortcut.unregisterAll();
+    if (STARTUP.mode !== 'packaged-smoke') globalShortcut.unregisterAll();
     closeSync();
   });
 

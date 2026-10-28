@@ -18,3 +18,38 @@ Allow automated verification of the actual packaged application without touching
 ## Blocked by
 
 None — can start immediately. The release gate depends on this support as well as the three correction deliveries.
+
+## Local source checkpoint — 28/10/2026
+
+The startup seam is implemented locally in `electron/main.cts` with mode and
+filesystem decisions in `electron/startup.cjs`. Packaged smoke mode requires
+`--smoke-test`, `MORROW_HIDDEN=1`, and an existing absolute
+`MORROW_USER_DATA=<os.tmpdir>/morrow-smoke-<id>/profile`. It checks the temporary
+directory, dedicated root, profile and existing session directory with `lstat`
+and `realpath` before creating directories, setting Electron paths, registering
+the protocol, or acquiring the single-instance lock. Invalid input exits before
+those effects. Packaged smoke mode is hidden, skips the normal second-instance
+focus handler, and does not register or unregister the global capture shortcut.
+
+The focused unit suite `npm test -- electron/startup.test.ts` passed 17 tests;
+`npx tsc -p tsconfig.electron.json --noEmit` passed. Sol independently reviewed
+the source seam with no blockers. These checks cover source logic only; no
+packaged executable was launched or built.
+
+The future Windows release gate has a prepared harness at
+`scripts/verify-packaged-smoke.cjs`. It accepts only the real
+`win-unpacked/Morrow.exe`, an expected version, and an optional evidence
+subdirectory under `docs/evidence/stabilization-1.1.1/`. It creates its own
+`morrow-smoke-*` profile and synthetic vault, launches twice with the explicit
+smoke switch and isolated environment, checks packaged status/version/effective
+paths/hidden windows, edits and reopens a synthetic note with disk assertions,
+then closes only its app instances and removes only its validated temp root.
+The harness has not been run; issue #49 still owns the build and packaged
+execution, with release evidence recorded under the parameterized evidence
+directory.
+
+Example for the later release-gate run:
+
+```powershell
+node scripts/verify-packaged-smoke.cjs "C:\path\to\win-unpacked\Morrow.exe" "<expected-version>" --evidence-dir "packaged-smoke\<run-id>"
+```

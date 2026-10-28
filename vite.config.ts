@@ -105,7 +105,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 1800,
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'electron/**/*.test.ts'],
     environment: 'node',
     setupFiles: ['./src/test-setup.ts'],
   },
