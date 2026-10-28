@@ -32,3 +32,5 @@ snapshot. GitHub remains authoritative for status and native dependencies. The
 on 28 October, #26–#43 were closed; #25 and integrated-validation issue #44
 remained open pending the final evidence and Sol review. Do not close either from
 this local snapshot alone.
+
+Aumento de Escopo 2, 28 October 2026: specification #51 and thirty native child tickets #52–#81. See [planning](../planning/scope-2-2026-10/index.md). All remain planning-only; ready-for-agent does not authorize execution. Native blocking edges are authoritative on GitHub. No product implementation was performed in this planning round.

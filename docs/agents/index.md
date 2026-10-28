@@ -10,3 +10,5 @@
   history; GitHub remains authoritative for current state.
 - [Planning and execution](../planning/interaction-expansion-2026-10/index.md)
   links the interaction-expansion specification, tickets and handoff.
+
+- [Aumento de Escopo 2](../planning/scope-2-2026-10/index.md): internal grilling, spec and tickets; planning only, implementation not authorized.

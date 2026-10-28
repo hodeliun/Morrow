@@ -1,0 +1,14 @@
+{
+  "planning_only": true,
+  "product_tests_run": false,
+  "source_items": 30,
+  "tickets": 30,
+  "native_children_verified": 30,
+  "native_blocking_edges_verified": 47,
+  "local_links": "pass",
+  "source_coverage": "pass",
+  "DAG": "pass",
+  "sanitized_content_scan": "pass",
+  "remote_issue_body_mirrors": "pass",
+  "issues_open_and_unassigned": "pass"
+}

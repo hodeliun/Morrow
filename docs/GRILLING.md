@@ -1,5 +1,8 @@
 # Internal design review
 
+For the new planning-only round, see [Aumento de Escopo 2 — internal review](planning/scope-2-2026-10/GRILLING.md).
+The decisions below remain baseline context; they do not authorize that round's implementation.
+
 ## What is the actual goal?
 
 A local editable document/database workspace, using RPG, entertainment and finance as behavioral acceptance scenarios. Not a screenshot clone, nor an unrestricted reimplementation of every Coda Pack. Existing originals remain canonical and untouched during development.

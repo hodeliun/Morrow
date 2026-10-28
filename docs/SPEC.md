@@ -1,5 +1,10 @@
 # Morrow — local documents and relational databases
 
+Current additive planning: [Aumento de Escopo 2](planning/scope-2-2026-10/index.md),
+[specification #51](https://github.com/hodeliun/Morrow/issues/51). This new round
+is planning-only; its tickets are not authorization to implement. The baseline
+specification below is preserved as historical product context.
+
 Status: implementation specification for the public Morrow fork. This supersedes the earlier planning-only proposals. Morrow is not affiliated with Coda or Notion; the upstream license and attribution are preserved.
 
 ## Problem
