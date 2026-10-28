@@ -1,0 +1,240 @@
+{
+  "tickets": {
+    "1": {
+      "url": "https://github.com/hodeliun/Morrow/issues/26",
+      "title": "Menus e painéis inteiros dentro da área visível",
+      "items": [
+        4,
+        17
+      ],
+      "deps": [],
+      "id": 6070392459
+    },
+    "2": {
+      "url": "https://github.com/hodeliun/Morrow/issues/27",
+      "title": "Fundos de bloco com amostras e cor personalizada",
+      "items": [
+        1
+      ],
+      "deps": [],
+      "id": 6070393050
+    },
+    "3": {
+      "url": "https://github.com/hodeliun/Morrow/issues/28",
+      "title": "Opções da tabela e filter bar compacta",
+      "items": [
+        2,
+        10
+      ],
+      "deps": [
+        1
+      ],
+      "id": 6070393541
+    },
+    "4": {
+      "url": "https://github.com/hodeliun/Morrow/issues/29",
+      "title": "Views vinculadas com apresentação local e mapa de vínculos",
+      "items": [
+        9,
+        10,
+        11
+      ],
+      "deps": [
+        3
+      ],
+      "id": 6070394541
+    },
+    "5": {
+      "url": "https://github.com/hodeliun/Morrow/issues/30",
+      "title": "Imagens com substituição, legenda, alinhamento e recorte",
+      "items": [
+        3
+      ],
+      "deps": [
+        1
+      ],
+      "id": 6070395293
+    },
+    "6": {
+      "url": "https://github.com/hodeliun/Morrow/issues/31",
+      "title": "Recolhimento persistente por título de seção",
+      "items": [
+        5
+      ],
+      "deps": [],
+      "id": 6070395894
+    },
+    "7": {
+      "url": "https://github.com/hodeliun/Morrow/issues/32",
+      "title": "Navegação de células com seleção e edição explícitas",
+      "items": [
+        6
+      ],
+      "deps": [],
+      "id": 6070396439
+    },
+    "8": {
+      "url": "https://github.com/hodeliun/Morrow/issues/33",
+      "title": "Intervalos de células: seleção, copiar, colar e limpar",
+      "items": [
+        6,
+        14
+      ],
+      "deps": [
+        7
+      ],
+      "id": 6070396909
+    },
+    "9": {
+      "url": "https://github.com/hodeliun/Morrow/issues/34",
+      "title": "Alça de preenchimento com prévia de cópia e sequência",
+      "items": [
+        6
+      ],
+      "deps": [
+        8
+      ],
+      "id": 6070397561
+    },
+    "10": {
+      "url": "https://github.com/hodeliun/Morrow/issues/35",
+      "title": "Seleção de linhas e menu de operações",
+      "items": [
+        15
+      ],
+      "deps": [
+        7
+      ],
+      "id": 6070398178
+    },
+    "11": {
+      "url": "https://github.com/hodeliun/Morrow/issues/36",
+      "title": "Copiar e mover linhas entre tabelas com mapeamento seguro",
+      "items": [
+        15
+      ],
+      "deps": [
+        8,
+        10
+      ],
+      "id": 6070398802
+    },
+    "12": {
+      "url": "https://github.com/hodeliun/Morrow/issues/37",
+      "title": "Seletor de tipos pesquisável e ícones de propriedades",
+      "items": [
+        7,
+        16,
+        20
+      ],
+      "deps": [],
+      "id": 6070399579
+    },
+    "13": {
+      "url": "https://github.com/hodeliun/Morrow/issues/38",
+      "title": "Formatação condicional com fórmula e prévia de cores",
+      "items": [
+        8
+      ],
+      "deps": [
+        2
+      ],
+      "id": 6070400074
+    },
+    "14": {
+      "url": "https://github.com/hodeliun/Morrow/issues/39",
+      "title": "Rodapé Calcular independente e alinhado por coluna",
+      "items": [
+        12
+      ],
+      "deps": [],
+      "id": 6070400796
+    },
+    "15": {
+      "url": "https://github.com/hodeliun/Morrow/issues/40",
+      "title": "Até sete colunas de conteúdo com criação por arraste",
+      "items": [
+        13
+      ],
+      "deps": [],
+      "id": 6070401367
+    },
+    "16": {
+      "url": "https://github.com/hodeliun/Morrow/issues/41",
+      "title": "Tokens arredondados e sugestões de campos relacionados",
+      "items": [
+        17
+      ],
+      "deps": [
+        1
+      ],
+      "id": 6070401909
+    },
+    "17": {
+      "url": "https://github.com/hodeliun/Morrow/issues/42",
+      "title": "Paridade de configuração de formato para resultados de fórmula",
+      "items": [
+        18
+      ],
+      "deps": [],
+      "id": 6070402588
+    },
+    "18": {
+      "url": "https://github.com/hodeliun/Morrow/issues/43",
+      "title": "Criar ou vincular relação inversa com prévia de dados",
+      "items": [
+        19
+      ],
+      "deps": [],
+      "id": 6070403116
+    },
+    "19": {
+      "url": "https://github.com/hodeliun/Morrow/issues/44",
+      "title": "Validar a expansão integrada sem dados pessoais",
+      "items": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "deps": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18
+      ],
+      "id": 6070403688
+    }
+  },
+  "parent": "https://github.com/hodeliun/Morrow/issues/25"
+}

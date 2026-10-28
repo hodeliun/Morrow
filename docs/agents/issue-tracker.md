@@ -15,3 +15,10 @@ acceptance evidence before closing an issue.
 Interaction improvement round, 27 October 2026: specification #7 and tickets
 #8–#20. `docs/SPEC-INTERACTION-2026-10.md` is the additive spec and
 `docs/tickets/interaction-*.md` mirrors the published acceptance criteria.
+
+Interaction expansion, 27 October 2026: parent specification #25 and tickets
+#26–#44. `docs/planning/interaction-expansion-2026-10/` contains the spec,
+internal critical review, requirement coverage and publication snapshot.
+GitHub remains authoritative for status and native dependencies. This round
+authorizes planning and tickets only; do not start implementation without a
+subsequent user instruction.
