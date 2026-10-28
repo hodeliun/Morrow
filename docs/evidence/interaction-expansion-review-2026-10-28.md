@@ -67,3 +67,17 @@ proteção somente leitura, foco após filtros e undo/reabertura/recuperação.
 
 Essa aceitação é exclusiva da grade; Media, ícones, autocomplete e a medição
 integrada de 1.000 linhas/células continuam na rodada seguinte/#44.
+
+## Aceitação do lote de correções das entregas anteriores
+
+Sol medium aprovou o lote após conferir scripts e os três JSONs finais citados em
+`interaction-expansion-prior-ui.md`. Todos registram ações e reaberturas
+aprovadas, fingerprints estáveis, janelas ocultas e zero erros de renderer.
+Imagem/recorte/substituição, ícone de propriedade, segunda sugestão por Tab/Enter
+e distinção false/null foram confirmados. Os grupos 1/2 e 3 usaram bundles
+identificados separadamente, como documentado na evidência.
+
+O check local final passou com 428 testes em 57 arquivos, tipos, lint e build;
+esse total local também inclui oito testes iniciais do core de linhas ainda
+não publicado. A aprovação e o commit de correções excluem esse WIP, assim como
+qualquer aceitação de #35/#36/#44.

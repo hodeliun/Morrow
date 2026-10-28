@@ -23,6 +23,13 @@ export function shouldResetCropOnImageReplace(
   return Math.abs(newRatio - oldRatio) > 0.01;
 }
 
+export function getImageCropAspectRatio(naturalAspectRatio: number, crop: ImageCrop): number {
+  const imageAspectRatio = Number.isFinite(naturalAspectRatio) && naturalAspectRatio > 0
+    ? naturalAspectRatio
+    : 1;
+  return (imageAspectRatio * crop.width) / crop.height;
+}
+
 export const Image = Node.create({
   name: 'image',
   group: 'block',
@@ -80,7 +87,12 @@ export const Image = Node.create({
       let isCropping = false;
       let cropDraft: ImageCrop = (node.attrs.crop as ImageCrop) ?? { x: 0, y: 0, width: 1, height: 1 };
       let naturalAspectRatio = 1;
-      void naturalAspectRatio;
+      let imageLoadRequest = 0;
+      let replacementRequest = 0;
+      let activeImageUrl: string | null = null;
+      let imageSourceKey: string | null = null;
+      let remoteBox: HTMLElement | null = null;
+      let isDestroyed = false;
 
       const dom = document.createElement('figure');
       dom.className = 'image-block is-loading';
@@ -112,6 +124,12 @@ export const Image = Node.create({
       toolbar.setAttribute('role', 'toolbar');
       toolbar.setAttribute('aria-label', t('slash.items.image.title'));
       dom.appendChild(toolbar);
+
+      const missingMessage = document.createElement('div');
+      missingMessage.className = 'image-missing-message';
+      missingMessage.textContent = t('editor.imageMissing');
+      missingMessage.style.display = 'none';
+      dom.appendChild(missingMessage);
 
       // Interactive Crop Overlay
       const cropOverlay = document.createElement('div');
@@ -174,7 +192,7 @@ export const Image = Node.create({
         if (crop && !isCropping) {
           cropWrapper.style.overflow = 'hidden';
           cropWrapper.style.position = 'relative';
-          cropWrapper.style.aspectRatio = `${crop.width} / ${crop.height}`;
+          cropWrapper.style.aspectRatio = `${getImageCropAspectRatio(naturalAspectRatio, crop)} / 1`;
           cropWrapper.style.width = '100%';
           cropWrapper.style.maxWidth = '100%';
 
@@ -187,7 +205,7 @@ export const Image = Node.create({
           img.style.maxHeight = 'none';
           img.style.objectFit = 'fill';
         } else {
-          cropWrapper.style.overflow = 'visible';
+          cropWrapper.style.overflow = isCropping ? 'hidden' : 'visible';
           cropWrapper.style.position = 'relative';
           cropWrapper.style.aspectRatio = '';
           cropWrapper.style.width = '';
@@ -215,7 +233,122 @@ export const Image = Node.create({
       const commitAttrs = (updates: Partial<typeof currentNode.attrs>) => {
         const position = getPos();
         if (typeof position !== 'number') return;
-        view.dispatch(view.state.tr.setNodeMarkup(position, undefined, { ...currentNode.attrs, ...updates }));
+        const state = view.state;
+        const liveNode = state.doc.nodeAt(position);
+        if (!liveNode || liveNode.type !== currentNode.type) return;
+        view.dispatch(state.tr.setNodeMarkup(position, undefined, { ...liveNode.attrs, ...updates }));
+      };
+
+      const showImageMissing = () => {
+        activeImageUrl = null;
+        dom.classList.remove('is-loading');
+        dom.classList.add('is-missing');
+        img.removeAttribute('src');
+        img.style.visibility = 'hidden';
+        missingMessage.style.display = '';
+      };
+
+      const loadImageFile = (fileId: string) => {
+        const request = ++imageLoadRequest;
+        naturalAspectRatio = 1;
+        activeImageUrl = null;
+        img.removeAttribute('src');
+        img.style.visibility = 'hidden';
+        missingMessage.style.display = 'none';
+        dom.classList.remove('is-missing');
+        dom.classList.add('is-loading');
+
+        void Promise.resolve()
+          .then(() => fileUrl(fileId))
+          .then((url) => {
+            if (
+              isDestroyed ||
+              request !== imageLoadRequest ||
+              String(currentNode.attrs.fileId ?? '') !== fileId
+            )
+              return;
+            if (!url) {
+              showImageMissing();
+              return;
+            }
+            img.src = url;
+            activeImageUrl = img.src;
+            updatePresentation();
+          })
+          .catch(() => {
+            if (
+              !isDestroyed &&
+              request === imageLoadRequest &&
+              String(currentNode.attrs.fileId ?? '') === fileId
+            )
+              showImageMissing();
+          });
+      };
+
+      const isExpectedImageUrl = () =>
+        activeImageUrl !== null &&
+        img.src === activeImageUrl &&
+        (!img.currentSrc || img.currentSrc === activeImageUrl);
+
+      const showRemoteSource = (src: string) => {
+        imageLoadRequest += 1;
+        activeImageUrl = null;
+        naturalAspectRatio = 1;
+        img.removeAttribute('src');
+        img.style.visibility = 'hidden';
+        missingMessage.style.display = 'none';
+        dom.classList.remove('is-loading', 'is-missing');
+        remoteBox?.remove();
+
+        const remote = /^https:\/\//i.test(src);
+        const box = document.createElement('div');
+        box.className = 'image-remote';
+        const label = document.createElement('span');
+        label.textContent = remote
+          ? t('editor.imageFrom', { host: safeHost(src) })
+          : t('editor.imageNotFound', { src });
+        box.append(label);
+        if (remote) {
+          const load = document.createElement('button');
+          load.type = 'button';
+          load.className = 'button small';
+          load.textContent = t('editor.loadImage');
+          load.addEventListener('click', (event) => {
+            event.preventDefault();
+            if (imageSourceKey !== `src:${src}` || currentNode.attrs.fileId) return;
+            naturalAspectRatio = 1;
+            img.removeAttribute('src');
+            img.style.visibility = 'hidden';
+            img.src = src;
+            activeImageUrl = img.src;
+            box.remove();
+            if (remoteBox === box) remoteBox = null;
+          });
+          box.append(load);
+        }
+        remoteBox = box;
+        dom.prepend(box);
+      };
+
+      const updateImageSource = (attrs: typeof currentNode.attrs) => {
+        const fileId = typeof attrs.fileId === 'string' && attrs.fileId ? attrs.fileId : null;
+        const src = typeof attrs.src === 'string' && attrs.src ? attrs.src : null;
+        const nextKey = fileId ? `file:${fileId}` : src ? `src:${src}` : 'missing';
+        if (nextKey === imageSourceKey) return;
+
+        imageSourceKey = nextKey;
+        replacementRequest += 1;
+        remoteBox?.remove();
+        remoteBox = null;
+
+        if (fileId) {
+          loadImageFile(fileId);
+        } else if (src) {
+          showRemoteSource(src);
+        } else {
+          imageLoadRequest += 1;
+          showImageMissing();
+        }
       };
 
       const startCropping = () => {
@@ -245,76 +378,118 @@ export const Image = Node.create({
       });
 
       // Dragging crop handles
-      const setupHandleDrag = (handleEl: HTMLElement, onDrag: (dx: number, dy: number) => void) => {
+      const setupHandleDrag = (
+        handleEl: HTMLElement,
+        onDrag: (dx: number, dy: number, startCrop: ImageCrop) => ImageCrop,
+      ) => {
         handleEl.addEventListener('pointerdown', (event: PointerEvent) => {
+          if (event.button !== 0) return;
           event.preventDefault();
           event.stopPropagation();
           const startX = event.clientX;
           const startY = event.clientY;
+          const startCrop = { ...cropDraft };
           const rect = cropWrapper.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) return;
 
           const onMove = (moveEvt: PointerEvent) => {
             const dx = (moveEvt.clientX - startX) / rect.width;
             const dy = (moveEvt.clientY - startY) / rect.height;
-            onDrag(dx, dy);
+            cropDraft = onDrag(dx, dy, startCrop);
             renderCropOverlay();
           };
 
           const onUp = () => {
             window.removeEventListener('pointermove', onMove, true);
             window.removeEventListener('pointerup', onUp, true);
+            window.removeEventListener('pointercancel', onUp, true);
           };
 
           window.addEventListener('pointermove', onMove, true);
           window.addEventListener('pointerup', onUp, true);
+          window.addEventListener('pointercancel', onUp, true);
         });
       };
 
-      setupHandleDrag(cornerTL, (dx, dy) => {
-        const newX = Math.max(0, Math.min(cropDraft.x + cropDraft.width - 0.1, cropDraft.x + dx));
-        const newY = Math.max(0, Math.min(cropDraft.y + cropDraft.height - 0.1, cropDraft.y + dy));
-        cropDraft.width = cropDraft.width + (cropDraft.x - newX);
-        cropDraft.height = cropDraft.height + (cropDraft.y - newY);
-        cropDraft.x = newX;
-        cropDraft.y = newY;
+      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+      setupHandleDrag(cropBox, (dx, dy, startCrop) => ({
+        ...startCrop,
+        x: clamp(startCrop.x + dx, 0, 1 - startCrop.width),
+        y: clamp(startCrop.y + dy, 0, 1 - startCrop.height),
+      }));
+
+      setupHandleDrag(cornerTL, (dx, dy, startCrop) => {
+        const right = startCrop.x + startCrop.width;
+        const bottom = startCrop.y + startCrop.height;
+        const x = clamp(startCrop.x + dx, 0, right - 0.1);
+        const y = clamp(startCrop.y + dy, 0, bottom - 0.1);
+        return { x, y, width: right - x, height: bottom - y };
       });
 
-      setupHandleDrag(cornerTR, (dx, dy) => {
-        const newW = Math.max(0.1, Math.min(1 - cropDraft.x, cropDraft.width + dx));
-        const newY = Math.max(0, Math.min(cropDraft.y + cropDraft.height - 0.1, cropDraft.y + dy));
-        cropDraft.height = cropDraft.height + (cropDraft.y - newY);
-        cropDraft.y = newY;
-        cropDraft.width = newW;
+      setupHandleDrag(cornerTR, (dx, dy, startCrop) => {
+        const bottom = startCrop.y + startCrop.height;
+        const y = clamp(startCrop.y + dy, 0, bottom - 0.1);
+        return {
+          x: startCrop.x,
+          y,
+          width: clamp(startCrop.width + dx, 0.1, 1 - startCrop.x),
+          height: bottom - y,
+        };
       });
 
-      setupHandleDrag(cornerBL, (dx, dy) => {
-        const newX = Math.max(0, Math.min(cropDraft.x + cropDraft.width - 0.1, cropDraft.x + dx));
-        const newH = Math.max(0.1, Math.min(1 - cropDraft.y, cropDraft.height + dy));
-        cropDraft.width = cropDraft.width + (cropDraft.x - newX);
-        cropDraft.x = newX;
-        cropDraft.height = newH;
+      setupHandleDrag(cornerBL, (dx, dy, startCrop) => {
+        const right = startCrop.x + startCrop.width;
+        const x = clamp(startCrop.x + dx, 0, right - 0.1);
+        return {
+          x,
+          y: startCrop.y,
+          width: right - x,
+          height: clamp(startCrop.height + dy, 0.1, 1 - startCrop.y),
+        };
       });
 
-      setupHandleDrag(cornerBR, (dx, dy) => {
-        cropDraft.width = Math.max(0.1, Math.min(1 - cropDraft.x, cropDraft.width + dx));
-        cropDraft.height = Math.max(0.1, Math.min(1 - cropDraft.y, cropDraft.height + dy));
-      });
+      setupHandleDrag(cornerBR, (dx, dy, startCrop) => ({
+        ...startCrop,
+        width: clamp(startCrop.width + dx, 0.1, 1 - startCrop.x),
+        height: clamp(startCrop.height + dy, 0.1, 1 - startCrop.y),
+      }));
 
       // Replace image helper
       const triggerReplace = () => {
+        const request = ++replacementRequest;
+        const originalFileId = currentNode.attrs.fileId;
+        const isCurrentRequest = () => {
+          if (isDestroyed || request !== replacementRequest || currentNode.attrs.fileId !== originalFileId) {
+            return false;
+          }
+          const position = getPos();
+          if (typeof position !== 'number') return false;
+          const liveNode = view.state.doc.nodeAt(position);
+          return !!liveNode && liveNode.type === currentNode.type && liveNode.attrs.fileId === originalFileId;
+        };
+        const invalidateRequest = () => {
+          if (request === replacementRequest) replacementRequest += 1;
+        };
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = 'image/*';
+        input.addEventListener('cancel', invalidateRequest);
         input.addEventListener('change', async () => {
           const file = input.files?.[0];
-          if (!file) return;
+          if (!file) {
+            invalidateRequest();
+            return;
+          }
+          if (!isCurrentRequest()) return;
           if (!file.type.startsWith('image/')) {
             toast(t('database.imageFilesOnly'), { tone: 'error' });
+            invalidateRequest();
             return;
           }
           try {
             const stored = await storeFiles([file]);
+            if (!isCurrentRequest()) return;
             if (!stored.length) return;
             const newMeta = stored[0]!;
 
@@ -338,6 +513,8 @@ export const Image = Node.create({
               URL.revokeObjectURL(objectUrl);
             }
 
+            if (!isCurrentRequest()) return;
+
             const oldRatio =
               img.naturalWidth && img.naturalHeight
                 ? img.naturalWidth / img.naturalHeight
@@ -351,7 +528,9 @@ export const Image = Node.create({
 
             commitAttrs({ fileId: newMeta.id, src: null, crop: nextCrop });
           } catch {
-            toast(t('editor.couldNotCopy'), { tone: 'error' });
+            if (isCurrentRequest()) toast(t('editor.couldNotCopy'), { tone: 'error' });
+          } finally {
+            invalidateRequest();
           }
         });
         input.click();
@@ -470,63 +649,22 @@ export const Image = Node.create({
       };
 
       img.addEventListener('load', () => {
+        if (!isExpectedImageUrl()) return;
         const nw = img.naturalWidth || 1;
         const nh = img.naturalHeight || 1;
         naturalAspectRatio = nw / nh;
-        if (isCropping) renderCropOverlay();
-      });
-
-      const src = typeof node.attrs.src === 'string' ? node.attrs.src : null;
-      if (!node.attrs.fileId && src) {
-        dom.classList.remove('is-loading');
-        const remote = /^https:\/\//i.test(src);
-        const box = document.createElement('div');
-        box.className = 'image-remote';
-        const label = document.createElement('span');
-        label.textContent = remote
-          ? t('editor.imageFrom', { host: safeHost(src) })
-          : t('editor.imageNotFound', { src });
-        box.append(label);
-        if (remote) {
-          const load = document.createElement('button');
-          load.type = 'button';
-          load.className = 'button small';
-          load.textContent = t('editor.loadImage');
-          load.addEventListener('click', (event) => {
-            event.preventDefault();
-            img.src = src;
-            box.remove();
-          });
-          box.append(load);
-        }
-        dom.prepend(box);
+        img.style.visibility = '';
+        dom.classList.remove('is-loading', 'is-missing');
+        missingMessage.style.display = 'none';
         updatePresentation();
-        return {
-          dom,
-          update(updated) {
-            if (updated.type !== currentNode.type) return false;
-            currentNode = updated;
-            updatePresentation();
-            return true;
-          },
-        };
-      }
+      });
 
       img.addEventListener('error', () => {
-        dom.classList.add('is-missing');
-        dom.textContent = t('editor.imageMissing');
+        if (!isExpectedImageUrl()) return;
+        showImageMissing();
       });
 
-      void fileUrl(String(node.attrs.fileId ?? '')).then((url) => {
-        dom.classList.remove('is-loading');
-        if (url) {
-          img.src = url;
-          updatePresentation();
-        } else {
-          dom.classList.add('is-missing');
-          dom.textContent = t('editor.imageMissing');
-        }
-      });
+      updateImageSource(currentNode.attrs);
 
       dom.addEventListener('morrow:image-crop', () => startCropping());
       dom.addEventListener('morrow:image-replace', () => triggerReplace());
@@ -539,8 +677,23 @@ export const Image = Node.create({
         update(updated) {
           if (updated.type !== currentNode.type) return false;
           currentNode = updated;
+          updateImageSource(updated.attrs);
           updatePresentation();
           return true;
+        },
+        stopEvent(event) {
+          const target = event.target;
+          if (!(target instanceof Element)) return false;
+          return (
+            target.closest(
+              '.image-toolbar, .image-crop-overlay, .image-caption-input, .image-remote button',
+            ) !== null
+          );
+        },
+        destroy() {
+          isDestroyed = true;
+          imageLoadRequest += 1;
+          replacementRequest += 1;
         },
       };
     };

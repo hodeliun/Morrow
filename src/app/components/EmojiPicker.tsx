@@ -128,7 +128,15 @@ export function EmojiPicker({
 }) {
   const state = useWorkspace();
   const page = pageId ? state.pages[pageId] : undefined;
-  const currentIcon = parsePageIcon(initialIcon !== undefined ? initialIcon : page?.icon);
+  const baseIcon = initialIcon !== undefined ? initialIcon : page?.icon;
+  const [localIconOverride, setLocalIconOverride] = useState<{
+    baseIcon: string | null | undefined;
+    icon: string | null;
+  } | null>(null);
+  const iconValue =
+    localIconOverride && localIconOverride.baseIcon === baseIcon ? localIconOverride.icon : baseIcon;
+  const currentIcon = parsePageIcon(iconValue);
+  const selectedEmoji = currentIcon?.kind === 'emoji' ? currentIcon.value : null;
   const [emoji, setEmoji] = useState<EmojiEntry[] | null>(null);
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState<number | null>(null);
@@ -171,7 +179,6 @@ export function EmojiPicker({
     });
   }, [query]);
 
-  if (!page) return null;
   const pick = (icon: string | null) => {
     const selected = parsePageIcon(icon);
     if (selected?.kind === 'emoji') {
@@ -192,10 +199,16 @@ export function EmojiPicker({
     setColor(next);
     if (currentIcon?.kind === 'lucide') {
       const value = encodeLucideIcon(currentIcon.name, next);
-      if (value) onPick(value);
+      if (value) {
+        setLocalIconOverride({ baseIcon, icon: value });
+        onPick(value);
+      }
     } else if (currentIcon?.kind === 'file' && /\.svg$/i.test(currentIcon.id)) {
       const value = encodeFileIcon(currentIcon.id, next);
-      if (value) onPick(value);
+      if (value) {
+        setLocalIconOverride({ baseIcon, icon: value });
+        onPick(value);
+      }
     }
   };
 
@@ -230,7 +243,13 @@ export function EmojiPicker({
 
   return (
     <Dialog
-      title={initialTitle ? t('emoji.title', { title: initialTitle }) : page ? t('emoji.title', { title: displayTitle(page) }) : t('emoji.iconTypes')}
+      title={
+        initialTitle
+          ? t('emoji.title', { title: initialTitle })
+          : page
+            ? t('emoji.title', { title: displayTitle(page) })
+            : t('emoji.iconTypes')
+      }
       onClose={closeDialog}
       className="emoji-dialog"
     >
@@ -287,7 +306,7 @@ export function EmojiPicker({
             {t('emoji.random')}
           </button>
         )}
-        {page.icon && (
+        {iconValue && (
           <button type="button" className="button" onClick={() => pick(null)}>
             {t('common.remove')}
           </button>
@@ -396,10 +415,10 @@ export function EmojiPicker({
               key={item.unicode}
               type="button"
               role="option"
-              aria-selected={page.icon === item.unicode}
+              aria-selected={selectedEmoji === item.unicode}
               title={item.label}
               aria-label={item.label}
-              className={`emoji-choice${page.icon === item.unicode ? ' is-active' : ''}`}
+              className={`emoji-choice${selectedEmoji === item.unicode ? ' is-active' : ''}`}
               onClick={() => pick(item.unicode)}
             >
               <Emoji emoji={item.unicode} />
@@ -442,7 +461,7 @@ export function EmojiPicker({
       )}
       {currentIcon?.kind === 'file' && (
         <span className="icon-picker-preview">
-          <PageGlyph icon={page.icon!} />
+          <PageGlyph icon={iconValue ?? ''} />
         </span>
       )}
     </Dialog>

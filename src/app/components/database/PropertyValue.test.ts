@@ -7,9 +7,30 @@ import { MemoryVault } from '../../../storage/memoryVault';
 import { WorkspaceSession } from '../../../storage/session';
 import { VaultRepository } from '../../../storage/vaultRepository';
 import { setSession } from '../../workspace';
-import { PropertyInput } from './PropertyValue';
+import { PropertyDisplay, PropertyInput } from './PropertyValue';
 
 describe('database property cell rendering', () => {
+  it('renders a false checkbox formula result distinctly from an empty result', () => {
+    const prop: PropDef = {
+      id: 'is-published',
+      name: 'Published',
+      type: 'formula',
+      options: [],
+      formula: 'false',
+      formulaResultType: 'checkbox',
+    };
+    const falseValue = renderToStaticMarkup(createElement(PropertyDisplay, { prop, value: false }));
+    const emptyValue = renderToStaticMarkup(createElement(PropertyDisplay, { prop, value: null }));
+    const trueValue = renderToStaticMarkup(createElement(PropertyDisplay, { prop, value: true }));
+
+    expect(falseValue).toContain('role="checkbox"');
+    expect(falseValue).toContain('aria-checked="false"');
+    expect(falseValue).toContain('aria-label="Published"');
+    expect(falseValue).toContain('<svg');
+    expect(emptyValue).toBe('');
+    expect(trueValue).toContain('aria-checked="true"');
+  });
+
   it('renders an action as a disabled button cell when its formula says so', async () => {
     let nextId = 0;
     const opened = await WorkspaceSession.open(

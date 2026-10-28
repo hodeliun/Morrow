@@ -42,3 +42,16 @@ de release. Publicar/instalar novo build é uma etapa separada da validação de
 
 Conclusão requer critérios verificados, `npm run check`, evidência de UI,
 revisão Sol e atualização das issues, não apenas retorno do executor.
+
+## Progresso verificado
+
+- Entrega 4 aceita e publicada em `6c79867`; #32, #33 e #34 encerrados.
+  CI Windows/Ubuntu aprovado: https://github.com/hodeliun/Morrow/actions/runs/40646353567.
+- Correções de mídia/ícones/autocomplete/checkbox e reforço dos testes das
+  entregas anteriores aceitos em revisão final separada; evidência em
+  `docs/evidence/interaction-expansion-prior-ui.md`.
+- Entrega 5 em execução por Luna max na sessão
+  `01a18147-5167-7621-b83e-851fb9c9e345`; core passou por revisão incremental,
+  mas persistência, UI e critérios completos ainda precisam de validação.
+- #44 e #25 continuam abertos até a integração final. Não confundir o código
+  publicado com uma nova versão instalada ou com release de instalador.

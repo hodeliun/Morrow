@@ -4,7 +4,7 @@ import type { Node as ProsemirrorNode } from '@tiptap/pm/model';
 import type { Transaction } from '@tiptap/pm/state';
 import { EditorState } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
-import { shouldResetCropOnImageReplace } from './Media';
+import { getImageCropAspectRatio, shouldResetCropOnImageReplace } from './Media';
 import { revealAncestorsForPosition } from './CollapsibleHeading';
 
 describe('Delivery 1: Editor extensions & interaction logic', () => {
@@ -24,6 +24,14 @@ describe('Delivery 1: Editor extensions & interaction logic', () => {
       expect(shouldResetCropOnImageReplace(1.5, null)).toBe(false);
       expect(shouldResetCropOnImageReplace(undefined, undefined)).toBe(false);
       expect(shouldResetCropOnImageReplace(Infinity, 1.0)).toBe(false);
+    });
+  });
+
+  describe('Ticket #30: cropped preview aspect ratio', () => {
+    test('keeps the natural landscape ratio when the normalized crop is square', () => {
+      const crop = { x: 0.05, y: 0.05, width: 0.9, height: 0.9 };
+
+      expect(getImageCropAspectRatio(400 / 200, crop)).toBe(2);
     });
   });
 

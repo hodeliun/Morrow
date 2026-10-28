@@ -1,6 +1,12 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
-import type { DatabaseDef, PageId, PageMeta, PropDef } from '../../../core/model';
+import type {
+  DatabaseDef,
+  FormulaReferenceBinding,
+  PageId,
+  PageMeta,
+  PropDef,
+} from '../../../core/model';
 import { displayTitle, newPageMeta } from '../../../core/model';
 import {
   bindFormulaReferences,
@@ -23,6 +29,96 @@ import {
 } from './formulaEditorModel';
 import type { FormulaDecoration, FormulaSuggestion } from './formulaEditorModel';
 
+export interface FormulaDraftState {
+  baseFormula: string;
+  baseBindingsKey: string;
+  source: string;
+  bindings: FormulaReferenceBinding[];
+  caret: number;
+}
+
+export interface FormulaSelectionRange {
+  start: number;
+  end: number;
+}
+
+export function formulaSelectionChanged(previous: FormulaSelectionRange, next: FormulaSelectionRange): boolean {
+  return previous.start !== next.start || previous.end !== next.end;
+}
+
+export function moveFormulaSuggestionIndex(
+  current: number,
+  key: 'ArrowDown' | 'ArrowUp',
+  count: number,
+): number {
+  if (count < 1) return 0;
+  return key === 'ArrowDown' ? (current + 1) % count : (current - 1 + count) % count;
+}
+
+export function formulaSuggestionForCommitKey(
+  key: string,
+  suggestions: FormulaSuggestion[],
+  activeIndex: number,
+): FormulaSuggestion | undefined {
+  return key === 'Enter' || key === 'Tab' ? suggestions[activeIndex] : undefined;
+}
+
+export function shouldResetFormulaSuggestionIndexOnKeyUp(
+  key: string,
+  selectionMoved: boolean,
+  suggestionsOpen: boolean,
+  suggestionCount: number,
+): boolean {
+  const navigatingSuggestions =
+    suggestionsOpen && suggestionCount > 0 && (key === 'ArrowDown' || key === 'ArrowUp');
+  return selectionMoved && !navigatingSuggestions;
+}
+
+export function applyFormulaSuggestion(
+  source: string,
+  bindings: FormulaReferenceBinding[],
+  suggestion: FormulaSuggestion,
+): { source: string; bindings: FormulaReferenceBinding[]; caret: number } {
+  const nextSource =
+    source.slice(0, suggestion.replaceStart) +
+    suggestion.insertText +
+    source.slice(suggestion.replaceEnd);
+  let nextBindings = adjustFormulaBindings(source, nextSource, bindings);
+  if (suggestion.binding)
+    nextBindings = [
+      ...nextBindings,
+      {
+        ...suggestion.binding,
+        start: suggestion.replaceStart,
+        end: suggestion.replaceStart + suggestion.insertText.length,
+        source: suggestion.insertText,
+      },
+    ];
+  return {
+    source: nextSource,
+    bindings: nextBindings,
+    caret: suggestion.replaceStart + (suggestion.caretOffset ?? suggestion.insertText.length),
+  };
+}
+
+export function updateFormulaDraftCaret(
+  current: FormulaDraftState,
+  formula: string,
+  bindingsKey: string,
+  savedBindings: FormulaReferenceBinding[],
+  caret: number,
+): FormulaDraftState {
+  if (current.baseFormula !== formula || current.baseBindingsKey !== bindingsKey)
+    return {
+      baseFormula: formula,
+      baseBindingsKey: bindingsKey,
+      source: formula,
+      bindings: savedBindings,
+      caret,
+    };
+  return { ...current, caret };
+}
+
 export function FormulaEditor({
   dbId,
   prop,
@@ -40,7 +136,7 @@ export function FormulaEditor({
   const formula = defaultFormula ? (prop.defaultFormula ?? '') : (prop.formula ?? '');
   const savedBindings = defaultFormula ? (prop.defaultFormulaBindings ?? []) : (prop.formulaBindings ?? []);
   const savedBindingsKey = JSON.stringify(savedBindings);
-  const [draftState, setDraftState] = useState(() => ({
+  const [draftState, setDraftState] = useState<FormulaDraftState>(() => ({
     baseFormula: formula,
     baseBindingsKey: savedBindingsKey,
     source: formula,
@@ -57,6 +153,8 @@ export function FormulaEditor({
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
+  const selectionRangeRef = useRef<FormulaSelectionRange>({ start: formula.length, end: formula.length });
+  const selectionChangedSinceKeyUpRef = useRef(false);
   const pendingCaretRef = useRef<number | null>(null);
   const inputId = `${prop.id}-${defaultFormula ? 'default-formula' : 'formula'}`;
 
@@ -133,24 +231,9 @@ export function FormulaEditor({
   };
 
   const selectSuggestion = (suggestion: FormulaSuggestion) => {
-    const next =
-      draft.slice(0, suggestion.replaceStart) +
-      suggestion.insertText +
-      draft.slice(suggestion.replaceEnd);
-    let nextBindings = adjustFormulaBindings(draft, next, draftBindings);
-    if (suggestion.binding)
-      nextBindings = [
-        ...nextBindings,
-        {
-          ...suggestion.binding,
-          start: suggestion.replaceStart,
-          end: suggestion.replaceStart + suggestion.insertText.length,
-          source: suggestion.insertText,
-        },
-      ];
-    const nextCaret = suggestion.replaceStart + (suggestion.caretOffset ?? suggestion.insertText.length);
-    setDraftSource(next, nextBindings, nextCaret);
-    pendingCaretRef.current = nextCaret;
+    const insertion = applyFormulaSuggestion(draft, draftBindings, suggestion);
+    setDraftSource(insertion.source, insertion.bindings, insertion.caret);
+    pendingCaretRef.current = insertion.caret;
     setSuggestionsOpen(false);
   };
 
@@ -180,15 +263,14 @@ export function FormulaEditor({
     if (suggestions.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
       setActiveSuggestion((current) =>
-        event.key === 'ArrowDown'
-          ? (current + 1) % suggestions.length
-          : (current - 1 + suggestions.length) % suggestions.length,
+        moveFormulaSuggestionIndex(current, event.key as 'ArrowDown' | 'ArrowUp', suggestions.length),
       );
       return;
     }
-    if (selectedSuggestion && (event.key === 'Enter' || event.key === 'Tab')) {
+    const suggestionToCommit = formulaSuggestionForCommitKey(event.key, suggestions, activeSuggestion);
+    if (selectedSuggestion && suggestionToCommit) {
       event.preventDefault();
-      selectSuggestion(selectedSuggestion);
+      selectSuggestion(suggestionToCommit);
       return;
     }
     if (event.key === 'Escape' && suggestionsOpen) {
@@ -205,6 +287,8 @@ export function FormulaEditor({
   const onTextareaChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const source = event.target.value;
     const nextCaret = event.target.selectionStart;
+    selectionRangeRef.current = { start: nextCaret, end: event.target.selectionEnd };
+    selectionChangedSinceKeyUpRef.current = false;
     const bindings = adjustFormulaBindings(draft, source, draftBindings);
     setDraftState({
       baseFormula: formula,
@@ -217,15 +301,11 @@ export function FormulaEditor({
     setActiveSuggestion(0);
   };
 
-  const onTextareaSelectionChange = (element: HTMLTextAreaElement) => {
-    setDraftState({
-      baseFormula: formula,
-      baseBindingsKey: savedBindingsKey,
-      source: draft,
-      bindings: draftBindings,
-      caret: element.selectionStart,
-    });
-    setActiveSuggestion(0);
+  const onTextareaSelectionChange = (element: HTMLTextAreaElement, resetActiveSuggestion = true) => {
+    setDraftState((current) =>
+      updateFormulaDraftCaret(current, formula, savedBindingsKey, savedBindings, element.selectionStart),
+    );
+    if (resetActiveSuggestion) setActiveSuggestion(0);
   };
 
   const insertFunction = (name: string) => insertAtEnd(`${name}()`, undefined, `${name}()`, name.length + 1);
@@ -257,9 +337,44 @@ export function FormulaEditor({
             setSuggestionsOpen(true);
           }}
           onBlur={() => setFocused(false)}
-          onClick={(event) => onTextareaSelectionChange(event.currentTarget)}
-          onKeyUp={(event) => onTextareaSelectionChange(event.currentTarget)}
-          onSelect={(event) => onTextareaSelectionChange(event.currentTarget)}
+          onClick={(event) => {
+            selectionRangeRef.current = {
+              start: event.currentTarget.selectionStart,
+              end: event.currentTarget.selectionEnd,
+            };
+            selectionChangedSinceKeyUpRef.current = false;
+            onTextareaSelectionChange(event.currentTarget);
+          }}
+          onKeyUp={(event) => {
+            const nextSelection = {
+              start: event.currentTarget.selectionStart,
+              end: event.currentTarget.selectionEnd,
+            };
+            const selectionMoved =
+              selectionChangedSinceKeyUpRef.current ||
+              formulaSelectionChanged(selectionRangeRef.current, nextSelection);
+            selectionRangeRef.current = nextSelection;
+            selectionChangedSinceKeyUpRef.current = false;
+            onTextareaSelectionChange(
+              event.currentTarget,
+              shouldResetFormulaSuggestionIndexOnKeyUp(
+                event.key,
+                selectionMoved,
+                suggestionsOpen,
+                suggestions.length,
+              ),
+            );
+          }}
+          onSelect={(event) => {
+            const nextSelection = {
+              start: event.currentTarget.selectionStart,
+              end: event.currentTarget.selectionEnd,
+            };
+            if (formulaSelectionChanged(selectionRangeRef.current, nextSelection))
+              selectionChangedSinceKeyUpRef.current = true;
+            selectionRangeRef.current = nextSelection;
+            onTextareaSelectionChange(event.currentTarget, false);
+          }}
           onScroll={(event) => {
             if (!highlightRef.current) return;
             highlightRef.current.scrollTop = event.currentTarget.scrollTop;

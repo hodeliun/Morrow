@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Pencil, Plus, X } from 'lucide-react';
+import { AlertTriangle, Check, Pencil, Plus, Square, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { formatDisplayValue, formulaResult, formulaValueText, valueOf } from '../../../core/database';
 import { displayTitle, TEXT_HEX } from '../../../core/model';
@@ -79,7 +79,13 @@ export function ProgressBar({
 export function PropertyDisplay({ prop, value }: { prop: PropDef; value: PropValue }) {
   const effectiveProp =
     prop.type === 'formula' && prop.formulaResultType ? { ...prop, type: prop.formulaResultType } : prop;
-  if (value === null || value === undefined || value === '' || value === false) return null;
+  if (
+    value === null ||
+    value === undefined ||
+    value === '' ||
+    (value === false && effectiveProp.type !== 'checkbox')
+  )
+    return null;
   if (isMediaProperty(effectiveProp.type)) return <MediaPropertyDisplay prop={effectiveProp} value={value} />;
   if ((effectiveProp.display === 'bar' || effectiveProp.type === 'progress') && typeof value === 'number')
     return (
@@ -126,8 +132,9 @@ export function PropertyDisplay({ prop, value }: { prop: PropDef; value: PropVal
       );
     case 'checkbox':
       return (
-        <span className="prop-check">
-          <Check size={12} /> {prop.name}
+        <span className="prop-check" role="checkbox" aria-checked={value === true} aria-label={prop.name}>
+          {value === true ? <Check size={12} aria-hidden="true" /> : <Square size={12} aria-hidden="true" />}
+          {prop.name}
         </span>
       );
     case 'date':
