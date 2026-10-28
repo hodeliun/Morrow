@@ -2,7 +2,7 @@
 
 Status: entregas funcionais implementadas e revisadas; validação integrada final em andamento. GitHub é a autoridade de estado.
 
-A autorização de execução de 28/10 está em [EXECUTION-2026-10-28.md](EXECUTION-2026-10-28.md). As notas de pausa nos tickets locais preservam o contexto da etapa inicial de planejamento; não substituem essa autorização posterior. As evidências de interface e revisão estão em `docs/evidence/`.
+A autorização de execução e o resultado mais recente estão em [EXECUTION-2026-10-28.md](EXECUTION-2026-10-28.md). A matriz de vinte itens e seus estados está em [interaction-expansion-final.md](../../evidence/interaction-expansion-final.md); o JSON unificado e previews PDF estão em `docs/evidence/`. As notas de pausa nos tickets locais preservam o contexto da etapa inicial de planejamento; não substituem a autorização posterior.
 
 [Spec local](SPEC.md) · [Grilling interno](GRILLING.md) · [Spec no GitHub](https://github.com/hodeliun/Morrow/issues/25)
 

@@ -1,6 +1,6 @@
 # Morrow — expansão de edição, tabelas e apresentação
 
-Status: especificação e tickets; implementação NÃO autorizada nesta rodada. Base examinada: commit 796496a, pacote 1.2.1-fork.1.0.1 sobre Morrow oficial 1.2.1. Complementa as especificações anteriores, sem substituir os contratos de dados.
+Status (checkpoint de validação local pré-publicação, 28/10/2026): implementação autorizada no handoff de 28/10/2026; tickets #26–#43 estavam encerrados no GitHub. A execução unificada final passou nos cinco grupos e na integração de #44; Sol aprovou a validação local de #44 sem bloqueios. Nesse checkpoint, #25/#44 estavam abertas e não havia execução de CI após a correção local do teste de locale (o workflow observado falhou antes dela). O estado posterior da CI e o encerramento atual de #25/#44 são os registrados nas issues #25/#44 no GitHub, fonte autoritativa que prevalece sobre este snapshot. A proposta original foi examinada no commit 796496a, pacote 1.2.1-fork.1.0.1 sobre Morrow oficial 1.2.1. Esta especificação complementa as anteriores, sem substituir contratos de dados. O histórico da autorização e das verificações fica em [EXECUTION-2026-10-28.md](EXECUTION-2026-10-28.md).
 
 ## Problem Statement
 
@@ -96,7 +96,7 @@ Cenários: (a) página sintética com sete colunas, imagem recortada e títulos 
 
 ## Out of Scope
 
-Implementação nesta rodada, instalação/publicação de builds, alteração dos cofres originais, colaboração/multiusuário, semântica completa de planilha Excel/Coda, execução de fórmulas arbitrárias, importação universal de clipboard HTML, edição destrutiva do arquivo da imagem, agrupamentos/pivot/chart novos e funções sem relação com os vinte itens. “No mínimo as mesmas operações do Coda” foi delimitado às operações de linha documentadas/observadas nesta rodada, não a uma promessa indefinida de paridade com todo o produto.
+Na versão inicial desta spec, implementação nesta rodada estava fora de escopo; a autorização posterior de 28/10 para executar os tickets #26–#44 está registrada em `EXECUTION-2026-10-28.md` e não altera os limites permanentes abaixo. Instalação/publicação de builds e alteração dos cofres originais continuam fora da issue #44, assim como colaboração/multiusuário, semântica completa de planilha Excel/Coda, execução de fórmulas arbitrárias, importação universal de clipboard HTML, edição destrutiva do arquivo da imagem, agrupamentos/pivot/chart novos e funções sem relação com os vinte itens. “No mínimo as mesmas operações do Coda” foi delimitado às operações de linha documentadas/observadas nesta rodada, não a uma promessa indefinida de paridade com todo o produto.
 
 ## Further Notes
 

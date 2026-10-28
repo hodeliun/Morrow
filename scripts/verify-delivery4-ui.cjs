@@ -295,7 +295,7 @@ Prazo: "${r.date}"
     assert.strictEqual(openBtnTabIndex, '-1', '.db-open button must have tabIndex=-1 so Tab skips it');
 
     // B) Click cell (quantity column, row 1)
-    const qtyCellRow1 = page.locator('table.db-table tbody tr').nth(0).locator('td').nth(1);
+    const qtyCellRow1 = cell(0, 'quantity');
     await qtyCellRow1.click();
     await page.waitForTimeout(200);
 
@@ -305,13 +305,13 @@ Prazo: "${r.date}"
     // C) Arrow key navigation
     await page.keyboard.press('ArrowRight'); // moves to notes column
     await page.waitForTimeout(100);
-    const notesCellRow1 = page.locator('table.db-table tbody tr').nth(0).locator('td').nth(2);
+    const notesCellRow1 = cell(0, 'notes');
     const isNotesActive = await notesCellRow1.evaluate((el) => el.classList.contains('is-grid-active'));
     assert.strictEqual(isNotesActive, true, 'ArrowRight must move active cell to notes column');
 
     await page.keyboard.press('ArrowDown'); // moves to row 2
     await page.waitForTimeout(100);
-    const notesCellRow2 = page.locator('table.db-table tbody tr').nth(1).locator('td').nth(2);
+    const notesCellRow2 = cell(1, 'notes');
     const isNotesRow2Active = await notesCellRow2.evaluate((el) => el.classList.contains('is-grid-active'));
     assert.strictEqual(isNotesRow2Active, true, 'ArrowDown must move active cell to row 2');
 
@@ -325,7 +325,7 @@ Prazo: "${r.date}"
     // E) Tab / Shift+Tab navigation
     await page.keyboard.press('Tab'); // moves to active column
     await page.waitForTimeout(100);
-    const activeColRow1 = page.locator('table.db-table tbody tr').nth(0).locator('td').nth(3);
+    const activeColRow1 = cell(0, 'active');
     const isActiveColActive = await activeColRow1.evaluate((el) => el.classList.contains('is-grid-active'));
     assert.strictEqual(isActiveColActive, true, 'Tab moves to next column');
 
@@ -345,7 +345,7 @@ Prazo: "${r.date}"
     await page.keyboard.press('Enter'); // commits and moves down to row 2
     await page.waitForTimeout(300);
 
-    const qtyCellRow2 = page.locator('table.db-table tbody tr').nth(1).locator('td').nth(1);
+    const qtyCellRow2 = cell(1, 'quantity');
     const isQty2ActiveAfterEnter = await qtyCellRow2.evaluate((el) => el.classList.contains('is-grid-active'));
     assert.strictEqual(isQty2ActiveAfterEnter, true, 'Enter in single-line edit commits and moves down');
 
@@ -616,7 +616,7 @@ Prazo: "${r.date}"
     await page.keyboard.press('Control+c');
     await page.waitForTimeout(200);
 
-    const qtyCellRow3 = page.locator('table.db-table tbody tr').nth(2).locator('td').nth(1);
+    const qtyCellRow3 = cell(2, 'quantity');
     await qtyCellRow3.click();
     await page.keyboard.press('Control+v');
     await page.waitForTimeout(300);

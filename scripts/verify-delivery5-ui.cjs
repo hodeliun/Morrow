@@ -7,6 +7,96 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROW_CLIPBOARD_PREFIX = 'morrow-row-clipboard:v1\n';
+const diagnosticMode = process.env.MORROW_DELIVERY5_DIAGNOSTIC === '1';
+
+let currentStage = 'fixture-setup';
+let currentStageStartedAt = Date.now();
+
+function markStage(name) {
+  currentStage = name;
+  currentStageStartedAt = Date.now();
+  console.log(`Delivery 5 stage: ${name}`);
+}
+
+function relativeStack(error) {
+  const stack = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  const repoRoot = path.resolve(process.cwd());
+  return stack
+    .replaceAll(`${repoRoot}${path.sep}`, '')
+    .replaceAll(`${repoRoot}/`, '')
+    .replaceAll(`${repoRoot}\\`, '')
+    .replaceAll('\\', '/');
+}
+
+function relativeStackLocation(error) {
+  const stack = relativeStack(error);
+  return stack
+    .split(/\r?\n/)
+    .find((line) => line.includes('verify-delivery5-ui.cjs:'))
+    ?.trim();
+}
+
+async function captureFailureState(page, vaultDir) {
+  let ui = null;
+  if (page) {
+    try {
+      ui = await page.evaluate(() => {
+        return {
+          url: location.href,
+          activeElement:
+            document.activeElement instanceof HTMLElement
+              ? `${document.activeElement.tagName.toLowerCase()}.${String(document.activeElement.className)}`
+              : null,
+          tables: [...document.querySelectorAll('.db-table')].map((table) => ({
+            rows: table.querySelectorAll('tbody tr').length,
+            titles: [...table.querySelectorAll('tbody tr .db-col-title')]
+              .map((cell) => cell.textContent?.trim() ?? '')
+              .slice(0, 8),
+          })),
+          dialogs: [...document.querySelectorAll('.db-row-dialog, [role="alertdialog"]')]
+            .map((element) => element.textContent?.trim().slice(0, 120) ?? '')
+            .slice(0, 3),
+          recovery: [...document.querySelectorAll('.table-action-recovery')]
+            .map((element) => element.textContent?.trim().slice(0, 120) ?? '')
+            .slice(0, 3),
+          toasts: [...document.querySelectorAll('.toast')]
+            .map((element) => element.textContent?.trim().slice(0, 120) ?? '')
+            .slice(0, 5),
+        };
+      });
+    } catch {
+      ui = { readFailed: true };
+    }
+  }
+
+  const journalPath = path.join(vaultDir, '.morrow', 'table-action-journal.json');
+  let journal = null;
+  if (fs.existsSync(journalPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+      journal = {
+        status: raw.status,
+        databaseId: raw.databaseId,
+        rowId: raw.rowId,
+        label: raw.label,
+        createdAt: raw.createdAt,
+        recordCount: Array.isArray(raw.records) ? raw.records.length : null,
+        commandCount: Array.isArray(raw.commands) ? raw.commands.length : null,
+        conflictCount: Array.isArray(raw.conflicts) ? raw.conflicts.length : null,
+        error: raw.error,
+      };
+    } catch {
+      journal = { readFailed: true };
+    }
+  }
+
+  return {
+    stage: currentStage,
+    stageElapsedMs: Date.now() - currentStageStartedAt,
+    ui,
+    journal,
+  };
+}
 
 function databaseMarkdown(properties, viewId, hidden = []) {
   const hiddenLines = hidden.length
@@ -204,8 +294,11 @@ async function main() {
   );
 
   let app = null;
+  let page = null;
+  const pageErrors = [];
   let evidencePath = null;
   let evidenceSaved = false;
+  let runSucceeded = false;
   const evidence = {
     timestamp: new Date().toISOString(),
     fixture: 'synthetic-only',
@@ -217,6 +310,7 @@ async function main() {
   };
 
   try {
+    markStage('initial-launch');
     console.log('1. Launching hidden Electron app with synthetic profile and vault...');
     app = await launchHidden(profileDir);
     const initiallyHidden = await app.evaluate(({ BrowserWindow }) =>
@@ -225,9 +319,9 @@ async function main() {
     assert.equal(initiallyHidden, true, 'No Electron window may be visible.');
     evidence.hiddenWindowVerified = true;
 
-    let page = await app.firstWindow();
+    markStage('initial-fixture-load');
+    page = await app.firstWindow();
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-    const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.name || 'Error'));
     await page.waitForTimeout(2500);
     await openTable(page, 'Source');
@@ -488,22 +582,32 @@ async function main() {
     evidence.ticket36.newIdsVerified = true;
 
     console.log('2. Reopening the same hidden app against the synthetic fixture...');
+    markStage('reopen-close-first-app');
     await app.close();
+    markStage('reopen-launch-second-app');
     app = await launchHidden(profileDir);
+    markStage('reopen-verify-hidden-window');
     const hiddenAfterReopen = await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().every((window) => !window.isVisible()),
     );
     assert.equal(hiddenAfterReopen, true);
+    markStage('reopen-attach-window-and-grant-clipboard');
     page = await app.firstWindow();
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     page.on('pageerror', (error) => pageErrors.push(error.name || 'Error'));
+    markStage('reopen-wait-renderer');
     await page.waitForTimeout(2000);
+    markStage('reopen-open-empty-table');
     await openTable(page, 'Empty');
+    markStage('reopen-verify-empty-table-persistence');
     assert.equal((await visibleRows(page)).length, 3, 'Copied rows must survive an app restart.');
+    markStage('reopen-open-source-table');
     await openTable(page, 'Source');
+    markStage('reopen-verify-source-preserved');
     assert.equal((await visibleRows(page)).length, 3, 'Copy must leave every source row in place.');
     evidence.ticket36.reopenPersistenceVerified = true;
 
+    markStage('row-menu-open-and-read-actions');
     const menuProbe = page.locator('.db-table tbody tr').filter({ hasText: 'Alpha' });
     await menuProbe.locator('.db-row-menu-trigger').click();
     const menuLabels = await page.locator('[role="menu"] [role="menuitem"]').allTextContents();
@@ -522,30 +626,40 @@ async function main() {
         `Row menu is missing ${pattern}.`,
       );
     const rowMenu = page.locator('[role="menu"]:visible');
+    markStage('row-menu-escape-close');
     await rowMenu.locator('[role="menuitem"]').first().focus();
     await page.keyboard.press('Escape');
     await rowMenu.waitFor({ state: 'detached' });
     evidence.ticket35.rowMenuActionsAndKeyboardCloseVerified = true;
 
-    for (const pattern of [
-      /inserir linha antes|insert row before/i,
-      /inserir linha depois|insert row after/i,
+    for (const [label, pattern] of [
+      ['insert-before', /inserir linha antes|insert row before/i],
+      ['insert-after', /inserir linha depois|insert row after/i],
     ]) {
+      markStage(`${label}-open-row-menu`);
       await page.locator('.db-table tbody tr').first().locator('.db-row-menu-trigger').click();
+      markStage(`${label}-select-action`);
       await clickMenuItem(page, pattern);
+      markStage(`${label}-wait-row-count`);
       await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 4);
       const insertUndo = page
         .locator('.table-action-recovery button')
         .filter({ hasText: /desfazer|undo|deshacer/i });
+      markStage(`${label}-wait-undo-button`);
       await insertUndo.waitFor({ state: 'visible' });
+      markStage(`${label}-undo`);
       await insertUndo.click();
+      markStage(`${label}-wait-restored-row-count`);
       await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 3);
+      markStage(`${label}-wait-journal-settled`);
       await page.locator('.table-action-recovery button').waitFor({ state: 'detached' });
     }
     evidence.ticket35.insertBeforeAfterAndUndoVerified = true;
     evidence.ticket35.recoveryJournalReadyBeforeNextActionVerified = true;
 
+    markStage('reorder-read-original-order');
     const beforeMoveOrder = await visibleRows(page);
+    markStage('reorder-dispatch-drag-drop');
     const reorderEvidence = await page.evaluate(() => {
       const rows = [...document.querySelectorAll('.db-table tbody tr')];
       const handle = rows[0]?.querySelector('.db-row-drag');
@@ -569,6 +683,7 @@ async function main() {
     });
     assert.ok(reorderEvidence.startAccepted && reorderEvidence.dropPrevented);
     const expectedReordered = [beforeMoveOrder[1], beforeMoveOrder[0], ...beforeMoveOrder.slice(2)];
+    markStage('reorder-wait-new-order');
     await page.waitForFunction(
       (expected) =>
         [...document.querySelectorAll('.db-table tbody tr')]
@@ -578,59 +693,83 @@ async function main() {
     );
     evidence.ticket35.manualReorderVerified = true;
 
+    markStage('duplicate-open-row-menu');
     const gammaRow = page.locator('.db-table tbody tr').filter({ hasText: 'Gamma' });
     await gammaRow.locator('.db-row-menu-trigger').click();
+    markStage('duplicate-select-action');
     await clickMenuItem(page, /duplicar|duplicate/i);
+    markStage('duplicate-wait-row-count');
     await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 4);
     assert.ok((await visibleRows(page)).some((title) => /Gamma/i.test(title) && !/^Gamma\s*$/.test(title)));
     const undoButton = page
       .locator('.table-action-recovery button')
       .filter({ hasText: /desfazer|undo|deshacer/i });
+    markStage('duplicate-wait-undo-button');
     await undoButton.waitFor({ state: 'visible' });
+    markStage('duplicate-undo');
     await undoButton.click();
+    markStage('duplicate-wait-restored-row-count');
     await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 3);
+    markStage('duplicate-wait-journal-settled');
     await page.locator('.table-action-recovery button').waitFor({ state: 'detached' });
     evidence.ticket35.duplicatePreservesRowsAndUndoVerified = true;
 
+    markStage('move-open-row-menu');
     const betaRow = page.locator('.db-table tbody tr').filter({ hasText: /^Beta/ });
     await betaRow.locator('.db-row-menu-trigger').click();
+    markStage('move-select-action');
     await clickMenuItem(page, /mover para outra tabela|move to another table|mover a otra tabla/i);
     dialog = page.locator('.db-row-dialog');
+    markStage('move-wait-mapping-dialog');
     await dialog.waitFor({ state: 'visible' });
+    markStage('move-select-destination');
     await dialog.locator('select[data-autofocus]').selectOption('destination-db');
+    markStage('move-confirm');
     await focusPrimaryByTab(page, dialog);
     await page.keyboard.press('Enter');
     await dialog.waitFor({ state: 'detached' });
+    markStage('move-wait-source-row-removed');
     await page.waitForFunction(
       () =>
         ![...document.querySelectorAll('.db-table tbody tr')].some((row) =>
           row.textContent?.includes('Beta'),
         ),
     );
+    markStage('move-wait-source-focus');
     await page.waitForFunction(() => Boolean(document.activeElement?.closest('.db-table-view')));
+    markStage('move-open-destination-table');
     await openTable(page, 'Destination');
     const moveUndo = page
       .locator('.table-action-recovery button')
       .filter({ hasText: /desfazer|undo|deshacer/i });
+    markStage('move-wait-undo-button');
     await moveUndo.waitFor({ state: 'visible' });
+    markStage('move-undo');
     await moveUndo.click();
+    markStage('move-wait-destination-restored');
     await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 1);
+    markStage('move-wait-journal-settled');
     await page.locator('.table-action-recovery button').waitFor({ state: 'detached' });
     assert.equal(
       (await visibleRows(page)).length,
       1,
       'Undoing a move must remove the moved row from its destination.',
     );
+    markStage('move-open-source-after-undo');
     await openTable(page, 'Source');
+    markStage('move-verify-source-row-restored');
     await page.waitForFunction(() =>
       [...document.querySelectorAll('.db-table tbody tr')].some((row) => row.textContent?.includes('Beta')),
     );
     evidence.ticket36.movePreservesSourceAndUndoVerified = true;
 
+    markStage('trash-filter-single-visible-row');
     const sourceSearch = page.locator('.db-search input[type="search"]');
     await sourceSearch.fill('Alpha');
+    markStage('trash-wait-filter-result');
     await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 1);
     const alphaRow = page.locator('.db-table tbody tr').filter({ hasText: /^Alpha/ });
+    markStage('trash-open-warning');
     await alphaRow.locator('.db-row-menu-trigger').click();
     await clickMenuItem(page, /lixeira|trash|papelera/i);
     let trashDialog = page.getByRole('alertdialog');
@@ -645,6 +784,7 @@ async function main() {
       true,
       'The delete warning must initially focus Cancel.',
     );
+    markStage('trash-cancel-warning');
     await page.keyboard.press('Escape');
     await trashDialog.waitFor({ state: 'detached' });
     await page.waitForFunction(() => document.activeElement?.classList.contains('db-row-menu-trigger'));
@@ -652,9 +792,11 @@ async function main() {
     evidence.ticket35.trashWarningCountsNestedRowsAndEscapeCancels = true;
     evidence.ticket35.dialogFocusReturnsToMenuTrigger = true;
 
+    markStage('trash-reopen-warning');
     const alphaAgain = page.locator('.db-table tbody tr').filter({ hasText: /^Alpha/ });
     await alphaAgain.locator('.db-row-menu-trigger').click();
     await clickMenuItem(page, /lixeira|trash|papelera/i);
+    markStage('trash-confirm-delete');
     trashDialog = page.getByRole('alertdialog');
     await trashDialog.waitFor({ state: 'visible' });
     const confirmDelete = trashDialog.locator('.db-row-dialog-actions .button.danger');
@@ -662,12 +804,14 @@ async function main() {
     assert.equal(await confirmDelete.evaluate((element) => element === document.activeElement), true);
     await page.keyboard.press('Enter');
     await trashDialog.waitFor({ state: 'detached' });
+    markStage('trash-wait-row-removed');
     await page.waitForFunction(
       () =>
         ![...document.querySelectorAll('.db-table tbody tr')].some((row) =>
           row.textContent?.includes('Alpha'),
         ),
     );
+    markStage('trash-wait-focus-fallback');
     await page.waitForFunction(() => document.activeElement === document.querySelector('.db-table'), null, {
       timeout: 5000,
     });
@@ -679,16 +823,21 @@ async function main() {
     const trashUndo = page
       .locator('.table-action-recovery button')
       .filter({ hasText: /desfazer|undo|deshacer/i });
+    markStage('trash-wait-undo-button');
     await trashUndo.waitFor({ state: 'visible' });
+    markStage('trash-undo');
     await trashUndo.click();
+    markStage('trash-wait-row-restored');
     await page.waitForFunction(() =>
       [...document.querySelectorAll('.db-table tbody tr')].some((row) => row.textContent?.includes('Alpha')),
     );
+    markStage('trash-wait-journal-settled');
     await page.locator('.table-action-recovery button').waitFor({ state: 'detached' });
     evidence.ticket35.keyboardTrashConfirmAndUndoVerified = true;
     evidence.ticket35.deleteDialogFocusContainmentVerified = true;
     evidence.ticket35.lastVisibleRowDeletionMovesFocusToTable = true;
 
+    markStage('final-hidden-window-check');
     const allHiddenAtEnd = await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().every((window) => !window.isVisible()),
     );
@@ -696,19 +845,41 @@ async function main() {
     assert.deepEqual(pageErrors, [], 'The renderer must not report page errors.');
     evidence.hiddenWindowVerified = true;
     evidence.rendererPageErrors = pageErrors;
-    evidencePath = path.join(process.cwd(), 'docs', 'evidence', 'interaction-expansion-delivery5-ui.json');
-    const serialized = JSON.stringify(evidence, null, 2);
-    assert.ok(
-      !serialized.includes(root),
-      'Evidence must not disclose synthetic temp profile or vault paths.',
+    if (diagnosticMode) {
+      console.log('3. Diagnostic run complete; canonical delivery evidence was not changed.');
+    } else {
+      markStage('write-evidence');
+      evidencePath = path.join(process.cwd(), 'docs', 'evidence', 'interaction-expansion-delivery5-ui.json');
+      const serialized = JSON.stringify(evidence, null, 2);
+      assert.ok(
+        !serialized.includes(root),
+        'Evidence must not disclose synthetic temp profile or vault paths.',
+      );
+      fs.writeFileSync(evidencePath, serialized, 'utf8');
+      evidenceSaved = true;
+      console.log('3. Delivery 5 hidden UI evidence saved.');
+    }
+    runSucceeded = true;
+  } catch (error) {
+    const snapshot = await captureFailureState(page, vaultDir);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `Delivery 5 failure: stage=${currentStage}; elapsedMs=${snapshot.stageElapsedMs}; message=${message}`,
     );
-    fs.writeFileSync(evidencePath, serialized, 'utf8');
-    evidenceSaved = true;
-    console.log('3. Delivery 5 hidden UI evidence saved.');
+    console.error(`Delivery 5 failure location: ${relativeStackLocation(error) ?? 'unavailable'}`);
+    console.error(`Delivery 5 failure state: ${JSON.stringify(snapshot)}`);
+    console.error(
+      `Delivery 5 failure stack (repo-relative): ${relativeStack(error).replace(/\r?\n/g, ' | ')}`,
+    );
+    throw error;
   } finally {
     if (app) await app.close();
-    fs.rmSync(root, { recursive: true, force: true });
-    assert.equal(fs.existsSync(root), false, 'Temporary profile and synthetic vault must be removed.');
+    if (diagnosticMode && !runSucceeded) {
+      console.error(`Delivery 5 diagnostic fixture retained: ${path.basename(root)}`);
+    } else {
+      fs.rmSync(root, { recursive: true, force: true });
+      assert.equal(fs.existsSync(root), false, 'Temporary profile and synthetic vault must be removed.');
+    }
     if (evidenceSaved && evidencePath) {
       evidence.cleanupVerified = true;
       const cleaned = JSON.stringify(evidence, null, 2);
@@ -718,7 +889,4 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error('Delivery 5 hidden UI verification failed:', error);
-  process.exit(1);
-});
+main().catch(() => process.exit(1));

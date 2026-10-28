@@ -6,6 +6,8 @@ import type { DatabaseDef, PageMeta } from '../../../core/model';
 import { MemoryVault } from '../../../storage/memoryVault';
 import { WorkspaceSession } from '../../../storage/session';
 import { VaultRepository } from '../../../storage/vaultRepository';
+import { t } from '../../i18n';
+import { getPreferences, setPreferences } from '../../platform/preferences';
 import { setSession } from '../../workspace';
 import { updateProp } from './data';
 import { DatabaseView } from './DatabaseView';
@@ -88,6 +90,29 @@ describe('database column descriptions', () => {
     const linkedMarkup = render(initialPage, view);
     const emptyMarkup = render(session.getState().pages['synthetic-empty-database']!);
 
+    const originalLocale = getPreferences().locale;
+    try {
+      for (const locale of ['en', 'pt'] as const) {
+        setPreferences({ locale });
+        const localizedMainMarkup = render(initialPage);
+        const localizedEmptyMarkup = render(session.getState().pages['synthetic-empty-database']!);
+        expect(localizedMainMarkup).toContain(
+          `aria-label="${t('database.rowSelectAll', { count: 2 }, locale)}"`,
+        );
+        expect(localizedMainMarkup).toContain(
+          `aria-label="${t('database.rowSelect', { name: 'Synthetic row one' }, locale)}"`,
+        );
+        expect(localizedMainMarkup).toContain(
+          `aria-label="${t('database.rowMenu', { name: 'Synthetic row one' }, locale)}"`,
+        );
+        expect(localizedEmptyMarkup).toContain(
+          `aria-label="${t('database.rowPasteTarget', undefined, locale)}"`,
+        );
+      }
+    } finally {
+      setPreferences({ locale: originalLocale });
+    }
+
     for (const markup of [mainMarkup, linkedMarkup]) {
       expect(markup.match(/class="db-header-info"/g)).toHaveLength(1);
       expect(markup).toContain('A synthetic description for this column.');
@@ -100,14 +125,10 @@ describe('database column descriptions', () => {
       expect(markup).toContain(`aria-describedby="${descriptionId}"`);
     }
     expect(linkedMarkup).toContain('is-linked-view');
-    expect(mainMarkup).toContain('aria-label="Selecionar todas as 2 linhas visíveis"');
-    expect(mainMarkup).toContain('aria-label="Selecionar Synthetic row one"');
-    expect(mainMarkup).toContain('aria-label="Ações de Synthetic row one"');
     expect(mainMarkup).toContain('class="db-row-drag"');
     expect(emptyMarkup).toContain('class="db-table-view"');
     expect(emptyMarkup).toContain('tabindex="0"');
     expect(emptyMarkup).toContain('role="group"');
-    expect(emptyMarkup).toContain('Tabela vazia. Pressione Ctrl+V para colar linhas copiadas.');
 
     expect(
       updateProp('synthetic-database', 'summary', (property) => ({

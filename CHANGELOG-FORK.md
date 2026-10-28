@@ -2,16 +2,40 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
-## Ainda não lançado — base Morrow 1.2.1
+## Modificações do fork 1.1.0 — base Morrow 1.2.1 (28/10/2026, ainda não lançado)
 
-- Grade de banco com foco e edição explícitos, navegação por teclado, seleção de intervalos, clipboard tipado/TSV e preenchimento por cópia ou sequência com prévia e desfazer.
-- Seleção e ações de linhas, cópia completa com mapeamento entre tabelas, movimentação e desfazer com journal recuperável. Colagem por teclado funciona também em destino vazio e no clipboard CRLF do Windows.
-- Correções de imagem: geometria e proporção do recorte, substituição imediata, proteção contra respostas assíncronas antigas e eventos dos controles isolados da seleção do editor.
-- Seletor de ícones de propriedades funciona sem depender de uma página; autocomplete conserva a segunda sugestão ao navegar e inserir por Tab/Enter.
-- Fórmulas de checkbox distinguem `false` de resultado vazio na apresentação.
-- Roteiros das entregas anteriores verificam ações, dados persistidos e reabertura com fixtures sintéticas, builds estáveis e zero erros de renderer; evidências em `docs/evidence/interaction-expansion-prior-ui.md`.
+Identificação do pacote: `1.2.1-fork.1.1.0`; base oficial: commit
+[`5e6392b`](https://github.com/hodeliun/Morrow/commit/5e6392bb6425924abd30eec8a99b42aa8c953577).
+O número da versão foi preparado localmente; nenhum instalador ou release foi
+publicado.
 
-Estas mudanças estão no código; o instalador publicado anteriormente não é atualizado automaticamente.
+### Entregas funcionais
+
+- **Entrega 1 —** [commit `f0a8146`](https://github.com/hodeliun/Morrow/commit/f0a8146): menus e painéis dentro da área visível (#26), fundos de bloco (#27), recorte e substituição de imagens (#30), seções recolhíveis (#31) e colunas de conteúdo até sete (#40).
+- **Entrega 2 —** [commit `c359e19`](https://github.com/hodeliun/Morrow/commit/c359e19): opções e filtros compactos (#28), visualizações vinculadas (#29), formatação condicional (#38) e cálculos independentes no rodapé (#39).
+- **Entrega 3 —** [commit `443f3db`](https://github.com/hodeliun/Morrow/commit/443f3db): tipos e ícones de propriedades (#37), sugestões de campos relacionados (#41), formato de resultados de fórmula (#42) e relações inversas (#43).
+- **Correções de revisão —** [commit `049de4d`](https://github.com/hodeliun/Morrow/commit/049de4d): controles de imagem, ícones de propriedades, editor de fórmulas, autocomplete e distinção de `false` em relação a resultado vazio; verificação das entregas 1–3 exercita os fluxos de interface com fixtures sintéticas.
+- **Entrega 4 —** [commit `6c79867`](https://github.com/hodeliun/Morrow/commit/6c79867): foco e edição de células, navegação por teclado, seleção/clipboard de intervalos e preenchimento com prévia e desfazer (#32–#34).
+- **Entrega 5 —** [commit `d3ee63e`](https://github.com/hodeliun/Morrow/commit/d3ee63ecdfbb8f345e8bd4b81354ecec0af7855c): seleção e operações de linhas, transferência entre tabelas com mapeamento seguro e journal recuperável (#35–#36).
+
+### Verificação local de 28/10
+
+`npm run check` passou localmente com 57 arquivos de teste e 440 testes, além de
+typecheck, lint e builds do renderer, Electron e MCP. A execução unificada final
+de UI passou nas cinco entregas e na integração sintética de #44, incluindo About
+em inglês/espanhol/português, PDF de três páginas e operações verificadas com
+1.000 linhas. Um timeout anterior da entrega 5 não se reproduziu na execução
+diagnóstica standalone nem nesta rodada; sua causa permanece indeterminada. O
+estado completo e as limitações estão em
+[`docs/evidence/interaction-expansion-final.md`](docs/evidence/interaction-expansion-final.md)
+e no JSON gerado pelo harness. Neste checkpoint pré-publicação de 28/10/2026, a
+revisão Sol aprovou a validação local de #44 sem bloqueios, e a CI ainda não havia
+sido executada após a correção local do teste de locale. O estado posterior da CI
+e o encerramento atual de #25/#44 são os registrados no GitHub; essas issues são
+a fonte autoritativa.
+
+Neste checkpoint, issues #25 e #44 estavam abertas. Este registro não afirma
+aprovação de CI; consulte as issues #25/#44 no GitHub para o estado posterior.
 
 ## Modificações do fork 1.0.1 — base Morrow 1.2.1 (27/10/2026)
 

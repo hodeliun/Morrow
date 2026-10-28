@@ -1,0 +1,842 @@
+{
+  "timestamp": "2026-10-28T08:57:25.223Z",
+  "sourceRevision": "d3ee63ecdfbb8f345e8bd4b81354ecec0af7855c",
+  "sourceHash": "26042ea846af5adddd5c6f1ca0877b71d54561fcfac549c968eaff0ecd10797e",
+  "sourceFileCount": 261,
+  "bundleFingerprint": "797e55782b2c7d2fb0a9a0bbaf4ed0986b2577bdb5222a6a094dd323a0889dfb",
+  "bundleFileCount": 3599,
+  "bundleStableAcrossAllGroups": true,
+  "sourceStableDuringRun": true,
+  "version": {
+    "officialBase": "1.2.1",
+    "officialBaseCommit": "5e6392bb6425924abd30eec8a99b42aa8c953577",
+    "fork": "1.1.0",
+    "package": "1.2.1-fork.1.1.0"
+  },
+  "groups": [
+    {
+      "group": "delivery1",
+      "script": "scripts/verify-delivery1-ui.cjs",
+      "result": "passed",
+      "exitCode": 0,
+      "processSignal": null,
+      "hiddenWindowVerified": true,
+      "zeroRendererPageErrors": true,
+      "appCloseAttempted": true,
+      "appCloseVerified": null,
+      "temporaryArtifactsRemoved": false,
+      "cleanupVerified": false,
+      "syntheticFixturesRetained": true,
+      "buildStableDuringGroup": true,
+      "failureCount": 0,
+      "evidence": "temporary-evidence:delivery1",
+      "tickets": [
+        {
+          "ticket": "#26",
+          "status": "passed",
+          "assertions": []
+        },
+        {
+          "ticket": "#27",
+          "status": "passed",
+          "assertions": [
+            [
+              "markdownMarkerSaved",
+              true
+            ],
+            [
+              "markdownRoundTrip",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#30",
+          "status": "passed",
+          "assertions": [
+            [
+              "initialCropRendered",
+              true
+            ],
+            [
+              "cropAppliedBeforeReplacement",
+              true
+            ],
+            [
+              "cropMarkdownUpdatedBeforeReplacement",
+              true
+            ],
+            [
+              "canceledReplacementKeptCrop",
+              true
+            ],
+            [
+              "replacementPreservedCaptionAndAlignment",
+              true
+            ],
+            [
+              "differentAspectRatioResetCrop",
+              true
+            ],
+            [
+              "renderedImageSourceChanged",
+              true
+            ],
+            [
+              "cropMarkdownMarkerAfterReplacement",
+              false
+            ],
+            [
+              "markdownStoresPresentation",
+              true
+            ],
+            [
+              "originalFileSha256Unchanged",
+              true
+            ],
+            [
+              "markdownCropRoundTrip",
+              false
+            ],
+            [
+              "originalImageUnchanged",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#31",
+          "status": "passed",
+          "assertions": [
+            [
+              "siblingRemainsVisible",
+              true
+            ],
+            [
+              "expandRestoresContent",
+              true
+            ],
+            [
+              "markerSaved",
+              true
+            ],
+            [
+              "reopenedStillCollapsed",
+              true
+            ],
+            [
+              "contentStillPresent",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#40",
+          "status": "passed",
+          "assertions": [
+            [
+              "partial",
+              false
+            ],
+            [
+              "createdSeventhByDrag",
+              true
+            ],
+            [
+              "createdSeventhByMenu",
+              false
+            ],
+            [
+              "rejectedEighthByDrag",
+              true
+            ],
+            [
+              "rejectedEighthByMenu",
+              false
+            ],
+            [
+              "markdownHasSevenColumns",
+              true
+            ],
+            [
+              "reopenedSevenColumns",
+              true
+            ],
+            [
+              "contentsPreserved",
+              true
+            ]
+          ]
+        }
+      ],
+      "durationMs": 22517
+    },
+    {
+      "group": "delivery2",
+      "script": "scripts/verify-delivery2-ui.cjs",
+      "result": "passed",
+      "exitCode": 0,
+      "processSignal": null,
+      "hiddenWindowVerified": true,
+      "zeroRendererPageErrors": true,
+      "appCloseAttempted": true,
+      "appCloseVerified": null,
+      "temporaryArtifactsRemoved": false,
+      "cleanupVerified": false,
+      "syntheticFixturesRetained": true,
+      "buildStableDuringGroup": true,
+      "failureCount": 0,
+      "evidence": "temporary-evidence:delivery2",
+      "tickets": [
+        {
+          "ticket": "#28",
+          "status": "passed",
+          "assertions": [
+            [
+              "resetRestoredThreeRows",
+              true
+            ],
+            [
+              "filterSectionOpened",
+              true
+            ],
+            [
+              "quickFilterRemainsTemporary",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#29",
+          "status": "passed",
+          "assertions": [
+            [
+              "searchProducedOneRowPerView",
+              true
+            ],
+            [
+              "collapsedOneViewOnly",
+              true
+            ],
+            [
+              "collapsedStateIndependent",
+              true
+            ],
+            [
+              "sourceLinkMapSaved",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#38",
+          "status": "passed",
+          "assertions": [
+            [
+              "markdownStoresRule",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#39",
+          "status": "passed",
+          "assertions": [
+            [
+              "distinctViewSummariesSaved",
+              true
+            ],
+            [
+              "configurationsIndependent",
+              true
+            ]
+          ]
+        }
+      ],
+      "durationMs": 17476
+    },
+    {
+      "group": "delivery3",
+      "script": "scripts/verify-delivery3-ui.cjs",
+      "result": "passed",
+      "exitCode": 0,
+      "processSignal": null,
+      "hiddenWindowVerified": true,
+      "zeroRendererPageErrors": true,
+      "appCloseAttempted": true,
+      "appCloseVerified": null,
+      "temporaryArtifactsRemoved": false,
+      "cleanupVerified": false,
+      "syntheticFixturesRetained": true,
+      "buildStableDuringGroup": true,
+      "failureCount": 0,
+      "evidence": "temporary-evidence:delivery3",
+      "tickets": [
+        {
+          "ticket": "#37",
+          "status": "passed",
+          "assertions": [
+            [
+              "schemaSaved",
+              true
+            ],
+            [
+              "markdownHasTypeAndIcon",
+              true
+            ],
+            [
+              "typeIsCurrencyAfterReopen",
+              true
+            ],
+            [
+              "iconRendersAfterReopen",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#41",
+          "status": "passed",
+          "assertions": [
+            [
+              "caretVerifiedForTabAndEnter",
+              true
+            ],
+            [
+              "selectedPropertyBindingPersisted",
+              true
+            ],
+            [
+              "formulaSaved",
+              true
+            ],
+            [
+              "relationPropertyBindingReopened",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#42",
+          "status": "passed",
+          "assertions": [
+            [
+              "formulaExpressionPreserved",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#43",
+          "status": "passed",
+          "assertions": [
+            [
+              "previewCountedExistingPairs",
+              true
+            ],
+            [
+              "clickedMergeAction",
+              true
+            ],
+            [
+              "ownerRelationPersisted",
+              true
+            ],
+            [
+              "targetMarkedAsInverse",
+              true
+            ],
+            [
+              "relationMetadataReopened",
+              true
+            ]
+          ]
+        }
+      ],
+      "durationMs": 18684
+    },
+    {
+      "group": "delivery4",
+      "script": "scripts/verify-delivery4-ui.cjs",
+      "result": "passed",
+      "exitCode": 0,
+      "processSignal": null,
+      "hiddenWindowVerified": true,
+      "zeroRendererPageErrors": true,
+      "appCloseAttempted": true,
+      "appCloseVerified": true,
+      "temporaryArtifactsRemoved": true,
+      "cleanupVerified": true,
+      "syntheticFixturesRetained": false,
+      "buildStableDuringGroup": true,
+      "failureCount": 0,
+      "evidence": "docs/evidence/interaction-expansion-delivery4-ui.json",
+      "tickets": [
+        {
+          "ticket": "#32",
+          "assertions": [
+            [
+              "rovingFocusVerified",
+              true
+            ],
+            [
+              "openButtonTabIndexVerified",
+              true
+            ],
+            [
+              "arrowNavigationVerified",
+              true
+            ],
+            [
+              "boundariesVerified",
+              true
+            ],
+            [
+              "tabShiftTabVerified",
+              true
+            ],
+            [
+              "enterCommitAndMoveDownVerified",
+              true
+            ],
+            [
+              "escapeCancelsDraftVerified",
+              true
+            ],
+            [
+              "multilineCommitVerified",
+              true
+            ],
+            [
+              "textareaTabCommitVerified",
+              true
+            ],
+            [
+              "checkboxDraftAndCancelVerified",
+              true
+            ],
+            [
+              "temporalDraftCancelVerified",
+              true
+            ],
+            [
+              "scaleDraftCancelAndTabCommitVerified",
+              true
+            ],
+            [
+              "urlDraftCancelAndTabCommitVerified",
+              true
+            ],
+            [
+              "pickerTriggerEscapeAndTabVerified",
+              true
+            ],
+            [
+              "selectPickerFocusVerified",
+              true
+            ],
+            [
+              "relationPickerFocusVerified",
+              true
+            ],
+            [
+              "pagePropertiesTabVerified",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#33",
+          "assertions": [
+            [
+              "rectangularSelectionVerified",
+              true
+            ],
+            [
+              "batchClearVerified",
+              true
+            ],
+            [
+              "batchUndoVerified",
+              true
+            ],
+            [
+              "copyPasteVerified",
+              true
+            ],
+            [
+              "externalClipboardWinsOverCacheVerified",
+              true
+            ],
+            [
+              "leadingZeroTextPreservedVerified",
+              true
+            ],
+            [
+              "typedClipboardAcrossViewsVerified",
+              true
+            ],
+            [
+              "readOnlyColumnProtectionVerified",
+              true
+            ],
+            [
+              "readOnlyMutationProtectionVerified",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#34",
+          "assertions": [
+            [
+              "fillHandleRenderedVerified",
+              true
+            ],
+            [
+              "fillPreviewVerified",
+              true
+            ],
+            [
+              "arithmeticSequenceVerified",
+              true
+            ],
+            [
+              "explicitFillModeVerified",
+              true
+            ],
+            [
+              "keyboardFillAlternativeVerified",
+              true
+            ],
+            [
+              "fillCancelVerified",
+              true
+            ],
+            [
+              "hiddenWindowVerified",
+              true
+            ],
+            [
+              "frozenColumnVerified",
+              true
+            ],
+            [
+              "hiddenColumnFocusRevalidationVerified",
+              true
+            ],
+            [
+              "sortedAndFilteredFocusRevalidationVerified",
+              true
+            ]
+          ]
+        }
+      ],
+      "durationMs": 17358
+    },
+    {
+      "group": "delivery5",
+      "script": "scripts/verify-delivery5-ui.cjs",
+      "result": "passed",
+      "exitCode": 0,
+      "processSignal": null,
+      "hiddenWindowVerified": true,
+      "zeroRendererPageErrors": true,
+      "appCloseAttempted": true,
+      "appCloseVerified": true,
+      "temporaryArtifactsRemoved": true,
+      "cleanupVerified": true,
+      "syntheticFixturesRetained": false,
+      "buildStableDuringGroup": true,
+      "failureCount": 0,
+      "evidence": "docs/evidence/interaction-expansion-delivery5-ui.json",
+      "tickets": [
+        {
+          "ticket": "#35",
+          "assertions": [
+            [
+              "filteredSelectionClearsWhenVisibleRowsChange",
+              true
+            ],
+            [
+              "shiftRangeSelectionVerified",
+              true
+            ],
+            [
+              "keyboardSelectAllVerified",
+              true
+            ],
+            [
+              "visibleSelectAllAndTriStateVerified",
+              true
+            ],
+            [
+              "rowMenuActionsAndKeyboardCloseVerified",
+              true
+            ],
+            [
+              "insertBeforeAfterAndUndoVerified",
+              true
+            ],
+            [
+              "recoveryJournalReadyBeforeNextActionVerified",
+              true
+            ],
+            [
+              "manualReorderVerified",
+              true
+            ],
+            [
+              "duplicatePreservesRowsAndUndoVerified",
+              true
+            ],
+            [
+              "trashWarningCountsNestedRowsAndEscapeCancels",
+              true
+            ],
+            [
+              "dialogFocusReturnsToMenuTrigger",
+              true
+            ],
+            [
+              "keyboardTrashConfirmAndUndoVerified",
+              true
+            ],
+            [
+              "deleteDialogFocusContainmentVerified",
+              true
+            ],
+            [
+              "lastVisibleRowDeletionMovesFocusToTable",
+              true
+            ]
+          ]
+        },
+        {
+          "ticket": "#36",
+          "assertions": [
+            [
+              "cellClipboardRemainsDistinct",
+              true
+            ],
+            [
+              "fullRowClipboardVerified",
+              true
+            ],
+            [
+              "keyboardPasteIgnoredFromPortaledPropertyPopoverVerified",
+              true
+            ],
+            [
+              "destinationChangeRecomputesMappings",
+              true
+            ],
+            [
+              "emptyDestinationDefaultPreviewVerified",
+              true
+            ],
+            [
+              "mappingCancelAndFocusRestoreVerified",
+              true
+            ],
+            [
+              "dialogTabContainmentVerified",
+              true
+            ],
+            [
+              "keyboardConfirmVerified",
+              true
+            ],
+            [
+              "keyboardPasteWithoutDestinationSelectionVerified",
+              true
+            ],
+            [
+              "keyboardPasteIntoEmptyTableVerified",
+              true
+            ],
+            [
+              "sameTablePasteCreatesFreshIdsAndUndoVerified",
+              true
+            ],
+            [
+              "copyToEmptyAndPersistenceVerified",
+              true
+            ],
+            [
+              "copiedContentAndUnmappedFrontmatterVerified",
+              true
+            ],
+            [
+              "newIdsVerified",
+              true
+            ],
+            [
+              "reopenPersistenceVerified",
+              true
+            ],
+            [
+              "movePreservesSourceAndUndoVerified",
+              true
+            ]
+          ]
+        }
+      ],
+      "durationMs": 16476
+    }
+  ],
+  "integratedUi": {
+    "result": "passed",
+    "profile": "synthetic-only",
+    "hiddenWindowVerified": true,
+    "pageErrors": [],
+    "aboutVersions": [
+      {
+        "locale": "en",
+        "aboutHeading": "About",
+        "aboutText": "Morrow base 1.2.1 Fork changes 1.1.0 Upstream revision 5e6392b Package 1.2.1-fork.1.1.0 Free and open source under the Apache License 2.0.",
+        "rendererVersion": "1.2.1-fork.1.1.0",
+        "settingsTitle": "Settings"
+      },
+      {
+        "locale": "es",
+        "aboutHeading": "Acerca de",
+        "aboutText": "Base Morrow 1.2.1 Cambios del fork 1.1.0 Revisión oficial 5e6392b Paquete 1.2.1-fork.1.1.0 Libre y de código abierto bajo la Licencia Apache 2.0.",
+        "rendererVersion": "1.2.1-fork.1.1.0",
+        "settingsTitle": "Ajustes"
+      },
+      {
+        "locale": "pt",
+        "aboutHeading": "Sobre",
+        "aboutText": "Base Morrow 1.2.1 Modificações do fork 1.1.0 Revisão oficial 5e6392b Pacote 1.2.1-fork.1.1.0 Gratuito e de código aberto sob a Licença Apache 2.0.",
+        "rendererVersion": "1.2.1-fork.1.1.0",
+        "settingsTitle": "Configurações"
+      }
+    ],
+    "integratedPage": {
+      "columns": 7,
+      "image": {
+        "complete": true,
+        "naturalWidth": 400,
+        "naturalHeight": 200,
+        "alt": "Imagem integrada sintética"
+      },
+      "sectionUndo": "text edit was undone through the editor shortcut",
+      "collapsedHeading": true,
+      "linkedViews": [
+        {
+          "name": "Visão independente Alfa",
+          "search": "Alfa"
+        },
+        {
+          "name": "Visão independente Beta",
+          "search": "Beta"
+        }
+      ],
+      "independentlyFilteredRows": [
+        "Alfa\n\t\n100\n\t\nInfra",
+        "Beta\n\t\n200\n\t\nDados"
+      ],
+      "markdownPersisted": true
+    },
+    "reopenedIntegratedPage": {
+      "columns": 7,
+      "image": {
+        "complete": true,
+        "naturalWidth": 400,
+        "naturalHeight": 200,
+        "alt": "Imagem integrada sintética"
+      },
+      "collapsedHeading": true,
+      "linkedViews": [
+        {
+          "name": "Visão independente Alfa",
+          "search": "Alfa"
+        },
+        {
+          "name": "Visão independente Beta",
+          "search": "Beta"
+        }
+      ],
+      "independentlyFilteredRows": [
+        "Alfa\n\t\n100\n\t\nInfra",
+        "Beta\n\t\n200\n\t\nDados"
+      ],
+      "reopened": true
+    },
+    "pdf": {
+      "result": "passed",
+      "signature": "%PDF",
+      "bytes": 211390,
+      "pages": 3,
+      "embeddedImages": 1,
+      "extractedTextChecks": {
+        "Interface integrada": true,
+        "Seção recolhível": true,
+        "Coluna sintética 1": true,
+        "Coluna sintética 7": true,
+        "Legenda integrada sintética": true,
+        "Visão independente Alfa": true,
+        "Visão independente Beta": true
+      },
+      "textExtractor": "pdfplumber extract_text(layout=True) with whitespace normalization",
+      "pypdfTextLength": 1180,
+      "pythonStdoutEncoding": "cp1252",
+      "previewPages": [
+        "docs/evidence/interaction-expansion-final-page1.png",
+        "docs/evidence/interaction-expansion-final-page2.png",
+        "docs/evidence/interaction-expansion-final-page3.png"
+      ]
+    },
+    "scale": {
+      "renderedRows": 1000,
+      "selectableAmountCells": 1000,
+      "operation": {
+        "kind": "clipboard TSV paste",
+        "cells": 1000,
+        "observedMs": 212
+      },
+      "limitAttempt": {
+        "cells": 1001,
+        "rejected": true,
+        "error": "Clipboard action exceeds the 1,000-cell limit.",
+        "rowsAfter": 1000
+      },
+      "allCellsPersisted": true,
+      "undoRestoredInitialValues": true,
+      "redoRestoredFinalValues": true,
+      "persistenceVerifiedAfterFinalRedo": true,
+      "valuesAfterReopenExpected": {
+        "first": 1,
+        "middle": 500,
+        "last": 1000
+      }
+    },
+    "timings": {
+      "firstLaunchReadyMs": 746,
+      "reopenPageAndExportMs": 3376,
+      "render1000RowsMs": 659,
+      "filterToOneRowMs": 494,
+      "select1000CellsMs": 536,
+      "persistFirst1000CellsMs": 13008,
+      "undo1000CellsMs": 223,
+      "persistUndo1000CellsMs": 11856,
+      "redo1000CellsMs": 256,
+      "persistFinal1000CellsMs": 11864,
+      "reject1001CellsMs": 233,
+      "reopen1000RowsAndValuesMs": 1434
+    },
+    "launchCount": 3,
+    "appCloseVerified": true,
+    "tempRootRemovedVerified": true,
+    "integratedFixtureCleanupVerified": true
+  },
+  "cleanup": {
+    "integratedFixtureCleanupVerified": true,
+    "appCloseAttemptedInPriorGroups": true,
+    "appCloseVerifiedForEveryGroup": false,
+    "priorSyntheticFixturesRetained": true,
+    "temporaryArtifactsRemovedForEveryGroup": false
+  },
+  "overall": "passed"
+}
