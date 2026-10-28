@@ -1,0 +1,298 @@
+{
+  "auditDate": "2026-10-28",
+  "auditStatus": "complete",
+  "completionMeaning": "All 20 scope items were assessed. Partial means at least one requested behavior failed or remains unverified.",
+  "scopeSource": {
+    "description": "Private original scope note, summarized without copying its contents or attachments.",
+    "sourceNoteCopied": false
+  },
+  "project": {
+    "head": "46784d6",
+    "packageVersion": "1.2.1-fork.1.1.0",
+    "compiledBuildFingerprint": "36a8b4fb53eeab87e9af9ba520b02084e8381daa9c9661e628fec20511948b77",
+    "compiledBuildStableDuringUiRuns": true
+  },
+  "execution": {
+    "syntheticDataOnly": true,
+    "hiddenWindowsVerified": true,
+    "visibleWindowCountMax": 0,
+    "productFilesChanged": false,
+    "runGroups": [
+      {
+        "name": "delivery1",
+        "script": "scripts/verify-prior-deliveries-ui.cjs",
+        "status": "passed",
+        "tickets": { "#26": "passed", "#27": "passed", "#30": "passed", "#31": "passed", "#40": "passed" }
+      },
+      {
+        "name": "delivery2",
+        "script": "scripts/verify-prior-deliveries-ui.cjs",
+        "runAt": "2026-10-28T14:18:43.403Z",
+        "status": "passed",
+        "tickets": { "#28": "passed", "#29": "passed", "#38": "passed", "#39": "passed" },
+        "rendererPageErrors": []
+      },
+      {
+        "name": "delivery3",
+        "script": "scripts/verify-prior-deliveries-ui.cjs",
+        "status": "passed",
+        "tickets": { "#37": "passed", "#41": "passed", "#42": "passed", "#43": "passed" },
+        "rendererPageErrors": []
+      },
+      {
+        "name": "delivery4",
+        "script": "scripts/verify-delivery4-ui.cjs",
+        "status": "passed",
+        "tickets": { "#32": "passed", "#33": "passed", "#34": "passed" },
+        "coverage": "Keyboard navigation/editing, Shift+arrow rectangular selection, Delete clear, clipboard, and vertical fill sequence."
+      },
+      {
+        "name": "delivery5 diagnostic",
+        "script": "scripts/verify-delivery5-ui.cjs",
+        "status": "partial",
+        "tickets": { "#35": "not passed: insert-after row-count assertion failed after insert-before undo" },
+        "note": "Checks before the failure were observed, but the ticket is not counted as a pass."
+      }
+    ],
+    "focusedRuns": [
+      {
+        "name": "page scope",
+        "evidence": "docs/evidence/original-scope-pages-2026-10-28.json",
+        "status": "completed",
+        "items": [1, 3, 4, 5, 13],
+        "buildUnchanged": true,
+        "hiddenWindowsVerified": true
+      },
+      {
+        "name": "items 7-12 and 15",
+        "script": "scripts/verify-original-scope-2026-10.cjs",
+        "runAt": "2026-10-28T14:59:40.613Z",
+        "hiddenWindowsVerified": true,
+        "buildUnchanged": true,
+        "items": [7, 8, 9, 10, 11, 12, 15],
+        "rendererPageErrors": [
+          {
+            "item": 9,
+            "stage": "linked-view-collapse",
+            "message": "Selection passed to setSelection must point at the current document"
+          }
+        ]
+      },
+      {
+        "name": "items 16-20",
+        "script": "scripts/verify-original-scope-2026-10.cjs delivery3",
+        "runAt": "2026-10-28T15:02:51.429Z",
+        "hiddenWindowsVerified": true,
+        "buildUnchanged": true,
+        "rendererPageErrors": [],
+        "caseFailures": []
+      },
+      {
+        "name": "horizontal fill and Backspace range clear",
+        "script": "scripts/verify-original-scope-2026-10.cjs item6-14",
+        "runAt": "2026-10-28T15:10:27.826Z",
+        "fixture": "fresh copy of synthetic delivery2 ticket-39 data with a second numeric column",
+        "hiddenWindowsVerified": true,
+        "buildUnchanged": true,
+        "rendererPageErrors": [],
+        "caseFailures": [],
+        "checks": {
+          "item6HorizontalFill": "pass: dragged 100 into the adjacent numeric cell, left other rows unchanged, then undo restored the empty column",
+          "item14Backspace": "pass: Backspace cleared two Shift+Arrow-selected cells, left the third row and row count unchanged, and undo restored values"
+        }
+      },
+      {
+        "name": "mouse range selection, Delete, and undo",
+        "script": "scripts/verify-original-scope-2026-10.cjs item14-mouse-range",
+        "runAt": "2026-10-28T15:19:47.552Z",
+        "fixture": "same retained synthetic fixture, seeded with two populated numeric columns",
+        "hiddenWindowsVerified": true,
+        "buildUnchanged": true,
+        "rendererPageErrors": [],
+        "outcome": "pass",
+        "checks": {
+          "selectedCells": [
+            { "property": "amount", "rowIndex": 0 },
+            { "property": "amount2", "rowIndex": 0 },
+            { "property": "amount", "rowIndex": 1 },
+            { "property": "amount2", "rowIndex": 1 }
+          ],
+          "selectedCount": 4,
+          "deleteClearedSelectedFourAndKeptRows": true,
+          "undoRestoredFourValues": true
+        },
+        "initialAttempt": "At 15:14 the range also selected four cells, but a row-label extraction returned blanks and stopped before Delete. The selector was corrected to use row indices for this successful focused rerun.",
+        "screenshots": [
+          "docs/evidence/original-scope-audit-2026-10-28/item-14-mouse-range-selected.png",
+          "docs/evidence/original-scope-audit-2026-10-28/item-14-mouse-range-deleted.png"
+        ]
+      },
+      {
+        "name": "canonical inline versus linked item 11 comparison",
+        "evidence": "docs/evidence/original-scope-inline-2026-10-28.json",
+        "runAt": "2026-10-28T15:18:51.188Z",
+        "fixture": "fresh synthetic fixture with a canonical [[Financeiro]] embed and two linked views using identical configuration",
+        "sameViewport": true,
+        "viewport": "1600×1000",
+        "sameTableWidth": true,
+        "tableWidths": { "inline": 774, "linked": 774 },
+        "computedTableCellStylesMatch": false,
+        "findings": [
+          "Inline body font is 13.5px with automatic table layout; linked body font is 12.15px with fixed layout.",
+          "Inline header and body cells are transparent; linked header uses rgba(20,20,30,0.05) and linked body cells are white.",
+          "Header and body cell border styles differ."
+        ],
+        "hiddenWindowsVerified": true,
+        "buildUnchanged": true,
+        "rendererPageErrors": [],
+        "status": "partial",
+        "screenshot": "docs/evidence/original-scope-inline-2026-10-28/inline-item11-side-by-side.png"
+      }
+    ],
+    "pendingEvidence": [],
+    "summary": { "pass": 12, "partial": 8, "fail": 0 }
+  },
+  "items": [
+    {
+      "number": 1,
+      "title": "Block color samples and custom HEX",
+      "status": "pass",
+      "findings": ["The standard color samples matched their applied block colors.", "A custom HEX color applied and persisted after reopening."],
+      "evidence": ["docs/evidence/original-scope-pages-2026-10-28/page-item01-palette-menu.png", "docs/evidence/original-scope-pages-2026-10-28/page-item01-custom-hex-applied.png"]
+    },
+    {
+      "number": 2,
+      "title": "Compact filter bar",
+      "status": "pass",
+      "qualification": "Functional behavior passed; compactness has limited visual evidence and was not stress-tested with multiple filters in a narrow window. This is not a reproduced product defect.",
+      "findings": ["Delivery2 ticket #28 applied a temporary filter, verified the matching rows, reset it, and opened the filter section from the options panel.", "The compactness judgment is qualified because the run did not capture a dedicated geometry comparison."],
+      "evidence": ["Fresh runGroup delivery2, ticket #28."]
+    },
+    {
+      "number": 3,
+      "title": "Image context menu and actions",
+      "status": "pass",
+      "findings": ["Right-click opened the image menu with replace, caption, three alignments, and crop.", "Alignment, caption, crop, canceled replacement, applied replacement, and reopened presentation were checked."],
+      "evidence": ["docs/evidence/original-scope-pages-2026-10-28/page-item03-right-click-menu.png", "docs/evidence/original-scope-pages-2026-10-28/page-item03-crop-overlay.png", "docs/evidence/original-scope-pages-2026-10-28/page-item03-replacement-applied.png"]
+    },
+    {
+      "number": 4,
+      "title": "Full-width layout and menu behavior",
+      "status": "partial",
+      "findings": ["Full width and unclipped menu geometry passed at 1600×1000 and 800×600.", "The property settings popover overlapped the icon picker and blocked controls in a reproduced scenario. This is the main reason item 4 remains partial; the same scenario is recorded under item 20.", "As an additional usability observation, Escape closed the style panel and restored focus, but the page options menu remained open."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-20-icon-upload.png", "docs/evidence/original-scope-audit-2026-10-28/item-20-icon-picker-overlay.png", "docs/evidence/original-scope-pages-2026-10-28/page-item04-style-panel-1600x1000.png", "docs/evidence/original-scope-pages-2026-10-28/page-item04-edge-menu-800x600.png", "docs/evidence/original-scope-pages-2026-10-28/page-item04-menu-remains-after-escape-800x600.png"]
+    },
+    {
+      "number": 5,
+      "title": "Hierarchical collapsible headings",
+      "status": "pass",
+      "findings": ["Collapse is opt-in; the control appears only on enabled headings.", "Nested content hides within its section, following sections remain visible, disabling restores content, and collapsed state persisted after reopening."],
+      "evidence": ["docs/evidence/original-scope-pages-2026-10-28/page-item05-collapsed-heading.png", "docs/evidence/original-scope-pages-2026-10-28/page-item-reopened-state.png"]
+    },
+    {
+      "number": 6,
+      "title": "Table keyboard, clipboard, and fill interactions",
+      "status": "pass",
+      "findings": ["Delivery4 covered keyboard navigation and editing, Enter/Tab behavior, cell selection, clipboard, Shift+arrow selection, and vertical fill.", "A focused hidden-UI check dragged the fill handle horizontally from 100 into an adjacent numeric column, verified other rows stayed unchanged, and confirmed undo restored the empty destination."],
+      "evidence": ["Fresh delivery4 run, tickets #32–34.", "docs/evidence/original-scope-audit-2026-10-28/item-06-horizontal-fill-preview.png", "Focused run at 2026-10-28T15:10:27.826Z."]
+    },
+    {
+      "number": 7,
+      "title": "Edit column menu action",
+      "status": "pass",
+      "findings": ["The rendered column menu contains the short label ‘Editar coluna’; selecting it opens column settings."],
+      "evidence": ["Focused UI result in docs/evidence/original-scope-audit-2026-10-28.json; see item 7 check in the authorized verification script."]
+    },
+    {
+      "number": 8,
+      "title": "Conditional formatting color and formula preview",
+      "status": "pass",
+      "findings": ["Nine color samples rendered, custom HEX preview matched #3157C8, and formula Valor >= 200 colored only matching values after reopen."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-08-conditional-swatches.png", "Fresh delivery2 run, ticket #38."]
+    },
+    {
+      "number": 9,
+      "title": "Collapse linked views and hide title",
+      "status": "partial",
+      "findings": ["A linked view collapses and expands.", "Enabling Hide title still leaves the source title Financeiro visible.", "The collapse/expand cycle produced a renderer error: Selection passed to setSelection must point at the current document."],
+      "evidence": ["Focused UI run at 2026-10-28T14:59:40.613Z; linked collapse/hide-title result is recorded here and the renderer error is captured in execution.focusedRuns."]
+    },
+    {
+      "number": 10,
+      "title": "Right-side table options and linked views",
+      "status": "partial",
+      "findings": ["The options panel shows filtering, sorting, layout, properties, calculation, conditional formatting, hide-title/collapse toggles, and two linked views.", "All four user-defined properties appear in the list; the implicit title column does not.", "The toolbar still has six direct controls plus Options, seven buttons total."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-10-options-panel.png"]
+    },
+    {
+      "number": 11,
+      "title": "Linked-view appearance and independent rename",
+      "status": "partial",
+      "findings": ["Renaming one linked view left its sibling and source title unchanged and persisted after reopening.", "A canonical inline [[Financeiro]] embed and linked view with identical view configuration and 774px table width were compared at the same 1600×1000 viewport.", "Styles differ: inline table/body text is 13.5px with automatic layout versus 12.15px and fixed layout for linked; header/body backgrounds and borders also differ."],
+      "evidence": ["docs/evidence/original-scope-inline-2026-10-28.json", "docs/evidence/original-scope-inline-2026-10-28/inline-item11-side-by-side.png"]
+    },
+    {
+      "number": 12,
+      "title": "Summary footer alignment and independent calculations",
+      "status": "partial",
+      "findings": ["Independent summaries persisted: primary sum 600 and count 3; review maximum 300.", "Unset cells show Calcular.", "The body value 100 is left aligned while the footer maximum 300 is right aligned; the footer is not aligned to the body column. Hover-only discretion was not established."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-12-summary-footer.png", "Fresh delivery2 run, ticket #39."]
+    },
+    {
+      "number": 13,
+      "title": "Seven-column layout and drag insertion",
+      "status": "pass",
+      "findings": ["An external paragraph dragged into an existing six-column group created a seventh column with a visible insertion indicator and persisted after reopening.", "A separate attempt to create an eighth column was rejected with the seven-column limit message."],
+      "evidence": ["docs/evidence/original-scope-pages-2026-10-28/page-item13-existing-column-drop-indicator.png", "docs/evidence/original-scope-pages-2026-10-28/page-item13-existing-column-reopened.png", "docs/evidence/original-scope-pages-2026-10-28/page-item13-seven-columns-limit.png"]
+    },
+    {
+      "number": 14,
+      "title": "Mouse/keyboard range selection and Backspace/Delete clearing",
+      "status": "pass",
+      "findings": ["Shift+arrow rectangular selection, Delete clearing, and undo passed in delivery4.", "A focused check selected two cells with Shift+Arrow, cleared them with Backspace, kept the third row and row count unchanged, and restored values with undo.", "A mouse drag selected the intended 2×2 range across two numeric columns; Delete cleared all four cells without removing rows, and undo restored all four values."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-14-backspace-range.png", "docs/evidence/original-scope-audit-2026-10-28/item-14-mouse-range-selected.png", "docs/evidence/original-scope-audit-2026-10-28/item-14-mouse-range-deleted.png", "Fresh delivery4 run, ticket #33."]
+    },
+    {
+      "number": 15,
+      "title": "Row handle, row actions, and select-all",
+      "status": "partial",
+      "findings": ["Clicking or right-clicking the six-dot row handle neither selects the row nor opens its menu.", "Checkbox selection and select-all/deselect-all work; the separate More menu shows eight row actions."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-15-row-handle.png"]
+    },
+    {
+      "number": 16,
+      "title": "Property-type search and icons",
+      "status": "pass",
+      "findings": ["Search for number returns Número; search for Número returns Telefone and Número.", "All 25 property types display representative icons to the left of their names."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-16-number-alias.png"]
+    },
+    {
+      "number": 17,
+      "title": "Formula relation tokens and suggestions",
+      "status": "pass",
+      "findings": ["Relation tokens have a rounded outline and distinct color; related-field suggestions appear.", "Tab inserts the selected reference, its binding persists after reopen, and the panel stays inside the viewport."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-17-formula-token.png", "docs/evidence/original-scope-audit-2026-10-28/item-17-formula-suggestions.png"]
+    },
+    {
+      "number": 18,
+      "title": "Number formatting for formula results",
+      "status": "pass",
+      "findings": ["All seven applicable number display controls matched between Formula→Number and a standard Number property; manual-fill controls were excluded."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-18-number-formula-format.png"]
+    },
+    {
+      "number": 19,
+      "title": "Create or link inverse relation",
+      "status": "partial",
+      "findings": ["Linking an existing inverse relation, merging its union, and persisting after reopen passed under delivery3 ticket #43.", "Creating a new inverse from a clean source relation failed with toast ‘Both properties must be relation properties.’; no inverse property or reciprocal metadata was saved."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-19-inverse-create.png", "Fresh delivery3 run, ticket #43."]
+    },
+    {
+      "number": 20,
+      "title": "Default and uploaded property icons",
+      "status": "partial",
+      "findings": ["Representative type icons are present; a custom PNG upload saved and rendered after reopening.", "The PNG displays at 200×400px against an expected 14px column icon size.", "One earlier run found the upload control covered by the Description field; the later run hit the upload control with the pointer."],
+      "evidence": ["docs/evidence/original-scope-audit-2026-10-28/item-20-icon-upload.png", "docs/evidence/original-scope-audit-2026-10-28/item-20-icon-picker-overlay.png"]
+    }
+  ]
+}

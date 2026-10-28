@@ -1,0 +1,1146 @@
+{
+  "audit": "Focused original item 11 inline database versus linked view visual comparison",
+  "startedAt": "2026-10-28T15:18:51.188Z",
+  "projectHead": "46784d6",
+  "syntheticDataOnly": true,
+  "scope": "Only item 11 visual comparison; no product code changes, clipboard interaction, OS dialog, build, or suite run.",
+  "fixture": {
+    "source": "Fresh copy of delivery1 ticket #30 synthetic vault",
+    "sourcePath": "morrow-delivery1-ui-c9C3eD/ticket-30",
+    "fixtureRoot": "morrow-inline-item11-6Ipn5c",
+    "interfaceMarkdown": "# Interface sintética\n\n![[Financeiro]]",
+    "canonicalWikiEmbedPresent": true,
+    "inlineEmbedTargetId": "finance-db",
+    "linkedViewCount": 2,
+    "linkedViewNames": [
+      "Comparação Alfa",
+      "Comparação Beta"
+    ],
+    "linkedViewConfigMatchesEmbeddedPrimary": true,
+    "viewConfig": {
+      "embeddedPrimary": {
+        "id": "finance-main",
+        "name": "Principal",
+        "type": "table",
+        "filters": [],
+        "sorts": [],
+        "groupBy": null,
+        "dateProp": null,
+        "hidden": [],
+        "widths": {
+          "title": 190,
+          "amount": 130,
+          "due": 130,
+          "done": 90,
+          "category": 130
+        },
+        "summaries": {}
+      },
+      "linkedViews": [
+        {
+          "id": "inline-compare-a-view",
+          "name": "Comparação Alfa",
+          "type": "table",
+          "filters": [],
+          "sorts": [],
+          "groupBy": null,
+          "dateProp": null,
+          "hidden": [],
+          "widths": {
+            "title": 190,
+            "amount": 130,
+            "due": 130,
+            "done": 90,
+            "category": 130
+          },
+          "summaries": {}
+        },
+        {
+          "id": "inline-compare-b-view",
+          "name": "Comparação Beta",
+          "type": "table",
+          "filters": [],
+          "sorts": [],
+          "groupBy": null,
+          "dateProp": null,
+          "hidden": [],
+          "widths": {
+            "title": 190,
+            "amount": 130,
+            "due": 130,
+            "done": 90,
+            "category": 130
+          },
+          "summaries": {}
+        }
+      ]
+    },
+    "embedResolution": {
+      "linkFound": true,
+      "linkAttributes": {
+        "class": "page-link is-embed",
+        "contenteditable": "false",
+        "href": "#/page/finance-db",
+        "data-page-id": "finance-db",
+        "title": "Abrir Financeiro"
+      },
+      "linkText": "Financeiro",
+      "wrapperClass": "page-embed is-live",
+      "embedBodyClass": "page-embed-body",
+      "inlineDatabaseFound": true
+    }
+  },
+  "execution": {
+    "mode": "Hidden Electron with synthetic fixture",
+    "hiddenWindowsVerified": true,
+    "visibleWindowChecks": [
+      {
+        "stage": "launch",
+        "visible": 0
+      },
+      {
+        "stage": "viewport:1600x1000",
+        "visible": 0
+      },
+      {
+        "stage": "inline-database-captured",
+        "visible": 0
+      },
+      {
+        "stage": "linked-database-captured",
+        "visible": 0
+      },
+      {
+        "stage": "close",
+        "visible": 0
+      }
+    ],
+    "visibleWindowCountMax": 0,
+    "rendererPageErrors": [],
+    "screenshots": [
+      "docs/evidence/original-scope-inline-2026-10-28/inline-item11-embedded-view.png",
+      "docs/evidence/original-scope-inline-2026-10-28/inline-item11-embedded-page.png",
+      "docs/evidence/original-scope-inline-2026-10-28/inline-item11-linked-view.png",
+      "docs/evidence/original-scope-inline-2026-10-28/inline-item11-linked-page.png",
+      "docs/evidence/original-scope-inline-2026-10-28/inline-item11-side-by-side.png"
+    ],
+    "buildBefore": {
+      "mainMtime": "2026-10-28T08:29:07.792Z",
+      "rendererIndexMtime": "2026-10-28T08:29:07.357Z",
+      "rendererAssetCount": 197,
+      "rendererAssetManifestSha256": "36a8b4fb53eeab87e9af9ba520b02084e8381daa9c9661e628fec20511948b77"
+    },
+    "buildAfter": {
+      "mainMtime": "2026-10-28T08:29:07.792Z",
+      "rendererIndexMtime": "2026-10-28T08:29:07.357Z",
+      "rendererAssetCount": 197,
+      "rendererAssetManifestSha256": "36a8b4fb53eeab87e9af9ba520b02084e8381daa9c9661e628fec20511948b77"
+    },
+    "buildUnchanged": true
+  },
+  "status": "partial",
+  "comparison": {
+    "sameViewport": true,
+    "sameTableWidth": true,
+    "inlineTableWidth": 774,
+    "linkedTableWidth": 774,
+    "inline": {
+      "viewport": {
+        "width": 1600,
+        "height": 1000,
+        "devicePixelRatio": 1
+      },
+      "wrapper": {
+        "tag": "div",
+        "className": "inline-database",
+        "display": "block",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "16px",
+          "weight": "400",
+          "lineHeight": "26.88px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 405,
+          "width": 720,
+          "height": 445
+        }
+      },
+      "pageEmbedShell": {
+        "tag": "span",
+        "className": "page-embed is-live",
+        "display": "block",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "16px",
+          "weight": "400",
+          "lineHeight": "26.88px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "16px",
+          "right": "0px",
+          "bottom": "16px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 405,
+          "width": 720,
+          "height": 445
+        }
+      },
+      "database": {
+        "tag": "section",
+        "className": "database",
+        "display": "block",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "13.5px",
+          "weight": "400",
+          "lineHeight": "22.68px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "8px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 447,
+          "width": 720,
+          "height": 402
+        }
+      },
+      "table": {
+        "tag": "table",
+        "className": "db-table is-filled",
+        "display": "table",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "13.5px",
+          "weight": "400",
+          "lineHeight": "22.68px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 567,
+          "width": 774,
+          "height": 174
+        }
+      },
+      "headerCell": {
+        "tag": "th",
+        "className": "db-row-controls db-row-controls-header",
+        "display": "table-cell",
+        "color": "rgb(91, 91, 95)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.5px",
+          "weight": "500",
+          "lineHeight": "21px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(91, 91, 95)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(91, 91, 95)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "8px",
+          "bottom": "0px",
+          "left": "8px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "center",
+        "verticalAlign": "middle",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 567,
+          "width": 80,
+          "height": 34
+        }
+      },
+      "bodyCell": {
+        "tag": "td",
+        "className": "db-row-controls",
+        "display": "table-cell",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "13.5px",
+          "weight": "400",
+          "lineHeight": "22.68px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "center",
+        "verticalAlign": "middle",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 601,
+          "width": 80,
+          "height": 35
+        }
+      },
+      "headers": [
+        "",
+        "Nome",
+        "Valor",
+        "Vencimento",
+        "Concluído",
+        "Categoria",
+        ""
+      ],
+      "rows": [
+        [
+          "",
+          "Alfa",
+          "100",
+          "2 de nov. de 2026",
+          "",
+          "Infra",
+          ""
+        ],
+        [
+          "",
+          "Beta",
+          "200",
+          "12 de nov. de 2026",
+          "",
+          "Desenvolvimento",
+          ""
+        ],
+        [
+          "",
+          "Gama",
+          "300",
+          "22 de nov. de 2026",
+          "",
+          "Infra",
+          ""
+        ]
+      ]
+    },
+    "linked": {
+      "viewport": {
+        "width": 1600,
+        "height": 1000,
+        "devicePixelRatio": 1
+      },
+      "wrapper": {
+        "tag": "section",
+        "className": "linked-database-view",
+        "display": "block",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "16px",
+          "weight": "400",
+          "lineHeight": "26.88px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 369,
+          "width": 720,
+          "height": 415
+        }
+      },
+      "pageEmbedShell": null,
+      "database": {
+        "tag": "section",
+        "className": "database is-linked-view",
+        "display": "block",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "13.5px",
+          "weight": "400",
+          "lineHeight": "22.68px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "auto",
+        "box": {
+          "x": 567,
+          "y": 421,
+          "width": 720,
+          "height": 363
+        }
+      },
+      "table": {
+        "tag": "table",
+        "className": "db-table is-filled",
+        "display": "table",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.15px",
+          "weight": "400",
+          "lineHeight": "18.225px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "start",
+        "verticalAlign": "baseline",
+        "tableLayout": "fixed",
+        "box": {
+          "x": 567,
+          "y": 540,
+          "width": 774,
+          "height": 174
+        }
+      },
+      "headerCell": {
+        "tag": "th",
+        "className": "db-row-controls db-row-controls-header",
+        "display": "table-cell",
+        "color": "rgb(91, 91, 95)",
+        "backgroundColor": "rgba(20, 20, 30, 0.05)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.5px",
+          "weight": "500",
+          "lineHeight": "18.75px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "8px",
+          "bottom": "0px",
+          "left": "8px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "center",
+        "verticalAlign": "middle",
+        "tableLayout": "auto",
+        "box": {
+          "x": 568,
+          "y": 541,
+          "width": 68,
+          "height": 34
+        }
+      },
+      "bodyCell": {
+        "tag": "td",
+        "className": "db-row-controls",
+        "display": "table-cell",
+        "color": "rgb(29, 29, 31)",
+        "backgroundColor": "rgb(255, 255, 255)",
+        "font": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.15px",
+          "weight": "400",
+          "lineHeight": "18.225px",
+          "letterSpacing": "normal"
+        },
+        "border": {
+          "top": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          }
+        },
+        "borderRadius": "0px",
+        "padding": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "margin": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "textAlign": "center",
+        "verticalAlign": "middle",
+        "tableLayout": "auto",
+        "box": {
+          "x": 568,
+          "y": 575,
+          "width": 68,
+          "height": 35
+        }
+      },
+      "headers": [
+        "",
+        "Nome",
+        "Valor",
+        "Vencimento",
+        "Concluído",
+        "Categoria",
+        ""
+      ],
+      "rows": [
+        [
+          "",
+          "Alfa",
+          "100",
+          "2 de nov. de 2026",
+          "",
+          "Infra",
+          ""
+        ],
+        [
+          "",
+          "Beta",
+          "200",
+          "12 de nov. de 2026",
+          "",
+          "Desenvolvimento",
+          ""
+        ],
+        [
+          "",
+          "Gama",
+          "300",
+          "22 de nov. de 2026",
+          "",
+          "Infra",
+          ""
+        ]
+      ]
+    },
+    "sameViewConfig": true,
+    "canonicalEmbedPersistedAfterRender": true,
+    "tableContentMatches": true,
+    "computedStyleMismatches": [
+      {
+        "node": "pageEmbedShell",
+        "field": "display",
+        "inline": "block",
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "color",
+        "inline": "rgb(29, 29, 31)",
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "backgroundColor",
+        "inline": "rgba(0, 0, 0, 0)",
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "font",
+        "inline": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "16px",
+          "weight": "400",
+          "lineHeight": "26.88px",
+          "letterSpacing": "normal"
+        },
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "border",
+        "inline": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "bottom": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "borderRadius",
+        "inline": "0px",
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "padding",
+        "inline": {
+          "top": "0px",
+          "right": "0px",
+          "bottom": "0px",
+          "left": "0px"
+        },
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "textAlign",
+        "inline": "start",
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "verticalAlign",
+        "inline": "baseline",
+        "linked": null
+      },
+      {
+        "node": "pageEmbedShell",
+        "field": "tableLayout",
+        "inline": "auto",
+        "linked": null
+      },
+      {
+        "node": "table",
+        "field": "font",
+        "inline": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "13.5px",
+          "weight": "400",
+          "lineHeight": "22.68px",
+          "letterSpacing": "normal"
+        },
+        "linked": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.15px",
+          "weight": "400",
+          "lineHeight": "18.225px",
+          "letterSpacing": "normal"
+        }
+      },
+      {
+        "node": "table",
+        "field": "tableLayout",
+        "inline": "auto",
+        "linked": "fixed"
+      },
+      {
+        "node": "headerCell",
+        "field": "backgroundColor",
+        "inline": "rgba(0, 0, 0, 0)",
+        "linked": "rgba(20, 20, 30, 0.05)"
+      },
+      {
+        "node": "headerCell",
+        "field": "font",
+        "inline": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.5px",
+          "weight": "500",
+          "lineHeight": "21px",
+          "letterSpacing": "normal"
+        },
+        "linked": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.5px",
+          "weight": "500",
+          "lineHeight": "18.75px",
+          "letterSpacing": "normal"
+        }
+      },
+      {
+        "node": "headerCell",
+        "field": "border",
+        "inline": {
+          "top": {
+            "color": "rgb(91, 91, 95)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(91, 91, 95)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "linked": {
+          "top": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          }
+        }
+      },
+      {
+        "node": "bodyCell",
+        "field": "backgroundColor",
+        "inline": "rgba(0, 0, 0, 0)",
+        "linked": "rgb(255, 255, 255)"
+      },
+      {
+        "node": "bodyCell",
+        "field": "font",
+        "inline": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "13.5px",
+          "weight": "400",
+          "lineHeight": "22.68px",
+          "letterSpacing": "normal"
+        },
+        "linked": {
+          "family": "\"Inter Variable\", \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", system-ui, -apple-system, \"Segoe UI\", sans-serif",
+          "size": "12.15px",
+          "weight": "400",
+          "lineHeight": "18.225px",
+          "letterSpacing": "normal"
+        }
+      },
+      {
+        "node": "bodyCell",
+        "field": "border",
+        "inline": {
+          "top": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(29, 29, 31)",
+            "style": "none",
+            "width": "0px"
+          }
+        },
+        "linked": {
+          "top": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "right": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "bottom": {
+            "color": "rgb(236, 236, 235)",
+            "style": "solid",
+            "width": "1px"
+          },
+          "left": {
+            "color": "rgb(220, 220, 218)",
+            "style": "solid",
+            "width": "1px"
+          }
+        }
+      }
+    ],
+    "computedTableCellStylesMatch": false,
+    "screenshotNote": "Captures show the real embedded database and the first linked database view side by side, using the same Financeiro database and identical view configuration; component shells remain measured separately."
+  },
+  "finding": "The real inline database comparison completed. Computed-style differences are recorded by DOM node and property; inline-versus-linked parity remains partial.",
+  "finishedAt": "2026-10-28T15:18:54.193Z"
+}

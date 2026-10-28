@@ -1,0 +1,38 @@
+[
+  {
+    "number": 50,
+    "title": "Permitir smoke test isolado e oculto do aplicativo empacotado",
+    "html_url": "https://github.com/hodeliun/Morrow/issues/50",
+    "state": "open"
+  },
+  {
+    "number": 49,
+    "title": "Validar vinte requisitos e publicar release ilustrada 1.1.1",
+    "html_url": "https://github.com/hodeliun/Morrow/issues/49",
+    "state": "open"
+  },
+  {
+    "number": 48,
+    "title": "Concluir interação e consistência visual das tabelas",
+    "html_url": "https://github.com/hodeliun/Morrow/issues/48",
+    "state": "open"
+  },
+  {
+    "number": 47,
+    "title": "Corrigir camadas de menus, ícones e seleção do editor",
+    "html_url": "https://github.com/hodeliun/Morrow/issues/47",
+    "state": "open"
+  },
+  {
+    "number": 46,
+    "title": "Corrigir relações inversas e confiabilidade de operações de linhas",
+    "html_url": "https://github.com/hodeliun/Morrow/issues/46",
+    "state": "open"
+  },
+  {
+    "number": 45,
+    "title": "Spec: estabilizar escopo original e publicar release ilustrada 1.1.1",
+    "html_url": "https://github.com/hodeliun/Morrow/issues/45",
+    "state": "open"
+  }
+]

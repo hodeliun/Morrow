@@ -1,5 +1,13 @@
 # Issue tracker
 
+Stabilization 1.1.1, 28 October 2026: specification #45 and execution issues
+#46–#50. Planning and acceptance are in `docs/planning/stabilization-1.1.1/`.
+#46–#50 are native children of #45; #49 is natively blocked by #46, #47, #48
+and isolated packaged-test support #50.
+This round follows the original twenty-item audit and includes an illustrated
+Windows release after verified corrections. GitHub remains authoritative for
+current status.
+
 The active tracker is the public fork's GitHub Issues:
 https://github.com/hodeliun/Morrow/issues. GitHub is authoritative for issue
 status, assignment, labels, and blocking relationships. `docs/issues.json` is a

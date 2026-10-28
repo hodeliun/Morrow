@@ -29,6 +29,9 @@ attribution.
   deliveries, not local checkpoints or individual microtasks. Consolidate
   unpublished local fixups before pushing; preserve published history and
   upstream ancestry. Ticket boundaries do not mandate commit boundaries.
+- Follow `docs/RELEASE-POLICY.md`: distinguish official-base and fork changes,
+  explain changes since the last downloadable release, include genuine synthetic
+  visual demonstrations, and verify final artifacts before publishing.
 
 - Active tracker: https://github.com/hodeliun/Morrow/issues. Specification:
   `docs/SPEC.md`; research: `docs/RESEARCH.md`; decisions:
