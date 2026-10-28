@@ -1,0 +1,106 @@
+{
+  "runAt": "2026-10-28T16:01:58.901Z",
+  "group": "delivery2",
+  "projectHead": "7e26c1f",
+  "compiledApp": "C:\\Users\\clove\\Projetos\\Morrow Public Fork\\dist-electron\\main.cjs",
+  "compiledAppModifiedAt": "2026-10-28T16:01:22.763Z",
+  "hiddenMode": true,
+  "syntheticFixturesRoot": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery2-ui-BCucoT",
+  "hiddenChecks": {
+    "#29": {
+      "initialLaunch": true,
+      "afterInitialActions": true,
+      "reopenedLaunch": true,
+      "afterReopenActions": true
+    }
+  },
+  "fatalFailures": [],
+  "tickets": {
+    "#29": {
+      "status": "passed",
+      "checks": {
+        "localNames": [
+          "Visão somente Alfa",
+          "Visão somente Beta"
+        ],
+        "independentSearches": [
+          "Alfa",
+          "Beta"
+        ],
+        "searchProducedOneRowPerView": true,
+        "collapseSequence": [
+          true,
+          false,
+          true,
+          false,
+          true
+        ],
+        "collapsedOneViewOnly": true,
+        "sourceListsBothViews": [
+          "Painel · Visão somente Alfa",
+          "Painel · Visão somente Beta"
+        ],
+        "reopenedNames": [
+          "Visão somente Alfa",
+          "Visão somente Beta"
+        ],
+        "collapsedStateIndependent": true,
+        "sourceLinkMapSaved": true
+      },
+      "fixture": {
+        "syntheticProfile": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery2-ui-BCucoT\\ticket-29\\profile",
+        "syntheticVault": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery2-ui-BCucoT\\ticket-29\\vault",
+        "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db"
+      },
+      "compiledBuildIdentity": {
+        "initialLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          }
+        },
+        "reopenedLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          }
+        }
+      },
+      "actionVerified": true,
+      "reopenVerified": true
+    }
+  },
+  "compiledBuildStableAcrossLaunches": true,
+  "allWindowsStayedHidden": true,
+  "pageErrors": [],
+  "overall": "passed",
+  "evidenceKind": "historical UI run; preserved before focused icon-upload acceptance rerun",
+  "buildSnapshotHead": "7e26c1f",
+  "buildInputFingerprint": "a5cb3081f3bc739593670f05c795ed517b72e135796988a3331741ca278b6628",
+  "buildInputState": "Built/tested from HEAD 7e26c1f with uncommitted production source inputs captured by SHA-256; this is not a release candidate and was not built solely from the commit.",
+  "buildFingerprint": {
+    "commitAtSnapshot": "7e26c1f",
+    "sourceInputsSha256": "a5cb3081f3bc739593670f05c795ed517b72e135796988a3331741ca278b6628",
+    "artifactContentSha256": null,
+    "artifactHashCapturedAtHistoricalRun": false,
+    "originalRendererAssetManifestSha256": null,
+    "originalMainMtime": null
+  },
+  "preservedFromTemporaryEvidence": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery2-ui-BCucoT\\evidence-delivery2.json"
+}

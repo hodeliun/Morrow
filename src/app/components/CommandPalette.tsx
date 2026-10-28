@@ -1,6 +1,7 @@
 import { CornerDownLeft, FileText, Search } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { dialogOpened } from '../platform/desktop';
 import { displayTitle } from '../../core/model';
 import { foldText, searchWorkspace } from '../../core/search';
@@ -12,6 +13,7 @@ import { navigate, openPage } from '../router';
 import { setUi } from '../ui';
 import { useWorkspace } from '../workspace';
 import { pageIcon } from './Sidebar';
+import { layerPortalTarget, useDismissableLayer } from './layers';
 
 interface Entry {
   key: string;
@@ -33,15 +35,23 @@ export function CommandPalette() {
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const previousFocus = useRef<HTMLElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+
+  useDismissableLayer({
+    surfaceRef,
+    elementRef: backdropRef,
+    onDismiss: () => setUi({ palette: false }),
+    captureFocusOnMount: true,
+    restoreFocusOnEscape: true,
+    restoreFocusOnUnmount: true,
+  });
 
   useEffect(() => {
-    previousFocus.current = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
     const closed = dialogOpened();
     return () => {
       closed();
-      if (previousFocus.current?.isConnected) previousFocus.current.focus({ preventScroll: true });
     };
   }, []);
 
@@ -140,21 +150,20 @@ export function CommandPalette() {
     } else if (event.key === 'Enter') {
       event.preventDefault();
       choose(entries[active]);
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      close();
     }
   };
 
   const activeEntry = entries[active];
 
-  return (
-    <div
-      className="dialog-backdrop palette-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && close()}
-    >
-      <div className="palette" role="dialog" aria-modal="true" aria-label={t('actions.paletteAria')}>
+  return createPortal(
+    <div ref={backdropRef} className="dialog-backdrop palette-backdrop">
+      <div
+        ref={surfaceRef}
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('actions.paletteAria')}
+      >
         <div className="palette-input-row">
           <Search size={18} strokeWidth={1.75} className="palette-search-icon" />
           <input
@@ -227,6 +236,7 @@ export function CommandPalette() {
           </span>
         </div>
       </div>
-    </div>
+    </div>,
+    layerPortalTarget(),
   );
 }

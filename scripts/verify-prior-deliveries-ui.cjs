@@ -147,6 +147,14 @@ Parágrafo que não deve ser movido para uma oitava coluna.
   fs.writeFileSync(originalImage, syntheticPng(400, 200, [44, 113, 168]));
   const replacementImage = path.join(root, 'replacement.png');
   fs.writeFileSync(replacementImage, syntheticPng(200, 400, [191, 82, 55]));
+  const syntheticRasterIcon = path.join(root, 'portrait-200x400.png');
+  fs.writeFileSync(syntheticRasterIcon, syntheticPng(200, 400, [191, 82, 55]));
+  const syntheticSvgIcon = path.join(root, 'portrait-200x400.svg');
+  fs.writeFileSync(
+    syntheticSvgIcon,
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 400" width="200" height="400"><rect x="0" y="0" width="200" height="400" fill="#2f80ed"/></svg>',
+    'utf8',
+  );
 
   const financeMarkdown = `---
 kind: database
@@ -226,6 +234,7 @@ ${viewMarkdown('authors-main', 'Autores')}
 
   const booksMarkdown = `---
 kind: database
+icon: "📚"
 database:
   properties:
     - id: writer
@@ -268,6 +277,13 @@ database:
     - id: type_test
       name: Value type test
       type: text
+    - id: svg_test
+      name: SVG type test
+      type: text
+    - id: rich_canvas_test
+      name: Rich canvas layer test
+      type: richCanvas
+      fillMode: default
   views:
 ${viewMarkdown('books-main', 'Livros')}
 ---
@@ -293,7 +309,7 @@ ${linkedViewMarker('linked-beta', 'linked-beta-view', 'Visão Beta')}
 `;
   fs.writeFileSync(path.join(vaultDir, 'Painel.md'), dashboardMarkdown, 'utf8');
 
-  return { profileDir, vaultDir, originalImage, replacementImage };
+  return { profileDir, vaultDir, originalImage, replacementImage, syntheticRasterIcon, syntheticSvgIcon };
 }
 
 function sha256(file) {
@@ -324,6 +340,8 @@ function setRuntime(evidence, fixture, app, page) {
     vaultDir: fixture.vaultDir,
     originalImage: fixture.originalImage,
     replacementImage: fixture.replacementImage,
+    syntheticRasterIcon: fixture.syntheticRasterIcon,
+    syntheticSvgIcon: fixture.syntheticSvgIcon,
     originalImageHash: sha256(fixture.originalImage),
   };
   for (const [key, value] of Object.entries(values)) {
@@ -457,11 +475,25 @@ function compiledBuildIdentity() {
     const stat = fs.statSync(path.join(assetDir, name));
     return { name, size: stat.size, mtime: stat.mtime.toISOString() };
   });
+  const artifactFiles = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(file);
+      else if (entry.isFile()) artifactFiles.push(file);
+    }
+  };
+  for (const directory of ['dist', 'dist-electron']) visit(path.join(projectRoot, directory));
+  const artifactManifest = artifactFiles
+    .map((file) => `${path.relative(projectRoot, file).replaceAll(path.sep, '/')}:${sha256(file)}`)
+    .join('\n');
   return {
     mainMtime: fs.statSync(path.join(projectRoot, 'dist-electron', 'main.cjs')).mtime.toISOString(),
     rendererIndexMtime: fs.statSync(path.join(rendererDir, 'index.html')).mtime.toISOString(),
     rendererAssetCount: manifest.length,
     rendererAssetManifestSha256: crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+    artifactFileCount: artifactFiles.length,
+    artifactContentSha256: crypto.createHash('sha256').update(artifactManifest).digest('hex'),
   };
 }
 
@@ -522,12 +554,16 @@ async function verify26(evidence) {
 
   await openPage(page, 'Financeiro sintético');
   await resizeHiddenWindow(evidence, 800, 600);
-  await page.locator('.db-options-button').click();
+  const optionsButton = page.locator('.db-options-button');
+  await optionsButton.click();
   const optionsPanel = page.locator('.popover.db-panel').last();
   await optionsPanel.waitFor({ state: 'visible' });
   const optionsRect = await insideViewport(optionsPanel, page);
   assert.ok(optionsRect.inside, `Table options panel escapes the viewport: ${JSON.stringify(optionsRect)}`);
   await page.keyboard.press('Escape');
+  await optionsPanel.waitFor({ state: 'detached' });
+  const pageOptionsEscapeRestoredFocus = await optionsButton.evaluate((button) => document.activeElement === button);
+  assert.ok(pageOptionsEscapeRestoredFocus, 'Escape must close page options and restore focus to its trigger.');
 
   await page.locator('tfoot .db-calc-trigger').first().scrollIntoViewIfNeeded();
   await page.locator('tfoot .db-calc-trigger').first().click();
@@ -537,7 +573,13 @@ async function verify26(evidence) {
   assert.ok(footerRect.inside, `Footer menu escapes the viewport: ${JSON.stringify(footerRect)}`);
   await page.keyboard.press('Escape');
   await resizeHiddenWindow(evidence, 1600, 1000);
-  return { blockMenuAtWideViewport: blockMenu, optionsPanelAtNarrowViewport: optionsRect, footerMenuAtNarrowViewport: footerRect, testedViewports: ['1600x1000', '800x600'] };
+  return {
+    blockMenuAtWideViewport: blockMenu,
+    optionsPanelAtNarrowViewport: optionsRect,
+    pageOptionsEscapeRestoredFocus,
+    footerMenuAtNarrowViewport: footerRect,
+    testedViewports: ['1600x1000', '800x600'],
+  };
 }
 
 async function verify27(evidence) {
@@ -924,11 +966,20 @@ async function verify29(evidence) {
   assert.ok(linkedRows.some((text) => text.includes('Beta')));
 
   const collapseButton = first.locator('.linked-database-head button[aria-label]').first();
-  await collapseButton.click();
-  await page.waitForFunction(() => {
-    const blocks = [...document.querySelectorAll('.linked-database-view')];
-    return blocks.length === 2 && !blocks[0]?.querySelector('.database') && !!blocks[1]?.querySelector('.database');
-  });
+  const pageErrorsBeforeCollapse = evidence.pageErrors?.length ?? 0;
+  const collapseSequence = [true, false, true, false, true];
+  for (const collapsed of collapseSequence) {
+    await collapseButton.click();
+    await page.waitForFunction((expected) => {
+      const blocks = [...document.querySelectorAll('.linked-database-view')];
+      return blocks.length === 2 && (!!blocks[0]?.querySelector('.database') === !expected) && !!blocks[1]?.querySelector('.database');
+    }, collapsed);
+  }
+  assert.equal(
+    evidence.pageErrors?.length ?? 0,
+    pageErrorsBeforeCollapse,
+    'Repeated linked-view collapse and expand must not produce editor selection errors.',
+  );
   const hostMarkdown = await waitForMarkdown(
     vaultDir,
     'Painel.md',
@@ -949,7 +1000,14 @@ async function verify29(evidence) {
   assert.ok(labels.some((label) => label.includes(names[1])));
   await links.first().click();
   await page.waitForFunction(() => document.querySelector('main')?.innerText.includes('Painel sintético') ?? false);
-  return { localNames: names, independentSearches: persistedViews.map((view) => view.search), searchProducedOneRowPerView: true, collapsedOneViewOnly: true, sourceListsBothViews: labels.map((label) => label.trim()) };
+  return {
+    localNames: names,
+    independentSearches: persistedViews.map((view) => view.search),
+    searchProducedOneRowPerView: true,
+    collapseSequence,
+    collapsedOneViewOnly: true,
+    sourceListsBothViews: labels.map((label) => label.trim()),
+  };
 }
 
 async function verify38(evidence) {
@@ -1061,10 +1119,134 @@ async function openPropertySettings(page, title) {
   return panel;
 }
 
+async function verifyRichCanvasLayer(page, vaultDir, evidence) {
+  let panel = await openPropertySettings(page, 'Rich canvas layer test');
+  const trigger = panel.locator('.media-default-value button.rich-canvas-preview');
+  await trigger.click();
+  const backdrop = page.locator('.rich-canvas-backdrop');
+  const dialog = page.locator('.rich-canvas-dialog');
+  await dialog.waitFor({ state: 'visible' });
+  const layerOrder = await page.evaluate(() => {
+    const backdrop = document.querySelector('.rich-canvas-backdrop');
+    const panel = [...document.querySelectorAll('.popover.db-panel')].at(-1);
+    if (!backdrop || !panel) return null;
+    return {
+      dialogOrder: Number.parseInt(getComputedStyle(backdrop).zIndex, 10),
+      propertyPanelOrder: Number.parseInt(getComputedStyle(panel).zIndex, 10),
+      sharedPortalRoot: backdrop.parentElement?.id === 'morrow-overlay-root' && panel.parentElement?.id === 'morrow-overlay-root',
+    };
+  });
+  assert.ok(layerOrder, 'The rich canvas and property panel must share the overlay portal root.');
+  assert.equal(layerOrder.sharedPortalRoot, true, 'The rich canvas must use the shared overlay root.');
+  assert.ok(
+    layerOrder.dialogOrder > layerOrder.propertyPanelOrder,
+    `The rich canvas must sit above its property panel: ${JSON.stringify(layerOrder)}`,
+  );
+  await saveEditorScreenshot(page, evidence, 'editor-20-rich-canvas-over-settings.png');
+
+  await page.keyboard.press('Escape');
+  await backdrop.waitFor({ state: 'detached' });
+  await panel.waitFor({ state: 'visible' });
+  const restoredPreviewFocus = await trigger.evaluate((button) => document.activeElement === button);
+  assert.equal(restoredPreviewFocus, true, 'Escape must close the rich canvas and restore focus to its preview trigger.');
+  await saveEditorScreenshot(page, evidence, 'editor-20-rich-canvas-escape-keeps-settings.png');
+  await page.keyboard.press('Escape');
+  await panel.waitFor({ state: 'detached' });
+
+  panel = await openPropertySettings(page, 'Rich canvas layer test');
+  const preview = panel.locator('.media-default-value button.rich-canvas-preview');
+  await preview.click();
+  const editor = page.locator('.rich-canvas-editor[contenteditable="true"]');
+  await editor.waitFor({ state: 'visible' });
+  await editor.fill('Unsaved synthetic canvas content');
+  await page.locator('.rich-canvas-dialog-actions button').first().click();
+  await backdrop.waitFor({ state: 'detached' });
+  await panel.waitFor({ state: 'visible' });
+  assert.equal(readMarkdown(vaultDir, 'Livros.md').includes('Unsaved synthetic canvas content'), false);
+
+  await preview.click();
+  await editor.waitFor({ state: 'visible' });
+  await editor.fill('Saved synthetic canvas content');
+  await page.locator('.rich-canvas-dialog-actions button').last().click();
+  const savedMarkdown = await waitForMarkdown(
+    vaultDir,
+    'Livros.md',
+    (text) => text.includes('Saved synthetic canvas content'),
+    'rich canvas save after cancel',
+  );
+  assert.ok(savedMarkdown.includes('Saved synthetic canvas content'));
+  assert.match(await preview.innerText(), /Saved synthetic canvas content/);
+  await saveEditorScreenshot(page, evidence, 'editor-20-rich-canvas-saved-content.png');
+
+  return {
+    layerOrder,
+    escapeClosesRichCanvasBeforePropertySettings: true,
+    escapeRestoresPreviewFocus: restoredPreviewFocus,
+    cancelDoesNotPersistDraft: !readMarkdown(vaultDir, 'Livros.md').includes('Unsaved synthetic canvas content'),
+    savePersistsContent: true,
+  };
+}
+
+async function uploadSyntheticIcon(page, dialog, file) {
+  const chooserPromise = page.waitForEvent('filechooser');
+  await dialog.locator('button.icon-upload').click();
+  const chooser = await chooserPromise;
+  const inputType = await chooser.element().evaluate((input) => input.type);
+  assert.equal(inputType, 'file', 'The picker must be intercepted at its HTML file input.');
+  await chooser.setFiles(file);
+  return { mechanism: 'Playwright filechooser', inputType, nativeDialogOpened: false };
+}
+
+async function uploadedGlyphMetrics(container, kind) {
+  const selector = kind === 'raster' ? 'img.icon-image' : '.custom-svg-icon';
+  const glyph = container.locator(selector);
+  await glyph.waitFor({ state: 'visible' });
+  return glyph.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const image = element instanceof HTMLImageElement ? element : null;
+    const svg = element.querySelector('svg');
+    const style = getComputedStyle(element);
+    return {
+      styleWidth: element.style.width,
+      styleHeight: element.style.height,
+      objectFit: style.objectFit,
+      renderedWidth: rect.width,
+      renderedHeight: rect.height,
+      naturalWidth: image?.naturalWidth ?? null,
+      naturalHeight: image?.naturalHeight ?? null,
+      svgViewBox: svg?.getAttribute('viewBox') ?? null,
+    };
+  });
+}
+
+async function pageIconState(page, vaultDir) {
+  const glyph = page.locator('.page-icon .emoji-img, .page-icon .emoji-text').first();
+  await glyph.waitFor({ state: 'visible' });
+  const domValue = await glyph.evaluate((element) =>
+    element instanceof HTMLImageElement ? element.alt : element.textContent?.trim() ?? '',
+  );
+  const markdown = readMarkdown(vaultDir, 'Livros.md');
+  const frontmatterValue = markdown.match(/^icon:\s*(.+)$/m)?.[1]?.trim() ?? null;
+  return { domValue, frontmatterValue };
+}
+
+async function saveEditorScreenshot(page, evidence, fileName) {
+  const directory = evidence.editorEvidenceRoot ?? evidence.syntheticFixturesRoot;
+  const outputName = evidence.editorEvidencePrefix
+    ? `${evidence.editorEvidencePrefix}-${fileName.replace(/^editor-20-/, '')}`
+    : fileName;
+  fs.mkdirSync(directory, { recursive: true });
+  await page.screenshot({ path: path.join(directory, outputName), fullPage: false });
+}
+
 async function verify37(evidence) {
-  const { page, vaultDir } = evidence;
+  const { page, vaultDir, syntheticRasterIcon, syntheticSvgIcon } = evidence;
   const ticket = evidence.tickets['#37'];
   await openPage(page, 'Livros sintéticos');
+  const originalPageIcon = await pageIconState(page, vaultDir);
+  assert.equal(originalPageIcon.domValue, '📚', 'The synthetic page icon must be visible before property icon edits.');
+  assert.match(originalPageIcon.frontmatterValue ?? '', /📚/);
+
   let panel = await openPropertySettings(page, 'Value type test');
   const iconTrigger = panel.locator('button.prop-icon-trigger');
   await iconTrigger.evaluate((button) => {
@@ -1075,6 +1257,24 @@ async function verify37(evidence) {
   });
   await iconTrigger.click();
   const iconDialog = page.locator('.emoji-dialog');
+  const overlayOrder = await page.evaluate(() => {
+    const dialog = document.querySelector('.emoji-dialog')?.closest('.dialog-backdrop');
+    const propertyPanel = [...document.querySelectorAll('.popover.db-panel')].at(-1);
+    if (!dialog || !propertyPanel) return null;
+    return {
+      dialogOrder: Number.parseInt(getComputedStyle(dialog).zIndex, 10),
+      propertyPanelOrder: Number.parseInt(getComputedStyle(propertyPanel).zIndex, 10),
+      sharedPortalRoot: dialog.parentElement?.id === 'morrow-overlay-root' && propertyPanel.parentElement?.id === 'morrow-overlay-root',
+    };
+  });
+  assert.ok(overlayOrder, 'The icon dialog and property panel must share the overlay portal root.');
+  assert.ok(
+    overlayOrder.dialogOrder > overlayOrder.propertyPanelOrder,
+    `The icon dialog must sit above its property panel: ${JSON.stringify(overlayOrder)}`,
+  );
+  assert.equal(overlayOrder.sharedPortalRoot, true, 'Both layers must use the shared overlay root.');
+  ticket.checks.iconDialogLayerOrder = overlayOrder;
+  await saveEditorScreenshot(page, evidence, 'editor-20-icon-dialog-over-property-settings.png');
   await page.waitForTimeout(250);
   const iconDialogState = await page.evaluate(() => ({
     dialogs: [...document.querySelectorAll('.emoji-dialog, [role="dialog"]')].map((node) => {
@@ -1098,28 +1298,52 @@ async function verify37(evidence) {
     if (keyboardDialogCount === 0) await page.screenshot({ path: path.join(evidence.syntheticFixturesRoot, 'ticket-37-icon-dialog-debug.png'), fullPage: true });
   }
   await iconDialog.waitFor({ state: 'visible', timeout: 3000 });
-  const firstEmoji = iconDialog.locator('.emoji-grid.emoji-all .emoji-choice').first();
-  await firstEmoji.waitFor({ state: 'visible', timeout: 10000 });
-  const iconLabel = await firstEmoji.getAttribute('aria-label');
-  await firstEmoji.click();
-  await page.waitForFunction(() => document.querySelector('.emoji-dialog') === null);
-  const markdownAfterIcon = await waitForMarkdown(
+  await page.keyboard.press('Escape');
+  await iconDialog.waitFor({ state: 'detached' });
+  await panel.waitFor({ state: 'visible' });
+  const escapeRestoredIconTrigger = await iconTrigger.evaluate((button) => document.activeElement === button);
+  assert.equal(escapeRestoredIconTrigger, true, 'Escape must close only the icon dialog and restore focus to its trigger.');
+
+  await iconTrigger.click();
+  await iconDialog.waitFor({ state: 'visible' });
+  const rasterFileChooser = await uploadSyntheticIcon(page, iconDialog, syntheticRasterIcon);
+  await iconDialog.waitFor({ state: 'detached' });
+  await waitForMarkdown(
     vaultDir,
     'Livros.md',
-    (text) => /id: type_test[\s\S]*?icon:\s*\S/.test(text),
-    'custom property icon save',
+    (text) => /id: type_test[\s\S]*?icon:[^\n]*portrait-200x400\.png/.test(text),
+    'synthetic portrait raster property icon save',
   );
-  const iconHeader = page.locator('.database thead th').filter({ hasText: 'Value type test' }).first();
-  const renderedCustomIconCount = await iconHeader.locator('.emoji-img, .emoji-text').count();
-  assert.ok(renderedCustomIconCount > 0, 'The selected custom icon must render in the property header');
-  ticket.checks.iconSavedBeforeTypeSearch = {
-    markerSaved: /id: type_test[\s\S]*?icon:\s*\S/.test(markdownAfterIcon),
-    renderedCustomIconCount,
-    iconLabel,
-    propertyPopoverClosedAfterPick: await page.locator('.popover.db-panel').count() === 0,
-  };
+  const rasterHeader = page.locator('.database thead th').filter({ hasText: 'Value type test' }).first();
+  await page.waitForFunction(() => {
+    const header = [...document.querySelectorAll('.database thead th')].find((item) => item.textContent?.includes('Value type test'));
+    const image = header?.querySelector('img.icon-image');
+    return image?.naturalWidth === 200 && image.naturalHeight === 400 && image.style.width === '14px' && image.style.height === '14px';
+  });
+  const rasterHeaderMetrics = await uploadedGlyphMetrics(rasterHeader, 'raster');
+  assert.deepEqual(rasterHeaderMetrics, {
+    styleWidth: '14px',
+    styleHeight: '14px',
+    objectFit: 'contain',
+    renderedWidth: 14,
+    renderedHeight: 14,
+    naturalWidth: 200,
+    naturalHeight: 400,
+    svgViewBox: null,
+  });
+  await saveEditorScreenshot(page, evidence, 'editor-20-raster-column-header-14px.png');
 
   panel = await openPropertySettings(page, 'Value type test');
+  const rasterSettingsButton = panel.locator('button.prop-icon-trigger');
+  const rasterSettingsMetrics = await uploadedGlyphMetrics(rasterSettingsButton, 'raster');
+  const rasterSettingsSlot = await rasterSettingsButton.evaluate((button) => ({
+    width: getComputedStyle(button).width,
+    height: getComputedStyle(button).height,
+  }));
+  assert.deepEqual(rasterSettingsSlot, { width: '32px', height: '32px' });
+  assert.deepEqual(rasterSettingsMetrics, rasterHeaderMetrics);
+  await saveEditorScreenshot(page, evidence, 'editor-20-raster-settings-slot-32px.png');
+
   await panel.locator('.property-type-select-trigger').click();
   const search = page.locator('.property-type-search-input');
   await search.fill('moeda');
@@ -1133,17 +1357,85 @@ async function verify37(evidence) {
   await page.locator('.property-type-item').first().click();
   await page.locator('.property-type-popover').waitFor({ state: 'hidden' });
   await page.locator('.database thead th').filter({ hasText: 'Value type test' }).first().waitFor({ state: 'visible' });
-  const markdown = await waitForMarkdown(
+  const markdownAfterTypeChange = await waitForMarkdown(
     vaultDir,
     'Livros.md',
-    (text) => /id: type_test[\s\S]*?type: currency/.test(text) && /icon:/.test(text),
-    'searchable type and custom property icon',
+    (text) => /id: type_test[\s\S]*?type: currency/.test(text) && /id: type_test[\s\S]*?icon:[^\n]*portrait-200x400\.png/.test(text),
+    'currency type and portrait raster icon persistence',
   );
-  const typeBlock = markdown.match(/    - id: type_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
-  assert.match(typeBlock, /type: currency/);
-  assert.match(typeBlock, /icon:/);
-  assert.ok(typeBlock.includes('icon:'), 'Changing property type must preserve the custom icon');
-  return { portugueseSearch: portugueseResults, englishSearch: englishResults, selectedType: 'currency', customIconChoice: iconLabel, schemaSaved: true, markdownHasTypeAndIcon: markdown.includes('icon:') };
+  const rasterTypeBlock = markdownAfterTypeChange.match(/    - id: type_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
+  assert.match(rasterTypeBlock, /type: currency/);
+  assert.match(rasterTypeBlock, /icon:[^\n]*portrait-200x400\.png/);
+  const pageIconAfterRaster = await pageIconState(page, vaultDir);
+  assert.deepEqual(pageIconAfterRaster, originalPageIcon, 'Property type and icon edits must not change the page icon.');
+
+  panel = await openPropertySettings(page, 'SVG type test');
+  await panel.locator('button.prop-icon-trigger').click();
+  await iconDialog.waitFor({ state: 'visible' });
+  const svgFileChooser = await uploadSyntheticIcon(page, iconDialog, syntheticSvgIcon);
+  await iconDialog.waitFor({ state: 'detached' });
+  await waitForMarkdown(
+    vaultDir,
+    'Livros.md',
+    (text) => /id: svg_test[\s\S]*?icon:[^\n]*portrait-200x400\.svg/.test(text),
+    'synthetic portrait SVG property icon save',
+  );
+  const svgHeader = page.locator('.database thead th').filter({ hasText: 'SVG type test' }).first();
+  await page.waitForFunction(() => {
+    const header = [...document.querySelectorAll('.database thead th')].find((item) => item.textContent?.includes('SVG type test'));
+    return header?.querySelector('.custom-svg-icon svg')?.getAttribute('viewBox') === '0 0 200 400';
+  });
+  const svgHeaderMetrics = await uploadedGlyphMetrics(svgHeader, 'svg');
+  assert.deepEqual(svgHeaderMetrics, {
+    styleWidth: '14px',
+    styleHeight: '14px',
+    objectFit: 'contain',
+    renderedWidth: 14,
+    renderedHeight: 14,
+    naturalWidth: null,
+    naturalHeight: null,
+    svgViewBox: '0 0 200 400',
+  });
+  await saveEditorScreenshot(page, evidence, 'editor-20-svg-column-header-14px.png');
+  panel = await openPropertySettings(page, 'SVG type test');
+  const svgSettingsButton = panel.locator('button.prop-icon-trigger');
+  const svgSettingsMetrics = await uploadedGlyphMetrics(svgSettingsButton, 'svg');
+  const svgSettingsSlot = await svgSettingsButton.evaluate((button) => ({
+    width: getComputedStyle(button).width,
+    height: getComputedStyle(button).height,
+  }));
+  assert.deepEqual(svgSettingsSlot, { width: '32px', height: '32px' });
+  assert.deepEqual(svgSettingsMetrics, svgHeaderMetrics);
+  await saveEditorScreenshot(page, evidence, 'editor-20-svg-settings-slot-32px.png');
+  const pageIconAfterUploads = await pageIconState(page, vaultDir);
+  assert.deepEqual(pageIconAfterUploads, originalPageIcon, 'Raster and SVG property icons must leave the page icon intact.');
+  const richCanvasLayer = await verifyRichCanvasLayer(page, vaultDir, evidence);
+
+  ticket.checks.uploadedIcons = {
+    rasterFileChooser,
+    rasterHeaderMetrics,
+    rasterSettingsMetrics,
+    rasterSettingsSlot,
+    rasterPreservedAfterTypeChange: true,
+    svgFileChooser,
+    svgHeaderMetrics,
+    svgSettingsMetrics,
+    svgSettingsSlot,
+    pageIconBefore: originalPageIcon,
+    pageIconAfterUploads,
+  };
+  ticket.checks.richCanvasLayer = richCanvasLayer;
+  return {
+    portugueseSearch: portugueseResults,
+    englishSearch: englishResults,
+    changedRasterPropertyType: 'currency',
+    rasterPreservedAfterTypeChange: true,
+    uploadedRasterHeader14pxAndSettings32px: true,
+    uploadedSvgHeader14pxAndSettings32px: true,
+    svgPersistedForReopen: true,
+    pageIconPreserved: true,
+    richCanvasEscapeAndCancelSave: richCanvasLayer,
+  };
 }
 
 async function verify41(evidence) {
@@ -1526,12 +1818,88 @@ async function runPersistenceChecks(evidence, selected) {
     '#37': async () => {
       await openPage(page, 'Livros sintéticos');
       const markdown = readMarkdown(vaultDir, 'Livros.md');
-      const typeBlock = markdown.match(/    - id: type_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
-      assert.match(typeBlock, /type: currency/);
-      assert.match(typeBlock, /icon:/);
-      const header = page.locator('.database thead th').filter({ hasText: 'Value type test' }).first();
-      assert.ok(await header.locator('.emoji-img, .emoji-text').count() > 0, 'The custom property emoji must render after reopen');
-      return { typeIsCurrencyAfterReopen: true, iconRendersAfterReopen: true };
+      const rasterBlock = markdown.match(/    - id: type_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
+      const svgBlock = markdown.match(/    - id: svg_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
+      assert.match(rasterBlock, /type: currency/);
+      assert.match(rasterBlock, /icon:[^\n]*portrait-200x400\.png/);
+      assert.match(svgBlock, /icon:[^\n]*portrait-200x400\.svg/);
+
+      const originalPageIcon = await pageIconState(page, vaultDir);
+      assert.equal(originalPageIcon.domValue, '📚');
+      assert.match(originalPageIcon.frontmatterValue ?? '', /📚/);
+
+      const canvasPanel = await openPropertySettings(page, 'Rich canvas layer test');
+      const canvasPreview = canvasPanel.locator('.media-default-value button.rich-canvas-preview');
+      await canvasPreview.waitFor({ state: 'visible' });
+      assert.match(await canvasPreview.innerText(), /Saved synthetic canvas content/);
+      await saveEditorScreenshot(page, evidence, 'editor-20-rich-canvas-saved-after-reopen.png');
+      await page.keyboard.press('Escape');
+      await canvasPanel.waitFor({ state: 'detached' });
+
+      const rasterHeader = page.locator('.database thead th').filter({ hasText: 'Value type test' }).first();
+      await page.waitForFunction(() => {
+        const header = [...document.querySelectorAll('.database thead th')].find((item) => item.textContent?.includes('Value type test'));
+        const image = header?.querySelector('img.icon-image');
+        return image?.naturalWidth === 200 && image.naturalHeight === 400 && image.style.width === '14px' && image.style.height === '14px';
+      });
+      const rasterHeaderMetrics = await uploadedGlyphMetrics(rasterHeader, 'raster');
+      assert.equal(rasterHeaderMetrics.naturalWidth, 200);
+      assert.equal(rasterHeaderMetrics.naturalHeight, 400);
+      assert.equal(rasterHeaderMetrics.styleWidth, '14px');
+      assert.equal(rasterHeaderMetrics.styleHeight, '14px');
+
+      const svgHeader = page.locator('.database thead th').filter({ hasText: 'SVG type test' }).first();
+      await page.waitForFunction(() => {
+        const header = [...document.querySelectorAll('.database thead th')].find((item) => item.textContent?.includes('SVG type test'));
+        return header?.querySelector('.custom-svg-icon svg')?.getAttribute('viewBox') === '0 0 200 400';
+      });
+      const svgHeaderMetrics = await uploadedGlyphMetrics(svgHeader, 'svg');
+      assert.equal(svgHeaderMetrics.svgViewBox, '0 0 200 400');
+      assert.equal(svgHeaderMetrics.styleWidth, '14px');
+      assert.equal(svgHeaderMetrics.styleHeight, '14px');
+
+      const panel = await openPropertySettings(page, 'Value type test');
+      const rasterSettingsButton = panel.locator('button.prop-icon-trigger');
+      const rasterSettingsMetrics = await uploadedGlyphMetrics(rasterSettingsButton, 'raster');
+      const rasterSettingsSlot = await rasterSettingsButton.evaluate((button) => ({
+        width: getComputedStyle(button).width,
+        height: getComputedStyle(button).height,
+      }));
+      assert.deepEqual(rasterSettingsSlot, { width: '32px', height: '32px' });
+      assert.equal(rasterSettingsMetrics.naturalWidth, 200);
+      assert.equal(rasterSettingsMetrics.naturalHeight, 400);
+      assert.equal(rasterSettingsMetrics.styleWidth, '14px');
+      assert.equal(rasterSettingsMetrics.styleHeight, '14px');
+      await saveEditorScreenshot(page, evidence, 'editor-20-raster-settings-after-reopen.png');
+
+      await panel.locator('.prop-reset-icon-btn').click();
+      const markdownAfterReset = await waitForMarkdown(
+        vaultDir,
+        'Livros.md',
+        (text) => {
+          const block = text.match(/    - id: type_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
+          const svg = text.match(/    - id: svg_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '';
+          return /type: currency/.test(block) && !/^\s*icon:/m.test(block) && /portrait-200x400\.svg/.test(svg);
+        },
+        'reset only the raster property icon while retaining the SVG property icon',
+      );
+      const resetHeaderCustomIconCount = await rasterHeader.locator('img.icon-image, .custom-svg-icon').count();
+      assert.equal(resetHeaderCustomIconCount, 0, 'Reset must clear the custom icon from the currency property header.');
+      assert.ok(await svgHeader.locator('.custom-svg-icon svg').count(), 'Resetting the raster property must keep the other SVG icon.');
+      const pageIconAfterReset = await pageIconState(page, vaultDir);
+      assert.deepEqual(pageIconAfterReset, originalPageIcon, 'Resetting a property icon must not remove the page icon.');
+      await saveEditorScreenshot(page, evidence, 'editor-20-property-reset-preserves-page-icon.png');
+      return {
+        rasterTypeAndIconAfterReopen: { type: 'currency', ...rasterHeaderMetrics },
+        svgIconAfterReopen: svgHeaderMetrics,
+        settingsSlotAfterReopen: { slot: rasterSettingsSlot, glyph: rasterSettingsMetrics },
+        resetClearedOnlyRasterPropertyIcon: resetHeaderCustomIconCount === 0,
+        svgPropertyIconRetainedAfterOtherReset: true,
+        pageIconBeforeAndAfterReset: { before: originalPageIcon, after: pageIconAfterReset },
+        markdownAfterResetContainsNoRasterPropertyIcon: !/^\s*icon:/m.test(
+          markdownAfterReset.match(/    - id: type_test[\s\S]*?(?=\n    - id:|\n  views:)/)?.[0] ?? '',
+        ),
+      };
     },
     '#41': async () => {
       await openPage(page, 'Livros sintéticos');
@@ -1603,18 +1971,32 @@ async function runGroup(group = 'all', onlyTickets = null) {
   if (onlyTickets) assert.ok(onlyTickets.every((id) => groupTickets.includes(id)), `Ticket filter must be in ${group}: ${onlyTickets.join(', ')}`);
   const selected = onlyTickets ? groupTickets.filter((id) => onlyTickets.includes(id)) : groupTickets;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `morrow-${group}-ui-`));
+  const editorEvidencePrefix = process.env.MORROW_EDITOR_EVIDENCE_PREFIX ?? null;
+  if (editorEvidencePrefix) assert.match(editorEvidencePrefix, /^[a-z0-9-]+$/i, 'Evidence prefixes may contain only letters, digits and hyphens.');
   const evidence = {
     runAt: new Date().toISOString(),
     group,
     projectHead: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot, encoding: 'utf8' }).trim(),
+    buildSnapshotHead: process.env.MORROW_UI_BUILD_HEAD ?? null,
+    buildInputFingerprint: process.env.MORROW_UI_BUILD_INPUT_FINGERPRINT ?? null,
+    buildInputState: 'The compiled snapshot includes uncommitted worktree edits; this is validation evidence, not the final release candidate.',
     compiledApp: path.join(projectRoot, 'dist-electron', 'main.cjs'),
     compiledAppModifiedAt: fs.statSync(path.join(projectRoot, 'dist-electron', 'main.cjs')).mtime.toISOString(),
     hiddenMode: true,
     syntheticFixturesRoot: root,
+    editorEvidenceRoot: process.env.MORROW_EDITOR_EVIDENCE_DIR ?? root,
+    editorEvidencePrefix,
+    editorEvidencePath:
+      group === 'delivery3' && selected.includes('#37') && process.env.MORROW_EDITOR_EVIDENCE_DIR
+        ? path.join(process.env.MORROW_EDITOR_EVIDENCE_DIR, `${editorEvidencePrefix ?? 'editor-20-icon'}-acceptance.json`)
+        : null,
     hiddenChecks: {},
     fatalFailures: [],
     tickets: {},
   };
+  if (evidence.editorEvidencePath && fs.existsSync(evidence.editorEvidencePath)) {
+    throw new Error(`Refusing to overwrite existing editor evidence: ${evidence.editorEvidencePath}. Set MORROW_EDITOR_EVIDENCE_PREFIX for a new run.`);
+  }
   let app;
   for (const id of selected) {
     const fixtureRoot = path.join(root, `ticket-${id.slice(1)}`);
@@ -1634,6 +2016,8 @@ async function runGroup(group = 'all', onlyTickets = null) {
         syntheticProfile: fixture.profileDir,
         syntheticVault: fixture.vaultDir,
         originalImageHash: imageHash,
+        syntheticRasterIcon: fixture.syntheticRasterIcon,
+        syntheticSvgIcon: fixture.syntheticSvgIcon,
       },
     };
     try {
@@ -1689,12 +2073,28 @@ async function runGroup(group = 'all', onlyTickets = null) {
   });
   const buildFingerprints = buildSnapshots.map((snapshot) => JSON.stringify(snapshot));
   evidence.compiledBuildStableAcrossLaunches = buildFingerprints.length > 0 && new Set(buildFingerprints).size === 1;
+  const artifactFingerprints = buildSnapshots.map((snapshot) => snapshot.artifactContentSha256);
+  evidence.compiledArtifactStableAcrossLaunches = artifactFingerprints.length > 0 && new Set(artifactFingerprints).size === 1;
+  evidence.buildFingerprint = {
+    commitAtSnapshot: evidence.buildSnapshotHead,
+    sourceInputsSha256: evidence.buildInputFingerprint,
+    artifactContentSha256: artifactFingerprints[0] ?? null,
+    artifactFileCount: buildSnapshots[0]?.artifactFileCount ?? null,
+  };
   evidence.allWindowsStayedHidden = Object.values(evidence.hiddenChecks).every((checks) => Object.values(checks).every(Boolean));
   evidence.pageErrors = evidence.pageErrors ?? [];
+  evidence.pageErrorsByLaunch = {
+    initial: evidence.pageErrors.filter((error) => error.phase === 'initial'),
+    reopen: evidence.pageErrors.filter((error) => error.phase === 'reopen'),
+  };
   evidence.overall = selected.every((id) => evidence.tickets[id]?.status === 'passed') &&
-    evidence.allWindowsStayedHidden && evidence.compiledBuildStableAcrossLaunches && !evidence.pageErrors.length && !evidence.fatalFailures.length ? 'passed' : 'failed';
+    evidence.allWindowsStayedHidden && evidence.compiledBuildStableAcrossLaunches && evidence.compiledArtifactStableAcrossLaunches && !evidence.pageErrors.length && !evidence.fatalFailures.length ? 'passed' : 'failed';
   const evidencePath = path.join(root, `evidence-${group}.json`);
   fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), 'utf8');
+  if (evidence.editorEvidencePath) {
+    fs.mkdirSync(path.dirname(evidence.editorEvidencePath), { recursive: true });
+    fs.writeFileSync(evidence.editorEvidencePath, JSON.stringify(evidence, null, 2), 'utf8');
+  }
   console.log(`Evidence JSON: ${evidencePath}`);
   console.log(`Synthetic fixtures retained for audit under: ${root}`);
   console.log(`RESULT ${group}: ${evidence.overall}`);

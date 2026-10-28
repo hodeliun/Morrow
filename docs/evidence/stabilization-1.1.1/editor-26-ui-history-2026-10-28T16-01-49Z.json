@@ -1,0 +1,116 @@
+{
+  "runAt": "2026-10-28T16:01:49.959Z",
+  "group": "delivery1",
+  "projectHead": "7e26c1f",
+  "compiledApp": "C:\\Users\\clove\\Projetos\\Morrow Public Fork\\dist-electron\\main.cjs",
+  "compiledAppModifiedAt": "2026-10-28T16:01:22.763Z",
+  "hiddenMode": true,
+  "syntheticFixturesRoot": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery1-ui-QQE5IA",
+  "hiddenChecks": {
+    "#26": {
+      "initialLaunch": true,
+      "afterInitialActions": true,
+      "reopenedLaunch": true,
+      "afterReopenActions": true
+    }
+  },
+  "fatalFailures": [],
+  "tickets": {
+    "#26": {
+      "status": "passed",
+      "checks": {
+        "blockMenuAtWideViewport": {
+          "x": 261,
+          "y": 8,
+          "width": 268,
+          "height": 984,
+          "right": 529,
+          "bottom": 992,
+          "viewportWidth": 1600,
+          "viewportHeight": 1000,
+          "inside": true
+        },
+        "optionsPanelAtNarrowViewport": {
+          "x": 250,
+          "y": 78,
+          "width": 520,
+          "height": 388,
+          "right": 770,
+          "bottom": 466,
+          "viewportWidth": 800,
+          "viewportHeight": 600,
+          "inside": true
+        },
+        "pageOptionsEscapeRestoredFocus": true,
+        "footerMenuAtNarrowViewport": {
+          "x": 97,
+          "y": 338,
+          "width": 242,
+          "height": 250,
+          "right": 339,
+          "bottom": 588,
+          "viewportWidth": 800,
+          "viewportHeight": 600,
+          "inside": true
+        },
+        "testedViewports": [
+          "1600x1000",
+          "800x600"
+        ]
+      },
+      "fixture": {
+        "syntheticProfile": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery1-ui-QQE5IA\\ticket-26\\profile",
+        "syntheticVault": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery1-ui-QQE5IA\\ticket-26\\vault",
+        "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db"
+      },
+      "compiledBuildIdentity": {
+        "initialLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          }
+        },
+        "reopenedLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          }
+        }
+      },
+      "actionVerified": true
+    }
+  },
+  "compiledBuildStableAcrossLaunches": true,
+  "allWindowsStayedHidden": true,
+  "pageErrors": [],
+  "overall": "passed",
+  "evidenceKind": "historical UI run; preserved before focused icon-upload acceptance rerun",
+  "buildSnapshotHead": "7e26c1f",
+  "buildInputFingerprint": "a5cb3081f3bc739593670f05c795ed517b72e135796988a3331741ca278b6628",
+  "buildInputState": "Built/tested from HEAD 7e26c1f with uncommitted production source inputs captured by SHA-256; this is not a release candidate and was not built solely from the commit.",
+  "buildFingerprint": {
+    "commitAtSnapshot": "7e26c1f",
+    "sourceInputsSha256": "a5cb3081f3bc739593670f05c795ed517b72e135796988a3331741ca278b6628",
+    "artifactContentSha256": null,
+    "artifactHashCapturedAtHistoricalRun": false,
+    "originalRendererAssetManifestSha256": null,
+    "originalMainMtime": null
+  },
+  "preservedFromTemporaryEvidence": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery1-ui-QQE5IA\\evidence-delivery1.json"
+}

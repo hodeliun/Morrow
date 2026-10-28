@@ -1,0 +1,279 @@
+{
+  "runAt": "2026-10-28T16:24:49.146Z",
+  "group": "delivery3",
+  "projectHead": "43e4045",
+  "buildSnapshotHead": "43e4045",
+  "buildInputFingerprint": null,
+  "buildInputState": "The compiled snapshot includes uncommitted worktree edits; this is validation evidence, not the final release candidate.",
+  "compiledApp": "C:\\Users\\clove\\Projetos\\Morrow Public Fork\\dist-electron\\main.cjs",
+  "compiledAppModifiedAt": "2026-10-28T16:22:42.162Z",
+  "hiddenMode": true,
+  "syntheticFixturesRoot": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-d9WakW",
+  "editorEvidenceRoot": "C:\\Users\\clove\\Projetos\\Morrow Public Fork\\docs\\evidence\\stabilization-1.1.1",
+  "editorEvidencePrefix": "editor-20-combined",
+  "editorEvidencePath": "C:\\Users\\clove\\Projetos\\Morrow Public Fork\\docs\\evidence\\stabilization-1.1.1\\editor-20-combined-acceptance.json",
+  "hiddenChecks": {
+    "#37": {
+      "initialLaunch": true,
+      "afterInitialActions": true,
+      "reopenedLaunch": true,
+      "afterReopenActions": true
+    }
+  },
+  "fatalFailures": [],
+  "tickets": {
+    "#37": {
+      "status": "passed",
+      "checks": {
+        "iconDialogLayerOrder": {
+          "dialogOrder": 2,
+          "propertyPanelOrder": 1,
+          "sharedPortalRoot": true
+        },
+        "iconTriggerStateAfterPointerClick": {
+          "dialogs": [
+            {
+              "className": "popover floating-layer panel-popover db-panel",
+              "visible": true,
+              "text": "NomeTipoTextoDescriçãoPreenchimentoManualPadrãoCalculadoOrdem crescente Ocultar Excluir"
+            },
+            {
+              "className": "dialog dialog-medium emoji-dialog",
+              "visible": true,
+              "text": "Ícone de “Value type test”EmojiLucideEnviar íconeAleatórioTodos"
+            }
+          ],
+          "bodyTail": "Calcular\tCalcular\t\nNovo\n\n2 linhas\n\nBuscar páginas que mencionam “Livros” sem vincular\nNome\nTipo\nTexto\nDescrição\nPreenchimento\nManual\nPadrão\nCalculado\nOrdem crescente\nOcultar\nExcluir\nÍcone de “Value type test”\nEmoji\nLucide\nEnviar ícone\nAleatório\nTodos",
+          "triggerEvents": [
+            {
+              "type": "pointerdown",
+              "target": {},
+              "defaultPrevented": false
+            },
+            {
+              "type": "click",
+              "target": {},
+              "defaultPrevented": false
+            }
+          ],
+          "triggerReactHandler": true
+        },
+        "uploadedIcons": {
+          "rasterFileChooser": {
+            "mechanism": "Playwright filechooser",
+            "inputType": "file",
+            "nativeDialogOpened": false
+          },
+          "rasterHeaderMetrics": {
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": 200,
+            "naturalHeight": 400,
+            "svgViewBox": null
+          },
+          "rasterSettingsMetrics": {
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": 200,
+            "naturalHeight": 400,
+            "svgViewBox": null
+          },
+          "rasterSettingsSlot": {
+            "width": "32px",
+            "height": "32px"
+          },
+          "rasterPreservedAfterTypeChange": true,
+          "svgFileChooser": {
+            "mechanism": "Playwright filechooser",
+            "inputType": "file",
+            "nativeDialogOpened": false
+          },
+          "svgHeaderMetrics": {
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": null,
+            "naturalHeight": null,
+            "svgViewBox": "0 0 200 400"
+          },
+          "svgSettingsMetrics": {
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": null,
+            "naturalHeight": null,
+            "svgViewBox": "0 0 200 400"
+          },
+          "svgSettingsSlot": {
+            "width": "32px",
+            "height": "32px"
+          },
+          "pageIconBefore": {
+            "domValue": "📚",
+            "frontmatterValue": "\"📚\""
+          },
+          "pageIconAfterUploads": {
+            "domValue": "📚",
+            "frontmatterValue": "\"📚\""
+          }
+        },
+        "richCanvasLayer": {
+          "layerOrder": {
+            "dialogOrder": 2,
+            "propertyPanelOrder": 1,
+            "sharedPortalRoot": true
+          },
+          "escapeClosesRichCanvasBeforePropertySettings": true,
+          "escapeRestoresPreviewFocus": true,
+          "cancelDoesNotPersistDraft": true,
+          "savePersistsContent": true
+        },
+        "portugueseSearch": [
+          "Moeda"
+        ],
+        "englishSearch": [
+          "Moeda"
+        ],
+        "changedRasterPropertyType": "currency",
+        "rasterPreservedAfterTypeChange": true,
+        "uploadedRasterHeader14pxAndSettings32px": true,
+        "uploadedSvgHeader14pxAndSettings32px": true,
+        "svgPersistedForReopen": true,
+        "pageIconPreserved": true,
+        "richCanvasEscapeAndCancelSave": {
+          "layerOrder": {
+            "dialogOrder": 2,
+            "propertyPanelOrder": 1,
+            "sharedPortalRoot": true
+          },
+          "escapeClosesRichCanvasBeforePropertySettings": true,
+          "escapeRestoresPreviewFocus": true,
+          "cancelDoesNotPersistDraft": true,
+          "savePersistsContent": true
+        },
+        "rasterTypeAndIconAfterReopen": {
+          "type": "currency",
+          "styleWidth": "14px",
+          "styleHeight": "14px",
+          "objectFit": "contain",
+          "renderedWidth": 14,
+          "renderedHeight": 14,
+          "naturalWidth": 200,
+          "naturalHeight": 400,
+          "svgViewBox": null
+        },
+        "svgIconAfterReopen": {
+          "styleWidth": "14px",
+          "styleHeight": "14px",
+          "objectFit": "contain",
+          "renderedWidth": 14,
+          "renderedHeight": 14,
+          "naturalWidth": null,
+          "naturalHeight": null,
+          "svgViewBox": "0 0 200 400"
+        },
+        "settingsSlotAfterReopen": {
+          "slot": {
+            "width": "32px",
+            "height": "32px"
+          },
+          "glyph": {
+            "styleWidth": "14px",
+            "styleHeight": "14px",
+            "objectFit": "contain",
+            "renderedWidth": 14,
+            "renderedHeight": 14,
+            "naturalWidth": 200,
+            "naturalHeight": 400,
+            "svgViewBox": null
+          }
+        },
+        "resetClearedOnlyRasterPropertyIcon": true,
+        "svgPropertyIconRetainedAfterOtherReset": true,
+        "pageIconBeforeAndAfterReset": {
+          "before": {
+            "domValue": "📚",
+            "frontmatterValue": "\"📚\""
+          },
+          "after": {
+            "domValue": "📚",
+            "frontmatterValue": "\"📚\""
+          }
+        },
+        "markdownAfterResetContainsNoRasterPropertyIcon": true
+      },
+      "fixture": {
+        "syntheticProfile": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-d9WakW\\ticket-37\\profile",
+        "syntheticVault": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-d9WakW\\ticket-37\\vault",
+        "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db",
+        "syntheticRasterIcon": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-d9WakW\\ticket-37\\portrait-200x400.png",
+        "syntheticSvgIcon": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-d9WakW\\ticket-37\\portrait-200x400.svg"
+      },
+      "compiledBuildIdentity": {
+        "initialLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:22:42.162Z",
+            "rendererIndexMtime": "2026-10-28T16:22:41.676Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "ab79a4ad403ebb6cdb0f09fdbd0089a799fb862643d3f6d9c47fe2550880d488",
+            "artifactFileCount": 3596,
+            "artifactContentSha256": "bff7b73840b019b3b771fa3a5fb7f77c84e5d1973c4bcdaabeb439f536e6d4f0"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:22:42.162Z",
+            "rendererIndexMtime": "2026-10-28T16:22:41.676Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "ab79a4ad403ebb6cdb0f09fdbd0089a799fb862643d3f6d9c47fe2550880d488",
+            "artifactFileCount": 3596,
+            "artifactContentSha256": "bff7b73840b019b3b771fa3a5fb7f77c84e5d1973c4bcdaabeb439f536e6d4f0"
+          }
+        },
+        "reopenedLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:22:42.162Z",
+            "rendererIndexMtime": "2026-10-28T16:22:41.676Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "ab79a4ad403ebb6cdb0f09fdbd0089a799fb862643d3f6d9c47fe2550880d488",
+            "artifactFileCount": 3596,
+            "artifactContentSha256": "bff7b73840b019b3b771fa3a5fb7f77c84e5d1973c4bcdaabeb439f536e6d4f0"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:22:42.162Z",
+            "rendererIndexMtime": "2026-10-28T16:22:41.676Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "ab79a4ad403ebb6cdb0f09fdbd0089a799fb862643d3f6d9c47fe2550880d488",
+            "artifactFileCount": 3596,
+            "artifactContentSha256": "bff7b73840b019b3b771fa3a5fb7f77c84e5d1973c4bcdaabeb439f536e6d4f0"
+          }
+        }
+      },
+      "actionVerified": true,
+      "reopenVerified": true
+    }
+  },
+  "compiledBuildStableAcrossLaunches": true,
+  "compiledArtifactStableAcrossLaunches": true,
+  "buildFingerprint": {
+    "commitAtSnapshot": "43e4045",
+    "sourceInputsSha256": null,
+    "artifactContentSha256": "bff7b73840b019b3b771fa3a5fb7f77c84e5d1973c4bcdaabeb439f536e6d4f0",
+    "artifactFileCount": 3596
+  },
+  "allWindowsStayedHidden": true,
+  "pageErrors": [],
+  "pageErrorsByLaunch": {
+    "initial": [],
+    "reopen": []
+  },
+  "overall": "passed"
+}

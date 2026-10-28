@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { dismissToast, useUi } from '../ui';
 import { dialogOpened } from '../platform/desktop';
 import { getLocale, t } from '../i18n';
+import { layerPortalTarget, useDismissableLayer } from './layers';
 
 // a sun on the horizon, drawn in code so it carries no third party license
 export function Logo({ size = 20 }: { size?: number }) {
@@ -47,27 +48,25 @@ export function Dialog({
   hideTitle,
 }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
+
+  useDismissableLayer({
+    surfaceRef: ref,
+    elementRef: backdropRef,
+    onDismiss: onClose,
+    captureFocusOnMount: true,
+    restoreFocusOnEscape: true,
+    restoreFocusOnUnmount: true,
   });
 
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
     const element = ref.current;
     const focusable = element?.querySelector<HTMLElement>(
       '[data-autofocus], input, button:not(.dialog-close), [tabindex="0"]',
     );
     (focusable ?? element)?.focus();
     const onKey = (event: KeyboardEvent) => {
-      // a menu or dropdown open over the dialog closes first
-      if ((event.target as HTMLElement | null)?.closest?.('.floating-layer')) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        closeRef.current();
-      }
       if (event.key === 'Tab' && element) {
         const items = Array.from(
           element.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex="0"]'),
@@ -89,14 +88,13 @@ export function Dialog({
     return () => {
       closed();
       document.removeEventListener('keydown', onKey, true);
-      if (previous?.isConnected) previous.focus({ preventScroll: true });
     };
   }, []);
 
   return createPortal(
     <div
+      ref={backdropRef}
       className="dialog-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <div
         ref={ref}
@@ -122,7 +120,7 @@ export function Dialog({
         {footer && <footer className="dialog-footer">{footer}</footer>}
       </div>
     </div>,
-    document.body,
+    layerPortalTarget(),
   );
 }
 

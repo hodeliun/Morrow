@@ -1,8 +1,9 @@
 import { computePosition, flip, offset, shift, size } from '@floating-ui/dom';
 import type { Placement } from '@floating-ui/dom';
 import type { ReactNode } from 'react';
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { layerPortalTarget, useDismissableLayer } from './layers';
 
 // a floating panel anchored to an element, closed by escape or a click outside
 export function Popover({
@@ -21,9 +22,12 @@ export function Popover({
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
+
+  useDismissableLayer({
+    surfaceRef: ref,
+    trigger: anchor instanceof HTMLElement ? anchor : null,
+    onDismiss: onClose,
+    restoreFocusOnEscape: true,
   });
 
   useLayoutEffect(() => {
@@ -65,29 +69,6 @@ export function Popover({
     return () => observer.disconnect();
   }, [anchor, placement]);
 
-  useEffect(() => {
-    const trigger = anchor instanceof HTMLElement ? anchor : null;
-    const onPointer = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (ref.current?.contains(target) || trigger?.contains(target)) return;
-      // menus opened from inside the popover live in their own layer
-      if ((target as HTMLElement).closest?.('.floating-layer')) return;
-      closeRef.current();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.stopPropagation();
-      closeRef.current();
-      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
-    };
-    document.addEventListener('pointerdown', onPointer, true);
-    document.addEventListener('keydown', onKey, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointer, true);
-      document.removeEventListener('keydown', onKey, true);
-    };
-  }, [anchor]);
-
   return createPortal(
     <div
       ref={ref}
@@ -98,6 +79,6 @@ export function Popover({
     >
       {children}
     </div>,
-    document.querySelector('main') ?? document.body,
+    layerPortalTarget(),
   );
 }

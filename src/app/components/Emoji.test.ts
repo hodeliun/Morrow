@@ -1,9 +1,10 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { encodeLucideIcon } from '../../core/icons';
+import { encodeFileIcon, encodeLucideIcon } from '../../core/icons';
 import { LUCIDE_ICON_NAMES, PageGlyph } from './Emoji';
 import { preparePageIconFile } from './EmojiPicker';
+import { PropertyGlyph } from './database/PropertyTypeSelect';
 
 describe('page icon renderer', () => {
   it('renders recolorable Lucide icons as inline SVG for page chrome and links', () => {
@@ -18,6 +19,23 @@ describe('page icon renderer', () => {
     expect(markup).toContain('page-link-icon');
     expect(LUCIDE_ICON_NAMES.length).toBeGreaterThan(1500);
     expect(LUCIDE_ICON_NAMES).toContain('BookOpen');
+  });
+
+  it.each([14, 32])('fits uploaded raster and SVG glyphs inside a %ipx property slot', (size) => {
+    for (const fileName of ['portrait-200x400.png', 'portrait-200x400.svg']) {
+      const icon = encodeFileIcon(`attachments/${fileName}`)!;
+      const markup = renderToStaticMarkup(
+        createElement(PropertyGlyph, { prop: { type: 'image', icon }, size }),
+      );
+      expect(markup).toContain(`style="width:${size}px;height:${size}px;object-fit:contain"`);
+    }
+  });
+
+  it('leaves page-level custom glyph sizing to its existing CSS contexts', () => {
+    const icon = encodeFileIcon('attachments/page-icon.png')!;
+    const markup = renderToStaticMarkup(createElement(PageGlyph, { icon }));
+    expect(markup).toContain('icon-loading');
+    expect(markup).not.toContain('style=');
   });
 
   it('accepts recognized raster bytes and sanitizes SVG before a vault write', async () => {

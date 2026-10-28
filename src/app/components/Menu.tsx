@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { layerPortalTarget, useDismissableLayer } from './layers';
 
 export type MenuEntry =
   | {
@@ -30,9 +31,12 @@ interface MenuProps {
 
 export function Menu({ anchor, entries, onClose, placement = 'bottom-start', label }: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
+
+  useDismissableLayer({
+    surfaceRef: ref,
+    trigger: anchor instanceof HTMLElement ? anchor : null,
+    onDismiss: onClose,
+    restoreFocusOnEscape: true,
   });
 
   useLayoutEffect(() => {
@@ -68,24 +72,17 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
 
   useEffect(() => {
     const trigger = anchor instanceof HTMLElement ? anchor : null;
-    const onPointer = (event: PointerEvent) => {
-      if (ref.current?.contains(event.target as Node)) return;
-      if (trigger?.contains(event.target as Node)) return;
-      closeRef.current();
-    };
-    const onBlurWindow = () => closeRef.current();
-    document.addEventListener('pointerdown', onPointer, true);
+    const onBlurWindow = () => onClose();
     window.addEventListener('blur', onBlurWindow);
     window.addEventListener('resize', onBlurWindow);
     return () => {
-      document.removeEventListener('pointerdown', onPointer, true);
       window.removeEventListener('blur', onBlurWindow);
       window.removeEventListener('resize', onBlurWindow);
       // give focus back to whatever opened the menu
       if (trigger?.isConnected && document.activeElement === document.body)
         trigger.focus({ preventScroll: true });
     };
-  }, [anchor]);
+  }, [anchor, onClose]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     const buttons = Array.from(
@@ -112,7 +109,7 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
       const last = buttons[buttons.length - 1];
       last?.focus();
       last?.scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'Escape' || event.key === 'Tab') {
+    } else if (event.key === 'Tab') {
       event.preventDefault();
       event.stopPropagation();
       onClose();
@@ -174,7 +171,6 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
         );
       })}
     </div>,
-    // inside the main landmark so assistive tech finds the menu where the page lives
-    document.querySelector('main') ?? document.body,
+    layerPortalTarget(),
   );
 }

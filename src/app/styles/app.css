@@ -1301,8 +1301,21 @@ input[type='checkbox']:checked::after {
 
 /* popovers and menus */
 
+.overlay-layer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.overlay-layer-root > * {
+  z-index: var(--layer-order, 1);
+  pointer-events: auto;
+}
+
 .floating-layer {
-  z-index: 60;
+  z-index: var(--layer-order, auto);
 }
 
 .popover {
@@ -1387,7 +1400,6 @@ input[type='checkbox']:checked::after {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
   background: var(--scrim);
   display: flex;
   align-items: flex-start;

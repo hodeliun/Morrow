@@ -3,6 +3,7 @@ import { ReactNodeViewRenderer } from '@tiptap/react';
 import { Plugin } from '@tiptap/pm/state';
 import { newId } from '../platform/files';
 import { LinkedDatabaseViewNode } from '../components/database/LinkedDatabaseView';
+import { shouldStopLinkedDatabaseControlEvent } from './linkedDatabaseEvents';
 
 interface LinkedDatabaseOptions {
   hostPageId: string;
@@ -64,7 +65,9 @@ export const LinkedDatabaseView = Node.create<LinkedDatabaseOptions>({
   },
 
   addNodeView() {
-    return ReactNodeViewRenderer(LinkedDatabaseViewNode);
+    return ReactNodeViewRenderer(LinkedDatabaseViewNode, {
+      stopEvent: ({ event }) => shouldStopLinkedDatabaseControlEvent(event),
+    });
   },
 
   addProseMirrorPlugins() {

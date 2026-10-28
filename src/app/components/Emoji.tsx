@@ -24,9 +24,28 @@ export function emojiSrc(emoji: string): string | null {
 }
 
 // page icons and other emoji in the interface, drawn the same on every system
-export function Emoji({ emoji, className }: { emoji: string; className?: string }) {
+export function Emoji({ emoji, className, size }: { emoji: string; className?: string; size?: number }) {
   const src = emojiSrc(emoji);
-  if (!src) return <span className={`emoji-text${className ? ` ${className}` : ''}`}>{emoji}</span>;
+  if (!src)
+    return (
+      <span
+        className={`emoji-text${className ? ` ${className}` : ''}`}
+        style={
+          size === undefined
+            ? undefined
+            : {
+                width: size,
+                height: size,
+                fontSize: size,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }
+        }
+      >
+        {emoji}
+      </span>
+    );
   return (
     <img
       className={`emoji-img${className ? ` ${className}` : ''}`}
@@ -35,12 +54,13 @@ export function Emoji({ emoji, className }: { emoji: string; className?: string 
       draggable={false}
       loading="lazy"
       decoding="async"
+      style={size === undefined ? undefined : { width: size, height: size, objectFit: 'contain' }}
     />
   );
 }
 
 // one renderer for emoji, the bundled Lucide catalog, and sanitized local icon uploads
-export function PageGlyph({ icon, className }: { icon: string; className?: string }) {
+export function PageGlyph({ icon, className, size }: { icon: string; className?: string; size?: number }) {
   const parsed = parsePageIcon(icon);
   const fileId = parsed?.kind === 'file' ? parsed.id : null;
   const fileColor = parsed?.kind === 'file' ? parsed.color : null;
@@ -70,30 +90,41 @@ export function PageGlyph({ icon, className }: { icon: string; className?: strin
     };
   }, [fileId, fileColor]);
 
-  if (!parsed) return <span className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`} />;
-  if (parsed.kind === 'emoji') return <Emoji emoji={parsed.value} className={className} />;
+  const sized =
+    size === undefined ? undefined : { width: size, height: size, objectFit: 'contain' as const };
+  if (!parsed)
+    return (
+      <span
+        className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`}
+        style={sized}
+      />
+    );
+  if (parsed.kind === 'emoji') return <Emoji emoji={parsed.value} className={className} size={size} />;
   if (parsed.kind === 'lucide') {
     const Icon = LUCIDE_ICONS[parsed.name];
     return Icon ? (
       <Icon
         className={`page-glyph${className ? ` ${className}` : ''}`}
-        size="1.2em"
+        size={size ?? '1.2em'}
         strokeWidth={1.75}
         style={parsed.color ? { color: parsed.color } : undefined}
         aria-hidden="true"
       />
     ) : (
-      <span className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`} />
+      <span
+        className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`}
+        style={sized}
+      />
     );
   }
 
   if (!asset || asset.id !== parsed.id)
-    return <span className={`page-glyph icon-loading${className ? ` ${className}` : ''}`} />;
+    return <span className={`page-glyph icon-loading${className ? ` ${className}` : ''}`} style={sized} />;
   if (asset.svg)
     return (
       <span
         className={`page-glyph custom-svg-icon${className ? ` ${className}` : ''}`}
-        style={parsed.color ? { color: parsed.color } : undefined}
+        style={{ ...sized, ...(parsed.color ? { color: parsed.color } : {}) }}
         aria-hidden="true"
         dangerouslySetInnerHTML={{ __html: asset.svg }}
       />
@@ -106,9 +137,15 @@ export function PageGlyph({ icon, className }: { icon: string; className?: strin
         alt=""
         draggable={false}
         aria-hidden="true"
+        style={sized}
       />
     );
-  return <span className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`} />;
+  return (
+    <span
+      className={`page-glyph icon-unavailable${className ? ` ${className}` : ''}`}
+      style={sized}
+    />
+  );
 }
 
 // the same for code that builds dom by hand, such as editor node views

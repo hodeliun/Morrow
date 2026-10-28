@@ -74,7 +74,7 @@ export function PropertyGlyph({
   size?: number;
 }) {
   if (prop.icon) {
-    return <PageGlyph icon={prop.icon} className={className} />;
+    return <PageGlyph icon={prop.icon} className={className} size={size} />;
   }
   const Icon = TYPE_ICONS[prop.type] ?? Type;
   return <Icon size={size} className={className} />;

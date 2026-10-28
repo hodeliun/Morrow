@@ -1,0 +1,130 @@
+{
+  "runAt": "2026-10-28T16:02:06.125Z",
+  "group": "delivery3",
+  "projectHead": "7e26c1f",
+  "compiledApp": "C:\\Users\\clove\\Projetos\\Morrow Public Fork\\dist-electron\\main.cjs",
+  "compiledAppModifiedAt": "2026-10-28T16:01:22.763Z",
+  "hiddenMode": true,
+  "syntheticFixturesRoot": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-KYg2yW",
+  "hiddenChecks": {
+    "#37": {
+      "initialLaunch": true,
+      "afterInitialActions": true,
+      "reopenedLaunch": true,
+      "afterReopenActions": true
+    }
+  },
+  "fatalFailures": [],
+  "tickets": {
+    "#37": {
+      "status": "passed",
+      "checks": {
+        "iconDialogLayerOrder": {
+          "dialogOrder": 2,
+          "propertyPanelOrder": 1,
+          "sharedPortalRoot": true
+        },
+        "iconTriggerStateAfterPointerClick": {
+          "dialogs": [
+            {
+              "className": "popover floating-layer panel-popover db-panel",
+              "visible": true,
+              "text": "NomeTipoTextoDescriçãoPreenchimentoManualPadrãoCalculadoOrdem crescente Ocultar Excluir"
+            },
+            {
+              "className": "dialog dialog-medium emoji-dialog",
+              "visible": true,
+              "text": "Ícone de “Value type test”EmojiLucideEnviar íconeAleatórioTodos"
+            }
+          ],
+          "bodyTail": "Calcular\tCalcular\t\nNovo\n\n2 linhas\n\nBuscar páginas que mencionam “Livros” sem vincular\nNome\nTipo\nTexto\nDescrição\nPreenchimento\nManual\nPadrão\nCalculado\nOrdem crescente\nOcultar\nExcluir\nÍcone de “Value type test”\nEmoji\nLucide\nEnviar ícone\nAleatório\nTodos",
+          "triggerEvents": [
+            {
+              "type": "pointerdown",
+              "target": {},
+              "defaultPrevented": false
+            },
+            {
+              "type": "click",
+              "target": {},
+              "defaultPrevented": false
+            }
+          ],
+          "triggerReactHandler": true
+        },
+        "iconSavedBeforeTypeSearch": {
+          "markerSaved": true,
+          "renderedCustomIconCount": 1,
+          "iconLabel": "grinning face",
+          "propertyPopoverClosedAfterPick": false
+        },
+        "portugueseSearch": [
+          "Moeda"
+        ],
+        "englishSearch": [
+          "Moeda"
+        ],
+        "selectedType": "currency",
+        "customIconChoice": "grinning face",
+        "schemaSaved": true,
+        "markdownHasTypeAndIcon": true,
+        "typeIsCurrencyAfterReopen": true,
+        "iconRendersAfterReopen": true
+      },
+      "fixture": {
+        "syntheticProfile": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-KYg2yW\\ticket-37\\profile",
+        "syntheticVault": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-KYg2yW\\ticket-37\\vault",
+        "originalImageHash": "9cdfb943a177df579827a25650e07a3b551a6a7003d8d1cb3d92f4144acec6db"
+      },
+      "compiledBuildIdentity": {
+        "initialLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          }
+        },
+        "reopenedLaunch": {
+          "beforeLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          },
+          "afterLaunch": {
+            "mainMtime": "2026-10-28T16:01:22.763Z",
+            "rendererIndexMtime": "2026-10-28T16:01:22.252Z",
+            "rendererAssetCount": 197,
+            "rendererAssetManifestSha256": "5ccb6eb1fc94218d9e802cbd563146f5dd4b90e441590afc49fbd4c9c1a739b3"
+          }
+        }
+      },
+      "actionVerified": true,
+      "reopenVerified": true
+    }
+  },
+  "compiledBuildStableAcrossLaunches": true,
+  "allWindowsStayedHidden": true,
+  "pageErrors": [],
+  "overall": "passed",
+  "evidenceKind": "historical UI run; preserved before focused icon-upload acceptance rerun",
+  "buildSnapshotHead": "7e26c1f",
+  "buildInputFingerprint": "a5cb3081f3bc739593670f05c795ed517b72e135796988a3331741ca278b6628",
+  "buildInputState": "Built/tested from HEAD 7e26c1f with uncommitted production source inputs captured by SHA-256; this is not a release candidate and was not built solely from the commit.",
+  "buildFingerprint": {
+    "commitAtSnapshot": "7e26c1f",
+    "sourceInputsSha256": "a5cb3081f3bc739593670f05c795ed517b72e135796988a3331741ca278b6628",
+    "artifactContentSha256": null,
+    "artifactHashCapturedAtHistoricalRun": false,
+    "originalRendererAssetManifestSha256": null,
+    "originalMainMtime": null
+  },
+  "preservedFromTemporaryEvidence": "C:\\Users\\clove\\AppData\\Local\\Temp\\morrow-delivery3-ui-KYg2yW\\evidence-delivery3.json"
+}

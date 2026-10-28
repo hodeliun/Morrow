@@ -32,6 +32,7 @@ import { pickFiles } from '../../platform/files';
 import { t } from '../../i18n';
 import { toast } from '../../ui';
 import { getSession, useWorkspace } from '../../workspace';
+import { layerPortalTarget, useDismissableLayer } from '../layers';
 import { setValue, updateProp } from './data';
 
 export function MediaPropertyInput({
@@ -284,10 +285,7 @@ function RichCanvasField({
 }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement | null>(null);
-  const close = () => {
-    setOpen(false);
-    setTimeout(() => trigger.current?.focus(), 0);
-  };
+  const close = () => setOpen(false);
   const doc = value === null ? null : parseRichCanvas(value);
   const invalid = value !== null && !doc;
   const summary = doc ? docToPlainText(doc).trim().replace(/\s+/g, ' ') : '';
@@ -310,6 +308,7 @@ function RichCanvasField({
       value={typeof value === 'string' ? value : emptyRichCanvasValue()}
       label={label}
       editable={editable}
+      triggerRef={trigger}
       onCancel={close}
       onSave={(next) => {
         if (onChange(next) === false) return;
@@ -320,7 +319,7 @@ function RichCanvasField({
   return (
     <span className="rich-canvas-field">
       {button}
-      {dialog && typeof document !== 'undefined' ? createPortal(dialog, document.body) : dialog}
+      {dialog && typeof document !== 'undefined' ? createPortal(dialog, layerPortalTarget()) : dialog}
     </span>
   );
 }
@@ -329,12 +328,14 @@ function RichCanvasDialog({
   value,
   label,
   editable,
+  triggerRef,
   onSave,
   onCancel,
 }: {
   value: string;
   label: string;
   editable: boolean;
+  triggerRef: { current: HTMLButtonElement | null };
   onSave: (next: string) => void;
   onCancel: () => void;
 }) {
@@ -369,6 +370,21 @@ function RichCanvasDialog({
     [value, editable],
   );
   const dialogRef = useRef<HTMLElement | null>(null);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
+
+  useDismissableLayer({
+    surfaceRef: dialogRef,
+    elementRef: backdropRef,
+    triggerRef,
+    captureFocusOnMount: Boolean(editor),
+    onDismiss: () => {
+      if (linkOpen) setLinkOpen(false);
+      else onCancel();
+    },
+    restoreFocusOnEscape: false,
+    restoreFocusOnUnmount: true,
+  });
+
   useEffect(() => {
     if (!editor) return;
     if (editable) editor.commands.focus();
@@ -443,9 +459,9 @@ function RichCanvasDialog({
 
   return (
     <div
+      ref={backdropRef}
       className="rich-canvas-backdrop"
       role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && onCancel()}
     >
       <section
         ref={dialogRef}
@@ -455,11 +471,6 @@ function RichCanvasDialog({
         aria-label={label}
         tabIndex={-1}
         onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            if (linkOpen) setLinkOpen(false);
-            else onCancel();
-          }
           if (event.key !== 'Tab') return;
           const focusable = Array.from(
             event.currentTarget.querySelectorAll<HTMLElement>(
