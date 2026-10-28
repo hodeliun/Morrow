@@ -64,7 +64,11 @@ export type Command =
       doc?: DocNode;
       index?: number;
       tags?: string[];
+      controls?: NamedControlDef[];
       properties?: Record<string, PropValue>;
+      extra?: Record<string, unknown>;
+      cover?: string | null;
+      coverPosition?: number;
       database?: DatabaseDef | null;
     }
   | { type: 'page.rename'; id: PageId; title: string; now: number }
@@ -453,7 +457,8 @@ function setPageFields(
         sourceDatabase?.kind === 'database'
           ? sourceDatabase.database?.properties.find((candidate) => candidate.id === key)
           : undefined;
-      if (!validValue(value, maxPropertyValueLength(property))) return fail('Invalid property value.');
+      if (value !== null && !validValue(value, maxPropertyValueLength(property)))
+        return fail('Invalid property value.');
       const previous = page.value.properties[key] ?? null;
       if (property && !samePropValue(previous, value)) {
         const error = propertyValueError(property, value);
@@ -1158,6 +1163,20 @@ function createPage(
   const noteStyle = command.noteStyle === undefined ? null : normalizeNoteStyle(command.noteStyle);
   const doc = validateDoc(command.doc ?? emptyDoc());
   if (!doc.ok) return doc;
+  const controls = normalizeNamedControls(command.controls);
+  if (!controls) return fail('Invalid page controls.');
+  for (const control of controls) {
+    const controlError =
+      controlValueErrorInState(control, control.value, state) ??
+      controlValueErrorInState(control, control.defaultValue, state);
+    if (controlError) return fail(`Control ${control.name}: ${controlError}`);
+  }
+  const extra = normalizeExtra(command.extra);
+  if (!extra) return fail('Some frontmatter values are not supported or exceed safe editing limits.');
+  const cover = command.cover === undefined || command.cover === null ? null : validCover(command.cover);
+  if (command.cover !== undefined && command.cover !== null && cover === null) return fail('Invalid cover.');
+  if (command.coverPosition !== undefined && !validCoverPosition(command.coverPosition))
+    return fail('Invalid cover position.');
   const kind = command.kind && PAGE_KINDS.includes(command.kind) ? command.kind : 'page';
   if (kind === 'database' && hasInvalidSequenceDefinition(command.database))
     return fail('Invalid numeric sequence configuration.');
@@ -1189,7 +1208,13 @@ function createPage(
     dailyDate: command.dailyDate ?? null,
     noteStyle,
     tags: normalizeTags(command.tags ?? []),
+    controls,
     properties,
+    extra,
+    cover,
+    coverPosition: command.coverPosition === undefined
+      ? DEFAULT_COVER_POSITION
+      : normalizeCoverPosition(command.coverPosition),
     database:
       kind === 'database' ? (normalizeDatabase(command.database) ?? { properties: [], views: [] }) : null,
   });

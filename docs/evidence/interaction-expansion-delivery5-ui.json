@@ -1,0 +1,41 @@
+{
+  "timestamp": "2026-10-28T08:13:47.425Z",
+  "fixture": "synthetic-only",
+  "hiddenWindowVerified": true,
+  "ticket35": {
+    "filteredSelectionClearsWhenVisibleRowsChange": true,
+    "shiftRangeSelectionVerified": true,
+    "keyboardSelectAllVerified": true,
+    "visibleSelectAllAndTriStateVerified": true,
+    "rowMenuActionsAndKeyboardCloseVerified": true,
+    "insertBeforeAfterAndUndoVerified": true,
+    "recoveryJournalReadyBeforeNextActionVerified": true,
+    "manualReorderVerified": true,
+    "duplicatePreservesRowsAndUndoVerified": true,
+    "trashWarningCountsNestedRowsAndEscapeCancels": true,
+    "dialogFocusReturnsToMenuTrigger": true,
+    "keyboardTrashConfirmAndUndoVerified": true,
+    "deleteDialogFocusContainmentVerified": true,
+    "lastVisibleRowDeletionMovesFocusToTable": true
+  },
+  "ticket36": {
+    "cellClipboardRemainsDistinct": true,
+    "fullRowClipboardVerified": true,
+    "keyboardPasteIgnoredFromPortaledPropertyPopoverVerified": true,
+    "destinationChangeRecomputesMappings": true,
+    "emptyDestinationDefaultPreviewVerified": true,
+    "mappingCancelAndFocusRestoreVerified": true,
+    "dialogTabContainmentVerified": true,
+    "keyboardConfirmVerified": true,
+    "keyboardPasteWithoutDestinationSelectionVerified": true,
+    "keyboardPasteIntoEmptyTableVerified": true,
+    "sameTablePasteCreatesFreshIdsAndUndoVerified": true,
+    "copyToEmptyAndPersistenceVerified": true,
+    "copiedContentAndUnmappedFrontmatterVerified": true,
+    "newIdsVerified": true,
+    "reopenPersistenceVerified": true,
+    "movePreservesSourceAndUndoVerified": true
+  },
+  "rendererPageErrors": [],
+  "cleanupVerified": true
+}

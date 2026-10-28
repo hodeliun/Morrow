@@ -1,10 +1,16 @@
 import { childrenOf } from '../core/tree';
+import { validateDoc } from '../core/doc';
+import { normalizeNamedControls } from '../core/controls';
 import type { Command } from '../core/commands';
 import type { ActionRecordChange, TableActionPlan } from '../core/tableActions';
-import type { PageId, PageMeta, PropValue, WorkspaceState } from '../core/model';
-import { normalizePage } from '../core/migrations';
+import type { DatabaseDef, DocNode, PageId, PageMeta, PropValue, WorkspaceState } from '../core/model';
+import { normalizeDatabase, normalizePage } from '../core/migrations';
+import { normalizeExtra } from '../core/vault/frontmatter';
 import { relationIds } from '../core/relations';
 import { errorMessage } from '../core/result';
+import { ROW_OPERATION_PROPERTY_ID } from '../core/rowOperations';
+import { validPageIcon } from '../core/icons';
+import { normalizeCoverPosition, validCover, validCoverPosition, validNoteStyle } from '../core/model';
 import type { WorkspaceSession } from './session';
 
 export const TABLE_ACTION_JOURNAL_META = 'table-action-journal.json';
@@ -194,7 +200,54 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
     return { status: 'aborted', journal, message: 'No action changes were written.' };
   }
   const beforeIds = new Set(classification.beforeIds);
-  const commands = journal.commands.filter((command) => beforeIds.has(commandPageId(command)));
+  const afterIds = new Set(classification.afterIds);
+  const commands = journal.commands
+    .filter((command) => beforeIds.has(commandPageId(command)))
+    .map((command) =>
+      repairPlannedSequenceValue(
+        command,
+        journal.records.find((record) => record.id === commandPageId(command)),
+        current,
+      ),
+    );
+  for (const id of classification.partialDocIds) {
+    const record = journal.records.find((candidate) => candidate.id === id);
+    if (record?.docAfter)
+      commands.push({ type: 'page.setDoc', id, doc: record.docAfter, now: journal.createdAt });
+  }
+  const completedCreates = journal.commands.filter(
+    (command): command is Extract<Command, { type: 'page.create' }> =>
+      command.type === 'page.create' && afterIds.has(command.id),
+  );
+  const pendingCreates = journal.commands.filter(
+    (command): command is Extract<Command, { type: 'page.create' }> =>
+      command.type === 'page.create' && beforeIds.has(command.id),
+  );
+  const createdParents = new Set(
+    completedCreates
+      .map((command) => command.parentId)
+      .filter((parentId): parentId is PageId => parentId !== null),
+  );
+  for (const parentId of createdParents) {
+    if (pendingCreates.some((command) => command.parentId === parentId)) continue;
+    if (commands.some((command) => command.type === 'database.set' && command.id === parentId)) continue;
+    const parentRecord = journal.records.find((record) => record.id === parentId);
+    if (!beforeIds.has(parentId) || !parentRecord?.before?.database || !parentRecord.after?.database)
+      continue;
+    if (!databaseChangeOnlyAdvancesSequences(parentRecord.before.database, parentRecord.after.database)) {
+      journal.status = 'conflict';
+      journal.conflicts = [...new Set([...journal.conflicts, parentId])];
+      journal.error = 'A created row changed its table in a way that cannot be recovered safely.';
+      await trySaveJournal(session, journal);
+      return { status: 'conflict', journal, message: conflictMessage(journal.conflicts) };
+    }
+    commands.push({
+      type: 'database.set',
+      id: parentId,
+      database: parentRecord.after.database,
+      now: journal.createdAt,
+    });
+  }
   const applied = session.executeAll(commands);
   if (!applied.ok) {
     journal.error = applied.error;
@@ -240,7 +293,10 @@ async function undoTableActionUnlocked(session: WorkspaceSession): Promise<Table
   const classification = classifyRecords(current, journal.records);
   const conflicts = [...classification.conflicts];
   const safeIds = new Set(classification.afterIds);
-  const undoCommands = buildUndoCommands(current, journal.records, safeIds, conflicts, Date.now());
+  const undoCommands =
+    journal.propertyId === ROW_OPERATION_PROPERTY_ID
+      ? buildRowOperationUndo(current, journal.records, safeIds, conflicts, Date.now())
+      : buildUndoCommands(current, journal.records, safeIds, conflicts, Date.now());
   journal.status = 'undoing';
   journal.undoCommands = undoCommands;
   journal.conflicts = [...new Set(conflicts)];
@@ -272,7 +328,9 @@ async function resumeUndo(
   const commands = (journal.undoCommands ?? []).filter((command) => afterIds.has(commandPageId(command)));
   const relatedRows = relationConflictTargets(current, journal.records, conflicts);
   for (const id of relatedRows) conflicts.add(id);
+  if (journal.propertyId === ROW_OPERATION_PROPERTY_ID) expandRowOrderConflicts(journal.records, conflicts);
   const safeCommands = commands.filter((command) => {
+    if (conflicts.has(commandPageId(command))) return false;
     if (command.type !== 'relation.set') return true;
     const valueIds =
       typeof command.value === 'string' ? [command.value] : Array.isArray(command.value) ? command.value : [];
@@ -391,6 +449,183 @@ function buildUndoCommands(
   return commands;
 }
 
+function buildRowOperationUndo(
+  state: WorkspaceState,
+  records: ActionRecordChange[],
+  safeIds: ReadonlySet<PageId>,
+  conflicts: PageId[],
+  now: number,
+): Command[] {
+  const conflictSet = new Set(conflicts);
+  for (const id of relationConflictTargets(state, records, conflictSet)) conflictSet.add(id);
+  expandRowOrderConflicts(records, conflictSet);
+
+  const removable: ActionRecordChange[] = [];
+  for (const record of records) {
+    if (!safeIds.has(record.id) || conflictSet.has(record.id) || record.before || !record.after) continue;
+    if (childrenOf(state.pages, record.id).length > 0 || hasExternalRelation(state, record.id, safeIds)) {
+      conflictSet.add(record.id);
+      continue;
+    }
+    removable.push(record);
+  }
+
+  const commands: Command[] = [];
+  // Clear copied rows' owning relations together before deleting any of them.
+  for (const record of removable) {
+    commands.push({ type: 'page.setFields', id: record.id, properties: {}, now });
+  }
+  for (const record of removable) {
+    commands.push({ type: 'page.trash', id: record.id, now });
+    commands.push({ type: 'page.deleteForever', id: record.id });
+  }
+
+  const existing = records.filter(
+    (record) => safeIds.has(record.id) && !conflictSet.has(record.id) && record.before && record.after,
+  );
+  const moving = existing.filter((record) => record.before!.parentId !== record.after!.parentId);
+  for (const record of existing) {
+    if (record.before!.trashedAt === null && record.after!.trashedAt !== null)
+      commands.push({ type: 'page.restore', id: record.id });
+  }
+  for (const record of moving) {
+    commands.push({ type: 'page.setFields', id: record.id, properties: {}, now });
+  }
+  for (const record of moving) {
+    commands.push({ type: 'page.move', id: record.id, parentId: record.before!.parentId });
+  }
+
+  const orderGroups = new Map<PageId | null, ActionRecordChange[]>();
+  for (const record of existing) {
+    const before = record.before!;
+    const after = record.after!;
+    const changedOrder =
+      before.parentId !== after.parentId ||
+      before.order !== after.order ||
+      (before.trashedAt === null) !== (after.trashedAt === null);
+    if (!changedOrder) continue;
+    orderGroups.set(before.parentId, [...(orderGroups.get(before.parentId) ?? []), record]);
+  }
+  for (const [parentId, group] of orderGroups) {
+    group.sort((a, b) => a.before!.order - b.before!.order || a.id.localeCompare(b.id));
+    for (const record of group) {
+      commands.push({ type: 'page.move', id: record.id, parentId, index: record.before!.order });
+    }
+  }
+
+  for (const record of existing) {
+    const before = record.before!;
+    const after = record.after!;
+    if (
+      before.parentId === after.parentId &&
+      same(before.properties, after.properties) &&
+      same(before.extra, after.extra)
+    )
+      continue;
+    const database = before.parentId ? state.pages[before.parentId]?.database : null;
+    const inverseIds = new Set(
+      database?.properties
+        .filter((prop) => prop.type === 'relation' && prop.relation?.isInverse)
+        .map((prop) => prop.id) ?? [],
+    );
+    const properties = Object.fromEntries(
+      Object.entries(before.properties).filter(([propertyId]) => !inverseIds.has(propertyId)),
+    );
+    commands.push({ type: 'page.setFields', id: record.id, properties, extra: before.extra, now });
+  }
+
+  for (const record of existing) {
+    const before = record.before!;
+    const after = record.after!;
+    if (before.kind !== 'database' || !before.database || after.kind !== 'database' || !after.database)
+      continue;
+    const currentDatabase = state.pages[record.id]?.database;
+    const restoredDatabase = currentDatabase
+      ? keepSequenceCounters(before.database, currentDatabase)
+      : before.database;
+    if (currentDatabase && !same(restoredDatabase, currentDatabase)) {
+      commands.push({ type: 'database.set', id: record.id, database: restoredDatabase, now });
+    }
+  }
+
+  conflicts.splice(0, conflicts.length, ...conflictSet);
+  return commands;
+}
+
+function repairPlannedSequenceValue(
+  command: Command,
+  record: ActionRecordChange | undefined,
+  state: WorkspaceState,
+): Command {
+  if (command.type !== 'page.create' || !record?.after) return command;
+  const parent = command.parentId ? state.pages[command.parentId] : undefined;
+  if (!parent?.database) return command;
+  const properties = { ...(command.properties ?? {}) };
+  let changed = false;
+  for (const prop of parent.database.properties) {
+    if (prop.fillMode !== 'default' || !prop.defaultSequence || Object.hasOwn(properties, prop.id)) continue;
+    if (!Object.hasOwn(record.after.properties, prop.id)) continue;
+    properties[prop.id] = record.after.properties[prop.id]!;
+    changed = true;
+  }
+  return changed ? { ...command, properties } : command;
+}
+
+function databaseChangeOnlyAdvancesSequences(before: DatabaseDef, after: DatabaseDef): boolean {
+  const withoutCounters = (database: DatabaseDef) => ({
+    ...database,
+    properties: database.properties.map(({ sequenceNext: _sequenceNext, ...property }) => property),
+  });
+  const advanced = before.properties.some((property) => {
+    const afterProperty = after.properties.find((candidate) => candidate.id === property.id);
+    return afterProperty && afterProperty.sequenceNext !== property.sequenceNext;
+  });
+  return advanced && same(withoutCounters(before), withoutCounters(after));
+}
+
+function keepSequenceCounters(target: DatabaseDef, current: DatabaseDef): DatabaseDef {
+  return {
+    ...target,
+    properties: target.properties.map((property) => {
+      const currentProperty = current.properties.find((candidate) => candidate.id === property.id);
+      const counters = [property.sequenceNext, currentProperty?.sequenceNext].filter(
+        (value): value is number => typeof value === 'number',
+      );
+      if (counters.length === 0) return property;
+      const sequenceNext = Math.max(...counters);
+      return property.sequenceNext === sequenceNext ? property : { ...property, sequenceNext };
+    }),
+  };
+}
+
+function expandRowOrderConflicts(records: ActionRecordChange[], conflicts: Set<PageId>): void {
+  const affected = records.filter((record) => {
+    if (!record.before || !record.after) return false;
+    return (
+      record.before.parentId !== record.after.parentId ||
+      record.before.order !== record.after.order ||
+      (record.before.trashedAt === null) !== (record.after.trashedAt === null)
+    );
+  });
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const conflictedId of [...conflicts]) {
+      const conflicted = affected.find((record) => record.id === conflictedId);
+      if (!conflicted) continue;
+      const parents = new Set([conflicted.before!.parentId, conflicted.after!.parentId]);
+      for (const candidate of affected) {
+        if (parents.has(candidate.before!.parentId) || parents.has(candidate.after!.parentId)) {
+          if (!conflicts.has(candidate.id)) {
+            conflicts.add(candidate.id);
+            grew = true;
+          }
+        }
+      }
+    }
+  }
+}
+
 function hasExternalRelation(
   state: WorkspaceState,
   pageId: PageId,
@@ -442,16 +677,39 @@ interface RecordClassification {
   beforeIds: PageId[];
   afterIds: PageId[];
   conflicts: PageId[];
+  partialDocIds: PageId[];
 }
 
 function classifyRecords(state: WorkspaceState, records: ActionRecordChange[]): RecordClassification {
-  const result: RecordClassification = { before: 0, after: 0, beforeIds: [], afterIds: [], conflicts: [] };
+  const result: RecordClassification = {
+    before: 0,
+    after: 0,
+    beforeIds: [],
+    afterIds: [],
+    conflicts: [],
+    partialDocIds: [],
+  };
   for (const record of records) {
     const current = state.pages[record.id] ?? null;
-    if (same(current, record.after)) {
+    const currentDoc = state.docs[record.id] ?? null;
+    const hasDocSnapshot = Object.hasOwn(record, 'docBefore') && Object.hasOwn(record, 'docAfter');
+    const afterPage = same(current, record.after);
+    const beforePage = same(current, record.before);
+    if (afterPage && (!hasDocSnapshot || same(currentDoc, record.docAfter))) {
       result.after++;
       result.afterIds.push(record.id);
-    } else if (same(current, record.before)) {
+    } else if (
+      afterPage &&
+      hasDocSnapshot &&
+      same(currentDoc, record.docBefore) &&
+      record.docAfter !== null
+    ) {
+      result.partialDocIds.push(record.id);
+    } else if (beforePage && (!hasDocSnapshot || same(currentDoc, record.docBefore))) {
+      result.before++;
+      result.beforeIds.push(record.id);
+    } else if (beforePage && hasDocSnapshot && same(currentDoc, record.docAfter)) {
+      // The document reached disk first. Replaying the page command safely repairs the pair.
       result.before++;
       result.beforeIds.push(record.id);
     } else result.conflicts.push(record.id);
@@ -460,13 +718,22 @@ function classifyRecords(state: WorkspaceState, records: ActionRecordChange[]): 
 }
 
 function classifyUndoRecords(state: WorkspaceState, records: ActionRecordChange[]): RecordClassification {
-  const result: RecordClassification = { before: 0, after: 0, beforeIds: [], afterIds: [], conflicts: [] };
+  const result: RecordClassification = {
+    before: 0,
+    after: 0,
+    beforeIds: [],
+    afterIds: [],
+    conflicts: [],
+    partialDocIds: [],
+  };
   for (const record of records) {
     const current = state.pages[record.id] ?? null;
-    if (same(current, record.before)) {
+    const currentDoc = state.docs[record.id] ?? null;
+    const hasDocSnapshot = Object.hasOwn(record, 'docBefore') && Object.hasOwn(record, 'docAfter');
+    if (same(current, record.before) && (!hasDocSnapshot || same(currentDoc, record.docBefore))) {
       result.before++;
       result.beforeIds.push(record.id);
-    } else if (same(current, record.after)) {
+    } else if (same(current, record.after) && (!hasDocSnapshot || same(currentDoc, record.docAfter))) {
       result.after++;
       result.afterIds.push(record.id);
     } else result.conflicts.push(record.id);
@@ -549,16 +816,41 @@ function normalizeJournal(raw: unknown): TableActionJournal | null {
     if ((record.before !== null && !before) || (record.after !== null && !after)) return null;
     if (before && before.id !== record.id) return null;
     if (after && after.id !== record.id) return null;
-    records.push({ id: record.id, before, after });
+    let docBefore: DocNode | null | undefined;
+    let docAfter: DocNode | null | undefined;
+    if (Object.hasOwn(record, 'docBefore')) {
+      if (record.docBefore === null) docBefore = null;
+      else {
+        const validated = validateDoc(record.docBefore);
+        if (!validated.ok) return null;
+        docBefore = validated.value;
+      }
+    }
+    if (Object.hasOwn(record, 'docAfter')) {
+      if (record.docAfter === null) docAfter = null;
+      else {
+        const validated = validateDoc(record.docAfter);
+        if (!validated.ok) return null;
+        docAfter = validated.value;
+      }
+    }
+    if (Object.hasOwn(record, 'docBefore') !== Object.hasOwn(record, 'docAfter')) return null;
+    records.push({
+      id: record.id,
+      before,
+      after,
+      ...(docBefore !== undefined ? { docBefore } : {}),
+      ...(docAfter !== undefined ? { docAfter } : {}),
+    });
   }
   const recordsById = new Map(records.map((record) => [record.id, record]));
   const commands = item.commands.map((command) =>
-    normalizeActionCommand(command, recordsById, item.databaseId as string),
+    normalizeActionCommand(command, recordsById, item.databaseId as string, 'action'),
   );
   if (commands.some((command) => !command)) return null;
   const undoCommands = Array.isArray(item.undoCommands)
     ? item.undoCommands.map((command) =>
-        normalizeActionCommand(command, recordsById, item.databaseId as string),
+        normalizeActionCommand(command, recordsById, item.databaseId as string, 'undo'),
       )
     : undefined;
   if (undoCommands?.some((command) => !command)) return null;
@@ -596,6 +888,7 @@ function normalizeActionCommand(
   raw: unknown,
   records: ReadonlyMap<PageId, ActionRecordChange>,
   databaseId: PageId,
+  phase: 'action' | 'undo',
 ): Command | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const command = raw as Record<string, unknown>;
@@ -604,10 +897,12 @@ function normalizeActionCommand(
   const now = Number.isFinite(command.now) ? (command.now as number) : null;
   if (command.type === 'page.create') {
     if (
+      phase !== 'action' ||
       !record ||
       record.before !== null ||
       record.after === null ||
       command.parentId !== databaseId ||
+      record.after.parentId !== databaseId ||
       now === null
     )
       return null;
@@ -615,13 +910,93 @@ function normalizeActionCommand(
     const properties =
       command.properties === undefined ? undefined : normalizeJournalValues(command.properties);
     if (command.properties !== undefined && !properties) return null;
+    const doc = command.doc === undefined ? undefined : validateDoc(command.doc);
+    if (command.doc !== undefined && !doc?.ok) return null;
+    const controls = command.controls === undefined ? undefined : normalizeNamedControls(command.controls);
+    if (command.controls !== undefined && !controls) return null;
+    const extra = command.extra === undefined ? undefined : normalizeExtra(command.extra);
+    if (command.extra !== undefined && !extra) return null;
+    const icon = command.icon;
+    if (icon !== undefined && icon !== null && (typeof icon !== 'string' || !validPageIcon(icon)))
+      return null;
+    if (
+      command.tags !== undefined &&
+      (!Array.isArray(command.tags) ||
+        command.tags.length > 200 ||
+        command.tags.some((tag) => typeof tag !== 'string' || tag.length > 100))
+    )
+      return null;
+    if (command.noteStyle !== undefined && !validNoteStyle(command.noteStyle)) return null;
+    const cover = command.cover;
+    if (cover !== undefined && cover !== null && (typeof cover !== 'string' || validCover(cover) === null))
+      return null;
+    if (command.coverPosition !== undefined && !validCoverPosition(command.coverPosition)) return null;
+    if (
+      command.index !== undefined &&
+      (typeof command.index !== 'number' ||
+        !Number.isInteger(command.index) ||
+        command.index < 0 ||
+        command.index > 100_000)
+    )
+      return null;
+    const createdDoc = doc?.ok ? doc.value : undefined;
     return {
       type: 'page.create',
       id,
       parentId: databaseId,
       now,
       title: command.title,
+      ...(command.index !== undefined ? { index: command.index as number } : {}),
+      ...(icon !== undefined ? { icon: icon as string | null } : {}),
+      ...(Array.isArray(command.tags) ? { tags: command.tags as string[] } : {}),
+      ...(command.noteStyle !== undefined
+        ? { noteStyle: command.noteStyle as NonNullable<PageMeta['noteStyle']> }
+        : {}),
+      ...(controls ? { controls } : {}),
       ...(properties ? { properties } : {}),
+      ...(extra ? { extra } : {}),
+      ...(cover !== undefined ? { cover: cover as string | null } : {}),
+      ...(command.coverPosition !== undefined
+        ? { coverPosition: normalizeCoverPosition(command.coverPosition) }
+        : {}),
+      ...(createdDoc ? { doc: createdDoc } : {}),
+    };
+  }
+  if (command.type === 'page.move') {
+    const targetParentId = phase === 'undo' ? record?.before?.parentId : record?.after?.parentId;
+    if (
+      !record?.before ||
+      !record.after ||
+      (typeof command.parentId !== 'string' && command.parentId !== null) ||
+      command.parentId !== targetParentId ||
+      (command.index !== undefined &&
+        (typeof command.index !== 'number' ||
+          !Number.isInteger(command.index) ||
+          command.index < 0 ||
+          command.index > 100_000))
+    )
+      return null;
+    return {
+      type: 'page.move',
+      id,
+      parentId: targetParentId!,
+      ...(command.index !== undefined ? { index: command.index as number } : {}),
+    };
+  }
+  if (command.type === 'page.setFields') {
+    if (!record?.after || now === null) return null;
+    const properties =
+      command.properties === undefined ? undefined : normalizeJournalValues(command.properties);
+    if (command.properties !== undefined && !properties) return null;
+    const extra = command.extra === undefined ? undefined : normalizeExtra(command.extra);
+    if (command.extra !== undefined && !extra) return null;
+    if (properties === undefined && extra === undefined) return null;
+    return {
+      type: 'page.setFields',
+      id,
+      now,
+      ...(properties ? { properties } : {}),
+      ...(extra ? { extra } : {}),
     };
   }
   if (command.type === 'page.setProperties') {
@@ -655,12 +1030,36 @@ function normalizeActionCommand(
     return { type: 'page.control.setValue', id, controlId: command.controlId, value: command.value, now };
   }
   if (command.type === 'page.trash') {
-    return record?.before === null && Boolean(record.after) && now !== null
-      ? { type: 'page.trash', id, now }
-      : null;
+    if (!record?.after || now === null) return null;
+    if (
+      (phase === 'action' &&
+        (!record.before || record.before.trashedAt !== null || record.after.trashedAt === null)) ||
+      (phase === 'undo' && record.before !== null)
+    )
+      return null;
+    return { type: 'page.trash', id, now };
+  }
+  if (command.type === 'page.restore') {
+    if (phase !== 'undo' || !record?.before || !record.after || record.after.trashedAt === null) return null;
+    return { type: 'page.restore', id };
   }
   if (command.type === 'page.deleteForever')
-    return record?.before === null && Boolean(record.after) ? { type: 'page.deleteForever', id } : null;
+    return phase === 'undo' && record?.before === null && Boolean(record.after)
+      ? { type: 'page.deleteForever', id }
+      : null;
+  if (command.type === 'database.set') {
+    if (
+      phase !== 'undo' ||
+      !record?.before?.database ||
+      record.before.kind !== 'database' ||
+      !record.after?.database ||
+      record.after.kind !== 'database' ||
+      now === null
+    )
+      return null;
+    const database = normalizeDatabase(command.database);
+    return database ? { type: 'database.set', id, database, now } : null;
+  }
   return null;
 }
 

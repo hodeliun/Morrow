@@ -3,6 +3,14 @@ import type { Command } from '../core/commands';
 import type { DatabaseDef, PropDef, WorkspaceState } from '../core/model';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import { planTableAction } from '../core/tableActions';
+import {
+  asTableActionPlan,
+  planDuplicateRows,
+  planMoveRows,
+  planPasteRows,
+  suggestRowPropertyMappings,
+} from '../core/rowOperations';
+import { createRowClipboardPayload } from '../core/rowClipboard';
 import { MemoryVault } from './memoryVault';
 import { WorkspaceSession } from './session';
 import type { VaultRepository } from './vaultRepository';
@@ -74,16 +82,21 @@ function definitions(): DatabaseDef {
 
 class FailingWriteVault extends MemoryVault {
   inspectActionWrites = false;
+  databaseFirstPageWriteOrder = false;
   failOnPageWrite = 0;
   pageWriteCount = 0;
   journalAtFirstPageWrite: string | null = null;
+  registryAtFirstPageWrite: string | null = null;
 
   override async apply(ops: VaultOp[]): Promise<VaultOpResult[]> {
     const results: VaultOpResult[] = [];
-    for (const op of ops) {
+    const orderedOps = this.databaseFirstPageWriteOrder ? databasePageWritesFirst(ops) : ops;
+    for (const op of orderedOps) {
       if (this.inspectActionWrites && op.op === 'write' && op.path.toLowerCase().endsWith('.md')) {
-        if (this.pageWriteCount === 0)
+        if (this.pageWriteCount === 0) {
           this.journalAtFirstPageWrite = this.text(`.morrow/${TABLE_ACTION_JOURNAL_META}`) ?? null;
+          this.registryAtFirstPageWrite = this.text('.morrow/workspace.json') ?? null;
+        }
         this.pageWriteCount++;
         if (this.failOnPageWrite > 0 && this.pageWriteCount === this.failOnPageWrite) {
           results.push({ ok: false, code: 'error', message: 'simulated page write failure' });
@@ -97,6 +110,24 @@ class FailingWriteVault extends MemoryVault {
     }
     return results;
   }
+}
+
+function databasePageWritesFirst(ops: VaultOp[]): VaultOp[] {
+  const ordered = [...ops];
+  const indexes = ops.flatMap((op, index) =>
+    op.op === 'write' && op.path.toLowerCase().endsWith('.md') ? [index] : [],
+  );
+  const pageWrites = indexes
+    .map((index) => ops[index]!)
+    .filter((op): op is Extract<VaultOp, { op: 'write' }> => op.op === 'write')
+    .sort((left, right) => {
+      const depth = (path: string) => path.split('/').length;
+      return depth(left.path) - depth(right.path);
+    });
+  indexes.forEach((index, position) => {
+    ordered[index] = pageWrites[position]!;
+  });
+  return ordered;
 }
 
 async function open(vault: MemoryVault): Promise<{ session: WorkspaceSession; repository: VaultRepository }> {
@@ -253,6 +284,329 @@ describe('table action persistence', () => {
       2,
     );
     expect((await readTableActionJournal(session))?.status).toBe('undone');
+    await session.close();
+  });
+
+  it('journals, reopens, and undoes a row copy together with its complete document', async () => {
+    const vault = new MemoryVault();
+    const { session, repository } = await open(vault);
+    await seed(session);
+    const changed = session.execute({
+      type: 'page.setDoc',
+      id: 'row-one',
+      doc: {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'First copied body' }] }],
+      },
+      now: 110,
+    });
+    expect(changed.ok).toBe(true);
+    expect(await session.flush()).toBe(true);
+
+    const planned = planDuplicateRows(session.getState(), 'table', ['row-one'], nextId, 120, '(copy)');
+    if (!planned.ok) throw new Error(planned.error);
+    const copyId = planned.value.rowIds[0]!;
+    const saved = await executeTableAction(session, asTableActionPlan(planned.value, 'Copy rows'), 120);
+    expect(saved.status).toBe('saved');
+    expect(session.getState().docs[copyId]?.content?.[0]?.content?.[0]?.text).toBe('First copied body');
+
+    crash(session, repository);
+    const reopened = await open(vault);
+    expect(reopened.session.getState().docs[copyId]?.content?.[0]?.content?.[0]?.text).toBe(
+      'First copied body',
+    );
+    const undone = await undoTableAction(reopened.session);
+    expect(undone.status).toBe('undone');
+    expect(reopened.session.getState().pages).not.toHaveProperty(copyId);
+    expect(reopened.session.getState().docs).not.toHaveProperty(copyId);
+    expect((await readTableActionJournal(reopened.session))?.status).toBe('undone');
+    await reopened.session.close();
+  });
+
+  it('recovers a partially saved multi-row copy after reopening', async () => {
+    const vault = new FailingWriteVault();
+    const first = await open(vault);
+    await seed(first.session);
+    const planned = planDuplicateRows(
+      first.session.getState(),
+      'table',
+      ['row-one', 'row-two'],
+      nextId,
+      120,
+      '(copy)',
+    );
+    if (!planned.ok) throw new Error(planned.error);
+    const copyIds = [...planned.value.rowIds];
+    vault.inspectActionWrites = true;
+    vault.failOnPageWrite = 2;
+    vault.pageWriteCount = 0;
+
+    const saved = await executeTableAction(first.session, asTableActionPlan(planned.value, 'Copy rows'), 120);
+    expect(saved.status).toBe('pending');
+    expect(vault.journalAtFirstPageWrite).not.toBeNull();
+    const registered = JSON.parse(vault.registryAtFirstPageWrite ?? '{}') as {
+      pages?: Record<string, { id?: string }>;
+    };
+    expect(
+      copyIds.every((id) => Object.values(registered.pages ?? {}).some((entry) => entry.id === id)),
+    ).toBe(true);
+    crash(first.session, first.repository);
+
+    vault.inspectActionWrites = false;
+    vault.failOnPageWrite = 0;
+    const reopened = await open(vault);
+    const recovered = await recoverTableAction(reopened.session);
+    expect(recovered.status, 'message' in recovered ? recovered.message : '').toBe('complete');
+    expect(copyIds.every((id) => Boolean(reopened.session.getState().pages[id]))).toBe(true);
+    expect((await readTableActionJournal(reopened.session))?.status).toBe('complete');
+    await reopened.session.close();
+  });
+
+  it('does not create ghost rows when the registry lands before the first copied page', async () => {
+    const vault = new FailingWriteVault();
+    const first = await open(vault);
+    await seed(first.session);
+    const planned = planDuplicateRows(
+      first.session.getState(),
+      'table',
+      ['row-one', 'row-two'],
+      nextId,
+      120,
+      '(copy)',
+    );
+    if (!planned.ok) throw new Error(planned.error);
+    const copyIds = [...planned.value.rowIds];
+    vault.inspectActionWrites = true;
+    vault.failOnPageWrite = 1;
+    vault.pageWriteCount = 0;
+
+    const saved = await executeTableAction(first.session, asTableActionPlan(planned.value, 'Copy rows'), 120);
+    expect(saved.status).toBe('pending');
+    expect(vault.journalAtFirstPageWrite).not.toBeNull();
+    crash(first.session, first.repository);
+
+    vault.inspectActionWrites = false;
+    vault.failOnPageWrite = 0;
+    const reopened = await open(vault);
+    expect(copyIds.every((id) => Boolean(reopened.session.getState().pages[id]))).toBe(false);
+    expect(
+      Object.values(reopened.session.getState().pages).filter((page) => page.parentId === 'table'),
+    ).toHaveLength(2);
+    const recovered = await recoverTableAction(reopened.session);
+    expect(recovered.status).toBe('aborted');
+    expect((await readTableActionJournal(reopened.session))?.status).toBe('aborted');
+    expect(
+      Object.values(reopened.session.getState().pages).filter((page) => page.parentId === 'table'),
+    ).toHaveLength(2);
+    await reopened.session.close();
+  });
+
+  it('recovers a row-sequence default when the row saves before its table counter', async () => {
+    const vault = new FailingWriteVault();
+    const first = await open(vault);
+    await seed(first.session);
+    const destination = first.session.execute({
+      type: 'page.create',
+      id: 'sequence-table',
+      parentId: null,
+      title: 'Sequence table',
+      kind: 'database',
+      database: {
+        properties: [
+          {
+            id: 'sequence',
+            name: 'Sequence',
+            type: 'number',
+            options: [],
+            fillMode: 'default',
+            defaultSequence: { start: 0, increment: 1 },
+          },
+        ],
+        views: [],
+      },
+      now: 110,
+    });
+    expect(destination.ok).toBe(true);
+    expect(await first.session.flush()).toBe(true);
+    const payload = createRowClipboardPayload(first.session.getState(), 'table', ['row-one']);
+    if (!payload.ok) throw new Error(payload.error);
+    const destinationDatabase = first.session.getState().pages['sequence-table']!.database!;
+    const mappings = suggestRowPropertyMappings(
+      payload.value.sourceProperties,
+      destinationDatabase,
+      payload.value.rows,
+    );
+    const planned = planPasteRows(
+      first.session.getState(),
+      'sequence-table',
+      payload.value,
+      mappings,
+      nextId,
+      120,
+      '(copy)',
+    );
+    if (!planned.ok) throw new Error(planned.error);
+    const copiedId = planned.value.rowIds[0]!;
+    vault.inspectActionWrites = true;
+    vault.failOnPageWrite = 2;
+    vault.pageWriteCount = 0;
+
+    const saved = await executeTableAction(first.session, asTableActionPlan(planned.value, 'Paste row'), 120);
+    expect(saved.status).toBe('pending');
+    crash(first.session, first.repository);
+
+    vault.inspectActionWrites = false;
+    vault.failOnPageWrite = 0;
+    const reopened = await open(vault);
+    const recovered = await recoverTableAction(reopened.session);
+    expect(recovered.status).toBe('complete');
+    expect(reopened.session.getState().pages[copiedId]?.properties.sequence).toBe(0);
+    expect(
+      reopened.session
+        .getState()
+        .pages['sequence-table']!.database!.properties.find((property) => property.id === 'sequence')
+        ?.sequenceNext,
+    ).toBe(1);
+    expect((await readTableActionJournal(reopened.session))?.status).toBe('complete');
+
+    const undone = await undoTableAction(reopened.session);
+    expect(undone.status).toBe('undone');
+    expect(reopened.session.getState().pages).not.toHaveProperty(copiedId);
+    expect(
+      reopened.session
+        .getState()
+        .pages['sequence-table']!.database!.properties.find((property) => property.id === 'sequence')
+        ?.sequenceNext,
+    ).toBe(1);
+    const next = reopened.session.execute({
+      type: 'page.create',
+      id: 'sequence-next-row',
+      parentId: 'sequence-table',
+      title: 'Next',
+      now: 130,
+    });
+    expect(next.ok).toBe(true);
+    expect(reopened.session.getState().pages['sequence-next-row']?.properties.sequence).toBe(1);
+    await reopened.session.close();
+  });
+
+  it('preserves planned sequence values when the table counter saves before the row', async () => {
+    const vault = new FailingWriteVault();
+    const first = await open(vault);
+    await seed(first.session);
+    const destination = first.session.execute({
+      type: 'page.create',
+      id: 'sequence-table',
+      parentId: null,
+      title: 'Sequence table',
+      kind: 'database',
+      database: {
+        properties: [
+          {
+            id: 'sequence',
+            name: 'Sequence',
+            type: 'number',
+            options: [],
+            fillMode: 'default',
+            defaultSequence: { start: 0, increment: 1 },
+          },
+        ],
+        views: [],
+      },
+      now: 110,
+    });
+    expect(destination.ok).toBe(true);
+    expect(await first.session.flush()).toBe(true);
+    const payload = createRowClipboardPayload(first.session.getState(), 'table', ['row-one']);
+    if (!payload.ok) throw new Error(payload.error);
+    const destinationDatabase = first.session.getState().pages['sequence-table']!.database!;
+    const mappings = suggestRowPropertyMappings(
+      payload.value.sourceProperties,
+      destinationDatabase,
+      payload.value.rows,
+    );
+    const planned = planPasteRows(
+      first.session.getState(),
+      'sequence-table',
+      payload.value,
+      mappings,
+      nextId,
+      120,
+      '(copy)',
+    );
+    if (!planned.ok) throw new Error(planned.error);
+    const copiedId = planned.value.rowIds[0]!;
+    vault.inspectActionWrites = true;
+    vault.databaseFirstPageWriteOrder = true;
+    vault.failOnPageWrite = 2;
+    vault.pageWriteCount = 0;
+
+    const saved = await executeTableAction(first.session, asTableActionPlan(planned.value, 'Paste row'), 120);
+    expect(saved.status).toBe('pending');
+    crash(first.session, first.repository);
+
+    vault.inspectActionWrites = false;
+    vault.databaseFirstPageWriteOrder = false;
+    vault.failOnPageWrite = 0;
+    const reopened = await open(vault);
+    const recovered = await recoverTableAction(reopened.session);
+    expect(recovered.status).toBe('complete');
+    expect(reopened.session.getState().pages[copiedId]?.properties.sequence).toBe(0);
+    expect(
+      reopened.session
+        .getState()
+        .pages['sequence-table']!.database!.properties.find((property) => property.id === 'sequence')
+        ?.sequenceNext,
+    ).toBe(1);
+    await reopened.session.close();
+  });
+
+  it('undoes a cross-table move in one journal and restores the source fields and order', async () => {
+    const vault = new MemoryVault();
+    const { session } = await open(vault);
+    await seed(session);
+    const metadata = session.execute({
+      type: 'page.setFields',
+      id: 'row-one',
+      properties: { status: 'Open', value: 0 },
+      extra: { Source: 'kept' },
+      now: 105,
+    });
+    expect(metadata.ok).toBe(true);
+    const added = session.execute({
+      type: 'page.create',
+      id: 'destination',
+      parentId: null,
+      title: 'Destination',
+      kind: 'database',
+      database: {
+        properties: definitions().properties.filter((prop) => prop.id === 'status' || prop.id === 'value'),
+        views: [],
+      },
+      now: 106,
+    });
+    expect(added.ok).toBe(true);
+    expect(await session.flush()).toBe(true);
+
+    const state = session.getState();
+    const sourceRow = state.pages['row-one']!;
+    const mappings = suggestRowPropertyMappings(
+      state.pages.table!.database!.properties,
+      state.pages.destination!.database!,
+      [{ page: sourceRow }],
+    );
+    const planned = planMoveRows(state, 'table', 'destination', ['row-one'], mappings, 130);
+    if (!planned.ok) throw new Error(planned.error);
+    const saved = await executeTableAction(session, asTableActionPlan(planned.value, 'Move rows'), 130);
+    expect(saved.status).toBe('saved');
+    expect(session.getState().pages['row-one']?.parentId).toBe('destination');
+
+    const undone = await undoTableAction(session);
+    expect(undone.status).toBe('undone');
+    expect(session.getState().pages['row-one']?.parentId).toBe('table');
+    expect(session.getState().pages['row-one']?.properties).toEqual({ status: 'Open', value: 0 });
+    expect(session.getState().pages['row-one']?.extra).toEqual({ Source: 'kept' });
+    expect(session.getState().pages['row-two']?.order).toBe(1);
     await session.close();
   });
 

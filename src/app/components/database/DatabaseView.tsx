@@ -14,9 +14,11 @@ import {
   EyeOff,
   Filter,
   GalleryVerticalEnd,
+  GripVertical,
   Info,
   LayoutList,
   Maximize2,
+  MoreHorizontal,
   Plus,
   Paintbrush,
   Search,
@@ -31,7 +33,11 @@ import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, us
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { dateKey } from '../../../core/daily';
-import { planColumnDuplicate, planColumnDuplicateUndo, snapshotColumnDuplicate } from '../../../core/columnDuplicate';
+import {
+  planColumnDuplicate,
+  planColumnDuplicateUndo,
+  snapshotColumnDuplicate,
+} from '../../../core/columnDuplicate';
 import {
   bindPageFormulaReferences,
   filterOpsFor,
@@ -50,8 +56,7 @@ import {
   valueOf,
   formulaResult,
 } from '../../../core/database';
-import { BACKGROUND_HEX,
-  validHexColor, COLORS, displayTitle, VIEW_TYPES } from '../../../core/model';
+import { BACKGROUND_HEX, validHexColor, COLORS, displayTitle, VIEW_TYPES } from '../../../core/model';
 import { unclaimedKeys } from '../../../core/properties';
 import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from '../../../core/migrations';
 import type {
@@ -75,9 +80,10 @@ import type {
 import { fileUrl } from '../../platform/attachments';
 import { newId } from '../../platform/files';
 import { openPage } from '../../router';
-import { getState, run, runAll, useWorkspace } from '../../workspace';
+import { getSession, getState, run, runAll, useWorkspace } from '../../workspace';
 import { Menu } from '../Menu';
 import { Popover } from '../Popover';
+import { Dialog } from '../primitives';
 import { PageGlyph } from '../Emoji';
 import { PageIcon } from '../Sidebar';
 import { addColumnsFromPages, createRow, setValue, updateDatabase, updateView } from './data';
@@ -90,6 +96,7 @@ import { colorLabel, filterLabel, propLabel, viewLabel, viewName } from '../../i
 import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
 import { linkedViewReferences } from '../../../core/linkedViews';
 import { namedControlIdentifier } from '../../../core/controls';
+import { childrenOf, descendantsOf } from '../../../core/tree';
 import { ViewChangeContext } from './viewContext';
 import { insertPropertyNear } from './columnActions';
 import {
@@ -113,10 +120,43 @@ import type { ColumnInsertPosition } from './columnActions';
 import type { Command } from '../../../core/commands';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
 import { toast } from '../../ui';
+import {
+  asTableActionPlan,
+  planDuplicateRows,
+  planInsertRow,
+  planMoveRows,
+  planPasteRows,
+  planReorderRows,
+  planTrashRows,
+  previewRowMappings,
+  PRESERVE_ROW_PROPERTY,
+  suggestRowPropertyMappings,
+} from '../../../core/rowOperations';
+import type { RowOperationPlan, RowPropertyMapping } from '../../../core/rowOperations';
+import {
+  createRowClipboardPayload,
+  parseRowClipboardText,
+  ROW_CLIPBOARD_PREFIX,
+  serializeRowClipboard,
+} from '../../../core/rowClipboard';
+import type { RowClipboardPayload } from '../../../core/rowClipboard';
+import { executeTableAction } from '../../../storage/tableActions';
 
 const nowTimestamp = (): number => Date.now();
 
 const gridClipboardCache = new Map<string, GridClipboardPayload>();
+const ROW_CONTROLS_WIDTH = 68;
+const ROW_CLIPBOARD_VERSION_MARKER = ROW_CLIPBOARD_PREFIX.slice(0, -1);
+
+interface RowMappingDialogState {
+  mode: 'copy' | 'move';
+  payload: RowClipboardPayload;
+  sourceDatabaseId: PageId;
+  rowIds: PageId[];
+  destinationDatabaseId: PageId;
+  afterRowId: PageId | null;
+  mappings: RowPropertyMapping;
+}
 
 const VIEW_ICONS: Record<ViewType, LucideIcon> = {
   table: Table2,
@@ -155,13 +195,49 @@ function operationsForProp(prop: PropDef | undefined): SummaryOperation[] {
   if (prop.type === 'checkbox') {
     return ['checked', 'unchecked', 'percentChecked', 'count', 'countEmpty', 'percentEmpty'];
   }
-  if (prop.type === 'date' || prop.type === 'datetime' || prop.type === 'createdTime' || prop.type === 'lastEditedTime') {
-    return ['min', 'max', 'range', 'count', 'countValues', 'countUnique', 'countEmpty', 'percentEmpty', 'percentNotEmpty'];
+  if (
+    prop.type === 'date' ||
+    prop.type === 'datetime' ||
+    prop.type === 'createdTime' ||
+    prop.type === 'lastEditedTime'
+  ) {
+    return [
+      'min',
+      'max',
+      'range',
+      'count',
+      'countValues',
+      'countUnique',
+      'countEmpty',
+      'percentEmpty',
+      'percentNotEmpty',
+    ];
   }
   if (isNumericPropertyType(prop.type) || prop.type === 'formula' || prop.fillMode === 'calculated') {
-    return ['sum', 'average', 'median', 'min', 'max', 'range', 'count', 'countValues', 'countUnique', 'countEmpty', 'percentEmpty', 'percentNotEmpty'];
+    return [
+      'sum',
+      'average',
+      'median',
+      'min',
+      'max',
+      'range',
+      'count',
+      'countValues',
+      'countUnique',
+      'countEmpty',
+      'percentEmpty',
+      'percentNotEmpty',
+    ];
   }
-  return ['count', 'countValues', 'countUnique', 'countEmpty', 'countNotEmpty', 'percentEmpty', 'percentNotEmpty'];
+  return [
+    'count',
+    'countValues',
+    'countUnique',
+    'countEmpty',
+    'countNotEmpty',
+    'percentEmpty',
+    'percentNotEmpty',
+  ];
 }
 
 const viewKey = (id: PageId) => `morrow.view.${id}`;
@@ -252,7 +328,7 @@ function orderedProperties(database: DatabaseDef, view: ViewDef): PropDef[] {
 }
 
 function contrastText(color: ColorValue): string {
-  const hex = validHexColor(color) ? color : BACKGROUND_HEX[color as ColorName] ?? '#f3f4f6';
+  const hex = validHexColor(color) ? color : (BACKGROUND_HEX[color as ColorName] ?? '#f3f4f6');
   const channels = hex.match(/[0-9a-f]{2}/gi)?.map((channel) => parseInt(channel, 16) / 255) ?? [1, 1, 1];
   const weights = [0.2126, 0.7152, 0.0722];
   const luminance = channels.reduce((total, channel, index) => {
@@ -264,7 +340,7 @@ function contrastText(color: ColorValue): string {
 
 function conditionalColorStyle(color: ColorValue): CSSProperties {
   const foreground = contrastText(color);
-  const bg = validHexColor(color) ? color : BACKGROUND_HEX[color as ColorName] ?? color;
+  const bg = validHexColor(color) ? color : (BACKGROUND_HEX[color as ColorName] ?? color);
   return {
     backgroundColor: bg,
     color: foreground,
@@ -647,11 +723,15 @@ function QuickFilterBar({
   }
 
   const activeDraft = drafts.find((d) => d.rule.id === activePopover?.id);
-  const activeProp = activeDraft ? database.properties.find((p) => p.id === activeDraft.rule.prop) : undefined;
-  const activeType = activeDraft ? propType(database, activeDraft.rule.prop) ?? 'text' : 'text';
+  const activeProp = activeDraft
+    ? database.properties.find((p) => p.id === activeDraft.rule.prop)
+    : undefined;
+  const activeType = activeDraft ? (propType(database, activeDraft.rule.prop) ?? 'text') : 'text';
   const activeOps = filterOpsFor(activeType === 'title' ? 'text' : activeType);
   const isTimestamp = activeType === 'createdTime' || activeType === 'lastEditedTime';
-  const needsValue = activeDraft ? !['empty', 'notEmpty', 'checked', 'unchecked'].includes(activeDraft.rule.op) : false;
+  const needsValue = activeDraft
+    ? !['empty', 'notEmpty', 'checked', 'unchecked'].includes(activeDraft.rule.op)
+    : false;
   const relationDatabaseId = activeProp?.type === 'relation' ? activeProp.relation?.targetDatabaseId : null;
   const relationDatabase = relationDatabaseId ? state.pages[relationDatabaseId] : undefined;
   const relationRows = relationDatabase?.database ? rowsOf(state, relationDatabase.id) : [];
@@ -779,7 +859,9 @@ function QuickFilterBar({
                   <select
                     className="text-input small"
                     value={String(activeDraft.rule.value ?? '')}
-                    onChange={(event) => updateDraft(activeDraft.rule.id, { value: event.target.value }, true)}
+                    onChange={(event) =>
+                      updateDraft(activeDraft.rule.id, { value: event.target.value }, true)
+                    }
                   >
                     <option value="">{t('database.choose')}</option>
                     {activeProp.options.map((option) => (
@@ -792,7 +874,9 @@ function QuickFilterBar({
                   <select
                     className="text-input small"
                     value={String(activeDraft.rule.value ?? '')}
-                    onChange={(event) => updateDraft(activeDraft.rule.id, { value: event.target.value }, true)}
+                    onChange={(event) =>
+                      updateDraft(activeDraft.rule.id, { value: event.target.value }, true)
+                    }
                   >
                     <option value="">{t('database.choose')}</option>
                     {relationRows.map((row) => (
@@ -817,7 +901,10 @@ function QuickFilterBar({
                     value={ruleValueForInput(activeDraft.rule.value, activeProp, activeType)}
                     onChange={(event) => {
                       const raw = event.target.value;
-                      const value = raw === '' ? '' : ruleValueFromInput(raw, activeDraft.rule.value, activeProp, activeType);
+                      const value =
+                        raw === ''
+                          ? ''
+                          : ruleValueFromInput(raw, activeDraft.rule.value, activeProp, activeType);
                       updateDraft(activeDraft.rule.id, { value }, true);
                     }}
                   />
@@ -920,7 +1007,8 @@ function Toolbar({
   const controls = state.pages[scopePageId]?.controls ?? [];
   const controlChoiceLabel = (control: (typeof controls)[number]) => {
     const foldedName = control.name.trim().toLocaleLowerCase();
-    const duplicate = controls.filter((item) => item.name.trim().toLocaleLowerCase() === foldedName).length > 1;
+    const duplicate =
+      controls.filter((item) => item.name.trim().toLocaleLowerCase() === foldedName).length > 1;
     return duplicate ? `${control.name} · ${control.id.slice(-6)}` : control.name;
   };
   const groups = filterGroupsForView(view);
@@ -965,8 +1053,13 @@ function Toolbar({
     setPanel({ kind: 'filter', anchor });
   }, [database, requestedFilter]);
   useEffect(() => {
-    if (!requestedFormat || handledFormatRequest.current === requestedFormat.token ||
-      !formatButton.current || !database.properties.some((prop) => prop.id === requestedFormat.propId)) return;
+    if (
+      !requestedFormat ||
+      handledFormatRequest.current === requestedFormat.token ||
+      !formatButton.current ||
+      !database.properties.some((prop) => prop.id === requestedFormat.propId)
+    )
+      return;
     handledFormatRequest.current = requestedFormat.token;
     setFormatDefaultProp(requestedFormat.propId);
     setPanel({ kind: 'format', anchor: formatButton.current });
@@ -1001,9 +1094,16 @@ function Toolbar({
       <button type="button" className="text-tool" onClick={open('summary')} disabled={!editable}>
         <Calculator size={13} /> {t('database.summary')}
       </button>
-      <button ref={formatButton} type="button" className="text-tool"
-        onClick={(event) => { setFormatDefaultProp(TITLE_PROP); setPanel({ kind: 'format', anchor: event.currentTarget }); }}
-        disabled={!editable}>
+      <button
+        ref={formatButton}
+        type="button"
+        className="text-tool"
+        onClick={(event) => {
+          setFormatDefaultProp(TITLE_PROP);
+          setPanel({ kind: 'format', anchor: event.currentTarget });
+        }}
+        disabled={!editable}
+      >
         <Paintbrush size={13} /> {t('database.conditionalFormatting')}
       </button>
       <button
@@ -1116,9 +1216,7 @@ function Toolbar({
               <input
                 type="checkbox"
                 checked={view.hideTitle === true}
-                onChange={(event) =>
-                  saveView((current) => ({ ...current, hideTitle: event.target.checked }))
-                }
+                onChange={(event) => saveView((current) => ({ ...current, hideTitle: event.target.checked }))}
               />
             </label>
             <label className="db-options-toggle">
@@ -1126,20 +1224,24 @@ function Toolbar({
               <input
                 type="checkbox"
                 checked={view.collapsed === true}
-                onChange={(event) =>
-                  saveView((current) => ({ ...current, collapsed: event.target.checked }))
-                }
+                onChange={(event) => saveView((current) => ({ ...current, collapsed: event.target.checked }))}
               />
             </label>
 
             <div className="db-options-separator" />
 
             <div style={{ padding: '4px 10px' }}>
-              <span className="muted small" style={{ fontWeight: 600 }}>{t('database.linkedViewsMap')}</span>
+              <span className="muted small" style={{ fontWeight: 600 }}>
+                {t('database.linkedViewsMap')}
+              </span>
               {(() => {
                 const links = linkedViewReferences(state, dbId);
                 if (links.length === 0) {
-                  return <p className="muted small" style={{ margin: '4px 0' }}>{t('database.noLinkedViews')}</p>;
+                  return (
+                    <p className="muted small" style={{ margin: '4px 0' }}>
+                      {t('database.noLinkedViews')}
+                    </p>
+                  );
                 }
                 return links.map((ref, idx) => {
                   const host = state.pages[ref.hostPageId];
@@ -1152,7 +1254,9 @@ function Toolbar({
                       onClick={() => openPage(host.id)}
                     >
                       <LinkIcon size={12} />
-                      <span>{displayTitle(host)} · {ref.viewName || t('database.linkedView')}</span>
+                      <span>
+                        {displayTitle(host)} · {ref.viewName || t('database.linkedView')}
+                      </span>
                     </button>
                   ) : null;
                 });
@@ -1223,9 +1327,12 @@ function Toolbar({
                 const ops = filterOpsFor(type === 'title' ? 'text' : type);
                 const isTimestamp = type === 'createdTime' || type === 'lastEditedTime';
                 const filterValue = ruleValueForInput(rule.value, prop, type);
-                const needsValue = !rule.controlRef && !['empty', 'notEmpty', 'checked', 'unchecked'].includes(rule.op);
+                const needsValue =
+                  !rule.controlRef && !['empty', 'notEmpty', 'checked', 'unchecked'].includes(rule.op);
                 const boundControl = rule.controlRef
-                  ? state.pages[rule.controlRef.pageId]?.controls.find((item) => item.id === rule.controlRef!.controlId)
+                  ? state.pages[rule.controlRef.pageId]?.controls.find(
+                      (item) => item.id === rule.controlRef!.controlId,
+                    )
                   : null;
                 const change = (patch: Partial<typeof rule>) =>
                   updateGroups((current) =>
@@ -1242,130 +1349,182 @@ function Toolbar({
                   );
                 return (
                   <div key={rule.id} className="db-rule">
-                    {formulaRule ? <div className="db-formula-filter">
-                      <label className="field">
-                        <span>{t('controls.formula')}</span>
-                        <textarea
-                          className="text-input small"
-                          rows={3}
-                          value={rule.formula ?? ''}
-                          placeholder={t('controls.filterFormulaPlaceholder')}
-                          onChange={(event) => {
-                            const formula = event.target.value;
-                            const formulaBindings = bindPageFormulaReferences(formula, scopePageId, state, dbId, rule.formulaBindings ?? []);
-                            change({ formula, formulaBindings });
-                          }}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>{t('controls.insertReference')}</span>
-                        <select className="text-input small" defaultValue="" onChange={(event) => {
-                          const control = controls.find((item) => item.id === event.target.value);
-                          if (!control) return;
-                          const source = namedControlIdentifier(control.name);
-                          const formula = rule.formula ?? '';
-                          const start = formula.length + (formula.trim() ? 1 : 0);
-                          const nextFormula = `${formula}${formula.trim() ? ' ' : ''}${source}`;
-                          const formulaBindings = [
-                            ...(rule.formulaBindings ?? []).filter((binding) => nextFormula.slice(binding.start, binding.end) === binding.source),
-                            { kind: 'control' as const, pageId: scopePageId, controlId: control.id, start, end: start + source.length, source },
-                          ];
-                          change({ formula: nextFormula, formulaBindings });
-                          event.target.value = '';
-                        }}>
-                          <option value="">{t('controls.chooseReference')}</option>
-                          {controls.map((control) => <option key={control.id} value={control.id}>{controlChoiceLabel(control)}</option>)}
-                        </select>
-                      </label>
-                      {rule.formulaBindings?.filter((binding) => binding.kind === 'ambiguous').map((binding) => (
-                        <p className="named-data-diagnostic" key={`${binding.start}:${binding.end}`}>{t('controls.ambiguousReference', { name: binding.source })}</p>
-                      ))}
-                    </div> : <>
-                    <select
-                      className="text-input small"
-                      aria-label={t('database.property')}
-                      value={rule.prop}
-                      onChange={(event) => {
-                        const nextType = propType(database, event.target.value) ?? 'text';
-                        change({
-                          prop: event.target.value,
-                          op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
-                          value: null,
-                          controlRef: undefined,
-                        });
-                      }}
-                    >
-                      {names.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      className="text-input small"
-                      aria-label={t('controls.selectControl')}
-                      value={rule.controlRef ? `${rule.controlRef.pageId}:${rule.controlRef.controlId}` : ''}
-                      onChange={(event) => {
-                        if (!event.target.value) change({ controlRef: undefined });
-                        else {
-                          const [pageId, ...rest] = event.target.value.split(':');
-                          change({ controlRef: { pageId: pageId!, controlId: rest.join(':') } });
-                        }
-                      }}
-                    >
-                      <option value="">{t('controls.directValue')}</option>
-                      {boundControl && rule.controlRef && !controls.some((item) => item.id === rule.controlRef!.controlId) && <option value={`${rule.controlRef.pageId}:${rule.controlRef.controlId}`}>{t('controls.referenceControl', { name: `${boundControl.name} · ${boundControl.id.slice(-6)}` })}</option>}
-                      {controls.map((control) => <option key={control.id} value={`${scopePageId}:${control.id}`}>{controlChoiceLabel(control)}</option>)}
-                    </select>
-                    {rule.controlRef && !boundControl && <p className="named-data-diagnostic">{t('controls.missingControl', { name: rule.controlRef.controlId })}</p>}
-                    <select
-                      className="text-input small"
-                      aria-label={t('database.condition')}
-                      value={rule.op}
-                      onChange={(event) => change({ op: event.target.value as FilterOp })}
-                    >
-                      {ops.map((op) => (
-                        <option key={op} value={op}>
-                          {filterLabel(op)}
-                        </option>
-                      ))}
-                    </select>
-                    {needsValue &&
-                      (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+                    {formulaRule ? (
+                      <div className="db-formula-filter">
+                        <label className="field">
+                          <span>{t('controls.formula')}</span>
+                          <textarea
+                            className="text-input small"
+                            rows={3}
+                            value={rule.formula ?? ''}
+                            placeholder={t('controls.filterFormulaPlaceholder')}
+                            onChange={(event) => {
+                              const formula = event.target.value;
+                              const formulaBindings = bindPageFormulaReferences(
+                                formula,
+                                scopePageId,
+                                state,
+                                dbId,
+                                rule.formulaBindings ?? [],
+                              );
+                              change({ formula, formulaBindings });
+                            }}
+                          />
+                        </label>
+                        <label className="field">
+                          <span>{t('controls.insertReference')}</span>
+                          <select
+                            className="text-input small"
+                            defaultValue=""
+                            onChange={(event) => {
+                              const control = controls.find((item) => item.id === event.target.value);
+                              if (!control) return;
+                              const source = namedControlIdentifier(control.name);
+                              const formula = rule.formula ?? '';
+                              const start = formula.length + (formula.trim() ? 1 : 0);
+                              const nextFormula = `${formula}${formula.trim() ? ' ' : ''}${source}`;
+                              const formulaBindings = [
+                                ...(rule.formulaBindings ?? []).filter(
+                                  (binding) =>
+                                    nextFormula.slice(binding.start, binding.end) === binding.source,
+                                ),
+                                {
+                                  kind: 'control' as const,
+                                  pageId: scopePageId,
+                                  controlId: control.id,
+                                  start,
+                                  end: start + source.length,
+                                  source,
+                                },
+                              ];
+                              change({ formula: nextFormula, formulaBindings });
+                              event.target.value = '';
+                            }}
+                          >
+                            <option value="">{t('controls.chooseReference')}</option>
+                            {controls.map((control) => (
+                              <option key={control.id} value={control.id}>
+                                {controlChoiceLabel(control)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {rule.formulaBindings
+                          ?.filter((binding) => binding.kind === 'ambiguous')
+                          .map((binding) => (
+                            <p className="named-data-diagnostic" key={`${binding.start}:${binding.end}`}>
+                              {t('controls.ambiguousReference', { name: binding.source })}
+                            </p>
+                          ))}
+                      </div>
+                    ) : (
+                      <>
                         <select
                           className="text-input small"
-                          aria-label={t('database.value')}
-                          value={String(rule.value ?? '')}
-                          onChange={(event) => change({ value: event.target.value || null })}
+                          aria-label={t('database.property')}
+                          value={rule.prop}
+                          onChange={(event) => {
+                            const nextType = propType(database, event.target.value) ?? 'text';
+                            change({
+                              prop: event.target.value,
+                              op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
+                              value: null,
+                              controlRef: undefined,
+                            });
+                          }}
                         >
-                          <option value="">{t('database.choose')}</option>
-                          {prop.options.map((option) => (
-                            <option key={option.id} value={option.id}>
-                              {option.name}
+                          {names.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
                             </option>
                           ))}
                         </select>
-                      ) : (
-                        <input
+                        <select
                           className="text-input small"
-                          aria-label={t('database.value')}
-                          type={
-                            prop && isNumericPropertyType(prop.type)
-                              ? 'number'
-                              : isTimestamp || prop?.type === 'datetime'
-                                ? 'datetime-local'
-                                : prop?.type === 'date' || prop?.type === 'time'
-                                  ? prop.type
-                                  : 'text'
+                          aria-label={t('controls.selectControl')}
+                          value={
+                            rule.controlRef ? `${rule.controlRef.pageId}:${rule.controlRef.controlId}` : ''
                           }
-                          step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
-                          value={filterValue}
-                          onChange={(event) =>
-                            change({ value: ruleValueFromInput(event.target.value, rule.value, prop, type) })
-                          }
-                        />
-                      ))}
-                    </>}
+                          onChange={(event) => {
+                            if (!event.target.value) change({ controlRef: undefined });
+                            else {
+                              const [pageId, ...rest] = event.target.value.split(':');
+                              change({ controlRef: { pageId: pageId!, controlId: rest.join(':') } });
+                            }
+                          }}
+                        >
+                          <option value="">{t('controls.directValue')}</option>
+                          {boundControl &&
+                            rule.controlRef &&
+                            !controls.some((item) => item.id === rule.controlRef!.controlId) && (
+                              <option value={`${rule.controlRef.pageId}:${rule.controlRef.controlId}`}>
+                                {t('controls.referenceControl', {
+                                  name: `${boundControl.name} · ${boundControl.id.slice(-6)}`,
+                                })}
+                              </option>
+                            )}
+                          {controls.map((control) => (
+                            <option key={control.id} value={`${scopePageId}:${control.id}`}>
+                              {controlChoiceLabel(control)}
+                            </option>
+                          ))}
+                        </select>
+                        {rule.controlRef && !boundControl && (
+                          <p className="named-data-diagnostic">
+                            {t('controls.missingControl', { name: rule.controlRef.controlId })}
+                          </p>
+                        )}
+                        <select
+                          className="text-input small"
+                          aria-label={t('database.condition')}
+                          value={rule.op}
+                          onChange={(event) => change({ op: event.target.value as FilterOp })}
+                        >
+                          {ops.map((op) => (
+                            <option key={op} value={op}>
+                              {filterLabel(op)}
+                            </option>
+                          ))}
+                        </select>
+                        {needsValue &&
+                          (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+                            <select
+                              className="text-input small"
+                              aria-label={t('database.value')}
+                              value={String(rule.value ?? '')}
+                              onChange={(event) => change({ value: event.target.value || null })}
+                            >
+                              <option value="">{t('database.choose')}</option>
+                              {prop.options.map((option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              className="text-input small"
+                              aria-label={t('database.value')}
+                              type={
+                                prop && isNumericPropertyType(prop.type)
+                                  ? 'number'
+                                  : isTimestamp || prop?.type === 'datetime'
+                                    ? 'datetime-local'
+                                    : prop?.type === 'date' || prop?.type === 'time'
+                                      ? prop.type
+                                      : 'text'
+                              }
+                              step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
+                              value={filterValue}
+                              onChange={(event) =>
+                                change({
+                                  value: ruleValueFromInput(event.target.value, rule.value, prop, type),
+                                })
+                              }
+                            />
+                          ))}
+                      </>
+                    )}
                     <button
                       type="button"
                       className="icon-button tiny"
@@ -1412,9 +1571,28 @@ function Toolbar({
               <button
                 type="button"
                 className="link-button"
-                onClick={() => updateGroups((current) => current.map((item) => item.id === group.id
-                  ? { ...item, filters: [...item.filters, { id: newId(), prop: '$formula', op: 'is', value: null, formula: '', formulaBindings: [] }] }
-                  : item))}
+                onClick={() =>
+                  updateGroups((current) =>
+                    current.map((item) =>
+                      item.id === group.id
+                        ? {
+                            ...item,
+                            filters: [
+                              ...item.filters,
+                              {
+                                id: newId(),
+                                prop: '$formula',
+                                op: 'is',
+                                value: null,
+                                formula: '',
+                                formulaBindings: [],
+                              },
+                            ],
+                          }
+                        : item,
+                    ),
+                  )
+                }
               >
                 <Plus size={13} /> {t('controls.addFormulaFilter')}
               </button>
@@ -1862,9 +2040,7 @@ function Toolbar({
                         editRule({ formula, formulaBindings });
                       }}
                     />
-                    {formulaError && (
-                      <div className="db-formula-diagnostic error">{formulaError}</div>
-                    )}
+                    {formulaError && <div className="db-formula-diagnostic error">{formulaError}</div>}
                     {formulaNonBoolean && (
                       <div className="db-formula-diagnostic warning">
                         {t('database.formulaMustReturnBoolean')}
@@ -1937,14 +2113,24 @@ function Toolbar({
                           step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
                           value={value}
                           onChange={(event) =>
-                            editRule({ value: ruleValueFromInput(event.target.value, rule.value, prop, type) })
+                            editRule({
+                              value: ruleValueFromInput(event.target.value, rule.value, prop, type),
+                            })
                           }
                         />
                       ))}
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', margin: '4px 0', flexWrap: 'wrap' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '6px',
+                    alignItems: 'center',
+                    margin: '4px 0',
+                    flexWrap: 'wrap',
+                  }}
+                >
                   <select
                     className="text-input small"
                     aria-label={t('database.backgroundColor')}
@@ -1978,7 +2164,9 @@ function Toolbar({
                   <input
                     type="color"
                     aria-label={t('database.customHexColor')}
-                    value={validHexColor(rule.color) ?? (BACKGROUND_HEX[rule.color as ColorName] || '#fbf3db')}
+                    value={
+                      validHexColor(rule.color) ?? (BACKGROUND_HEX[rule.color as ColorName] || '#fbf3db')
+                    }
                     onChange={(event) => {
                       const hex = validHexColor(event.target.value);
                       if (hex) editRule({ color: hex });
@@ -2006,7 +2194,10 @@ function Toolbar({
                           width: '18px',
                           height: '18px',
                           borderRadius: '50%',
-                          border: rule.color === color ? '2px solid var(--text, #333)' : '1px solid var(--border-subtle, #ccc)',
+                          border:
+                            rule.color === color
+                              ? '2px solid var(--text, #333)'
+                              : '1px solid var(--border-subtle, #ccc)',
                           backgroundColor: BACKGROUND_HEX[color] || '#eee',
                           cursor: 'pointer',
                           padding: 0,
@@ -2019,7 +2210,8 @@ function Toolbar({
 
                 <div className="db-format-preview" style={conditionalColorStyle(rule.color)}>
                   <span>
-                    {t('database.rulePreview')}: {rule.scope === 'row' ? t('database.entireRow') : t('database.matchingCell')}
+                    {t('database.rulePreview')}:{' '}
+                    {rule.scope === 'row' ? t('database.entireRow') : t('database.matchingCell')}
                   </span>
                 </div>
               </div>
@@ -2036,7 +2228,10 @@ function Toolbar({
                   {
                     id: newId(),
                     prop: formatDefaultProp,
-                    op: formatDefaultProp === TITLE_PROP ? 'notEmpty' : filterOpsFor(propType(database, formatDefaultProp) ?? 'text')[0]!,
+                    op:
+                      formatDefaultProp === TITLE_PROP
+                        ? 'notEmpty'
+                        : filterOpsFor(propType(database, formatDefaultProp) ?? 'text')[0]!,
                     value: null,
                     scope: formatDefaultProp === TITLE_PROP ? 'row' : 'cell',
                     color: 'yellow',
@@ -2444,8 +2639,9 @@ function InsertColumnPopover({
     };
     const insertion = insertPropertyNear(database, view, property, anchorPropId, position);
     if (!insertion) return;
-    const added = updateDatabase(dbId, (current) =>
-      insertPropertyNear(current, view, property, anchorPropId, position)?.database ?? current,
+    const added = updateDatabase(
+      dbId,
+      (current) => insertPropertyNear(current, view, property, anchorPropId, position)?.database ?? current,
     );
     if (!added) return;
     saveView((current) => ({ ...current, order: insertion.view.order }));
@@ -2478,7 +2674,16 @@ function InsertColumnPopover({
   );
 }
 
-function TableView({ dbId, database, view, rows, props, editable, onRequestFilter, onRequestFormat }: ViewProps & {
+function TableView({
+  dbId,
+  database,
+  view,
+  rows,
+  props,
+  editable,
+  onRequestFilter,
+  onRequestFormat,
+}: ViewProps & {
   onRequestFilter: (propId: string) => void;
   onRequestFormat: (propId: string) => void;
 }) {
@@ -2489,6 +2694,157 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
 
   const visibleColIds = useMemo(() => [TITLE_PROP, ...props.map((p) => p.id)], [props]);
   const visibleRowIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  const visibleRowIdSet = useMemo(() => new Set(visibleRowIds), [visibleRowIds]);
+  const visibleRowKey = visibleRowIds.join('\u0000');
+  const [rowSelection, setRowSelection] = useState<{
+    visibleRowKey: string;
+    ids: PageId[];
+    anchor: PageId | null;
+  }>(() => ({
+    visibleRowKey,
+    ids: [],
+    anchor: null,
+  }));
+  if (rowSelection.visibleRowKey !== visibleRowKey) setRowSelection({ visibleRowKey, ids: [], anchor: null });
+  const selectedRowIds = useMemo(
+    () => (rowSelection.visibleRowKey === visibleRowKey ? rowSelection.ids : []),
+    [rowSelection, visibleRowKey],
+  );
+  const setSelectedRowIds = (update: PageId[] | ((current: PageId[]) => PageId[])) => {
+    setRowSelection((current) => {
+      const currentIds = current.visibleRowKey === visibleRowKey ? current.ids : [];
+      const ids = typeof update === 'function' ? update(currentIds) : update;
+      return {
+        visibleRowKey,
+        ids: ids.filter((id) => visibleRowIdSet.has(id)),
+        anchor: current.visibleRowKey === visibleRowKey ? current.anchor : null,
+      };
+    });
+  };
+  const setRowSelectionAnchor = (anchor: PageId | null) => {
+    setRowSelection((current) => ({
+      visibleRowKey,
+      ids: current.visibleRowKey === visibleRowKey ? current.ids : [],
+      anchor,
+    }));
+  };
+  const selectedRowIdSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
+  const selectedVisibleRowIds = useMemo(
+    () => visibleRowIds.filter((id) => selectedRowIdSet.has(id)),
+    [selectedRowIdSet, visibleRowIds],
+  );
+  const rowSelectionAnchor = rowSelection.visibleRowKey === visibleRowKey ? rowSelection.anchor : null;
+  const headerRowSelectorRef = useRef<HTMLInputElement>(null);
+  const rowSelectorRefs = useRef<Map<PageId, HTMLInputElement>>(new Map());
+  const dragRowIds = useRef<PageId[]>([]);
+  const [rowMenu, setRowMenu] = useState<{ rowId: PageId; anchor: HTMLElement } | null>(null);
+  const [rowMappingDialog, setRowMappingDialog] = useState<RowMappingDialogState | null>(null);
+  const [rowTrashConfirmation, setRowTrashConfirmation] = useState<{
+    rowIds: PageId[];
+    nestedCount: number;
+  } | null>(null);
+  const rowDialogReturnFocusRef = useRef<HTMLElement | null>(null);
+
+  const captureRowDialogFocus = () => {
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    rowDialogReturnFocusRef.current = rowMenu?.anchor.isConnected ? rowMenu.anchor : active;
+  };
+  const restoreRowDialogFocus = () => {
+    const target = rowDialogReturnFocusRef.current;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const fallbackRowId = rowTrashConfirmation?.rowIds[0] ?? visibleRowIds[0];
+        const fallback = fallbackRowId ? rowSelectorRefs.current.get(fallbackRowId) : null;
+        const header = headerRowSelectorRef.current;
+        (target?.isConnected
+          ? target
+          : (fallback ?? (header && !header.disabled ? header : tableRef.current))
+        )?.focus({
+          preventScroll: true,
+        });
+        if (rowDialogReturnFocusRef.current === target) rowDialogReturnFocusRef.current = null;
+      });
+    });
+  };
+  const closeRowMappingDialog = () => {
+    setRowMappingDialog(null);
+    restoreRowDialogFocus();
+  };
+  const closeRowTrashConfirmation = () => {
+    setRowTrashConfirmation(null);
+    restoreRowDialogFocus();
+  };
+
+  const clearRowSelection = () => {
+    if (
+      selectedRowIds.length === 0 &&
+      rowSelection.visibleRowKey === visibleRowKey &&
+      rowSelection.anchor === null
+    )
+      return;
+    setSelectedRowIds([]);
+    setRowSelectionAnchor(null);
+  };
+  const selectRowsExplicitly = (update: PageId[] | ((current: PageId[]) => PageId[])) => {
+    setActiveCell(null);
+    activeCellRef.current = null;
+    setSelectionRange(null);
+    setEditingCell(null);
+    setSelectedRowIds(update);
+  };
+
+  const changeRowSelection = (
+    rowId: PageId,
+    checked: boolean,
+    modifiers: { shift: boolean; additive: boolean },
+  ) => {
+    const index = visibleRowIds.indexOf(rowId);
+    if (index < 0) return;
+    const anchor = rowSelectionAnchor;
+    if (modifiers.shift && anchor && visibleRowIdSet.has(anchor)) {
+      const anchorIndex = visibleRowIds.indexOf(anchor);
+      const range = visibleRowIds.slice(Math.min(anchorIndex, index), Math.max(anchorIndex, index) + 1);
+      selectRowsExplicitly((current) => {
+        const next = new Set(modifiers.additive ? current : []);
+        if (checked) range.forEach((id) => next.add(id));
+        else range.forEach((id) => next.delete(id));
+        return visibleRowIds.filter((id) => next.has(id));
+      });
+    } else if (modifiers.additive) {
+      selectRowsExplicitly((current) => {
+        const next = new Set(current);
+        if (checked) next.add(rowId);
+        else next.delete(rowId);
+        return visibleRowIds.filter((id) => next.has(id));
+      });
+      setRowSelectionAnchor(rowId);
+    } else {
+      selectRowsExplicitly(checked ? [rowId] : []);
+      setRowSelectionAnchor(rowId);
+    }
+  };
+
+  const handleRowSelectorKeyDown = (event: React.KeyboardEvent<HTMLInputElement>, rowId: PageId) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault();
+      selectRowsExplicitly([...visibleRowIds]);
+      setRowSelectionAnchor(rowId);
+      return;
+    }
+    if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+      event.preventDefault();
+      setRowMenu({ rowId, anchor: event.currentTarget });
+      return;
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    const index = visibleRowIds.indexOf(rowId);
+    const nextId = visibleRowIds[index + (event.key === 'ArrowUp' ? -1 : 1)];
+    if (!nextId) return;
+    event.preventDefault();
+    if (event.shiftKey)
+      changeRowSelection(nextId, true, { shift: true, additive: event.ctrlKey || event.metaKey });
+    rowSelectorRefs.current.get(nextId)?.focus({ preventScroll: true });
+  };
 
   const [activeCell, setActiveCell] = useState<GridCoord | null>(() => {
     const r = visibleRowIds[0];
@@ -2521,7 +2877,9 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
   const [lastBatchUndo, setLastBatchUndo] = useState<Command[] | null>(null);
   const [lastBatchRedo, setLastBatchRedo] = useState<Command[] | null>(null);
   const [lastBatchApplied, setLastBatchApplied] = useState(false);
-  const [rowConfirmation, setRowConfirmation] = useState<{ count: number; onConfirm: () => void } | null>(null);
+  const [rowConfirmation, setRowConfirmation] = useState<{ count: number; onConfirm: () => void } | null>(
+    null,
+  );
   const [liveAnnouncement, setLiveAnnouncement] = useState<string>('');
 
   const prevRowIdsRef = useRef<string[]>(visibleRowIds);
@@ -2572,8 +2930,20 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     }
 
     if (selectionRange) {
-      const anchorResult = revalidateActiveCell(selectionRange.anchor, prevRows, prevCols, visibleRowIds, visibleColIds);
-      const focusResult = revalidateActiveCell(selectionRange.focus, prevRows, prevCols, visibleRowIds, visibleColIds);
+      const anchorResult = revalidateActiveCell(
+        selectionRange.anchor,
+        prevRows,
+        prevCols,
+        visibleRowIds,
+        visibleColIds,
+      );
+      const focusResult = revalidateActiveCell(
+        selectionRange.focus,
+        prevRows,
+        prevCols,
+        visibleRowIds,
+        visibleColIds,
+      );
       if (anchorResult.moved || focusResult.moved) {
         const fallback = focusResult.active ?? anchorResult.active ?? focusAfterRevalidation;
         const anchor = anchorResult.active ?? fallback;
@@ -2581,7 +2951,10 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
         if (anchor && focus) setSelectionRange({ anchor, focus });
         else setSelectionRange(null);
         focusAfterRevalidation = focus ?? focusAfterRevalidation;
-        if (!currentActive || !revalidateActiveCell(currentActive, prevRows, prevCols, visibleRowIds, visibleColIds).moved) {
+        if (
+          !currentActive ||
+          !revalidateActiveCell(currentActive, prevRows, prevCols, visibleRowIds, visibleColIds).moved
+        ) {
           setLiveAnnouncement(t('database.rangeSelectionAdjusted'));
         }
       } else if (focusAfterRevalidation) {
@@ -2591,7 +2964,9 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
       setSelectionRange({ anchor: focusAfterRevalidation, focus: focusAfterRevalidation });
     }
     if (focusAfterRevalidation) {
-      tdRefs.current.get(`${focusAfterRevalidation.rowId}:${focusAfterRevalidation.colId}`)?.focus({ preventScroll: true });
+      tdRefs.current
+        .get(`${focusAfterRevalidation.rowId}:${focusAfterRevalidation.colId}`)
+        ?.focus({ preventScroll: true });
     }
     setFillPreview(null);
     setFocusFillActions(false);
@@ -2600,10 +2975,13 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
 
   const resolvedSelection = useMemo(
     () => (selectionRange ? resolveVisibleRange(selectionRange, visibleRowIds, visibleColIds) : null),
-    [selectionRange, visibleRowIds, visibleColIds]
+    [selectionRange, visibleRowIds, visibleColIds],
   );
 
-  const navigateCell = (direction: 'up' | 'down' | 'left' | 'right' | 'next' | 'prev', extendSelection = false) => {
+  const navigateCell = (
+    direction: 'up' | 'down' | 'left' | 'right' | 'next' | 'prev',
+    extendSelection = false,
+  ) => {
     if (!activeCell || visibleRowIds.length === 0 || visibleColIds.length === 0) return;
     if (fillPreview) cancelFillPreview();
     const baseCoord = extendSelection && selectionRange ? selectionRange.focus : activeCell;
@@ -2650,7 +3028,11 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     tdRefs.current.get(cellKey)?.focus();
   };
 
-  const handleCommitAndMove = (rowId: PageId, colId: string, direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => {
+  const handleCommitAndMove = (
+    rowId: PageId,
+    colId: string,
+    direction: 'down' | 'up' | 'next' | 'prev' | 'stay',
+  ) => {
     setEditingCell(null);
     if (direction === 'stay') {
       const cellKey = `${rowId}:${colId}`;
@@ -2665,7 +3047,10 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     tdRefs.current.get(`${rowId}:${colId}`)?.focus({ preventScroll: true });
   };
 
-  const applyBatchPlan = (plan: GridOperationPlan, successKey: 'database.clearBatchSuccess' | 'database.pasteBatchSuccess') => {
+  const applyBatchPlan = (
+    plan: GridOperationPlan,
+    successKey: 'database.clearBatchSuccess' | 'database.pasteBatchSuccess',
+  ) => {
     if (!editable) {
       toast(t('database.unsupportedSchema'), { tone: 'error' });
       return false;
@@ -2700,7 +3085,14 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
       return;
     }
     if (!selectionRange) return;
-    const planResult = planGridClear(state, dbId, selectionRange, visibleRowIds, visibleColIds, nowTimestamp());
+    const planResult = planGridClear(
+      state,
+      dbId,
+      selectionRange,
+      visibleRowIds,
+      visibleColIds,
+      nowTimestamp(),
+    );
     if (!planResult.ok) {
       toast(planResult.error, { tone: 'error' });
       return;
@@ -2760,9 +3152,18 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     if (!payload && clipboardReadFailed) toast(t('database.clipboardReadFailed'), { tone: 'error' });
     if (!payload) return;
 
-    const planResult = planGridPaste(state, dbId, selectionRange, payload, visibleRowIds, visibleColIds, nowTimestamp(), {
-      allowCreateRows: false,
-    });
+    const planResult = planGridPaste(
+      state,
+      dbId,
+      selectionRange,
+      payload,
+      visibleRowIds,
+      visibleColIds,
+      nowTimestamp(),
+      {
+        allowCreateRows: false,
+      },
+    );
 
     if (!planResult.ok) {
       if (planResult.extraRowsNeeded) {
@@ -2771,10 +3172,19 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
           count: needed,
           onConfirm: () => {
             setRowConfirmation(null);
-            const authResult = planGridPaste(state, dbId, selectionRange, payload!, visibleRowIds, visibleColIds, nowTimestamp(), {
-              allowCreateRows: true,
-              newRowIdFactory: () => newId(),
-            });
+            const authResult = planGridPaste(
+              state,
+              dbId,
+              selectionRange,
+              payload!,
+              visibleRowIds,
+              visibleColIds,
+              nowTimestamp(),
+              {
+                allowCreateRows: true,
+                newRowIdFactory: () => newId(),
+              },
+            );
             if (authResult.ok) {
               applyBatchPlan(authResult.value, 'database.pasteBatchSuccess');
             } else {
@@ -2791,36 +3201,49 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     applyBatchPlan(planResult.value, 'database.pasteBatchSuccess');
   };
 
-  const updateFillPreview = useCallback((sourceRange: GridRange, targetRange: GridRange, mode: FillModeChoice) => {
-    if (!editable) return;
-    const plan = planGridFill(state, dbId, sourceRange, targetRange, mode, visibleRowIds, visibleColIds, nowTimestamp(), { prepareUndo: false });
-    if (!plan.ok) {
+  const updateFillPreview = useCallback(
+    (sourceRange: GridRange, targetRange: GridRange, mode: FillModeChoice) => {
+      if (!editable) return;
+      const plan = planGridFill(
+        state,
+        dbId,
+        sourceRange,
+        targetRange,
+        mode,
+        visibleRowIds,
+        visibleColIds,
+        nowTimestamp(),
+        { prepareUndo: false },
+      );
+      if (!plan.ok) {
+        setFillPreview({
+          sourceRange,
+          targetRange,
+          mode,
+          previewCells: [],
+          commands: [],
+          undoCommands: [],
+          redoCommands: [],
+          affectedCells: 0,
+          canSequence: false,
+          error: plan.error,
+        });
+        return;
+      }
       setFillPreview({
         sourceRange,
         targetRange,
         mode,
-        previewCells: [],
-        commands: [],
-        undoCommands: [],
-        redoCommands: [],
-        affectedCells: 0,
-        canSequence: false,
-        error: plan.error,
+        previewCells: plan.value.previewCells,
+        commands: plan.value.commands,
+        undoCommands: plan.value.undoCommands,
+        redoCommands: plan.value.redoCommands,
+        affectedCells: plan.value.affectedCells,
+        canSequence: plan.value.canSequence,
       });
-      return;
-    }
-    setFillPreview({
-      sourceRange,
-      targetRange,
-      mode,
-      previewCells: plan.value.previewCells,
-      commands: plan.value.commands,
-      undoCommands: plan.value.undoCommands,
-      redoCommands: plan.value.redoCommands,
-      affectedCells: plan.value.affectedCells,
-      canSequence: plan.value.canSequence,
-    });
-  }, [dbId, editable, state, visibleColIds, visibleRowIds]);
+    },
+    [dbId, editable, state, visibleColIds, visibleRowIds],
+  );
 
   const beginKeyboardFill = (direction: 'up' | 'down' | 'left' | 'right') => {
     if (!editable) {
@@ -2839,10 +3262,13 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     const firstCol = visibleColIds[0];
     const lastCol = visibleColIds[visibleColIds.length - 1];
     const focus =
-      direction === 'up' ? { rowId: firstRow!, colId: sourceRange.focus.colId }
-      : direction === 'down' ? { rowId: lastRow!, colId: sourceRange.focus.colId }
-      : direction === 'left' ? { rowId: sourceRange.focus.rowId, colId: firstCol! }
-      : { rowId: sourceRange.focus.rowId, colId: lastCol! };
+      direction === 'up'
+        ? { rowId: firstRow!, colId: sourceRange.focus.colId }
+        : direction === 'down'
+          ? { rowId: lastRow!, colId: sourceRange.focus.colId }
+          : direction === 'left'
+            ? { rowId: sourceRange.focus.rowId, colId: firstCol! }
+            : { rowId: sourceRange.focus.rowId, colId: lastCol! };
     const targetRange: GridRange = { anchor: sourceRange.anchor, focus };
     fillSourceRangeRef.current = sourceRange;
     fillDraggingRef.current = false;
@@ -2877,7 +3303,9 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
       setFillPreview(null);
       setFocusFillActions(false);
       fillSourceRangeRef.current = null;
-      tdRefs.current.get(`${fillPreview.targetRange.focus.rowId}:${fillPreview.targetRange.focus.colId}`)?.focus();
+      tdRefs.current
+        .get(`${fillPreview.targetRange.focus.rowId}:${fillPreview.targetRange.focus.colId}`)
+        ?.focus();
     }
   };
 
@@ -2894,26 +3322,30 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     }
   };
 
-  const handleCellMouseEnter = useCallback((rowId: PageId, colId: string) => {
-    if (fillDraggingRef.current && fillSourceRangeRef.current) {
-      const targetRange: GridRange = {
-        anchor: fillSourceRangeRef.current.anchor,
-        focus: { rowId, colId },
-      };
-      updateFillPreview(fillSourceRangeRef.current, targetRange, 'copy');
-      return;
-    }
+  const handleCellMouseEnter = useCallback(
+    (rowId: PageId, colId: string) => {
+      if (fillDraggingRef.current && fillSourceRangeRef.current) {
+        const targetRange: GridRange = {
+          anchor: fillSourceRangeRef.current.anchor,
+          focus: { rowId, colId },
+        };
+        updateFillPreview(fillSourceRangeRef.current, targetRange, 'copy');
+        return;
+      }
 
-    if (isSelectingRef.current && selectionRange) {
-      setSelectionRange({ anchor: selectionRange.anchor, focus: { rowId, colId } });
-    }
-  }, [selectionRange, updateFillPreview]);
-
+      if (isSelectingRef.current && selectionRange) {
+        setSelectionRange({ anchor: selectionRange.anchor, focus: { rowId, colId } });
+      }
+    },
+    [selectionRange, updateFillPreview],
+  );
 
   useEffect(() => {
     const onGlobalMouseMove = (e: MouseEvent) => {
       if (!fillDraggingRef.current && !isSelectingRef.current) return;
-      const td = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLTableCellElement>('td[data-row-id]');
+      const td = (
+        document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+      )?.closest<HTMLTableCellElement>('td[data-row-id]');
       if (td) {
         const rowId = td.getAttribute('data-row-id');
         const colId = td.getAttribute('data-col-id');
@@ -2958,8 +3390,12 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     };
   }, [state, dbId, visibleRowIds, visibleColIds, selectionRange, handleCellMouseEnter]);
 
-  const handleCellKeyDown = (event: React.KeyboardEvent<HTMLTableCellElement>, rowId: PageId, colId: string) => {
-    if (editingCell) return;
+  const handleCellKeyDown = (
+    event: React.KeyboardEvent<HTMLTableCellElement>,
+    rowId: PageId,
+    colId: string,
+  ) => {
+    if (event.defaultPrevented || editingCell) return;
 
     if (event.altKey && event.shiftKey && event.key === 'ArrowDown') {
       event.preventDefault();
@@ -3007,7 +3443,11 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     } else if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'v') {
       event.preventDefault();
       handleBatchPaste();
-    } else if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase())) {
+    } else if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      ['z', 'y'].includes(event.key.toLowerCase())
+    ) {
       const isRedo = event.key.toLowerCase() === 'y' || event.shiftKey;
       if (!editable) {
         event.preventDefault();
@@ -3035,6 +3475,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     if ((event.target as HTMLElement).closest('.db-fill-handle')) return;
     if (editingCell?.rowId === rowId && editingCell?.colId === colId) return;
 
+    clearRowSelection();
     isSelectingRef.current = true;
     const coord: GridCoord = { rowId, colId };
     setActiveCell(coord);
@@ -3044,6 +3485,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
   };
 
   const handleCellDoubleClick = (rowId: PageId, colId: string) => {
+    clearRowSelection();
     if (editable && !isColumnReadOnly(colId, database)) {
       setEditingCell({ rowId, colId });
     }
@@ -3057,7 +3499,11 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     );
   };
   const [summaryAnchor, setSummaryAnchor] = useState<{ propId: string; anchor: HTMLElement } | null>(null);
-  const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement; focusSection?: 'formula' } | null>(null);
+  const [header, setHeader] = useState<{
+    prop: PropDef;
+    anchor: HTMLElement;
+    focusSection?: 'formula';
+  } | null>(null);
   const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
   const [adding, setAdding] = useState<HTMLElement | null>(null);
   const [inserting, setInserting] = useState<{
@@ -3091,18 +3537,23 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
       />
     );
   const total =
-    widthOf(TITLE_PROP) + props.reduce((sum, prop) => sum + widthOf(prop.id), 0) + (editable ? 36 : 0);
+    ROW_CONTROLS_WIDTH * (editable ? 1 : 0) +
+    widthOf(TITLE_PROP) +
+    props.reduce((sum, prop) => sum + widthOf(prop.id), 0) +
+    (editable ? 36 : 0);
   const frozenIndex = props.findIndex((prop) => prop.id === view.frozenThrough);
   const frozenStyle = (index: number): CSSProperties | undefined => {
     if (frozenIndex < 0 || index > frozenIndex) return undefined;
-    const left = index < 0
-      ? 0
-      : widthOf(TITLE_PROP) + props.slice(0, index).reduce((sum, prop) => sum + widthOf(prop.id), 0);
+    const left =
+      ROW_CONTROLS_WIDTH * (editable ? 1 : 0) +
+      (index < 0
+        ? 0
+        : widthOf(TITLE_PROP) + props.slice(0, index).reduce((sum, prop) => sum + widthOf(prop.id), 0));
     return { position: 'sticky', left, zIndex: 2 };
   };
   const fitColumn = (propId: string) => {
     const table = tableRef.current;
-    const index = props.findIndex((prop) => prop.id === propId) + 1;
+    const index = props.findIndex((prop) => prop.id === propId) + 1 + (editable ? 1 : 0);
     if (!table || index < 1) return;
     const probe = document.createElement('span');
     probe.style.position = 'fixed';
@@ -3129,7 +3580,15 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     setColumnMenu({ prop, anchor });
   };
   const duplicateColumn = (propId: string, includeValues: boolean) => {
-    const plan = planColumnDuplicate(state, dbId, propId, newId(), includeValues, nowTimestamp(), t('database.copySuffix'));
+    const plan = planColumnDuplicate(
+      state,
+      dbId,
+      propId,
+      newId(),
+      includeValues,
+      nowTimestamp(),
+      t('database.copySuffix'),
+    );
     if (!plan) {
       toast(t('database.duplicateColumnUnavailable'), { tone: 'error' });
       return;
@@ -3152,220 +3611,751 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
       },
     });
   };
+  const rowTargets = Object.values(state.pages).filter(
+    (page) =>
+      page.kind === 'database' &&
+      page.database &&
+      page.trashedAt === null &&
+      !page.database.unsupportedProperties?.length,
+  );
+  const siblings = childrenOf(state.pages, dbId);
+  const canReorderRows =
+    editable &&
+    view.sorts.length === 0 &&
+    view.filters.length === 0 &&
+    view.groupBy === null &&
+    visibleRowIds.length === siblings.length &&
+    visibleRowIds.every((id) => siblings.some((row) => row.id === id));
+  const rowReorderHint =
+    view.sorts.length > 0 ? t('database.rowReorderSortHint') : t('database.rowReorderFilterHint');
+  const mappingDestination = rowMappingDialog ? state.pages[rowMappingDialog.destinationDatabaseId] : null;
+  const rowMappingPreview =
+    rowMappingDialog && mappingDestination?.kind === 'database' && mappingDestination.database
+      ? previewRowMappings(
+          rowMappingDialog.payload.sourceProperties,
+          mappingDestination.database,
+          rowMappingDialog.payload.rows,
+          rowMappingDialog.mappings,
+        )
+      : [];
+  useEffect(() => {
+    if (headerRowSelectorRef.current)
+      headerRowSelectorRef.current.indeterminate =
+        selectedVisibleRowIds.length > 0 && selectedVisibleRowIds.length < visibleRowIds.length;
+  }, [selectedVisibleRowIds.length, visibleRowIds.length]);
+  const rowActionIds = (rowId: PageId) =>
+    selectedVisibleRowIds.includes(rowId) ? selectedVisibleRowIds : [rowId];
+  const applyRowPlan = async (plan: RowOperationPlan, label: string, successMessage: string) => {
+    const result = await executeTableAction(getSession(), asTableActionPlan(plan, label), nowTimestamp());
+    window.dispatchEvent(new Event('morrow-table-action-changed'));
+    if (result.status === 'saved') toast(successMessage);
+    else toast(result.message, { tone: result.status === 'pending' ? 'info' : 'error' });
+    return result.status === 'saved';
+  };
+  const insertRowAt = (rowId: PageId, placement: 'before' | 'after') => {
+    const planned = planInsertRow(getState(), dbId, rowId, placement, newId(), nowTimestamp());
+    if (!planned.ok) {
+      toast(planned.error, { tone: 'error' });
+      return;
+    }
+    void applyRowPlan(
+      planned.value,
+      placement === 'before' ? t('database.rowInsertBefore') : t('database.rowInsertAfter'),
+      t('database.rowInsertSuccess'),
+    );
+  };
+  const duplicateRows = (rowIds: PageId[]) => {
+    const planned = planDuplicateRows(state, dbId, rowIds, newId, nowTimestamp(), t('database.copySuffix'));
+    if (!planned.ok) {
+      toast(planned.error, { tone: 'error' });
+      return;
+    }
+    void applyRowPlan(planned.value, t('database.rowDuplicate'), t('database.rowCopySuccess'));
+  };
+  const requestTrashRows = (rowIds: PageId[]) => {
+    captureRowDialogFocus();
+    const nested = new Set<PageId>();
+    for (const id of rowIds) for (const page of descendantsOf(state.pages, id)) nested.add(page.id);
+    setRowTrashConfirmation({ rowIds: [...rowIds], nestedCount: nested.size });
+  };
+  const trashRows = () => {
+    if (!rowTrashConfirmation) return;
+    const planned = planTrashRows(getState(), dbId, rowTrashConfirmation.rowIds, nowTimestamp());
+    if (!planned.ok) {
+      toast(planned.error, { tone: 'error' });
+      closeRowTrashConfirmation();
+      return;
+    }
+    setRowTrashConfirmation(null);
+    setSelectedRowIds((current) => current.filter((id) => !rowTrashConfirmation.rowIds.includes(id)));
+    setRowSelectionAnchor(null);
+    void applyRowPlan(planned.value, t('database.rowTrash'), t('database.rowTrashSuccess')).then(() =>
+      restoreRowDialogFocus(),
+    );
+  };
+  const copyRows = async (rowIds: PageId[]) => {
+    const payload = createRowClipboardPayload(getState(), dbId, rowIds);
+    if (!payload.ok) {
+      toast(payload.error, { tone: 'error' });
+      return;
+    }
+    const serialized = serializeRowClipboard(payload.value);
+    if (!serialized.ok) {
+      toast(serialized.error, { tone: 'error' });
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error(t('database.rowClipboardUnavailable'));
+      await navigator.clipboard.writeText(serialized.value);
+      toast(t('database.rowClipboardCopied', { count: rowIds.length }));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : t('database.rowClipboardCopyFailed'), { tone: 'error' });
+    }
+  };
+  const openRowMapping = (
+    mode: 'copy' | 'move',
+    payload: RowClipboardPayload,
+    sourceDatabaseId: PageId,
+    rowIds: PageId[],
+    preferredDestinationId: PageId,
+    afterRowId: PageId | null = null,
+  ) => {
+    const candidates = rowTargets.filter((page) => mode !== 'move' || page.id !== sourceDatabaseId);
+    const destination = candidates.find((page) => page.id === preferredDestinationId) ?? candidates[0];
+    if (!destination?.database) {
+      toast(t('database.rowDestinationUnavailable'), { tone: 'error' });
+      return;
+    }
+    setRowMappingDialog({
+      mode,
+      payload,
+      sourceDatabaseId,
+      rowIds,
+      destinationDatabaseId: destination.id,
+      afterRowId,
+      mappings: suggestRowPropertyMappings(
+        payload.sourceProperties,
+        destination.database,
+        payload.rows,
+        destination.id === sourceDatabaseId,
+      ),
+    });
+  };
+  const moveRowsToTable = (rowIds: PageId[]) => {
+    captureRowDialogFocus();
+    const payload = createRowClipboardPayload(getState(), dbId, rowIds);
+    if (!payload.ok) {
+      toast(payload.error, { tone: 'error' });
+      return;
+    }
+    const firstDestination = rowTargets.find((page) => page.id !== dbId)?.id ?? '';
+    openRowMapping('move', payload.value, dbId, rowIds, firstDestination);
+  };
+  const pasteRowsAfter = async (afterRowId: PageId) => {
+    captureRowDialogFocus();
+    try {
+      if (!navigator.clipboard?.readText) throw new Error(t('database.rowClipboardUnavailable'));
+      const text = await navigator.clipboard.readText();
+      const parsed = parseRowClipboardText(text);
+      if (!parsed.ok) {
+        toast(parsed.error, { tone: 'error' });
+        return;
+      }
+      openRowMapping(
+        'copy',
+        parsed.value,
+        parsed.value.sourceDatabaseId,
+        parsed.value.rows.map((row) => row.page.id),
+        dbId,
+        afterRowId,
+      );
+    } catch (error) {
+      toast(error instanceof Error ? error.message : t('database.rowClipboardPasteFailed'), {
+        tone: 'error',
+      });
+    }
+  };
+  const routeKeyboardPaste = async (afterRowId: PageId | null) => {
+    captureRowDialogFocus();
+    let text: string;
+    try {
+      if (!navigator.clipboard?.readText) throw new Error(t('database.rowClipboardUnavailable'));
+      text = await navigator.clipboard.readText();
+    } catch {
+      if (activeCell && selectionRange) {
+        void handleBatchPaste();
+        return;
+      }
+      toast(t('database.rowClipboardUnavailable'), { tone: 'error' });
+      return;
+    }
+
+    if (text.startsWith(ROW_CLIPBOARD_VERSION_MARKER)) {
+      const parsed = parseRowClipboardText(text);
+      if (!parsed.ok) {
+        toast(parsed.error, { tone: 'error' });
+        return;
+      }
+      openRowMapping(
+        'copy',
+        parsed.value,
+        parsed.value.sourceDatabaseId,
+        parsed.value.rows.map((row) => row.page.id),
+        dbId,
+        afterRowId,
+      );
+      return;
+    }
+
+    if (activeCell && selectionRange) void handleBatchPaste();
+  };
+  const handleRowClipboardShortcut = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (
+      event.defaultPrevented ||
+      !editable ||
+      rowMappingDialog !== null ||
+      rowTrashConfirmation !== null ||
+      !(event.ctrlKey || event.metaKey) ||
+      event.altKey
+    )
+      return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !event.currentTarget.contains(target)) return;
+    const emptyTableTarget = target === event.currentTarget && visibleRowIds.length === 0;
+    if (!target.closest('.db-table') && !emptyTableTarget) return;
+    if (
+      target.closest(
+        'textarea, select, form, [contenteditable="true"], .db-row-dialog, [role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"], [data-floating-ui-portal], [data-radix-popper-content-wrapper]',
+      )
+    )
+      return;
+    if (target instanceof HTMLInputElement && target.type !== 'checkbox') return;
+    const key = event.key.toLowerCase();
+    if (key === 'c' && selectedVisibleRowIds.length > 0) {
+      event.preventDefault();
+      void copyRows(selectedVisibleRowIds);
+    } else if (key === 'v') {
+      event.preventDefault();
+      const afterRowId = selectedVisibleRowIds.at(-1) ?? activeCellRef.current?.rowId ?? null;
+      void routeKeyboardPaste(afterRowId);
+    }
+  };
+  const submitRowMapping = () => {
+    if (!rowMappingDialog) return;
+    const latest = getState();
+    const destination = latest.pages[rowMappingDialog.destinationDatabaseId];
+    if (destination?.kind !== 'database' || !destination.database) {
+      toast(t('database.rowDestinationUnavailable'), { tone: 'error' });
+      return;
+    }
+    const preview = previewRowMappings(
+      rowMappingDialog.payload.sourceProperties,
+      destination.database,
+      rowMappingDialog.payload.rows,
+      rowMappingDialog.mappings,
+    );
+    const invalid = preview.find((item) => item.error);
+    if (invalid?.error) {
+      toast(invalid.error, { tone: 'error' });
+      return;
+    }
+    const now = nowTimestamp();
+    const planned =
+      rowMappingDialog.mode === 'move'
+        ? planMoveRows(
+            latest,
+            rowMappingDialog.sourceDatabaseId,
+            rowMappingDialog.destinationDatabaseId,
+            rowMappingDialog.rowIds,
+            rowMappingDialog.mappings,
+            now,
+          )
+        : planPasteRows(
+            latest,
+            rowMappingDialog.destinationDatabaseId,
+            rowMappingDialog.payload,
+            rowMappingDialog.mappings,
+            newId,
+            now,
+            t('database.copySuffix'),
+            rowMappingDialog.afterRowId,
+          );
+    if (!planned.ok) {
+      toast(planned.error, { tone: 'error' });
+      return;
+    }
+    const mode = rowMappingDialog.mode;
+    setRowMappingDialog(null);
+    void applyRowPlan(
+      planned.value,
+      mode === 'move' ? t('database.rowMoveTo') : t('database.rowPaste'),
+      mode === 'move' ? t('database.rowMoveSuccess') : t('database.rowCopySuccess'),
+    ).then(() => restoreRowDialogFocus());
+  };
+  const changeMappingDestination = (destinationId: PageId) => {
+    if (!rowMappingDialog) return;
+    const destination = rowTargets.find((page) => page.id === destinationId);
+    if (!destination?.database) return;
+    setRowMappingDialog((current) =>
+      current
+        ? {
+            ...current,
+            destinationDatabaseId: destinationId,
+            afterRowId: null,
+            mappings: suggestRowPropertyMappings(
+              current.payload.sourceProperties,
+              destination.database!,
+              current.payload.rows,
+              destinationId === current.sourceDatabaseId,
+            ),
+          }
+        : current,
+    );
+  };
+  const dropRowsOn = (event: React.DragEvent<HTMLTableRowElement>, anchorRowId: PageId) => {
+    if (!canReorderRows || dragRowIds.current.length === 0) return;
+    event.preventDefault();
+    const rowRect = event.currentTarget.getBoundingClientRect();
+    const placement = event.clientY < rowRect.top + rowRect.height / 2 ? 'before' : 'after';
+    const dragged = dragRowIds.current.filter((id) => visibleRowIdSet.has(id));
+    dragRowIds.current = [];
+    const planned = planReorderRows(getState(), dbId, dragged, anchorRowId, placement);
+    if (!planned.ok) {
+      toast(planned.error, { tone: 'error' });
+      return;
+    }
+    void applyRowPlan(planned.value, t('database.rowReorder'), t('database.rowReorderSuccess'));
+  };
   return (
-    <div className="db-table-wrap">
-      <table ref={tableRef} className={`db-table${editable ? ' is-filled' : ''}`} style={{ width: total }}>
-        <colgroup>
-          <col style={{ width: widthOf(TITLE_PROP) }} />
-          {props.map((prop) => (
-            <col key={prop.id} style={{ width: widthOf(prop.id) }} />
-          ))}
-          {/* the add column takes whatever room is left, so the others keep the width they were given */}
-          {editable && <col />}
-        </colgroup>
-        <thead>
-          <tr>
-            <th scope="col" className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`} style={frozenStyle(-1)}>
-              {t('database.name')}
-              {resizer(TITLE_PROP)}
-            </th>
-            {props.map((prop) => {
-              const description = prop.description?.trim() ? prop.description : null;
-              return (
-                <th key={prop.id} scope="col" className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
-                  style={frozenStyle(props.indexOf(prop))}>
-                  <div className="db-header-row">
-                    <button
-                      type="button"
-                      className="db-header"
-                      disabled={!editable}
-                      aria-haspopup={editable ? 'menu' : undefined}
-                      aria-expanded={columnMenu?.prop.id === prop.id}
-                      aria-keyshortcuts="Shift+F10 ContextMenu"
-                      title={editable ? t('database.columnMenuHint') : undefined}
-                      onClick={(event) => {
-                        setColumnMenu(null);
-                        setInserting(null);
-                        setHeader({ prop, anchor: event.currentTarget });
-                      }}
-                      onContextMenu={(event) => {
-                        if (!editable) return;
-                        event.preventDefault();
-                        openColumnMenu(prop, event.currentTarget);
-                      }}
-                      onKeyDown={(event) => {
-                        if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+    <div
+      className="db-table-view"
+      onKeyDownCapture={handleRowClipboardShortcut}
+      tabIndex={editable && visibleRowIds.length === 0 ? 0 : undefined}
+      role={editable && visibleRowIds.length === 0 ? 'group' : undefined}
+      aria-label={editable && visibleRowIds.length === 0 ? t('database.rowPasteTarget') : undefined}
+      aria-keyshortcuts={editable && visibleRowIds.length === 0 ? 'Control+V Meta+V' : undefined}
+    >
+      {(selectedVisibleRowIds.length > 0 || (editable && visibleRowIds.length > 0 && !canReorderRows)) && (
+        <div className="db-row-operations">
+          {selectedVisibleRowIds.length > 0 && (
+            <>
+              <span className="db-row-selection-count" role="status">
+                {t('database.rowSelectionCount', { count: selectedVisibleRowIds.length })}
+              </span>
+              <button
+                type="button"
+                className="button small"
+                onClick={() => void copyRows(selectedVisibleRowIds)}
+              >
+                <Copy size={13} /> {t('database.rowCopy')}
+              </button>
+              <button
+                type="button"
+                className="button small"
+                disabled={rowTargets.length < 2}
+                onClick={() => moveRowsToTable(selectedVisibleRowIds)}
+              >
+                <ArrowDownUp size={13} /> {t('database.rowMoveTo')}
+              </button>
+              <button
+                type="button"
+                className="button small"
+                onClick={() => duplicateRows(selectedVisibleRowIds)}
+              >
+                <Copy size={13} /> {t('database.rowDuplicate')}
+              </button>
+              <button
+                type="button"
+                className="button small danger"
+                onClick={() => requestTrashRows(selectedVisibleRowIds)}
+              >
+                <Trash2 size={13} /> {t('database.rowTrash')}
+              </button>
+              <button
+                type="button"
+                className="button small"
+                onClick={() => {
+                  setSelectedRowIds([]);
+                  setRowSelectionAnchor(null);
+                }}
+              >
+                {t('database.rowClearSelection')}
+              </button>
+            </>
+          )}
+          {editable && visibleRowIds.length > 0 && !canReorderRows && (
+            <span className="db-row-reorder-hint" role="status">
+              {rowReorderHint}
+            </span>
+          )}
+        </div>
+      )}
+      <div className="db-table-wrap">
+        <table
+          ref={tableRef}
+          tabIndex={-1}
+          className={`db-table${editable ? ' is-filled' : ''}`}
+          style={{ width: total }}
+        >
+          <colgroup>
+            {editable && <col style={{ width: ROW_CONTROLS_WIDTH }} />}
+            <col style={{ width: widthOf(TITLE_PROP) }} />
+            {props.map((prop) => (
+              <col key={prop.id} style={{ width: widthOf(prop.id) }} />
+            ))}
+            {/* the add column takes whatever room is left, so the others keep the width they were given */}
+            {editable && <col />}
+          </colgroup>
+          <thead>
+            <tr>
+              {editable && (
+                <th
+                  scope="col"
+                  className="db-row-controls db-row-controls-header"
+                  style={{ position: 'sticky', left: 0, zIndex: 5 }}
+                >
+                  <input
+                    ref={headerRowSelectorRef}
+                    className="db-row-select"
+                    type="checkbox"
+                    aria-label={t('database.rowSelectAll', { count: visibleRowIds.length })}
+                    checked={
+                      visibleRowIds.length > 0 && selectedVisibleRowIds.length === visibleRowIds.length
+                    }
+                    disabled={visibleRowIds.length === 0}
+                    onChange={(event) => {
+                      const next = event.currentTarget.checked ? [...visibleRowIds] : [];
+                      selectRowsExplicitly(next);
+                      setRowSelectionAnchor(next[0] ?? null);
+                    }}
+                  />
+                </th>
+              )}
+              <th
+                scope="col"
+                className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`}
+                style={frozenStyle(-1)}
+              >
+                {t('database.name')}
+                {resizer(TITLE_PROP)}
+              </th>
+              {props.map((prop) => {
+                const description = prop.description?.trim() ? prop.description : null;
+                return (
+                  <th
+                    key={prop.id}
+                    scope="col"
+                    className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
+                    style={frozenStyle(props.indexOf(prop))}
+                  >
+                    <div className="db-header-row">
+                      <button
+                        type="button"
+                        className="db-header"
+                        disabled={!editable}
+                        aria-haspopup={editable ? 'menu' : undefined}
+                        aria-expanded={columnMenu?.prop.id === prop.id}
+                        aria-keyshortcuts="Shift+F10 ContextMenu"
+                        title={editable ? t('database.columnMenuHint') : undefined}
+                        onClick={(event) => {
+                          setColumnMenu(null);
+                          setInserting(null);
+                          setHeader({ prop, anchor: event.currentTarget });
+                        }}
+                        onContextMenu={(event) => {
+                          if (!editable) return;
                           event.preventDefault();
                           openColumnMenu(prop, event.currentTarget);
-                        }
-                      }}
-                    >
-                      <span className="db-header-icon" aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', marginRight: '6px', opacity: 0.85 }}>
-                        <PropertyGlyph prop={prop} />
-                      </span>
-                      <span className="db-header-name">{prop.name}</span>
-                    </button>
-                    {description && (
-                      <span className="db-header-info-wrap">
-                        <ColumnDescription description={description} />
-                      </span>
-                    )}
-                  </div>
-                  {resizer(prop.id)}
-                </th>
-              );
-            })}
-            {editable && (
-              <th className="db-col-add">
-                <button
-                  type="button"
-                  className="icon-button tiny"
-                  aria-label={t('page.addAProperty')}
-                  onClick={(event) => setAdding(event.currentTarget)}
-                >
-                  <Plus size={13} />
-                </button>
-              </th>
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const rowRule = conditionalFormatForRow(row, view.conditionalFormats, database, state);
-            const rowStyle = rowRule ? conditionalColorStyle(rowRule.color) : undefined;
-            const titleRule = conditionalFormatForCell(
-              row,
-              TITLE_PROP,
-              view.conditionalFormats,
-              database,
-              state,
-            );
-            const isTitleActive = activeCell?.rowId === row.id && activeCell?.colId === TITLE_PROP;
-            const isTitleSelected = resolvedSelection?.rowIds.includes(row.id) && resolvedSelection?.colIds.includes(TITLE_PROP);
-            const titleFillCell = fillPreview?.previewCells.find((p) => p.rowId === row.id && p.colId === TITLE_PROP);
-            const isTitleFill = Boolean(titleFillCell);
-
-            return (
-              <tr key={row.id} style={rowStyle}>
-                <td
-                  ref={(el) => {
-                    if (el) tdRefs.current.set(`${row.id}:${TITLE_PROP}`, el);
-                    else tdRefs.current.delete(`${row.id}:${TITLE_PROP}`);
-                  }}
-                  tabIndex={isTitleActive ? 0 : -1}
-                  data-row-id={row.id}
-                  data-col-id={TITLE_PROP}
-                  data-fill-preview={isTitleFill ? String(titleFillCell?.value ?? '') : undefined}
-                  className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}${isTitleActive ? ' is-grid-active' : ''}${isTitleSelected ? ' is-grid-selected' : ''}${isTitleFill ? ' is-fill-preview' : ''}`}
-                  style={{ ...rowStyle, ...(titleRule ? conditionalColorStyle(titleRule.color) : {}), ...frozenStyle(-1) }}
-                  onKeyDown={(e) => handleCellKeyDown(e, row.id, TITLE_PROP)}
-                  onMouseDown={(e) => handleCellMouseDown(row.id, TITLE_PROP, e)}
-                  onMouseEnter={() => handleCellMouseEnter(row.id, TITLE_PROP)}
-                  onDoubleClick={() => handleCellDoubleClick(row.id, TITLE_PROP)}
-                >
-                  {titleFillCell ? (
-                    <span className="db-cell-content db-fill-preview-value">
-                      {titleFillCell.value === null || titleFillCell.value === '' ? (
-                        <span className="prop-empty">{t('page.untitled')}</span>
-                      ) : String(titleFillCell.value)}
-                    </span>
-                  ) : (
-                    <RowTitle
-                      row={row}
-                      editable={editable}
-                      autoFocus={focusNew === row.id}
-                      gridMode={true}
-                      isEditing={editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP}
-                      onCommitAndMove={(dir) => handleCommitAndMove(row.id, TITLE_PROP, dir)}
-                      onCancelEdit={() => handleCancelEdit(row.id, TITLE_PROP)}
-                    />
-                  )}
-                  {isBottomRightCell(row.id, TITLE_PROP) && editable && !isColumnReadOnly(TITLE_PROP, database) && (
-                    <div
-                      className="db-fill-handle"
-                      role="button"
-                      aria-label={t('database.fillHandle')}
-                      onMouseDown={(event) => {
-                        event.stopPropagation();
-                        event.preventDefault();
-                        fillDraggingRef.current = true;
-                        fillSourceRangeRef.current = selectionRange;
-                      }}
-                    />
-                  )}
-                </td>
-                {props.map((prop) => {
-                  const cellRule = conditionalFormatForCell(
-                    row,
-                    prop.id,
-                    view.conditionalFormats,
-                    database,
-                    state,
-                  );
-                  const isCellActive = activeCell?.rowId === row.id && activeCell?.colId === prop.id;
-                  const isCellSelected = resolvedSelection?.rowIds.includes(row.id) && resolvedSelection?.colIds.includes(prop.id);
-                  const propFillCell = fillPreview?.previewCells.find((p) => p.rowId === row.id && p.colId === prop.id);
-                  const isCellFill = Boolean(propFillCell);
-
-                  return (
-                    <td
-                      key={prop.id}
-                      ref={(el) => {
-                        if (el) tdRefs.current.set(`${row.id}:${prop.id}`, el);
-                        else tdRefs.current.delete(`${row.id}:${prop.id}`);
-                      }}
-                      tabIndex={isCellActive ? 0 : -1}
-                      data-row-id={row.id}
-                      data-col-id={prop.id}
-                      data-fill-preview={isCellFill ? String(propFillCell?.value ?? '') : undefined}
-                      className={`${props.indexOf(prop) <= frozenIndex ? 'db-frozen ' : ''}${isCellActive ? 'is-grid-active ' : ''}${isCellSelected ? 'is-grid-selected ' : ''}${isCellFill ? 'is-fill-preview' : ''}`}
-                      style={{
-                        ...rowStyle,
-                        ...(cellRule ? conditionalColorStyle(cellRule.color) : {}),
-                        textAlign: view.align?.[prop.id] ?? 'left',
-                        whiteSpace: view.wrap?.includes(prop.id) ? 'normal' : 'nowrap',
-                        ...frozenStyle(props.indexOf(prop)),
-                      }}
-                      onKeyDown={(e) => handleCellKeyDown(e, row.id, prop.id)}
-                      onMouseDown={(e) => handleCellMouseDown(row.id, prop.id, e)}
-                      onMouseEnter={() => handleCellMouseEnter(row.id, prop.id)}
-                      onDoubleClick={() => handleCellDoubleClick(row.id, prop.id)}
-                    >
-                      {view.rowHeight ? (
-                        <div
-                          className={`db-cell-frame${expandedCell === `${row.id}:${prop.id}` ? ' is-expanded' : ''}`}
-                          style={{ maxHeight: expandedCell === `${row.id}:${prop.id}` ? undefined : view.rowHeight }}
+                        }}
+                        onKeyDown={(event) => {
+                          if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+                            event.preventDefault();
+                            openColumnMenu(prop, event.currentTarget);
+                          }
+                        }}
+                      >
+                        <span
+                          className="db-header-icon"
+                          aria-hidden="true"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            marginRight: '6px',
+                            opacity: 0.85,
+                          }}
                         >
-                          {propFillCell ? (
-                            <span className="db-cell-content db-fill-preview-value">
-                              {propFillCell.value === null || propFillCell.value === '' || (Array.isArray(propFillCell.value) && propFillCell.value.length === 0) ? (
-                                <span className="prop-empty">{t('database.empty')}</span>
-                              ) : prop.type === 'checkbox' ? (
-                                <input type="checkbox" className="prop-checkbox" checked={propFillCell.value === true} disabled tabIndex={-1} aria-label={prop.name} />
-                              ) : (
-                                <PropertyDisplay prop={prop} value={propFillCell.value} />
-                              )}
-                            </span>
-                          ) : (
-                            <PropertyInput
-                              dbId={dbId}
-                              prop={prop}
-                              row={row}
-                              editable={editable}
-                              gridMode={true}
-                              isEditing={editingCell?.rowId === row.id && editingCell?.colId === prop.id}
-                              onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
-                              onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
-                            />
-                          )}
-                        </div>
-                      ) : (
-                        propFillCell ? (
+                          <PropertyGlyph prop={prop} />
+                        </span>
+                        <span className="db-header-name">{prop.name}</span>
+                      </button>
+                      {description && (
+                        <span className="db-header-info-wrap">
+                          <ColumnDescription description={description} />
+                        </span>
+                      )}
+                    </div>
+                    {resizer(prop.id)}
+                  </th>
+                );
+              })}
+              {editable && (
+                <th className="db-col-add">
+                  <button
+                    type="button"
+                    className="icon-button tiny"
+                    aria-label={t('page.addAProperty')}
+                    onClick={(event) => setAdding(event.currentTarget)}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const rowRule = conditionalFormatForRow(row, view.conditionalFormats, database, state);
+              const rowStyle = rowRule ? conditionalColorStyle(rowRule.color) : undefined;
+              const titleRule = conditionalFormatForCell(
+                row,
+                TITLE_PROP,
+                view.conditionalFormats,
+                database,
+                state,
+              );
+              const isTitleActive = activeCell?.rowId === row.id && activeCell?.colId === TITLE_PROP;
+              const isTitleSelected =
+                resolvedSelection?.rowIds.includes(row.id) && resolvedSelection?.colIds.includes(TITLE_PROP);
+              const titleFillCell = fillPreview?.previewCells.find(
+                (p) => p.rowId === row.id && p.colId === TITLE_PROP,
+              );
+              const isTitleFill = Boolean(titleFillCell);
+
+              return (
+                <tr
+                  key={row.id}
+                  className={selectedRowIdSet.has(row.id) ? 'is-row-selected' : undefined}
+                  style={rowStyle}
+                  onDragOver={(event) => {
+                    if (canReorderRows && dragRowIds.current.length > 0) event.preventDefault();
+                  }}
+                  onDrop={(event) => dropRowsOn(event, row.id)}
+                >
+                  {editable && (
+                    <td className="db-row-controls" style={{ position: 'sticky', left: 0, zIndex: 3 }}>
+                      <div className="db-row-tools">
+                        <input
+                          ref={(element) => {
+                            if (element) rowSelectorRefs.current.set(row.id, element);
+                            else rowSelectorRefs.current.delete(row.id);
+                          }}
+                          className="db-row-select"
+                          type="checkbox"
+                          checked={selectedRowIdSet.has(row.id)}
+                          aria-label={t('database.rowSelect', { name: displayTitle(row) })}
+                          onChange={(event) => {
+                            const native = event.nativeEvent as MouseEvent;
+                            changeRowSelection(row.id, event.currentTarget.checked, {
+                              shift: Boolean(native.shiftKey),
+                              additive: Boolean(native.ctrlKey || native.metaKey),
+                            });
+                          }}
+                          onKeyDown={(event) => handleRowSelectorKeyDown(event, row.id)}
+                        />
+                        <button
+                          type="button"
+                          className="db-row-drag"
+                          draggable={canReorderRows}
+                          aria-label={t('database.rowDrag', { name: displayTitle(row) })}
+                          title={
+                            canReorderRows
+                              ? t('database.rowDrag', { name: displayTitle(row) })
+                              : rowReorderHint
+                          }
+                          onDragStart={(event) => {
+                            const ids = selectedRowIdSet.has(row.id) ? selectedVisibleRowIds : [row.id];
+                            dragRowIds.current = ids.filter((id) => visibleRowIdSet.has(id));
+                            event.dataTransfer.effectAllowed = 'move';
+                            event.dataTransfer.setData(
+                              'application/x-morrow-row-ids',
+                              JSON.stringify(dragRowIds.current),
+                            );
+                          }}
+                          onDragEnd={() => {
+                            dragRowIds.current = [];
+                          }}
+                        >
+                          <GripVertical size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="db-row-menu-trigger"
+                          aria-label={t('database.rowMenu', { name: displayTitle(row) })}
+                          aria-haspopup="menu"
+                          aria-expanded={rowMenu?.rowId === row.id}
+                          onClick={(event) => setRowMenu({ rowId: row.id, anchor: event.currentTarget })}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setRowMenu({ rowId: row.id, anchor: event.currentTarget });
+                          }}
+                        >
+                          <MoreHorizontal size={15} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                  <td
+                    ref={(el) => {
+                      if (el) tdRefs.current.set(`${row.id}:${TITLE_PROP}`, el);
+                      else tdRefs.current.delete(`${row.id}:${TITLE_PROP}`);
+                    }}
+                    tabIndex={isTitleActive ? 0 : -1}
+                    data-row-id={row.id}
+                    data-col-id={TITLE_PROP}
+                    data-fill-preview={isTitleFill ? String(titleFillCell?.value ?? '') : undefined}
+                    className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}${isTitleActive ? ' is-grid-active' : ''}${isTitleSelected ? ' is-grid-selected' : ''}${isTitleFill ? ' is-fill-preview' : ''}`}
+                    style={{
+                      ...rowStyle,
+                      ...(titleRule ? conditionalColorStyle(titleRule.color) : {}),
+                      ...frozenStyle(-1),
+                    }}
+                    onFocus={clearRowSelection}
+                    onKeyDown={(e) => handleCellKeyDown(e, row.id, TITLE_PROP)}
+                    onMouseDown={(e) => handleCellMouseDown(row.id, TITLE_PROP, e)}
+                    onMouseEnter={() => handleCellMouseEnter(row.id, TITLE_PROP)}
+                    onDoubleClick={() => handleCellDoubleClick(row.id, TITLE_PROP)}
+                  >
+                    {titleFillCell ? (
+                      <span className="db-cell-content db-fill-preview-value">
+                        {titleFillCell.value === null || titleFillCell.value === '' ? (
+                          <span className="prop-empty">{t('page.untitled')}</span>
+                        ) : (
+                          String(titleFillCell.value)
+                        )}
+                      </span>
+                    ) : (
+                      <RowTitle
+                        row={row}
+                        editable={editable}
+                        autoFocus={focusNew === row.id}
+                        gridMode={true}
+                        isEditing={editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP}
+                        onCommitAndMove={(dir) => handleCommitAndMove(row.id, TITLE_PROP, dir)}
+                        onCancelEdit={() => handleCancelEdit(row.id, TITLE_PROP)}
+                      />
+                    )}
+                    {isBottomRightCell(row.id, TITLE_PROP) &&
+                      editable &&
+                      !isColumnReadOnly(TITLE_PROP, database) && (
+                        <div
+                          className="db-fill-handle"
+                          role="button"
+                          aria-label={t('database.fillHandle')}
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+                            event.preventDefault();
+                            fillDraggingRef.current = true;
+                            fillSourceRangeRef.current = selectionRange;
+                          }}
+                        />
+                      )}
+                  </td>
+                  {props.map((prop) => {
+                    const cellRule = conditionalFormatForCell(
+                      row,
+                      prop.id,
+                      view.conditionalFormats,
+                      database,
+                      state,
+                    );
+                    const isCellActive = activeCell?.rowId === row.id && activeCell?.colId === prop.id;
+                    const isCellSelected =
+                      resolvedSelection?.rowIds.includes(row.id) &&
+                      resolvedSelection?.colIds.includes(prop.id);
+                    const propFillCell = fillPreview?.previewCells.find(
+                      (p) => p.rowId === row.id && p.colId === prop.id,
+                    );
+                    const isCellFill = Boolean(propFillCell);
+
+                    return (
+                      <td
+                        key={prop.id}
+                        ref={(el) => {
+                          if (el) tdRefs.current.set(`${row.id}:${prop.id}`, el);
+                          else tdRefs.current.delete(`${row.id}:${prop.id}`);
+                        }}
+                        tabIndex={isCellActive ? 0 : -1}
+                        data-row-id={row.id}
+                        data-col-id={prop.id}
+                        data-fill-preview={isCellFill ? String(propFillCell?.value ?? '') : undefined}
+                        className={`${props.indexOf(prop) <= frozenIndex ? 'db-frozen ' : ''}${isCellActive ? 'is-grid-active ' : ''}${isCellSelected ? 'is-grid-selected ' : ''}${isCellFill ? 'is-fill-preview' : ''}`}
+                        style={{
+                          ...rowStyle,
+                          ...(cellRule ? conditionalColorStyle(cellRule.color) : {}),
+                          textAlign: view.align?.[prop.id] ?? 'left',
+                          whiteSpace: view.wrap?.includes(prop.id) ? 'normal' : 'nowrap',
+                          ...frozenStyle(props.indexOf(prop)),
+                        }}
+                        onFocus={clearRowSelection}
+                        onKeyDown={(e) => handleCellKeyDown(e, row.id, prop.id)}
+                        onMouseDown={(e) => handleCellMouseDown(row.id, prop.id, e)}
+                        onMouseEnter={() => handleCellMouseEnter(row.id, prop.id)}
+                        onDoubleClick={() => handleCellDoubleClick(row.id, prop.id)}
+                      >
+                        {view.rowHeight ? (
+                          <div
+                            className={`db-cell-frame${expandedCell === `${row.id}:${prop.id}` ? ' is-expanded' : ''}`}
+                            style={{
+                              maxHeight: expandedCell === `${row.id}:${prop.id}` ? undefined : view.rowHeight,
+                            }}
+                          >
+                            {propFillCell ? (
+                              <span className="db-cell-content db-fill-preview-value">
+                                {propFillCell.value === null ||
+                                propFillCell.value === '' ||
+                                (Array.isArray(propFillCell.value) && propFillCell.value.length === 0) ? (
+                                  <span className="prop-empty">{t('database.empty')}</span>
+                                ) : prop.type === 'checkbox' ? (
+                                  <input
+                                    type="checkbox"
+                                    className="prop-checkbox"
+                                    checked={propFillCell.value === true}
+                                    disabled
+                                    tabIndex={-1}
+                                    aria-label={prop.name}
+                                  />
+                                ) : (
+                                  <PropertyDisplay prop={prop} value={propFillCell.value} />
+                                )}
+                              </span>
+                            ) : (
+                              <PropertyInput
+                                dbId={dbId}
+                                prop={prop}
+                                row={row}
+                                editable={editable}
+                                gridMode={true}
+                                isEditing={editingCell?.rowId === row.id && editingCell?.colId === prop.id}
+                                onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
+                                onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
+                              />
+                            )}
+                          </div>
+                        ) : propFillCell ? (
                           <span className="db-cell-content db-fill-preview-value">
-                            {propFillCell.value === null || propFillCell.value === '' || (Array.isArray(propFillCell.value) && propFillCell.value.length === 0) ? (
+                            {propFillCell.value === null ||
+                            propFillCell.value === '' ||
+                            (Array.isArray(propFillCell.value) && propFillCell.value.length === 0) ? (
                               <span className="prop-empty">{t('database.empty')}</span>
                             ) : prop.type === 'checkbox' ? (
-                              <input type="checkbox" className="prop-checkbox" checked={propFillCell.value === true} disabled tabIndex={-1} aria-label={prop.name} />
+                              <input
+                                type="checkbox"
+                                className="prop-checkbox"
+                                checked={propFillCell.value === true}
+                                disabled
+                                tabIndex={-1}
+                                aria-label={prop.name}
+                              />
                             ) : (
                               <PropertyDisplay prop={prop} value={propFillCell.value} />
                             )}
@@ -3381,44 +4371,54 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                             onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
                             onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
                           />
-                        )
-                      )}
-                      {view.rowHeight && view.wrap?.includes(prop.id) && (
-                        <button
-                          type="button"
-                          className="db-cell-expand icon-button tiny"
-                          aria-label={t('database.expandCell', { name: prop.name })}
-                          aria-expanded={expandedCell === `${row.id}:${prop.id}`}
-                          title={t('database.expandCell', { name: prop.name })}
-                          onClick={() => setExpandedCell((current) => current === `${row.id}:${prop.id}` ? null : `${row.id}:${prop.id}`)}
-                        >
-                          <Maximize2 size={12} />
-                        </button>
-                      )}
-                      {isBottomRightCell(row.id, prop.id) && editable && !isColumnReadOnly(prop.id, database) && (
-                        <div
-                          className="db-fill-handle"
-                          role="button"
-                          aria-label={t('database.fillHandle')}
-                          onMouseDown={(event) => {
-                            event.stopPropagation();
-                            event.preventDefault();
-                            fillDraggingRef.current = true;
-                            fillSourceRangeRef.current = selectionRange;
-                          }}
-                        />
-                      )}
-                    </td>
-                  );
-                })}
-                {editable && <td style={rowStyle} />}
-              </tr>
-            );
-          })}
-        </tbody>
-        <tfoot>
+                        )}
+                        {view.rowHeight && view.wrap?.includes(prop.id) && (
+                          <button
+                            type="button"
+                            className="db-cell-expand icon-button tiny"
+                            aria-label={t('database.expandCell', { name: prop.name })}
+                            aria-expanded={expandedCell === `${row.id}:${prop.id}`}
+                            title={t('database.expandCell', { name: prop.name })}
+                            onClick={() =>
+                              setExpandedCell((current) =>
+                                current === `${row.id}:${prop.id}` ? null : `${row.id}:${prop.id}`,
+                              )
+                            }
+                          >
+                            <Maximize2 size={12} />
+                          </button>
+                        )}
+                        {isBottomRightCell(row.id, prop.id) &&
+                          editable &&
+                          !isColumnReadOnly(prop.id, database) && (
+                            <div
+                              className="db-fill-handle"
+                              role="button"
+                              aria-label={t('database.fillHandle')}
+                              onMouseDown={(event) => {
+                                event.stopPropagation();
+                                event.preventDefault();
+                                fillDraggingRef.current = true;
+                                fillSourceRangeRef.current = selectionRange;
+                              }}
+                            />
+                          )}
+                      </td>
+                    );
+                  })}
+                  {editable && <td style={rowStyle} />}
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
             <tr>
-              <th scope="row" className={`db-col-title db-footer-cell${frozenIndex === -1 ? '' : ' db-frozen'}`} style={frozenStyle(-1)}>
+              {editable && <td className="db-row-controls db-footer-cell" />}
+              <th
+                scope="row"
+                className={`db-col-title db-footer-cell${frozenIndex === -1 ? '' : ' db-frozen'}`}
+                style={frozenStyle(-1)}
+              >
                 {view.summaries?.['title'] ? (
                   <button
                     type="button"
@@ -3427,7 +4427,13 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                     title={summaryLabel(view.summaries['title'])}
                   >
                     {(() => {
-                      const s = summarizeProperty(rows, { id: 'title', name: t('database.name'), type: 'text', options: [] }, view.summaries['title'], database, state);
+                      const s = summarizeProperty(
+                        rows,
+                        { id: 'title', name: t('database.name'), type: 'text', options: [] },
+                        view.summaries['title'],
+                        database,
+                        state,
+                      );
                       return s.error ? '!' : s.value === null ? '—' : String(s.value);
                     })()}
                   </button>
@@ -3450,15 +4456,31 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                     className={`db-footer-cell${cellIndex <= frozenIndex ? ' db-frozen' : ''}`}
                     style={{
                       ...frozenStyle(cellIndex),
-                      textAlign: view.align?.[prop.id] ?? (isNumericPropertyType(prop.type) ? 'right' : 'left'),
+                      textAlign:
+                        view.align?.[prop.id] ?? (isNumericPropertyType(prop.type) ? 'right' : 'left'),
                     }}
                   >
                     {operation ? (
                       (() => {
                         const summary = summarizeProperty(rows, prop, operation, database, state);
-                        const isCountOp = ['count', 'countValues', 'countUnique', 'countEmpty', 'countNotEmpty', 'checked', 'unchecked'].includes(operation);
-                        const isPercentOp = ['percentEmpty', 'percentNotEmpty', 'percentChecked'].includes(operation);
-                        const isDateRange = operation === 'range' && (prop.type === 'date' || prop.type === 'datetime' || prop.type === 'createdTime' || prop.type === 'lastEditedTime');
+                        const isCountOp = [
+                          'count',
+                          'countValues',
+                          'countUnique',
+                          'countEmpty',
+                          'countNotEmpty',
+                          'checked',
+                          'unchecked',
+                        ].includes(operation);
+                        const isPercentOp = ['percentEmpty', 'percentNotEmpty', 'percentChecked'].includes(
+                          operation,
+                        );
+                        const isDateRange =
+                          operation === 'range' &&
+                          (prop.type === 'date' ||
+                            prop.type === 'datetime' ||
+                            prop.type === 'createdTime' ||
+                            prop.type === 'lastEditedTime');
                         const formatted = summary.error
                           ? t('database.summaryFormulaError', { error: summary.error })
                           : summary.value === null
@@ -3474,7 +4496,9 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                           <button
                             type="button"
                             className={`db-footer-summary${summary.error ? ' has-error' : ''}`}
-                            onClick={(event) => setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })}
+                            onClick={(event) =>
+                              setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })
+                            }
                             title={summary.error ?? summaryLabel(operation)}
                           >
                             {formatted}
@@ -3485,7 +4509,9 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                       <button
                         type="button"
                         className="db-calc-trigger"
-                        onClick={(event) => setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })}
+                        onClick={(event) =>
+                          setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })
+                        }
                       >
                         {t('database.calculate')}
                       </button>
@@ -3496,305 +4522,542 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
               {editable && <td />}
             </tr>
           </tfoot>
-      </table>
-      {fillPreview && (
-        <div className="db-fill-toolbar" role="group" aria-label={t('database.fillActions')}>
-          <span className={fillPreview.error ? 'db-fill-error' : 'db-fill-status'} role={fillPreview.error ? 'alert' : 'status'}>
-            {fillPreview.error ?? t('database.fillPreview', { count: fillPreview.affectedCells })}
-          </span>
-          <div className="db-fill-actions">
-            <button
-              ref={fillCopyButtonRef}
-              type="button"
-              className="button small"
-              aria-pressed={fillPreview.mode === 'copy'}
-              disabled={!editable || Boolean(fillPreview.error)}
-              onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'copy')}
+        </table>
+        {fillPreview && (
+          <div className="db-fill-toolbar" role="group" aria-label={t('database.fillActions')}>
+            <span
+              className={fillPreview.error ? 'db-fill-error' : 'db-fill-status'}
+              role={fillPreview.error ? 'alert' : 'status'}
             >
-              {t('database.fillCopy')}
-            </button>
-            {fillPreview.canSequence && (
+              {fillPreview.error ?? t('database.fillPreview', { count: fillPreview.affectedCells })}
+            </span>
+            <div className="db-fill-actions">
               <button
+                ref={fillCopyButtonRef}
                 type="button"
                 className="button small"
-                aria-pressed={fillPreview.mode === 'sequence'}
-                disabled={!editable}
-                onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'sequence')}
+                aria-pressed={fillPreview.mode === 'copy'}
+                disabled={!editable || Boolean(fillPreview.error)}
+                onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'copy')}
               >
-                {t('database.fillSequence')}
+                {t('database.fillCopy')}
               </button>
-            )}
-            <button type="button" className="button small primary" disabled={!editable || Boolean(fillPreview.error) || fillPreview.commands.length === 0} onClick={applyFillPreview}>
-              {t('database.fillApply')}
-            </button>
-            <button type="button" className="button small" onClick={() => cancelFillPreview(true)}>
-              {t('common.cancel')}
-            </button>
-          </div>
-          <small className="db-fill-hint">{t('database.fillKeyboardHint')}</small>
-        </div>
-      )}
-      {summaryAnchor && (
-        <Popover
-          anchor={summaryAnchor.anchor}
-          onClose={() => setSummaryAnchor(null)}
-          label={t('database.calculate')}
-        >
-          <div className="db-options-menu">
-            <button
-              type="button"
-              className="db-options-item"
-              onClick={() => {
-                saveView((current) => {
-                  const summaries = { ...current.summaries };
-                  delete summaries[summaryAnchor.propId];
-                  return { ...current, summaries };
-                });
-                setSummaryAnchor(null);
-              }}
-            >
-              {t('database.summaryNone')}
-            </button>
-            {operationsForProp(
-              summaryAnchor.propId === 'title' ? undefined : props.find((p) => p.id === summaryAnchor.propId),
-            ).map((op) => (
+              {fillPreview.canSequence && (
+                <button
+                  type="button"
+                  className="button small"
+                  aria-pressed={fillPreview.mode === 'sequence'}
+                  disabled={!editable}
+                  onClick={() =>
+                    updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'sequence')
+                  }
+                >
+                  {t('database.fillSequence')}
+                </button>
+              )}
               <button
-                key={op}
+                type="button"
+                className="button small primary"
+                disabled={!editable || Boolean(fillPreview.error) || fillPreview.commands.length === 0}
+                onClick={applyFillPreview}
+              >
+                {t('database.fillApply')}
+              </button>
+              <button type="button" className="button small" onClick={() => cancelFillPreview(true)}>
+                {t('common.cancel')}
+              </button>
+            </div>
+            <small className="db-fill-hint">{t('database.fillKeyboardHint')}</small>
+          </div>
+        )}
+        {summaryAnchor && (
+          <Popover
+            anchor={summaryAnchor.anchor}
+            onClose={() => setSummaryAnchor(null)}
+            label={t('database.calculate')}
+          >
+            <div className="db-options-menu">
+              <button
                 type="button"
                 className="db-options-item"
                 onClick={() => {
-                  saveView((current) => ({
-                    ...current,
-                    summaries: { ...current.summaries, [summaryAnchor.propId]: op },
-                  }));
+                  saveView((current) => {
+                    const summaries = { ...current.summaries };
+                    delete summaries[summaryAnchor.propId];
+                    return { ...current, summaries };
+                  });
                   setSummaryAnchor(null);
                 }}
               >
-                {summaryLabel(op)}
+                {t('database.summaryNone')}
               </button>
-            ))}
+              {operationsForProp(
+                summaryAnchor.propId === 'title'
+                  ? undefined
+                  : props.find((p) => p.id === summaryAnchor.propId),
+              ).map((op) => (
+                <button
+                  key={op}
+                  type="button"
+                  className="db-options-item"
+                  onClick={() => {
+                    saveView((current) => ({
+                      ...current,
+                      summaries: { ...current.summaries, [summaryAnchor.propId]: op },
+                    }));
+                    setSummaryAnchor(null);
+                  }}
+                >
+                  {summaryLabel(op)}
+                </button>
+              ))}
+            </div>
+          </Popover>
+        )}
+        {editable && (
+          <button
+            type="button"
+            className="db-new-row"
+            onClick={() => {
+              const id = createRow(dbId);
+              if (id) setFocusNew(id);
+            }}
+          >
+            <Plus size={14} /> {t('database.new')}
+          </button>
+        )}
+        {header && (
+          <PropertySettings
+            dbId={dbId}
+            database={database}
+            prop={header.prop}
+            view={view}
+            anchor={header.anchor}
+            onClose={() => setHeader(null)}
+            focusSection={header.focusSection}
+          />
+        )}
+        {columnMenu && (
+          <Menu
+            anchor={columnMenu.anchor}
+            label={t('database.columnMenuAria', { name: columnMenu.prop.name })}
+            onClose={() => setColumnMenu(null)}
+            entries={[
+              { heading: columnMenu.prop.name },
+              {
+                label: t('database.editColumn'),
+                icon: Settings2,
+                onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
+              },
+              {
+                label: t('database.setDisplayColumn'),
+                icon: Eye,
+                checked: database.displayPropertyId === columnMenu.prop.id,
+                onSelect: () =>
+                  updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: columnMenu.prop.id })),
+              },
+              ...(database.displayPropertyId === columnMenu.prop.id
+                ? [
+                    {
+                      label: t('database.useTitleForDisplay'),
+                      icon: X,
+                      onSelect: () =>
+                        updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: null })),
+                    },
+                  ]
+                : []),
+              {
+                label: t('database.editColumnFormula'),
+                icon: Calculator,
+                disabled: ['button', 'createdTime', 'lastEditedTime', 'image', 'file', 'richCanvas'].includes(
+                  columnMenu.prop.type,
+                ),
+                onSelect: () =>
+                  setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor, focusSection: 'formula' }),
+              },
+              {
+                label: t('database.formatColumnConditionally'),
+                icon: Paintbrush,
+                onSelect: () => onRequestFormat(columnMenu.prop.id),
+              },
+              { separator: true },
+              {
+                label: t('database.sortAscending'),
+                icon: ArrowUp,
+                checked: selectedSort?.dir === 'asc',
+                onSelect: () =>
+                  saveView((current) => ({
+                    ...current,
+                    sorts: [
+                      { prop: columnMenu.prop.id, dir: 'asc' },
+                      ...current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
+                    ],
+                  })),
+              },
+              {
+                label: t('database.sortDescending'),
+                icon: ArrowDown,
+                checked: selectedSort?.dir === 'desc',
+                onSelect: () =>
+                  saveView((current) => ({
+                    ...current,
+                    sorts: [
+                      { prop: columnMenu.prop.id, dir: 'desc' },
+                      ...current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
+                    ],
+                  })),
+              },
+              ...(selectedSort
+                ? [
+                    {
+                      label: t('database.removeSort'),
+                      icon: X,
+                      onSelect: () =>
+                        saveView((current) => ({
+                          ...current,
+                          sorts: current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
+                        })),
+                    },
+                  ]
+                : []),
+              { separator: true },
+              {
+                label: t('database.filterColumn'),
+                icon: Filter,
+                onSelect: () => onRequestFilter(columnMenu.prop.id),
+              },
+              { separator: true },
+              {
+                label: t('database.insertColumnBefore'),
+                icon: Plus,
+                onSelect: () =>
+                  setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'before' }),
+              },
+              {
+                label: t('database.insertColumnAfter'),
+                icon: Plus,
+                onSelect: () =>
+                  setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
+              },
+              { separator: true },
+              {
+                label: t('database.freezeThroughColumn'),
+                icon: Columns3,
+                checked: view.frozenThrough === columnMenu.prop.id,
+                onSelect: () => saveView((current) => ({ ...current, frozenThrough: columnMenu.prop.id })),
+              },
+              ...(view.frozenThrough
+                ? [
+                    {
+                      label: t('database.unfreezeColumns'),
+                      icon: X,
+                      onSelect: () => saveView((current) => ({ ...current, frozenThrough: undefined })),
+                    },
+                  ]
+                : []),
+              {
+                label: t('database.fitColumnToContent'),
+                icon: Maximize2,
+                onSelect: () => fitColumn(columnMenu.prop.id),
+              },
+              { heading: t('database.rowHeight') },
+              ...(
+                [
+                  [undefined, 'database.rowHeightAutomatic'],
+                  [34, 'database.rowHeightCompact'],
+                  [68, 'database.rowHeightMedium'],
+                  [120, 'database.rowHeightTall'],
+                ] as const
+              ).map(([height, label]) => ({
+                label: t(label),
+                checked: view.rowHeight === height,
+                onSelect: () => saveView((current) => ({ ...current, rowHeight: height })),
+              })),
+              { separator: true },
+              {
+                label: t('database.duplicateColumnEmpty'),
+                icon: Copy,
+                onSelect: () => duplicateColumn(columnMenu.prop.id, false),
+              },
+              {
+                label: t('database.duplicateColumnValues'),
+                icon: Copy,
+                onSelect: () => duplicateColumn(columnMenu.prop.id, true),
+              },
+            ]}
+          />
+        )}
+        {rowMenu && (
+          <Menu
+            anchor={rowMenu.anchor}
+            label={t('database.rowMenu', {
+              name: displayTitle(state.pages[rowMenu.rowId] ?? rows.find((row) => row.id === rowMenu.rowId)!),
+            })}
+            onClose={() => setRowMenu(null)}
+            entries={[
+              {
+                heading: t('database.rowSelectionCount', { count: rowActionIds(rowMenu.rowId).length }),
+              },
+              {
+                label: t('database.rowOpen'),
+                icon: Maximize2,
+                onSelect: () => openPage(rowMenu.rowId),
+              },
+              { separator: true },
+              {
+                label: t('database.rowInsertBefore'),
+                icon: Plus,
+                disabled: !editable,
+                onSelect: () => insertRowAt(rowMenu.rowId, 'before'),
+              },
+              {
+                label: t('database.rowInsertAfter'),
+                icon: Plus,
+                disabled: !editable,
+                onSelect: () => insertRowAt(rowMenu.rowId, 'after'),
+              },
+              {
+                label: t('database.rowDuplicate'),
+                icon: Copy,
+                disabled: !editable,
+                onSelect: () => duplicateRows(rowActionIds(rowMenu.rowId)),
+              },
+              {
+                label: t('database.rowCopy'),
+                icon: Copy,
+                disabled: !editable,
+                onSelect: () => void copyRows(rowActionIds(rowMenu.rowId)),
+              },
+              {
+                label: t('database.rowPaste'),
+                icon: Plus,
+                disabled: !editable,
+                onSelect: () => void pasteRowsAfter(rowMenu.rowId),
+              },
+              {
+                label: t('database.rowMoveTo'),
+                icon: ArrowDownUp,
+                disabled: !editable || rowTargets.length < 2,
+                onSelect: () => moveRowsToTable(rowActionIds(rowMenu.rowId)),
+              },
+              { separator: true },
+              {
+                label: t('database.rowTrash'),
+                icon: Trash2,
+                danger: true,
+                disabled: !editable,
+                onSelect: () => requestTrashRows(rowActionIds(rowMenu.rowId)),
+              },
+            ]}
+          />
+        )}
+        {rowMappingDialog && mappingDestination?.kind === 'database' && mappingDestination.database && (
+          <Dialog
+            title={t(
+              rowMappingDialog.mode === 'move'
+                ? 'database.rowMoveDialogTitle'
+                : 'database.rowPasteDialogTitle',
+              { count: rowMappingDialog.payload.rows.length },
+            )}
+            onClose={closeRowMappingDialog}
+            size="large"
+            className="db-row-dialog"
+          >
+            <p className="db-row-dialog-hint">{t('database.rowMappingHint')}</p>
+            <label className="field">
+              <span>{t('database.rowDestination')}</span>
+              <select
+                className="text-input small"
+                data-autofocus
+                value={rowMappingDialog.destinationDatabaseId}
+                onChange={(event) => changeMappingDestination(event.target.value)}
+              >
+                {rowTargets
+                  .filter(
+                    (page) =>
+                      rowMappingDialog.mode !== 'move' || page.id !== rowMappingDialog.sourceDatabaseId,
+                  )
+                  .map((page) => (
+                    <option key={page.id} value={page.id}>
+                      {displayTitle(page)}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <div className="db-row-mapping-list">
+              <div className="db-row-mapping-heading">
+                <span>{t('database.rowMappingSource')}</span>
+                <span>{t('database.rowMappingTarget')}</span>
+              </div>
+              {rowMappingPreview.map((item) => {
+                const currentChoice = rowMappingDialog.mappings[item.source.id] ?? '';
+                const conversionKey =
+                  item.conversion === 'select-to-multiple'
+                    ? 'database.rowMappingSelectToMultiple'
+                    : item.conversion === 'multiple-to-select'
+                      ? 'database.rowMappingMultipleToSelect'
+                      : item.conversion === 'numeric'
+                        ? 'database.rowMappingNumeric'
+                        : item.conversion === 'preserve'
+                          ? 'database.rowMappingPreserve'
+                          : item.conversion === 'derived'
+                            ? 'database.rowMappingDerived'
+                            : 'database.rowMappingSame';
+                return (
+                  <div className="db-row-mapping-item" key={item.source.id}>
+                    <div className="db-row-mapping-source">
+                      <strong>{item.source.name}</strong>
+                      <span>{t('database.rowMappingValues', { count: item.valueCount })}</span>
+                      {item.destination?.defaultValue !== undefined &&
+                        item.valueCount < rowMappingDialog.payload.rows.length && (
+                          <span>
+                            {t('database.rowMappingDefault', {
+                              value: formatDisplayValue(
+                                item.destination,
+                                item.destination.defaultValue,
+                                getLocale(),
+                              ),
+                            })}
+                          </span>
+                        )}
+                    </div>
+                    {item.conversion === 'derived' ? (
+                      <div className="db-row-mapping-derived">{t('database.rowMappingDerived')}</div>
+                    ) : (
+                      <select
+                        className="text-input small"
+                        aria-label={t('database.rowMappingFor', { name: item.source.name })}
+                        value={currentChoice}
+                        onChange={(event) =>
+                          setRowMappingDialog((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  mappings: { ...current.mappings, [item.source.id]: event.target.value },
+                                }
+                              : current,
+                          )
+                        }
+                      >
+                        <option value="">{t('database.rowDoNotMap')}</option>
+                        <option value={PRESERVE_ROW_PROPERTY}>{t('database.rowKeepFrontmatter')}</option>
+                        {mappingDestination
+                          .database!.properties.filter(
+                            (prop) => !isColumnReadOnly(prop.id, mappingDestination.database!),
+                          )
+                          .map((prop) => (
+                            <option key={prop.id} value={prop.id}>
+                              {prop.name}
+                            </option>
+                          ))}
+                      </select>
+                    )}
+                    <div className={`db-row-mapping-status${item.error ? ' is-error' : ''}`}>
+                      {item.error ?? t(conversionKey)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <footer className="db-row-dialog-actions">
+              <button type="button" className="button small" onClick={closeRowMappingDialog}>
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className="button small primary"
+                disabled={rowMappingPreview.some((item) => Boolean(item.error))}
+                onClick={submitRowMapping}
+              >
+                {t(rowMappingDialog.mode === 'move' ? 'database.rowMoveSubmit' : 'database.rowPasteSubmit')}
+              </button>
+            </footer>
+          </Dialog>
+        )}
+        {rowTrashConfirmation && (
+          <Dialog
+            title={t('database.rowTrashConfirmTitle', { count: rowTrashConfirmation.rowIds.length })}
+            onClose={closeRowTrashConfirmation}
+            role="alertdialog"
+            describedBy="db-row-trash-impact"
+            size="small"
+            className="db-row-dialog db-row-trash-dialog"
+          >
+            <p id="db-row-trash-impact">
+              {t('database.rowTrashImpact', {
+                count: rowTrashConfirmation.nestedCount,
+              })}
+            </p>
+            <p>{t('database.rowTrashUndo')}</p>
+            <div className="db-row-dialog-actions">
+              <button
+                type="button"
+                className="button small"
+                data-autofocus
+                onClick={closeRowTrashConfirmation}
+              >
+                {t('common.cancel')}
+              </button>
+              <button type="button" className="button small danger" onClick={trashRows}>
+                {t('common.confirm')}
+              </button>
+            </div>
+          </Dialog>
+        )}
+        {adding && (
+          <Popover
+            anchor={adding}
+            onClose={() => setAdding(null)}
+            label={t('database.newProperty')}
+            className="db-panel"
+          >
+            <NewProperty dbId={dbId} database={database} onDone={() => setAdding(null)} />
+          </Popover>
+        )}
+        {inserting && (
+          <InsertColumnPopover
+            dbId={dbId}
+            database={database}
+            view={view}
+            anchor={inserting.anchor}
+            anchorPropId={inserting.prop.id}
+            position={inserting.position}
+            onClose={() => setInserting(null)}
+          />
+        )}
+        {rowConfirmation && (
+          <div
+            className="db-paste-confirm-banner"
+            role="dialog"
+            aria-label={t('database.confirmPasteExtraRows', { count: rowConfirmation.count })}
+            style={{
+              position: 'fixed',
+              bottom: '24px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: 'var(--surface, #1e293b)',
+              border: '1px solid var(--border)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              padding: '12px 18px',
+              borderRadius: '8px',
+              zIndex: 100,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}
+          >
+            <span>{t('database.confirmPasteExtraRows', { count: rowConfirmation.count })}</span>
+            <button type="button" className="button small primary" onClick={rowConfirmation.onConfirm}>
+              {t('common.confirm')}
+            </button>
+            <button type="button" className="button small" onClick={() => setRowConfirmation(null)}>
+              {t('common.cancel')}
+            </button>
           </div>
-        </Popover>
-      )}
-      {editable && (
-        <button
-          type="button"
-          className="db-new-row"
-          onClick={() => {
-            const id = createRow(dbId);
-            if (id) setFocusNew(id);
-          }}
-        >
-          <Plus size={14} /> {t('database.new')}
-        </button>
-      )}
-      {header && (
-        <PropertySettings
-          dbId={dbId}
-          database={database}
-          prop={header.prop}
-          view={view}
-          anchor={header.anchor}
-          onClose={() => setHeader(null)}
-          focusSection={header.focusSection}
-        />
-      )}
-      {columnMenu && (
-        <Menu
-          anchor={columnMenu.anchor}
-          label={t('database.columnMenuAria', { name: columnMenu.prop.name })}
-          onClose={() => setColumnMenu(null)}
-          entries={[
-            { heading: columnMenu.prop.name },
-            {
-              label: t('database.editColumn'),
-              icon: Settings2,
-              onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
-            },
-            {
-              label: t('database.setDisplayColumn'),
-              icon: Eye,
-              checked: database.displayPropertyId === columnMenu.prop.id,
-              onSelect: () => updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: columnMenu.prop.id })),
-            },
-            ...(database.displayPropertyId === columnMenu.prop.id ? [{
-              label: t('database.useTitleForDisplay'),
-              icon: X,
-              onSelect: () => updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: null })),
-            }] : []),
-            {
-              label: t('database.editColumnFormula'),
-              icon: Calculator,
-              disabled: ['button', 'createdTime', 'lastEditedTime', 'image', 'file', 'richCanvas'].includes(columnMenu.prop.type),
-              onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor, focusSection: 'formula' }),
-            },
-            {
-              label: t('database.formatColumnConditionally'),
-              icon: Paintbrush,
-              onSelect: () => onRequestFormat(columnMenu.prop.id),
-            },
-            { separator: true },
-            {
-              label: t('database.sortAscending'),
-              icon: ArrowUp,
-              checked: selectedSort?.dir === 'asc',
-              onSelect: () =>
-                saveView((current) => ({
-                  ...current,
-                  sorts: [
-                    { prop: columnMenu.prop.id, dir: 'asc' },
-                    ...current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
-                  ],
-                })),
-            },
-            {
-              label: t('database.sortDescending'),
-              icon: ArrowDown,
-              checked: selectedSort?.dir === 'desc',
-              onSelect: () =>
-                saveView((current) => ({
-                  ...current,
-                  sorts: [
-                    { prop: columnMenu.prop.id, dir: 'desc' },
-                    ...current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
-                  ],
-                })),
-            },
-            ...(selectedSort
-              ? [
-                  {
-                    label: t('database.removeSort'),
-                    icon: X,
-                    onSelect: () =>
-                      saveView((current) => ({
-                        ...current,
-                        sorts: current.sorts.filter((item) => item.prop !== columnMenu.prop.id),
-                      })),
-                  },
-                ]
-              : []),
-            { separator: true },
-            {
-              label: t('database.filterColumn'),
-              icon: Filter,
-              onSelect: () => onRequestFilter(columnMenu.prop.id),
-            },
-            { separator: true },
-            {
-              label: t('database.insertColumnBefore'),
-              icon: Plus,
-              onSelect: () =>
-                setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'before' }),
-            },
-            {
-              label: t('database.insertColumnAfter'),
-              icon: Plus,
-              onSelect: () =>
-                setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
-            },
-            { separator: true },
-            {
-              label: t('database.freezeThroughColumn'),
-              icon: Columns3,
-              checked: view.frozenThrough === columnMenu.prop.id,
-              onSelect: () => saveView((current) => ({ ...current, frozenThrough: columnMenu.prop.id })),
-            },
-            ...(view.frozenThrough ? [{
-              label: t('database.unfreezeColumns'),
-              icon: X,
-              onSelect: () => saveView((current) => ({ ...current, frozenThrough: undefined })),
-            }] : []),
-            {
-              label: t('database.fitColumnToContent'),
-              icon: Maximize2,
-              onSelect: () => fitColumn(columnMenu.prop.id),
-            },
-            { heading: t('database.rowHeight') },
-            ...([
-              [undefined, 'database.rowHeightAutomatic'],
-              [34, 'database.rowHeightCompact'],
-              [68, 'database.rowHeightMedium'],
-              [120, 'database.rowHeightTall'],
-            ] as const).map(([height, label]) => ({
-              label: t(label),
-              checked: view.rowHeight === height,
-              onSelect: () => saveView((current) => ({ ...current, rowHeight: height })),
-            })),
-            { separator: true },
-            {
-              label: t('database.duplicateColumnEmpty'),
-              icon: Copy,
-              onSelect: () => duplicateColumn(columnMenu.prop.id, false),
-            },
-            {
-              label: t('database.duplicateColumnValues'),
-              icon: Copy,
-              onSelect: () => duplicateColumn(columnMenu.prop.id, true),
-            },
-          ]}
-        />
-      )}
-      {adding && (
-        <Popover
-          anchor={adding}
-          onClose={() => setAdding(null)}
-          label={t('database.newProperty')}
-          className="db-panel"
-        >
-          <NewProperty dbId={dbId} database={database} onDone={() => setAdding(null)} />
-        </Popover>
-      )}
-      {inserting && (
-        <InsertColumnPopover
-          dbId={dbId}
-          database={database}
-          view={view}
-          anchor={inserting.anchor}
-          anchorPropId={inserting.prop.id}
-          position={inserting.position}
-          onClose={() => setInserting(null)}
-        />
-      )}
-      {rowConfirmation && (
-        <div
-          className="db-paste-confirm-banner"
-          role="dialog"
-          aria-label={t('database.confirmPasteExtraRows', { count: rowConfirmation.count })}
-          style={{
-            position: 'fixed',
-            bottom: '24px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'var(--surface, #1e293b)',
-            border: '1px solid var(--border)',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-            padding: '12px 18px',
-            borderRadius: '8px',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-          }}
-        >
-          <span>{t('database.confirmPasteExtraRows', { count: rowConfirmation.count })}</span>
-          <button
-            type="button"
-            className="button small primary"
-            onClick={rowConfirmation.onConfirm}
-          >
-            {t('common.confirm')}
-          </button>
-          <button
-            type="button"
-            className="button small"
-            onClick={() => setRowConfirmation(null)}
-          >
-            {t('common.cancel')}
-          </button>
+        )}
+        <div className="sr-only" aria-live="polite" role="status">
+          {liveAnnouncement}
         </div>
-      )}
-      <div className="sr-only" aria-live="polite" role="status">
-        {liveAnnouncement}
       </div>
     </div>
   );

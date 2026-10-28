@@ -204,6 +204,10 @@ export class VaultRepository implements WorkspaceRepository {
       if (before?.file) ops.push({ op: 'remove', path: before.file });
     }
     ops.push(...planMoves(previous, next));
+    // Keep IDs stable if a later page write only partially succeeds. The registry
+    // can safely refer to files that have not been created yet; loadVault only
+    // uses entries for paths that actually exist.
+    const afterPathOps = ops.length;
 
     const oldTargets = linkTargets(previous);
     const newTargets = linkTargets(next);
@@ -299,7 +303,7 @@ export class VaultRepository implements WorkspaceRepository {
     }
     const registry = this.registryFor(state, next);
     if (registry.workspace !== this.registryText)
-      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace });
+      ops.splice(afterPathOps, 0, { op: 'write', path: REGISTRY_PATH, text: registry.workspace });
     if (registry.recent !== this.recentText)
       ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent });
     // the shell only removes empty folders, a folder page keeps its folder because the folder is the page

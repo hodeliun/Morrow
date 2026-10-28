@@ -27,6 +27,8 @@ interface DialogProps {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  role?: 'dialog' | 'alertdialog';
+  describedBy?: string;
   footer?: ReactNode;
   size?: 'small' | 'medium' | 'large';
   className?: string;
@@ -37,6 +39,8 @@ export function Dialog({
   title,
   onClose,
   children,
+  role = 'dialog',
+  describedBy,
   footer,
   size = 'medium',
   className,
@@ -97,9 +101,10 @@ export function Dialog({
       <div
         ref={ref}
         className={`dialog dialog-${size}${className ? ` ${className}` : ''}`}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={describedBy}
         tabIndex={-1}
       >
         <header className={`dialog-header${hideTitle ? ' visually-hidden' : ''}`}>

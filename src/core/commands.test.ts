@@ -42,6 +42,59 @@ describe('page creation and hierarchy', () => {
     expect(applyCommand(state, create('b', 'missing')).ok).toBe(false);
   });
 
+  it('creates copied rows with defaults while preserving supported page metadata', () => {
+    const database = create('db', null, {
+      kind: 'database',
+      database: {
+        properties: [
+          { id: 'amount', name: 'Amount', type: 'number', options: [], fillMode: 'default', defaultValue: 7 },
+          { id: 'checked', name: 'Checked', type: 'checkbox', options: [], fillMode: 'default', defaultValue: true },
+          { id: 'blank', name: 'Blank', type: 'text', options: [], fillMode: 'default', defaultValue: 'fallback' },
+        ],
+        views: [],
+      },
+    } as Partial<Command>);
+    const state = run(emptyWorkspace(), database);
+    const result = applyCommand(state, {
+      type: 'page.create',
+      id: 'copy',
+      parentId: 'db',
+      now: 2,
+      title: 'Copied',
+      properties: { amount: 0, checked: false, blank: null },
+      controls: [{ id: 'filter', name: 'Filter', type: 'text', value: 'open', defaultValue: '', options: [] }],
+      extra: { Source: 'preserved' },
+      cover: 'gradient-2',
+      coverPosition: 23,
+      doc: paragraph('Copied body'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const page = result.value.state.pages.copy!;
+    expect(page.properties).toMatchObject({ amount: 0, checked: false, blank: null });
+    expect(page.properties).not.toHaveProperty('source-only');
+    expect(page.controls).toMatchObject([{ id: 'filter', value: 'open' }]);
+    expect(page.extra).toEqual({ Source: 'preserved' });
+    expect(page.cover).toBe('gradient-2');
+    expect(page.coverPosition).toBe(23);
+    expect(result.value.state.docs.copy?.content?.[0]?.content?.[0]?.text).toBe('Copied body');
+  });
+
+  it('rejects invalid copied-row metadata without changing state', () => {
+    const state = run(emptyWorkspace(), create('parent'));
+    const result = applyCommand(state, {
+      type: 'page.create',
+      id: 'invalid-copy',
+      parentId: 'parent',
+      now: 2,
+      controls: [{ id: 'bad', name: '', type: 'text', value: 'x', defaultValue: '', options: [] }],
+      extra: { Source: 'preserved' },
+    } as unknown as Command);
+    expect(result.ok).toBe(false);
+    expect(state.pages).not.toHaveProperty('invalid-copy');
+    expect(state.docs).not.toHaveProperty('invalid-copy');
+  });
+
   it('refuses to move a page inside itself or its descendants', () => {
     const state = run(emptyWorkspace(), create('a'), create('b', 'a'), create('c', 'b'));
     expect(applyCommand(state, { type: 'page.move', id: 'a', parentId: 'a' }).ok).toBe(false);
@@ -174,6 +227,44 @@ describe('formula defaults', () => {
     const failed = applyCommand(multiState, create('multi-row', 'db'));
     expect(failed.ok).toBe(false);
     if (!failed.ok) expect(failed.error).toContain('unknown option');
+  });
+});
+
+describe('page fields replacement', () => {
+  it('clears explicit null fields while retaining the other values and frontmatter', () => {
+    const state = run(
+      emptyWorkspace(),
+      create('db', null, {
+        kind: 'database',
+        database: {
+          properties: [
+            { id: 'note', name: 'Note', type: 'text', options: [] },
+            { id: 'amount', name: 'Amount', type: 'number', options: [] },
+          ],
+          views: [],
+        },
+      } as Partial<Command>),
+      create('row', 'db', { properties: { note: 'old', amount: 4 }, extra: { keep: 'me' } } as Partial<Command>),
+    );
+    const cleared = applyCommand(state, {
+      type: 'page.setFields',
+      id: 'row',
+      properties: { note: null, amount: 4 },
+      now: 2,
+    });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) return;
+    expect(cleared.value.state.pages.row!.properties).toEqual({ amount: 4 });
+    expect(cleared.value.state.pages.row!.extra).toEqual({ keep: 'me' });
+
+    const invalid = applyCommand(state, {
+      type: 'page.setFields',
+      id: 'row',
+      properties: { note: null, amount: 'not a number' as never },
+      now: 3,
+    });
+    expect(invalid.ok).toBe(false);
+    expect(state.pages.row!.properties).toEqual({ note: 'old', amount: 4 });
   });
 });
 

@@ -5,6 +5,7 @@ O Morrow original e este fork têm versões independentes. A tela **Sobre** most
 ## Ainda não lançado — base Morrow 1.2.1
 
 - Grade de banco com foco e edição explícitos, navegação por teclado, seleção de intervalos, clipboard tipado/TSV e preenchimento por cópia ou sequência com prévia e desfazer.
+- Seleção e ações de linhas, cópia completa com mapeamento entre tabelas, movimentação e desfazer com journal recuperável. Colagem por teclado funciona também em destino vazio e no clipboard CRLF do Windows.
 - Correções de imagem: geometria e proporção do recorte, substituição imediata, proteção contra respostas assíncronas antigas e eventos dos controles isolados da seleção do editor.
 - Seletor de ícones de propriedades funciona sem depender de uma página; autocomplete conserva a segunda sugestão ao navegar e inserir por Tab/Enter.
 - Fórmulas de checkbox distinguem `false` de resultado vazio na apresentação.

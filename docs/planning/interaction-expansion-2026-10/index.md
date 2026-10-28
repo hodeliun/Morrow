@@ -1,6 +1,8 @@
 # Expansão de interação — especificação e tickets
 
-Status: planejamento publicado; implementação não iniciada. GitHub é a autoridade de estado.
+Status: entregas funcionais implementadas e revisadas; validação integrada final em andamento. GitHub é a autoridade de estado.
+
+A autorização de execução de 28/10 está em [EXECUTION-2026-10-28.md](EXECUTION-2026-10-28.md). As notas de pausa nos tickets locais preservam o contexto da etapa inicial de planejamento; não substituem essa autorização posterior. As evidências de interface e revisão estão em `docs/evidence/`.
 
 [Spec local](SPEC.md) · [Grilling interno](GRILLING.md) · [Spec no GitHub](https://github.com/hodeliun/Morrow/issues/25)
 

@@ -48,6 +48,32 @@ describe('database column descriptions', () => {
       now: 1,
     });
     if (!created.ok) throw new Error(created.error);
+    for (const [id, title, index] of [
+      ['synthetic-row-one', 'Synthetic row one', 0],
+      ['synthetic-row-two', 'Synthetic row two', 1],
+    ] as const) {
+      const row = session.execute({
+        type: 'page.create',
+        id,
+        parentId: 'synthetic-database',
+        title,
+        now: 2,
+        index,
+      });
+      if (!row.ok) throw new Error(row.error);
+    }
+    const emptyDatabase: DatabaseDef = structuredClone(database);
+    emptyDatabase.views = [newView('table', emptyDatabase, () => 'synthetic-empty-table')];
+    const emptyCreated = session.execute({
+      type: 'page.create',
+      id: 'synthetic-empty-database',
+      parentId: null,
+      title: 'Synthetic empty database',
+      kind: 'database',
+      database: emptyDatabase,
+      now: 3,
+    });
+    if (!emptyCreated.ok) throw new Error(emptyCreated.error);
 
     const render = (page: PageMeta, embeddedView?: typeof view) =>
       renderToStaticMarkup(
@@ -60,6 +86,7 @@ describe('database column descriptions', () => {
     const initialPage = session.getState().pages['synthetic-database']!;
     const mainMarkup = render(initialPage);
     const linkedMarkup = render(initialPage, view);
+    const emptyMarkup = render(session.getState().pages['synthetic-empty-database']!);
 
     for (const markup of [mainMarkup, linkedMarkup]) {
       expect(markup.match(/class="db-header-info"/g)).toHaveLength(1);
@@ -73,6 +100,14 @@ describe('database column descriptions', () => {
       expect(markup).toContain(`aria-describedby="${descriptionId}"`);
     }
     expect(linkedMarkup).toContain('is-linked-view');
+    expect(mainMarkup).toContain('aria-label="Selecionar todas as 2 linhas visíveis"');
+    expect(mainMarkup).toContain('aria-label="Selecionar Synthetic row one"');
+    expect(mainMarkup).toContain('aria-label="Ações de Synthetic row one"');
+    expect(mainMarkup).toContain('class="db-row-drag"');
+    expect(emptyMarkup).toContain('class="db-table-view"');
+    expect(emptyMarkup).toContain('tabindex="0"');
+    expect(emptyMarkup).toContain('role="group"');
+    expect(emptyMarkup).toContain('Tabela vazia. Pressione Ctrl+V para colar linhas copiadas.');
 
     expect(
       updateProp('synthetic-database', 'summary', (property) => ({

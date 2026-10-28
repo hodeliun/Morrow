@@ -5,6 +5,7 @@ import type { FormulaResult } from './database';
 import type {
   ActionFormulaDef,
   DatabaseDef,
+  DocNode,
   FormulaReferenceBinding,
   PageId,
   PageMeta,
@@ -39,6 +40,9 @@ export interface ActionRecordChange {
   id: PageId;
   before: PageMeta | null;
   after: PageMeta | null;
+  // Row copy actions can persist a page and its document in separate vault files.
+  docBefore?: DocNode | null;
+  docAfter?: DocNode | null;
 }
 
 export interface TableActionPlan {

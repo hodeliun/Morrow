@@ -55,3 +55,17 @@ revisão Sol e atualização das issues, não apenas retorno do executor.
   mas persistência, UI e critérios completos ainda precisam de validação.
 - #44 e #25 continuam abertos até a integração final. Não confundir o código
   publicado com uma nova versão instalada ou com release de instalador.
+
+## Aceitação da entrega 5
+
+Sol medium aprovou o código e os testes dos tickets #35/#36, incluindo journal,
+recuperação parcial de IDs e contadores sequenciais, comandos compartilhados,
+mapeamento e clipboard de linhas. O harness oculto confirmou seleção filtrada,
+teclado, colagem em destino vazio, proteção de formulários em portal, conteúdo e
+propriedades ocultas, mover/desfazer, persistência/reabertura e retorno de foco
+após remover a última linha. Zero erros do renderer e cleanup foram registrados
+em `docs/evidence/interaction-expansion-delivery5-ui.json`.
+
+O executor registrou `npm run check` aprovado com 440 testes em 57 arquivos,
+tipos, lint e builds. Os achados incrementais estão resolvidos. A medição de
+1.000 linhas/células e a matriz dos vinte itens continuam na aceitação de #44.
