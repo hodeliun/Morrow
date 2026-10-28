@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { computePosition, flip, offset, shift } from '@floating-ui/dom';
 import type { LucideIcon } from 'lucide-react';
-import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { dateKey } from '../../../core/daily';
@@ -92,9 +92,31 @@ import { linkedViewReferences } from '../../../core/linkedViews';
 import { namedControlIdentifier } from '../../../core/controls';
 import { ViewChangeContext } from './viewContext';
 import { insertPropertyNear } from './columnActions';
+import {
+  isColumnReadOnly,
+  planGridClear,
+  planGridFill,
+  planGridPaste,
+  resolveVisibleRange,
+  revalidateActiveCell,
+  serializeGridClipboard,
+  parseGridClipboard,
+} from '../../../core/gridOperations';
+import type {
+  GridCoord,
+  GridRange,
+  GridClipboardPayload,
+  FillModeChoice,
+  GridOperationPlan,
+} from '../../../core/gridOperations';
 import type { ColumnInsertPosition } from './columnActions';
+import type { Command } from '../../../core/commands';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
 import { toast } from '../../ui';
+
+const nowTimestamp = (): number => Date.now();
+
+const gridClipboardCache = new Map<string, GridClipboardPayload>();
 
 const VIEW_ICONS: Record<ViewType, LucideIcon> = {
   table: Table2,
@@ -2182,25 +2204,62 @@ interface ViewProps {
   editable: boolean;
 }
 
-function RowTitle({ row, editable, autoFocus }: { row: PageMeta; editable: boolean; autoFocus?: boolean }) {
+function RowTitle({
+  row,
+  editable,
+  autoFocus,
+  gridMode,
+  isEditing,
+  onCommitAndMove,
+  onCancelEdit,
+}: {
+  row: PageMeta;
+  editable: boolean;
+  autoFocus?: boolean;
+  gridMode?: boolean;
+  isEditing?: boolean;
+  onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
+  onCancelEdit?: () => void;
+}) {
   return (
     <div className="db-title">
       <span className="tree-icon">
         <PageIcon page={row} />
       </span>
-      <DraftInput
-        type="text"
-        label={t('database.name')}
-        className="db-title-input"
-        value={row.title}
-        placeholder={t('page.untitled')}
-        editable={editable}
-        onCommit={(title) => run({ type: 'page.rename', id: row.id, title, now: Date.now() })}
-      />
-      {autoFocus && <FocusLast />}
+      {gridMode && !isEditing ? (
+        <span
+          className="db-title-text"
+          style={{
+            flex: '1 1 auto',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            padding: '0 4px',
+            userSelect: 'none',
+          }}
+        >
+          {row.title || <span className="prop-empty">{t('page.untitled')}</span>}
+        </span>
+      ) : (
+        <DraftInput
+          type="text"
+          label={t('database.name')}
+          className="db-title-input"
+          value={row.title}
+          placeholder={t('page.untitled')}
+          editable={editable}
+          autoFocus={gridMode ? true : autoFocus}
+          gridMode={gridMode}
+          onCommitAndMove={onCommitAndMove}
+          onCancelEdit={onCancelEdit}
+          onCommit={(title) => run({ type: 'page.rename', id: row.id, title, now: nowTimestamp() })}
+        />
+      )}
+      {!gridMode && autoFocus && <FocusLast />}
       <button
         type="button"
         className="icon-button tiny db-open"
+        tabIndex={-1}
         aria-label={t('database.openTitle', { title: displayTitle(row) })}
         title={t('common.open')}
         onClick={() => openPage(row.id)}
@@ -2427,6 +2486,576 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
   const state = useWorkspace();
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
+
+  const visibleColIds = useMemo(() => [TITLE_PROP, ...props.map((p) => p.id)], [props]);
+  const visibleRowIds = useMemo(() => rows.map((r) => r.id), [rows]);
+
+  const [activeCell, setActiveCell] = useState<GridCoord | null>(() => {
+    const r = visibleRowIds[0];
+    const c = visibleColIds[0];
+    return r && c ? { rowId: r, colId: c } : null;
+  });
+  const activeCellRef = useRef<GridCoord | null>(activeCell);
+  useEffect(() => {
+    activeCellRef.current = activeCell;
+  }, [activeCell]);
+  const [selectionRange, setSelectionRange] = useState<GridRange | null>(() => {
+    const r = visibleRowIds[0];
+    const c = visibleColIds[0];
+    return r && c ? { anchor: { rowId: r, colId: c }, focus: { rowId: r, colId: c } } : null;
+  });
+  const [editingCell, setEditingCell] = useState<GridCoord | null>(null);
+  const [fillPreview, setFillPreview] = useState<{
+    sourceRange: GridRange;
+    targetRange: GridRange;
+    mode: FillModeChoice;
+    previewCells: Array<{ rowId: PageId; colId: string; value: PropValue }>;
+    commands: Command[];
+    undoCommands: Command[];
+    redoCommands: Command[];
+    affectedCells: number;
+    canSequence: boolean;
+    error?: string;
+  } | null>(null);
+  const [focusFillActions, setFocusFillActions] = useState(false);
+  const [lastBatchUndo, setLastBatchUndo] = useState<Command[] | null>(null);
+  const [lastBatchRedo, setLastBatchRedo] = useState<Command[] | null>(null);
+  const [lastBatchApplied, setLastBatchApplied] = useState(false);
+  const [rowConfirmation, setRowConfirmation] = useState<{ count: number; onConfirm: () => void } | null>(null);
+  const [liveAnnouncement, setLiveAnnouncement] = useState<string>('');
+
+  const prevRowIdsRef = useRef<string[]>(visibleRowIds);
+  const prevColIdsRef = useRef<string[]>(visibleColIds);
+  const tdRefs = useRef<Map<string, HTMLTableCellElement>>(new Map());
+  const fillCopyButtonRef = useRef<HTMLButtonElement>(null);
+  const isSelectingRef = useRef<boolean>(false);
+  const fillDraggingRef = useRef<boolean>(false);
+  const fillSourceRangeRef = useRef<GridRange | null>(null);
+  const hasFillPreview = fillPreview !== null;
+
+  useEffect(() => {
+    if (!hasFillPreview || !focusFillActions) return;
+    const frame = window.requestAnimationFrame(() => {
+      fillCopyButtonRef.current?.focus({ preventScroll: true });
+      setFocusFillActions(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [hasFillPreview, focusFillActions]);
+
+  // Active cell revalidation upon sort, filter, or column hide
+  useEffect(() => {
+    const prevRows = prevRowIdsRef.current;
+    const prevCols = prevColIdsRef.current;
+    const rowsChanged = prevRows !== visibleRowIds;
+    const colsChanged = prevCols !== visibleColIds;
+    prevRowIdsRef.current = visibleRowIds;
+    prevColIdsRef.current = visibleColIds;
+    if (!rowsChanged && !colsChanged) return;
+
+    const currentActive = activeCellRef.current;
+    let focusAfterRevalidation: GridCoord | null = null;
+    if (currentActive) {
+      const reval = revalidateActiveCell(currentActive, prevRows, prevCols, visibleRowIds, visibleColIds);
+      if (reval.moved) {
+        setActiveCell(reval.active);
+        focusAfterRevalidation = reval.active;
+        setLiveAnnouncement(t('database.activeCellMoved', { reason: reval.reason ?? '' }));
+      }
+    } else if (visibleRowIds.length > 0 && visibleColIds.length > 0) {
+      const r = visibleRowIds[0];
+      const c = visibleColIds[0];
+      if (r && c) {
+        const initial = { rowId: r, colId: c };
+        setActiveCell(initial);
+        focusAfterRevalidation = initial;
+      }
+    }
+
+    if (selectionRange) {
+      const anchorResult = revalidateActiveCell(selectionRange.anchor, prevRows, prevCols, visibleRowIds, visibleColIds);
+      const focusResult = revalidateActiveCell(selectionRange.focus, prevRows, prevCols, visibleRowIds, visibleColIds);
+      if (anchorResult.moved || focusResult.moved) {
+        const fallback = focusResult.active ?? anchorResult.active ?? focusAfterRevalidation;
+        const anchor = anchorResult.active ?? fallback;
+        const focus = focusResult.active ?? fallback;
+        if (anchor && focus) setSelectionRange({ anchor, focus });
+        else setSelectionRange(null);
+        focusAfterRevalidation = focus ?? focusAfterRevalidation;
+        if (!currentActive || !revalidateActiveCell(currentActive, prevRows, prevCols, visibleRowIds, visibleColIds).moved) {
+          setLiveAnnouncement(t('database.rangeSelectionAdjusted'));
+        }
+      } else if (focusAfterRevalidation) {
+        setSelectionRange({ anchor: focusAfterRevalidation, focus: focusAfterRevalidation });
+      }
+    } else if (focusAfterRevalidation) {
+      setSelectionRange({ anchor: focusAfterRevalidation, focus: focusAfterRevalidation });
+    }
+    if (focusAfterRevalidation) {
+      tdRefs.current.get(`${focusAfterRevalidation.rowId}:${focusAfterRevalidation.colId}`)?.focus({ preventScroll: true });
+    }
+    setFillPreview(null);
+    setFocusFillActions(false);
+    fillSourceRangeRef.current = null;
+  }, [visibleRowIds, visibleColIds, selectionRange]);
+
+  const resolvedSelection = useMemo(
+    () => (selectionRange ? resolveVisibleRange(selectionRange, visibleRowIds, visibleColIds) : null),
+    [selectionRange, visibleRowIds, visibleColIds]
+  );
+
+  const navigateCell = (direction: 'up' | 'down' | 'left' | 'right' | 'next' | 'prev', extendSelection = false) => {
+    if (!activeCell || visibleRowIds.length === 0 || visibleColIds.length === 0) return;
+    if (fillPreview) cancelFillPreview();
+    const baseCoord = extendSelection && selectionRange ? selectionRange.focus : activeCell;
+    const rIdx = visibleRowIds.indexOf(baseCoord.rowId);
+    const cIdx = visibleColIds.indexOf(baseCoord.colId);
+    if (rIdx === -1 || cIdx === -1) return;
+
+    let nextR = rIdx;
+    let nextC = cIdx;
+
+    if (direction === 'up') nextR = Math.max(0, rIdx - 1);
+    else if (direction === 'down') nextR = Math.min(visibleRowIds.length - 1, rIdx + 1);
+    else if (direction === 'left') nextC = Math.max(0, cIdx - 1);
+    else if (direction === 'right') nextC = Math.min(visibleColIds.length - 1, cIdx + 1);
+    else if (direction === 'next') {
+      if (cIdx + 1 < visibleColIds.length) {
+        nextC = cIdx + 1;
+      } else if (rIdx + 1 < visibleRowIds.length) {
+        nextR = rIdx + 1;
+        nextC = 0;
+      }
+    } else if (direction === 'prev') {
+      if (cIdx > 0) {
+        nextC = cIdx - 1;
+      } else if (rIdx > 0) {
+        nextR = rIdx - 1;
+        nextC = visibleColIds.length - 1;
+      }
+    }
+
+    const nr = visibleRowIds[nextR];
+    const nc = visibleColIds[nextC];
+    if (!nr || !nc) return;
+    const nextCoord: GridCoord = { rowId: nr, colId: nc };
+
+    if (extendSelection && selectionRange) {
+      setSelectionRange({ anchor: selectionRange.anchor, focus: nextCoord });
+    } else {
+      setActiveCell(nextCoord);
+      setSelectionRange({ anchor: nextCoord, focus: nextCoord });
+    }
+
+    const cellKey = `${nextCoord.rowId}:${nextCoord.colId}`;
+    tdRefs.current.get(cellKey)?.focus();
+  };
+
+  const handleCommitAndMove = (rowId: PageId, colId: string, direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => {
+    setEditingCell(null);
+    if (direction === 'stay') {
+      const cellKey = `${rowId}:${colId}`;
+      tdRefs.current.get(cellKey)?.focus();
+      return;
+    }
+    navigateCell(direction, false);
+  };
+
+  const handleCancelEdit = (rowId: PageId, colId: string) => {
+    setEditingCell(null);
+    tdRefs.current.get(`${rowId}:${colId}`)?.focus({ preventScroll: true });
+  };
+
+  const applyBatchPlan = (plan: GridOperationPlan, successKey: 'database.clearBatchSuccess' | 'database.pasteBatchSuccess') => {
+    if (!editable) {
+      toast(t('database.unsupportedSchema'), { tone: 'error' });
+      return false;
+    }
+    const result = runAll(plan.commands);
+    if (!result.ok) {
+      toast(result.error, { tone: 'error' });
+      return false;
+    }
+    setLastBatchUndo(plan.undoCommands);
+    setLastBatchRedo(plan.redoCommands);
+    setLastBatchApplied(true);
+    toast(t(successKey, { count: plan.affectedCells }), {
+      action: {
+        label: t('toasts.undo'),
+        run: () => {
+          const undone = runAll(plan.undoCommands);
+          if (!undone.ok) {
+            toast(undone.error, { tone: 'error' });
+            return;
+          }
+          setLastBatchApplied(false);
+        },
+      },
+    });
+    return true;
+  };
+
+  const handleBatchClear = () => {
+    if (!editable) {
+      toast(t('database.unsupportedSchema'), { tone: 'error' });
+      return;
+    }
+    if (!selectionRange) return;
+    const planResult = planGridClear(state, dbId, selectionRange, visibleRowIds, visibleColIds, nowTimestamp());
+    if (!planResult.ok) {
+      toast(planResult.error, { tone: 'error' });
+      return;
+    }
+    applyBatchPlan(planResult.value, 'database.clearBatchSuccess');
+  };
+
+  const handleBatchCopy = async () => {
+    if (!selectionRange) return;
+    const serialized = serializeGridClipboard(state, dbId, selectionRange, visibleRowIds, visibleColIds);
+    if (!serialized.ok) {
+      toast(serialized.error, { tone: 'error' });
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(serialized.value.tsv);
+      }
+      gridClipboardCache.clear();
+      gridClipboardCache.set(serialized.value.tsv, serialized.value.payload);
+    } catch (error) {
+      gridClipboardCache.clear();
+      toast(error instanceof Error ? error.message : t('database.clipboardWriteFailed'), { tone: 'error' });
+    }
+  };
+
+  const handleBatchPaste = async () => {
+    if (!editable) {
+      toast(t('database.unsupportedSchema'), { tone: 'error' });
+      return;
+    }
+    if (!activeCell || !selectionRange) return;
+    let payload: GridClipboardPayload | null = null;
+    let clipboardRead = false;
+    let clipboardReadFailed = false;
+    if (navigator.clipboard?.readText) {
+      try {
+        const text = await navigator.clipboard.readText();
+        clipboardRead = true;
+        if (!text) return;
+        const cachedPayload = gridClipboardCache.get(text);
+        if (cachedPayload) {
+          payload = cachedPayload;
+        } else {
+          const parsed = parseGridClipboard(text);
+          if (!parsed.ok) {
+            toast(parsed.error, { tone: 'error' });
+            return;
+          }
+          payload = parsed.value;
+        }
+      } catch {
+        clipboardReadFailed = true;
+      }
+    }
+    if (!clipboardRead) payload = gridClipboardCache.values().next().value ?? null;
+    if (!payload && clipboardReadFailed) toast(t('database.clipboardReadFailed'), { tone: 'error' });
+    if (!payload) return;
+
+    const planResult = planGridPaste(state, dbId, selectionRange, payload, visibleRowIds, visibleColIds, nowTimestamp(), {
+      allowCreateRows: false,
+    });
+
+    if (!planResult.ok) {
+      if (planResult.extraRowsNeeded) {
+        const needed = planResult.extraRowsNeeded;
+        setRowConfirmation({
+          count: needed,
+          onConfirm: () => {
+            setRowConfirmation(null);
+            const authResult = planGridPaste(state, dbId, selectionRange, payload!, visibleRowIds, visibleColIds, nowTimestamp(), {
+              allowCreateRows: true,
+              newRowIdFactory: () => newId(),
+            });
+            if (authResult.ok) {
+              applyBatchPlan(authResult.value, 'database.pasteBatchSuccess');
+            } else {
+              toast(authResult.error, { tone: 'error' });
+            }
+          },
+        });
+        return;
+      }
+      toast(planResult.error, { tone: 'error' });
+      return;
+    }
+
+    applyBatchPlan(planResult.value, 'database.pasteBatchSuccess');
+  };
+
+  const updateFillPreview = useCallback((sourceRange: GridRange, targetRange: GridRange, mode: FillModeChoice) => {
+    if (!editable) return;
+    const plan = planGridFill(state, dbId, sourceRange, targetRange, mode, visibleRowIds, visibleColIds, nowTimestamp(), { prepareUndo: false });
+    if (!plan.ok) {
+      setFillPreview({
+        sourceRange,
+        targetRange,
+        mode,
+        previewCells: [],
+        commands: [],
+        undoCommands: [],
+        redoCommands: [],
+        affectedCells: 0,
+        canSequence: false,
+        error: plan.error,
+      });
+      return;
+    }
+    setFillPreview({
+      sourceRange,
+      targetRange,
+      mode,
+      previewCells: plan.value.previewCells,
+      commands: plan.value.commands,
+      undoCommands: plan.value.undoCommands,
+      redoCommands: plan.value.redoCommands,
+      affectedCells: plan.value.affectedCells,
+      canSequence: plan.value.canSequence,
+    });
+  }, [dbId, editable, state, visibleColIds, visibleRowIds]);
+
+  const beginKeyboardFill = (direction: 'up' | 'down' | 'left' | 'right') => {
+    if (!editable) {
+      toast(t('database.unsupportedSchema'), { tone: 'error' });
+      return;
+    }
+    const sourceRange = selectionRange ?? (activeCell ? { anchor: activeCell, focus: activeCell } : null);
+    if (!sourceRange) return;
+    const resolved = resolveVisibleRange(sourceRange, visibleRowIds, visibleColIds);
+    if (!resolved) {
+      toast(t('database.rangeSelectionAdjusted'), { tone: 'error' });
+      return;
+    }
+    const firstRow = visibleRowIds[0];
+    const lastRow = visibleRowIds[visibleRowIds.length - 1];
+    const firstCol = visibleColIds[0];
+    const lastCol = visibleColIds[visibleColIds.length - 1];
+    const focus =
+      direction === 'up' ? { rowId: firstRow!, colId: sourceRange.focus.colId }
+      : direction === 'down' ? { rowId: lastRow!, colId: sourceRange.focus.colId }
+      : direction === 'left' ? { rowId: sourceRange.focus.rowId, colId: firstCol! }
+      : { rowId: sourceRange.focus.rowId, colId: lastCol! };
+    const targetRange: GridRange = { anchor: sourceRange.anchor, focus };
+    fillSourceRangeRef.current = sourceRange;
+    fillDraggingRef.current = false;
+    setFocusFillActions(true);
+    updateFillPreview(sourceRange, targetRange, 'copy');
+  };
+
+  const applyFillPreview = () => {
+    if (!editable) {
+      toast(t('database.unsupportedSchema'), { tone: 'error' });
+      return;
+    }
+    if (!fillPreview || fillPreview.error || fillPreview.commands.length === 0) return;
+    const plan = planGridFill(
+      state,
+      dbId,
+      fillPreview.sourceRange,
+      fillPreview.targetRange,
+      fillPreview.mode,
+      visibleRowIds,
+      visibleColIds,
+      nowTimestamp(),
+    );
+    if (!plan.ok) {
+      setFillPreview({ ...fillPreview, error: plan.error });
+      toast(plan.error, { tone: 'error' });
+      return;
+    }
+    if (applyBatchPlan(plan.value, 'database.pasteBatchSuccess')) {
+      setActiveCell(fillPreview.targetRange.focus);
+      setSelectionRange(fillPreview.targetRange);
+      setFillPreview(null);
+      setFocusFillActions(false);
+      fillSourceRangeRef.current = null;
+      tdRefs.current.get(`${fillPreview.targetRange.focus.rowId}:${fillPreview.targetRange.focus.colId}`)?.focus();
+    }
+  };
+
+  const cancelFillPreview = (restoreFocus = false) => {
+    const returnTo = fillPreview?.sourceRange.focus ?? fillSourceRangeRef.current?.focus;
+    setFillPreview(null);
+    setFocusFillActions(false);
+    fillSourceRangeRef.current = null;
+    fillDraggingRef.current = false;
+    if (restoreFocus && returnTo) {
+      window.requestAnimationFrame(() =>
+        tdRefs.current.get(`${returnTo.rowId}:${returnTo.colId}`)?.focus({ preventScroll: true }),
+      );
+    }
+  };
+
+  const handleCellMouseEnter = useCallback((rowId: PageId, colId: string) => {
+    if (fillDraggingRef.current && fillSourceRangeRef.current) {
+      const targetRange: GridRange = {
+        anchor: fillSourceRangeRef.current.anchor,
+        focus: { rowId, colId },
+      };
+      updateFillPreview(fillSourceRangeRef.current, targetRange, 'copy');
+      return;
+    }
+
+    if (isSelectingRef.current && selectionRange) {
+      setSelectionRange({ anchor: selectionRange.anchor, focus: { rowId, colId } });
+    }
+  }, [selectionRange, updateFillPreview]);
+
+
+  useEffect(() => {
+    const onGlobalMouseMove = (e: MouseEvent) => {
+      if (!fillDraggingRef.current && !isSelectingRef.current) return;
+      const td = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLTableCellElement>('td[data-row-id]');
+      if (td) {
+        const rowId = td.getAttribute('data-row-id');
+        const colId = td.getAttribute('data-col-id');
+        if (rowId && colId) {
+          handleCellMouseEnter(rowId, colId);
+        }
+      }
+    };
+
+    const onGlobalMouseUp = () => {
+      if (isSelectingRef.current) {
+        isSelectingRef.current = false;
+      }
+      if (fillDraggingRef.current) {
+        fillDraggingRef.current = false;
+        setFocusFillActions(true);
+      }
+    };
+
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const returnTo = fillSourceRangeRef.current?.focus;
+        fillDraggingRef.current = false;
+        setFillPreview(null);
+        setFocusFillActions(false);
+        fillSourceRangeRef.current = null;
+        if (returnTo) {
+          window.requestAnimationFrame(() =>
+            tdRefs.current.get(`${returnTo.rowId}:${returnTo.colId}`)?.focus({ preventScroll: true }),
+          );
+        }
+      }
+    };
+
+    window.addEventListener('mousemove', onGlobalMouseMove);
+    window.addEventListener('mouseup', onGlobalMouseUp);
+    window.addEventListener('keydown', onGlobalKeyDown);
+    return () => {
+      window.removeEventListener('mousemove', onGlobalMouseMove);
+      window.removeEventListener('mouseup', onGlobalMouseUp);
+      window.removeEventListener('keydown', onGlobalKeyDown);
+    };
+  }, [state, dbId, visibleRowIds, visibleColIds, selectionRange, handleCellMouseEnter]);
+
+  const handleCellKeyDown = (event: React.KeyboardEvent<HTMLTableCellElement>, rowId: PageId, colId: string) => {
+    if (editingCell) return;
+
+    if (event.altKey && event.shiftKey && event.key === 'ArrowDown') {
+      event.preventDefault();
+      beginKeyboardFill('down');
+    } else if (event.altKey && event.shiftKey && event.key === 'ArrowUp') {
+      event.preventDefault();
+      beginKeyboardFill('up');
+    } else if (event.altKey && event.shiftKey && event.key === 'ArrowLeft') {
+      event.preventDefault();
+      beginKeyboardFill('left');
+    } else if (event.altKey && event.shiftKey && event.key === 'ArrowRight') {
+      event.preventDefault();
+      beginKeyboardFill('right');
+    } else if (event.altKey && event.key === 'Enter') {
+      if (colId === TITLE_PROP) {
+        event.preventDefault();
+        openPage(rowId);
+      }
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      navigateCell('up', event.shiftKey);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      navigateCell('down', event.shiftKey);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      navigateCell('left', event.shiftKey);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      navigateCell('right', event.shiftKey);
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      navigateCell(event.shiftKey ? 'prev' : 'next', false);
+    } else if (event.key === 'Enter' || event.key === 'F2') {
+      event.preventDefault();
+      if (editable && !isColumnReadOnly(colId, database)) {
+        setEditingCell({ rowId, colId });
+      }
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault();
+      handleBatchClear();
+    } else if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'c') {
+      event.preventDefault();
+      handleBatchCopy();
+    } else if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'v') {
+      event.preventDefault();
+      handleBatchPaste();
+    } else if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase())) {
+      const isRedo = event.key.toLowerCase() === 'y' || event.shiftKey;
+      if (!editable) {
+        event.preventDefault();
+        toast(t('database.unsupportedSchema'), { tone: 'error' });
+        return;
+      }
+      if (isRedo && !lastBatchApplied && lastBatchRedo) {
+        event.preventDefault();
+        const result = runAll(lastBatchRedo);
+        if (result.ok) {
+          setLastBatchApplied(true);
+        } else toast(result.error, { tone: 'error' });
+      } else if (!isRedo && lastBatchApplied && lastBatchUndo) {
+        event.preventDefault();
+        const result = runAll(lastBatchUndo);
+        if (result.ok) {
+          setLastBatchApplied(false);
+        } else toast(result.error, { tone: 'error' });
+      }
+    }
+  };
+
+  const handleCellMouseDown = (rowId: PageId, colId: string, event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('.db-fill-handle')) return;
+    if (editingCell?.rowId === rowId && editingCell?.colId === colId) return;
+
+    isSelectingRef.current = true;
+    const coord: GridCoord = { rowId, colId };
+    setActiveCell(coord);
+    setSelectionRange({ anchor: coord, focus: coord });
+    setEditingCell(null);
+    cancelFillPreview();
+  };
+
+  const handleCellDoubleClick = (rowId: PageId, colId: string) => {
+    if (editable && !isColumnReadOnly(colId, database)) {
+      setEditingCell({ rowId, colId });
+    }
+  };
+
+  const isBottomRightCell = (rowId: PageId, colId: string) => {
+    if (!resolvedSelection) return false;
+    return (
+      resolvedSelection.rowIds[resolvedSelection.rowIds.length - 1] === rowId &&
+      resolvedSelection.colIds[resolvedSelection.colIds.length - 1] === colId
+    );
+  };
   const [summaryAnchor, setSummaryAnchor] = useState<{ propId: string; anchor: HTMLElement } | null>(null);
   const [header, setHeader] = useState<{ prop: PropDef; anchor: HTMLElement; focusSection?: 'formula' } | null>(null);
   const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
@@ -2500,7 +3129,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
     setColumnMenu({ prop, anchor });
   };
   const duplicateColumn = (propId: string, includeValues: boolean) => {
-    const plan = planColumnDuplicate(state, dbId, propId, newId(), includeValues, Date.now(), t('database.copySuffix'));
+    const plan = planColumnDuplicate(state, dbId, propId, newId(), includeValues, nowTimestamp(), t('database.copySuffix'));
     if (!plan) {
       toast(t('database.duplicateColumnUnavailable'), { tone: 'error' });
       return;
@@ -2513,7 +3142,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
       action: {
         label: t('toasts.undo'),
         run: () => {
-          const undo = planColumnDuplicateUndo(getState(), dbId, plan.property.id, snapshot, Date.now());
+          const undo = planColumnDuplicateUndo(getState(), dbId, plan.property.id, snapshot, nowTimestamp());
           if (!undo) {
             toast(t('database.duplicateColumnUndoUnavailable'), { tone: 'error' });
             return;
@@ -2611,13 +3240,59 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
               database,
               state,
             );
+            const isTitleActive = activeCell?.rowId === row.id && activeCell?.colId === TITLE_PROP;
+            const isTitleSelected = resolvedSelection?.rowIds.includes(row.id) && resolvedSelection?.colIds.includes(TITLE_PROP);
+            const titleFillCell = fillPreview?.previewCells.find((p) => p.rowId === row.id && p.colId === TITLE_PROP);
+            const isTitleFill = Boolean(titleFillCell);
+
             return (
               <tr key={row.id} style={rowStyle}>
                 <td
-                  className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`}
+                  ref={(el) => {
+                    if (el) tdRefs.current.set(`${row.id}:${TITLE_PROP}`, el);
+                    else tdRefs.current.delete(`${row.id}:${TITLE_PROP}`);
+                  }}
+                  tabIndex={isTitleActive ? 0 : -1}
+                  data-row-id={row.id}
+                  data-col-id={TITLE_PROP}
+                  data-fill-preview={isTitleFill ? String(titleFillCell?.value ?? '') : undefined}
+                  className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}${isTitleActive ? ' is-grid-active' : ''}${isTitleSelected ? ' is-grid-selected' : ''}${isTitleFill ? ' is-fill-preview' : ''}`}
                   style={{ ...rowStyle, ...(titleRule ? conditionalColorStyle(titleRule.color) : {}), ...frozenStyle(-1) }}
+                  onKeyDown={(e) => handleCellKeyDown(e, row.id, TITLE_PROP)}
+                  onMouseDown={(e) => handleCellMouseDown(row.id, TITLE_PROP, e)}
+                  onMouseEnter={() => handleCellMouseEnter(row.id, TITLE_PROP)}
+                  onDoubleClick={() => handleCellDoubleClick(row.id, TITLE_PROP)}
                 >
-                  <RowTitle row={row} editable={editable} autoFocus={focusNew === row.id} />
+                  {titleFillCell ? (
+                    <span className="db-cell-content db-fill-preview-value">
+                      {titleFillCell.value === null || titleFillCell.value === '' ? (
+                        <span className="prop-empty">{t('page.untitled')}</span>
+                      ) : String(titleFillCell.value)}
+                    </span>
+                  ) : (
+                    <RowTitle
+                      row={row}
+                      editable={editable}
+                      autoFocus={focusNew === row.id}
+                      gridMode={true}
+                      isEditing={editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP}
+                      onCommitAndMove={(dir) => handleCommitAndMove(row.id, TITLE_PROP, dir)}
+                      onCancelEdit={() => handleCancelEdit(row.id, TITLE_PROP)}
+                    />
+                  )}
+                  {isBottomRightCell(row.id, TITLE_PROP) && editable && !isColumnReadOnly(TITLE_PROP, database) && (
+                    <div
+                      className="db-fill-handle"
+                      role="button"
+                      aria-label={t('database.fillHandle')}
+                      onMouseDown={(event) => {
+                        event.stopPropagation();
+                        event.preventDefault();
+                        fillDraggingRef.current = true;
+                        fillSourceRangeRef.current = selectionRange;
+                      }}
+                    />
+                  )}
                 </td>
                 {props.map((prop) => {
                   const cellRule = conditionalFormatForCell(
@@ -2627,10 +3302,23 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                     database,
                     state,
                   );
+                  const isCellActive = activeCell?.rowId === row.id && activeCell?.colId === prop.id;
+                  const isCellSelected = resolvedSelection?.rowIds.includes(row.id) && resolvedSelection?.colIds.includes(prop.id);
+                  const propFillCell = fillPreview?.previewCells.find((p) => p.rowId === row.id && p.colId === prop.id);
+                  const isCellFill = Boolean(propFillCell);
+
                   return (
                     <td
                       key={prop.id}
-                      className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
+                      ref={(el) => {
+                        if (el) tdRefs.current.set(`${row.id}:${prop.id}`, el);
+                        else tdRefs.current.delete(`${row.id}:${prop.id}`);
+                      }}
+                      tabIndex={isCellActive ? 0 : -1}
+                      data-row-id={row.id}
+                      data-col-id={prop.id}
+                      data-fill-preview={isCellFill ? String(propFillCell?.value ?? '') : undefined}
+                      className={`${props.indexOf(prop) <= frozenIndex ? 'db-frozen ' : ''}${isCellActive ? 'is-grid-active ' : ''}${isCellSelected ? 'is-grid-selected ' : ''}${isCellFill ? 'is-fill-preview' : ''}`}
                       style={{
                         ...rowStyle,
                         ...(cellRule ? conditionalColorStyle(cellRule.color) : {}),
@@ -2638,16 +3326,62 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                         whiteSpace: view.wrap?.includes(prop.id) ? 'normal' : 'nowrap',
                         ...frozenStyle(props.indexOf(prop)),
                       }}
+                      onKeyDown={(e) => handleCellKeyDown(e, row.id, prop.id)}
+                      onMouseDown={(e) => handleCellMouseDown(row.id, prop.id, e)}
+                      onMouseEnter={() => handleCellMouseEnter(row.id, prop.id)}
+                      onDoubleClick={() => handleCellDoubleClick(row.id, prop.id)}
                     >
                       {view.rowHeight ? (
                         <div
                           className={`db-cell-frame${expandedCell === `${row.id}:${prop.id}` ? ' is-expanded' : ''}`}
                           style={{ maxHeight: expandedCell === `${row.id}:${prop.id}` ? undefined : view.rowHeight }}
                         >
-                          <PropertyInput dbId={dbId} prop={prop} row={row} editable={editable} />
+                          {propFillCell ? (
+                            <span className="db-cell-content db-fill-preview-value">
+                              {propFillCell.value === null || propFillCell.value === '' || (Array.isArray(propFillCell.value) && propFillCell.value.length === 0) ? (
+                                <span className="prop-empty">{t('database.empty')}</span>
+                              ) : prop.type === 'checkbox' ? (
+                                <input type="checkbox" className="prop-checkbox" checked={propFillCell.value === true} disabled tabIndex={-1} aria-label={prop.name} />
+                              ) : (
+                                <PropertyDisplay prop={prop} value={propFillCell.value} />
+                              )}
+                            </span>
+                          ) : (
+                            <PropertyInput
+                              dbId={dbId}
+                              prop={prop}
+                              row={row}
+                              editable={editable}
+                              gridMode={true}
+                              isEditing={editingCell?.rowId === row.id && editingCell?.colId === prop.id}
+                              onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
+                              onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
+                            />
+                          )}
                         </div>
                       ) : (
-                        <PropertyInput dbId={dbId} prop={prop} row={row} editable={editable} />
+                        propFillCell ? (
+                          <span className="db-cell-content db-fill-preview-value">
+                            {propFillCell.value === null || propFillCell.value === '' || (Array.isArray(propFillCell.value) && propFillCell.value.length === 0) ? (
+                              <span className="prop-empty">{t('database.empty')}</span>
+                            ) : prop.type === 'checkbox' ? (
+                              <input type="checkbox" className="prop-checkbox" checked={propFillCell.value === true} disabled tabIndex={-1} aria-label={prop.name} />
+                            ) : (
+                              <PropertyDisplay prop={prop} value={propFillCell.value} />
+                            )}
+                          </span>
+                        ) : (
+                          <PropertyInput
+                            dbId={dbId}
+                            prop={prop}
+                            row={row}
+                            editable={editable}
+                            gridMode={true}
+                            isEditing={editingCell?.rowId === row.id && editingCell?.colId === prop.id}
+                            onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
+                            onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
+                          />
+                        )
                       )}
                       {view.rowHeight && view.wrap?.includes(prop.id) && (
                         <button
@@ -2660,6 +3394,19 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                         >
                           <Maximize2 size={12} />
                         </button>
+                      )}
+                      {isBottomRightCell(row.id, prop.id) && editable && !isColumnReadOnly(prop.id, database) && (
+                        <div
+                          className="db-fill-handle"
+                          role="button"
+                          aria-label={t('database.fillHandle')}
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+                            event.preventDefault();
+                            fillDraggingRef.current = true;
+                            fillSourceRangeRef.current = selectionRange;
+                          }}
+                        />
                       )}
                     </td>
                   );
@@ -2750,6 +3497,43 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
             </tr>
           </tfoot>
       </table>
+      {fillPreview && (
+        <div className="db-fill-toolbar" role="group" aria-label={t('database.fillActions')}>
+          <span className={fillPreview.error ? 'db-fill-error' : 'db-fill-status'} role={fillPreview.error ? 'alert' : 'status'}>
+            {fillPreview.error ?? t('database.fillPreview', { count: fillPreview.affectedCells })}
+          </span>
+          <div className="db-fill-actions">
+            <button
+              ref={fillCopyButtonRef}
+              type="button"
+              className="button small"
+              aria-pressed={fillPreview.mode === 'copy'}
+              disabled={!editable || Boolean(fillPreview.error)}
+              onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'copy')}
+            >
+              {t('database.fillCopy')}
+            </button>
+            {fillPreview.canSequence && (
+              <button
+                type="button"
+                className="button small"
+                aria-pressed={fillPreview.mode === 'sequence'}
+                disabled={!editable}
+                onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'sequence')}
+              >
+                {t('database.fillSequence')}
+              </button>
+            )}
+            <button type="button" className="button small primary" disabled={!editable || Boolean(fillPreview.error) || fillPreview.commands.length === 0} onClick={applyFillPreview}>
+              {t('database.fillApply')}
+            </button>
+            <button type="button" className="button small" onClick={() => cancelFillPreview(true)}>
+              {t('common.cancel')}
+            </button>
+          </div>
+          <small className="db-fill-hint">{t('database.fillKeyboardHint')}</small>
+        </div>
+      )}
       {summaryAnchor && (
         <Popover
           anchor={summaryAnchor.anchor}
@@ -2971,6 +3755,47 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
           onClose={() => setInserting(null)}
         />
       )}
+      {rowConfirmation && (
+        <div
+          className="db-paste-confirm-banner"
+          role="dialog"
+          aria-label={t('database.confirmPasteExtraRows', { count: rowConfirmation.count })}
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'var(--surface, #1e293b)',
+            border: '1px solid var(--border)',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            padding: '12px 18px',
+            borderRadius: '8px',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+          }}
+        >
+          <span>{t('database.confirmPasteExtraRows', { count: rowConfirmation.count })}</span>
+          <button
+            type="button"
+            className="button small primary"
+            onClick={rowConfirmation.onConfirm}
+          >
+            {t('common.confirm')}
+          </button>
+          <button
+            type="button"
+            className="button small"
+            onClick={() => setRowConfirmation(null)}
+          >
+            {t('common.cancel')}
+          </button>
+        </div>
+      )}
+      <div className="sr-only" aria-live="polite" role="status">
+        {liveAnnouncement}
+      </div>
     </div>
   );
 }

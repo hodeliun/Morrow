@@ -228,17 +228,34 @@ export function PropertyInput({
   prop,
   row,
   editable,
+  gridMode,
+  isEditing,
+  onCommitAndMove,
+  onCancelEdit,
 }: {
   dbId: PageId;
   prop: PropDef;
   row: PageMeta;
   editable: boolean;
+  gridMode?: boolean;
+  isEditing?: boolean;
+  onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
+  onCancelEdit?: () => void;
 }) {
   const state = useWorkspace();
   const database = state.pages[dbId]?.database;
   const value = database ? valueOf(row, prop.id, database, state) : (row.properties[prop.id] ?? null);
   const [picker, setPicker] = useState<HTMLElement | null>(null);
   const [editing, setEditing] = useState(false);
+  const [checkboxDraft, setCheckboxDraft] = useState<boolean | null>(null);
+  const checkboxDraftRef = useRef<boolean | null>(null);
+  const checkboxCanceling = useRef(false);
+  const checkboxFinished = useRef(false);
+  const [rangeDraft, setRangeDraft] = useState<number | null>(null);
+  const rangeDraftRef = useRef<number | null>(null);
+  const rangeCanceling = useRef(false);
+  const rangeFinished = useRef(false);
+  const effectiveEditing = gridMode ? Boolean(isEditing) : editing;
   const label = t('properties.valueOf', { key: prop.name, title: displayTitle(row) });
   const unsupportedRelationValue =
     prop.type === 'relation' &&
@@ -258,7 +275,28 @@ export function PropertyInput({
     'datetime',
     'duration',
   ].includes(prop.type);
-  const stopEditing = () => setEditing(false);
+  const stopEditing = () => {
+    if (gridMode && onCancelEdit) onCancelEdit();
+    else setEditing(false);
+  };
+  const handlePickerTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (!gridMode || picker) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      onCancelEdit?.();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      onCommitAndMove?.(event.shiftKey ? 'prev' : 'next');
+    }
+  };
+  const handlePickerGridTab = gridMode
+    ? (direction: 'next' | 'prev') => {
+        setPicker(null);
+        onCommitAndMove?.(direction);
+      }
+    : undefined;
 
   if (prop.type === 'button')
     return <ButtonActionCell dbId={dbId} prop={prop} row={row} editable={editable} />;
@@ -272,8 +310,28 @@ export function PropertyInput({
     return <span className="prop-text">{formatValue(prop, value)}</span>;
   if (prop.fillMode === 'calculated' && prop.type !== 'formula')
     return <FormulaCell dbId={dbId} prop={prop} row={row} />;
+
+  if (gridMode && !effectiveEditing) {
+    if (prop.type === 'checkbox') {
+      return (
+        <span className="prop-checkbox-display" role="checkbox" aria-checked={value === true} aria-label={label}>
+          {value === true ? <Check size={14} aria-hidden="true" /> : <span aria-hidden="true" />}
+        </span>
+      );
+    }
+    return (
+      <span className="db-cell-content" style={{ width: '100%', minHeight: '20px', pointerEvents: 'none' }}>
+        {value === null || value === '' || (Array.isArray(value) && value.length === 0) ? (
+          <span className="prop-empty">{t('database.empty')}</span>
+        ) : (
+          <PropertyDisplay prop={prop} value={value} />
+        )}
+      </span>
+    );
+  }
+
   if (scalarInput && !editable) return <PropertyDisplay prop={prop} value={value} />;
-  if (scalarInput && !editing && ['email', 'url', 'phone'].includes(prop.type))
+  if (scalarInput && !effectiveEditing && ['email', 'url', 'phone'].includes(prop.type))
     return (
       <span className="prop-cell-link">
         {value === null || value === '' ? (
@@ -294,7 +352,7 @@ export function PropertyInput({
         )}
       </span>
     );
-  if (scalarInput && !editing)
+  if (scalarInput && !effectiveEditing)
     return (
       <button type="button" className="prop-cell-value" aria-label={label} onClick={() => setEditing(true)}>
         {value === null || value === '' ? (
@@ -304,7 +362,7 @@ export function PropertyInput({
         )}
       </button>
     );
-  const cellEditable = editable && (!scalarInput || editing);
+  const cellEditable = editable && (!scalarInput || effectiveEditing);
 
   switch (prop.type) {
     case 'formula':
@@ -318,6 +376,8 @@ export function PropertyInput({
             className="prop-select"
             aria-label={label}
             disabled={!editable || !prop.relation?.targetDatabaseId || unsupportedRelationValue}
+            autoFocus={effectiveEditing}
+            onKeyDown={handlePickerTriggerKeyDown}
             title={unsupportedRelationValue ? t('database.relationDiagnosticUnsupported') : undefined}
             onClick={(event) => setPicker(event.currentTarget)}
           >
@@ -339,13 +399,66 @@ export function PropertyInput({
               prop={prop}
               targets={targets}
               anchor={picker}
-              onClose={() => setPicker(null)}
+              onGridTab={handlePickerGridTab}
+              onClose={() => {
+                setPicker(null);
+                if (gridMode) onCommitAndMove?.('stay');
+              }}
             />
           )}
         </>
       );
     }
     case 'checkbox':
+      if (gridMode) {
+        const checkboxValue = checkboxDraft ?? value === true;
+        const commitCheckbox = () => {
+          if (checkboxFinished.current) return;
+          checkboxFinished.current = true;
+          if (checkboxCanceling.current) {
+            checkboxCanceling.current = false;
+            return;
+          }
+          if (checkboxDraftRef.current !== null && checkboxDraftRef.current !== (value === true)) {
+            setValue(row.id, prop.id, checkboxDraftRef.current);
+          }
+          checkboxDraftRef.current = null;
+          setCheckboxDraft(null);
+          stopEditing();
+        };
+        return (
+          <input
+            type="checkbox"
+            className="prop-checkbox"
+            aria-label={label}
+            checked={checkboxValue}
+            disabled={!cellEditable}
+            autoFocus={effectiveEditing}
+            onChange={(event) => {
+              checkboxFinished.current = false;
+              checkboxDraftRef.current = event.target.checked;
+              setCheckboxDraft(event.target.checked);
+            }}
+            onBlur={commitCheckbox}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                checkboxCanceling.current = true;
+                checkboxFinished.current = false;
+                checkboxDraftRef.current = null;
+                setCheckboxDraft(value === true);
+                event.currentTarget.blur();
+                onCancelEdit?.();
+              } else if (event.key === 'Enter' || event.key === 'Tab') {
+                event.preventDefault();
+                commitCheckbox();
+                event.currentTarget.blur();
+                onCommitAndMove?.(event.key === 'Tab' ? (event.shiftKey ? 'prev' : 'next') : event.shiftKey ? 'up' : 'down');
+              }
+            }}
+          />
+        );
+      }
       return (
         <input
           type="checkbox"
@@ -373,8 +486,11 @@ export function PropertyInput({
           label={label}
           value={typeof value === 'number' ? String(value * multiplier) : ''}
           editable={cellEditable}
-          autoFocus={editing}
+          autoFocus={effectiveEditing}
           onDone={stopEditing}
+          gridMode={gridMode}
+          onCommitAndMove={onCommitAndMove}
+          onCancelEdit={onCancelEdit}
           min={prop.format?.min === undefined ? undefined : prop.format.min * multiplier}
           max={prop.format?.max === undefined ? undefined : prop.format.max * multiplier}
           step={prop.format?.step === undefined ? undefined : prop.format.step * multiplier}
@@ -406,32 +522,90 @@ export function PropertyInput({
       const min = prop.format?.min ?? (prop.type === 'scale' ? 1 : 0);
       const max = prop.format?.max ?? (prop.type === 'scale' ? 5 : 100);
       const step = prop.format?.step ?? 1;
+      const currentValue = rangeDraft ?? (typeof value === 'number' ? value : min);
+      const commitRangeDraft = () => {
+        if (rangeFinished.current) return;
+        rangeFinished.current = true;
+        if (rangeCanceling.current) {
+          rangeCanceling.current = false;
+          rangeDraftRef.current = null;
+          setRangeDraft(null);
+          return;
+        }
+        if (rangeDraftRef.current !== null && rangeDraftRef.current !== value) {
+          setValue(row.id, prop.id, rangeDraftRef.current);
+        }
+        rangeDraftRef.current = null;
+        setRangeDraft(null);
+        stopEditing();
+      };
       return (
         <span className="prop-range-edit">
           <input
             type="range"
             className="prop-range"
             aria-label={label}
-            aria-valuetext={typeof value === 'number' ? formatValue(prop, value) : undefined}
+            aria-valuetext={formatValue(prop, currentValue)}
             min={min}
             max={max}
             step={step}
-            value={typeof value === 'number' ? value : min}
+            value={currentValue}
             disabled={!cellEditable}
-            autoFocus={editing}
+            autoFocus={effectiveEditing}
             style={prop.format?.color ? { accentColor: TEXT_HEX[prop.format.color] } : undefined}
-            onChange={(event) => setValue(row.id, prop.id, Number(event.target.value))}
-            onBlur={stopEditing}
+            onChange={(event) => {
+              const next = Number(event.target.value);
+              if (gridMode) {
+                rangeFinished.current = false;
+                rangeDraftRef.current = next;
+                setRangeDraft(next);
+              } else setValue(row.id, prop.id, next);
+            }}
+            onBlur={gridMode ? commitRangeDraft : stopEditing}
+            onKeyDown={(event) => {
+              if (!gridMode) return;
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                rangeCanceling.current = true;
+                rangeFinished.current = false;
+                rangeDraftRef.current = null;
+                setRangeDraft(null);
+                event.currentTarget.blur();
+                onCancelEdit?.();
+              } else if (event.key === 'Enter' || event.key === 'Tab') {
+                event.preventDefault();
+                const direction = event.key === 'Tab'
+                  ? (event.shiftKey ? 'prev' : 'next')
+                  : (event.shiftKey ? 'up' : 'down');
+                commitRangeDraft();
+                event.currentTarget.blur();
+                onCommitAndMove?.(direction);
+              }
+            }}
           />
           {prop.format?.showValue !== false && (
             <span className="prop-range-value">
-              {typeof value === 'number' ? formatValue(prop, value) : '—'}
+              {rangeDraft !== null || typeof value === 'number' ? formatValue(prop, currentValue) : '—'}
             </span>
           )}
         </span>
       );
     }
     case 'date':
+      if (gridMode) {
+        return (
+          <DraftTemporalInput
+            type="date"
+            label={label}
+            value={typeof value === 'string' ? value : ''}
+            autoFocus={effectiveEditing}
+            onDone={stopEditing}
+            onCommit={(raw) => setValue(row.id, prop.id, raw || null)}
+            onCommitAndMove={onCommitAndMove}
+            onCancelEdit={onCancelEdit}
+          />
+        );
+      }
       return (
         <input
           type="date"
@@ -439,12 +613,26 @@ export function PropertyInput({
           aria-label={label}
           value={typeof value === 'string' ? value : ''}
           disabled={!cellEditable}
-          autoFocus={editing}
+          autoFocus={effectiveEditing}
           onChange={(event) => setValue(row.id, prop.id, event.target.value || null)}
           onBlur={stopEditing}
         />
       );
     case 'time':
+      if (gridMode) {
+        return (
+          <DraftTemporalInput
+            type="time"
+            label={label}
+            value={typeof value === 'string' ? value : ''}
+            autoFocus={effectiveEditing}
+            onDone={stopEditing}
+            onCommit={(raw) => setValue(row.id, prop.id, raw || null)}
+            onCommitAndMove={onCommitAndMove}
+            onCancelEdit={onCancelEdit}
+          />
+        );
+      }
       return (
         <input
           type="time"
@@ -452,13 +640,27 @@ export function PropertyInput({
           aria-label={label}
           value={typeof value === 'string' ? value : ''}
           disabled={!cellEditable}
-          autoFocus={editing}
+          autoFocus={effectiveEditing}
           onChange={(event) => setValue(row.id, prop.id, event.target.value || null)}
           onBlur={stopEditing}
         />
       );
     case 'datetime': {
       const local = typeof value === 'string' ? toDateTimeLocal(value) : '';
+      if (gridMode) {
+        return (
+          <DraftTemporalInput
+            type="datetime-local"
+            label={label}
+            value={local}
+            autoFocus={effectiveEditing}
+            onDone={stopEditing}
+            onCommit={(raw) => setValue(row.id, prop.id, raw ? new Date(raw).toISOString() : null)}
+            onCommitAndMove={onCommitAndMove}
+            onCancelEdit={onCancelEdit}
+          />
+        );
+      }
       return (
         <input
           type="datetime-local"
@@ -466,7 +668,7 @@ export function PropertyInput({
           aria-label={label}
           value={local}
           disabled={!cellEditable}
-          autoFocus={editing}
+          autoFocus={effectiveEditing}
           onChange={(event) => {
             const raw = event.target.value;
             setValue(row.id, prop.id, raw ? new Date(raw).toISOString() : null);
@@ -485,8 +687,11 @@ export function PropertyInput({
             label={label}
             value={typeof value === 'string' ? value : ''}
             editable={cellEditable}
-            autoFocus={editing}
+            autoFocus={effectiveEditing}
             onDone={stopEditing}
+            gridMode={gridMode}
+            onCommitAndMove={onCommitAndMove}
+            onCancelEdit={onCancelEdit}
             onCommit={(text) => setValue(row.id, prop.id, text.trim() || null)}
           />
         </span>
@@ -501,6 +706,8 @@ export function PropertyInput({
             className="prop-select"
             aria-label={label}
             disabled={!editable}
+            autoFocus={effectiveEditing}
+            onKeyDown={handlePickerTriggerKeyDown}
             onClick={(event) => setPicker(event.currentTarget)}
           >
             {ids.length === 0 && editable && <span className="prop-empty">{t('database.empty')}</span>}
@@ -515,7 +722,11 @@ export function PropertyInput({
               prop={prop}
               selected={ids}
               anchor={picker}
-              onClose={() => setPicker(null)}
+              onGridTab={handlePickerGridTab}
+              onClose={() => {
+                setPicker(null);
+                if (gridMode) onCommitAndMove?.('stay');
+              }}
               row={row}
             />
           )}
@@ -528,8 +739,11 @@ export function PropertyInput({
           label={label}
           value={typeof value === 'string' ? value : ''}
           editable={cellEditable}
-          autoFocus={editing}
+          autoFocus={effectiveEditing}
           onDone={stopEditing}
+          gridMode={gridMode}
+          onCommitAndMove={onCommitAndMove}
+          onCancelEdit={onCancelEdit}
           onCommit={(text) => setValue(row.id, prop.id, text)}
         />
       );
@@ -540,12 +754,82 @@ export function PropertyInput({
           label={label}
           value={typeof value === 'string' ? value : value === null ? '' : String(value)}
           editable={cellEditable}
-          autoFocus={editing}
+          autoFocus={effectiveEditing}
           onDone={stopEditing}
+          gridMode={gridMode}
+          onCommitAndMove={onCommitAndMove}
+          onCancelEdit={onCancelEdit}
           onCommit={(text) => setValue(row.id, prop.id, text)}
         />
       );
   }
+}
+
+function DraftTemporalInput({
+  type,
+  label,
+  value,
+  autoFocus,
+  onCommit,
+  onDone,
+  onCommitAndMove,
+  onCancelEdit,
+}: {
+  type: 'date' | 'time' | 'datetime-local';
+  label: string;
+  value: string;
+  autoFocus?: boolean;
+  onCommit: (value: string) => void;
+  onDone?: () => void;
+  onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
+  onCancelEdit?: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const canceling = useRef(false);
+  const finished = useRef(false);
+  const commit = () => {
+    if (finished.current) return;
+    finished.current = true;
+    if (canceling.current) {
+      canceling.current = false;
+      setDraft(null);
+      onDone?.();
+      return;
+    }
+    if (draft !== null && draft !== value) onCommit(draft);
+    setDraft(null);
+    onDone?.();
+  };
+  return (
+    <input
+      type={type}
+      className="prop-input"
+      aria-label={label}
+      value={draft ?? value}
+      autoFocus={autoFocus}
+      onChange={(event) => {
+        finished.current = false;
+        setDraft(event.target.value);
+      }}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          canceling.current = true;
+          setDraft(null);
+          event.currentTarget.blur();
+          onCancelEdit?.();
+        } else if (event.key === 'Enter' || event.key === 'Tab') {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+          onCommitAndMove?.(
+            event.key === 'Tab' ? (event.shiftKey ? 'prev' : 'next') : event.shiftKey ? 'up' : 'down',
+          );
+        }
+      }}
+    />
+  );
 }
 
 // keeps typing local and saves on blur or enter, so every keystroke is not a separate change
@@ -562,6 +846,9 @@ export function DraftInput({
   max,
   step,
   onDone,
+  gridMode,
+  onCommitAndMove,
+  onCancelEdit,
 }: {
   type: 'text' | 'number' | 'url';
   label: string;
@@ -576,15 +863,21 @@ export function DraftInput({
   step?: number;
   // called when the input loses focus, changed or not
   onDone?: () => void;
+  gridMode?: boolean;
+  onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
+  onCancelEdit?: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const canceling = useRef(false);
+  const finished = useRef(false);
   const input = useRef<HTMLInputElement>(null);
   // the values this field saved, so undo inside it steps back through them. the browser's own undo knows
   // nothing of values set from outside the field and can empty it instead
   const undone = useRef<Array<{ before: string; after: string }>>([]);
   const redone = useRef<Array<{ before: string; after: string }>>([]);
   const commit = () => {
+    if (finished.current) return;
+    finished.current = true;
     if (canceling.current) {
       canceling.current = false;
       setDraft(null);
@@ -638,18 +931,33 @@ export function DraftInput({
       placeholder={placeholder ?? (editable ? t('database.empty') : '')}
       value={draft ?? value}
       readOnly={!editable}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => {
+        finished.current = false;
+        setDraft(event.target.value);
+      }}
       onBlur={commit}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
           commit();
           event.currentTarget.blur();
+          if (gridMode && onCommitAndMove) {
+            onCommitAndMove(event.shiftKey ? 'up' : 'down');
+          }
+        }
+        if (event.key === 'Tab' && gridMode && onCommitAndMove) {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+          onCommitAndMove(event.shiftKey ? 'prev' : 'next');
         }
         if (event.key === 'Escape') {
           canceling.current = true;
           setDraft(null);
           event.currentTarget.blur();
+          if (gridMode && onCancelEdit) {
+            onCancelEdit();
+          }
         }
         const key = event.key.toLowerCase();
         if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === 'z' || key === 'y')) {
@@ -668,6 +976,9 @@ function DraftTextarea({
   autoFocus,
   onCommit,
   onDone,
+  gridMode,
+  onCommitAndMove,
+  onCancelEdit,
 }: {
   label: string;
   value: string;
@@ -675,10 +986,16 @@ function DraftTextarea({
   autoFocus?: boolean;
   onCommit: (text: string) => void;
   onDone?: () => void;
+  gridMode?: boolean;
+  onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
+  onCancelEdit?: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const canceling = useRef(false);
+  const finished = useRef(false);
   const commit = () => {
+    if (finished.current) return;
+    finished.current = true;
     if (canceling.current) {
       canceling.current = false;
       setDraft(null);
@@ -697,18 +1014,33 @@ function DraftTextarea({
       readOnly={!editable}
       autoFocus={autoFocus}
       rows={2}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => {
+        finished.current = false;
+        setDraft(event.target.value);
+      }}
       onBlur={commit}
       onKeyDown={(event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
           event.preventDefault();
           commit();
           event.currentTarget.blur();
+          if (gridMode && onCommitAndMove) {
+            onCommitAndMove('stay');
+          }
         }
         if (event.key === 'Escape') {
           canceling.current = true;
           setDraft(null);
           event.currentTarget.blur();
+          if (gridMode && onCancelEdit) {
+            onCancelEdit();
+          }
+        }
+        if (event.key === 'Tab' && gridMode && onCommitAndMove) {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+          onCommitAndMove(event.shiftKey ? 'prev' : 'next');
         }
       }}
     />
@@ -721,6 +1053,7 @@ function OptionPicker({
   row,
   selected,
   anchor,
+  onGridTab,
   onClose,
 }: {
   dbId: PageId;
@@ -728,6 +1061,7 @@ function OptionPicker({
   row: PageMeta;
   selected: string[];
   anchor: HTMLElement;
+  onGridTab?: (direction: 'next' | 'prev') => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
@@ -744,6 +1078,12 @@ function OptionPicker({
       setValue(row.id, prop.id, selected[0] === id ? null : id);
       onClose();
     }
+  };
+  const handleGridTab = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Tab' || !onGridTab) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onGridTab(event.shiftKey ? 'prev' : 'next');
   };
   const create = () => {
     const option = ensureOption(dbId, prop.id, query);
@@ -770,6 +1110,8 @@ function OptionPicker({
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
+          handleGridTab(event);
+          if (event.defaultPrevented) return;
           if (event.key !== 'Enter') return;
           event.preventDefault();
           if (query.trim() && !exact) create();
@@ -785,6 +1127,7 @@ function OptionPicker({
               aria-selected={selected.includes(option.id)}
               className="option-row"
               onClick={() => choose(option.id)}
+              onKeyDown={handleGridTab}
             >
               <Chip option={option} />
               {selected.includes(option.id) && <Check size={14} className="option-check" />}
@@ -793,7 +1136,7 @@ function OptionPicker({
         ))}
         {query.trim() && !exact && (
           <li>
-            <button type="button" className="option-row" onClick={create}>
+            <button type="button" className="option-row" onClick={create} onKeyDown={handleGridTab}>
               <Plus size={14} /> {t('database.create')}
               <Chip option={{ name: query.trim(), color: 'gray' }} />
             </button>
@@ -804,6 +1147,7 @@ function OptionPicker({
             <button
               type="button"
               className="option-row muted"
+              onKeyDown={handleGridTab}
               onClick={() => {
                 setValue(row.id, prop.id, null);
                 onClose();
@@ -919,6 +1263,7 @@ export function RelationPicker({
   prop,
   targets,
   anchor,
+  onGridTab,
   onClose,
   onChange,
 }: {
@@ -926,6 +1271,7 @@ export function RelationPicker({
   prop: PropDef;
   targets: string[];
   anchor: HTMLElement;
+  onGridTab?: (direction: 'next' | 'prev') => void;
   onClose: () => void;
   onChange?: (targets: string[]) => void;
 }) {
@@ -934,6 +1280,12 @@ export function RelationPicker({
   const chosen = new Set(targets);
   const found = relationOptions(state, prop, query).slice(0, 100);
   const multi = prop.relation?.multiple === true;
+  const handleGridTab = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Tab' || !onGridTab) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onGridTab(event.shiftKey ? 'prev' : 'next');
+  };
   const toggle = (targetId: string) => {
     if (!multi) {
       if (onChange) onChange(chosen.has(targetId) ? [] : [targetId]);
@@ -965,6 +1317,7 @@ export function RelationPicker({
             aria-label={t('database.searchPages')}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={handleGridTab}
           />
           <ul className="relation-list" role="listbox" aria-multiselectable={multi}>
             {found.map((page) => {
@@ -978,6 +1331,7 @@ export function RelationPicker({
                     aria-selected={on}
                     className={`relation-option${on ? ' is-on' : ''}`}
                     onClick={() => toggle(page.id)}
+                    onKeyDown={handleGridTab}
                   >
                     <PageIcon page={page} />
                     <span>{label}</span>

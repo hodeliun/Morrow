@@ -1123,6 +1123,74 @@ textarea.text-input.small {
   max-height: none !important;
   overflow: visible;
 }
+.db-table td.is-grid-active {
+  outline: 2px solid var(--accent, #2563eb) !important;
+  outline-offset: -2px;
+  z-index: 2;
+}
+.db-table td.is-grid-selected {
+  background-color: var(--accent-soft, rgba(37, 99, 235, 0.12)) !important;
+}
+.db-table td.is-fill-preview {
+  background-color: var(--accent-soft, rgba(37, 99, 235, 0.22)) !important;
+  outline: 1px dashed var(--accent, #2563eb) !important;
+}
+.db-fill-handle {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 7px;
+  height: 7px;
+  background-color: var(--accent, #2563eb);
+  border: 1px solid #ffffff;
+  cursor: crosshair;
+  z-index: 5;
+}
+.db-fill-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--text-sm);
+}
+.db-fill-status,
+.db-fill-error {
+  flex: 1 1 180px;
+}
+.db-fill-error {
+  color: var(--danger);
+}
+.db-fill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.db-fill-actions [aria-pressed='true'] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.db-fill-hint {
+  flex-basis: 100%;
+  color: var(--text-muted);
+}
+.db-fill-preview-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.db-cell-content {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 4px;
+}
 .db-cell-expand {
   position: absolute;
   top: 3px;
@@ -1592,6 +1660,21 @@ td:hover .prop-empty,
   width: 15px;
   height: 15px;
   accent-color: var(--accent);
+}
+.prop-checkbox-display {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  color: var(--bg);
+}
+.prop-checkbox-display[aria-checked='true'] {
+  border-color: var(--accent);
+  background: var(--accent);
 }
 .prop-select {
   display: flex;
