@@ -25,6 +25,11 @@ attribution.
 
 ## Authority and scope
 
+- Follow `docs/COMMIT-POLICY.md`: remote commits represent coherent functional
+  deliveries, not local checkpoints or individual microtasks. Consolidate
+  unpublished local fixups before pushing; preserve published history and
+  upstream ancestry. Ticket boundaries do not mandate commit boundaries.
+
 - Active tracker: https://github.com/hodeliun/Morrow/issues. Specification:
   `docs/SPEC.md`; research: `docs/RESEARCH.md`; decisions:
   `docs/GRILLING.md`; historical ticket notes: `docs/tickets/`.

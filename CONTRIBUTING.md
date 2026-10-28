@@ -38,6 +38,11 @@ MORROW_USER_DATA=/tmp/morrow-test npm run dev
 
 ## Before a pull request
 
+This fork publishes commits by coherent functional delivery. Local checkpoints
+are welcome; consolidate unpublished WIP and development fixups before pushing.
+See [Commit and publication policy](docs/COMMIT-POLICY.md) for grouping,
+validation, correction batches and preservation of published/upstream history.
+
 ```sh
 npm run check      # type check, lint, tests and build
 npm run format     # prettier, if the check complains about formatting
