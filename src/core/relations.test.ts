@@ -300,9 +300,9 @@ describe('scoped relations', () => {
     ).toContain('inverse-mismatch');
   });
 
-  it('refuses to convert a populated relation field into a projection and safely unlinks an inverse', () => {
-    const configure: Command = {
-      type: 'relation.configure',
+  it('connects a populated relation field through union of pairs, blocks on cardinality conflict, and safely unlinks preserving data', () => {
+    const configure = {
+      type: 'relation.configure' as const,
       databaseId: 'books',
       propertyId: 'author',
       relation: {
@@ -322,9 +322,29 @@ describe('scoped relations', () => {
       values: { books: 'book-1' },
       now: 2,
     });
-    const refused = tryRun(populated, configure);
-    expect(refused.ok).toBe(false);
-    expect(populated.pages['author-1']!.properties.books).toBe('book-1');
+    const linkedSuccess = tryRun(populated, configure);
+    expect(linkedSuccess.ok).toBe(true);
+    if (!linkedSuccess.ok) throw new Error(linkedSuccess.error);
+    expect(linkedSuccess.value.state.pages['book-1']!.properties.author).toBe('author-1');
+
+    let conflictState = unconfiguredState(false);
+    conflictState = run(
+      conflictState,
+      {
+        type: 'page.setProperties',
+        id: 'book-1',
+        values: { author: 'author-1' },
+        now: 2,
+      },
+      {
+        type: 'page.setProperties',
+        id: 'book-2',
+        values: { author: 'author-1' },
+        now: 2,
+      },
+    );
+    expect(tryRun(conflictState, configure).ok).toBe(false);
+
     const base = unconfiguredState();
     const withLegacyExtra: WorkspaceState = {
       ...base,
@@ -332,7 +352,7 @@ describe('scoped relations', () => {
         ...base.pages,
         'author-1': {
           ...base.pages['author-1']!,
-          extra: { Books: '[[Dune]]' },
+          extra: { Books: '[[Unresolvable 999]]' },
         },
       },
     };
@@ -388,6 +408,6 @@ describe('scoped relations', () => {
       targetDatabaseId: null,
       isInverse: false,
     });
-    expect(valueOf(linked.pages['author-1']!, 'books', linked.pages.authors!.database!, linked)).toBeNull();
+    expect(valueOf(linked.pages['author-1']!, 'books', linked.pages.authors!.database!, linked)).toEqual(['book-1']);
   });
 });

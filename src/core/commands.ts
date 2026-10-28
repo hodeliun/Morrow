@@ -33,7 +33,7 @@ import type {
 } from './model';
 import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
-import { relationIds } from './relations';
+import { previewRelationPairUnion, relationIds } from './relations';
 import { bindFormulaReferences, formulaResult } from './database';
 import { isNumericPropertyType, propertyValueError, scalarValueError } from './typedValues';
 import { MAX_ATTACHMENT_VALUE_LENGTH, MAX_RICH_CANVAS_BYTES } from './propertyMedia';
@@ -92,6 +92,7 @@ export type Command =
       databaseId: PageId;
       propertyId: string;
       relation: RelationConfig;
+      createInverseProperty?: { id?: string; name: string; multiple?: boolean };
       now: number;
     }
   // replaces a page's database values, its other frontmatter, or both
@@ -298,7 +299,7 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
     case 'relation.set':
       return applyRelationValue(state, command.id, command.propertyId, command.value, command.now);
     case 'relation.configure':
-      return configureRelation(state, command.databaseId, command.propertyId, command.relation, command.now);
+      return configureRelation(state, command, command.now);
     case 'page.setFields': {
       return setPageFields(state, command.id, command.properties, command.extra, command.now);
     }
@@ -701,11 +702,10 @@ function requestedRelationIds(value: PropValue): Result<string[]> {
 
 function configureRelation(
   state: WorkspaceState,
-  databaseId: PageId,
-  propertyId: string,
-  requested: RelationConfig,
+  command: Extract<Command, { type: 'relation.configure' }>,
   now: number,
 ): Result<Applied> {
+  const { databaseId, propertyId, relation: requested, createInverseProperty } = command;
   const source = requirePage(state, databaseId);
   if (!source.ok) return source;
   if (source.value.kind !== 'database' || !source.value.database) return fail('That page is not a database.');
@@ -730,20 +730,9 @@ function configureRelation(
     !target?.database?.properties.some((candidate) => candidate.id === displayPropertyId)
   )
     return fail('The display property is not in the target database.');
-  const inversePropertyId =
+
+  let inversePropertyId =
     typeof requested.inversePropertyId === 'string' ? requested.inversePropertyId : null;
-  if (inversePropertyId && !targetId) return fail('Choose a target database before an inverse field.');
-  if (inversePropertyId && source.value.id === targetId && inversePropertyId === propertyId)
-    return fail('A relation field cannot be its own inverse.');
-  if (!Array.isArray(requested.filters) || requested.filters.length > 100)
-    return fail('A relation can have at most 100 option filters.');
-  if (
-    targetId &&
-    requested.filters.some(
-      (filter) => !target!.database!.properties.some((candidate) => candidate.id === filter.prop),
-    )
-  )
-    return fail('Every option filter must use a property in the target database.');
 
   const schemas = new Map<PageId, DatabaseDef>();
   const schemaFor = (id: PageId): DatabaseDef => {
@@ -765,11 +754,58 @@ function configureRelation(
       properties: database.properties.map((prop) => (prop.id === propId ? change(prop) : prop)),
     });
   };
+
+  // If requested to create a new inverse property in the target database
+  if (createInverseProperty && targetId && target?.database) {
+    const newPropId = createInverseProperty.id || `prop-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const newPropName = createInverseProperty.name.trim() || displayTitle(source.value);
+    const newInverseProp: PropDef = {
+      id: newPropId,
+      name: newPropName,
+      type: 'relation',
+      options: [],
+      relation: {
+        targetDatabaseId: databaseId,
+        multiple: createInverseProperty.multiple ?? true,
+        isInverse: true,
+        displayPropertyId: null,
+        inversePropertyId: propertyId,
+        filters: [],
+      },
+    };
+    schemas.set(target.id, {
+      ...schemaFor(target.id),
+      properties: [...schemaFor(target.id).properties, newInverseProp],
+    });
+    inversePropertyId = newPropId;
+  }
+
+  if (inversePropertyId && !targetId) return fail('Choose a target database before an inverse field.');
+  if (inversePropertyId && source.value.id === targetId && inversePropertyId === propertyId)
+    return fail('A relation field cannot be its own inverse.');
+  if (!Array.isArray(requested.filters) || requested.filters.length > 100)
+    return fail('A relation can have at most 100 option filters.');
+  if (
+    targetId &&
+    requested.filters.some(
+      (filter) => !target!.database!.properties.some((candidate) => candidate.id === filter.prop),
+    )
+  )
+    return fail('Every option filter must use a property in the target database.');
+
   const oldConfig = sourceProp.relation;
-  if (oldConfig?.targetDatabaseId && oldConfig.inversePropertyId) {
-    const oldTarget = state.pages[oldConfig.targetDatabaseId];
+  const isUnlinkingOldInverse =
+    oldConfig?.targetDatabaseId &&
+    oldConfig.inversePropertyId &&
+    (oldConfig.targetDatabaseId !== targetId || oldConfig.inversePropertyId !== inversePropertyId);
+
+  const pagesToMutate: PageMeta[] = [];
+
+  // When unlinking an old inverse relationship, materialize the projected links into the old inverse column
+  if (isUnlinkingOldInverse) {
+    const oldTarget = state.pages[oldConfig!.targetDatabaseId!];
     const oldInverse = oldTarget?.database?.properties.find(
-      (candidate) => candidate.id === oldConfig.inversePropertyId,
+      (candidate) => candidate.id === oldConfig!.inversePropertyId,
     );
     if (
       oldTarget?.kind === 'database' &&
@@ -781,40 +817,60 @@ function configureRelation(
         ...prop,
         relation: {
           targetDatabaseId: null,
-          multiple: false,
+          multiple: oldInverse.relation?.multiple ?? false,
           isInverse: false,
           displayPropertyId: null,
           inversePropertyId: null,
           filters: [],
         },
       }));
+
+      // Materialize projected values in rows of oldTarget
+      const oldTargetRows = Object.values(state.pages).filter((page) => page.parentId === oldTarget.id);
+      const sourceRows = Object.values(state.pages).filter((page) => page.parentId === databaseId);
+      for (const tRow of oldTargetRows) {
+        const connectedSourceIds = sourceRows
+          .filter((sRow) => relationIds(sRow.properties[propertyId] ?? null).includes(tRow.id))
+          .map((sRow) => sRow.id);
+        if (connectedSourceIds.length > 0) {
+          const materializedVal: PropValue = oldInverse.relation?.multiple
+            ? connectedSourceIds
+            : (connectedSourceIds[0] ?? null);
+          pagesToMutate.push({
+            ...tRow,
+            properties: { ...tRow.properties, [oldInverse.id]: materializedVal },
+            updatedAt: now,
+          });
+        }
+      }
     }
   }
 
+  // When linking to an inverse property in target
+  let unionPreview: ReturnType<typeof previewRelationPairUnion> | null = null;
   if (inversePropertyId && target) {
-    const inverse = target.database!.properties.find((candidate) => candidate.id === inversePropertyId);
+    const inverse = schemaFor(target.id).properties.find((candidate) => candidate.id === inversePropertyId);
     if (inverse?.type !== 'relation') return fail('Choose a relation property as the inverse field.');
     const current = inverse.relation;
     if (current?.targetDatabaseId && current.targetDatabaseId !== databaseId)
       return fail('That inverse field already targets another database.');
     if (current?.inversePropertyId && current.inversePropertyId !== propertyId)
       return fail('That inverse field is already linked to another relation.');
-    const alreadyLinked =
-      current?.isInverse === true &&
-      current.targetDatabaseId === databaseId &&
-      current.inversePropertyId === propertyId;
-    const populated = Object.values(state.pages).some(
-      (page) =>
-        page.parentId === target.id &&
-        (relationIds(page.properties[inverse.id] ?? null).length > 0 ||
-          Object.keys(page.extra).some(
-            (key) => key.toLocaleLowerCase() === inverse.name.toLocaleLowerCase(),
-          )),
+
+    // Calculate union preview and check conflicts
+    unionPreview = previewRelationPairUnion(
+      state,
+      databaseId,
+      propertyId,
+      requested.multiple === true,
+      target.id,
+      inversePropertyId,
+      current?.multiple,
     );
-    if (populated && !alreadyLinked)
-      return fail(
-        'This field already contains relation values. Move or clear them before making it an inverse projection.',
-      );
+    if (!unionPreview.canLink) {
+      return fail(unionPreview.conflicts[0] ?? 'Cardinality conflict when linking inverse relations.');
+    }
+
     updateProp(target.id, inverse.id, (prop) => ({
       ...prop,
       relation: {
@@ -845,37 +901,96 @@ function configureRelation(
     if (!normalized || !page) return fail('The relation settings could not be saved.');
     schemaPages.push({ ...page, database: normalized, updatedAt: now });
   }
-  let applied = withChanges(state, { pages: schemaPages });
+  let applied = withChanges(state, { pages: [...schemaPages, ...pagesToMutate] });
+
   if (targetId) {
     const targetRows = Object.values(applied.state.pages).filter((page) => page.parentId === targetId);
     const sourceRows = Object.values(applied.state.pages).filter((page) => page.parentId === databaseId);
-    for (const row of sourceRows) {
-      const tokens = relationIds(row.properties[propertyId] ?? null);
-      if (tokens.length === 0) continue;
-      const converted: string[] = [];
-      let resolvable = true;
-      for (const token of tokens) {
-        if (applied.state.pages[token]?.parentId === targetId) {
-          converted.push(token);
-          continue;
+
+    if (unionPreview && inversePropertyId) {
+      // Clear values on the inverse projection side
+      const targetInverseProperty = schemaFor(targetId).properties.find((p) => p.id === inversePropertyId);
+      for (const tRow of targetRows) {
+        const hasProp = tRow.properties[inversePropertyId] !== undefined && tRow.properties[inversePropertyId] !== null;
+        const extraKey = targetInverseProperty
+          ? Object.keys(tRow.extra).find((k) => k.toLocaleLowerCase() === targetInverseProperty.name.toLocaleLowerCase())
+          : null;
+        if (hasProp || extraKey) {
+          const nextProps = { ...tRow.properties };
+          delete nextProps[inversePropertyId];
+          const nextExtra = { ...tRow.extra };
+          if (extraKey) delete nextExtra[extraKey];
+          const updatedRow: PageMeta = {
+            ...tRow,
+            properties: nextProps,
+            extra: nextExtra,
+            updatedAt: now,
+          };
+          const step = withChanges(applied.state, { pages: [updatedRow] });
+          mergeChanges(applied.changes, step.changes);
+          applied = { state: step.state, changes: applied.changes };
         }
-        const wanted = foldText(token.trim());
-        const candidates = targetRows.filter((candidate) => foldText(displayTitle(candidate)) === wanted);
-        if (candidates.length !== 1) {
-          resolvable = false;
-          break;
-        }
-        converted.push(candidates[0]!.id);
       }
-      if (!resolvable || (!nextConfig.multiple && converted.length > 1)) continue;
-      const nextValue: PropValue = nextConfig.multiple ? [...new Set(converted)] : (converted[0] ?? null);
-      const migrated = applyRelationValue(applied.state, row.id, propertyId, nextValue, now);
-      if (migrated.ok) {
-        mergeChanges(applied.changes, migrated.value.changes);
-        applied = { state: migrated.value.state, changes: applied.changes };
+
+      // Reconcile and apply unified pairs onto the owner side
+      for (const sRow of sourceRows) {
+        const currentVal = sRow.properties[propertyId];
+        const currentTokens = relationIds(currentVal ?? null);
+        let hasAmbiguous = false;
+        for (const token of currentTokens) {
+          if (!targetRows.some((r) => r.id === token)) {
+            const clean = token.trim().replace(/^\[\[(.*)\]\]$/, '$1').trim();
+            const folded = foldText(clean);
+            const matches = targetRows.filter((r) => foldText(displayTitle(r)) === folded);
+            if (matches.length > 1) {
+              hasAmbiguous = true;
+              break;
+            }
+          }
+        }
+        if (hasAmbiguous) continue;
+
+        const unifiedTargets = unionPreview.ownerPairs.get(sRow.id) ?? [];
+        const nextValue: PropValue = nextConfig.multiple
+          ? (unifiedTargets.length > 0 ? unifiedTargets : null)
+          : (unifiedTargets[0] ?? null);
+        const migrated = applyRelationValue(applied.state, sRow.id, propertyId, nextValue, now);
+        if (migrated.ok) {
+          mergeChanges(applied.changes, migrated.value.changes);
+          applied = { state: migrated.value.state, changes: applied.changes };
+        }
+      }
+    } else {
+      // Legacy resolution of titles into ids if not uniting
+      for (const row of sourceRows) {
+        const tokens = relationIds(row.properties[propertyId] ?? null);
+        if (tokens.length === 0) continue;
+        const converted: string[] = [];
+        let resolvable = true;
+        for (const token of tokens) {
+          if (applied.state.pages[token]?.parentId === targetId) {
+            converted.push(token);
+            continue;
+          }
+          const wanted = foldText(token.trim());
+          const candidates = targetRows.filter((candidate) => foldText(displayTitle(candidate)) === wanted);
+          if (candidates.length !== 1) {
+            resolvable = false;
+            break;
+          }
+          converted.push(candidates[0]!.id);
+        }
+        if (!resolvable || (!nextConfig.multiple && converted.length > 1)) continue;
+        const nextValue: PropValue = nextConfig.multiple ? [...new Set(converted)] : (converted[0] ?? null);
+        const migrated = applyRelationValue(applied.state, row.id, propertyId, nextValue, now);
+        if (migrated.ok) {
+          mergeChanges(applied.changes, migrated.value.changes);
+          applied = { state: migrated.value.state, changes: applied.changes };
+        }
       }
     }
   }
+
   return ok(applied);
 }
 

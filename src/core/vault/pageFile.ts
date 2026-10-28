@@ -441,6 +441,8 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
         type: prop.type,
         ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
         ...(prop.description ? { description: prop.description } : {}),
+        ...(prop.icon ? { icon: prop.icon } : {}),
+        ...(prop.formulaResultType ? { formulaResultType: prop.formulaResultType } : {}),
         ...(prop.format ? { format: { ...prop.format } } : {}),
         ...(prop.fillMode ? { fillMode: prop.fillMode } : {}),
         ...(Object.prototype.hasOwnProperty.call(prop, 'defaultValue')

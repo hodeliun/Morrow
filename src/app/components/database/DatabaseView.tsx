@@ -51,7 +51,7 @@ import {
   formulaResult,
 } from '../../../core/database';
 import { BACKGROUND_HEX,
-  validHexColor, COLORS, displayTitle, PROP_TYPES, VIEW_TYPES } from '../../../core/model';
+  validHexColor, COLORS, displayTitle, VIEW_TYPES } from '../../../core/model';
 import { unclaimedKeys } from '../../../core/properties';
 import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from '../../../core/migrations';
 import type {
@@ -83,6 +83,7 @@ import { PageIcon } from '../Sidebar';
 import { addColumnsFromPages, createRow, setValue, updateDatabase, updateView } from './data';
 import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from './PropertyValue';
 import { PropertySettings } from './PropertySettings';
+import { PropertyGlyph, PropertyTypeSelect } from './PropertyTypeSelect';
 import { TableActionRecoveryNotice } from './TableActionCell';
 import { dateLocale, getLocale, t, tp } from '../../i18n';
 import { colorLabel, filterLabel, propLabel, viewLabel, viewName } from '../../i18n/labels';
@@ -2409,18 +2410,7 @@ function InsertColumnPopover({
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
-        <select
-          className="text-input small"
-          aria-label={t('database.type')}
-          value={type}
-          onChange={(event) => setType(event.target.value as PropType)}
-        >
-          {PROP_TYPES.map((item) => (
-            <option key={item} value={item}>
-              {propLabel(item)}
-            </option>
-          ))}
-        </select>
+        <PropertyTypeSelect value={type} onChange={setType} />
         <button type="submit" className="button small" disabled={!name.trim()}>
           {t('common.add')}
         </button>
@@ -2581,6 +2571,9 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
                         }
                       }}
                     >
+                      <span className="db-header-icon" aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', marginRight: '6px', opacity: 0.85 }}>
+                        <PropertyGlyph prop={prop} />
+                      </span>
                       <span className="db-header-name">{prop.name}</span>
                     </button>
                     {description && (
@@ -2830,7 +2823,7 @@ function TableView({ dbId, database, view, rows, props, editable, onRequestFilte
           entries={[
             { heading: columnMenu.prop.name },
             {
-              label: t('database.editColumnSettings'),
+              label: t('database.editColumn'),
               icon: Settings2,
               onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
             },

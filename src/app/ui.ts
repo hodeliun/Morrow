@@ -9,7 +9,13 @@ export type Dialog =
   | { kind: 'shortcuts' }
   | { kind: 'move'; pageId: PageId }
   | { kind: 'history'; pageId: PageId }
-  | { kind: 'icon'; pageId: PageId }
+  | {
+      kind: 'icon';
+      pageId?: PageId;
+      title?: string;
+      currentIcon?: string | null;
+      onPick?: (icon: string | null) => void;
+    }
   // edit a formula or markdown kept as written, with a live preview for formulas
   | {
       kind: 'source';

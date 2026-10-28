@@ -601,7 +601,11 @@ function normalizeFormulaOutput(
 ): { value: FormulaRuntimeValue; error: string | null } {
   if (prop.type === 'formula') {
     const error = validateFormulaOutput(value, state);
-    return error ? { value: null, error: `${prop.name}: ${error}` } : { value, error: null };
+    if (error) return { value: null, error: `${prop.name}: ${error}` };
+    if (prop.formulaResultType && prop.formulaResultType !== 'formula') {
+      return normalizeFormulaOutput({ ...prop, type: prop.formulaResultType }, value, state);
+    }
+    return { value, error: null };
   }
   if (prop.type === 'relation') return normalizeRelationFormulaOutput(prop, value, state);
   if (Array.isArray(value)) {
@@ -1342,7 +1346,14 @@ export function formatValue(prop: PropDef | undefined, value: PropValue): string
     case 'file':
     case 'richCanvas':
       return propertyMediaLabel(prop, value);
-    case 'formula':
+    case 'formula': {
+      const resultType = prop.formulaResultType ?? (prop.format?.currency ? 'currency' : undefined);
+      if (resultType && resultType !== 'formula') {
+        return formatValue({ ...prop, type: resultType }, value);
+      }
+      if (prop.format?.currency && typeof value === 'number') return formatNumber(prop, value, 'currency');
+      if (prop.format?.precision !== undefined && typeof value === 'number')
+        return formatNumber(prop, value, 'decimal');
       return typeof value === 'number'
         ? String(Math.round(value * 1e6) / 1e6)
         : typeof value === 'boolean'
@@ -1350,6 +1361,7 @@ export function formatValue(prop: PropDef | undefined, value: PropValue): string
             ? 'Yes'
             : 'No'
           : String(value);
+    }
     case 'button':
       return '';
     case 'currency':

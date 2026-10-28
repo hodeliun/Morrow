@@ -115,10 +115,20 @@ export async function preparePageIconFile(file: File): Promise<File | null> {
   return null;
 }
 
-export function EmojiPicker({ pageId, onPick }: { pageId: PageId; onPick: (icon: string | null) => void }) {
+export function EmojiPicker({
+  pageId,
+  currentIcon: initialIcon,
+  title: initialTitle,
+  onPick,
+}: {
+  pageId?: PageId;
+  currentIcon?: string | null;
+  title?: string;
+  onPick: (icon: string | null) => void;
+}) {
   const state = useWorkspace();
-  const page = state.pages[pageId];
-  const currentIcon = parsePageIcon(page?.icon);
+  const page = pageId ? state.pages[pageId] : undefined;
+  const currentIcon = parsePageIcon(initialIcon !== undefined ? initialIcon : page?.icon);
   const [emoji, setEmoji] = useState<EmojiEntry[] | null>(null);
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState<number | null>(null);
@@ -220,7 +230,7 @@ export function EmojiPicker({ pageId, onPick }: { pageId: PageId; onPick: (icon:
 
   return (
     <Dialog
-      title={t('emoji.title', { title: displayTitle(page) })}
+      title={initialTitle ? t('emoji.title', { title: initialTitle }) : page ? t('emoji.title', { title: displayTitle(page) }) : t('emoji.iconTypes')}
       onClose={closeDialog}
       className="emoji-dialog"
     >

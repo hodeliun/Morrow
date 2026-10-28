@@ -251,3 +251,195 @@ export function relatedRowsFromValue(
     label: relationDisplayLabel(state, prop, page),
   }));
 }
+
+
+export interface RelationPairUnionPreview {
+  canLink: boolean;
+  sourcePairsCount: number;
+  targetPairsCount: number;
+  totalUniquePairsCount: number;
+  conflicts: string[];
+  ownerPairs: Map<PageId, string[]>;
+}
+
+export function previewRelationPairUnion(
+  state: WorkspaceState,
+  sourceDbId: PageId,
+  sourcePropId: string,
+  sourceMultiple: boolean,
+  targetDbId: PageId,
+  targetPropId: string,
+  targetMultiple?: boolean,
+): RelationPairUnionPreview {
+  const conflicts: string[] = [];
+  const sourceDb = state.pages[sourceDbId];
+  const targetDb = state.pages[targetDbId];
+
+  if (!sourceDb?.database || !targetDb?.database) {
+    return {
+      canLink: false,
+      sourcePairsCount: 0,
+      targetPairsCount: 0,
+      totalUniquePairsCount: 0,
+      conflicts: ['Database not found.'],
+      ownerPairs: new Map(),
+    };
+  }
+
+  const sourceProp = sourceDb.database.properties.find((p) => p.id === sourcePropId);
+  const targetProp = targetDb.database.properties.find((p) => p.id === targetPropId);
+
+  if (!sourceProp || sourceProp.type !== 'relation' || !targetProp || targetProp.type !== 'relation') {
+    return {
+      canLink: false,
+      sourcePairsCount: 0,
+      targetPairsCount: 0,
+      totalUniquePairsCount: 0,
+      conflicts: ['Both properties must be relation properties.'],
+      ownerPairs: new Map(),
+    };
+  }
+
+  if (sourceDbId === targetDbId && sourcePropId === targetPropId) {
+    return {
+      canLink: false,
+      sourcePairsCount: 0,
+      targetPairsCount: 0,
+      totalUniquePairsCount: 0,
+      conflicts: ['A relation property cannot be linked to itself as an inverse.'],
+      ownerPairs: new Map(),
+    };
+  }
+
+  const currentTargetRelation = targetProp.relation;
+  if (currentTargetRelation?.targetDatabaseId && currentTargetRelation.targetDatabaseId !== sourceDbId) {
+    conflicts.push('The selected inverse property is already linked to a different database.');
+  }
+  if (
+    currentTargetRelation?.inversePropertyId &&
+    currentTargetRelation.inversePropertyId !== sourcePropId
+  ) {
+    conflicts.push('The selected inverse property is already linked to a different property.');
+  }
+
+  const sourceRows = rowsOf(state, sourceDbId);
+  const targetRows = rowsOf(state, targetDbId);
+  const targetRowIds = new Set(targetRows.map((r) => r.id));
+  const sourceRowIds = new Set(sourceRows.map((r) => r.id));
+
+  let sourcePairsCount = 0;
+  let targetPairsCount = 0;
+
+  const ownerToTargets = new Map<PageId, Set<string>>();
+  const targetToOwners = new Map<PageId, Set<string>>();
+
+  const addPair = (sId: string, tId: string) => {
+    if (!ownerToTargets.has(sId)) ownerToTargets.set(sId, new Set());
+    ownerToTargets.get(sId)!.add(tId);
+
+    if (!targetToOwners.has(tId)) targetToOwners.set(tId, new Set());
+    targetToOwners.get(tId)!.add(sId);
+  };
+
+  const cleanToken = (token: string) => token.trim().replace(/^[[(.*)]]$/, '$1').trim();
+
+  const resolveTargetId = (token: string): string | null => {
+    if (targetRowIds.has(token)) return token;
+    const clean = cleanToken(token);
+    if (targetRowIds.has(clean)) return clean;
+    const folded = foldText(clean);
+    const candidates = targetRows.filter((r) => foldText(displayTitle(r)) === folded);
+    return candidates.length === 1 ? candidates[0]!.id : null;
+  };
+
+  const resolveSourceId = (token: string): string | null => {
+    if (sourceRowIds.has(token)) return token;
+    const clean = cleanToken(token);
+    if (sourceRowIds.has(clean)) return clean;
+    const folded = foldText(clean);
+    const candidates = sourceRows.filter((r) => foldText(displayTitle(r)) === folded);
+    return candidates.length === 1 ? candidates[0]!.id : null;
+  };
+
+  for (const sRow of sourceRows) {
+    const rawVal = sRow.properties[sourcePropId];
+    const ids = relationIds(rawVal ?? null);
+    const extraVal = Object.entries(sRow.extra).find(
+      ([k]) => k.toLocaleLowerCase() === sourceProp.name.toLocaleLowerCase(),
+    )?.[1];
+    const extraIds = (typeof extraVal === "string" || Array.isArray(extraVal)) ? relationIds(extraVal as PropValue) : [];
+    const allIds = [...new Set([...ids, ...extraIds])];
+
+    for (const token of allIds) {
+      const resolved = resolveTargetId(token);
+      if (resolved) {
+        sourcePairsCount++;
+        addPair(sRow.id, resolved);
+      }
+    }
+  }
+
+  for (const tRow of targetRows) {
+    const rawVal = tRow.properties[targetPropId];
+    const ids = relationIds(rawVal ?? null);
+    const extraVal = Object.entries(tRow.extra).find(
+      ([k]) => k.toLocaleLowerCase() === targetProp.name.toLocaleLowerCase(),
+    )?.[1];
+    const extraIds = (typeof extraVal === "string" || Array.isArray(extraVal)) ? relationIds(extraVal as PropValue) : [];
+    const allIds = [...new Set([...ids, ...extraIds])];
+
+    for (const token of allIds) {
+      const resolved = resolveSourceId(token);
+      if (resolved) {
+        targetPairsCount++;
+        addPair(resolved, tRow.id);
+      } else if (extraVal) {
+        conflicts.push('The inverse field has frontmatter content that cannot be resolved safely.');
+      }
+    }
+  }
+
+  let totalUniquePairsCount = 0;
+  for (const set of ownerToTargets.values()) {
+    totalUniquePairsCount += set.size;
+  }
+
+  const isTargetMultiple =
+    targetMultiple !== undefined ? targetMultiple : (targetProp.relation?.multiple ?? true);
+
+  if (!sourceMultiple) {
+    for (const [sId, tSet] of ownerToTargets) {
+      if (tSet.size > 1) {
+        const sRow = state.pages[sId];
+        conflicts.push(
+          `Cardinality conflict: “${displayTitle(sRow)}” would be linked to ${tSet.size} rows, but this relation only allows one.`,
+        );
+      }
+    }
+  }
+
+  if (!isTargetMultiple) {
+    for (const [tId, sSet] of targetToOwners) {
+      if (sSet.size > 1) {
+        const tRow = state.pages[tId];
+        conflicts.push(
+          `Cardinality conflict: “${displayTitle(tRow)}” would be linked to ${sSet.size} rows, but the inverse relation only allows one.`,
+        );
+      }
+    }
+  }
+
+  const ownerPairs = new Map<PageId, string[]>();
+  for (const [sId, set] of ownerToTargets) {
+    ownerPairs.set(sId, [...set]);
+  }
+
+  return {
+    canLink: conflicts.length === 0,
+    sourcePairsCount,
+    targetPairsCount,
+    totalUniquePairsCount,
+    conflicts,
+    ownerPairs,
+  };
+}

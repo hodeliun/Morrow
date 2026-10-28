@@ -208,6 +208,8 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
               color: COLORS.includes(option.color as ColorName) ? (option.color as ColorName) : 'gray',
             })),
     ...(typeof raw.description === 'string' ? { description: raw.description.slice(0, 2000) } : {}),
+    ...(validPageIcon(raw.icon) ? { icon: raw.icon } : {}),
+    ...(PROP_TYPES.includes(raw.formulaResultType as PropType) ? { formulaResultType: raw.formulaResultType as PropType } : {}),
     ...(raw.type !== 'button' && normalizePropertyFormat(raw.format) ? { format: normalizePropertyFormat(raw.format)! } : {}),
     ...(raw.type !== 'button' && fillMode ? { fillMode } : {}),
     ...(raw.type !== 'button' && defaultValue !== undefined ? { defaultValue } : {}),

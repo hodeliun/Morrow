@@ -176,6 +176,7 @@ export function FormulaEditor({
   };
 
   const onTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (suggestions.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
       setActiveSuggestion((current) =>

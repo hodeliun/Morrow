@@ -36,7 +36,12 @@ export function Dialogs() {
       return (
         <EmojiPicker
           pageId={dialog.pageId}
-          onPick={(icon) => run({ type: 'page.setIcon', id: dialog.pageId, icon, now: Date.now() })}
+          currentIcon={dialog.currentIcon}
+          title={dialog.title}
+          onPick={
+            dialog.onPick ??
+            ((icon) => dialog.pageId && run({ type: 'page.setIcon', id: dialog.pageId, icon, now: Date.now() }))
+          }
         />
       );
     case 'source':

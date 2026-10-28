@@ -1916,6 +1916,9 @@ td:hover .prop-empty,
   background: var(--hover);
 }
 .row-prop-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 8px;
   color: var(--text-muted);
   white-space: nowrap;

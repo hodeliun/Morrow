@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, EyeOff, Trash2, X } from 'lucide-react';
-import { useContext, useState } from 'react';
+import { useContext, useMemo, useState } from 'react';
 import type { Command } from '../../../core/commands';
 import {
   filterOpsFor,
@@ -9,7 +9,7 @@ import {
   rowsOf,
   tryConvertValue,
 } from '../../../core/database';
-import { COLORS, PROP_TYPES } from '../../../core/model';
+import { COLORS } from '../../../core/model';
 import { isMediaProperty } from '../../../core/propertyMedia';
 import type {
   ColorName,
@@ -35,14 +35,16 @@ import {
 import { isEffectivelyTrashed } from '../../../core/tree';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
 import { newId } from '../../platform/files';
-import { toast } from '../../ui';
+import { openDialog, toast } from '../../ui';
+import { PropertyGlyph, PropertyTypeSelect } from './PropertyTypeSelect';
+import { previewRelationPairUnion } from '../../../core/relations';
 import { run, runAll, useWorkspace } from '../../workspace';
 import { Popover } from '../Popover';
 import { Select } from '../Select';
 import { updateDatabase, updateProp, updateView } from './data';
 import { DraftInput, RelationPicker } from './PropertyValue';
 import { t } from '../../i18n';
-import { colorLabel, filterLabel, propLabel } from '../../i18n/labels';
+import { colorLabel, filterLabel } from '../../i18n/labels';
 import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
 import { MediaPropertyDefault, MediaPropertyOptions } from './MediaProperty';
 import { ViewChangeContext } from './viewContext';
@@ -121,7 +123,7 @@ export function PropertySettings({
               newId,
             )
         : [];
-    let next: PropDef = { ...prop, type, options };
+    let next: PropDef = { ...prop, type, options, ...(prop.icon ? { icon: prop.icon } : {}) };
     if (type === 'button') {
       const {
         formula: _formula,
@@ -212,36 +214,64 @@ export function PropertySettings({
       label={t('database.propertyAria', { name: prop.name })}
       className={`db-panel${prop.type === 'formula' || prop.type === 'relation' || prop.type === 'button' ? ' is-wide' : ''}`}
     >
-      <label className="field">
-        <span>{t('database.name')}</span>
-        <DraftInput
-          type="text"
-          label={t('page.propertyNamePlaceholder')}
-          className="text-input small"
-          value={prop.name}
-          editable
-          onCommit={(name) => {
-            const clean = name.trim();
-            if (
-              !clean ||
-              reservedPropertyName(clean) ||
-              database.properties.some(
-                (item) => item.id !== prop.id && item.name.toLowerCase() === clean.toLowerCase(),
-              )
-            ) {
-              toast(t('toasts.propNameEmptyOrUsed'), { tone: 'error' });
-              return;
-            }
-            updateProp(dbId, prop.id, (current) => ({ ...current, name: clean }));
-          }}
-        />
-      </label>
+      <div className="field-inline prop-name-icon-row" style={{ display: 'flex', alignItems: 'flex-end', gap: '8px' }}>
+        <button
+          type="button"
+          className="icon-button prop-icon-trigger"
+          aria-label={t('database.changePropertyIcon')}
+          title={t('database.changePropertyIcon')}
+          style={{ width: '32px', height: '32px', marginBottom: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border)', borderRadius: '6px' }}
+          onClick={() =>
+            openDialog({
+              kind: 'icon',
+              currentIcon: prop.icon,
+              title: prop.name,
+              onPick: (icon) => updateProp(dbId, prop.id, (current) => ({ ...current, icon })),
+            })
+          }
+        >
+          <PropertyGlyph prop={prop} />
+        </button>
+        <label className="field prop-name-field" style={{ flex: 1, margin: 0 }}>
+          <span>{t('database.name')}</span>
+          <DraftInput
+            type="text"
+            label={t('page.propertyNamePlaceholder')}
+            className="text-input small"
+            value={prop.name}
+            editable
+            onCommit={(name) => {
+              const clean = name.trim();
+              if (
+                !clean ||
+                reservedPropertyName(clean) ||
+                database.properties.some(
+                  (item) => item.id !== prop.id && item.name.toLowerCase() === clean.toLowerCase(),
+                )
+              ) {
+                toast(t('toasts.propNameEmptyOrUsed'), { tone: 'error' });
+                return;
+              }
+              updateProp(dbId, prop.id, (current) => ({ ...current, name: clean }));
+            }}
+          />
+        </label>
+        {prop.icon && (
+          <button
+            type="button"
+            className="button tiny prop-reset-icon-btn"
+            title={t('database.resetIcon')}
+            style={{ marginBottom: '2px' }}
+            onClick={() => updateProp(dbId, prop.id, (current) => ({ ...current, icon: null }))}
+          >
+            {t('database.resetIcon')}
+          </button>
+        )}
+      </div>
       <div className="field">
         <span>{t('database.type')}</span>
-        <Select<PropType>
-          label={t('database.type')}
+        <PropertyTypeSelect
           value={prop.type}
-          options={PROP_TYPES.map((item) => ({ value: item, label: propLabel(item) }))}
           onChange={(type) => changeType(type, Date.now())}
         />
       </div>
@@ -330,6 +360,31 @@ export function PropertySettings({
       )}
       {(prop.fillMode === 'calculated' || prop.type === 'formula') && (
         <FormulaEditor dbId={dbId} prop={prop} database={database} autoFocus={focusSection === 'formula'} />
+      )}
+      {prop.type === 'formula' && (
+        <div className="field">
+          <span>{t('database.formulaResultType')}</span>
+          <Select<PropType>
+            label={t('database.formulaResultType')}
+            value={prop.formulaResultType ?? 'number'}
+            options={[
+              { value: 'number', label: t('database.typeNumber') },
+              { value: 'currency', label: t('database.typeCurrency') },
+              { value: 'percent', label: t('database.typePercent') },
+              { value: 'date', label: t('database.typeDate') },
+              { value: 'duration', label: t('database.typeDuration') },
+              { value: 'scale', label: t('database.typeScale') },
+              { value: 'text', label: t('database.typeText') },
+              { value: 'checkbox', label: t('database.typeCheckbox') },
+            ]}
+            onChange={(type) =>
+              updateProp(dbId, prop.id, (current) => ({
+                ...current,
+                formulaResultType: type,
+              }))
+            }
+          />
+        </div>
       )}
       {prop.type !== 'button' && <PropertyFormatSettings key={`${prop.id}:${prop.type}`} dbId={dbId} prop={prop} />}
       {isMediaProperty(prop.type) && <MediaPropertyOptions prop={prop} dbId={dbId} rows={rowsOf(state, dbId)} />}
@@ -827,8 +882,9 @@ function SequenceNumberField({
 }
 
 function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
+  const effectiveType = prop.type === 'formula' ? (prop.formulaResultType ?? 'number') : prop.type;
   const numeric = ['number', 'currency', 'percent', 'slider', 'progress', 'scale', 'duration'].includes(
-    prop.type,
+    effectiveType,
   );
   const [draftFormat, setDraftFormat] = useState<PropertyFormat>(prop.format ?? {});
   const format = numeric ? draftFormat : (prop.format ?? {});
@@ -863,15 +919,15 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
     });
   };
   const constraintMultiplier =
-    prop.type === 'percent'
+    effectiveType === 'percent'
       ? 100
-      : prop.type === 'duration'
+      : effectiveType === 'duration'
         ? 1 / durationUnitFactor(format.durationUnit ?? 'minutes')
         : 1;
   const setDisplayConstraint = (key: 'min' | 'max' | 'step', value: number | undefined) =>
     setFormat(key, value === undefined ? undefined : value / constraintMultiplier);
-  const dateLike = ['date', 'time', 'datetime', 'createdTime', 'lastEditedTime'].includes(prop.type);
-  const linkLike = ['email', 'url', 'phone'].includes(prop.type);
+  const dateLike = ['date', 'time', 'datetime', 'createdTime', 'lastEditedTime'].includes(effectiveType);
+  const linkLike = ['email', 'url', 'phone'].includes(effectiveType);
   const localeField = (dateOrNumber: boolean) => (
     <label className="field">
       <span>{t('database.locale')} {numeric && <span title={t('database.localeHelp')} aria-label={t('database.localeHelp')} tabIndex={0}>ⓘ</span>}</span>
@@ -907,7 +963,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
       {localeField(numeric)}
       {numeric && (
         <div className="field-grid">
-          {prop.type === 'currency' && (
+          {(prop.type === 'currency' || (prop.type === 'formula' && effectiveType === 'currency')) && (
             <FormatTextField
               label={t('database.currencyCode')}
               value={format.currency ?? 'BRL'}
@@ -948,7 +1004,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
             value={format.step === undefined ? undefined : format.step * constraintMultiplier}
             onCommit={(value) => setDisplayConstraint('step', value)}
           />
-          {(prop.type === 'number' || prop.type === 'currency') && (
+          {(effectiveType === 'number' || effectiveType === 'currency') && (
             <label className="field">
               <span>{t('database.negativeFormat')}</span>
               <select
@@ -964,7 +1020,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
               </select>
             </label>
           )}
-          {prop.type === 'duration' && (
+          {effectiveType === 'duration' && (
             <label className="field">
               <span>{t('database.durationUnit')}</span>
               <select
@@ -982,7 +1038,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
               </select>
             </label>
           )}
-          {prop.type === 'scale' && (
+          {effectiveType === 'scale' && (
             <label className="field">
               <span>{t('database.scaleDisplay')}</span>
               <select
@@ -998,7 +1054,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
               </select>
             </label>
           )}
-          {['slider', 'progress', 'scale'].includes(prop.type) && (
+          {['slider', 'progress', 'scale'].includes(effectiveType) && (
             <>
               <label className="field">
                 <span>{t('editor.colour')}</span>
@@ -1012,7 +1068,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
               <label className="field-inline">
                 <input
                   type="checkbox"
-                  checked={format.showValue ?? (prop.type === 'slider' || prop.type === 'scale')}
+                  checked={format.showValue ?? (effectiveType === 'slider' || effectiveType === 'scale')}
                   onChange={(event) => setFormat('showValue', event.target.checked)}
                 />
                 <span>{t('database.showValue')}</span>
@@ -1023,7 +1079,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
       )}
       {dateLike && (
         <div className="field-grid">
-          {(prop.type === 'date' || prop.type === 'datetime' || prop.type.endsWith('Time')) && (
+          {(effectiveType === 'date' || effectiveType === 'datetime' || effectiveType.endsWith('Time')) && (
             <FormatChoice
               label={t('database.dateFormat')}
               value={format.dateStyle}
@@ -1031,7 +1087,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
               onChange={(value) => setFormat('dateStyle', value)}
             />
           )}
-          {(prop.type === 'time' || prop.type === 'datetime' || prop.type.endsWith('Time')) && (
+          {(effectiveType === 'time' || effectiveType === 'datetime' || effectiveType.endsWith('Time')) && (
             <FormatChoice
               label={t('database.timeFormat')}
               value={format.timeStyle}
@@ -1039,7 +1095,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
               onChange={(value) => setFormat('timeStyle', value)}
             />
           )}
-          {(prop.type === 'datetime' || prop.type.endsWith('Time')) && (
+          {(effectiveType === 'datetime' || effectiveType.endsWith('Time')) && (
             <label className="field">
               <span>{t('database.timeZone')}</span>
               <DraftInput
@@ -1065,7 +1121,7 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
       {numeric && (
         <div className="field">
           <span>{t('database.numberPreview')}</span>
-          <output>{formatValue({ ...prop, format }, prop.type === 'percent' ? 0.25 : 1234.5)}</output>
+          <output>{formatValue({ ...prop, type: effectiveType, format }, effectiveType === 'percent' ? 0.25 : 1234.5)}</output>
           <div className="field-inline">
             <button type="button" className="button small" disabled={!dirty} onClick={saveNumericFormat}>{t('common.save')}</button>
             <button type="button" className="button small" disabled={!dirty} onClick={() => setDraftFormat(prop.format ?? {})}>{t('common.cancel')}</button>
@@ -1197,6 +1253,27 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
   const rowsWithIssues = rowsOf(state, dbId).filter(
     (row) => relationDiagnostics(state, row, prop).length > 0,
   ).length;
+
+  const [inverseMode, setInverseMode] = useState<'none' | 'create' | 'link'>(() =>
+    relation.inversePropertyId ? 'link' : 'none'
+  );
+  const [newInverseName, setNewInverseName] = useState(() => displayTitle(state.pages[dbId]));
+  const [selectedLinkTarget, setSelectedLinkTarget] = useState<string | null>(relation.inversePropertyId);
+
+  const selectedTargetProp = target?.database?.properties.find((candidate) => candidate.id === selectedLinkTarget);
+  const unionPreview = useMemo(() => {
+    if (!target?.database || !selectedLinkTarget) return null;
+    return previewRelationPairUnion(
+      state,
+      dbId,
+      prop.id,
+      relation.multiple,
+      target.id,
+      selectedLinkTarget,
+      selectedTargetProp?.relation?.multiple
+    );
+  }, [state, dbId, prop.id, relation.multiple, target, selectedLinkTarget, selectedTargetProp]);
+
   const save = (change: Partial<RelationConfig>) =>
     run({
       type: 'relation.configure',
@@ -1230,6 +1307,23 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
     value: candidate.id,
     label: candidate.name,
   }));
+
+  const createAndLinkInverse = () => {
+    if (!target?.id || !newInverseName.trim()) return;
+    run({
+      type: 'relation.configure',
+      databaseId: dbId,
+      propertyId: prop.id,
+      relation: { ...relation, isInverse: false },
+      createInverseProperty: { name: newInverseName.trim() },
+      now: Date.now(),
+    });
+  };
+
+  const linkExistingInverse = () => {
+    if (!selectedLinkTarget || !unionPreview?.canLink) return;
+    save({ inversePropertyId: selectedLinkTarget });
+  };
 
   return (
     <div className="db-relation-settings">
@@ -1305,21 +1399,113 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
               onChange={(displayPropertyId) => save({ displayPropertyId })}
             />
           </label>
-          <label className="field">
-            <span>{t('database.relationInverse')}</span>
-            <Select<string>
-              label={t('database.relationInverse')}
-              value={relation.inversePropertyId}
-              placeholder={t('database.none')}
-              options={inverseOptions}
-              footer={
-                relation.inversePropertyId
-                  ? { label: t('database.none'), onSelect: () => save({ inversePropertyId: null }) }
-                  : undefined
-              }
-              onChange={(inversePropertyId) => save({ inversePropertyId })}
-            />
-          </label>
+          <div className="field">
+            <span>{t('database.relationInverseMode')}</span>
+            <div className="segmented" role="radiogroup" aria-label={t('database.relationInverseMode')}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={inverseMode === 'none'}
+                className={inverseMode === 'none' ? 'is-active' : ''}
+                onClick={() => {
+                  setInverseMode('none');
+                  if (relation.inversePropertyId) save({ inversePropertyId: null });
+                }}
+              >
+                {t('database.relationUnidirectional')}
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={inverseMode === 'create'}
+                className={inverseMode === 'create' ? 'is-active' : ''}
+                onClick={() => setInverseMode('create')}
+              >
+                {t('database.relationCreateNewInverse')}
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={inverseMode === 'link'}
+                className={inverseMode === 'link' ? 'is-active' : ''}
+                onClick={() => setInverseMode('link')}
+              >
+                {t('database.relationLinkExistingInverse')}
+              </button>
+            </div>
+          </div>
+
+          {inverseMode === 'create' && (
+            <div className="field-inline" style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+              <label className="field" style={{ flex: 1, margin: 0 }}>
+                <span>{t('database.relationNewColumnName')}</span>
+                <DraftInput
+                  type="text"
+                  label={t('database.relationNewColumnName')}
+                  className="text-input small"
+                  value={newInverseName}
+                  editable
+                  onCommit={setNewInverseName}
+                />
+              </label>
+              <button
+                type="button"
+                className="button small"
+                disabled={!newInverseName.trim()}
+                onClick={createAndLinkInverse}
+              >
+                {t('database.relationCreateAndLink')}
+              </button>
+            </div>
+          )}
+
+          {inverseMode === 'link' && (
+            <>
+              <label className="field">
+                <span>{t('database.relationLinkExistingInverse')}</span>
+                <Select<string>
+                  label={t('database.relationLinkExistingInverse')}
+                  value={selectedLinkTarget}
+                  placeholder={t('database.none')}
+                  options={inverseOptions}
+                  footer={
+                    selectedLinkTarget
+                      ? { label: t('database.none'), onSelect: () => setSelectedLinkTarget(null) }
+                      : undefined
+                  }
+                  onChange={(selected) => setSelectedLinkTarget(selected)}
+                />
+              </label>
+
+              {unionPreview && selectedLinkTarget && selectedLinkTarget !== relation.inversePropertyId && (
+                <div className="db-relation-preview-box" style={{ padding: '8px 10px', background: 'var(--surface-hover)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+                  {unionPreview.conflicts.length > 0 ? (
+                    <p className="db-relation-warning" role="alert" style={{ margin: 0, color: 'var(--danger)' }}>
+                      {unionPreview.conflicts[0]}
+                    </p>
+                  ) : (
+                    <>
+                      <p className="muted small" style={{ margin: '0 0 6px 0' }}>
+                        {t('database.relationUnionSummary', {
+                          total: unionPreview.totalUniquePairsCount,
+                          source: unionPreview.sourcePairsCount,
+                          target: unionPreview.targetPairsCount,
+                        })}
+                      </p>
+                      <button
+                        type="button"
+                        className="button small"
+                        onClick={linkExistingInverse}
+                      >
+                        {t('database.relationLinkAndMerge')}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
           <RelationFilterSettings
             target={target}
             filters={relation.filters}

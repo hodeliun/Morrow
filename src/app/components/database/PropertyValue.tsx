@@ -12,7 +12,6 @@ import {
 import { openPage } from '../../router';
 import { useWorkspace } from '../../workspace';
 import { PageIcon } from '../Sidebar';
-import { PROP_TYPES } from '../../../core/model';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
 import { newId } from '../../platform/files';
 import { getLocale, t } from '../../i18n';
@@ -30,12 +29,12 @@ import type {
 import { openExternal } from '../../platform/desktop';
 import { Popover } from '../Popover';
 import { ensureOption, setValue, updateDatabase } from './data';
-import { propLabel } from '../../i18n/labels';
 import { durationUnitFactor } from '../../../core/typedValues';
 import { scalarValueError } from '../../../core/typedValues';
 import { isMediaProperty } from '../../../core/propertyMedia';
 import { MediaPropertyDisplay, MediaPropertyInput } from './MediaProperty';
 import { ButtonActionCell } from './TableActionCell';
+import { PropertyTypeSelect } from './PropertyTypeSelect';
 
 export function Chip({ option }: { option: Pick<SelectOption, 'name' | 'color'> }) {
   return <span className={`chip color-${option.color}`}>{option.name}</span>;
@@ -78,40 +77,42 @@ export function ProgressBar({
 }
 
 export function PropertyDisplay({ prop, value }: { prop: PropDef; value: PropValue }) {
+  const effectiveProp =
+    prop.type === 'formula' && prop.formulaResultType ? { ...prop, type: prop.formulaResultType } : prop;
   if (value === null || value === undefined || value === '' || value === false) return null;
-  if (isMediaProperty(prop.type)) return <MediaPropertyDisplay prop={prop} value={value} />;
-  if ((prop.display === 'bar' || prop.type === 'progress') && typeof value === 'number')
+  if (isMediaProperty(effectiveProp.type)) return <MediaPropertyDisplay prop={effectiveProp} value={value} />;
+  if ((effectiveProp.display === 'bar' || effectiveProp.type === 'progress') && typeof value === 'number')
     return (
       <ProgressBar
         value={value}
-        min={prop.format?.min}
-        max={prop.format?.max ?? prop.max}
-        color={prop.format?.color}
-        label={prop.format?.showValue ? formatValue(prop, value) : undefined}
-        showPercent={prop.format?.showValue === undefined && prop.display === 'bar'}
+        min={effectiveProp.format?.min}
+        max={effectiveProp.format?.max ?? effectiveProp.max}
+        color={effectiveProp.format?.color}
+        label={effectiveProp.format?.showValue ? formatValue(effectiveProp, value) : undefined}
+        showPercent={effectiveProp.format?.showValue === undefined && effectiveProp.display === 'bar'}
       />
     );
-  if (prop.type === 'scale' && typeof value === 'number' && (prop.format?.scaleIcon ?? 'star') === 'star') {
-    const min = prop.format?.min ?? 1;
-    const max = prop.format?.max ?? 5;
+  if (effectiveProp.type === 'scale' && typeof value === 'number' && (effectiveProp.format?.scaleIcon ?? 'star') === 'star') {
+    const min = effectiveProp.format?.min ?? 1;
+    const max = effectiveProp.format?.max ?? 5;
     const total = Math.max(1, Math.round(max - min + 1));
     const filled = Math.min(total, Math.max(0, Math.round(value - min + 1)));
     return (
       <span
         className="prop-scale-stars"
-        aria-label={formatValue(prop, value)}
-        title={formatValue(prop, value)}
-        style={prop.format?.color ? { color: TEXT_HEX[prop.format.color] } : undefined}
+        aria-label={formatValue(effectiveProp, value)}
+        title={formatValue(effectiveProp, value)}
+        style={effectiveProp.format?.color ? { color: TEXT_HEX[effectiveProp.format.color] } : undefined}
       >
         {'★'.repeat(filled)}
         <span>{'☆'.repeat(total - filled)}</span>
-        {prop.format?.showValue && <small>{` ${formatValue(prop, value)}`}</small>}
+        {effectiveProp.format?.showValue && <small>{` ${formatValue(effectiveProp, value)}`}</small>}
       </span>
     );
   }
-  switch (prop.type) {
+  switch (effectiveProp.type) {
     case 'select': {
-      const option = prop.options.find((candidate) => candidate.id === value);
+      const option = effectiveProp.options.find((candidate) => candidate.id === value);
       return option ? <Chip option={option} /> : null;
     }
     case 'multiSelect':
@@ -872,18 +873,7 @@ export function NewProperty({
         value={name}
         onChange={(event) => setName(event.target.value)}
       />
-      <select
-        className="text-input small"
-        aria-label={t('database.type')}
-        value={type}
-        onChange={(event) => setType(event.target.value as PropType)}
-      >
-        {PROP_TYPES.map((item) => (
-          <option key={item} value={item}>
-            {propLabel(item)}
-          </option>
-        ))}
-      </select>
+      <PropertyTypeSelect value={type} onChange={setType} />
       <button type="submit" className="button small" disabled={!name.trim()}>
         {t('common.add')}
       </button>
@@ -903,18 +893,23 @@ function FormulaCell({ dbId, prop, row }: { dbId: PageId; prop: PropDef; row: Pa
       </span>
     );
   const value = valueOf(row, prop.id, database, state);
-  if (isMediaProperty(prop.type)) return <MediaPropertyDisplay prop={prop} value={value} />;
-  if ((prop.display === 'bar' || prop.type === 'progress') && typeof value === 'number')
+  const effectiveProp =
+    prop.type === 'formula' && prop.formulaResultType ? { ...prop, type: prop.formulaResultType } : prop;
+  if (isMediaProperty(effectiveProp.type)) return <MediaPropertyDisplay prop={effectiveProp} value={value} />;
+  if ((effectiveProp.display === 'bar' || effectiveProp.type === 'progress') && typeof value === 'number')
     return (
       <ProgressBar
         value={value}
-        min={prop.format?.min}
-        max={prop.format?.max ?? prop.max}
-        color={prop.format?.color}
-        label={prop.format?.showValue ? formatValue(prop, value) : undefined}
-        showPercent={prop.format?.showValue === undefined && prop.display === 'bar'}
+        min={effectiveProp.format?.min}
+        max={effectiveProp.format?.max ?? effectiveProp.max}
+        color={effectiveProp.format?.color}
+        label={effectiveProp.format?.showValue ? formatValue(effectiveProp, value) : undefined}
+        showPercent={effectiveProp.format?.showValue === undefined && effectiveProp.display === 'bar'}
       />
     );
+  if (effectiveProp.type === 'scale' && typeof value === 'number') {
+    return <PropertyDisplay prop={effectiveProp} value={value} />;
+  }
   return <span className="prop-text formula-value">{formulaValueText(prop, result.value, state)}</span>;
 }
 

@@ -15,6 +15,7 @@ import { run } from '../workspace';
 import { addColumnsFromPages } from './database/data';
 import { DraftInput, NewProperty, PropertyInput, RelationChips } from './database/PropertyValue';
 import { PropertySettings } from './database/PropertySettings';
+import { PropertyGlyph } from './database/PropertyTypeSelect';
 import { Popover } from './Popover';
 import { t } from '../i18n';
 
@@ -94,10 +95,14 @@ export function PageProperties({
                 title={t('properties.editProperty')}
                 onClick={(event) => setSettings({ prop, anchor: event.currentTarget })}
               >
-                {prop.name}
+                <PropertyGlyph prop={prop} size={14} />
+                <span>{prop.name}</span>
               </button>
             ) : (
-              <span className="row-prop-name">{prop.name}</span>
+              <span className="row-prop-name">
+                <PropertyGlyph prop={prop} size={14} />
+                <span>{prop.name}</span>
+              </span>
             )}
             <span className="row-prop-value">
               <PropertyInput dbId={database.id} prop={prop} row={page} editable={editable} />

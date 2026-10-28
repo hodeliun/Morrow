@@ -157,6 +157,17 @@ function databaseForIdentifier(
   const folded = name.trim().toLocaleLowerCase();
   if (folded === 'thisrow' || folded === 'currentvalue')
     return { databaseId: ownerDatabaseId, kind: 'row' };
+
+  const ownerProp = state.pages[ownerDatabaseId]?.database?.properties.find(
+    (property) => property.name.trim().toLocaleLowerCase() === folded,
+  );
+  if (ownerProp?.type === 'relation') {
+    const target = relationConfig(ownerProp).targetDatabaseId;
+    if (target && state.pages[target]?.database) {
+      return { databaseId: target, kind: ownerProp.relation?.multiple ? 'rows' : 'row' };
+    }
+  }
+
   const binding = bindingAt(bindings, span.start, span.end);
   if (binding?.kind === 'database')
     return state.pages[binding.databaseId]?.database
@@ -327,7 +338,7 @@ export function formulaSuggestions(
     } catch {
       return [];
     }
-    return candidates.slice(0, 8);
+    return candidates.slice(0, 20);
   }
 
   const allTables = Object.values(state.pages)

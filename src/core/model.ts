@@ -110,6 +110,10 @@ export interface PropDef {
   type: PropType;
   options: SelectOption[];
   description?: string;
+  // custom property icon; when omitted, the default icon for the type is displayed
+  icon?: string | null;
+  // for formula columns, the declared output type that guides formatting and parity with calculated columns
+  formulaResultType?: PropType;
   // how scalar values are displayed and constrained; storage values remain locale independent
   format?: PropertyFormat;
   // manual is the legacy default; defaults are materialized once when a row is created
