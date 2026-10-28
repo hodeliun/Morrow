@@ -1,0 +1,147 @@
+{
+  "mode": "focused-save-queue-diagnostic",
+  "sourceRevision": "9ccf63ff3697dc2187e9d47297bcee07d3fb7118",
+  "sourceHash": "1a202925352a48390f2562b7320812b76175bfebee5ddc6a3b7c1d1748a3b1b5",
+  "sourceStable": true,
+  "bundleFingerprint": "09e65c934335952051b27386c7f21ce02015ddf8a102ebae94239fad26280d68",
+  "bundleStable": true,
+  "integratedUi": {
+    "result": "passed",
+    "profile": "synthetic-only",
+    "hiddenWindowVerified": true,
+    "pageErrors": [],
+    "aboutVersions": [
+      {
+        "locale": "en",
+        "aboutHeading": "About",
+        "aboutText": "Morrow base 1.2.1 Fork changes 1.1.1 Upstream revision 5e6392b Package 1.2.1-fork.1.1.1 Free and open source under the Apache License 2.0.",
+        "rendererVersion": "1.2.1-fork.1.1.1",
+        "settingsTitle": "Settings"
+      },
+      {
+        "locale": "es",
+        "aboutHeading": "Acerca de",
+        "aboutText": "Base Morrow 1.2.1 Cambios del fork 1.1.1 Revisión oficial 5e6392b Paquete 1.2.1-fork.1.1.1 Libre y de código abierto bajo la Licencia Apache 2.0.",
+        "rendererVersion": "1.2.1-fork.1.1.1",
+        "settingsTitle": "Ajustes"
+      },
+      {
+        "locale": "pt",
+        "aboutHeading": "Sobre",
+        "aboutText": "Base Morrow 1.2.1 Modificações do fork 1.1.1 Revisão oficial 5e6392b Pacote 1.2.1-fork.1.1.1 Gratuito e de código aberto sob a Licença Apache 2.0.",
+        "rendererVersion": "1.2.1-fork.1.1.1",
+        "settingsTitle": "Configurações"
+      }
+    ],
+    "integratedPage": {
+      "columns": 7,
+      "image": {
+        "complete": true,
+        "naturalWidth": 400,
+        "naturalHeight": 200,
+        "alt": "Imagem integrada sintética"
+      },
+      "sectionUndo": "text edit was undone through the editor shortcut",
+      "collapsedHeading": true,
+      "linkedViews": [
+        {
+          "name": "Visão independente Alfa",
+          "search": "Alfa"
+        },
+        {
+          "name": "Visão independente Beta",
+          "search": "Beta"
+        }
+      ],
+      "independentlyFilteredRows": [
+        "Alfa\n\t\n100\n\t\nInfra",
+        "Beta\n\t\n200\n\t\nDados"
+      ],
+      "markdownPersisted": true
+    },
+    "reopenedIntegratedPage": {
+      "columns": 7,
+      "image": {
+        "complete": true,
+        "naturalWidth": 400,
+        "naturalHeight": 200,
+        "alt": "Imagem integrada sintética"
+      },
+      "collapsedHeading": true,
+      "linkedViews": [
+        {
+          "name": "Visão independente Alfa",
+          "search": "Alfa"
+        },
+        {
+          "name": "Visão independente Beta",
+          "search": "Beta"
+        }
+      ],
+      "independentlyFilteredRows": [
+        "Alfa\n\t\n100\n\t\nInfra",
+        "Beta\n\t\n200\n\t\nDados"
+      ],
+      "reopened": true
+    },
+    "pdf": {
+      "result": "passed",
+      "signature": "%PDF",
+      "bytes": 197074,
+      "pages": 3,
+      "embeddedImages": 1,
+      "extractedTextChecks": {
+        "Interface integrada": true,
+        "Seção recolhível": true,
+        "Coluna sintética 1": true,
+        "Coluna sintética 7": true,
+        "Legenda integrada sintética": true,
+        "Visão independente Alfa": true,
+        "Visão independente Beta": true
+      },
+      "textExtractor": "pdfplumber extract_text(layout=True) with whitespace normalization",
+      "pypdfTextLength": 1048,
+      "pythonStdoutEncoding": "cp1252",
+      "previewPages": [
+        "docs/evidence/stabilization-1.1.1/9ccf63f-final-saveprobe-20261028T152441072-7a488d65/screenshots/interaction-final-page1.png",
+        "docs/evidence/stabilization-1.1.1/9ccf63f-final-saveprobe-20261028T152441072-7a488d65/screenshots/interaction-expansion-final-page2.png",
+        "docs/evidence/stabilization-1.1.1/9ccf63f-final-saveprobe-20261028T152441072-7a488d65/screenshots/interaction-expansion-final-page3.png"
+      ]
+    },
+    "scale": {
+      "renderedRows": 1000,
+      "selectableAmountCells": 1000,
+      "operation": {
+        "kind": "clipboard TSV paste",
+        "cells": 1000,
+        "observedMs": 458
+      },
+      "allCellsPersisted": true,
+      "firstPastePersistence": {
+        "waitTimeoutMs": 300000,
+        "observationIntervalMs": 20000,
+        "observedMs": 20081
+      },
+      "focusedScope": "single 1,000-cell paste plus disk re-open; undo, redo, and 1,001-cell rejection omitted",
+      "valuesAfterReopenExpected": {
+        "first": 1,
+        "middle": 500,
+        "last": 1000
+      }
+    },
+    "timings": {
+      "firstLaunchReadyMs": 862,
+      "reopenPageAndExportMs": 3832,
+      "render1000RowsMs": 932,
+      "filterToOneRowMs": 689,
+      "select1000CellsMs": 736,
+      "persistFirst1000CellsMs": 20081,
+      "reopen1000RowsAndValuesMs": 1539
+    },
+    "launchCount": 3,
+    "appCloseVerified": true,
+    "tempRootRemovedVerified": true,
+    "integratedFixtureCleanupVerified": true,
+    "rendererConsoleErrors": []
+  }
+}

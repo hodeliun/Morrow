@@ -1,0 +1,11 @@
+{
+  "testedRevision": "9ccf63ff3697dc2187e9d47297bcee07d3fb7118",
+  "testedSourceHash": "061de264d7bfc3b48a1904d9fcec216abcda35059645def73cb3d090b8d4f568",
+  "observedTreeReconstructedHash": "061de264d7bfc3b48a1904d9fcec216abcda35059645def73cb3d090b8d4f568",
+  "finalSourceHash": "98cd623d79beb0f6384b640a04602bd97cd2b906bd5772488fb4926cf19c9eba",
+  "sourceFileCount": 283,
+  "onlyDifference": "One explanatory comment in scripts/verify-interaction-final-ui.cjs; no logic change",
+  "uiResult": "passed",
+  "bundleSha256": "09e65c934335952051b27386c7f21ce02015ddf8a102ebae94239fad26280d68",
+  "commentOnlyEquivalenceProven": true
+}

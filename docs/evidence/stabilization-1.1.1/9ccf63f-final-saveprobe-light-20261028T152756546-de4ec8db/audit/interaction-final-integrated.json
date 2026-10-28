@@ -1,0 +1,91 @@
+{
+  "mode": "focused-save-queue-diagnostic",
+  "sourceRevision": "9ccf63ff3697dc2187e9d47297bcee07d3fb7118",
+  "sourceHash": "1a202925352a48390f2562b7320812b76175bfebee5ddc6a3b7c1d1748a3b1b5",
+  "sourceStable": true,
+  "bundleFingerprint": "09e65c934335952051b27386c7f21ce02015ddf8a102ebae94239fad26280d68",
+  "bundleStable": true,
+  "integratedUi": {
+    "result": "passed",
+    "profile": "synthetic-only",
+    "scope": "actual UI clipboard paste of 1,000 cells, queue status, light disk sentinels, one full disk assertion, and app reopen; no About or PDF flow",
+    "renderedRows": 1000,
+    "selectedCells": 1000,
+    "paste": {
+      "cells": 1000,
+      "pasteUiMs": 238
+    },
+    "persistence": {
+      "queueWaitMs": 18128,
+      "pasteToDiskVerifiedMs": 18394,
+      "pasteUiMs": 238,
+      "polling": {
+        "sentinelReads": 3,
+        "intervalMs": 3000,
+        "fullArrayAssertions": 1,
+        "maxObservationMs": 300000
+      },
+      "saveIndicator": {
+        "className": "save-status",
+        "text": "Salvo",
+        "title": "Salvo às 15:28:16"
+      },
+      "sentinels": [
+        1,
+        500,
+        1000
+      ],
+      "fullDiskAssertion": {
+        "rowsChecked": 1000,
+        "elapsedMs": 76,
+        "mismatch": null
+      },
+      "checkpoints": [
+        {
+          "elapsedMs": 11,
+          "saveIndicator": {
+            "className": "save-status is-saving",
+            "text": "Salvando…",
+            "title": null
+          },
+          "sentinels": [
+            0,
+            0,
+            0
+          ],
+          "fileEvents": 0,
+          "uniqueFiles": 0
+        }
+      ],
+      "fileWrites": {
+        "targetMarkdownEvents": 2000,
+        "uniqueTargetMarkdownFiles": 1000,
+        "firstTargetWriteMsAfterPaste": 476,
+        "lastTargetWriteMsAfterPaste": 16706,
+        "firstToLastTargetWriteMs": 16230,
+        "watcherError": null,
+        "note": "fs.watch event counts are observational; the full Markdown assertion and app reopen are authoritative."
+      }
+    },
+    "reopen": {
+      "rows": 1000,
+      "allValuesMatch": true
+    },
+    "pageErrors": [],
+    "launchCount": 2,
+    "appCloseVerified": true,
+    "tempRootRemovedVerified": true,
+    "integratedFixtureCleanupVerified": true,
+    "fileWrites": {
+      "targetMarkdownEvents": 2000,
+      "uniqueTargetMarkdownFiles": 1000,
+      "firstTargetWriteMsAfterPaste": 476,
+      "lastTargetWriteMsAfterPaste": 16706,
+      "firstToLastTargetWriteMs": 16230,
+      "watcherError": null,
+      "note": "fs.watch event counts are observational; the full Markdown assertion and app reopen are authoritative."
+    },
+    "rendererConsoleErrors": [],
+    "totalElapsedMs": 22798
+  }
+}

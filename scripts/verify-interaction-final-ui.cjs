@@ -655,14 +655,83 @@ function checkSavedValues(rows, expected) {
   return bad;
 }
 
-async function waitForSavedValues(rows, expected, description, timeoutMs = 120000) {
+function readSavedValue(row) {
+  const text = fs.readFileSync(row.file, 'utf8');
+  const line = text.split(/\r?\n/).find((candidate) => /^Quantidade:\s*/.test(candidate));
+  const raw = line?.replace(/^Quantidade:\s*/, '').trim().replace(/^['"]|['"]$/g, '');
+  return raw === undefined ? null : Number(raw);
+}
+
+async function waitForSavedValues(page, rows, expected, description, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
+  const sentinelIndexes = rows.length > 0
+    ? [...new Set([0, Math.floor((rows.length - 1) / 2), rows.length - 1])]
+    : [];
+  let lastSaveStatus = null;
+  let lastMismatch = null;
+  let mismatchIndex = null;
+  let stableSavedSamples = 0;
+  let sentinelsStableSince = null;
+
   while (Date.now() < deadline) {
-    const bad = checkSavedValues(rows, expected);
-    if (!bad) return;
+    lastSaveStatus = await page.evaluate(() => {
+      const indicator = document.querySelector('.save-status');
+      return indicator
+        ? {
+            className: indicator.className,
+            text: indicator.textContent?.trim() ?? '',
+            title: indicator.getAttribute('title'),
+          }
+        : null;
+    }).catch(() => null);
+
+    if (mismatchIndex !== null) {
+      if (readSavedValue(rows[mismatchIndex]) !== expected[mismatchIndex]) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      mismatchIndex = null;
+      stableSavedSamples = 0;
+      sentinelsStableSince = null;
+    }
+
+    // avoid rescanning the saved prefix while writes are still queued
+    const sentinelsMatch = sentinelIndexes.every((index) => readSavedValue(rows[index]) === expected[index]);
+    const statusClass = lastSaveStatus?.className?.trim() ?? null;
+    const saveStatusSettled = statusClass === null || statusClass === 'save-status' || statusClass.includes('is-error');
+    if (sentinelsMatch) {
+      stableSavedSamples++;
+      sentinelsStableSince ??= Date.now();
+      const sentinelsStableLongEnough = Date.now() - sentinelsStableSince >= 5000;
+      if (stableSavedSamples >= 2 && (saveStatusSettled || sentinelsStableLongEnough)) {
+        const mismatch = checkSavedValues(rows, expected);
+        if (!mismatch) return;
+        lastMismatch = mismatch;
+        mismatchIndex = mismatch.row - 1;
+        stableSavedSamples = 0;
+        sentinelsStableSince = null;
+        continue;
+      }
+    } else {
+      stableSavedSamples = 0;
+      sentinelsStableSince = null;
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  assert.fail(`Timed out waiting for ${description}; first mismatch: ${JSON.stringify(checkSavedValues(rows, expected))}`);
+
+  const finalMismatch = checkSavedValues(rows, expected);
+  if (!finalMismatch) return;
+  const saveStatus = lastSaveStatus
+    ? {
+        ...lastSaveStatus,
+        title: lastSaveStatus.title ? sanitizeDiagnostic(lastSaveStatus.title).slice(0, 500) : null,
+      }
+    : null;
+  assert.fail(
+    `Timed out waiting for ${description} after ${timeoutMs}ms; save status: ${JSON.stringify(saveStatus)}; ` +
+      `last mismatch: ${JSON.stringify(lastMismatch)}; final mismatch: ${JSON.stringify(finalMismatch)}.`,
+  );
 }
 
 async function measureScale(page, app, fixture, timings) {
@@ -726,7 +795,7 @@ async function measureScale(page, app, fixture, timings) {
   const firstBatchMs = Math.round(performance.now() - started);
   assertUiAmounts(await readVisibleAmounts(page), values, 'first 1,000-cell paste');
   started = performance.now();
-  await waitForSavedValues(fixture.rows, values, 'the first 1,000-cell save');
+  await waitForSavedValues(page, fixture.rows, values, 'the first 1,000-cell save');
   timings.persistFirst1000CellsMs = Math.round(performance.now() - started);
 
   await amountCells.first().click();
@@ -739,7 +808,7 @@ async function measureScale(page, app, fixture, timings) {
   timings.undo1000CellsMs = Math.round(performance.now() - started);
   assertUiAmounts(await readVisibleAmounts(page), Array(rowCount).fill(0), 'undo of the saved 1,000-cell paste');
   started = performance.now();
-  await waitForSavedValues(fixture.rows, Array(rowCount).fill(0), 'persistence of the undo restoring initial values');
+  await waitForSavedValues(page, fixture.rows, Array(rowCount).fill(0), 'persistence of the undo restoring initial values');
   timings.persistUndo1000CellsMs = Math.round(performance.now() - started);
 
   started = performance.now();
@@ -756,7 +825,7 @@ async function measureScale(page, app, fixture, timings) {
   timings.redo1000CellsMs = Math.round(performance.now() - started);
   assertUiAmounts(await readVisibleAmounts(page), values, 'redo of the undone 1,000-cell paste');
   started = performance.now();
-  await waitForSavedValues(fixture.rows, values, 'persistence of the redone 1,000-cell paste');
+  await waitForSavedValues(page, fixture.rows, values, 'persistence of the redone 1,000-cell paste');
   timings.persistFinal1000CellsMs = Math.round(performance.now() - started);
 
   const beforeLimitAttempt = await readVisibleAmounts(page);
