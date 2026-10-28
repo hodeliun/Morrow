@@ -2013,3 +2013,80 @@ input[type='checkbox']:checked::after {
   font-size: var(--text-sm);
   color: var(--text-faint);
 }
+
+.menu-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.menu-swatch[data-transparent] {
+  background: linear-gradient(135deg, transparent 40%, var(--danger) 45%, var(--danger) 55%, transparent 60%);
+}
+.menu-custom-entry {
+  padding: 4px 6px;
+}
+.menu-custom-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px;
+}
+.menu-custom-color-row input[type="color"] {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.menu-custom-color-row .color-hex-input {
+  width: 76px;
+  height: 24px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg, var(--bg));
+  color: var(--text);
+}
+.menu-custom-color-row button {
+  height: 24px;
+  padding: 0 6px;
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--hover);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu-custom-color-row button:hover {
+  background: var(--active, var(--border));
+}
+
+.page-outline-toggle {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  z-index: 5;
+  transition: color 120ms var(--ease), background 120ms var(--ease);
+}
+.page-outline-toggle:hover,
+.page-outline-toggle.is-active {
+  color: var(--text);
+  background: var(--hover);
+}

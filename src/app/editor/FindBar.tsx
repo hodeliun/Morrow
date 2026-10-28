@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from '../ui';
 import { t } from '../i18n';
 import { getFindState, replaceAll, replaceCurrent, setFindQuery, stepFind } from './Blocks';
+import { revealAncestorsForPosition } from './CollapsibleHeading';
 
 export function FindBar({ editor, onClose }: { editor: Editor; onClose: () => void }) {
   const [query, setQuery] = useState('');
@@ -31,8 +32,25 @@ export function FindBar({ editor, onClose }: { editor: Editor; onClose: () => vo
   const update = (value: string) => {
     setQuery(value);
     setFindQuery(editor.state, editor.view.dispatch, value);
+    if (value.trim()) {
+      const state = getFindState(editor.state);
+      const match = state.matches[state.current];
+      if (match) {
+        revealAncestorsForPosition(editor.view, match.from);
+      }
+    }
   };
-  const step = (direction: 1 | -1) => stepFind(editor.state, editor.view.dispatch, direction);
+  const step = (direction: 1 | -1) => {
+    const state = getFindState(editor.state);
+    if (state.matches.length > 0) {
+      const targetIndex = (state.current + direction + state.matches.length) % state.matches.length;
+      const targetMatch = state.matches[targetIndex];
+      if (targetMatch) {
+        revealAncestorsForPosition(editor.view, targetMatch.from);
+      }
+    }
+    stepFind(editor.state, editor.view.dispatch, direction);
+  };
   const close = () => {
     onClose();
     editor.commands.focus();

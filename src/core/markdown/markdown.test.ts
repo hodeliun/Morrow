@@ -559,4 +559,75 @@ describe('things that used to change on a reload', () => {
     );
     expect(settles('- parent\n  - <br>\n  - b\n')).toBe('- parent\n  - <br>\n  - b\n');
   });
+  it('round trips up to seven columns with explicit widths', () => {
+    const cols = Array.from({ length: 7 }, (_, i) => ({
+      type: 'column',
+      content: [p(text(`Col ${i + 1}`))],
+    }));
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          attrs: { widths: [10, 15, 15, 10, 20, 15, 15] },
+          content: cols,
+        },
+      ],
+    };
+    const markdown = docToMarkdown(doc);
+    expect(markdown).toContain('<div data-columns data-widths="10,15,15,10,20,15,15">');
+    const reopened = markdownToDoc(markdown);
+    expect(reopened.content?.[0]?.type).toBe('columns');
+    expect(reopened.content?.[0]?.attrs?.widths).toEqual([10, 15, 15, 10, 20, 15, 15]);
+    expect(reopened.content?.[0]?.content?.length).toBe(7);
+  });
+
+  it('round trips image metadata including caption, alignment and crop', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'image',
+          attrs: {
+            src: 'https://example.com/photo.jpg',
+            alt: 'Landscape',
+            align: 'center',
+            caption: 'A scenic vista',
+            crop: { x: 0.1, y: 0.2, width: 0.6, height: 0.7 },
+          },
+        },
+      ],
+    };
+    const markdown = docToMarkdown(doc);
+    expect(markdown).toContain('<!-- morrow:image align="center" caption="A scenic vista" crop="0.1,0.2,0.6,0.7" -->');
+    expect(markdown).toContain('![Landscape](https://example.com/photo.jpg)');
+    const reopened = markdownToDoc(markdown);
+    const img = reopened.content?.[0];
+    expect(img?.type).toBe('image');
+    expect(img?.attrs?.align).toBe('center');
+    expect(img?.attrs?.caption).toBe('A scenic vista');
+    expect(img?.attrs?.crop).toEqual({ x: 0.1, y: 0.2, width: 0.6, height: 0.7 });
+  });
+
+  it('round trips collapsible and collapsed heading states', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2, collapsible: true, collapsed: true },
+          content: [text('Collapsible Section')],
+        },
+        p(text('Section content')),
+      ],
+    };
+    const markdown = docToMarkdown(doc);
+    expect(markdown).toContain('<!-- morrow:heading collapsible collapsed -->');
+    expect(markdown).toContain('## Collapsible Section');
+    const reopened = markdownToDoc(markdown);
+    expect(reopened.content?.[0]?.type).toBe('heading');
+    expect(reopened.content?.[0]?.attrs?.collapsible).toBe(true);
+    expect(reopened.content?.[0]?.attrs?.collapsed).toBe(true);
+    expect(reopened.content?.[1]?.type).toBe('paragraph');
+  });
 });

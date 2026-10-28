@@ -2,10 +2,12 @@ import {
   BACKGROUND_HEX,
   TEXT_HEX,
   formatColumnWidths,
+  formatImageCrop,
   validBlockBackground,
   validColor,
+  validImageAlign,
 } from '../model';
-import type { ColorName, DocMark, DocNode, PageId } from '../model';
+import type { ColorName, DocMark, DocNode, ImageCrop, PageId } from '../model';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
@@ -86,7 +88,12 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'heading': {
       const level = clampLevel(node.attrs?.level);
-      return `${'#'.repeat(level)} ${inline(node.content ?? [], options)}`;
+      const text = `${'#'.repeat(level)} ${inline(node.content ?? [], options)}`;
+      if (node.attrs?.collapsible) {
+        const flags = ['collapsible', node.attrs?.collapsed ? 'collapsed' : ''].filter(Boolean).join(' ');
+        return `<!-- morrow:heading ${flags} -->\n${text}`;
+      }
+      return text;
     }
     case 'blockquote':
       return prefixLines(blocks(node.content ?? [], options), '> ', '>');
@@ -117,7 +124,21 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
       const target =
         typeof node.attrs?.fileId === 'string' ? options.filePath?.(node.attrs.fileId) : undefined;
       const src = target ?? (typeof node.attrs?.src === 'string' ? node.attrs.src : null);
-      return src ? `![${alt}](${formatHref(src)})` : `*[image${alt ? `: ${alt}` : ''}]*`;
+      const markdown = src ? `![${alt}](${formatHref(src)})` : `*[image${alt ? `: ${alt}` : ''}]*`;
+      const align = validImageAlign(node.attrs?.align);
+      const caption =
+        typeof node.attrs?.caption === 'string' && node.attrs.caption.trim()
+          ? node.attrs.caption.trim()
+          : null;
+      const crop = formatImageCrop(node.attrs?.crop as ImageCrop | null);
+      if (align || caption || crop) {
+        const parts = ['morrow:image'];
+        if (align) parts.push(`align="${align}"`);
+        if (caption) parts.push(`caption="${caption.replace(/"/g, '&quot;')}"`);
+        if (crop) parts.push(`crop="${crop}"`);
+        return `<!-- ${parts.join(' ')} -->\n${markdown}`;
+      }
+      return markdown;
     }
     case 'fileAttachment': {
       const name = escapeText(String(node.attrs?.name ?? 'file'));

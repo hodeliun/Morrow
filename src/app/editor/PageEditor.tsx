@@ -24,6 +24,7 @@ import { BlockMenu, FormattingMenu, LinkMenu, openHref, TableMenu } from './Edit
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
 import { anchorSlice, isBlockAnchor } from '../../core/anchors';
+import { revealAncestorsForPosition } from './CollapsibleHeading';
 
 interface Props {
   pageId: PageId;
@@ -358,6 +359,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
     });
     const match = found as { from: number; to: number } | null;
     if (match) {
+      revealAncestorsForPosition(editor.view, match.from);
       editor.chain().focus().setTextSelection(match).scrollIntoView().run();
     }
     navigate({ name: 'page', id: pageId, find: null }, { replace: true, pane });
@@ -375,6 +377,9 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       if (hit) target = pos;
       return !hit;
     });
+    if (target !== null) {
+      revealAncestorsForPosition(editor.view, target);
+    }
     const dom = target === null ? null : editor.view.nodeDOM(target);
     if (dom instanceof HTMLElement) {
       dom.scrollIntoView({ block: 'center' });

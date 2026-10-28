@@ -1,6 +1,8 @@
 import { mergeAttributes, Node } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
-import { PluginKey, TextSelection } from '@tiptap/pm/state';
+import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import type { Transaction } from '@tiptap/pm/state';
+import type { Node as ProsemirrorNode, Slice } from '@tiptap/pm/model';
 import Suggestion from '@tiptap/suggestion';
 import { CalendarDays, FileText } from 'lucide-react';
 import {
@@ -13,27 +15,47 @@ import { dateKey, parseDateKey } from '../../core/daily';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
 import { dateLocale, t } from '../i18n';
+import { MAX_PAGE_COLUMNS } from '../../core/model';
+import { toast } from '../ui';
+import { revealAncestorsForPosition } from './CollapsibleHeading';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     columns: {
       setColumns: (count: number) => ReturnType;
+      addColumn: (side?: 'left' | 'right') => ReturnType;
+      splitIntoColumns: (count?: number) => ReturnType;
+      resetColumnWidths: () => ReturnType;
     };
   }
 }
 
-const MIN_COLUMN_WIDTH = 160;
 const COLUMN_GAP = 28;
 
+function minColumnWidthFor(count: number): number {
+  if (count >= 6) return 50;
+  if (count >= 4) return 80;
+  return 120;
+}
+
 function columnTrackTemplate(widths: number[]): string {
-  return widths.map((width) => `minmax(${MIN_COLUMN_WIDTH}px, ${width}fr)`).join(' ');
+  const minWidth = minColumnWidthFor(widths.length);
+  return widths.map((width) => `minmax(${minWidth}px, ${width}fr)`).join(' ');
 }
 
 // side by side blocks, each column holds any blocks
+interface DraggingView {
+  dragging?: { slice?: Slice; move?: boolean } | null;
+}
+
+function clearDragging(view: unknown): void {
+  (view as DraggingView).dragging = null;
+}
+
 export const Columns = Node.create({
   name: 'columns',
   group: 'block',
-  content: 'column{2,4}',
+  content: 'column{2,7}',
   defining: true,
   isolating: true,
 
@@ -145,7 +167,7 @@ export const Columns = Node.create({
         const minimumShare = (widths: number[], availableWidth: number) =>
           Math.min(
             (widths[index]! + widths[index + 1]!) / 2,
-            (MIN_COLUMN_WIDTH / Math.max(1, availableWidth)) * 100,
+            (minColumnWidthFor(currentNode.childCount) / Math.max(1, availableWidth)) * 100,
           );
         let isDragging = false;
         const removeWindowListeners = () => {
@@ -281,7 +303,7 @@ export const Columns = Node.create({
             1,
             contentWidth - COLUMN_GAP * (count - 1),
           );
-          const minShare = Math.min(pairShare / 2, (MIN_COLUMN_WIDTH / availableWidth) * 100);
+          const minShare = Math.min(pairShare / 2, (minColumnWidthFor(count) / availableWidth) * 100);
           const boundary = (leftShare / 100) * availableWidth + COLUMN_GAP * (index + 1);
           handle.style.left = `${(boundary / contentWidth) * 100}%`;
           handle.hidden = !editable;
@@ -333,34 +355,381 @@ export const Columns = Node.create({
       setColumns:
         (count) =>
         ({ chain, state }) => {
+          const target = Math.min(MAX_PAGE_COLUMNS, Math.max(2, count));
           const start = state.selection.from;
           return (
             chain()
               .insertContent({
                 type: 'columns',
-                content: Array.from({ length: Math.min(4, Math.max(2, count)) }, () => ({
+                content: Array.from({ length: target }, () => ({
                   type: 'column',
                   content: [{ type: 'paragraph' }],
                 })),
               })
               // typing carries on in the first column
               .command(({ tr }) => {
-                let target: number | null = null;
+                let targetPos: number | null = null;
                 tr.doc.nodesBetween(Math.max(0, start - 2), tr.doc.content.size, (node, pos) => {
-                  if (target !== null) return false;
+                  if (targetPos !== null) return false;
                   if (node.type.name === 'column') {
-                    target = pos + 2;
+                    targetPos = pos + 2;
                     return false;
                   }
                   return true;
                 });
-                if (target !== null) tr.setSelection(TextSelection.near(tr.doc.resolve(target)));
+                if (targetPos !== null) tr.setSelection(TextSelection.near(tr.doc.resolve(targetPos)));
                 return true;
               })
               .run()
           );
         },
+
+      addColumn:
+        (side = 'right') =>
+        ({ state, dispatch }) => {
+          const { $from } = state.selection;
+          let columnsPos = -1;
+          let columnsNode: ProsemirrorNode | null = null;
+          for (let d = $from.depth; d > 0; d--) {
+            if ($from.node(d).type.name === 'columns') {
+              columnsPos = $from.before(d);
+              columnsNode = $from.node(d);
+              break;
+            }
+          }
+          if (!columnsNode && state.selection instanceof NodeSelection && state.selection.node.type.name === 'columns') {
+            columnsPos = state.selection.from;
+            columnsNode = state.selection.node;
+          }
+          if (!columnsNode || columnsPos === -1) return false;
+          if (columnsNode.childCount >= MAX_PAGE_COLUMNS) {
+            toast(t('editor.maxColumnsReached', { max: MAX_PAGE_COLUMNS }), { tone: 'error' });
+            return false;
+          }
+          if (dispatch) {
+            const newCol = state.schema.nodes.column!.create(null, [state.schema.nodes.paragraph!.create()]);
+            const insertIndex = side === 'left' ? 0 : columnsNode.childCount;
+            let offset = 0;
+            for (let i = 0; i < insertIndex; i++) {
+              offset += columnsNode.child(i).nodeSize;
+            }
+            const tr = state.tr.insert(columnsPos + 1 + offset, newCol);
+            tr.setNodeMarkup(columnsPos, undefined, {
+              ...columnsNode.attrs,
+              widths: null,
+            });
+            dispatch(tr);
+          }
+          return true;
+        },
+
+      splitIntoColumns:
+        (count = 2) =>
+        ({ state, dispatch }) => {
+          const target = Math.min(MAX_PAGE_COLUMNS, Math.max(2, count));
+          const { $from } = state.selection;
+          const block =
+            state.selection instanceof NodeSelection
+              ? state.selection.node
+              : $from.depth >= 1
+                ? $from.node(1)
+                : $from.nodeAfter;
+          const blockPos =
+            state.selection instanceof NodeSelection
+              ? state.selection.from
+              : $from.depth >= 1
+                ? $from.before(1)
+                : $from.pos;
+          if (!block || block.type.name === 'columns') return false;
+          if (dispatch) {
+            const col1 = state.schema.nodes.column!.create(null, [block]);
+            const otherCols = Array.from({ length: target - 1 }, () =>
+              state.schema.nodes.column!.create(null, [state.schema.nodes.paragraph!.create()]),
+            );
+            const columnsNode = state.schema.nodes.columns!.create(null, [col1, ...otherCols]);
+            const tr = state.tr.replaceWith(blockPos, blockPos + block.nodeSize, columnsNode);
+            dispatch(tr);
+          }
+          return true;
+        },
+
+      resetColumnWidths:
+        () =>
+        ({ state, dispatch }) => {
+          const { $from } = state.selection;
+          for (let d = $from.depth; d > 0; d--) {
+            if ($from.node(d).type.name === 'columns') {
+              const pos = $from.before(d);
+              const node = $from.node(d);
+              if (dispatch) {
+                dispatch(state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, widths: null }));
+              }
+              return true;
+            }
+          }
+          if (state.selection instanceof NodeSelection && state.selection.node.type.name === 'columns') {
+            if (dispatch) {
+              dispatch(state.tr.setNodeMarkup(state.selection.from, undefined, { ...state.selection.node.attrs, widths: null }));
+            }
+            return true;
+          }
+          return false;
+        },
     };
+  },
+
+  addProseMirrorPlugins() {
+    let indicator: HTMLDivElement | null = null;
+    const getIndicator = () => {
+      if (!indicator && typeof document !== 'undefined') {
+        indicator = document.createElement('div');
+        indicator.className = 'column-drop-indicator';
+        indicator.style.display = 'none';
+        document.body.appendChild(indicator);
+      }
+      return indicator;
+    };
+    const hideIndicator = () => {
+      if (indicator) indicator.style.display = 'none';
+    };
+
+    let activeDrop: { pos: number; side: 'left' | 'right'; inColumns: boolean; columnsPos: number; childCount: number } | null = null;
+
+    return [
+      new Plugin({
+        key: new PluginKey('columnsDropAndCleanup'),
+        appendTransaction(transactions, _oldState, newState) {
+          if (!transactions.some((tr) => tr.docChanged)) return null;
+          let tr: Transaction | null = null;
+          const targets: Array<{ pos: number; node: ProsemirrorNode }> = [];
+          newState.doc.descendants((node, pos) => {
+            if (node.type.name === 'columns') {
+              targets.push({ pos, node });
+            }
+          });
+
+          for (let i = targets.length - 1; i >= 0; i--) {
+            const { pos, node } = targets[i]!;
+            const validCols: ProsemirrorNode[] = [];
+            node.forEach((col: ProsemirrorNode) => {
+              if (col.childCount > 0) validCols.push(col);
+            });
+
+            if (validCols.length === 0) {
+              if (!tr) tr = newState.tr;
+              tr.delete(pos, pos + node.nodeSize);
+            } else if (validCols.length === 1) {
+              if (!tr) tr = newState.tr;
+              const colContent: ProsemirrorNode[] = [];
+              validCols[0]!.forEach((child: ProsemirrorNode) => colContent.push(child));
+              tr.replaceWith(pos, pos + node.nodeSize, colContent);
+            } else if (validCols.length < node.childCount) {
+              if (!tr) tr = newState.tr;
+              const normalized = normalizeColumnWidths(node.attrs.widths, validCols.length);
+              const newColumns = newState.schema.nodes.columns!.create(
+                { ...node.attrs, widths: formatColumnWidths(normalized, validCols.length) ? normalized : null },
+                validCols,
+              );
+              tr.replaceWith(pos, pos + node.nodeSize, newColumns);
+            }
+          }
+          return tr;
+        },
+
+        props: {
+          handleDOMEvents: {
+            dragover(view, event) {
+              const el = (event.target as HTMLElement | null)?.closest?.('.column, .columns, .editor-surface .prose > *') as HTMLElement | null;
+              if (!el) {
+                hideIndicator();
+                activeDrop = null;
+                return false;
+              }
+              const rect = el.getBoundingClientRect();
+              const relX = (event.clientX - rect.left) / Math.max(1, rect.width);
+              if (relX < 0.2 || relX > 0.8) {
+                const side = relX < 0.2 ? 'left' : 'right';
+                const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? 0;
+                const $pos = view.state.doc.resolve(pos);
+                let inColumns = false;
+                let columnsPos = -1;
+                let childCount = 0;
+                for (let d = $pos.depth; d > 0; d--) {
+                  if ($pos.node(d).type.name === 'columns') {
+                    inColumns = true;
+                    columnsPos = $pos.before(d);
+                    childCount = $pos.node(d).childCount;
+                    break;
+                  }
+                }
+
+                if (inColumns && childCount >= MAX_PAGE_COLUMNS) {
+                  if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+                  hideIndicator();
+                  activeDrop = { pos, side, inColumns, columnsPos, childCount };
+                  return false;
+                }
+
+                const ind = getIndicator();
+                if (ind) {
+                  ind.style.display = 'block';
+                  ind.style.top = `${rect.top}px`;
+                  ind.style.height = `${rect.height}px`;
+                  ind.style.left = `${side === 'left' ? rect.left : rect.right - 4}px`;
+                }
+                activeDrop = { pos, side, inColumns, columnsPos, childCount };
+                event.preventDefault();
+                return true;
+              }
+              hideIndicator();
+              activeDrop = null;
+              return false;
+            },
+            dragleave() {
+              hideIndicator();
+              activeDrop = null;
+              return false;
+            },
+            drop(view, event) {
+              hideIndicator();
+              if (!activeDrop) return false;
+              const dropInfo = activeDrop;
+              activeDrop = null;
+
+              if (dropInfo.inColumns && dropInfo.childCount >= MAX_PAGE_COLUMNS) {
+                toast(t('editor.maxColumnsReached', { max: MAX_PAGE_COLUMNS }), { tone: 'error' });
+                event.preventDefault();
+                clearDragging(view);
+                return true;
+              }
+
+              const draggedNodes: ProsemirrorNode[] = [];
+              const dragging = (view as unknown as DraggingView).dragging;
+              if (dragging?.slice?.content?.childCount) {
+                dragging.slice.content.forEach((n: ProsemirrorNode) => {
+                  if (n.type.name === 'column') {
+                    n.forEach((c) => draggedNodes.push(c));
+                  } else {
+                    draggedNodes.push(n);
+                  }
+                });
+              }
+              const sel = view.state.selection;
+              if (draggedNodes.length === 0 && sel instanceof NodeSelection) {
+                if (sel.node.type.name === 'column') {
+                  sel.node.forEach((c) => draggedNodes.push(c));
+                } else {
+                  draggedNodes.push(sel.node);
+                }
+              }
+              if (draggedNodes.length === 0 && !sel.empty) {
+                const slice = sel.content();
+                slice.content.forEach((n) => {
+                  if (n.type.name === 'column') {
+                    n.forEach((c) => draggedNodes.push(c));
+                  } else {
+                    draggedNodes.push(n);
+                  }
+                });
+              }
+              if (draggedNodes.length === 0) {
+                draggedNodes.push(view.state.schema.nodes.paragraph!.create());
+              }
+
+              const hasSource = !sel.empty;
+              const sourceFrom = sel.from;
+              const sourceTo = sel.to;
+
+              if (hasSource && dropInfo.pos >= sourceFrom && dropInfo.pos <= sourceTo) {
+                event.preventDefault();
+                clearDragging(view);
+                return true;
+              }
+
+              const tr = view.state.tr;
+              const newCol = view.state.schema.nodes.column!.create(null, draggedNodes);
+
+              if (dropInfo.inColumns) {
+                if (hasSource) {
+                  tr.delete(sourceFrom, sourceTo);
+                }
+                const mappedColumnsPos = tr.mapping.map(dropInfo.columnsPos);
+                const currentColumns = tr.doc.nodeAt(mappedColumnsPos);
+                if (!currentColumns || currentColumns.type.name !== 'columns') {
+                  event.preventDefault();
+                  clearDragging(view);
+                  return true;
+                }
+                if (currentColumns.childCount >= MAX_PAGE_COLUMNS) {
+                  toast(t('editor.maxColumnsReached', { max: MAX_PAGE_COLUMNS }), { tone: 'error' });
+                  event.preventDefault();
+                  clearDragging(view);
+                  return true;
+                }
+
+                const mappedPos = tr.mapping.map(dropInfo.pos);
+                const $mappedPos = tr.doc.resolve(Math.min(mappedPos, tr.doc.content.size));
+                let insertOffset = 0;
+                let foundCol = false;
+                for (let d = $mappedPos.depth; d > 0; d--) {
+                  if ($mappedPos.node(d).type.name === 'column' && $mappedPos.node(d - 1).type.name === 'columns') {
+                    const colIndex = $mappedPos.index(d - 1);
+                    const insertColIdx = dropInfo.side === 'left' ? colIndex : colIndex + 1;
+                    for (let i = 0; i < insertColIdx && i < currentColumns.childCount; i++) {
+                      insertOffset += currentColumns.child(i).nodeSize;
+                    }
+                    foundCol = true;
+                    break;
+                  }
+                }
+                if (!foundCol) {
+                  insertOffset = dropInfo.side === 'left' ? 0 : currentColumns.content.size;
+                }
+
+                const insertPos = mappedColumnsPos + 1 + insertOffset;
+                tr.insert(insertPos, newCol);
+                const finalColumnsPos = tr.mapping.map(mappedColumnsPos);
+                const finalColNode = tr.doc.nodeAt(finalColumnsPos);
+                if (finalColNode && finalColNode.type.name === 'columns') {
+                  tr.setNodeMarkup(finalColumnsPos, undefined, { ...finalColNode.attrs, widths: null });
+                }
+              } else {
+                const $pos = view.state.doc.resolve(dropInfo.pos);
+                if ($pos.depth < 1) {
+                  event.preventDefault();
+                  clearDragging(view);
+                  return true;
+                }
+                const targetBlockPos = $pos.before(1);
+
+                if (hasSource) {
+                  tr.delete(sourceFrom, sourceTo);
+                }
+                const mappedTargetBlockPos = tr.mapping.map(targetBlockPos);
+                const mappedTargetBlock = tr.doc.nodeAt(mappedTargetBlockPos);
+                if (!mappedTargetBlock) {
+                  event.preventDefault();
+                  clearDragging(view);
+                  return true;
+                }
+
+                const colTarget = view.state.schema.nodes.column!.create(null, [mappedTargetBlock]);
+                const columnsNode = view.state.schema.nodes.columns!.create(
+                  null,
+                  dropInfo.side === 'left' ? [newCol, colTarget] : [colTarget, newCol],
+                );
+                tr.replaceWith(mappedTargetBlockPos, mappedTargetBlockPos + mappedTargetBlock.nodeSize, columnsNode);
+              }
+
+              view.dispatch(tr);
+              clearDragging(view);
+              event.preventDefault();
+              return true;
+            },
+          },
+        },
+      }),
+    ];
   },
 });
 
@@ -439,6 +808,7 @@ export const TableOfContents = Node.create({
               return true;
             });
             if (target === null) return;
+            revealAncestorsForPosition(editor.view, target);
             const element = editor.view.nodeDOM(target) as HTMLElement | null;
             element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           });

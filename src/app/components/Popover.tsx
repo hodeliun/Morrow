@@ -1,4 +1,4 @@
-import { computePosition, flip, offset, shift } from '@floating-ui/dom';
+import { computePosition, flip, offset, shift, size } from '@floating-ui/dom';
 import type { Placement } from '@floating-ui/dom';
 import type { ReactNode } from 'react';
 import { useEffect, useLayoutEffect, useRef } from 'react';
@@ -36,7 +36,20 @@ export function Popover({
       void computePosition(reference, element, {
         placement,
         strategy: 'fixed',
-        middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+        middleware: [
+          offset(6),
+          flip({ padding: 8 }),
+          shift({ padding: 8 }),
+          size({
+            padding: 8,
+            apply({ availableHeight, availableWidth, elements }) {
+              Object.assign(elements.floating.style, {
+                maxHeight: `${Math.max(160, Math.floor(availableHeight))}px`,
+                maxWidth: `${Math.max(220, Math.floor(availableWidth))}px`,
+              });
+            },
+          }),
+        ],
       }).then(({ x, y }) => {
         element.style.left = `${x}px`;
         element.style.top = `${y}px`;

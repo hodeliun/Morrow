@@ -416,10 +416,59 @@ export function normalizeNoteStyle(
   };
 }
 
+export const MAX_PAGE_COLUMNS = 7;
+
+export interface ImageCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type ImageAlign = 'left' | 'center' | 'right';
+
+export function validImageAlign(value: unknown): ImageAlign | null {
+  return value === 'left' || value === 'center' || value === 'right' ? value : null;
+}
+
+export function validImageCrop(value: unknown): ImageCrop | null {
+  if (!value || typeof value !== 'object') return null;
+  const { x, y, width, height } = value as Record<string, unknown>;
+  if (
+    typeof x !== 'number' ||
+    typeof y !== 'number' ||
+    typeof width !== 'number' ||
+    typeof height !== 'number'
+  )
+    return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height))
+    return null;
+  if (x < -0.001 || y < -0.001 || width <= 0.01 || height <= 0.01) return null;
+  if (x + width > 1.001 || y + height > 1.001) return null;
+  const clampedX = Math.max(0, Math.min(1, Math.round(x * 10000) / 10000));
+  const clampedY = Math.max(0, Math.min(1, Math.round(y * 10000) / 10000));
+  const clampedW = Math.max(0.01, Math.min(1 - clampedX, Math.round(width * 10000) / 10000));
+  const clampedH = Math.max(0.01, Math.min(1 - clampedY, Math.round(height * 10000) / 10000));
+  return { x: clampedX, y: clampedY, width: clampedW, height: clampedH };
+}
+
+export function parseImageCrop(value: string | null | undefined): ImageCrop | null {
+  if (!value || typeof value !== 'string') return null;
+  const parts = value.split(',').map((part) => Number(part.trim()));
+  if (parts.length !== 4 || parts.some((p) => !Number.isFinite(p))) return null;
+  return validImageCrop({ x: parts[0], y: parts[1], width: parts[2], height: parts[3] });
+}
+
+export function formatImageCrop(crop: ImageCrop | null | undefined): string | null {
+  const valid = validImageCrop(crop);
+  if (!valid) return null;
+  return `${valid.x},${valid.y},${valid.width},${valid.height}`;
+}
+
 // Column proportions are stored as percentages on the columns block itself. Invalid or
 // mismatched values fall back to equal tracks, so hand-edited Markdown stays safe to open.
 export function normalizeColumnWidths(value: unknown, count: number): number[] {
-  if (!Number.isInteger(count) || count < 2 || count > 4) return [];
+  if (!Number.isInteger(count) || count < 2 || count > MAX_PAGE_COLUMNS) return [];
   const equal = Array.from({ length: count }, () => 100 / count);
   if (!Array.isArray(value) || value.length !== count) return equal;
   if (
@@ -435,10 +484,10 @@ export function normalizeColumnWidths(value: unknown, count: number): number[] {
 }
 
 export function parseColumnWidths(value: string | null, count?: number): number[] | null {
-  if (!value || value.length > 32) return null;
+  if (!value || value.length > 96) return null;
   const parts = value.split(',');
   const expected = count ?? parts.length;
-  if (parts.length !== expected || expected < 2 || expected > 4) return null;
+  if (parts.length !== expected || expected < 2 || expected > MAX_PAGE_COLUMNS) return null;
   const widths = parts.map((part) => (/^\d+(?:\.\d{1,2})?$/.test(part.trim()) ? Number(part) : NaN));
   if (widths.some((width) => !Number.isFinite(width) || width <= 0 || width > 1000)) return null;
   return normalizeColumnWidths(widths, expected);

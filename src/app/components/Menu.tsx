@@ -1,6 +1,7 @@
-import { computePosition, flip, offset, shift } from '@floating-ui/dom';
+import { computePosition, flip, offset, shift, size } from '@floating-ui/dom';
 import type { Placement } from '@floating-ui/dom';
 import type { LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -8,6 +9,7 @@ export type MenuEntry =
   | {
       label: string;
       icon?: LucideIcon;
+      swatch?: string;
       shortcut?: string;
       danger?: boolean;
       disabled?: boolean;
@@ -15,7 +17,8 @@ export type MenuEntry =
       onSelect: () => void;
     }
   | { separator: true }
-  | { heading: string };
+  | { heading: string }
+  | { custom: ReactNode };
 
 interface MenuProps {
   anchor: HTMLElement | DOMRect;
@@ -39,13 +42,28 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
     void computePosition(reference, element, {
       placement,
       strategy: 'fixed',
-      middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 })],
+      middleware: [
+        offset(4),
+        flip({ padding: 8 }),
+        shift({ padding: 8 }),
+        size({
+          padding: 8,
+          apply({ availableHeight, availableWidth, elements }) {
+            Object.assign(elements.floating.style, {
+              maxHeight: `${Math.max(120, Math.floor(availableHeight))}px`,
+              maxWidth: `${Math.max(180, Math.floor(availableWidth))}px`,
+            });
+          },
+        }),
+      ],
     }).then(({ x, y }) => {
       element.style.left = `${x}px`;
       element.style.top = `${y}px`;
       element.style.visibility = 'visible';
     });
-    element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    const firstButton = element.querySelector<HTMLButtonElement>('button:not(:disabled)');
+    firstButton?.focus();
+    firstButton?.scrollIntoView({ block: 'nearest' });
   }, [anchor, placement]);
 
   useEffect(() => {
@@ -76,16 +94,24 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      buttons[(index + 1) % buttons.length]?.focus();
+      const next = buttons[(index + 1) % buttons.length];
+      next?.focus();
+      next?.scrollIntoView({ block: 'nearest' });
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
-      buttons[(index - 1 + buttons.length) % buttons.length]?.focus();
+      const prev = buttons[(index - 1 + buttons.length) % buttons.length];
+      prev?.focus();
+      prev?.scrollIntoView({ block: 'nearest' });
     } else if (event.key === 'Home') {
       event.preventDefault();
-      buttons[0]?.focus();
+      const first = buttons[0];
+      first?.focus();
+      first?.scrollIntoView({ block: 'nearest' });
     } else if (event.key === 'End') {
       event.preventDefault();
-      buttons[buttons.length - 1]?.focus();
+      const last = buttons[buttons.length - 1];
+      last?.focus();
+      last?.scrollIntoView({ block: 'nearest' });
     } else if (event.key === 'Escape' || event.key === 'Tab') {
       event.preventDefault();
       event.stopPropagation();
@@ -110,6 +136,12 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
               {entry.heading}
             </div>
           );
+        if ('custom' in entry)
+          return (
+            <div key={index} className="menu-custom-entry">
+              {entry.custom}
+            </div>
+          );
         const Icon = entry.icon;
         return (
           <button
@@ -124,7 +156,17 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
               entry.onSelect();
             }}
           >
-            <span className="menu-icon">{Icon && <Icon size={15} strokeWidth={1.75} />}</span>
+            <span className="menu-icon">
+              {entry.swatch ? (
+                <span
+                  className={`menu-swatch${entry.swatch === 'transparent' ? ' is-transparent' : ''}`}
+                  style={entry.swatch !== 'transparent' ? { backgroundColor: entry.swatch } : undefined}
+                  aria-hidden="true"
+                />
+              ) : (
+                Icon && <Icon size={15} strokeWidth={1.75} />
+              )}
+            </span>
             <span className="menu-label">{entry.label}</span>
             {entry.checked && <span className="menu-check">✓</span>}
             {entry.shortcut && <kbd className="menu-shortcut">{entry.shortcut}</kbd>}

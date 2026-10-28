@@ -7,8 +7,17 @@ import type { BubbleMenuProps } from '@tiptap/react/menus';
 import {
   ArrowDown,
   ArrowUp,
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   Bold,
+  ChevronDown,
   ChevronRight,
+  Columns2,
+  Crop,
+  MessageSquare,
+  RefreshCw,
+  RotateCcw,
   Code,
   Code2,
   Copy,
@@ -161,7 +170,7 @@ const showLink: BubbleMenuProps['shouldShow'] = ({ editor, from, to }) =>
   from === to && editor.isActive('link');
 const showTable: BubbleMenuProps['shouldShow'] = ({ editor, from, to }) =>
   editor.isEditable && from === to && editor.isActive('table');
-const TABLE_OPTIONS = { placement: 'top-start', offset: 8, flip: false, shift: { padding: 8 } } as const;
+const TABLE_OPTIONS = { placement: 'top-start', offset: 8, flip: true, shift: { padding: 8 } } as const;
 
 function useMarks(editor: Editor) {
   return useEditorState({
@@ -650,7 +659,94 @@ function linkable(editor: Editor, pos: number): boolean {
   );
 }
 
-function setBlockBackground(editor: Editor, pos: number, color: ColorName | null): void {
+function CustomBlockBackgroundRow({
+  initialColor,
+  onApply,
+  onClear,
+  onCancel,
+}: {
+  initialColor: ColorValue | null;
+  onApply: (color: ColorValue) => void;
+  onClear: () => void;
+  onCancel: () => void;
+}) {
+  const initialRef = useRef(initialColor);
+  const isCustomHex = validHexColor(initialColor) !== null;
+  const [draft, setDraft] = useState(isCustomHex ? String(initialColor) : '#ffd580');
+  const valid = validHexColor(draft);
+
+  const handleCancel = () => {
+    if (initialRef.current !== null) {
+      onApply(initialRef.current);
+    } else {
+      onClear();
+    }
+    onCancel();
+  };
+
+  return (
+    <div
+      className="menu-custom-color-row"
+      role="group"
+      aria-label={t('editor.customBlockBackgroundColor')}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          handleCancel();
+        } else if (e.key === 'Enter') {
+          e.stopPropagation();
+          if (valid) onApply(valid);
+        }
+      }}
+    >
+      <input
+        type="color"
+        aria-label={t('editor.customBlockBackgroundColor')}
+        value={valid ?? '#ffd580'}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const v = validHexColor(e.target.value);
+          if (v) onApply(v);
+        }}
+      />
+      <input
+        className="color-hex-input"
+        type="text"
+        aria-label={t('editor.hexColorFor', { target: t('editor.blockBackground') })}
+        aria-invalid={valid === null}
+        value={draft}
+        placeholder="#RRGGBB"
+        maxLength={7}
+        spellCheck={false}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const v = validHexColor(e.target.value);
+          if (v) onApply(v);
+        }}
+      />
+      <button
+        type="button"
+        title={t('editor.clearColor')}
+        aria-label={t('editor.clearColor')}
+        onClick={() => {
+          onClear();
+        }}
+      >
+        {t('editor.clearColor')}
+      </button>
+      <button
+        type="button"
+        title={t('common.cancel')}
+        aria-label={t('common.cancel')}
+        onClick={handleCancel}
+      >
+        {t('common.cancel')}
+      </button>
+    </div>
+  );
+}
+
+function setBlockBackground(editor: Editor, pos: number, color: ColorValue | null): void {
   const node = editor.state.doc.nodeAt(pos);
   if (!node) return;
   const tr = editor.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, blockBackground: color });
@@ -788,16 +884,26 @@ export function BlockMenu({
     { heading: t('editor.blockBackground') },
     {
       label: t('editor.noBlockBackground'),
-      icon: Palette,
+      swatch: 'transparent',
       checked: currentBackground === null,
       onSelect: () => setBlockBackground(editor, request.pos, null),
     },
     ...COLORS.map((color) => ({
       label: t('editor.colourBlockBackground', { colour: colorLabel(color) }),
-      icon: Palette,
+      swatch: BACKGROUND_HEX[color],
       checked: currentBackground === color,
       onSelect: () => setBlockBackground(editor, request.pos, color),
     })),
+    {
+      custom: (
+        <CustomBlockBackgroundRow
+          initialColor={currentBackground}
+          onApply={(color) => setBlockBackground(editor, request.pos, color)}
+          onClear={() => setBlockBackground(editor, request.pos, null)}
+          onCancel={onClose}
+        />
+      ),
+    },
     { separator: true },
     {
       label: t('editor.moveUp'),
@@ -850,23 +956,181 @@ export function BlockMenu({
   ];
   const fileId = editor.state.doc.nodeAt(request.pos)?.attrs.fileId as string | null | undefined;
   const vault = desktop?.vault;
-  if (blockType === 'image' && fileId) {
+  if (blockType === 'heading') {
+    const isCollapsible = Boolean(selectedBlock?.attrs.collapsible);
+    const isCollapsed = Boolean(selectedBlock?.attrs.collapsed);
+    const headingLevel = (Math.min(6, Math.max(1, Number(selectedBlock?.attrs.level) || 1)) as 1 | 2 | 3 | 4 | 5 | 6);
     entries.unshift(
-      { heading: t('slash.items.image.title') },
-      { label: t('editor.copyImage'), icon: ImageIcon, onSelect: () => void copyImageFile(fileId) },
-      { label: t('editor.saveACopy'), icon: Download, onSelect: () => void downloadFile(fileId) },
-      ...(vault
+      { heading: t(`slash.items.h${headingLevel}.title`) },
+      isCollapsible
+        ? {
+            label: t('editor.disableCollapsible'),
+            icon: ChevronDown,
+            onSelect: () => {
+              const node = editor.state.doc.nodeAt(request.pos);
+              if (node) {
+                editor.view.dispatch(
+                  editor.state.tr.setNodeMarkup(request.pos, undefined, {
+                    ...node.attrs,
+                    collapsible: false,
+                    collapsed: false,
+                  }),
+                );
+              }
+            },
+          }
+        : {
+            label: t('editor.enableCollapsible'),
+            icon: ChevronRight,
+            onSelect: () => {
+              const node = editor.state.doc.nodeAt(request.pos);
+              if (node) {
+                editor.view.dispatch(
+                  editor.state.tr.setNodeMarkup(request.pos, undefined, {
+                    ...node.attrs,
+                    collapsible: true,
+                    collapsed: false,
+                  }),
+                );
+              }
+            },
+          },
+      ...(isCollapsible
         ? [
             {
-              label: t('editor.openInDefaultApp'),
-              icon: ExternalLink,
-              onSelect: () => void vault.openFile(fileId),
+              label: t('editor.collapseSection'),
+              icon: ChevronRight,
+              checked: isCollapsed,
+              onSelect: () => {
+                const node = editor.state.doc.nodeAt(request.pos);
+                if (node) {
+                  editor.view.dispatch(
+                    editor.state.tr.setNodeMarkup(request.pos, undefined, {
+                      ...node.attrs,
+                      collapsed: !isCollapsed,
+                    }),
+                  );
+                }
+              },
             },
+          ]
+        : []),
+      { separator: true },
+    );
+  }
+  if (blockType === 'image') {
+    entries.unshift(
+      { heading: t('slash.items.image.title') },
+      {
+        label: t('editor.replaceImage'),
+        icon: RefreshCw,
+        onSelect: () => {
+          const dom = editor.view.nodeDOM(request.pos);
+          if (dom instanceof HTMLElement) {
+            dom.dispatchEvent(new CustomEvent('morrow:image-replace'));
+          }
+        },
+      },
+      {
+        label: t('editor.editCaption'),
+        icon: MessageSquare,
+        onSelect: () => {
+          setTimeout(() => {
+            const dom = editor.view.nodeDOM(request.pos);
+            if (dom instanceof HTMLElement) {
+              const input = dom.querySelector<HTMLInputElement>('.image-caption-input');
+              if (input) {
+                input.style.display = 'block';
+                input.focus();
+                input.select();
+              }
+            }
+          }, 50);
+        },
+      },
+      {
+        label: t('editor.alignLeft'),
+        icon: AlignLeft,
+        checked: (selectedBlock?.attrs.align || 'center') === 'left',
+        onSelect: () => {
+          const node = editor.state.doc.nodeAt(request.pos);
+          if (node) {
+            editor.view.dispatch(
+              editor.state.tr.setNodeMarkup(request.pos, undefined, { ...node.attrs, align: 'left' }),
+            );
+          }
+        },
+      },
+      {
+        label: t('editor.alignCenter'),
+        icon: AlignCenter,
+        checked: (selectedBlock?.attrs.align || 'center') === 'center',
+        onSelect: () => {
+          const node = editor.state.doc.nodeAt(request.pos);
+          if (node) {
+            editor.view.dispatch(
+              editor.state.tr.setNodeMarkup(request.pos, undefined, { ...node.attrs, align: 'center' }),
+            );
+          }
+        },
+      },
+      {
+        label: t('editor.alignRight'),
+        icon: AlignRight,
+        checked: (selectedBlock?.attrs.align || 'center') === 'right',
+        onSelect: () => {
+          const node = editor.state.doc.nodeAt(request.pos);
+          if (node) {
+            editor.view.dispatch(
+              editor.state.tr.setNodeMarkup(request.pos, undefined, { ...node.attrs, align: 'right' }),
+            );
+          }
+        },
+      },
+      {
+        label: t('editor.cropImage'),
+        icon: Crop,
+        onSelect: () => {
+          const dom = editor.view.nodeDOM(request.pos);
+          if (dom instanceof HTMLElement) {
+            dom.dispatchEvent(new CustomEvent('morrow:image-crop'));
+          }
+        },
+      },
+      ...(selectedBlock?.attrs.crop
+        ? [
             {
-              label: t('pageMenu.showInFolder'),
-              icon: FolderOpen,
-              onSelect: () => void vault.reveal(fileId),
+              label: t('editor.resetCrop'),
+              icon: RotateCcw,
+              onSelect: () => {
+                const node = editor.state.doc.nodeAt(request.pos);
+                if (node) {
+                  editor.view.dispatch(
+                    editor.state.tr.setNodeMarkup(request.pos, undefined, { ...node.attrs, crop: null }),
+                  );
+                }
+              },
             },
+          ]
+        : []),
+      ...(fileId
+        ? [
+            { label: t('editor.copyImage'), icon: ImageIcon, onSelect: () => void copyImageFile(fileId) },
+            { label: t('editor.saveACopy'), icon: Download, onSelect: () => void downloadFile(fileId) },
+            ...(vault
+              ? [
+                  {
+                    label: t('editor.openInDefaultApp'),
+                    icon: ExternalLink,
+                    onSelect: () => void vault.openFile(fileId),
+                  },
+                  {
+                    label: t('pageMenu.showInFolder'),
+                    icon: FolderOpen,
+                    onSelect: () => void vault.reveal(fileId),
+                  },
+                ]
+              : []),
           ]
         : []),
       { separator: true },
@@ -916,6 +1180,57 @@ export function BlockMenu({
       },
     );
   }
+  const $pos = editor.state.doc.resolve(request.pos);
+  let insideColumns = false;
+  for (let d = $pos.depth; d > 0; d--) {
+    if ($pos.node(d).type.name === 'columns') {
+      insideColumns = true;
+      break;
+    }
+  }
+  if (selectedBlock?.type.name === 'columns') {
+    insideColumns = true;
+  }
+
+  if (insideColumns) {
+    entries.push(
+      { separator: true },
+      { heading: t('slash.items.columns2.title') },
+      {
+        label: t('editor.addColumnLeft'),
+        icon: Columns2,
+        onSelect: () => {
+          editor.chain().focus().setNodeSelection(request.pos).addColumn('left').run();
+        },
+      },
+      {
+        label: t('editor.addColumnRight'),
+        icon: Columns2,
+        onSelect: () => {
+          editor.chain().focus().setNodeSelection(request.pos).addColumn('right').run();
+        },
+      },
+      {
+        label: t('editor.resetColumnWidths'),
+        icon: RotateCcw,
+        onSelect: () => {
+          editor.chain().focus().setNodeSelection(request.pos).resetColumnWidths().run();
+        },
+      },
+    );
+  } else if ($pos.depth === 0 && blockType !== 'columns') {
+    entries.push(
+      { separator: true },
+      {
+        label: t('editor.splitIntoColumns'),
+        icon: Columns2,
+        onSelect: () => {
+          editor.chain().focus().setNodeSelection(request.pos).splitIntoColumns(2).run();
+        },
+      },
+    );
+  }
+
   const textual = turnable(editor, request.pos);
   const firstTurnInto = entries.findIndex(
     (entry) => 'heading' in entry && entry.heading === t('editor.turnInto'),

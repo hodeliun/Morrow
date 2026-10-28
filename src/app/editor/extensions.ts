@@ -11,6 +11,7 @@ import { BlockHandle } from './BlockHandle';
 import { BlockBackground, Callout, FindReplace } from './Blocks';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
+import { CollapsibleHeading } from './CollapsibleHeading';
 import type { BlockMenuRequest } from './BlockHandle';
 import { MarkdownPaste } from './MarkdownPaste';
 import { DatabasePaste } from './DatabasePaste';
@@ -60,6 +61,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
   return [
     BlockIds,
     BlockBackground,
+    CollapsibleHeading,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       link: {

@@ -6,11 +6,13 @@ import {
   emptyDoc,
   nearestColor,
   parseColumnWidths,
+  parseImageCrop,
   TEXT_HEX,
   validBlockBackground,
   validHexColor,
+  validImageAlign,
 } from '../model';
-import type { ColorName, ColorValue, DocMark, DocNode, PageId } from '../model';
+import type { ColorName, ColorValue, DocMark, DocNode, ImageAlign, ImageCrop, PageId } from '../model';
 import { inlineText } from '../doc';
 import { normalizeDatabase } from '../migrations';
 
@@ -31,6 +33,46 @@ export interface WikiLink {
   alias: string | null;
   embed: boolean;
 }
+
+interface ParsedHeadingAttrs {
+  collapsible?: boolean;
+  collapsed?: boolean;
+}
+
+function parseHeadingMarker(content: string): ParsedHeadingAttrs | null {
+  const match = /^<!--\s*morrow:heading\b([^>]*)-->$/i.exec(content.trim());
+  if (!match) return null;
+  const body = match[1] ?? '';
+  const collapsible = /\bcollapsible\b/i.test(body);
+  const collapsed = /\bcollapsed\b/i.test(body);
+  if (!collapsible && !collapsed) return null;
+  return { collapsible, collapsed };
+}
+
+interface ParsedImageAttrs {
+  align?: ImageAlign;
+  caption?: string;
+  crop?: ImageCrop;
+}
+
+function parseImageMarker(content: string): ParsedImageAttrs | null {
+  const match = /^<!--\s*morrow:image\b([^>]*)-->$/i.exec(content.trim());
+  if (!match) return null;
+  const body = match[1] ?? '';
+  const alignMatch = /\balign\s*=\s*["'](left|center|right)["']/i.exec(body);
+  const captionMatch = /\bcaption\s*=\s*["']([^"']*)["']/i.exec(body);
+  const cropMatch = /\bcrop\s*=\s*["']([^"']+)["']/i.exec(body);
+  const align = validImageAlign(alignMatch?.[1]);
+  const caption = captionMatch?.[1] ? captionMatch[1].replace(/&quot;/g, '"') : undefined;
+  const crop = parseImageCrop(cropMatch?.[1]);
+  if (!align && !caption && !crop) return null;
+  const result: ParsedImageAttrs = {};
+  if (align) result.align = align;
+  if (caption) result.caption = caption;
+  if (crop) result.crop = crop;
+  return result;
+}
+
 
 const md = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 
@@ -197,6 +239,8 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   const root: DocNode = { type: 'doc', content: [] };
   const stack: DocNode[] = [root];
   let pendingBlockBackground: string | null = null;
+  let pendingHeadingAttrs: ParsedHeadingAttrs | null = null;
+  let pendingImageAttrs: ParsedImageAttrs | null = null;
   let pendingLinkedView: Record<string, unknown> | null = null;
   let skipLinkedFallback = false;
   const top = () => stack[stack.length - 1]!;
@@ -231,7 +275,15 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         open({ type: 'paragraph', content: [] });
         break;
       case 'heading_open':
-        open({ type: 'heading', attrs: { level: Number(token.tag.slice(1)) || 1 }, content: [] });
+        open({
+          type: 'heading',
+          attrs: {
+            level: Number(token.tag.slice(1)) || 1,
+            ...(pendingHeadingAttrs ? pendingHeadingAttrs : {}),
+          },
+          content: [],
+        });
+        pendingHeadingAttrs = null;
         break;
       case 'blockquote_open':
         open({ type: 'blockquote', content: [] });
@@ -279,11 +331,23 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         break;
       case 'inline':
         {
-          const nodes = inlineNodes(token.children ?? [], options);
+          const nodes = inlineNodes(token.children ?? [], options, pendingImageAttrs);
+          pendingImageAttrs = null;
           const marker = nodes.find((node) => node.type === 'blockBackgroundMarker');
           const color = validBlockBackground(marker?.attrs?.color);
           if (color) top().attrs = { ...top().attrs, blockBackground: color };
-          (top().content ??= []).push(...nodes.filter((node) => node.type !== 'blockBackgroundMarker'));
+          const headMarker = nodes.find((node) => node.type === 'headingMarker');
+          if (headMarker && top().type === 'heading') {
+            top().attrs = { ...top().attrs, ...headMarker.attrs };
+          }
+          (top().content ??= []).push(
+            ...nodes.filter(
+              (node) =>
+                node.type !== 'blockBackgroundMarker' &&
+                node.type !== 'headingMarker' &&
+                node.type !== 'imageMarker',
+            ),
+          );
         }
         break;
       case 'fence':
@@ -305,13 +369,24 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         break;
       case 'html_block':
         {
-          const linkedView = parseLinkedViewMarker(token.content.trim());
+          const trimmed = token.content.trim();
+          const linkedView = parseLinkedViewMarker(trimmed);
           if (linkedView) {
             pendingLinkedView = linkedView;
             break;
           }
+          const headingAttrs = parseHeadingMarker(trimmed);
+          if (headingAttrs) {
+            pendingHeadingAttrs = headingAttrs;
+            break;
+          }
+          const imageAttrs = parseImageMarker(trimmed);
+          if (imageAttrs) {
+            pendingImageAttrs = imageAttrs;
+            break;
+          }
           const marker = /^<!--\s*morrow:block-background:([a-z]+|#[0-9a-f]{6})\s*-->$/i.exec(
-            token.content.trim(),
+            trimmed,
           );
           const color = validBlockBackground(marker?.[1]);
           if (color) pendingBlockBackground = color;
@@ -472,7 +547,7 @@ export function markdownToPage(
   return { title: fallbackTitle, doc };
 }
 
-function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
+function inlineNodes(tokens: Token[], options: ParseOptions, pendingImageAttrs?: ParsedImageAttrs | null): DocNode[] {
   const out: DocNode[] = [];
   const marks: DocMark[] = [];
   const add = (text: string, extra: DocMark[] = []) => {
@@ -576,13 +651,34 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         const src = String(token.attrGet('src') ?? '');
         const alt = token.content || String(token.attrGet('alt') ?? '');
         const file = options.resolveFile?.(src) ?? null;
-        if (file?.image) out.push({ type: 'image', attrs: { fileId: file.fileId, alt } });
-        else if (file) add(alt || file.name, [{ type: 'link', attrs: { href: src, fileRef: file } }]);
-        else out.push({ type: 'image', attrs: { fileId: null, src, alt } });
+        let attrs: Record<string, unknown> = file?.image
+          ? { fileId: file.fileId, alt }
+          : { fileId: null, src, alt };
+        const lastMarkerIndex = out.findLastIndex((n) => n.type === 'imageMarker');
+        if (lastMarkerIndex !== -1) {
+          const marker = out.splice(lastMarkerIndex, 1)[0];
+          attrs = { ...attrs, ...marker?.attrs };
+        } else if (pendingImageAttrs) {
+          attrs = { ...attrs, ...pendingImageAttrs };
+          pendingImageAttrs = null;
+        }
+        if (file && !file.image) add(alt || file.name, [{ type: 'link', attrs: { href: src, fileRef: file } }]);
+        else out.push({ type: 'image', attrs });
         break;
       }
       case 'html_inline': {
-        const tag = token.content.trim().toLowerCase();
+        const raw = token.content.trim();
+        const headingAttrs = parseHeadingMarker(raw);
+        if (headingAttrs) {
+          out.push({ type: 'headingMarker', attrs: headingAttrs as Record<string, unknown> });
+          break;
+        }
+        const imageAttrs = parseImageMarker(raw);
+        if (imageAttrs) {
+          out.push({ type: 'imageMarker', attrs: imageAttrs as Record<string, unknown> });
+          break;
+        }
+        const tag = raw.toLowerCase();
         const blockBackground = /^<!--\s*morrow:block-background:([a-z]+|#[0-9a-f]{6})\s*-->$/.exec(tag);
         const background = validBlockBackground(blockBackground?.[1]);
         if (background) {

@@ -11,7 +11,9 @@ import {
   Smile,
   Trash2,
   ChevronRight,
+  ListTree,
 } from 'lucide-react';
+import { revealAncestorsForPosition } from '../editor/CollapsibleHeading';
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { docToPlainText, findUnknownTypes, inlineText, isDocEmpty } from '../../core/doc';
 import { backlinksTo, unlinkedMentions } from '../../core/links';
@@ -194,7 +196,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             </button>
           </div>
         )}
-        {page.kind !== 'database' && !unreadable && <Outline doc={doc} />}
+        {page.kind !== 'database' && !unreadable && <Outline doc={doc} editorRef={editorRef} />}
         <CoverBanner page={page} editable={!trashed} />
         <article
           className={`page font-${noteStyle.font} width-${noteStyle.width}${page.cover ? ' has-cover' : ''}`}
@@ -634,10 +636,11 @@ const OUTLINE_ROOM = 1090;
 
 // a list of the page's headings beside long pages, click one to jump to it. it starts below the cover,
 // marks the section being read, and a heading with smaller ones under it can fold them away
-function Outline({ doc }: { doc: DocNode }) {
+function Outline({ doc, editorRef }: { doc: DocNode; editorRef?: React.RefObject<Editor | null> }) {
   const headings = useMemo(() => headingsOf(doc), [doc]);
   const ref = useRef<HTMLElement>(null);
   const [roomy, setRoomy] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [active, setActive] = useState(-1);
   const [top, setTop] = useState<number | null>(null);
   const [folded, setFolded] = useState<ReadonlySet<number>>(new Set());
@@ -646,16 +649,24 @@ function Outline({ doc }: { doc: DocNode }) {
     ref.current
       ?.closest('.view')
       ?.querySelectorAll<HTMLElement>('.editor-surface .prose > :is(h1, h2, h3, h4, h5, h6)') ?? [];
-  // measured on the view it sits in, so a narrow side of a split hides it
+  // measured on the view it sits in, checking right margin so outline never overlaps page content
   useEffect(() => {
     const view = ref.current?.closest('.view');
     if (!view) return;
-    const observer = new ResizeObserver(([entry]) =>
-      setRoomy((entry?.contentRect.width ?? 0) >= OUTLINE_ROOM),
-    );
+    const checkFit = () => {
+      const viewRect = view.getBoundingClientRect();
+      const pageEl = view.querySelector<HTMLElement>('.page');
+      const pageRect = pageEl?.getBoundingClientRect();
+      const rightSpace = pageRect ? viewRect.right - pageRect.right : (viewRect.width - 700) / 2;
+      setRoomy(viewRect.width >= OUTLINE_ROOM && rightSpace >= 220);
+    };
+    const observer = new ResizeObserver(checkFit);
     observer.observe(view);
+    const pageEl = view.querySelector<HTMLElement>('.page');
+    if (pageEl) observer.observe(pageEl);
+    checkFit();
     return () => observer.disconnect();
-  }, [enough]);
+  }, [enough, doc]);
   useEffect(() => {
     const view = ref.current?.closest('.view');
     const scroller = view?.querySelector('.page-scroll');
@@ -684,7 +695,26 @@ function Outline({ doc }: { doc: DocNode }) {
     };
   }, [enough, doc]);
   if (!enough) return null;
-  const jump = (index: number) => elements()[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const jump = (index: number) => {
+    const editor = editorRef?.current;
+    if (editor && !editor.isDestroyed) {
+      let seen = 0;
+      let targetPos: number | null = null;
+      editor.state.doc.descendants((node, pos) => {
+        if (targetPos !== null) return false;
+        if (node.type.name === 'heading') {
+          if (seen === index) targetPos = pos;
+          seen++;
+          return false;
+        }
+        return true;
+      });
+      if (targetPos !== null) {
+        revealAncestorsForPosition(editor.view, targetPos);
+      }
+    }
+    elements()[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   // a heading owns the smaller headings after it, up to the next one of its size or bigger
   const hasChildren = (index: number) => (headings[index + 1]?.level ?? 0) > headings[index]!.level;
   const hidden = new Set<number>();
@@ -705,13 +735,24 @@ function Outline({ doc }: { doc: DocNode }) {
       if (!next.delete(index)) next.add(index);
       return next;
     });
+  const isVisible = roomy && !collapsed;
   return (
-    <nav
-      ref={ref}
-      className={`page-outline${roomy ? ' is-roomy' : ''}`}
-      style={top === null ? undefined : { top, maxHeight: `calc(100% - ${top + 46}px)` }}
-      aria-label={t('page.outlineAria')}
-    >
+    <>
+      <button
+        type="button"
+        className={`page-outline-toggle${isVisible ? ' is-active' : ''}`}
+        aria-label={t('editor.toggleOutline')}
+        title={t('editor.toggleOutline')}
+        onClick={() => setCollapsed((v) => !v)}
+      >
+        <ListTree size={14} />
+      </button>
+      <nav
+        ref={ref}
+        className={`page-outline${isVisible ? ' is-roomy' : ''}`}
+        style={top === null ? undefined : { top, maxHeight: `calc(100% - ${top + 46}px)` }}
+        aria-label={t('page.outlineAria')}
+      >
       <p className="page-outline-title">{t('page.onThisPage')}</p>
       <ul>
         {headings.map((heading, index) =>
@@ -740,5 +781,6 @@ function Outline({ doc }: { doc: DocNode }) {
         )}
       </ul>
     </nav>
+    </>
   );
 }
