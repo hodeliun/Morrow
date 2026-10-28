@@ -2,12 +2,19 @@ const {
   _electron,
 } = require('C:/Users/clove/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const ROW_CLIPBOARD_PREFIX = 'morrow-row-clipboard:v1\n';
 const diagnosticMode = process.env.MORROW_DELIVERY5_DIAGNOSTIC === '1';
+const propertyLimitGuardIncludedInTestedBuild =
+  process.env.MORROW_DELIVERY5_PROPERTY_LIMIT_GUARD_BUILT === '1';
+const evidenceDirectory = path.resolve(
+  process.env.MORROW_EVIDENCE_DIR ?? path.join(process.cwd(), 'docs', 'evidence', 'stabilization-1.1.1'),
+);
 
 let currentStage = 'fixture-setup';
 let currentStageStartedAt = Date.now();
@@ -62,6 +69,9 @@ async function captureFailureState(page, vaultDir) {
           toasts: [...document.querySelectorAll('.toast')]
             .map((element) => element.textContent?.trim().slice(0, 120) ?? '')
             .slice(0, 5),
+          actionObservations: Array.isArray(window.__delivery5ActionObservations)
+            ? window.__delivery5ActionObservations.slice(-12)
+            : [],
         };
       });
     } catch {
@@ -98,10 +108,11 @@ async function captureFailureState(page, vaultDir) {
   };
 }
 
-function databaseMarkdown(properties, viewId, hidden = []) {
+function databaseMarkdown(properties, viewId, hidden = [], title = null) {
   const hiddenLines = hidden.length
     ? `      hidden:\n${hidden.map((id) => `        - ${id}`).join('\n')}\n`
     : '';
+  const pageTitle = title ?? (viewId === 'source-grid' ? 'Source' : viewId === 'destination-grid' ? 'Destination' : 'Empty');
   return `---
 kind: database
 database:
@@ -116,7 +127,7 @@ ${properties}
       groupBy: null
       dateProp: null
 ${hiddenLines}---
-# ${viewId === 'source-grid' ? 'Source' : viewId === 'destination-grid' ? 'Destination' : 'Empty'}
+# ${pageTitle}
 `;
 }
 
@@ -149,6 +160,104 @@ async function visibleRows(page) {
   return page
     .locator('.db-table tbody tr')
     .evaluateAll((rows) => rows.map((row) => row.querySelector('.db-col-title')?.textContent?.trim() ?? ''));
+}
+
+function readActionJournal(vaultDir) {
+  const journalPath = path.join(vaultDir, '.morrow', 'table-action-journal.json');
+  if (!fs.existsSync(journalPath)) return null;
+  const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+  return {
+    id: journal.id,
+    status: journal.status,
+    label: journal.label,
+    error: journal.error,
+  };
+}
+
+function buildIdentity() {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+  const rendererDir = path.join(process.cwd(), 'dist', 'assets');
+  const rendererAssets = fs
+    .readdirSync(rendererDir)
+    .filter((name) => name.endsWith('.js'))
+    .sort()
+    .map((name) => ({
+      name,
+        sha256: crypto
+          .createHash('sha256')
+          .update(fs.readFileSync(path.join(rendererDir, name)))
+          .digest('hex'),
+    }));
+  let source = null;
+  try {
+    source = {
+      revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd(), encoding: 'utf8' }).trim(),
+      worktreeDirty:
+        execFileSync('git', ['status', '--porcelain'], { cwd: process.cwd(), encoding: 'utf8' }).trim() !== '',
+    };
+  } catch {
+    source = { revision: null, worktreeDirty: null };
+  }
+  return {
+    version: packageJson.version,
+    source,
+    electronMainSha256: crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(path.join(process.cwd(), 'dist-electron', 'main.cjs')))
+      .digest('hex'),
+    rendererAssets,
+  };
+}
+
+function waitForFileText(filePath, predicate, description, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (error, text) => {
+      if (settled) return;
+      settled = true;
+      watcher.close();
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(text);
+    };
+    const check = () => {
+      try {
+        const text = fs.readFileSync(filePath, 'utf8');
+        if (predicate(text)) finish(null, text);
+      } catch {
+        // The directory watcher will check again when the save creates or replaces the file.
+      }
+    };
+    const watcher = fs.watch(path.dirname(filePath), (_event, changedName) => {
+      if (
+        !changedName ||
+        changedName.toString().toLowerCase() === path.basename(filePath).toLowerCase()
+      )
+        check();
+    });
+    timer = setTimeout(
+      () => finish(new Error(`${description} was not saved within ${timeoutMs}ms.`)),
+      timeoutMs,
+    );
+    check();
+  });
+}
+
+function databasePropertyBlock(markdown, propertyId) {
+  const lines = markdown.split(/\r?\n/);
+  const idLine = /^\s{4}- id:\s*(.+?)\s*$/;
+  const start = lines.findIndex((line) => idLine.exec(line)?.[1] === propertyId);
+  if (start === -1) return null;
+
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index++) {
+    if (/^\s{4}- id:\s/.test(lines[index]) || /^\s{2}views:\s*$/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join('\n');
 }
 
 async function openTable(page, title) {
@@ -193,6 +302,8 @@ async function focusPrimaryByTab(page, dialog) {
 }
 
 async function main() {
+  const currentBuildIdentity = buildIdentity();
+  const runId = `${new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')}-${process.pid}`;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'morrow-delivery5-ui-'));
   const tempRoot = path.resolve(root);
   assert.ok(
@@ -238,9 +349,26 @@ async function main() {
       name: Notas
       type: text
 `;
+  const relationSourceProperties = `    - id: author
+      name: Author
+      type: relation
+      relation:
+        targetDatabaseId: null
+        multiple: false
+        isInverse: false
+        displayPropertyId: null
+        inversePropertyId: null
+        filters: []
+`;
+  const relationTargetProperties = `    - id: author-name
+      name: Name
+      type: text
+`;
   fs.mkdirSync(path.join(vaultDir, '.morrow'));
   fs.mkdirSync(path.join(vaultDir, 'Source', 'Alpha'), { recursive: true });
   fs.mkdirSync(path.join(vaultDir, 'Destination'));
+  fs.mkdirSync(path.join(vaultDir, 'Books'));
+  fs.mkdirSync(path.join(vaultDir, 'Authors'));
   fs.writeFileSync(
     path.join(vaultDir, '.morrow', 'workspace.json'),
     JSON.stringify({
@@ -253,6 +381,10 @@ async function main() {
         'Destination.md': { id: 'destination-db' },
         'Destination/Existing.md': { id: 'destination-existing' },
         'Empty.md': { id: 'empty-db' },
+        'Books.md': { id: 'books-db' },
+        'Books/Earthsea.md': { id: 'book-earthsea' },
+        'Authors.md': { id: 'authors-db' },
+        'Authors/Le Guin.md': { id: 'author-le-guin' },
       },
     }),
   );
@@ -267,6 +399,16 @@ async function main() {
     'utf8',
   );
   fs.writeFileSync(path.join(vaultDir, 'Empty.md'), databaseMarkdown(emptyProperties, 'empty-grid'), 'utf8');
+  fs.writeFileSync(
+    path.join(vaultDir, 'Books.md'),
+    databaseMarkdown(relationSourceProperties, 'books-grid', [], 'Books'),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(vaultDir, 'Authors.md'),
+    databaseMarkdown(relationTargetProperties, 'authors-grid', [], 'Authors'),
+    'utf8',
+  );
   fs.writeFileSync(
     path.join(vaultDir, 'Source', 'Alpha.md'),
     sourceRow({ title: 'Alpha', amount: 10, notes: 'Nota Alpha', active: false, secret: 'segredo alpha' }),
@@ -292,6 +434,16 @@ async function main() {
     '---\nNotas: existente\nQuantidade: 100\n---\n# Existing\n',
     'utf8',
   );
+  fs.writeFileSync(
+    path.join(vaultDir, 'Books', 'Earthsea.md'),
+    '---\nAuthor: "Le Guin"\n---\n# Earthsea\n\nExisting legacy relation link.\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(vaultDir, 'Authors', 'Le Guin.md'),
+    '---\n---\n# Le Guin\n',
+    'utf8',
+  );
 
   let app = null;
   let page = null;
@@ -301,13 +453,19 @@ async function main() {
   let runSucceeded = false;
   const evidence = {
     timestamp: new Date().toISOString(),
+    runId,
     fixture: 'synthetic-only',
+    buildIdentity: currentBuildIdentity,
     hiddenWindowVerified: false,
     ticket35: {},
     ticket36: {},
+    ticket46: {
+      maxPropertyGuardIncludedInTestedBuild: propertyLimitGuardIncludedInTestedBuild,
+    },
     rendererPageErrors: [],
     cleanupVerified: false,
   };
+  console.log(`Delivery 5 build identity: ${JSON.stringify(evidence.buildIdentity)}`);
 
   try {
     markStage('initial-launch');
@@ -632,14 +790,49 @@ async function main() {
     await rowMenu.waitFor({ state: 'detached' });
     evidence.ticket35.rowMenuActionsAndKeyboardCloseVerified = true;
 
+    if (diagnosticMode) {
+      await page.evaluate(() => {
+        const observations = [];
+        let previous = '';
+        const capture = (event) => {
+          const snapshot = {
+            event,
+            at: Date.now(),
+            rows: [...document.querySelectorAll('.db-table tbody tr .db-col-title')].map(
+              (cell) => cell.textContent?.trim() ?? '',
+            ),
+            toasts: [...document.querySelectorAll('.toast')].map((item) => item.textContent?.trim() ?? ''),
+            recovery: [...document.querySelectorAll('.table-action-recovery')].map(
+              (item) => item.textContent?.trim() ?? '',
+            ),
+          };
+          const fingerprint = JSON.stringify(snapshot);
+          if (fingerprint !== previous) {
+            previous = fingerprint;
+            observations.push(snapshot);
+            if (observations.length > 40) observations.shift();
+          }
+        };
+        window.__delivery5ActionObservations = observations;
+        new MutationObserver(() => capture('mutation')).observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+        window.addEventListener('morrow-table-action-changed', () => capture('table-action-changed'));
+        capture('baseline');
+      });
+    }
+
     for (const [label, pattern] of [
       ['insert-before', /inserir linha antes|insert row before/i],
       ['insert-after', /inserir linha depois|insert row after/i],
     ]) {
+      const previousJournal = readActionJournal(vaultDir);
       markStage(`${label}-open-row-menu`);
       await page.locator('.db-table tbody tr').first().locator('.db-row-menu-trigger').click();
       markStage(`${label}-select-action`);
-      await clickMenuItem(page, pattern);
+      const actionLabel = await clickMenuItem(page, pattern);
       markStage(`${label}-wait-row-count`);
       await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 4);
       const insertUndo = page
@@ -647,12 +840,27 @@ async function main() {
         .filter({ hasText: /desfazer|undo|deshacer/i });
       markStage(`${label}-wait-undo-button`);
       await insertUndo.waitFor({ state: 'visible' });
+      const completedJournal = readActionJournal(vaultDir);
+      assert.equal(completedJournal?.status, 'complete', `${label} must be saved before it can be undone.`);
+      assert.notEqual(
+        completedJournal?.id,
+        previousJournal?.id,
+        `${label} must replace the prior action journal.`,
+      );
+      assert.equal(completedJournal?.label, actionLabel, `${label} must journal the action the user selected.`);
       markStage(`${label}-undo`);
       await insertUndo.click();
       markStage(`${label}-wait-restored-row-count`);
       await page.waitForFunction(() => document.querySelectorAll('.db-table tbody tr').length === 3);
       markStage(`${label}-wait-journal-settled`);
       await page.locator('.table-action-recovery button').waitFor({ state: 'detached' });
+      const undoneJournal = readActionJournal(vaultDir);
+      assert.equal(
+        undoneJournal?.status,
+        'undone',
+        `${label} recovery must finish before the next action.`,
+      );
+      assert.equal(undoneJournal?.id, completedJournal?.id, `${label} undo must settle the same journal.`);
     }
     evidence.ticket35.insertBeforeAfterAndUndoVerified = true;
     evidence.ticket35.recoveryJournalReadyBeforeNextActionVerified = true;
@@ -837,6 +1045,100 @@ async function main() {
     evidence.ticket35.deleteDialogFocusContainmentVerified = true;
     evidence.ticket35.lastVisibleRowDeletionMovesFocusToTable = true;
 
+    markStage('inverse-open-source-table');
+    await openTable(page, 'Books');
+    markStage('inverse-open-property-settings');
+    await page.locator('.db-header').filter({ hasText: 'Author' }).click();
+    const relationPanel = page.locator('.db-panel');
+    await relationPanel.waitFor({ state: 'visible' });
+    const relationTargetField = relationPanel
+      .locator('.field')
+      .filter({ hasText: /Target table|Tabela relacionada|Tabla de destino/i });
+    await relationTargetField.locator('.select-button').click();
+    markStage('inverse-select-target-table');
+    await page.getByRole('option', { name: 'Authors', exact: true }).click();
+    const createInverseMode = relationPanel.getByRole('radio', {
+      name: /Create new column in target|Criar nova coluna no destino|Crear nueva columna en el destino/i,
+    });
+    markStage('inverse-select-create-mode');
+    await createInverseMode.click();
+    const inverseName = relationPanel
+      .locator('.field')
+      .filter({ hasText: /New column name|Nome da nova coluna|Nombre de la nueva columna/i })
+      .locator('input');
+    assert.equal(await inverseName.inputValue(), 'Books');
+    const createAndLink = relationPanel.getByRole('button', {
+      name: /Create & Link|Criar e vincular|Crear y vincular/i,
+    });
+    markStage('inverse-create-and-link');
+    await createAndLink.click();
+    const sourceSchemaText = await waitForFileText(
+      path.join(vaultDir, 'Books.md'),
+      (text) => {
+        const ownerBlock = databasePropertyBlock(text, 'author');
+        return ownerBlock !== null && /^\s+inversePropertyId:\s*(?!null\s*$)\S+\s*$/m.test(ownerBlock);
+      },
+      'The source relation configuration',
+    );
+    const ownerBlock = databasePropertyBlock(sourceSchemaText, 'author');
+    assert.ok(ownerBlock, 'The source relation property must be persisted.');
+    const inversePropertyId = ownerBlock.match(/^\s+inversePropertyId:\s*(\S+)\s*$/m)?.[1];
+    assert.ok(inversePropertyId && inversePropertyId !== 'null', 'A dynamic inverse property id must be saved.');
+    const targetSchemaText = await waitForFileText(
+      path.join(vaultDir, 'Authors.md'),
+      (text) => databasePropertyBlock(text, inversePropertyId) !== null,
+      'The created inverse property',
+    );
+    const inverseBlock = databasePropertyBlock(targetSchemaText, inversePropertyId);
+    assert.ok(inverseBlock, 'The target schema must contain the dynamically created inverse property.');
+    assert.match(inverseBlock, /^\s+name:\s*Books\s*$/m);
+    assert.match(inverseBlock, /^\s+type:\s*relation\s*$/m);
+    assert.match(inverseBlock, /^\s+targetDatabaseId:\s*books-db\s*$/m);
+    assert.match(inverseBlock, /^\s+isInverse:\s*true\s*$/m);
+    assert.match(inverseBlock, /^\s+inversePropertyId:\s*author\s*$/m);
+    evidence.ticket46.createdInversePropertyId = inversePropertyId;
+    markStage('inverse-wait-persisted-schemas');
+    await page.keyboard.press('Escape');
+    await relationPanel.waitFor({ state: 'detached' });
+
+    markStage('inverse-open-target-table');
+    await openTable(page, 'Authors');
+    markStage('inverse-verify-projected-existing-link');
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('.db-table thead .db-header-name')].some(
+        (header) => header.textContent?.trim() === 'Books',
+      ),
+    );
+    const linkedAuthorRow = page.locator('.db-table tbody tr').filter({ hasText: 'Le Guin' });
+    assert.ok((await linkedAuthorRow.innerText()).includes('Earthsea'));
+
+    markStage('inverse-close-before-reopen');
+    await app.close();
+    markStage('inverse-launch-after-reopen');
+    app = await launchHidden(profileDir);
+    const hiddenAfterInverseReopen = await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().every((window) => !window.isVisible()),
+    );
+    assert.equal(hiddenAfterInverseReopen, true);
+    page = await app.firstWindow();
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    page.on('pageerror', (error) => pageErrors.push(error.name || 'Error'));
+    markStage('inverse-wait-tree-after-reopen');
+    await page.waitForSelector('.tree-row', { timeout: 15000 });
+    markStage('inverse-open-target-after-reopen');
+    await openTable(page, 'Authors');
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('.db-table thead .db-header-name')].some(
+        (header) => header.textContent?.trim() === 'Books',
+      ),
+    );
+    const reopenedAuthorRow = page.locator('.db-table tbody tr').filter({ hasText: 'Le Guin' });
+    await reopenedAuthorRow.waitFor({ state: 'visible' });
+    assert.ok((await reopenedAuthorRow.innerText()).includes('Earthsea'));
+    evidence.ticket46.createdInverseLinkedExistingValueVerified = true;
+    evidence.ticket46.inverseSchemaPersistedAfterReopenVerified = true;
+    evidence.ticket46.existingRelationProjectedAfterReopenVerified = true;
+
     markStage('final-hidden-window-check');
     const allHiddenAtEnd = await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().every((window) => !window.isVisible()),
@@ -845,24 +1147,47 @@ async function main() {
     assert.deepEqual(pageErrors, [], 'The renderer must not report page errors.');
     evidence.hiddenWindowVerified = true;
     evidence.rendererPageErrors = pageErrors;
-    if (diagnosticMode) {
-      console.log('3. Diagnostic run complete; canonical delivery evidence was not changed.');
-    } else {
-      markStage('write-evidence');
-      evidencePath = path.join(process.cwd(), 'docs', 'evidence', 'interaction-expansion-delivery5-ui.json');
-      const serialized = JSON.stringify(evidence, null, 2);
-      assert.ok(
-        !serialized.includes(root),
-        'Evidence must not disclose synthetic temp profile or vault paths.',
-      );
-      fs.writeFileSync(evidencePath, serialized, 'utf8');
-      evidenceSaved = true;
-      console.log('3. Delivery 5 hidden UI evidence saved.');
-    }
+    markStage('write-evidence');
+    fs.mkdirSync(evidenceDirectory, { recursive: true });
+    const evidenceName = diagnosticMode ? `delivery5-ui-diagnostic-${runId}.json` : `delivery5-ui-${runId}.json`;
+    evidencePath = path.join(evidenceDirectory, evidenceName);
+    const serialized = JSON.stringify(evidence, null, 2);
+    assert.ok(
+      !serialized.includes(root),
+      'Evidence must not disclose synthetic temp profile or vault paths.',
+    );
+    fs.writeFileSync(evidencePath, serialized, 'utf8');
+    evidenceSaved = true;
+    console.log(
+      diagnosticMode
+        ? `3. Delivery 5 diagnostic evidence saved: ${path.relative(process.cwd(), evidencePath)}`
+        : `3. Delivery 5 hidden UI evidence saved: ${path.relative(process.cwd(), evidencePath)}`,
+    );
     runSucceeded = true;
   } catch (error) {
     const snapshot = await captureFailureState(page, vaultDir);
     const message = error instanceof Error ? error.message : String(error);
+    const failurePath = path.join(evidenceDirectory, `delivery5-ui-failure-${runId}.json`);
+    const failureEvidence = {
+      timestamp: new Date().toISOString(),
+      runId,
+      fixture: 'synthetic-only',
+      buildIdentity: currentBuildIdentity,
+      stage: currentStage,
+      stageElapsedMs: snapshot.stageElapsedMs,
+      message,
+      location: relativeStackLocation(error),
+      stack: relativeStack(error),
+      state: snapshot,
+    };
+    fs.mkdirSync(evidenceDirectory, { recursive: true });
+    const serializedFailure = JSON.stringify(failureEvidence, null, 2).replaceAll(root, '<synthetic-test-root>');
+    assert.ok(
+      !serializedFailure.includes(root),
+      'Failure evidence must not disclose synthetic temp profile or vault paths.',
+    );
+    fs.writeFileSync(failurePath, serializedFailure, 'utf8');
+    console.error(`Delivery 5 failure evidence saved: ${path.relative(process.cwd(), failurePath)}`);
     console.error(
       `Delivery 5 failure: stage=${currentStage}; elapsedMs=${snapshot.stageElapsedMs}; message=${message}`,
     );

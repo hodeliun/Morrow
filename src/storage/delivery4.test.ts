@@ -292,4 +292,80 @@ describe('delivery 4 database grid operations through WorkspaceSession', () => {
     expect(valueOf(reopened.getState().pages['author-2']!, 'books', reopenedAuthors, reopened.getState())).toEqual(['book-1']);
     await reopened.close();
   });
+
+  it('creates a new inverse relation from staged schemas and persists the projected links after reopening', async () => {
+    const vault = new MemoryVault();
+    const session = await openSession(vault);
+    runAll(session, [
+      { type: 'page.create', id: 'authors-db', parentId: null, title: 'Authors', kind: 'database', now: 1 },
+      {
+        type: 'database.set',
+        id: 'authors-db',
+        database: table('Authors', [{ id: 'author-name', name: 'Name', type: 'text', options: [] }]),
+        now: 1,
+      },
+      { type: 'page.create', id: 'books-db', parentId: null, title: 'Books', kind: 'database', now: 1 },
+      {
+        type: 'database.set',
+        id: 'books-db',
+        database: table('Books', [{ id: 'author', name: 'Author', type: 'relation', options: [] }]),
+        now: 1,
+      },
+      { type: 'page.create', id: 'author-1', parentId: 'authors-db', title: 'Ursula Le Guin', now: 1 },
+      {
+        type: 'page.create',
+        id: 'book-1',
+        parentId: 'books-db',
+        title: 'A Wizard of Earthsea',
+        properties: { author: 'author-1' },
+        now: 1,
+      },
+      {
+        type: 'relation.configure',
+        databaseId: 'books-db',
+        propertyId: 'author',
+        relation: {
+          targetDatabaseId: 'authors-db',
+          multiple: false,
+          isInverse: false,
+          displayPropertyId: 'author-name',
+          inversePropertyId: null,
+          filters: [],
+        },
+        createInverseProperty: { id: 'author-books', name: 'Books', multiple: true },
+        now: 2,
+      },
+    ]);
+
+    const linkedState = session.getState();
+    const authors = linkedState.pages['authors-db']!.database!;
+    expect(
+      authors.properties.find((property) => property.id === 'author-books')?.relation,
+    ).toMatchObject({
+      targetDatabaseId: 'books-db',
+      isInverse: true,
+      inversePropertyId: 'author',
+    });
+    expect(
+      valueOf(linkedState.pages['author-1']!, 'author-books', authors, linkedState),
+    ).toEqual(['book-1']);
+
+    expect(await session.flush()).toBe(true);
+    await session.close();
+
+    const reopened = await openSession(vault);
+    const reopenedState = reopened.getState();
+    const reopenedAuthors = reopenedState.pages['authors-db']!.database!;
+    expect(
+      reopenedAuthors.properties.find((property) => property.id === 'author-books')?.relation,
+    ).toMatchObject({
+      targetDatabaseId: 'books-db',
+      isInverse: true,
+      inversePropertyId: 'author',
+    });
+    expect(
+      valueOf(reopenedState.pages['author-1']!, 'author-books', reopenedAuthors, reopenedState),
+    ).toEqual(['book-1']);
+    await reopened.close();
+  });
 });

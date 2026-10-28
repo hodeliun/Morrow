@@ -10,7 +10,13 @@ import { relationIds } from '../core/relations';
 import { errorMessage } from '../core/result';
 import { ROW_OPERATION_PROPERTY_ID } from '../core/rowOperations';
 import { validPageIcon } from '../core/icons';
-import { normalizeCoverPosition, validCover, validCoverPosition, validNoteStyle } from '../core/model';
+import {
+  normalizeCoverPosition,
+  UNTITLED,
+  validCover,
+  validCoverPosition,
+  validNoteStyle,
+} from '../core/model';
 import type { WorkspaceSession } from './session';
 
 export const TABLE_ACTION_JOURNAL_META = 'table-action-journal.json';
@@ -174,7 +180,11 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
   if (journal.status === 'undoing') return resumeUndo(session, journal);
 
   const current = session.getState();
-  const classification = classifyRecords(current, journal.records);
+  const classification = classifyRecords(
+    current,
+    journal.records,
+    journal.propertyId === ROW_OPERATION_PROPERTY_ID,
+  );
   if (classification.conflicts.length) {
     journal.status = 'conflict';
     journal.conflicts = classification.conflicts;
@@ -290,7 +300,11 @@ async function undoTableActionUnlocked(session: WorkspaceSession): Promise<Table
     return { status: 'failed', journal, message: 'Save the current changes before undoing this action.' };
 
   const current = session.getState();
-  const classification = classifyRecords(current, journal.records);
+  const classification = classifyRecords(
+    current,
+    journal.records,
+    journal.propertyId === ROW_OPERATION_PROPERTY_ID,
+  );
   const conflicts = [...classification.conflicts];
   const safeIds = new Set(classification.afterIds);
   const undoCommands =
@@ -322,7 +336,8 @@ async function resumeUndo(
   journal: TableActionJournal,
 ): Promise<TableActionRecoveryResult> {
   const current = session.getState();
-  const classification = classifyUndoRecords(current, journal.records);
+  const normalizeEmptyRowTitle = journal.propertyId === ROW_OPERATION_PROPERTY_ID;
+  const classification = classifyUndoRecords(current, journal.records, normalizeEmptyRowTitle);
   const conflicts = new Set([...journal.conflicts, ...classification.conflicts]);
   const afterIds = new Set(classification.afterIds);
   const commands = (journal.undoCommands ?? []).filter((command) => afterIds.has(commandPageId(command)));
@@ -348,7 +363,11 @@ async function resumeUndo(
     await trySaveJournal(session, journal);
     return { status: 'pending', journal, message: 'Undo is waiting for the remaining files to save.' };
   }
-  const finalCheck = classifyUndoRecords(session.getState(), journal.records);
+  const finalCheck = classifyUndoRecords(
+    session.getState(),
+    journal.records,
+    journal.propertyId === ROW_OPERATION_PROPERTY_ID,
+  );
   journal.conflicts = [...new Set([...conflicts, ...finalCheck.conflicts])];
   journal.status = 'undone';
   journal.error = journal.conflicts.length ? 'Undo preserved records edited after the action.' : undefined;
@@ -680,7 +699,11 @@ interface RecordClassification {
   partialDocIds: PageId[];
 }
 
-function classifyRecords(state: WorkspaceState, records: ActionRecordChange[]): RecordClassification {
+function classifyRecords(
+  state: WorkspaceState,
+  records: ActionRecordChange[],
+  normalizeEmptyRowTitle = false,
+): RecordClassification {
   const result: RecordClassification = {
     before: 0,
     after: 0,
@@ -693,8 +716,9 @@ function classifyRecords(state: WorkspaceState, records: ActionRecordChange[]): 
     const current = state.pages[record.id] ?? null;
     const currentDoc = state.docs[record.id] ?? null;
     const hasDocSnapshot = Object.hasOwn(record, 'docBefore') && Object.hasOwn(record, 'docAfter');
-    const afterPage = same(current, record.after);
-    const beforePage = same(current, record.before);
+    const normalizeCreatedRowTitle = normalizeEmptyRowTitle && record.before === null;
+    const afterPage = sameActionPage(current, record.after, normalizeCreatedRowTitle);
+    const beforePage = sameActionPage(current, record.before, false);
     if (afterPage && (!hasDocSnapshot || same(currentDoc, record.docAfter))) {
       result.after++;
       result.afterIds.push(record.id);
@@ -717,7 +741,11 @@ function classifyRecords(state: WorkspaceState, records: ActionRecordChange[]): 
   return result;
 }
 
-function classifyUndoRecords(state: WorkspaceState, records: ActionRecordChange[]): RecordClassification {
+function classifyUndoRecords(
+  state: WorkspaceState,
+  records: ActionRecordChange[],
+  normalizeEmptyRowTitle = false,
+): RecordClassification {
   const result: RecordClassification = {
     before: 0,
     after: 0,
@@ -730,15 +758,32 @@ function classifyUndoRecords(state: WorkspaceState, records: ActionRecordChange[
     const current = state.pages[record.id] ?? null;
     const currentDoc = state.docs[record.id] ?? null;
     const hasDocSnapshot = Object.hasOwn(record, 'docBefore') && Object.hasOwn(record, 'docAfter');
-    if (same(current, record.before) && (!hasDocSnapshot || same(currentDoc, record.docBefore))) {
+    const normalizeCreatedRowTitle = normalizeEmptyRowTitle && record.before === null;
+    if (
+      sameActionPage(current, record.before, false) &&
+      (!hasDocSnapshot || same(currentDoc, record.docBefore))
+    ) {
       result.before++;
       result.beforeIds.push(record.id);
-    } else if (same(current, record.after) && (!hasDocSnapshot || same(currentDoc, record.docAfter))) {
+    } else if (
+      sameActionPage(current, record.after, normalizeCreatedRowTitle) &&
+      (!hasDocSnapshot || same(currentDoc, record.docAfter))
+    ) {
       result.after++;
       result.afterIds.push(record.id);
     } else result.conflicts.push(record.id);
   }
   return result;
+}
+
+function sameActionPage(
+  current: PageMeta | null,
+  expected: PageMeta | null,
+  normalizeCreatedRowTitle: boolean,
+): boolean {
+  if (normalizeCreatedRowTitle && current?.title === UNTITLED && expected?.title === '')
+    return same({ ...current, title: '' }, expected);
+  return same(current, expected);
 }
 
 function same(left: unknown, right: unknown): boolean {

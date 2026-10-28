@@ -762,7 +762,18 @@ function configureRelation(
 
   // If requested to create a new inverse property in the target database
   if (createInverseProperty && targetId && target?.database) {
-    const newPropId = createInverseProperty.id || `prop-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    if (target.database.properties.length >= 200)
+      return fail('A database can contain at most 200 properties.');
+
+    const newPropId =
+      createInverseProperty.id === undefined
+        ? `prop-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+        : createInverseProperty.id;
+    if (typeof newPropId !== 'string' || !ID_PATTERN.test(newPropId))
+      return fail('Invalid inverse property id.');
+    if (target.database.properties.some((property) => property.id === newPropId))
+      return fail('That property id already exists in the target database.');
+
     const newPropName = createInverseProperty.name.trim() || displayTitle(source.value);
     const newInverseProp: PropDef = {
       id: newPropId,
@@ -862,9 +873,18 @@ function configureRelation(
     if (current?.inversePropertyId && current.inversePropertyId !== propertyId)
       return fail('That inverse field is already linked to another relation.');
 
-    // Calculate union preview and check conflicts
+    // Preview against staged schemas so a newly-created inverse property is visible to validation.
+    const candidatePages = { ...state.pages };
+    for (const [schemaId, schema] of schemas) {
+      const page = candidatePages[schemaId];
+      if (!page) return fail('The database no longer exists.');
+      candidatePages[schemaId] = { ...page, database: schema };
+    }
+    const candidateState: WorkspaceState = { ...state, pages: candidatePages };
+
+    // Calculate union preview and check conflicts against the complete candidate state.
     unionPreview = previewRelationPairUnion(
-      state,
+      candidateState,
       databaseId,
       propertyId,
       requested.multiple === true,

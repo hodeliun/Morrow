@@ -276,6 +276,279 @@ describe('Delivery 3 — Formula Format Parity (#42)', () => {
 });
 
 describe('Delivery 3 — Inverse Relations Union & Unlink (#43)', () => {
+  it('creates and links a new inverse relation while reconciling existing owner values', () => {
+    let state = emptyWorkspace();
+    state = createDatabase(state, 'books', 'Books', [
+      {
+        id: 'book-author',
+        name: 'Author',
+        type: 'relation',
+        options: [],
+        relation: {
+          targetDatabaseId: null,
+          multiple: false,
+          isInverse: false,
+          displayPropertyId: null,
+          inversePropertyId: null,
+          filters: [],
+        },
+      },
+    ]);
+    state = createDatabase(state, 'authors', 'Authors', [
+      { id: 'author-name', name: 'Name', type: 'text', options: [] },
+    ]);
+    state = createRow(state, 'book-1', 'books', 'Dune', { 'book-author': 'author-1' });
+    state = createRow(state, 'author-1', 'authors', 'Ursula Le Guin');
+
+    const result = applyCommand(state, {
+      type: 'relation.configure',
+      databaseId: 'books',
+      propertyId: 'book-author',
+      relation: {
+        targetDatabaseId: 'authors',
+        multiple: false,
+        isInverse: false,
+        displayPropertyId: 'author-name',
+        inversePropertyId: null,
+        filters: [],
+      },
+      createInverseProperty: { id: 'author-books', name: 'Books', multiple: true },
+      now: 2,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const next = result.value.state;
+    const inverse = next.pages.authors!.database!.properties.find((prop) => prop.id === 'author-books');
+    expect(inverse).toMatchObject({
+      type: 'relation',
+      relation: {
+        targetDatabaseId: 'books',
+        multiple: true,
+        isInverse: true,
+        inversePropertyId: 'book-author',
+      },
+    });
+    expect(
+      valueOf(next.pages['author-1']!, 'author-books', next.pages.authors!.database!, next),
+    ).toEqual(['book-1']);
+
+    // Failed or successful configuration must not mutate the input state.
+    expect(
+      state.pages.authors!.database!.properties.some((prop) => prop.id === 'author-books'),
+    ).toBe(false);
+    expect(state.pages.books!.database!.properties[0]!.relation?.targetDatabaseId).toBeNull();
+  });
+
+  it('rejects a conflicting new inverse property without changing either database schema', () => {
+    let state = emptyWorkspace();
+    state = createDatabase(state, 'books', 'Books', [
+      {
+        id: 'book-authors',
+        name: 'Authors',
+        type: 'relation',
+        options: [],
+        relation: {
+          targetDatabaseId: null,
+          multiple: true,
+          isInverse: false,
+          displayPropertyId: null,
+          inversePropertyId: null,
+          filters: [],
+        },
+      },
+    ]);
+    state = createDatabase(state, 'authors', 'Authors', [
+      { id: 'author-name', name: 'Name', type: 'text', options: [] },
+    ]);
+    state = createRow(state, 'book-1', 'books', 'Book 1', { 'book-authors': 'author-1' });
+    state = createRow(state, 'book-2', 'books', 'Book 2', { 'book-authors': 'author-1' });
+    state = createRow(state, 'author-1', 'authors', 'Ursula Le Guin');
+
+    const result = applyCommand(state, {
+      type: 'relation.configure',
+      databaseId: 'books',
+      propertyId: 'book-authors',
+      relation: {
+        targetDatabaseId: 'authors',
+        multiple: true,
+        isInverse: false,
+        displayPropertyId: 'author-name',
+        inversePropertyId: null,
+        filters: [],
+      },
+      createInverseProperty: { id: 'author-book', name: 'Book', multiple: false },
+      now: 2,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/cardinality conflict/i);
+    expect(state.pages.authors!.database!.properties).toHaveLength(1);
+    expect(state.pages.books!.database!.properties[0]!.relation?.targetDatabaseId).toBeNull();
+    expect(state.pages['book-1']!.properties['book-authors']).toBe('author-1');
+    expect(state.pages['book-2']!.properties['book-authors']).toBe('author-1');
+  });
+
+  it('rejects creating an inverse property when the target database already has 200 properties', () => {
+    let state = emptyWorkspace();
+    state = createDatabase(state, 'books', 'Books', [
+      {
+        id: 'book-author',
+        name: 'Author',
+        type: 'relation',
+        options: [],
+        relation: {
+          targetDatabaseId: null,
+          multiple: false,
+          isInverse: false,
+          displayPropertyId: null,
+          inversePropertyId: null,
+          filters: [],
+        },
+      },
+    ]);
+    const targetProperties = Array.from({ length: 200 }, (_, index) => ({
+      id: `author-property-${index}`,
+      name: `Property ${index}`,
+      type: 'text' as const,
+      options: [],
+    }));
+    state = createDatabase(state, 'authors', 'Authors', targetProperties);
+
+    const result = applyCommand(state, {
+      type: 'relation.configure',
+      databaseId: 'books',
+      propertyId: 'book-author',
+      relation: {
+        targetDatabaseId: 'authors',
+        multiple: false,
+        isInverse: false,
+        displayPropertyId: 'author-property-0',
+        inversePropertyId: null,
+        filters: [],
+      },
+      createInverseProperty: { id: 'author-books', name: 'Books', multiple: true },
+      now: 2,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/at most 200 properties/i);
+    expect(state.pages.authors!.database!.properties).toHaveLength(200);
+    expect(state.pages.authors!.database!.properties.some((prop) => prop.id === 'author-books')).toBe(false);
+    expect(state.pages.books!.database!.properties[0]!.relation?.targetDatabaseId).toBeNull();
+  });
+
+  it('rejects an invalid explicit inverse property id without changing relation data', () => {
+    let state = emptyWorkspace();
+    state = createDatabase(state, 'books', 'Books', [
+      {
+        id: 'book-author',
+        name: 'Author',
+        type: 'relation',
+        options: [],
+        relation: {
+          targetDatabaseId: null,
+          multiple: false,
+          isInverse: false,
+          displayPropertyId: null,
+          inversePropertyId: null,
+          filters: [],
+        },
+      },
+    ]);
+    const targetProperties: PropDef[] = [
+      { id: 'author-name', name: 'Name', type: 'text', options: [] },
+    ];
+    state = createDatabase(state, 'authors', 'Authors', targetProperties);
+    state = createRow(state, 'book-1', 'books', 'Dune', { 'book-author': 'author-1' });
+    state = createRow(state, 'author-1', 'authors', 'Ursula Le Guin');
+
+    const result = applyCommand(state, {
+      type: 'relation.configure',
+      databaseId: 'books',
+      propertyId: 'book-author',
+      relation: {
+        targetDatabaseId: 'authors',
+        multiple: false,
+        isInverse: false,
+        displayPropertyId: 'author-name',
+        inversePropertyId: null,
+        filters: [],
+      },
+      createInverseProperty: { id: 'bad.id', name: 'Books', multiple: true },
+      now: 2,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/invalid inverse property id/i);
+    expect(state.pages.authors!.database!.properties).toEqual(targetProperties);
+    expect(state.pages.books!.database!.properties[0]!.relation?.targetDatabaseId).toBeNull();
+    expect(state.pages['book-1']!.properties['book-author']).toBe('author-1');
+  });
+
+  it('rejects an explicit inverse property id already used by another relation', () => {
+    let state = emptyWorkspace();
+    state = createDatabase(state, 'books', 'Books', [
+      {
+        id: 'book-author',
+        name: 'Author',
+        type: 'relation',
+        options: [],
+        relation: {
+          targetDatabaseId: null,
+          multiple: false,
+          isInverse: false,
+          displayPropertyId: null,
+          inversePropertyId: null,
+          filters: [],
+        },
+      },
+    ]);
+    const targetProperties: PropDef[] = [
+      { id: 'author-name', name: 'Name', type: 'text', options: [] },
+      {
+        id: 'existing-relation',
+        name: 'Existing relation',
+        type: 'relation',
+        options: [],
+        relation: {
+          targetDatabaseId: null,
+          multiple: true,
+          isInverse: false,
+          displayPropertyId: null,
+          inversePropertyId: null,
+          filters: [],
+        },
+      },
+    ];
+    state = createDatabase(state, 'authors', 'Authors', targetProperties);
+    state = createRow(state, 'book-1', 'books', 'Dune', { 'book-author': 'author-1' });
+    state = createRow(state, 'author-1', 'authors', 'Ursula Le Guin');
+
+    const result = applyCommand(state, {
+      type: 'relation.configure',
+      databaseId: 'books',
+      propertyId: 'book-author',
+      relation: {
+        targetDatabaseId: 'authors',
+        multiple: false,
+        isInverse: false,
+        displayPropertyId: 'author-name',
+        inversePropertyId: null,
+        filters: [],
+      },
+      createInverseProperty: { id: 'existing-relation', name: 'Books', multiple: true },
+      now: 2,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/already exists in the target database/i);
+    expect(state.pages.authors!.database!.properties).toEqual(targetProperties);
+    expect(state.pages.books!.database!.properties[0]!.relation?.targetDatabaseId).toBeNull();
+    expect(state.pages['book-1']!.properties['book-author']).toBe('author-1');
+  });
+
   it('previews pair union correctly and detects cardinality conflicts', () => {
     let state = emptyWorkspace();
     const studentsDb: PropDef[] = [

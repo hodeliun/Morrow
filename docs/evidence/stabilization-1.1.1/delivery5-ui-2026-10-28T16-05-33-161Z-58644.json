@@ -1,0 +1,511 @@
+{
+  "timestamp": "2026-10-28T16:05:33.170Z",
+  "runId": "2026-10-28T16-05-33-161Z-58644",
+  "fixture": "synthetic-only",
+  "buildIdentity": {
+    "version": "1.2.1-fork.1.1.0",
+    "source": {
+      "revision": "7e26c1f8ebfed2d6cd6121b46871aabf0445dd8e",
+      "worktreeDirty": true
+    },
+    "electronMainSha256": "5e462be3b78a1ac494425f57d11acd94fcf9ed323abd6f7ded8fe81315a7bb50",
+    "rendererAssets": [
+      {
+        "name": "AssistantPanel-Bt4Du4uU.js",
+        "sha256": "19e0ac13fd0773c3363124cffb5fcd797ff0a47e73a96a097f22d20a5c5d701b"
+      },
+      {
+        "name": "CanvasView-B6jo1SzA.js",
+        "sha256": "7ef6e5faf36b5a370eda485f387edc5b489ffc57d2c0eb880fab72cb3ec7fbdb"
+      },
+      {
+        "name": "EmbeddedCanvas-Do7XI_s4.js",
+        "sha256": "a5947a2de7d740e85d388b52a427672b4881269a433b0e447785b546bf640770"
+      },
+      {
+        "name": "EmbeddedDatabase-BI_wKCSs.js",
+        "sha256": "da4f379190482f8812a724f15186370d1b2ac6b35a2e12d832845bb73541e9f2"
+      },
+      {
+        "name": "Emoji-k5Mq1l5q.js",
+        "sha256": "f3beb37a7e099e2ac7daa1d88b77dbf86ceed68d4cd78481cf00f715f721378a"
+      },
+      {
+        "name": "GraphView-iokJEooD.js",
+        "sha256": "2f1404339372b7ebb71e9170e6eef143ebc1bd031ae870e4b11659011cae29f0"
+      },
+      {
+        "name": "Popover-Cbd0w14h.js",
+        "sha256": "ef82b36b3b3c7b6d0ef824b9ddecba600bf2cc284e805c5fff924c9a8cc10cab"
+      },
+      {
+        "name": "Select-DaIulkE-.js",
+        "sha256": "76d68f450ba0e872434397067c5cf8b839cf5219aaab80d4215884ab72513ca9"
+      },
+      {
+        "name": "Sidebar-CTe_z_rb.js",
+        "sha256": "12ded2b93bc16b8e2382488b6e58dfce90b1f2a2d7700412dd551ddf6b58e216"
+      },
+      {
+        "name": "abnfDiagram-WEYOIA3C-BEW7Bm44.js",
+        "sha256": "d77fd212c1aa8033cf5c7fc54fbc768ab011f12cb48d0af48251924f30118f75"
+      },
+      {
+        "name": "arc-DgcGdgmL.js",
+        "sha256": "1735e3f0546d8bee503453c952b18688ea84f94679e70ee73bb610caf6ce2de1"
+      },
+      {
+        "name": "architecture-WOLXFQ4H-VlFXkQF6.js",
+        "sha256": "3f0a1d8fd2eb1220757163364f6fb7e9c10a0c09a0d59d3805ea519ff68676aa"
+      },
+      {
+        "name": "architectureDiagram-ZHVYKT53-o7EN3JRf.js",
+        "sha256": "3b8153eb42e08033fdd0d2b8abd75664dbafa6cea621f2ae7da308d8a799f5f5"
+      },
+      {
+        "name": "array-BifhSqXX.js",
+        "sha256": "63126646dbf611a0cf9e2293a9f636ac3c93c815a8f7d1e97d783151ab8529b9"
+      },
+      {
+        "name": "blockDiagram-RJAE7QA3-DQ_iW9Ru.js",
+        "sha256": "7252437fe4822b1a1801a5edf5e45a64d5f85cb5c116f3b199dcc45ececd9300"
+      },
+      {
+        "name": "c4Diagram-XDPPPE54-BHHMDyjS.js",
+        "sha256": "4e39e18c5df2b898d137b10e8c8988ed92eca800c52a05463ee397ab977e8b20"
+      },
+      {
+        "name": "channel-BDZagYFb.js",
+        "sha256": "a5a56069e1b0a47fe10b6dfad562f35cacb14b9117432f1d0ea9069691e56425"
+      },
+      {
+        "name": "chunk-2E7WHVMD-GM1fimxB.js",
+        "sha256": "ab990ade7e8db0214d34f99cb2ff52ef84c3b98c3be81c542439e049f7623aaa"
+      },
+      {
+        "name": "chunk-2Q5K7J3B-C1jixKkw.js",
+        "sha256": "675dd6cbaeea3bf091ba6afb397cf4c3debf6b66cc7bee6d115d87fa831e05fc"
+      },
+      {
+        "name": "chunk-4EMNKR2T-qvdXUycu.js",
+        "sha256": "0afff6c03982cf794b46d88105befde4e79f754934fba154ccff4c60bf6df1e2"
+      },
+      {
+        "name": "chunk-55XCU76K-D6zmEepn.js",
+        "sha256": "4be1123467e0c327e5cf2104a5a2359294125ea94ba5ec4a31b96f77a1fc1ac1"
+      },
+      {
+        "name": "chunk-5VM5RSS4-ZNzvKenW.js",
+        "sha256": "cee7c98f98440b1fbf0548b756d421097642c784547b835515f1124b9cdd4351"
+      },
+      {
+        "name": "chunk-7S6XSTFO-D4c5AThd.js",
+        "sha256": "d21429e47ba4fa4b6e620eb610bbdab828922075327b6c9ee254882880c4d8b7"
+      },
+      {
+        "name": "chunk-AQDTSKZB-bTIsD39g.js",
+        "sha256": "404d6ce942474feaf7be8350a112980341abc0ef9f5768c4fbab3ad1d34b9dfb"
+      },
+      {
+        "name": "chunk-DSNLSHJZ-DyjKoYtZ.js",
+        "sha256": "b6415cff12cee7afccdb9620103fe581401efb1b536f0e68267558d6221badeb"
+      },
+      {
+        "name": "chunk-DUW6YSOI-Dgx8z5s3.js",
+        "sha256": "22510db79bf4267465f9431ff41620d6cdd1f3778179b0402819c9f75edbb6e8"
+      },
+      {
+        "name": "chunk-HAGFOTED-DYv_qUPW.js",
+        "sha256": "dce6f4d11f3060c97e8ce4e87a2c72b8922ce989f39c69ba2c0401197bc0a5c7"
+      },
+      {
+        "name": "chunk-HNE4Q36P-BU8SWqc3.js",
+        "sha256": "3c78b95ee19b8905e2ee69ceeb1629db230ec3cb8630d770e59f9f9c138dd8a5"
+      },
+      {
+        "name": "chunk-J5ZVWO5B-oDCd-gWO.js",
+        "sha256": "9ef2dc3eac1cfcec79acc9e2d21b546b3007482f6f67953492e76710abb2ba71"
+      },
+      {
+        "name": "chunk-JWPE2WC7-DVXcaiue.js",
+        "sha256": "11e56beaf2526e7304036d27b4e083ed68ced60066faded0e683115da3dfa099"
+      },
+      {
+        "name": "chunk-NGNAAXSQ-C2Wy9Xmz.js",
+        "sha256": "4e402c6ba3db42cb05a813e00c06f91360dc914993bd9b588895da99693f32d4"
+      },
+      {
+        "name": "chunk-NQOKRVIF-B9iAYEyr.js",
+        "sha256": "33b8809aee7998b201f1f2be92827e228cbcc898ffa6287738ceeb0137177326"
+      },
+      {
+        "name": "chunk-UHW7PFBP-BhvyS_eE.js",
+        "sha256": "b7ebd00aae3ecff5a39b7755ab6254ae41f2e77bb936db6378937464e575ba9c"
+      },
+      {
+        "name": "chunk-VQ5W62QI-C7P-wY68.js",
+        "sha256": "4f62df37ea60af15001ca670ba96f3aed9487a9681233185d3706104297d3e92"
+      },
+      {
+        "name": "chunk-WQQL4CDK-DYCwD8rP.js",
+        "sha256": "e48efea0a982761435a270610c8df7224e99d1f32e78af8c73d2e8796a3a32af"
+      },
+      {
+        "name": "chunk-XXDRQBXY-Vp3bF9i4.js",
+        "sha256": "3753e3450fa993799b79e4e12a6cec66f33b002db29f029b9ce2bfa3abd97646"
+      },
+      {
+        "name": "chunk-Y2CYZVJY-DsF7k-Jl.js",
+        "sha256": "a74e3669f356ad0d67cc5232f1e0f62ff4544fdb8e7057cf9a5001a0ea6fc2cc"
+      },
+      {
+        "name": "chunk-YZO67HFG-DYQc4tHm.js",
+        "sha256": "efb5c7efc1a22af7dea5e88b2671542098d2b9df6e26e9bd894147f09b2b695e"
+      },
+      {
+        "name": "chunk-ZAUX2LTX-P9dyo3EI.js",
+        "sha256": "067e57577163cd4b5c6bab475324ba32c27e1d5a5dae70dea347c9d1c5024f30"
+      },
+      {
+        "name": "chunk-ZCHMQSOR-C8QgQJo9.js",
+        "sha256": "f5b3da425d066b6e19956d8316f3610fa3c0e4d55ad5dbd736a9af711d6ed4d3"
+      },
+      {
+        "name": "classDiagram-v2-4MYWR3UA-DRtOkbnD.js",
+        "sha256": "130cfd532708de65a912845b5ad437eb39dc5f4d875d3ee08a2397e1eb465ec8"
+      },
+      {
+        "name": "compact-CelYNJqw.js",
+        "sha256": "e91a8612e4bfcad85aebcd98bcd3a32b193860898f34130784f5399bae882963"
+      },
+      {
+        "name": "cose-bilkent-JH36ORCC-BHiFTeJj.js",
+        "sha256": "889596326669b92e8ddd3faae7d9a8496c1e5af69c6f562d738888c1cc192891"
+      },
+      {
+        "name": "cynefin-EF2NZ3EQ-B91NgBQv.js",
+        "sha256": "a3095baf9f2693ff77c2927d99af3c20c17b684a091206ce7d1ad0fe71e1ace5"
+      },
+      {
+        "name": "cynefinDiagram-WF24UDRP-EMzDug8H.js",
+        "sha256": "f40e1d544116450926b5c10f58412e3f689a10be7d9f28cceeb4e807be3d7b52"
+      },
+      {
+        "name": "cytoscape.esm-BegBNzOV.js",
+        "sha256": "53df08bbb6b7483df22b390a3d3e88aa2df7b0d5a7d10c482bdb3de3067e68c6"
+      },
+      {
+        "name": "dagre-NK4GIZVX-IlXkWZBq.js",
+        "sha256": "6f07f1a572c1998700771a8897a5c7f0230279875ecb2d0fc029ac3d7792ee21"
+      },
+      {
+        "name": "defaultLocale-BFoDCU3G.js",
+        "sha256": "098cc4b380fbfa5bf43b3dc6afaa137a43b0df3f079845fc096dca41e38fb341"
+      },
+      {
+        "name": "diagram-CBK3MWTC-BYyoVw5V.js",
+        "sha256": "eb716388e5833b039e931750b940eea54c489b98de43fb550b243e8b228e36f4"
+      },
+      {
+        "name": "diagram-I5XIIV2D-BSvH4zfM.js",
+        "sha256": "cb1c803d78b56e5b011917f1ca0ef2219b56ebe8430b0cfe7eb047a95884566d"
+      },
+      {
+        "name": "diagram-ODIL2UCW-DHp_qVxi.js",
+        "sha256": "625081367c1efb2523a0b431f8acb3fa4d2a8a73aa0f5e6be956bf7ea562ce63"
+      },
+      {
+        "name": "diagram-PFBEJUXE-BqdFQMpt.js",
+        "sha256": "3d12878b00d3cb9d1baf5f5f9939336eda11cd82e2e97d9b07e197e051c4962c"
+      },
+      {
+        "name": "diagram-RJA3I4VV-DM2a0M7H.js",
+        "sha256": "46acc3f8cb7a2619d2e397c6f7330c2d2ffd3b7c2ed0c560fc6624c464acea0b"
+      },
+      {
+        "name": "diagram-TYUNFSNR-BzmaECMy.js",
+        "sha256": "a9835ad95d956bba8630320c52fda2c74e9732ec0f5cb46448bb42226a70dbde"
+      },
+      {
+        "name": "dist-B_J_HbC0.js",
+        "sha256": "3139e1ca1e75406eaf31e7261a437ed1cf6299b3f96439bdf2c57d6988c5072f"
+      },
+      {
+        "name": "dist-Bi0_0gjh.js",
+        "sha256": "b9c7e512a1fc86c09d917e4cf4e6ddcc256c1502dfc78b694b21ef3309641536"
+      },
+      {
+        "name": "ebnfDiagram-V4P3TTPT-BeAboQvL.js",
+        "sha256": "d6519b59eed9ccfc8dca1b56979964c0d3ad3c3ee0e9de615c3c57ac3e598484"
+      },
+      {
+        "name": "elk-QONTBCTQ-CIslLmaa.js",
+        "sha256": "c3fd2841bbfb08eef7090d2609a45c051b11a2d082808dad4f12a30f8150378a"
+      },
+      {
+        "name": "erDiagram-KYQIGQAA-DUUasKvd.js",
+        "sha256": "d865e38c5cf3c11a935dbd53397eea9d68dae0827554573c59db77705271fb2a"
+      },
+      {
+        "name": "eventmodeling-K75KTNOO-B3W9lDfz.js",
+        "sha256": "048acc7ed42fe147567baaa2cc80b6c6b5aeea394e7ff0e5805bc05ccb1da195"
+      },
+      {
+        "name": "flowDiagram-IUGLLWBU-CSNGyF4S.js",
+        "sha256": "be30f38263d94c9c3ac527bfc2198a11792436f04a3b7f8139805d54d65a5be0"
+      },
+      {
+        "name": "ganttDiagram-R7GPNTJY-BkB_hpPu.js",
+        "sha256": "7e35593c38750f8c43b7638bb63a5c09891250804d4e596a781cc11a444376ec"
+      },
+      {
+        "name": "gitGraph-VSP46ZUC-C6Syto8f.js",
+        "sha256": "320bc4a31612010e94ff5ffc80105dc3061ad6c113b8294fd71628781a0a5d1e"
+      },
+      {
+        "name": "gitGraphDiagram-PDYL7XHY-Wesx7VXn.js",
+        "sha256": "28568ac1854bb71152856aaabb1aa2f53a9d8541b16504cdec49ed74b9876330"
+      },
+      {
+        "name": "graphlib-DS17s2tU.js",
+        "sha256": "6afce81d54f184820fad5ed0c9fa2dc42acc6e0cd0fd8fbcb0568dafc2cc7ab7"
+      },
+      {
+        "name": "index-DK195jzq.js",
+        "sha256": "f00bde00449fc326e363f0464fce6e084ae5c7b66e875098a869034c62dbf2d8"
+      },
+      {
+        "name": "info-OHQRW6UA-CGExVvnq.js",
+        "sha256": "4aaf8e013e1d79e8d201c5cc668922cb61d67a6db0ea4aac304f13cd56aebdb5"
+      },
+      {
+        "name": "infoDiagram-MVDRKAX5-DH3wjA44.js",
+        "sha256": "e90da59ba3dd13bfdf8728a4e382941e68fdf5683287dacb62d9ef0a2ab49d54"
+      },
+      {
+        "name": "init-C-OQMol4.js",
+        "sha256": "cb5c97a434bb5c3eeb4f6d38072ad7d8e4ac454d14e039a1fb6e8262c5ce82bc"
+      },
+      {
+        "name": "ishikawaDiagram-HPEHV2GE-CWNKQwvS.js",
+        "sha256": "74c018193e6bc5d91879b5038a06914595720b84e763126a12ccb0b604d4ab9a"
+      },
+      {
+        "name": "journeyDiagram-BOSHW7O7-PA2BwzHT.js",
+        "sha256": "92a4d2ac0e5a2b089a81710e06fac005fc2a1e4461d1401a163b1e712e8dfec2"
+      },
+      {
+        "name": "jsx-runtime-HulyA6em.js",
+        "sha256": "f0a9bc223dbd7f383e7f9ceab16c8bf9785f0c5b1944eae9bdd158e42a622339"
+      },
+      {
+        "name": "kanban-definition-FNSA4HC5-Dx9TiAuJ.js",
+        "sha256": "c71fe738f43f4e1cce7ad7115d26be16cbf7d0e39c824abdc33da5c32f75d54e"
+      },
+      {
+        "name": "katex-DaTn5cot.js",
+        "sha256": "82df91bc92305852db37566e212926b8021ae9b7ca366691cb4492dccd135d6b"
+      },
+      {
+        "name": "line-CU2lrN5T.js",
+        "sha256": "82227b1e60c0e5b61564ffe63fed3cc2e4ba139462038437e20c6d6f2df4bb2c"
+      },
+      {
+        "name": "linear-CCSc1VLh.js",
+        "sha256": "57ef72324d1e96eff343fc6f29e852cda72cdc877b9f67fd4ded4704561dbcca"
+      },
+      {
+        "name": "mermaid-parser.core-BVAwTMou.js",
+        "sha256": "893ea30dc8c05e8bfc403b6796639d5fdba02354bc638aa79b3918a9b693145a"
+      },
+      {
+        "name": "mermaid.core-Czyk5iEW.js",
+        "sha256": "7d9809222a886b53246983d735754b940b6b6298312362457b98e117c88580b0"
+      },
+      {
+        "name": "mindmap-definition-6OY57UG3-BpkssJxs.js",
+        "sha256": "88141485a5bec567f4a55893e0b4b931f38b44d9d00ef1fbf353d142ff7399b4"
+      },
+      {
+        "name": "ordinal-BDEzSJ7C.js",
+        "sha256": "1a236cf33d69c13da184852fe890a0d5d4083636373cb3ce166537b3e8cc0dcb"
+      },
+      {
+        "name": "packet-JDAUHWVQ-Do9VRb0V.js",
+        "sha256": "4721c37823ab780bbe3e2238062a5a678ea63fc6ebb8e4e322e97f0d70d73356"
+      },
+      {
+        "name": "path-fybaL0A-.js",
+        "sha256": "71b62c60fd6659668995a83955af7c0ffd1bc05496148191841e017441afe36b"
+      },
+      {
+        "name": "pegDiagram-ECIUJNBX-D2ocpplN.js",
+        "sha256": "038dacc6d89a63b942d19b7c9e385bc518f3c70e9590517101214b21ba9a541e"
+      },
+      {
+        "name": "pie-XZMESJXO-hxolZe7w.js",
+        "sha256": "9e817d759d7165c4e28afdbee4ac2269648f577cb5339969fa614a16f446ca66"
+      },
+      {
+        "name": "pieDiagram-GNMPY74T-DKi4cr-S.js",
+        "sha256": "dfdba2304b245f574f3d461553e803e7fff6a1ad52ab17e5b466b17f098c61d3"
+      },
+      {
+        "name": "primitives-BSOudQtP.js",
+        "sha256": "d679a5bf75d5d78e488cb5f75965f418ec192667cb4f98e22c8d9afc3e2fb446"
+      },
+      {
+        "name": "quadrantDiagram-D57K4MC3-Cnt5-M7v.js",
+        "sha256": "a8bc86f7c3e8b3e69ac90f8d3af9fb4b7fe62f6e59938e71a537a8b2694a6d5f"
+      },
+      {
+        "name": "radar-ABXABTNO-BJUjB5TE.js",
+        "sha256": "807792752f1aead534c5545f7954105a51eacda385444e8f7c5a25a809b73863"
+      },
+      {
+        "name": "railroad-I3PHUGI6-lUicXWSu.js",
+        "sha256": "a26e08f033bd3598640aa3e7f1df48d06f6173cebcd6a03feb914851fb6a89a1"
+      },
+      {
+        "name": "railroad-abnf-LNEFI6M7-Dq0VMyw6.js",
+        "sha256": "d1fb9342b72417e5fddcef74e413701eb65f9ca17bdd7fe4de84eea9fe426031"
+      },
+      {
+        "name": "railroad-ebnf-DWYD2UWJ-CQQwq0Wx.js",
+        "sha256": "6653d3b265d616d08242cc6908b77b9574bdd89e0917606c588012a5abb54147"
+      },
+      {
+        "name": "railroad-peg-JR7BVNR7-0Jy924tX.js",
+        "sha256": "f16c51b243e0b1bc482ba77da4b51d98c119ac523de287055719ceec5dfc6c02"
+      },
+      {
+        "name": "railroadDiagram-Y72NRBL7-BDHA1efl.js",
+        "sha256": "53798eefca026a6b94e45bb6349290556137dd21aa646ab4e01e3b273b3fd6df"
+      },
+      {
+        "name": "requirementDiagram-EQYSW5RA-CIUt2qoA.js",
+        "sha256": "a8c2ec160db7daabb293f517663b8a060b02f878059717113babc9ae063e7813"
+      },
+      {
+        "name": "rolldown-runtime-Dd_uD5pT.js",
+        "sha256": "c5f0356f5d0918a3137e4e811fd18950efe8ac8f6bf84d1d4da7811c477a24d8"
+      },
+      {
+        "name": "rough.esm-Dy-Kn_BL.js",
+        "sha256": "ef405c5eaa3316c75428f63ec698e39993bdcc2da358dbc7ebd355d18901f63f"
+      },
+      {
+        "name": "sankeyDiagram-SY24JHO5-BubF58PR.js",
+        "sha256": "d8bd05235179c68b55f7ad7be5c2738e860fe6af1241977275ae090552165c39"
+      },
+      {
+        "name": "sequenceDiagram-BLEHNHQU-4AL2b85e.js",
+        "sha256": "9208205f018e2818e22d8f1ef9cdd894675df736c8308a5dc4bb78e1ae82d7c9"
+      },
+      {
+        "name": "sizeCapture-INFHLROL-3uHXrFqA.js",
+        "sha256": "43cda9dafa717894de5c07b396319d09d8704c534f1ca4c529736e4b03bf26b5"
+      },
+      {
+        "name": "src-Bn2B4fR0.js",
+        "sha256": "babd61b6bf999ce54ed470c678f92a2365f6234cab51b3f8c356aa458da8283a"
+      },
+      {
+        "name": "stateDiagram-v2-A6IESKWZ-4OcMmFb8.js",
+        "sha256": "a9430abd762dd349834dbf5d768665dfc64e8eadf4f4e3a80362511e035a3153"
+      },
+      {
+        "name": "swimlanes-B3ENRKFQ-G3NaicpQ.js",
+        "sha256": "eb2e68db935a041ef28930ce312cff4701e297e8099b6384dd5d936411732e3f"
+      },
+      {
+        "name": "swimlanesDiagram-AYQRV4AK-6bVTUTQP.js",
+        "sha256": "38dc51712165d2c4b3c448729f75a05d8a93e8bd295fd43323dff14410e79a58"
+      },
+      {
+        "name": "timeline-definition-JXYKGLGB-BfjBrMKr.js",
+        "sha256": "2024f9a903a01822706effd748716601c1fd96348179dd5f317ea0b3ffb9737c"
+      },
+      {
+        "name": "timer-_0FoOEJQ.js",
+        "sha256": "2991abd28f2227ebd0a74b7b1153a3d8678b5333ba5dc38673f0603c30d200d8"
+      },
+      {
+        "name": "treeView-D4JQ5SDB-EX3ZUEFF.js",
+        "sha256": "6f87e392923d66f9a9bae5454f87e378f7612694ba1e923e46aa92b79873924e"
+      },
+      {
+        "name": "treemap-SAJKECNS-Ctd5gbPu.js",
+        "sha256": "a225ac77802db691c701ea9f7304faf71c9bd2ab80fbf4a81922202e9f06f865"
+      },
+      {
+        "name": "triangle-alert-Dp7SZc_X.js",
+        "sha256": "85364ee02483c1fa0ca769789ae0436ff8141c8caefdfbec574225426668c013"
+      },
+      {
+        "name": "usecaseDiagram-WPOLBNNX-C6cVSEns.js",
+        "sha256": "9618e72e834df32bbfdb138cc265b984826bd46aeb09bbdab55108beef99e978"
+      },
+      {
+        "name": "vennDiagram-Q3Y3IDCW-Boo0GPBX.js",
+        "sha256": "9042ed821e0b53081b0b6474a32da8d7cdc192f7749dad2357947fee591e0171"
+      },
+      {
+        "name": "wardley-7MLQ67FV-DL2t_qIc.js",
+        "sha256": "f1e5f3a70f74eae4fe193a64b6bf2e481210643f1d99730b2d73253442091603"
+      },
+      {
+        "name": "wardleyDiagram-IVAIDKWA-CG5pQ6pf.js",
+        "sha256": "35ac75b4f971591beab313d77327478680d5ac428271755e0a092988a1233e31"
+      },
+      {
+        "name": "xychartDiagram-4URNHDU4-pq7U7vWY.js",
+        "sha256": "5b3deb57dece6c57732afd81065178d0d364d347cd08a89900d1f29aafbfbc0a"
+      }
+    ]
+  },
+  "hiddenWindowVerified": true,
+  "ticket35": {
+    "filteredSelectionClearsWhenVisibleRowsChange": true,
+    "shiftRangeSelectionVerified": true,
+    "keyboardSelectAllVerified": true,
+    "visibleSelectAllAndTriStateVerified": true,
+    "rowMenuActionsAndKeyboardCloseVerified": true,
+    "insertBeforeAfterAndUndoVerified": true,
+    "recoveryJournalReadyBeforeNextActionVerified": true,
+    "manualReorderVerified": true,
+    "duplicatePreservesRowsAndUndoVerified": true,
+    "trashWarningCountsNestedRowsAndEscapeCancels": true,
+    "dialogFocusReturnsToMenuTrigger": true,
+    "keyboardTrashConfirmAndUndoVerified": true,
+    "deleteDialogFocusContainmentVerified": true,
+    "lastVisibleRowDeletionMovesFocusToTable": true
+  },
+  "ticket36": {
+    "cellClipboardRemainsDistinct": true,
+    "fullRowClipboardVerified": true,
+    "keyboardPasteIgnoredFromPortaledPropertyPopoverVerified": true,
+    "destinationChangeRecomputesMappings": true,
+    "emptyDestinationDefaultPreviewVerified": true,
+    "mappingCancelAndFocusRestoreVerified": true,
+    "dialogTabContainmentVerified": true,
+    "keyboardConfirmVerified": true,
+    "keyboardPasteWithoutDestinationSelectionVerified": true,
+    "keyboardPasteIntoEmptyTableVerified": true,
+    "sameTablePasteCreatesFreshIdsAndUndoVerified": true,
+    "copyToEmptyAndPersistenceVerified": true,
+    "copiedContentAndUnmappedFrontmatterVerified": true,
+    "newIdsVerified": true,
+    "reopenPersistenceVerified": true,
+    "movePreservesSourceAndUndoVerified": true
+  },
+  "ticket46": {
+    "maxPropertyGuardIncludedInTestedBuild": false,
+    "createdInversePropertyId": "prop-mvsb3c7m-nmjun",
+    "createdInverseLinkedExistingValueVerified": true,
+    "inverseSchemaPersistedAfterReopenVerified": true,
+    "existingRelationProjectedAfterReopenVerified": true
+  },
+  "rendererPageErrors": [],
+  "cleanupVerified": true
+}

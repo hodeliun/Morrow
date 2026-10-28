@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Command } from '../core/commands';
 import type { DatabaseDef, PropDef, WorkspaceState } from '../core/model';
+import { childrenOf } from '../core/tree';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import { planTableAction } from '../core/tableActions';
 import {
   asTableActionPlan,
   planDuplicateRows,
+  planInsertRow,
   planMoveRows,
   planPasteRows,
   suggestRowPropertyMappings,
@@ -285,6 +287,103 @@ describe('table action persistence', () => {
     );
     expect((await readTableActionJournal(session))?.status).toBe('undone');
     await session.close();
+  });
+
+  it('runs insert-before, undo, then insert-after with a fresh journal and survives reopening', async () => {
+    const vault = new MemoryVault();
+    const { session, repository } = await open(vault);
+    await seed(session);
+
+    const beforePlan = planInsertRow(session.getState(), 'table', 'row-one', 'before', nextId(), 200);
+    if (!beforePlan.ok) throw new Error(beforePlan.error);
+    const beforeId = beforePlan.value.rowIds[0]!;
+    const before = await executeTableAction(
+      session,
+      asTableActionPlan(beforePlan.value, 'Insert row before'),
+      200,
+    );
+    expect(before.status).toBe('saved');
+    expect(childrenOf(session.getState().pages, 'table').map((row) => row.id)).toEqual([
+      beforeId,
+      'row-one',
+      'row-two',
+    ]);
+    const beforeJournal = await readTableActionJournal(session);
+    expect(beforeJournal?.status).toBe('complete');
+
+    const undoneBefore = await undoTableAction(session);
+    expect(undoneBefore.status).toBe('undone');
+    expect(childrenOf(session.getState().pages, 'table').map((row) => row.id)).toEqual(['row-one', 'row-two']);
+    expect((await readTableActionJournal(session))?.status).toBe('undone');
+
+    const afterPlan = planInsertRow(session.getState(), 'table', 'row-one', 'after', nextId(), 300);
+    if (!afterPlan.ok) throw new Error(afterPlan.error);
+    const afterId = afterPlan.value.rowIds[0]!;
+    const after = await executeTableAction(
+      session,
+      asTableActionPlan(afterPlan.value, 'Insert row after'),
+      300,
+    );
+    expect(after.status).toBe('saved');
+    expect(childrenOf(session.getState().pages, 'table').map((row) => row.id)).toEqual([
+      'row-one',
+      afterId,
+      'row-two',
+    ]);
+    const afterJournal = await readTableActionJournal(session);
+    expect(afterJournal?.status).toBe('complete');
+    expect(afterJournal?.label).toBe('Insert row after');
+    expect(afterJournal?.id).not.toBe(beforeJournal?.id);
+
+    crash(session, repository);
+    const reopened = await open(vault);
+    expect(childrenOf(reopened.session.getState().pages, 'table').map((row) => row.id)).toEqual([
+      'row-one',
+      afterId,
+      'row-two',
+    ]);
+    expect((await readTableActionJournal(reopened.session))?.label).toBe('Insert row after');
+    const undoneAfter = await undoTableAction(reopened.session);
+    expect(undoneAfter.status).toBe('undone');
+    expect(undoneAfter.status === 'undone' ? undoneAfter.journal.conflicts : []).toEqual([]);
+    expect(childrenOf(reopened.session.getState().pages, 'table').map((row) => row.id)).toEqual([
+      'row-one',
+      'row-two',
+    ]);
+    await reopened.session.close();
+  });
+
+  it('preserves a newly inserted row edited after reopening when its action is undone', async () => {
+    const vault = new MemoryVault();
+    const first = await open(vault);
+    await seed(first.session);
+
+    const planned = planInsertRow(first.session.getState(), 'table', 'row-one', 'after', nextId(), 200);
+    if (!planned.ok) throw new Error(planned.error);
+    const insertedId = planned.value.rowIds[0]!;
+    const inserted = await executeTableAction(
+      first.session,
+      asTableActionPlan(planned.value, 'Insert row after'),
+      200,
+    );
+    expect(inserted.status).toBe('saved');
+    crash(first.session, first.repository);
+
+    const reopened = await open(vault);
+    const edit = reopened.session.execute({
+      type: 'page.rename',
+      id: insertedId,
+      title: 'Kept after conflict',
+      now: 300,
+    });
+    expect(edit.ok).toBe(true);
+    expect(await reopened.session.flush()).toBe(true);
+
+    const undone = await undoTableAction(reopened.session);
+    expect(undone.status).toBe('undone');
+    expect(undone.status === 'undone' ? undone.journal.conflicts : []).toContain(insertedId);
+    expect(reopened.session.getState().pages[insertedId]?.title).toBe('Kept after conflict');
+    await reopened.session.close();
   });
 
   it('journals, reopens, and undoes a row copy together with its complete document', async () => {
