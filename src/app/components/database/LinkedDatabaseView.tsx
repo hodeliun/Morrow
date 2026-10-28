@@ -98,7 +98,7 @@ export function LinkedDatabaseViewNode({
               aria-label={t('database.showTitle')}
             >
               <Eye size={13} />
-              <span>{source ? displayTitle(source) : t('database.linkedView')}</span>
+              <span>{t('database.showTitle')}</span>
             </button>
           ) : source ? (
             <button type="button" className="linked-database-source" onClick={() => openPage(source.id)}>
@@ -108,6 +108,17 @@ export function LinkedDatabaseViewNode({
             </button>
           ) : (
             <strong>{t('database.linkedView')}</strong>
+          )}
+          {hideTitle && source && (
+            <button
+              type="button"
+              className="icon-button small linked-database-open-source"
+              title={t('database.openSourceDatabase')}
+              aria-label={t('database.openSourceDatabase')}
+              onClick={() => openPage(source.id)}
+            >
+              <ArrowUpRight size={14} aria-hidden="true" />
+            </button>
           )}
           {!hideTitle && source && view && editor.isEditable && (
             <DraftInput
@@ -121,7 +132,7 @@ export function LinkedDatabaseViewNode({
               }
             />
           )}
-          {editor.isEditable && (
+          {editor.isEditable && (!hideTitle || !source) && (
             <select
               className="text-input small linked-database-picker"
               aria-label={t('database.chooseSource')}

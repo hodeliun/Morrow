@@ -1016,9 +1016,7 @@ function Toolbar({
   const activeCount = filterCount + (view.search?.trim() ? 1 : 0);
   const updateGroups = (change: (groups: FilterGroup[]) => FilterGroup[]) =>
     saveView((current) => withFilterGroups(current, change(filterGroupsForView(current))));
-  const filterButton = useRef<HTMLButtonElement>(null);
   const optionsButton = useRef<HTMLButtonElement>(null);
-  const formatButton = useRef<HTMLButtonElement>(null);
   const handledFormatRequest = useRef<string | null>(null);
   const [formatDefaultProp, setFormatDefaultProp] = useState(TITLE_PROP);
   const handledFilterRequest = useRef<string | null>(null);
@@ -1027,8 +1025,9 @@ function Toolbar({
     updateGroupsRef.current = updateGroups;
   });
   useEffect(() => {
-    const anchor = filterButton.current;
+    const anchor = optionsButton.current;
     if (
+      !editable ||
       !requestedFilter ||
       handledFilterRequest.current === requestedFilter.token ||
       !anchor ||
@@ -1051,71 +1050,48 @@ function Toolbar({
         : [{ id: newId(), logic: 'and', filters: [rule] }],
     );
     setPanel({ kind: 'filter', anchor });
-  }, [database, requestedFilter]);
+  }, [database, editable, requestedFilter]);
   useEffect(() => {
     if (
+      !editable ||
       !requestedFormat ||
       handledFormatRequest.current === requestedFormat.token ||
-      !formatButton.current ||
+      !optionsButton.current ||
       !database.properties.some((prop) => prop.id === requestedFormat.propId)
     )
       return;
     handledFormatRequest.current = requestedFormat.token;
     setFormatDefaultProp(requestedFormat.propId);
-    setPanel({ kind: 'format', anchor: formatButton.current });
-  }, [database, requestedFormat]);
+    setPanel({ kind: 'format', anchor: optionsButton.current });
+  }, [database, editable, requestedFormat]);
   return (
     <div className="db-tools">
-      <button
-        ref={filterButton}
-        type="button"
-        className={`text-tool${filterCount ? ' is-active' : ''}`}
-        onClick={open('filter')}
-        disabled={!editable}
-      >
-        <Filter size={13} /> {t('database.filter')}
-        {filterCount ? ` ${filterCount}` : ''}
-      </button>
-      <button
-        type="button"
-        className={`text-tool${view.sorts.length ? ' is-active' : ''}`}
-        onClick={open('sort')}
-        disabled={!editable}
-      >
-        <ArrowDownUp size={13} /> {t('database.sort')}
-        {view.sorts.length ? ` ${view.sorts.length}` : ''}
-      </button>
-      <button type="button" className="text-tool" onClick={open('layout')} disabled={!editable}>
-        <Settings2 size={13} /> {t('slash.sections.layout')}
-      </button>
-      <button type="button" className="text-tool" onClick={open('properties')}>
-        <Eye size={13} /> {t('database.properties')}
-      </button>
-      <button type="button" className="text-tool" onClick={open('summary')} disabled={!editable}>
-        <Calculator size={13} /> {t('database.summary')}
-      </button>
-      <button
-        ref={formatButton}
-        type="button"
-        className="text-tool"
-        onClick={(event) => {
-          setFormatDefaultProp(TITLE_PROP);
-          setPanel({ kind: 'format', anchor: event.currentTarget });
-        }}
-        disabled={!editable}
-      >
-        <Paintbrush size={13} /> {t('database.conditionalFormatting')}
-      </button>
       <button
         ref={optionsButton}
         type="button"
         className={`text-tool db-options-button${panel?.kind === 'options' ? ' is-active' : ''}`}
         onClick={open('options')}
-        disabled={!editable}
         title={t('database.tableOptions')}
-        aria-label={t('database.tableOptions')}
+        aria-label={t('database.tableOptionsState', {
+          filters: filterCount,
+          sorts: view.sorts.length,
+          search: view.search?.trim() ? t('database.searchActive') : t('database.searchInactive'),
+        })}
+        aria-haspopup="dialog"
+        aria-expanded={panel?.kind === 'options'}
       >
-        <SlidersHorizontal size={13} /> {t('database.options')}
+        <SlidersHorizontal size={13} aria-hidden="true" />
+        <span>{t('database.options')}</span>
+        {filterCount > 0 && (
+          <span className="db-options-count" aria-hidden="true">
+            <Filter size={10} /> {filterCount}
+          </span>
+        )}
+        {view.sorts.length > 0 && (
+          <span className="db-options-count" aria-hidden="true">
+            <ArrowDownUp size={10} /> {view.sorts.length}
+          </span>
+        )}
       </button>
       <label className="db-search">
         <Search size={13} aria-hidden="true" />
@@ -1138,6 +1114,7 @@ function Toolbar({
           <button
             type="button"
             className="link-button"
+            disabled={!editable}
             onClick={() => saveView((current) => ({ ...current, filters: [], filterGroups: [], search: '' }))}
           >
             {t('database.clearFilters')}
@@ -1155,6 +1132,7 @@ function Toolbar({
             <button
               type="button"
               className="db-options-item"
+              disabled={!editable}
               onClick={() => setPanel({ kind: 'filter', anchor: panel.anchor })}
             >
               <Filter size={14} />
@@ -1164,6 +1142,7 @@ function Toolbar({
             <button
               type="button"
               className="db-options-item"
+              disabled={!editable}
               onClick={() => setPanel({ kind: 'sort', anchor: panel.anchor })}
             >
               <ArrowDownUp size={14} />
@@ -1173,6 +1152,7 @@ function Toolbar({
             <button
               type="button"
               className="db-options-item"
+              disabled={!editable}
               onClick={() => setPanel({ kind: 'layout', anchor: panel.anchor })}
             >
               <Settings2 size={14} />
@@ -1189,6 +1169,7 @@ function Toolbar({
             <button
               type="button"
               className="db-options-item"
+              disabled={!editable}
               onClick={() => setPanel({ kind: 'summary', anchor: panel.anchor })}
             >
               <Calculator size={14} />
@@ -1197,6 +1178,7 @@ function Toolbar({
             <button
               type="button"
               className="db-options-item"
+              disabled={!editable}
               onClick={() => {
                 setFormatDefaultProp(TITLE_PROP);
                 setPanel({ kind: 'format', anchor: panel.anchor });
@@ -1216,6 +1198,7 @@ function Toolbar({
               <input
                 type="checkbox"
                 checked={view.hideTitle === true}
+                disabled={!editable}
                 onChange={(event) => saveView((current) => ({ ...current, hideTitle: event.target.checked }))}
               />
             </label>
@@ -1224,6 +1207,7 @@ function Toolbar({
               <input
                 type="checkbox"
                 checked={view.collapsed === true}
+                disabled={!editable}
                 onChange={(event) => saveView((current) => ({ ...current, collapsed: event.target.checked }))}
               />
             </label>
@@ -2824,7 +2808,7 @@ function TableView({
     }
   };
 
-  const handleRowSelectorKeyDown = (event: React.KeyboardEvent<HTMLInputElement>, rowId: PageId) => {
+  const handleRowSelectorKeyDown = (event: React.KeyboardEvent<HTMLElement>, rowId: PageId) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
       event.preventDefault();
       selectRowsExplicitly([...visibleRowIds]);
@@ -4166,12 +4150,28 @@ function TableView({
                           type="button"
                           className="db-row-drag"
                           draggable={canReorderRows}
-                          aria-label={t('database.rowDrag', { name: displayTitle(row) })}
+                          aria-label={t('database.rowGrip', { name: displayTitle(row) })}
+                          aria-pressed={selectedRowIdSet.has(row.id)}
+                          aria-haspopup="menu"
+                          aria-expanded={rowMenu?.rowId === row.id}
+                          aria-keyshortcuts="Enter Space Shift+F10 ContextMenu"
                           title={
                             canReorderRows
                               ? t('database.rowDrag', { name: displayTitle(row) })
                               : rowReorderHint
                           }
+                          onClick={(event) => {
+                            const additive = event.ctrlKey || event.metaKey;
+                            changeRowSelection(row.id, additive ? !selectedRowIdSet.has(row.id) : true, {
+                              shift: event.shiftKey,
+                              additive,
+                            });
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setRowMenu({ rowId: row.id, anchor: event.currentTarget });
+                          }}
+                          onKeyDown={(event) => handleRowSelectorKeyDown(event, row.id)}
                           onDragStart={(event) => {
                             const ids = selectedRowIdSet.has(row.id) ? selectedVisibleRowIds : [row.id];
                             dragRowIds.current = ids.filter((id) => visibleRowIdSet.has(id));
@@ -4416,6 +4416,7 @@ function TableView({
               {editable && <td className="db-row-controls db-footer-cell" />}
               <th
                 scope="row"
+                data-col-id={TITLE_PROP}
                 className={`db-col-title db-footer-cell${frozenIndex === -1 ? '' : ' db-frozen'}`}
                 style={frozenStyle(-1)}
               >
@@ -4441,6 +4442,8 @@ function TableView({
                   <button
                     type="button"
                     className="db-calc-trigger"
+                    aria-label={t('database.calculateSummaryFor', { name: t('database.name') })}
+                    title={t('database.calculateSummaryFor', { name: t('database.name') })}
                     onClick={(event) => setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })}
                   >
                     {t('database.calculate')}
@@ -4453,11 +4456,11 @@ function TableView({
                 return (
                   <td
                     key={prop.id}
+                    data-col-id={prop.id}
                     className={`db-footer-cell${cellIndex <= frozenIndex ? ' db-frozen' : ''}`}
                     style={{
                       ...frozenStyle(cellIndex),
-                      textAlign:
-                        view.align?.[prop.id] ?? (isNumericPropertyType(prop.type) ? 'right' : 'left'),
+                      textAlign: view.align?.[prop.id] ?? 'left',
                     }}
                   >
                     {operation ? (
@@ -4509,6 +4512,8 @@ function TableView({
                       <button
                         type="button"
                         className="db-calc-trigger"
+                        aria-label={t('database.calculateSummaryFor', { name: prop.name })}
+                        title={t('database.calculateSummaryFor', { name: prop.name })}
                         onClick={(event) =>
                           setSummaryAnchor({ propId: prop.id, anchor: event.currentTarget })
                         }

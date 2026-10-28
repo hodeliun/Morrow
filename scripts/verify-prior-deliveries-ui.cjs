@@ -426,6 +426,24 @@ async function clickMatchingButton(locator, pattern, description = pattern.toStr
   assert.fail(`Could not find an actionable button matching ${description}. Available labels: ${labels.join(' | ')}`);
 }
 
+async function openDatabaseOptions(page, database) {
+  const button = database.locator('.db-options-button');
+  assert.equal(await button.count(), 1, 'Each database must expose one Options control.');
+  await button.click();
+  const options = page.locator('.popover.db-panel .db-options-menu').last();
+  await options.waitFor({ state: 'visible' });
+  return options;
+}
+
+async function openDatabaseOption(page, database, pattern, description) {
+  const options = await openDatabaseOptions(page, database);
+  const labels = await options.locator('.db-options-item').allInnerTexts();
+  const selected = await clickMatchingButton(options.locator('.db-options-item'), pattern, description);
+  const panel = page.locator('.popover.db-panel').last();
+  await panel.waitFor({ state: 'visible' });
+  return { labels, selected, panel };
+}
+
 async function openBlockMenu(page, selector, text) {
   const block = page.locator(`.ProseMirror ${selector}`).filter({ hasText: text }).first();
   await block.scrollIntoViewIfNeeded();
@@ -928,9 +946,7 @@ async function verify28(evidence) {
   await database.locator('.db-filter-reset').click();
   await page.waitForFunction(() => document.querySelector('.database tbody')?.querySelectorAll('tr').length === 3);
 
-  await database.locator('.db-options-button').click();
-  const options = page.locator('.popover.db-panel .db-options-menu').last();
-  await options.waitFor({ state: 'visible' });
+  const options = await openDatabaseOptions(page, database);
   const optionsLabels = await options.locator('.db-options-item').allInnerTexts();
   assert.ok(optionsLabels.some((label) => /filter|filt?r|filtr|filtro|filtrar/i.test(label)));
   await clickMatchingButton(options.locator('.db-options-item'), /filter|filt?r|filtr|filtro|filtrar/i, 'open filter options');
@@ -1013,11 +1029,13 @@ async function verify29(evidence) {
 async function verify38(evidence) {
   const { page, vaultDir } = evidence;
   await openPage(page, 'Financeiro sintético');
-  await page.locator('.db-options-button').click();
-  const options = page.locator('.db-panel .db-options-menu').last();
-  await clickMatchingButton(options.locator('.db-options-item'), /conditional formatting|formata[cç][aã]o condicional/i, 'open conditional formatting');
-  const panel = page.locator('.popover.db-panel').last();
-  await panel.waitFor({ state: 'visible' });
+  const database = page.locator('.database').first();
+  const { panel } = await openDatabaseOption(
+    page,
+    database,
+    /conditional formatting|formata[cç][aã]o condicional/i,
+    'open conditional formatting',
+  );
   await clickMatchingButton(panel.locator('button.link-button'), /add condition|adicionar condi[cç][aã]o/i, 'add a conditional rule');
   const rule = panel.locator('.db-conditional-rule').last();
   await rule.waitFor({ state: 'visible' });
@@ -1085,6 +1103,17 @@ async function verify39(evidence) {
   const { page, vaultDir } = evidence;
   await openPage(page, 'Financeiro sintético');
   const table = page.locator('.database table').first();
+  const database = page.locator('.database').first();
+  const summaryOptions = await openDatabaseOption(
+    page,
+    database,
+    /calculate|calcular|resumen|resumo/i,
+    'open summary options',
+  );
+  const summaryFields = await summaryOptions.panel.locator('label.field').allInnerTexts();
+  assert.ok(summaryFields.some((label) => /Valor/.test(label)), `Summary options must expose Valor. Fields: ${summaryFields.join(' | ')}`);
+  assert.ok(summaryFields.some((label) => /Categoria/.test(label)), `Summary options must expose Categoria. Fields: ${summaryFields.join(' | ')}`);
+  await page.keyboard.press('Escape');
   await chooseSummary(page, table, 'Valor', /^\s*(?:sum|soma)\b/i);
   await chooseSummary(page, table, 'Categoria', /count values|contar.*preench/i);
   let footer = await table.locator('tfoot tr').innerText();

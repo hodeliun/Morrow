@@ -755,6 +755,18 @@ textarea.text-input.small {
 .db-tools .text-tool.is-active {
   color: var(--accent-strong);
 }
+.db-options-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px;
+  border-radius: 8px;
+  background: var(--active);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
 .db-search {
   display: flex;
   flex: 1 1 180px;
@@ -1163,6 +1175,10 @@ textarea.text-input.small {
 .db-row-menu-trigger:focus-visible {
   opacity: 1;
 }
+.db-table tr.is-row-selected .db-row-drag,
+.db-table tr.is-row-selected .db-row-menu-trigger {
+  opacity: 1;
+}
 .db-row-drag[draggable='true'] {
   cursor: grab;
 }
@@ -1175,6 +1191,10 @@ textarea.text-input.small {
 .db-row-menu-trigger:focus-visible {
   color: var(--text);
   background: var(--surface-hover, var(--surface));
+}
+.db-row-drag:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 1px;
 }
 .db-row-controls-header .db-row-select {
   opacity: 1;
@@ -1420,6 +1440,47 @@ textarea.text-input.small {
   color: var(--text-muted);
   font-size: var(--text-sm);
   padding: 0 8px;
+}
+.prose .database table.db-table {
+  table-layout: fixed;
+  min-width: 100%;
+  font-size: inherit;
+  line-height: inherit;
+  margin: 0;
+}
+.prose .database .db-table th,
+.prose .database .db-table td {
+  border-top: 0;
+  border-left: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  vertical-align: middle;
+}
+.prose .database .db-table th:last-child,
+.prose .database .db-table td:last-child {
+  border-right: 0;
+}
+.prose .database .db-table th {
+  padding: 0 8px;
+  font-weight: 500;
+}
+.prose .database .db-table td {
+  padding: 0;
+}
+.prose .database .db-table th > *,
+.prose .database .db-table td > * {
+  margin: 0;
+}
+.prose .database .db-table tfoot th,
+.prose .database .db-table tfoot td {
+  padding: 4px 8px;
+  border-top: 2px solid var(--border);
+  border-bottom: 0;
+  background: var(--surface);
+}
+.prose .database .db-table .db-frozen {
+  background: var(--bg);
 }
 .db-table .db-col-add {
   min-width: 36px;
@@ -4067,6 +4128,10 @@ td:hover .prop-empty,
   opacity: 1;
   background: var(--hover);
   color: var(--text);
+}
+.db-calc-trigger:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 1px;
 }
 .db-footer-summary {
   display: inline-flex;

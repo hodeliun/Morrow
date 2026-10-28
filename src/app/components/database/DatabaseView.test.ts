@@ -35,6 +35,7 @@ describe('database column descriptions', () => {
           description: 'A synthetic description for this column.',
         },
         { id: 'unlabeled', name: 'No description', type: 'text', options: [] },
+        { id: 'score', name: 'Score', type: 'number', options: [] },
       ],
       views: [],
     };
@@ -77,11 +78,11 @@ describe('database column descriptions', () => {
     });
     if (!emptyCreated.ok) throw new Error(emptyCreated.error);
 
-    const render = (page: PageMeta, embeddedView?: typeof view) =>
+    const render = (page: PageMeta, embeddedView?: typeof view, editable = true) =>
       renderToStaticMarkup(
         createElement(DatabaseView, {
           page,
-          editable: true,
+          editable,
           ...(embeddedView ? { embeddedView, onEmbeddedViewChange: () => {} } : {}),
         }),
       );
@@ -89,6 +90,18 @@ describe('database column descriptions', () => {
     const mainMarkup = render(initialPage);
     const linkedMarkup = render(initialPage, view);
     const emptyMarkup = render(session.getState().pages['synthetic-empty-database']!);
+    const configuredView = {
+      ...view,
+      filters: [{ id: 'active-filter', prop: 'summary', op: 'contains' as const, value: 'Synthetic' }],
+      sorts: [{ prop: 'score', dir: 'asc' as const }],
+      search: 'row',
+    };
+    const configuredPage = {
+      ...initialPage,
+      database: { ...initialPage.database!, views: [configuredView] },
+    };
+    const configuredMarkup = render(configuredPage);
+    const readOnlyMarkup = render(initialPage, undefined, false);
 
     const originalLocale = getPreferences().locale;
     try {
@@ -126,9 +139,43 @@ describe('database column descriptions', () => {
     }
     expect(linkedMarkup).toContain('is-linked-view');
     expect(mainMarkup).toContain('class="db-row-drag"');
+    expect(mainMarkup).toContain(
+      `aria-label="${t('database.rowGrip', { name: 'Synthetic row one' })}"`,
+    );
+    expect(mainMarkup).toContain('aria-haspopup="menu"');
+    expect(mainMarkup).toContain('aria-pressed="false"');
     expect(emptyMarkup).toContain('class="db-table-view"');
     expect(emptyMarkup).toContain('tabindex="0"');
     expect(emptyMarkup).toContain('role="group"');
+
+    const scoreCellTags = [...mainMarkup.matchAll(/<(?:td|th)\b[^>]*data-col-id="score"[^>]*>/g)].map(
+      ([tag]) => tag!,
+    );
+    expect(scoreCellTags).toHaveLength(3);
+    expect(scoreCellTags.every((tag) => tag.includes('text-align:left'))).toBe(true);
+    const alignedPage = {
+      ...initialPage,
+      database: { ...initialPage.database!, views: [{ ...view, align: { score: 'right' as const } }] },
+    };
+    const configuredScoreCellTags = [
+      ...render(alignedPage).matchAll(/<(?:td|th)\b[^>]*data-col-id="score"[^>]*>/g),
+    ].map(([tag]) => tag!);
+    expect(configuredScoreCellTags).toHaveLength(3);
+    expect(configuredScoreCellTags.every((tag) => tag.includes('text-align:right'))).toBe(true);
+    expect(configuredMarkup.match(/class="text-tool/g)).toHaveLength(1);
+    expect(configuredMarkup).toContain(
+      `aria-label="${t('database.tableOptionsState', {
+        filters: 1,
+        sorts: 1,
+        search: t('database.searchActive'),
+      })}"`,
+    );
+    expect(configuredMarkup.match(/class="db-options-count"/g)).toHaveLength(2);
+    const readOnlyOptionsControl = readOnlyMarkup.match(
+      /<button(?=[^>]*class="text-tool db-options-button[^"]*")[^>]*>/,
+    )?.[0];
+    expect(readOnlyOptionsControl).toBeTruthy();
+    expect(readOnlyOptionsControl).not.toContain('disabled');
 
     expect(
       updateProp('synthetic-database', 'summary', (property) => ({
