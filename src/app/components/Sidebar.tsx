@@ -41,6 +41,7 @@ import {
 } from '../../core/tree';
 import { collectCards, dueCards } from '../../core/flashcards';
 import { collectTags } from '../../core/tags';
+import { isPageTreeFileVisible } from '../../core/vault/fileCatalog';
 import { useReviewLog } from '../review';
 import { formatShortcut, runAction } from '../actions';
 import { t, useTranslation } from '../i18n';
@@ -50,6 +51,7 @@ import { chooseVaultFolder, createVault, switchVault } from '../vaults';
 import { getSession } from '../workspace';
 import { createPage, expandPage, importMarkdown, movePage, openToday, trashPage } from '../operations';
 import { getPreferences, setPreferences, usePreferences } from '../platform/preferences';
+import { useFileCatalogPreferences } from '../platform/fileCatalogPreferences';
 import { navigate, openPage, useActiveRoute } from '../router';
 import { openDialog, setUi, useUi } from '../ui';
 import { run, useWorkspace } from '../workspace';
@@ -58,6 +60,7 @@ import { pageMenuEntries } from './pageMenu';
 import { PageGlyph } from './Emoji';
 import { Logo } from './primitives';
 import { PAGE_DRAG_TYPE } from '../editor/PageLink';
+import { FileCatalog } from './FileCatalog';
 
 type DropZone = 'before' | 'inside' | 'after';
 
@@ -141,11 +144,26 @@ export function Sidebar() {
   const state = useWorkspace();
   const route = useActiveRoute();
   const prefs = usePreferences();
+  const session = getSession();
+  const location = session.location;
+  const fileCatalogPreferences = useFileCatalogPreferences(location ?? '');
   const activeId = route.name === 'page' ? route.id : null;
   const live = useMemo(() => livePages(state.pages), [state.pages]);
+  const visiblePageIds = useMemo(
+    () =>
+      new Set(
+        live
+          .filter((page) => isPageTreeFileVisible(session.pathOf(page.id), fileCatalogPreferences))
+          .map((page) => page.id),
+      ),
+    [fileCatalogPreferences, live, session],
+  );
   const favorites = useMemo(
-    () => live.filter((page) => page.favorite).sort((a, b) => displayTitle(a).localeCompare(displayTitle(b))),
-    [live],
+    () =>
+      live
+        .filter((page) => page.favorite && visiblePageIds.has(page.id))
+        .sort((a, b) => displayTitle(a).localeCompare(displayTitle(b))),
+    [live, visiblePageIds],
   );
   const trashCount = useMemo(() => trashedPages(state.pages).length, [state.pages]);
   const openTasks = useMemo(() => collectTasks(state).filter((task) => !task.checked).length, [state]);
@@ -158,7 +176,6 @@ export function Sidebar() {
     anchor: HTMLElement;
     recent: Array<{ path: string; name: string; exists: boolean }>;
   } | null>(null);
-  const location = getSession().location;
   const todayKey = dateKey(new Date());
   const isToday = activeId !== null && state.pages[activeId]?.dailyDate === todayKey;
   const resizing = useRef(false);
@@ -333,9 +350,15 @@ export function Sidebar() {
               </button>
             </div>
           ) : (
-            <PageTree state={state} activeId={activeId} expanded={prefs.expanded} />
+            <PageTree
+              state={state}
+              activeId={activeId}
+              expanded={prefs.expanded}
+              visiblePageIds={visiblePageIds}
+            />
           )}
         </section>
+        <FileCatalog />
       </div>
 
       <div className="sidebar-footer">
@@ -413,11 +436,12 @@ interface TreeProps {
   state: WorkspaceState;
   activeId: PageId | null;
   expanded: string[];
+  visiblePageIds: Set<PageId>;
 }
 
 const SUBPAGES_SHOWN = 50;
 
-function PageTree({ state, activeId, expanded }: TreeProps) {
+function PageTree({ state, activeId, expanded, visiblePageIds }: TreeProps) {
   const ui = useUi();
   const [drop, setDrop] = useState<{ id: PageId; zone: DropZone } | null>(null);
   const [menu, setMenu] = useState<{ id: PageId; anchor: HTMLElement } | null>(null);
@@ -425,6 +449,35 @@ function PageTree({ state, activeId, expanded }: TreeProps) {
   const treeRef = useRef<HTMLUListElement>(null);
   // how many subpages each folder shows, a journal of years opens with its latest days and the rest on request
   const [limits, setLimits] = useState<Record<string, number>>({});
+
+  const visibleTree = useMemo(() => {
+    const childrenByParent = new Map<PageId | null, PageMeta[]>();
+    const visualParentById = new Map<PageId, PageId | null>();
+    const builtParents = new Set<PageId | null>();
+
+    const buildChildren = (parentId: PageId | null) => {
+      if (builtParents.has(parentId)) return;
+      builtParents.add(parentId);
+      const visible: PageMeta[] = [];
+      const visited = new Set<PageId>();
+      const collect = (actualParentId: PageId | null) => {
+        for (const page of childrenOf(state.pages, actualParentId)) {
+          if (visited.has(page.id)) continue;
+          visited.add(page.id);
+          if (visiblePageIds.has(page.id)) {
+            visible.push(page);
+            visualParentById.set(page.id, parentId);
+          } else collect(page.id);
+        }
+      };
+      collect(parentId);
+      childrenByParent.set(parentId, visible);
+      for (const page of visible) buildChildren(page.id);
+    };
+
+    buildChildren(null);
+    return { childrenByParent, visualParentById };
+  }, [state.pages, visiblePageIds]);
 
   const ancestorIds = useMemo(
     () => new Set(activeId ? ancestorsOf(state.pages, activeId).map((page) => page.id) : []),
@@ -468,7 +521,7 @@ function PageTree({ state, activeId, expanded }: TreeProps) {
     const id = current!.dataset.pageId!;
     const page = state.pages[id];
     if (!page) return;
-    const hasChildren = childrenOf(state.pages, id).length > 0;
+    const hasChildren = (visibleTree.childrenByParent.get(id)?.length ?? 0) > 0;
     const focus = (row: HTMLElement | undefined) => row?.focus();
     switch (event.key) {
       case 'ArrowDown':
@@ -487,7 +540,10 @@ function PageTree({ state, activeId, expanded }: TreeProps) {
       case 'ArrowLeft':
         event.preventDefault();
         if (hasChildren && expandedSet.has(id)) toggle(id);
-        else if (page.parentId) focus(rows.find((row) => row.dataset.pageId === page.parentId));
+        else {
+          const visualParentId = visibleTree.visualParentById.get(id);
+          if (visualParentId) focus(rows.find((row) => row.dataset.pageId === visualParentId));
+        }
         break;
       case 'Enter':
         event.preventDefault();
@@ -515,7 +571,7 @@ function PageTree({ state, activeId, expanded }: TreeProps) {
   };
 
   const renderLevel = (parentId: PageId | null, depth: number): React.ReactNode => {
-    const all = childrenOf(state.pages, parentId);
+    const all = visibleTree.childrenByParent.get(parentId) ?? [];
     if (all.length === 0) return null;
     const key = parentId ?? '';
     let limit = limits[key] ?? SUBPAGES_SHOWN;
@@ -527,7 +583,7 @@ function PageTree({ state, activeId, expanded }: TreeProps) {
     const children = all.length > limit ? all.slice(0, limit) : all;
     const rest = all.length - children.length;
     const rows = children.map((page) => {
-      const hasChildren = childrenOf(state.pages, page.id).length > 0;
+      const hasChildren = (visibleTree.childrenByParent.get(page.id)?.length ?? 0) > 0;
       const isOpen = expandedSet.has(page.id);
       return (
         <li key={page.id} role="none">

@@ -33,6 +33,7 @@ import { displayTitle } from '../../core/model';
 import type { NoteStyle, PageId } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
 import { NoteStyleControls } from './NoteStyleControls';
+import { FileCatalogSettings } from './FileCatalogSettings';
 
 interface SectionDef {
   id: SettingsSection;
@@ -499,6 +500,7 @@ function VaultSettings() {
           </SettingRow>
         )}
       </SettingsGroup>
+      {vault && <FileCatalogSettings location={vault} />}
       <SettingsGroup title={t('settings.vault.filesTitle')}>
         <SettingRow label={t('settings.vault.exportBackup')} help={t('settings.vault.exportBackupHelp')}>
           <button type="button" className="button small" onClick={() => void exportBackup()}>
