@@ -3,6 +3,8 @@ import {
   summarizeProperty,
   conditionalFormatForRow,
   conditionalFormatForCell,
+  resolveConditionalFormatForCell,
+  resolveConditionalFormatForRow,
 } from './database';
 import { normalizeDatabase } from './migrations';
 import { managedFrontmatter, composeFrontmatter, renderPageText, readPageText } from './vault/pageFile';
@@ -296,6 +298,189 @@ describe('Delivery 2: Conditional Formatting with Formulas & Custom Colors (#38)
     };
 
     expect(conditionalFormatForRow(rows[0]!, [firstRule, secondRule], database, state)).toBe(firstRule);
+  });
+});
+
+describe('T09: conditional formatting resolution', () => {
+  const scoreProp: PropDef = { id: 'score', name: 'Score', type: 'number', options: [] };
+  const baseView = {
+    id: 'view-1', name: 'Default', type: 'table' as const,
+    filters: [], sorts: [], groupBy: null, dateProp: null, hidden: [],
+  };
+
+  it('uses normalized simple mode with formula: empty and applies numeric thresholds strictly', () => {
+    const { database, rows, state } = testState([scoreProp], [
+      { id: 'above', title: 'Above', values: { score: 91 } },
+      { id: 'equal', title: 'Equal', values: { score: 90 } },
+      { id: 'below', title: 'Below', values: { score: 89 } },
+    ]);
+    const normalized = normalizeDatabase({
+      properties: [scoreProp],
+      views: [{
+        ...baseView,
+        conditionalFormats: [{
+          id: 'above-90', prop: 'score', op: 'gt', value: 90, scope: 'row', color: 'green',
+          mode: 'simple', formula: '',
+        }],
+      }],
+    })!;
+    const view = normalized.views[0]!;
+    expect(view.conditionalFormats?.[0]).toMatchObject({ mode: 'simple', formula: '' });
+    expect(
+      conditionalFormatForRow(rows[0]!, view.conditionalFormats, database, state),
+    ).toBe(view.conditionalFormats![0]);
+    expect(conditionalFormatForRow(rows[1]!, view.conditionalFormats, database, state)).toBeNull();
+    expect(resolveConditionalFormatForRow(rows[0]!, view, database, state).backgroundColor).toBe('green');
+    expect(resolveConditionalFormatForRow(rows[1]!, view, database, state).matchedRuleIds).toEqual([]);
+    expect(resolveConditionalFormatForRow(rows[2]!, view, database, state).matchedRuleIds).toEqual([]);
+  });
+
+  it('diagnoses context-invalid simple rules and keeps numeric-string thresholds compatible', () => {
+    const labelProp: PropDef = { id: 'label', name: 'Label', type: 'text', options: [] };
+    const { database, rows, state } = testState([scoreProp, labelProp], [
+      { id: 'above', title: 'Above', values: { score: 95, label: 'ready' } },
+      { id: 'equal', title: 'Equal', values: { score: 90, label: 'ready' } },
+    ]);
+    const makeView = (rule: Record<string, unknown>) => normalizeDatabase({
+      properties: [scoreProp, labelProp],
+      views: [{ ...baseView, conditionalFormats: [{ scope: 'row', color: 'red', ...rule }] }],
+    })!.views[0]!;
+    const invalidRules = [
+      { id: 'bad-not', prop: 'score', op: 'isNot', value: 'oops' },
+      { id: 'bad-gt', prop: 'score', op: 'gt', value: ' ' },
+      { id: 'missing-empty', prop: 'missing', op: 'empty', value: null },
+      { id: 'wrong-op', prop: 'label', op: 'gt', value: 10 },
+    ];
+
+    for (const rule of invalidRules) {
+      const result = resolveConditionalFormatForRow(rows[0]!, makeView(rule), database, state);
+      expect(result.matchedRuleIds).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+    }
+
+    const numericStringRule = makeView({ id: 'numeric-string', prop: 'score', op: 'gt', value: '90' });
+    expect(resolveConditionalFormatForRow(rows[0]!, numericStringRule, database, state).matchedRuleIds)
+      .toEqual(['numeric-string']);
+    expect(resolveConditionalFormatForRow(rows[1]!, numericStringRule, database, state).matchedRuleIds).toEqual([]);
+  });
+
+  it('validates control references before matching and uses a resolved control value', () => {
+    const { database, rows, state } = testState([scoreProp], [
+      { id: 'above', title: 'Above', values: { score: 95 } },
+    ]);
+    const makeView = (controlRef: { pageId: string; controlId: string }) => normalizeDatabase({
+      properties: [scoreProp],
+      views: [{ ...baseView, conditionalFormats: [{
+        id: 'controlled', prop: 'score', op: 'gt', value: 0, scope: 'row', color: 'red', controlRef,
+      }] }],
+    })!.views[0]!;
+
+    const unresolved = resolveConditionalFormatForRow(
+      rows[0]!, makeView({ pageId: 'missing-page', controlId: 'threshold' }), database, state,
+    );
+    expect(unresolved.matchedRuleIds).toEqual([]);
+    expect(unresolved.diagnostics[0]?.message).toContain('control is unavailable');
+
+    const databasePage = state.pages['test-db']!;
+    const controlState: WorkspaceState = {
+      ...state,
+      pages: {
+        ...state.pages,
+        'test-db': {
+          ...databasePage,
+          controls: [{
+            id: 'threshold', name: 'Threshold', type: 'number', value: 90, defaultValue: 90,
+            options: [],
+          }],
+        },
+      },
+    };
+    const resolved = resolveConditionalFormatForRow(
+      rows[0]!, makeView({ pageId: 'test-db', controlId: 'threshold' }), database, controlState,
+    );
+    expect(resolved.matchedRuleIds).toEqual(['controlled']);
+  });
+
+  it('composes row and cell styles in one global order, with later values overriding per attribute', () => {
+    const { database, rows, state } = testState([scoreProp], [
+      { id: 'row', title: 'Row', values: { score: 95 } },
+    ]);
+    const rowRule = {
+      id: 'row-rule', prop: 'score', op: 'gt', value: 0, scope: 'row', color: 'blue',
+      textColor: 'yellow', bold: true, italic: true,
+    };
+    const cellRule = {
+      id: 'cell-rule', prop: 'score', op: 'gt', value: 0, scope: 'cell', color: 'red',
+      bold: false, italic: false,
+    };
+    const makeView = (conditionalFormats: unknown[]) => normalizeDatabase({
+      properties: [scoreProp], views: [{ ...baseView, conditionalFormats }],
+    })!.views[0]!;
+
+    const rowThenCell = resolveConditionalFormatForCell(
+      rows[0]!, 'score', makeView([rowRule, cellRule]), database, state,
+    );
+    expect(rowThenCell).toMatchObject({
+      backgroundColor: 'red', textColor: 'yellow', bold: false, italic: false,
+      matchedRuleIds: ['row-rule', 'cell-rule'],
+    });
+    expect(resolveConditionalFormatForRow(rows[0]!, makeView([rowRule, cellRule]), database, state))
+      .toMatchObject({ backgroundColor: 'blue', bold: true, italic: true, matchedRuleIds: ['row-rule'] });
+
+    const cellThenRow = resolveConditionalFormatForCell(
+      rows[0]!, 'score', makeView([cellRule, rowRule]), database, state,
+    );
+    expect(cellThenRow).toMatchObject({
+      backgroundColor: 'blue', textColor: 'yellow', bold: true, italic: true,
+      matchedRuleIds: ['cell-rule', 'row-rule'],
+    });
+  });
+
+  it('reports formula errors and non-boolean results without treating them as matches', () => {
+    const { database, rows, state } = testState([scoreProp], [
+      { id: 'row', title: 'Row', values: { score: 95 } },
+    ]);
+    const makeView = (formula: string) => normalizeDatabase({
+      properties: [scoreProp],
+      views: [{ ...baseView, conditionalFormats: [{
+        id: 'formula-rule', prop: 'score', op: 'is', value: null, scope: 'row', mode: 'formula', formula, color: 'red',
+      }] }],
+    })!.views[0]!;
+
+    const nonBoolean = resolveConditionalFormatForRow(rows[0]!, makeView('"hello"'), database, state);
+    expect(nonBoolean.matchedRuleIds).toEqual([]);
+    expect(nonBoolean.diagnostics[0]?.message).toContain('must return true or false');
+    expect(nonBoolean.diagnostics[0]?.code).toBe('formulaMustBeBoolean');
+
+    const broken = resolveConditionalFormatForRow(rows[0]!, makeView('MissingProperty > 10'), database, state);
+    expect(broken.matchedRuleIds).toEqual([]);
+    expect(broken.diagnostics).toHaveLength(1);
+  });
+
+  it('does not evaluate unsupported future rules and exposes a diagnostic', () => {
+    const { database, rows, state } = testState([scoreProp], [
+      { id: 'row', title: 'Row', values: { score: 95 } },
+    ]);
+    const view = normalizeDatabase({
+      properties: [scoreProp],
+      views: [{
+        ...baseView,
+        conditionalFormats: [{
+          id: 'future-rule', prop: 'score', op: 'gt', value: 0, scope: 'row', color: 'red',
+          futureStyle: 'glow',
+        }],
+      }],
+    })!.views[0]!;
+
+    const resolved = resolveConditionalFormatForRow(rows[0]!, view, database, state);
+    expect(resolved.matchedRuleIds).toEqual([]);
+    expect(resolved.backgroundColor).toBeUndefined();
+    expect(resolved.diagnostics).toMatchObject([
+      {
+        code: 'unsupportedRule', ruleId: 'future-rule', index: 0,
+        message: 'Rule contains fields this version does not understand.',
+      },
+    ]);
   });
 });
 

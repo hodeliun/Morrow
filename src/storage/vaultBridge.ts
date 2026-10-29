@@ -11,6 +11,10 @@ export interface VaultChange {
   dir?: boolean;
   // set for files other than pages, such as images
   other?: boolean;
+  // file size from stat; a missing size means metadata was unavailable or the path was removed
+  size?: number;
+  // an externally created directory that is physically empty, matching the existing empty-folder page rule
+  emptyFolder?: boolean;
 }
 
 export interface VaultFileInfo {

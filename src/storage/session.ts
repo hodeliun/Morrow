@@ -16,12 +16,14 @@ import type {
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { descendantsOf, isDescendantOf } from '../core/tree';
+import type { FileCatalogSnapshot } from '../core/vault/fileCatalog';
 import { openRepository } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository } from './repository';
 import { SaveQueue } from './saveQueue';
 import type { SaveQueueOptions, SaveStatus } from './saveQueue';
 
 type DatabasePasteDirection = 'undo' | 'redo';
+const EMPTY_FILE_CATALOG: FileCatalogSnapshot = { files: [], folders: [] };
 
 interface DatabasePasteRecord {
   databaseId: PageId;
@@ -161,6 +163,8 @@ function hasExternalReferences(
 export class WorkspaceSession {
   private state: WorkspaceState;
   private readonly listeners = new Set<() => void>();
+  private readonly fileCatalogListeners = new Set<() => void>();
+  private stopRepositoryFileCatalog: (() => void) | null = null;
   private readonly lastSnapshot = new Map<PageId, number>();
   // what each page held when it was last kept as a version, or when it was opened. a page saved with
   // nothing really different, such as only its edit time, gets no new version
@@ -203,6 +207,9 @@ export class WorkspaceSession {
       },
     });
     repository.onExternalChange?.((patch) => this.applyExternal(patch));
+    this.stopRepositoryFileCatalog = repository.onFileCatalogChange?.(() => {
+      for (const listener of this.fileCatalogListeners) listener();
+    }) ?? null;
   }
 
   get location(): string | null {
@@ -331,6 +338,13 @@ export class WorkspaceSession {
   }
 
   getState = (): WorkspaceState => this.state;
+
+  getFileCatalog = (): FileCatalogSnapshot => this.repository.getFileCatalog?.() ?? EMPTY_FILE_CATALOG;
+
+  subscribeFileCatalog = (listener: () => void): (() => void) => {
+    this.fileCatalogListeners.add(listener);
+    return () => this.fileCatalogListeners.delete(listener);
+  };
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -627,6 +641,9 @@ export class WorkspaceSession {
   async close(): Promise<void> {
     await this.queue.flush();
     this.queue.dispose();
+    this.stopRepositoryFileCatalog?.();
+    this.stopRepositoryFileCatalog = null;
+    this.fileCatalogListeners.clear();
     this.repository.close();
   }
 }

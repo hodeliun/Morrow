@@ -50,6 +50,13 @@ export interface GridClipboardPayload {
   rows: GridTypedCell[][];
 }
 
+export interface GridClipboardEnvelope {
+  version: 1;
+  kind: 'morrow-grid-clipboard';
+  text: string;
+  payload: GridClipboardPayload;
+}
+
 export type FillModeChoice = 'copy' | 'sequence';
 
 export interface GridOperationPlan {
@@ -588,6 +595,25 @@ export function validateGridClipboardPayload(value: unknown): GridResult<GridCli
       rows: normalizedRows,
     },
   };
+}
+
+/** Keeps typed clipboard data tied to the TSV copied in the same system clipboard item. */
+export function validateGridClipboardEnvelope(
+  value: unknown,
+  text: string,
+): GridResult<GridClipboardPayload> {
+  if (
+    !isPlainObject(value) ||
+    !hasOnlyKeys(value, ['version', 'kind', 'text', 'payload']) ||
+    value.version !== 1 ||
+    value.kind !== 'morrow-grid-clipboard' ||
+    typeof value.text !== 'string' ||
+    value.text.length > MAX_GRID_CLIPBOARD_CHARS ||
+    value.text.replace(/\r\n?/g, '\n') !== text.replace(/\r\n?/g, '\n')
+  ) {
+    return { ok: false, error: 'Morrow clipboard data no longer matches the system clipboard text.' };
+  }
+  return validateGridClipboardPayload(value.payload);
 }
 
 /**

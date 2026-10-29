@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  ClipboardItem,
   clipboard,
   dialog,
   globalShortcut,
@@ -9,17 +10,26 @@ import {
   nativeTheme,
   net,
   protocol,
+  safeStorage,
   screen,
   session,
   shell,
 } from 'electron';
-import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
-import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions, WebContents } from 'electron';
+import { constants, existsSync } from 'node:fs';
+import { access, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import startup = require('./startup.cjs');
+import { registerClipboardHandlers } from './clipboard.js';
+import type { ClipboardIpcMainLike, SystemClipboard } from './clipboard.js';
+import { createDeviceIdentityProvider } from './deviceIdentity.js';
+import { readMachineIdentityAnchor } from './machineIdentity.js';
+import { createFileHandlerModule, createSpawnLauncher } from './fileHandlers.js';
+import type { FileHandlerModule } from './fileHandlers.js';
+import { nativeApplicationDialogFilterName, nativeApplicationDialogTitle } from './fileHandlerDialogs.js';
+import { sendExternalOpenError } from './externalOpenErrors.js';
 import {
   applyOps,
   chooseFolder,
@@ -48,6 +58,7 @@ import {
   writeSyncBase,
   writeSyncedFile,
   copyVaultInto,
+  currentVaultContext,
 } from './vault.cjs';
 import { cloudStatus } from './cloud.cjs';
 import { getMcpLaunch, isMcpEnabled, setMcpEnabled } from './mcp.cjs';
@@ -71,6 +82,8 @@ const SCHEME = 'morrow';
 // images and files inside the open vault load through this scheme, nothing outside the vault is served
 const FILE_SCHEME = 'morrow-file';
 const APP_ORIGIN = `${SCHEME}://app`;
+const TRUSTED_MAIN_PROCESS = Symbol('trusted-main-process');
+let activeFileHandlers: FileHandlerModule | null = null;
 const DEV_URL = process.env.MORROW_DEV_URL ?? null;
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const KEEP_BACKUPS = 20;
@@ -293,13 +306,13 @@ async function createWindow(): Promise<void> {
   if (!HIDDEN) window.once('ready-to-show', () => window.show());
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    openExternal(url);
+    openExternal(url, window.webContents);
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
     event.preventDefault();
-    openExternal(url);
+    openExternal(url, window.webContents);
   });
   window.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return;
@@ -378,8 +391,40 @@ function isAppUrl(url: string): boolean {
   return url.startsWith(`${APP_ORIGIN}/`) || (DEV_URL !== null && url.startsWith(DEV_URL));
 }
 
-function openExternal(url: string): void {
-  if (/^(https?:|mailto:|tel:)/i.test(url)) void shell.openExternal(url);
+function reportExternalOpenError(
+  sender: WebContents,
+  urlValue: string,
+  code: string,
+  canChooseBrowser: boolean,
+): void {
+  sendExternalOpenError(sender, isAppUrl, urlValue, code, canChooseBrowser);
+}
+
+function openExternal(url: string, sender: WebContents): void {
+  if (sender.isDestroyed() || !isAppUrl(sender.getURL())) return;
+  if (/^https?:/i.test(url)) {
+    if (!activeFileHandlers) {
+      reportExternalOpenError(sender, url, 'open-failed', false);
+      return;
+    }
+    void activeFileHandlers
+      .openUrl(TRUSTED_MAIN_PROCESS, url)
+      .then((result) => {
+        if (result.ok) return;
+        if (result.code === 'cancelled') return;
+        reportExternalOpenError(
+          sender,
+          url,
+          result.code,
+          result.recovery?.includes('choose-application') ?? false,
+        );
+      })
+      .catch(() => reportExternalOpenError(sender, url, 'open-failed', true));
+    return;
+  }
+  if (/^(mailto:|tel:)/i.test(url)) {
+    void shell.openExternal(url).catch(() => reportExternalOpenError(sender, '', 'open-failed', false));
+  }
 }
 
 // a file watcher or sync can still report something while the window closes, that is dropped
@@ -393,7 +438,88 @@ function fromApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   return isAppUrl(url);
 }
 
+function createFileHandlerAdapter() {
+  const userDataPath = app.getPath('userData');
+  return createFileHandlerModule({
+    userDataPath,
+    getDeviceIdentity: createDeviceIdentityProvider({
+      userDataPath,
+      safeStorage,
+      getMachineAnchor: () => readMachineIdentityAnchor(),
+    }),
+    native: {
+      getCurrentVaultContext: currentVaultContext,
+      isTrustedSender: (sender) => sender === TRUSTED_MAIN_PROCESS || fromApp(sender as IpcMainInvokeEvent),
+      // No renderer file viewer is registered yet. Image tabs add their own capability in T33.
+      getInternalExtensions: () => [],
+      async chooseApplication(kind, _extension, locale) {
+        const properties: Array<'openFile' | 'treatPackageAsDirectory'> = ['openFile'];
+        if (process.platform === 'darwin') properties.push('treatPackageAsDirectory');
+        const filters =
+          process.platform === 'win32'
+            ? [{ name: nativeApplicationDialogFilterName(locale), extensions: ['exe'] }]
+            : undefined;
+        const options = {
+          title: nativeApplicationDialogTitle(kind, locale),
+          properties,
+          ...(filters ? { filters } : {}),
+        };
+        const result = mainWindow
+          ? await dialog.showOpenDialog(mainWindow, options)
+          : await dialog.showOpenDialog(options);
+        return result.canceled ? null : (result.filePaths[0] ?? null);
+      },
+      async isExecutableApplication(absolutePath) {
+        try {
+          const info = await lstat(absolutePath);
+          if (info.isSymbolicLink()) return false;
+          if (process.platform === 'win32')
+            return info.isFile() && path.extname(absolutePath).toLowerCase() === '.exe';
+          if (process.platform === 'darwin' && path.extname(absolutePath).toLowerCase() === '.app') {
+            if (!info.isDirectory()) return false;
+            const infoPlist = path.join(absolutePath, 'Contents', 'Info.plist');
+            const binaries = path.join(absolutePath, 'Contents', 'MacOS');
+            const plistInfo = await lstat(infoPlist);
+            const binariesInfo = await lstat(binaries);
+            if (
+              plistInfo.isSymbolicLink() ||
+              !plistInfo.isFile() ||
+              binariesInfo.isSymbolicLink() ||
+              !binariesInfo.isDirectory()
+            )
+              return false;
+            for (const name of await readdir(binaries)) {
+              const binary = path.join(binaries, name);
+              const binaryInfo = await lstat(binary);
+              if (binaryInfo.isFile() && !binaryInfo.isSymbolicLink()) {
+                try {
+                  await access(binary, constants.X_OK);
+                  return true;
+                } catch {
+                  // Keep looking for a runnable bundle entry point.
+                }
+              }
+            }
+            return false;
+          }
+          if (!info.isFile()) return false;
+          await access(absolutePath, constants.X_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      openDefaultFile: (absolutePath) => shell.openPath(absolutePath),
+      openDefaultUrl: (url) => shell.openExternal(url),
+      revealInFolder: (absolutePath) => shell.showItemInFolder(absolutePath),
+    },
+    launchApplication: createSpawnLauncher(),
+  });
+}
+
 function registerIpc(): void {
+  const fileHandlers = createFileHandlerAdapter();
+  activeFileHandlers = fileHandlers;
   ipcMain.on('morrow:info', (event) => {
     event.returnValue = fromApp(event)
       ? { version: app.getVersion(), dataPath: app.getPath('userData'), platform: process.platform }
@@ -420,16 +546,46 @@ function registerIpc(): void {
     if (!HEX.test(color) || !HEX.test(symbolColor)) return;
     window.setTitleBarOverlay({ color, symbolColor });
   });
-  ipcMain.handle('morrow:open-external', (event, url: unknown) => {
-    if (fromApp(event) && typeof url === 'string') openExternal(url);
-  });
-  ipcMain.handle('morrow:copy-text', (event, text: unknown) => {
-    if (fromApp(event) && typeof text === 'string') {
-      clipboard.writeText(text);
-      return true;
+  ipcMain.handle('morrow:open-external', async (event, url: unknown) => {
+    if (!fromApp(event) || typeof url !== 'string')
+      return { ok: false, code: 'not-allowed', message: 'Not allowed.' };
+    if (/^https?:/i.test(url)) return fileHandlers.openUrl(event, url);
+    if (/^(mailto:|tel:)/i.test(url)) {
+      try {
+        await shell.openExternal(url);
+        return { ok: true, destination: 'system' };
+      } catch {
+        return { ok: false, code: 'open-failed', message: 'The system could not open this address.' };
+      }
     }
-    return false;
+    return {
+      ok: false,
+      code: 'invalid-url',
+      message: 'Only HTTP, HTTPS, mail and telephone links can be opened.',
+    };
   });
+  ipcMain.handle('file-handlers:get-preferences', (event) => fileHandlers.getPreferences(event));
+  ipcMain.handle('file-handlers:set-file', (event, extension: unknown, mode: unknown, locale: unknown) =>
+    fileHandlers.setFileHandler(event, extension, mode, locale),
+  );
+  ipcMain.handle('file-handlers:set-browser', (event, mode: unknown, locale: unknown) =>
+    fileHandlers.setBrowserHandler(event, mode, locale),
+  );
+  ipcMain.handle('file-handlers:open-file', (event, relativePath: unknown, options: unknown) =>
+    fileHandlers.openFile(event, relativePath, options),
+  );
+  ipcMain.handle('file-handlers:open-url', (event, url: unknown, options: unknown) =>
+    fileHandlers.openUrl(event, url, options),
+  );
+  ipcMain.handle('file-handlers:open-folder', (event, relativePath: unknown) =>
+    fileHandlers.openContainingFolder(event, relativePath),
+  );
+  registerClipboardHandlers(
+    ipcMain as unknown as ClipboardIpcMainLike,
+    clipboard as unknown as SystemClipboard,
+    (event) => fromApp(event as IpcMainInvokeEvent),
+    (data) => new ClipboardItem(data),
+  );
   ipcMain.handle('morrow:show-data-folder', async (event) => {
     if (fromApp(event)) await shell.openPath(app.getPath('userData'));
   });

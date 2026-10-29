@@ -4,6 +4,7 @@ import { snapshotsToPrune } from '../core/history';
 import { readWorkspace } from '../core/migrations';
 import type { LoadedWorkspace } from '../core/migrations';
 import { SCHEMA_VERSION } from '../core/model';
+import type { FileCatalogSnapshot } from '../core/vault/fileCatalog';
 import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
@@ -44,6 +45,9 @@ export interface WorkspaceRepository {
   onExternalChange?(listener: (patch: ExternalPatch) => PageId[]): () => void;
   // a name for the storage location, shown in settings
   readonly location?: string;
+  // file-based repositories may expose a separate read-only catalog of ordinary vault resources
+  getFileCatalog?(): FileCatalogSnapshot;
+  onFileCatalogChange?(listener: () => void): () => void;
   // gives storage the live workspace, to read outside edits against unsaved changes
   attachState?(getState: () => WorkspaceState): void;
   // where a page's file lives, relative to the storage location

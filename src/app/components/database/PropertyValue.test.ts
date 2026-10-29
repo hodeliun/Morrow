@@ -31,6 +31,52 @@ describe('database property cell rendering', () => {
     expect(trueValue).toContain('aria-checked="true"');
   });
 
+  it('keeps a numeric first-key draft in a decimal text input', async () => {
+    let nextId = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(new MemoryVault(), () => `numberDraft${++nextId}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    setSession(session);
+    const amount: PropDef = { id: 'amount', name: 'Amount', type: 'number', options: [] };
+    const database: DatabaseDef = { properties: [amount], views: [] };
+    const created = session.executeAll([
+      {
+        type: 'page.create',
+        id: 'number-table',
+        parentId: null,
+        title: 'Numbers',
+        kind: 'database',
+        database,
+        now: 1,
+      },
+      { type: 'page.create', id: 'number-row', parentId: 'number-table', title: 'Row', properties: { amount: 3 }, now: 2 },
+    ]);
+    if (!created.ok) throw new Error(created.error);
+
+    const row = session.getState().pages['number-row']!;
+    for (const initialText of ['-', '.', ',']) {
+      const html = renderToStaticMarkup(
+        createElement(PropertyInput, {
+          dbId: 'number-table',
+          prop: amount,
+          row,
+          editable: true,
+          gridMode: true,
+          isEditing: true,
+          initialText,
+        }),
+      );
+      expect(html).toContain('type="text"');
+      expect(html).toContain('inputMode="decimal"');
+      expect(html).toContain(`value="${initialText}"`);
+      expect(html).not.toContain('type="number"');
+    }
+    await session.close();
+  });
+
   it('renders an action as a disabled button cell when its formula says so', async () => {
     let nextId = 0;
     const opened = await WorkspaceSession.open(

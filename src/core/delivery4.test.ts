@@ -10,6 +10,7 @@ import {
   revalidateActiveCell,
   serializeGridClipboard,
   TITLE_PROP_ID,
+  validateGridClipboardEnvelope,
   validateGridClipboardPayload,
 } from './gridOperations';
 import type { DatabaseDef, PageMeta, PropDef, WorkspaceState } from './model';
@@ -373,6 +374,67 @@ describe('gridOperations — delivery 4 unit tests (#32, #33, #34)', () => {
       expect(validateGridClipboardPayload({ ...valid, rows: [[{ type: 'checkbox', value: false }]] }).ok).toBe(false);
       expect(validateGridClipboardPayload({ ...valid, rows: [[{ type: 'checkbox', value: { code: 'x' } }, valid.rows[0]![1]]] }).ok).toBe(false);
       expect(validateGridClipboardPayload({ ...valid, rows: [[{ type: 'checkbox', value: false, extra: 'ignored' }, valid.rows[0]![1]]] }).ok).toBe(false);
+    });
+
+    it('accepts typed metadata only while its paired TSV is still on the clipboard', () => {
+      const payload = {
+        version: 1,
+        kind: 'morrow-grid-range',
+        rowCount: 1,
+        colCount: 1,
+        colTypes: ['number'],
+        rows: [[{ type: 'number', value: 42 }]],
+      };
+      const envelope = {
+        version: 1,
+        kind: 'morrow-grid-clipboard',
+        text: '42',
+        payload,
+      };
+
+      expect(validateGridClipboardEnvelope(envelope, '42').ok).toBe(true);
+      expect(validateGridClipboardEnvelope(envelope, '43').ok).toBe(false);
+      expect(validateGridClipboardEnvelope({ ...envelope, extra: true }, '42').ok).toBe(false);
+      expect(
+        validateGridClipboardEnvelope({ ...envelope, payload: { ...payload, extra: true } }, '42').ok,
+      ).toBe(false);
+      expect(validateGridClipboardEnvelope({ ...envelope, text: '42\r\n' }, '42\n').ok).toBe(true);
+    });
+
+    it('copies calculated results as typed values and rejects pasting over calculated cells', () => {
+      const { state, dbId, rowIds, propIds } = makeSyntheticState();
+      const formulaRange = {
+        anchor: { rowId: rowIds[0], colId: 'formula-prop' },
+        focus: { rowId: rowIds[0], colId: 'formula-prop' },
+      };
+      const copied = serializeGridClipboard(state, dbId, formulaRange, rowIds, propIds);
+      expect(copied.ok).toBe(true);
+      if (!copied.ok) return;
+      expect(copied.value.tsv).toBe('20');
+      expect(copied.value.payload.rows[0]?.[0]).toEqual({ type: 'formula', value: 20 });
+
+      const editableTarget = {
+        anchor: { rowId: rowIds[1], colId: 'num-prop' },
+        focus: { rowId: rowIds[1], colId: 'num-prop' },
+      };
+      const pasted = planGridPaste(state, dbId, editableTarget, copied.value.payload, rowIds, propIds, 3000);
+      expect(pasted.ok).toBe(true);
+      if (pasted.ok) {
+        expect(pasted.value.commands).toContainEqual({
+          type: 'page.setProperties',
+          id: rowIds[1],
+          values: { 'num-prop': 20 },
+          now: 3000,
+        });
+      }
+
+      const calculatedTarget = {
+        anchor: { rowId: rowIds[1], colId: 'formula-prop' },
+        focus: { rowId: rowIds[1], colId: 'formula-prop' },
+      };
+      const blocked = planGridPaste(state, dbId, calculatedTarget, copied.value.payload, rowIds, propIds, 3000);
+      expect(blocked.ok).toBe(false);
+      if (!blocked.ok) expect(blocked.error).toContain('read-only');
     });
 
     it('fills 1x1 source value across NxM target selection', () => {

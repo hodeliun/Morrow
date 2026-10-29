@@ -782,6 +782,92 @@ describe('content', () => {
   });
 });
 
+describe('conditional formatting commands', () => {
+  it('rejects an invalid new rule atomically and keeps the previous rule list', () => {
+    const created = create('db', null, {
+      kind: 'database',
+      database: {
+        properties: [{ id: 'score', name: 'Score', type: 'number', options: [] }],
+        views: [{
+          id: 'view', name: 'Rules', type: 'table', filters: [], sorts: [], groupBy: null,
+          dateProp: null, hidden: [],
+          conditionalFormats: [{
+            id: 'valid-rule', prop: 'score', op: 'gt', value: 10, scope: 'cell', color: 'green',
+          }],
+        }],
+      },
+    } as Partial<Command>);
+    const state = run(emptyWorkspace(), created);
+    const previousDatabase = state.pages.db!.database!;
+    const previousRules = previousDatabase.views[0]!.conditionalFormats;
+    const invalidRules = [
+      [{ ...previousRules![0]!, bold: 'yes' }],
+      [{ ...previousRules![0]!, mode: 'formula', formula: '' }],
+      [{ ...previousRules![0]!, mode: 'formula', formula: '(' }],
+      [{ ...previousRules![0]!, op: 'isNot', value: 'oops' }],
+      [{ ...previousRules![0]!, op: 'gt', value: ' ' }],
+      [{ ...previousRules![0]!, prop: 'missing', op: 'empty', value: null }],
+    ];
+
+    for (const [index, conditionalFormats] of invalidRules.entries()) {
+      const invalidDatabase = {
+        ...previousDatabase,
+        views: previousDatabase.views.map((view) => ({ ...view, conditionalFormats })),
+      } as unknown as DatabaseDef;
+      const rejected = applyCommand(state, {
+        type: 'database.set', id: 'db', database: invalidDatabase, now: index + 2,
+      });
+      expect(rejected.ok).toBe(false);
+      if (!rejected.ok) expect(rejected.error).toContain('Invalid conditional formatting configuration');
+    }
+    expect(state.pages.db!.database!.views[0]!.conditionalFormats).toEqual(previousRules);
+  });
+
+  it('preserves unchanged legacy context-invalid rules but rejects edits to them', () => {
+    const created = create('legacy-db', null, {
+      kind: 'database',
+      database: {
+        properties: [{ id: 'score', name: 'Score', type: 'number', options: [] }],
+        views: [{
+          id: 'view', name: 'Rules', type: 'table', filters: [], sorts: [], groupBy: null,
+          dateProp: null, hidden: [],
+          conditionalFormats: [{
+            id: 'legacy-invalid', prop: 'score', op: 'isNot', value: 'oops', scope: 'row', color: 'red',
+          }],
+        }],
+      },
+    } as Partial<Command>);
+    const state = run(emptyWorkspace(), created);
+    const current = state.pages['legacy-db']!.database!;
+    const unchangedRuleEdit = applyCommand(state, {
+      type: 'database.set', id: 'legacy-db',
+      database: {
+        ...current,
+        views: current.views.map((view) => ({ ...view, name: 'Renamed' })),
+      },
+      now: 2,
+    });
+    expect(unchangedRuleEdit.ok).toBe(true);
+    if (unchangedRuleEdit.ok)
+      expect(unchangedRuleEdit.value.state.pages['legacy-db']!.database!.views[0]?.conditionalFormats?.[0]?.value)
+        .toBe('oops');
+
+    const editedRule = applyCommand(state, {
+      type: 'database.set', id: 'legacy-db',
+      database: {
+        ...current,
+        views: current.views.map((view) => ({
+          ...view,
+          conditionalFormats: view.conditionalFormats?.map((rule) => ({ ...rule, value: 'still bad' })),
+        })),
+      },
+      now: 3,
+    });
+    expect(editedRule.ok).toBe(false);
+    if (!editedRule.ok) expect(editedRule.error).toContain('finite number or empty');
+  });
+});
+
 describe('page presentation', () => {
   it('stores a cover focal point and validates per-note style overrides', () => {
     const state = run(emptyWorkspace(), create('a'));

@@ -4,6 +4,7 @@ import { dateKey } from './daily';
 import type {
   ConditionalFormatRule,
   ColorName,
+  ColorValue,
   DatabaseDef,
   DocNode,
   FilterOp,
@@ -1828,20 +1829,375 @@ export function summarizeProperty(
   return { value: null, error: null };
 }
 
+type BackgroundConditionalFormatRule = ConditionalFormatRule & { color: ColorValue };
+
+export type ConditionalFormatDiagnosticCode =
+  | 'propertyUnavailable'
+  | 'operatorUnsupported'
+  | 'controlStateUnavailable'
+  | 'controlUnavailable'
+  | 'finiteNumberRequired'
+  | 'validDateRequired'
+  | 'validTimeRequired'
+  | 'validDateTimeRequired'
+  | 'textRequired'
+  | 'optionRequired'
+  | 'relationIdRequired'
+  | 'invalidComparisonValue'
+  | 'formulaRequired'
+  | 'formulaStateUnavailable'
+  | 'formulaEvaluationFailed'
+  | 'formulaMustBeBoolean'
+  | 'calculatedStateUnavailable'
+  | 'unsupportedRule';
+
+export interface ConditionalFormatIssue {
+  code: ConditionalFormatDiagnosticCode;
+  message: string;
+  params?: Record<string, string>;
+}
+
+interface ConditionalFormatMatch {
+  matches: boolean;
+  diagnostic: ConditionalFormatIssue | null;
+}
+
+const NUMERIC_FILTER_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+
+function finiteNumericFilterValue(value: PropValue): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return trimmed !== '' && NUMERIC_FILTER_PATTERN.test(trimmed) && Number.isFinite(Number(trimmed));
+}
+
+function emptyFilterValue(value: PropValue): boolean {
+  return value === null || value === '';
+}
+
+function conditionalFormatSimpleCriterionIssue(
+  rule: ConditionalFormatRule,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): ConditionalFormatIssue | null {
+  const rawType = propType(database, rule.prop);
+  if (!rawType)
+    return {
+      code: 'propertyUnavailable',
+      message: `Property “${rule.prop}” is unavailable for this rule.`,
+      params: { property: rule.prop },
+    };
+  const property = database.properties.find((candidate) => candidate.id === rule.prop);
+  const effectiveType: PropType | 'title' = rawType === 'formula'
+    ? property?.formulaResultType && property.formulaResultType !== 'formula'
+      ? property.formulaResultType
+      : 'text'
+    : rawType;
+  const label = property?.name ?? (rule.prop === TITLE_PROP ? 'Title' : rule.prop);
+  if (!filterOpsFor(effectiveType).includes(rule.op))
+    return {
+      code: 'operatorUnsupported',
+      message: `Operator “${rule.op}” is not supported for property “${label}”.`,
+      params: { operator: rule.op, property: label },
+    };
+
+  let target = rule.value;
+  if (rule.controlRef) {
+    if (!state)
+      return {
+        code: 'controlStateUnavailable',
+        message: 'The referenced control cannot be resolved without workspace state.',
+      };
+    const control = state.pages[rule.controlRef.pageId]?.controls.find(
+      (candidate) => candidate.id === rule.controlRef!.controlId,
+    );
+    if (!control) return { code: 'controlUnavailable', message: 'The referenced control is unavailable.' };
+    target = control.value;
+  }
+
+  if (rule.op === 'empty' || rule.op === 'notEmpty' || rule.op === 'checked' || rule.op === 'unchecked')
+    return null;
+  if (rule.op === 'gt' || rule.op === 'lt') {
+    if ((effectiveType !== 'title' && isNumericPropertyType(effectiveType)) ||
+      effectiveType === 'createdTime' || effectiveType === 'lastEditedTime')
+      return finiteNumericFilterValue(target)
+        ? null
+        : {
+            code: 'finiteNumberRequired',
+            message: `Comparison value for “${label}” must be a finite number.`,
+            params: { property: label },
+          };
+    if (effectiveType === 'date')
+      return typeof target === 'string' && isValidDateKey(target)
+        ? null
+        : {
+            code: 'validDateRequired',
+            message: `Comparison value for “${label}” must be a valid date.`,
+            params: { property: label },
+          };
+    if (effectiveType === 'time')
+      return typeof target === 'string' && isValidTime(target)
+        ? null
+        : {
+            code: 'validTimeRequired',
+            message: `Comparison value for “${label}” must be a valid time.`,
+            params: { property: label },
+          };
+    if (effectiveType === 'datetime')
+      return typeof target === 'string' && isValidDateTime(target)
+        ? null
+        : {
+            code: 'validDateTimeRequired',
+            message: `Comparison value for “${label}” must be a valid date and time.`,
+            params: { property: label },
+          };
+  }
+
+  if (rule.op === 'contains' || rule.op === 'notContains')
+    return typeof target === 'string'
+      ? null
+      : { code: 'textRequired', message: `Comparison value for “${label}” must be text.`, params: { property: label } };
+
+  if (effectiveType === 'number' || effectiveType === 'currency' || effectiveType === 'percent' ||
+    effectiveType === 'slider' || effectiveType === 'progress' || effectiveType === 'scale' ||
+    effectiveType === 'duration' || effectiveType === 'createdTime' || effectiveType === 'lastEditedTime') {
+    return emptyFilterValue(target) || finiteNumericFilterValue(target)
+      ? null
+      : {
+          code: 'finiteNumberRequired',
+          message: `Comparison value for “${label}” must be a finite number or empty.`,
+          params: { property: label },
+        };
+  }
+  if (effectiveType === 'date' || effectiveType === 'time' || effectiveType === 'datetime') {
+    if (emptyFilterValue(target)) return null;
+    const valid = effectiveType === 'date'
+      ? typeof target === 'string' && isValidDateKey(target)
+      : effectiveType === 'time'
+        ? typeof target === 'string' && isValidTime(target)
+        : typeof target === 'string' && isValidDateTime(target);
+    return valid
+      ? null
+      : {
+          code: 'invalidComparisonValue',
+          message: `Comparison value for “${label}” is invalid for its property type.`,
+          params: { property: label },
+        };
+  }
+  if (effectiveType === 'select') {
+    if (emptyFilterValue(target)) return null;
+    return typeof target === 'string' && property?.options.some((option) => option.id === target)
+      ? null
+      : {
+          code: 'optionRequired',
+          message: `Comparison value for “${label}” is not one of its configured options.`,
+          params: { property: label },
+        };
+  }
+  if (effectiveType === 'multiSelect') {
+    if (emptyFilterValue(target)) return null;
+    const validOption = (id: string) => property?.options.some((option) => option.id === id) === true;
+    return (typeof target === 'string' && validOption(target)) ||
+      (Array.isArray(target) && target.every((id) => typeof id === 'string' && validOption(id)))
+      ? null
+      : {
+          code: 'optionRequired',
+          message: `Comparison value for “${label}” is not a configured option or option list.`,
+          params: { property: label },
+        };
+  }
+  if (effectiveType === 'relation') {
+    return emptyFilterValue(target) || typeof target === 'string' ||
+      (Array.isArray(target) && target.every((id) => typeof id === 'string'))
+      ? null
+      : {
+          code: 'relationIdRequired',
+          message: `Comparison value for “${label}” must be a relation ID or ID list.`,
+          params: { property: label },
+        };
+  }
+  return emptyFilterValue(target) || typeof target === 'string'
+    ? null
+    : { code: 'textRequired', message: `Comparison value for “${label}” must be text or empty.`, params: { property: label } };
+}
+
+export function conditionalFormatRuleConfigurationIssue(
+  rule: ConditionalFormatRule,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): ConditionalFormatIssue | null {
+  const mode = rule.mode ?? (rule.formula?.trim() ? 'formula' : 'simple');
+  return mode === 'simple' ? conditionalFormatSimpleCriterionIssue(rule, database, state) : null;
+}
+
+export function conditionalFormatRuleConfigurationProblem(
+  rule: ConditionalFormatRule,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): string | null {
+  return conditionalFormatRuleConfigurationIssue(rule, database, state)?.message ?? null;
+}
+
+function matchConditionalFormatRule(
+  row: PageMeta,
+  rule: ConditionalFormatRule,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): ConditionalFormatMatch {
+  const mode = rule.mode ?? (rule.formula?.trim() ? 'formula' : 'simple');
+  if (mode === 'formula') {
+    if (!rule.formula?.trim())
+      return {
+        matches: false,
+        diagnostic: { code: 'formulaRequired', message: 'Formula mode requires a non-empty formula.' },
+      };
+    if (!state)
+      return {
+        matches: false,
+        diagnostic: { code: 'formulaStateUnavailable', message: 'Formula evaluation requires workspace state.' },
+      };
+    const result = formulaResult(
+      row,
+      {
+        id: `conditional-format-${rule.id}`,
+        name: 'Conditional format condition',
+        type: 'formula',
+        options: [],
+        formula: rule.formula,
+        formulaBindings: rule.formulaBindings ?? [],
+      },
+      database,
+      0,
+      state,
+    );
+    if (result.error)
+      return {
+        matches: false,
+        diagnostic: { code: 'formulaEvaluationFailed', message: result.error, params: { detail: result.error } },
+      };
+    if (typeof result.value !== 'boolean') {
+      return {
+        matches: false,
+        diagnostic: {
+          code: 'formulaMustBeBoolean',
+          message: `Formula must return true or false; it returned ${result.value === null ? 'empty' : typeof result.value}.`,
+          params: { resultType: result.value === null ? 'empty' : typeof result.value },
+        },
+      };
+    }
+    return { matches: result.value, diagnostic: null };
+  }
+  const criterionIssue = conditionalFormatSimpleCriterionIssue(rule, database, state);
+  if (criterionIssue) return { matches: false, diagnostic: criterionIssue };
+  const property = database.properties.find((candidate) => candidate.id === rule.prop);
+  if (property && (property.type === 'formula' || property.fillMode === 'calculated')) {
+    if (!state)
+      return {
+        matches: false,
+        diagnostic: {
+          code: 'calculatedStateUnavailable',
+          message: 'Calculated property evaluation requires workspace state.',
+        },
+      };
+    const result = formulaResult(row, property, database, 0, state);
+    if (result.error)
+      return {
+        matches: false,
+        diagnostic: { code: 'formulaEvaluationFailed', message: result.error, params: { detail: result.error } },
+      };
+  }
+  // The current editor emits formula: "" for simple rules; explicit mode selects evaluation.
+  return { matches: matchesFilter(row, { ...rule, formula: undefined }, database, state), diagnostic: null };
+}
+
+export interface ConditionalFormatDiagnostic {
+  code: ConditionalFormatDiagnosticCode;
+  ruleId?: string;
+  index?: number;
+  message: string;
+  params?: Record<string, string>;
+}
+
+export interface ResolvedConditionalFormatStyle {
+  backgroundColor?: ColorValue;
+  textColor?: ColorValue;
+  bold?: boolean;
+  italic?: boolean;
+  matchedRuleIds: string[];
+  diagnostics: ConditionalFormatDiagnostic[];
+}
+
+function resolveConditionalFormatStyle(
+  row: PageMeta,
+  propId: string | null,
+  view: ViewDef,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): ResolvedConditionalFormatStyle {
+  const resolved: ResolvedConditionalFormatStyle = { matchedRuleIds: [], diagnostics: [] };
+  for (const unsupported of view.unsupportedConditionalFormats ?? []) {
+    const ruleId = typeof unsupported.raw === 'object' && unsupported.raw !== null &&
+      'id' in unsupported.raw && typeof unsupported.raw.id === 'string'
+      ? unsupported.raw.id
+      : undefined;
+    resolved.diagnostics.push({
+      code: 'unsupportedRule',
+      ...(ruleId ? { ruleId } : {}),
+      index: unsupported.index,
+      message: unsupported.reason,
+      params: { detail: unsupported.reason },
+    });
+  }
+
+  for (const rule of view.conditionalFormats ?? []) {
+    const applies = propId === null
+      ? rule.scope === 'row'
+      : rule.scope === 'row' || (rule.scope === 'cell' && rule.prop === propId);
+    if (!applies) continue;
+    const result = matchConditionalFormatRule(row, rule, database, state);
+    if (result.diagnostic) {
+      resolved.diagnostics.push({ ruleId: rule.id, ...result.diagnostic });
+      continue;
+    }
+    if (!result.matches) continue;
+    resolved.matchedRuleIds.push(rule.id);
+    if (rule.color !== undefined) resolved.backgroundColor = rule.color;
+    if (rule.textColor !== undefined) resolved.textColor = rule.textColor;
+    if (rule.bold !== undefined) resolved.bold = rule.bold;
+    if (rule.italic !== undefined) resolved.italic = rule.italic;
+  }
+  return resolved;
+}
+
+export function resolveConditionalFormatForRow(
+  row: PageMeta,
+  view: ViewDef,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): ResolvedConditionalFormatStyle {
+  return resolveConditionalFormatStyle(row, null, view, database, state);
+}
+
+export function resolveConditionalFormatForCell(
+  row: PageMeta,
+  propId: string,
+  view: ViewDef,
+  database: DatabaseDef,
+  state?: WorkspaceState,
+): ResolvedConditionalFormatStyle {
+  return resolveConditionalFormatStyle(row, propId, view, database, state);
+}
+
 export function conditionalFormatForRow(
   row: PageMeta,
   rules: ConditionalFormatRule[] | undefined,
   database: DatabaseDef,
   state?: WorkspaceState,
-): ConditionalFormatRule | null {
+): BackgroundConditionalFormatRule | null {
   if (!rules || rules.length === 0) return null;
-  return rules.find((rule) => {
-    if (rule.scope !== 'row') return false;
-    if (rule.mode === 'formula') {
-      if (!rule.formula || !rule.formula.trim()) return false;
-      return matchesFilter(row, rule, database, state);
-    }
-    return matchesFilter(row, rule, database, state);
+  return rules.find((rule): rule is BackgroundConditionalFormatRule => {
+    return rule.scope === 'row' && rule.color !== undefined &&
+      matchConditionalFormatRule(row, rule, database, state).matches;
   }) ?? null;
 }
 
@@ -1851,16 +2207,11 @@ export function conditionalFormatForCell(
   rules: ConditionalFormatRule[] | undefined,
   database: DatabaseDef,
   state?: WorkspaceState,
-): ConditionalFormatRule | null {
+): BackgroundConditionalFormatRule | null {
   if (!rules || rules.length === 0) return null;
-  return rules.find((rule) => {
-    if (rule.scope !== 'cell') return false;
-    if (rule.prop !== propId) return false;
-    if (rule.mode === 'formula') {
-      if (!rule.formula || !rule.formula.trim()) return false;
-      return matchesFilter(row, rule, database, state);
-    }
-    return matchesFilter(row, rule, database, state);
+  return rules.find((rule): rule is BackgroundConditionalFormatRule => {
+    return rule.scope === 'cell' && rule.prop === propId && rule.color !== undefined &&
+      matchConditionalFormatRule(row, rule, database, state).matches;
   }) ?? null;
 }
 

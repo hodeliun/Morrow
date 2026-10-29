@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { McpVaultManager } from './vault';
+import type { PageId } from '../core/model';
+import type { Placement } from '../core/vault/layout';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerMcpTools } from './tools';
 import { registerMcpResources } from './resources';
@@ -47,6 +49,50 @@ describe('McpVaultManager', () => {
     expect(result.page.title).toBe('Welcome');
     expect(result.markdown).toContain('Welcome to Morrow');
     expect(result.page.tags).toContain('guide');
+  });
+
+  it('retargets Markdown links in a dirty read fallback using the current page layout', async () => {
+    await writeFile(path.join(tempDir, 'Host.md'), '', 'utf8');
+    await writeFile(path.join(tempDir, 'Target.md'), 'Target body.\n', 'utf8');
+    const manager = await McpVaultManager.open(tempDir);
+    const target = manager.resolvePage('Target');
+    if (!target) throw new Error('Target page was not loaded.');
+    const host = manager.resolvePage('Host');
+    if (!host) throw new Error('Host page was not loaded.');
+
+    await manager.editPage({ page: host.id, content: '[Section](./Target.md#part%20two)\n' });
+    const layout = manager.getLayout() as Map<PageId, Placement>;
+    layout.set(target.id, { file: 'Folder/Renamed Target.md', folder: 'Folder/Renamed Target' });
+
+    const read = manager.readPage(host.id);
+    expect(manager.getState().docs[host.id]?.content?.[0]?.content?.[0]).toMatchObject({
+      type: 'pageLink',
+      attrs: { id: target.id, markdownHref: './Target.md#part%20two' },
+    });
+    expect(read.markdown).toContain('[Section](./Folder/Renamed%20Target.md#part%20two)');
+  });
+
+  it('resolves percent-encoded literal percent page paths once when a space filename also exists', async () => {
+    await writeFile(path.join(tempDir, 'Host.md'), '# Host\n', 'utf8');
+    await writeFile(path.join(tempDir, 'Percent%20name.md'), '# Literal percent target\n', 'utf8');
+    await writeFile(path.join(tempDir, 'Percent name.md'), '# Decoded space target\n', 'utf8');
+    const manager = await McpVaultManager.open(tempDir);
+    const host = manager.resolvePage('Host');
+    if (!host) throw new Error('Synthetic MCP host must load.');
+    const layout = manager.getLayout() as Map<PageId, Placement>;
+    const literalPercentTarget = manager.listPages().find(
+      (page) => layout.get(page.id)?.file === 'Percent%20name.md',
+    );
+    const decodedSpaceTarget = manager.listPages().find((page) => layout.get(page.id)?.file === 'Percent name.md');
+    if (!literalPercentTarget || !decodedSpaceTarget) throw new Error('Both synthetic MCP targets must load.');
+
+    await manager.editPage({ page: host.id, content: '[Literal](./Percent%2520name.md#part%20two)\n' });
+
+    expect(manager.getState().docs[host.id]?.content?.[0]?.content?.[0]).toMatchObject({
+      type: 'pageLink',
+      attrs: { id: literalPercentTarget.id, markdownHref: './Percent%2520name.md#part%20two' },
+    });
+    expect(literalPercentTarget.id).not.toBe(decodedSpaceTarget.id);
   });
 
   it('searches pages with query and keywords', async () => {

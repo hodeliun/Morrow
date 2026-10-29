@@ -75,7 +75,13 @@ describe('images and attachments in markdown', () => {
     // an image whose file is unknown stays an image of its path, so saving never drops it
     expect(doc.content!.map((node) => node.type)).toEqual(['image', 'fileAttachment', 'image']);
     expect(doc.content![2]!.attrs).toEqual({ fileId: null, src: 'elsewhere.png', alt: '' });
-    expect(doc.content![0]!.attrs).toEqual({ fileId: 'img1', alt: 'Front garden' });
+    expect(doc.content![0]!.attrs).toEqual({ fileId: 'img1', alt: 'Front garden', markdownHref: 'photo.png' });
+    expect(doc.content![1]!.attrs).toEqual({
+      fileId: 'pdf1',
+      name: 'plan.pdf',
+      markdownHref: 'plan.pdf',
+      markdownLabel: 'plan.pdf',
+    });
     expect(fileIdsInDoc(doc)).toEqual(['img1', 'pdf1']);
   });
 
@@ -98,6 +104,49 @@ describe('images and attachments in markdown', () => {
     expect(docToMarkdown(doc, { filePath: (id) => paths[id] ?? null })).toBe(
       '![Roses](attachments/roses.png)\n\n[plan.pdf](attachments/plan.pdf)\n',
     );
+  });
+
+  it('retains attachment labels and fragments while updating a moved file path', () => {
+    const source = '[manual de campo](Anexos/Manual%20de%20campo.pdf#pagina=4)';
+    const doc = markdownToDoc(source, {
+      resolveFile: (href) =>
+        href.startsWith('Anexos/') ? { fileId: 'pdf1', name: 'Manual de campo.pdf', image: false } : null,
+    });
+
+    expect(doc.content![0]!.attrs).toMatchObject({
+      fileId: 'pdf1',
+      markdownHref: 'Anexos/Manual%20de%20campo.pdf#pagina=4',
+      markdownLabel: 'manual de campo',
+    });
+    expect(docToMarkdown(doc)).toBe(`${source}\n`);
+    expect(docToMarkdown(doc, { filePath: () => 'Anexos/Manual-novo.pdf' })).toBe(
+      '[manual de campo](Anexos/Manual-novo.pdf#pagina=4)\n',
+    );
+  });
+
+  it('preserves the encoded source path of a stored image', () => {
+    const source = '![Mapa do céu](Anexos/Mapa%20do%20c%C3%A9u.png)';
+    const doc = markdownToDoc(source, {
+      resolveFile: (href) =>
+        href.startsWith('Anexos/') ? { fileId: 'image1', name: 'Mapa do céu.png', image: true } : null,
+    });
+
+    expect(doc.content![0]!.attrs?.markdownHref).toBe('Anexos/Mapa%20do%20c%C3%A9u.png');
+    expect(docToMarkdown(doc, { filePath: () => 'Anexos/Mapa do céu.png' })).toBe(`${source}\n`);
+  });
+
+  it('keeps a Markdown link to an image as a link with its label', () => {
+    const source = '[croqui original](Anexos/Mapa%20do%20c%C3%A9u.png)';
+    const doc = markdownToDoc(source, {
+      resolveFile: (href) =>
+        href.startsWith('Anexos/') ? { fileId: 'image1', name: 'Mapa do céu.png', image: true } : null,
+    });
+
+    expect(doc.content![0]!.attrs).toMatchObject({
+      markdownHref: 'Anexos/Mapa%20do%20c%C3%A9u.png',
+      markdownLabel: 'croqui original',
+    });
+    expect(docToMarkdown(doc, { filePath: () => 'Anexos/Mapa do céu.png' })).toBe(`${source}\n`);
   });
 });
 
@@ -176,7 +225,11 @@ describe('notion and folder imports', () => {
     expect(plan.files[0]!.meta.type).toBe('image/png');
     expect(projects.content![1]).toEqual({
       type: 'image',
-      attrs: { fileId: plan.files[0]!.meta.id, alt: '' },
+      attrs: {
+        fileId: plan.files[0]!.meta.id,
+        alt: '',
+        markdownHref: `Projects%20${id('a')}/photo.png`,
+      },
     });
     // the csv becomes a database, rows with a page keep it and the rest get new pages
     const reading = byTitle('Reading');

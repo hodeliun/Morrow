@@ -1,5 +1,6 @@
 import { AlertTriangle, Check, Pencil, Plus, Square, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import type { InputHTMLAttributes } from 'react';
 import { formatDisplayValue, formulaResult, formulaValueText, valueOf } from '../../../core/database';
 import { displayTitle, TEXT_HEX } from '../../../core/model';
 import { resolveLinkTarget } from '../../../core/search';
@@ -32,6 +33,12 @@ import { ensureOption, setValue, updateDatabase } from './data';
 import { durationUnitFactor } from '../../../core/typedValues';
 import { scalarValueError } from '../../../core/typedValues';
 import { isMediaProperty } from '../../../core/propertyMedia';
+import {
+  attemptCellDraftCommit,
+  isCellEditableNow,
+  parseCellNumberDraft,
+  placeInitialCellDraftCaret,
+} from './cellEditing';
 import { MediaPropertyDisplay, MediaPropertyInput } from './MediaProperty';
 import { ButtonActionCell } from './TableActionCell';
 import { PropertyTypeSelect } from './PropertyTypeSelect';
@@ -237,8 +244,13 @@ export function PropertyInput({
   editable,
   gridMode,
   isEditing,
+  initialText,
+  openPickerOnEdit,
+  canEditNow,
   onCommitAndMove,
   onCancelEdit,
+  onDoneEdit,
+  onInvalidDraftChange,
 }: {
   dbId: PageId;
   prop: PropDef;
@@ -246,13 +258,19 @@ export function PropertyInput({
   editable: boolean;
   gridMode?: boolean;
   isEditing?: boolean;
+  initialText?: string;
+  openPickerOnEdit?: boolean;
+  canEditNow?: () => boolean;
   onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
   onCancelEdit?: () => void;
+  onDoneEdit?: () => void;
+  onInvalidDraftChange?: (invalid: boolean) => void;
 }) {
   const state = useWorkspace();
   const database = state.pages[dbId]?.database;
   const value = database ? valueOf(row, prop.id, database, state) : (row.properties[prop.id] ?? null);
   const [picker, setPicker] = useState<HTMLElement | null>(null);
+  const pickerTrigger = useRef<HTMLButtonElement>(null);
   const [editing, setEditing] = useState(false);
   const [checkboxDraft, setCheckboxDraft] = useState<boolean | null>(null);
   const checkboxDraftRef = useRef<boolean | null>(null);
@@ -263,6 +281,7 @@ export function PropertyInput({
   const rangeCanceling = useRef(false);
   const rangeFinished = useRef(false);
   const effectiveEditing = gridMode ? Boolean(isEditing) : editing;
+  const canCommitNow = () => isCellEditableNow(editable, canEditNow);
   const label = t('properties.valueOf', { key: prop.name, title: displayTitle(row) });
   const unsupportedRelationValue =
     prop.type === 'relation' &&
@@ -283,9 +302,22 @@ export function PropertyInput({
     'duration',
   ].includes(prop.type);
   const stopEditing = () => {
-    if (gridMode && onCancelEdit) onCancelEdit();
+    if (gridMode) (onDoneEdit ?? onCancelEdit)?.();
     else setEditing(false);
   };
+  useEffect(() => {
+    if (!gridMode || !effectiveEditing || !openPickerOnEdit || picker || !pickerTrigger.current) return;
+    if (prop.type === 'relation' && (!prop.relation?.targetDatabaseId || unsupportedRelationValue)) return;
+    setPicker(pickerTrigger.current);
+  }, [
+    effectiveEditing,
+    gridMode,
+    openPickerOnEdit,
+    picker,
+    prop.relation?.targetDatabaseId,
+    prop.type,
+    unsupportedRelationValue,
+  ]);
   const handlePickerTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (!gridMode || picker) return;
     if (event.key === 'Escape') {
@@ -384,7 +416,11 @@ export function PropertyInput({
             aria-label={label}
             disabled={!editable || !prop.relation?.targetDatabaseId || unsupportedRelationValue}
             autoFocus={effectiveEditing}
+            ref={pickerTrigger}
             onKeyDown={handlePickerTriggerKeyDown}
+            onBlur={() => {
+              if (!picker) stopEditing();
+            }}
             title={unsupportedRelationValue ? t('database.relationDiagnosticUnsupported') : undefined}
             onClick={(event) => setPicker(event.currentTarget)}
           >
@@ -406,6 +442,9 @@ export function PropertyInput({
               prop={prop}
               targets={targets}
               anchor={picker}
+              initialQuery={initialText}
+            editable={editable}
+            canEditNow={canEditNow}
               onGridTab={handlePickerGridTab}
               onClose={() => {
                 setPicker(null);
@@ -426,7 +465,11 @@ export function PropertyInput({
             checkboxCanceling.current = false;
             return;
           }
-          if (checkboxDraftRef.current !== null && checkboxDraftRef.current !== (value === true)) {
+          if (
+            canCommitNow() &&
+            checkboxDraftRef.current !== null &&
+            checkboxDraftRef.current !== (value === true)
+          ) {
             setValue(row.id, prop.id, checkboxDraftRef.current);
           }
           checkboxDraftRef.current = null;
@@ -442,6 +485,7 @@ export function PropertyInput({
             disabled={!cellEditable}
             autoFocus={effectiveEditing}
             onChange={(event) => {
+              if (!canCommitNow()) return;
               checkboxFinished.current = false;
               checkboxDraftRef.current = event.target.checked;
               setCheckboxDraft(event.target.checked);
@@ -473,7 +517,9 @@ export function PropertyInput({
           aria-label={label}
           checked={value === true}
           disabled={!editable}
-          onChange={(event) => setValue(row.id, prop.id, event.target.checked)}
+          onChange={(event) => {
+            if (canCommitNow()) setValue(row.id, prop.id, event.target.checked);
+          }}
         />
       );
     case 'number':
@@ -487,23 +533,35 @@ export function PropertyInput({
           : prop.type === 'duration'
             ? 1 / durationUnitFactor(prop.format?.durationUnit ?? 'minutes')
             : 1;
+      const numberLocale =
+        prop.format?.locale || (typeof navigator !== 'undefined' ? navigator.language : 'en-US');
+      const parseNumber = (text: string) => parseCellNumberDraft(text, numberLocale);
       const input = (
         <DraftInput
-          type="number"
+          type="text"
+          inputMode="decimal"
           label={label}
           value={typeof value === 'number' ? String(value * multiplier) : ''}
           editable={cellEditable}
+          canEditNow={canEditNow}
           autoFocus={effectiveEditing}
+          initialDraft={initialText}
+          validateInAllModes
           onDone={stopEditing}
           gridMode={gridMode}
           onCommitAndMove={onCommitAndMove}
           onCancelEdit={onCancelEdit}
-          min={prop.format?.min === undefined ? undefined : prop.format.min * multiplier}
-          max={prop.format?.max === undefined ? undefined : prop.format.max * multiplier}
-          step={prop.format?.step === undefined ? undefined : prop.format.step * multiplier}
+          onInvalidDraftChange={onInvalidDraftChange}
+          validateDraft={(text) => {
+            if (!text.trim()) return null;
+            const number = parseNumber(text);
+            return number === null ? t('cellUx.invalidNumber') : scalarValueError(prop, number / multiplier);
+          }}
           onCommit={(text) => {
-            const number = Number(text);
-            setValue(row.id, prop.id, text.trim() && Number.isFinite(number) ? number / multiplier : null);
+            if (!text.trim()) return setValue(row.id, prop.id, null);
+            const number = parseNumber(text);
+            if (number === null) return false;
+            return setValue(row.id, prop.id, number / multiplier);
           }}
         />
       );
@@ -540,7 +598,7 @@ export function PropertyInput({
           return;
         }
         if (rangeDraftRef.current !== null && rangeDraftRef.current !== value) {
-          setValue(row.id, prop.id, rangeDraftRef.current);
+          if (canCommitNow()) setValue(row.id, prop.id, rangeDraftRef.current);
         }
         rangeDraftRef.current = null;
         setRangeDraft(null);
@@ -561,6 +619,7 @@ export function PropertyInput({
             autoFocus={effectiveEditing}
             style={prop.format?.color ? { accentColor: TEXT_HEX[prop.format.color] } : undefined}
             onChange={(event) => {
+              if (!canCommitNow()) return;
               const next = Number(event.target.value);
               if (gridMode) {
                 rangeFinished.current = false;
@@ -605,8 +664,11 @@ export function PropertyInput({
             type="date"
             label={label}
             value={typeof value === 'string' ? value : ''}
+            editable={cellEditable}
+            canEditNow={canEditNow}
             autoFocus={effectiveEditing}
             onDone={stopEditing}
+            onInvalidDraftChange={onInvalidDraftChange}
             onCommit={(raw) => setValue(row.id, prop.id, raw || null)}
             onCommitAndMove={onCommitAndMove}
             onCancelEdit={onCancelEdit}
@@ -621,7 +683,9 @@ export function PropertyInput({
           value={typeof value === 'string' ? value : ''}
           disabled={!cellEditable}
           autoFocus={effectiveEditing}
-          onChange={(event) => setValue(row.id, prop.id, event.target.value || null)}
+          onChange={(event) => {
+            if (canCommitNow()) setValue(row.id, prop.id, event.target.value || null);
+          }}
           onBlur={stopEditing}
         />
       );
@@ -632,8 +696,11 @@ export function PropertyInput({
             type="time"
             label={label}
             value={typeof value === 'string' ? value : ''}
+            editable={cellEditable}
+            canEditNow={canEditNow}
             autoFocus={effectiveEditing}
             onDone={stopEditing}
+            onInvalidDraftChange={onInvalidDraftChange}
             onCommit={(raw) => setValue(row.id, prop.id, raw || null)}
             onCommitAndMove={onCommitAndMove}
             onCancelEdit={onCancelEdit}
@@ -648,7 +715,9 @@ export function PropertyInput({
           value={typeof value === 'string' ? value : ''}
           disabled={!cellEditable}
           autoFocus={effectiveEditing}
-          onChange={(event) => setValue(row.id, prop.id, event.target.value || null)}
+          onChange={(event) => {
+            if (canCommitNow()) setValue(row.id, prop.id, event.target.value || null);
+          }}
           onBlur={stopEditing}
         />
       );
@@ -660,8 +729,11 @@ export function PropertyInput({
             type="datetime-local"
             label={label}
             value={local}
+            editable={cellEditable}
+            canEditNow={canEditNow}
             autoFocus={effectiveEditing}
             onDone={stopEditing}
+            onInvalidDraftChange={onInvalidDraftChange}
             onCommit={(raw) => setValue(row.id, prop.id, raw ? new Date(raw).toISOString() : null)}
             onCommitAndMove={onCommitAndMove}
             onCancelEdit={onCancelEdit}
@@ -677,6 +749,7 @@ export function PropertyInput({
           disabled={!cellEditable}
           autoFocus={effectiveEditing}
           onChange={(event) => {
+            if (!canCommitNow()) return;
             const raw = event.target.value;
             setValue(row.id, prop.id, raw ? new Date(raw).toISOString() : null);
           }}
@@ -694,11 +767,15 @@ export function PropertyInput({
             label={label}
             value={typeof value === 'string' ? value : ''}
             editable={cellEditable}
+            canEditNow={canEditNow}
             autoFocus={effectiveEditing}
+            initialDraft={initialText}
             onDone={stopEditing}
             gridMode={gridMode}
             onCommitAndMove={onCommitAndMove}
             onCancelEdit={onCancelEdit}
+            onInvalidDraftChange={onInvalidDraftChange}
+            validateDraft={(text) => scalarValueError(prop, text.trim() || null)}
             onCommit={(text) => setValue(row.id, prop.id, text.trim() || null)}
           />
         </span>
@@ -714,7 +791,11 @@ export function PropertyInput({
             aria-label={label}
             disabled={!editable}
             autoFocus={effectiveEditing}
+            ref={pickerTrigger}
             onKeyDown={handlePickerTriggerKeyDown}
+            onBlur={() => {
+              if (!picker) stopEditing();
+            }}
             onClick={(event) => setPicker(event.currentTarget)}
           >
             {ids.length === 0 && editable && <span className="prop-empty">{t('database.empty')}</span>}
@@ -729,6 +810,9 @@ export function PropertyInput({
               prop={prop}
               selected={ids}
               anchor={picker}
+              initialQuery={initialText}
+              editable={editable}
+              canEditNow={canEditNow}
               onGridTab={handlePickerGridTab}
               onClose={() => {
                 setPicker(null);
@@ -746,11 +830,14 @@ export function PropertyInput({
           label={label}
           value={typeof value === 'string' ? value : ''}
           editable={cellEditable}
+          canEditNow={canEditNow}
           autoFocus={effectiveEditing}
+          initialDraft={initialText}
           onDone={stopEditing}
           gridMode={gridMode}
           onCommitAndMove={onCommitAndMove}
           onCancelEdit={onCancelEdit}
+          onInvalidDraftChange={onInvalidDraftChange}
           onCommit={(text) => setValue(row.id, prop.id, text)}
         />
       );
@@ -761,74 +848,152 @@ export function PropertyInput({
           label={label}
           value={typeof value === 'string' ? value : value === null ? '' : String(value)}
           editable={cellEditable}
+          canEditNow={canEditNow}
           autoFocus={effectiveEditing}
+          initialDraft={initialText}
           onDone={stopEditing}
           gridMode={gridMode}
           onCommitAndMove={onCommitAndMove}
           onCancelEdit={onCancelEdit}
+          onInvalidDraftChange={onInvalidDraftChange}
           onCommit={(text) => setValue(row.id, prop.id, text)}
         />
       );
   }
 }
 
+type DraftCommitResult = unknown;
+
+function draftCommitFailure(result: DraftCommitResult): string | null {
+  if (result === false) return t('topBar.saveFailed');
+  if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
+    return 'error' in result && typeof result.error === 'string' ? result.error : t('topBar.saveFailed');
+  }
+  return null;
+}
+
 function DraftTemporalInput({
   type,
   label,
   value,
+  editable,
+  canEditNow,
   autoFocus,
   onCommit,
   onDone,
   onCommitAndMove,
   onCancelEdit,
+  onInvalidDraftChange,
 }: {
   type: 'date' | 'time' | 'datetime-local';
   label: string;
   value: string;
+  editable: boolean;
+  canEditNow?: () => boolean;
   autoFocus?: boolean;
-  onCommit: (value: string) => void;
+  onCommit: (value: string) => DraftCommitResult;
   onDone?: () => void;
   onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
   onCancelEdit?: () => void;
+  onInvalidDraftChange?: (invalid: boolean) => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const canceling = useRef(false);
   const finished = useRef(false);
-  const commit = () => {
-    if (finished.current) return;
+  const commitFailed = useRef(false);
+  const commit = (): boolean => {
+    if (finished.current) return true;
     finished.current = true;
     if (canceling.current) {
       canceling.current = false;
       setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
       onDone?.();
-      return;
+      return true;
     }
-    if (draft !== null && draft !== value) onCommit(draft);
+    const attempt = attemptCellDraftCommit({ editable, canEditNow, draft, value, onCommit });
+    if (attempt.kind === 'readonly') {
+      canceling.current = false;
+      setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
+      onDone?.();
+      return true;
+    }
+    if (attempt.kind === 'committed') {
+      const error = draftCommitFailure(attempt.result);
+      if (error) {
+        finished.current = false;
+        commitFailed.current = true;
+        setValidationError(error);
+        onInvalidDraftChange?.(true);
+        return false;
+      }
+    }
+    commitFailed.current = false;
+    setValidationError(null);
+    onInvalidDraftChange?.(false);
     setDraft(null);
     onDone?.();
+    return true;
   };
   return (
     <input
       type={type}
       className="prop-input"
       aria-label={label}
+      aria-invalid={validationError ? true : undefined}
+      title={validationError ?? undefined}
       value={draft ?? value}
       autoFocus={autoFocus}
       onChange={(event) => {
         finished.current = false;
+        if (!commitFailed.current) {
+          setValidationError(null);
+          onInvalidDraftChange?.(false);
+        }
         setDraft(event.target.value);
       }}
-      onBlur={commit}
+      onBlur={(event) => {
+        if (!commit()) {
+          const element = event.currentTarget;
+          const pane = element.closest<HTMLElement>('.pane[data-pane]');
+          const nextTarget = event.relatedTarget;
+          if (!pane || !(nextTarget instanceof Element) || !pane.contains(nextTarget)) return;
+          requestAnimationFrame(() => {
+            const activeElement = pane.ownerDocument.activeElement;
+            if (
+              !element.isConnected ||
+              !pane.isConnected ||
+              pane.classList.contains('is-cached') ||
+              pane.getAttribute('aria-hidden') === 'true' ||
+              pane.getClientRects().length === 0 ||
+              !pane.ownerDocument.hasFocus() ||
+              !pane.classList.contains('is-active') ||
+              activeElement?.closest('[data-pane]') !== pane
+            ) return;
+            element.focus({ preventScroll: true });
+          });
+        }
+      }}
       onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
         if (event.key === 'Escape') {
           event.preventDefault();
           canceling.current = true;
           setDraft(null);
+          setValidationError(null);
+          commitFailed.current = false;
+          onInvalidDraftChange?.(false);
           event.currentTarget.blur();
           onCancelEdit?.();
         } else if (event.key === 'Enter' || event.key === 'Tab') {
           event.preventDefault();
-          commit();
+          if (!commit()) return;
           event.currentTarget.blur();
           onCommitAndMove?.(
             event.key === 'Tab' ? (event.shiftKey ? 'prev' : 'next') : event.shiftKey ? 'up' : 'down',
@@ -842,9 +1007,11 @@ function DraftTemporalInput({
 // keeps typing local and saves on blur or enter, so every keystroke is not a separate change
 export function DraftInput({
   type,
+  inputMode,
   label,
   value,
   editable,
+  canEditNow,
   onCommit,
   placeholder,
   className,
@@ -856,12 +1023,18 @@ export function DraftInput({
   gridMode,
   onCommitAndMove,
   onCancelEdit,
+  initialDraft,
+  validateDraft,
+  validateInAllModes,
+  onInvalidDraftChange,
 }: {
   type: 'text' | 'number' | 'url';
+  inputMode?: InputHTMLAttributes<HTMLInputElement>['inputMode'];
   label: string;
   value: string;
   editable: boolean;
-  onCommit: (text: string) => void;
+  canEditNow?: () => boolean;
+  onCommit: (text: string) => DraftCommitResult;
   placeholder?: string;
   className?: string;
   autoFocus?: boolean;
@@ -873,38 +1046,105 @@ export function DraftInput({
   gridMode?: boolean;
   onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
   onCancelEdit?: () => void;
+  initialDraft?: string;
+  validateDraft?: (text: string) => string | null;
+  validateInAllModes?: boolean;
+  onInvalidDraftChange?: (invalid: boolean) => void;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
+  const shouldValidateDraft = Boolean(gridMode || validateInAllModes);
+  const [draft, setDraft] = useState<string | null>(() => initialDraft ?? null);
+  const [validationError, setValidationError] = useState<string | null>(() =>
+    shouldValidateDraft && initialDraft !== undefined ? (validateDraft?.(initialDraft) ?? null) : null,
+  );
   const canceling = useRef(false);
   const finished = useRef(false);
   const input = useRef<HTMLInputElement>(null);
+  const commitFailed = useRef(false);
+  const initialCaretPending = useRef(initialDraft !== undefined);
+  const wasEditable = useRef(editable);
   // the values this field saved, so undo inside it steps back through them. the browser's own undo knows
   // nothing of values set from outside the field and can empty it instead
   const undone = useRef<Array<{ before: string; after: string }>>([]);
   const redone = useRef<Array<{ before: string; after: string }>>([]);
-  const commit = () => {
-    if (finished.current) return;
+  const commit = (): boolean => {
+    if (finished.current) return true;
     finished.current = true;
     if (canceling.current) {
       canceling.current = false;
       setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
       onDone?.();
-      return;
+      return true;
     }
-    if (draft !== null && draft !== value) {
-      undone.current.push({ before: value, after: draft });
+    const attempt = attemptCellDraftCommit({
+      editable,
+      canEditNow,
+      draft,
+      value,
+      validate: shouldValidateDraft ? validateDraft : undefined,
+      onCommit,
+    });
+    if (attempt.kind === 'readonly') {
+      canceling.current = false;
+      setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
+      onDone?.();
+      return true;
+    }
+    if (attempt.kind === 'invalid') {
+      finished.current = false;
+      setValidationError(attempt.error);
+      onInvalidDraftChange?.(true);
+      return false;
+    }
+    if (attempt.kind === 'committed') {
+      const error = gridMode ? draftCommitFailure(attempt.result) : null;
+      if (error) {
+        finished.current = false;
+        commitFailed.current = true;
+        setValidationError(error);
+        onInvalidDraftChange?.(true);
+        return false;
+      }
+      undone.current.push({ before: value, after: attempt.draft });
       redone.current = [];
-      onCommit(draft);
     }
+    commitFailed.current = false;
+    setValidationError(null);
+    onInvalidDraftChange?.(false);
     setDraft(null);
     onDone?.();
+    return true;
   };
+  useEffect(() => {
+    const lostPermission = wasEditable.current && !editable;
+    wasEditable.current = editable;
+    if (!lostPermission) return;
+    finished.current = true;
+    canceling.current = false;
+    setDraft(null);
+    setValidationError(null);
+    commitFailed.current = false;
+    onInvalidDraftChange?.(false);
+    onDone?.();
+  }, [editable, onDone, onInvalidDraftChange]);
   const stepHistory = (direction: 'undo' | 'redo') => {
     // typing that is not saved yet goes first
-    if (direction === 'undo' && draft !== null && draft !== value) return setDraft(null);
+    if (direction === 'undo' && draft !== null && draft !== value) {
+      setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
+      return;
+    }
+    if (!isCellEditableNow(editable, canEditNow)) return;
     const [from, to] = direction === 'undo' ? [undone, redone] : [redone, undone];
     const change = from.current.pop();
-    if (!change || !editable) return;
+    if (!change) return;
     to.current.push(change);
     setDraft(null);
     onCommit(direction === 'undo' ? change.before : change.after);
@@ -913,6 +1153,9 @@ export function DraftInput({
   useEffect(() => {
     stepRef.current = stepHistory;
   });
+  useEffect(() => {
+    if (validationError) onInvalidDraftChange?.(true);
+  }, [onInvalidDraftChange, validationError]);
   // undo and redo from the edit menu arrive as input events rather than keys
   useEffect(() => {
     const element = input.current;
@@ -929,24 +1172,55 @@ export function DraftInput({
     <input
       ref={input}
       type={type}
+      inputMode={inputMode}
       autoFocus={autoFocus}
       min={min}
       max={max}
       step={step}
       className={className ?? 'prop-input'}
       aria-label={label}
+      aria-invalid={validationError ? true : undefined}
+      title={validationError ?? undefined}
       placeholder={placeholder ?? (editable ? t('database.empty') : '')}
       value={draft ?? value}
       readOnly={!editable}
+      onFocus={(event) => placeInitialCellDraftCaret(event.currentTarget, initialCaretPending)}
       onChange={(event) => {
         finished.current = false;
-        setDraft(event.target.value);
+        const next = event.target.value;
+        const nextError = shouldValidateDraft ? (validateDraft?.(next) ?? null) : null;
+        const visibleError = nextError ?? (commitFailed.current ? validationError : null);
+        setValidationError(visibleError);
+        onInvalidDraftChange?.(Boolean(visibleError));
+        setDraft(next);
       }}
-      onBlur={commit}
+      onBlur={(event) => {
+        if (!commit()) {
+          const element = event.currentTarget;
+          const pane = element.closest<HTMLElement>('.pane[data-pane]');
+          const nextTarget = event.relatedTarget;
+          if (!pane || !(nextTarget instanceof Element) || !pane.contains(nextTarget)) return;
+          requestAnimationFrame(() => {
+            const activeElement = pane.ownerDocument.activeElement;
+            if (
+              !element.isConnected ||
+              !pane.isConnected ||
+              pane.classList.contains('is-cached') ||
+              pane.getAttribute('aria-hidden') === 'true' ||
+              pane.getClientRects().length === 0 ||
+              !pane.ownerDocument.hasFocus() ||
+              !pane.classList.contains('is-active') ||
+              activeElement?.closest('[data-pane]') !== pane
+            ) return;
+            element.focus({ preventScroll: true });
+          });
+        }
+      }}
       onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
         if (event.key === 'Enter') {
           event.preventDefault();
-          commit();
+          if (!commit()) return;
           event.currentTarget.blur();
           if (gridMode && onCommitAndMove) {
             onCommitAndMove(event.shiftKey ? 'up' : 'down');
@@ -954,13 +1228,17 @@ export function DraftInput({
         }
         if (event.key === 'Tab' && gridMode && onCommitAndMove) {
           event.preventDefault();
-          commit();
+          if (!commit()) return;
           event.currentTarget.blur();
           onCommitAndMove(event.shiftKey ? 'prev' : 'next');
         }
         if (event.key === 'Escape') {
+          event.preventDefault();
           canceling.current = true;
           setDraft(null);
+          setValidationError(null);
+          commitFailed.current = false;
+          onInvalidDraftChange?.(false);
           event.currentTarget.blur();
           if (gridMode && onCancelEdit) {
             onCancelEdit();
@@ -980,74 +1258,148 @@ function DraftTextarea({
   label,
   value,
   editable,
+  canEditNow,
   autoFocus,
   onCommit,
   onDone,
   gridMode,
   onCommitAndMove,
   onCancelEdit,
+  initialDraft,
+  onInvalidDraftChange,
 }: {
   label: string;
   value: string;
   editable: boolean;
+  canEditNow?: () => boolean;
   autoFocus?: boolean;
-  onCommit: (text: string) => void;
+  onCommit: (text: string) => DraftCommitResult;
   onDone?: () => void;
   gridMode?: boolean;
   onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
   onCancelEdit?: () => void;
+  initialDraft?: string;
+  onInvalidDraftChange?: (invalid: boolean) => void;
 }) {
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(() => initialDraft ?? null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const canceling = useRef(false);
   const finished = useRef(false);
-  const commit = () => {
-    if (finished.current) return;
+  const commitFailed = useRef(false);
+  const initialCaretPending = useRef(initialDraft !== undefined);
+  const wasEditable = useRef(editable);
+  const commit = (): boolean => {
+    if (finished.current) return true;
     finished.current = true;
     if (canceling.current) {
       canceling.current = false;
       setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
       onDone?.();
-      return;
+      return true;
     }
-    if (draft !== null && draft !== value) onCommit(draft);
+    const attempt = attemptCellDraftCommit({ editable, canEditNow, draft, value, onCommit });
+    if (attempt.kind === 'readonly') {
+      canceling.current = false;
+      setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
+      onDone?.();
+      return true;
+    }
+    if (attempt.kind === 'committed') {
+      const error = gridMode ? draftCommitFailure(attempt.result) : null;
+      if (error) {
+        finished.current = false;
+        commitFailed.current = true;
+        setValidationError(error);
+        onInvalidDraftChange?.(true);
+        return false;
+      }
+    }
+    commitFailed.current = false;
+    setValidationError(null);
+    onInvalidDraftChange?.(false);
     setDraft(null);
     onDone?.();
+    return true;
   };
+  useEffect(() => {
+    const lostPermission = wasEditable.current && !editable;
+    wasEditable.current = editable;
+    if (!lostPermission) return;
+    finished.current = true;
+    canceling.current = false;
+    setDraft(null);
+    setValidationError(null);
+    commitFailed.current = false;
+    onInvalidDraftChange?.(false);
+    onDone?.();
+  }, [editable, onDone, onInvalidDraftChange]);
   return (
     <textarea
       className="prop-input prop-textarea"
       aria-label={label}
+      aria-invalid={validationError ? true : undefined}
+      title={validationError ?? undefined}
       value={draft ?? value}
       readOnly={!editable}
       autoFocus={autoFocus}
       rows={2}
+      onFocus={(event) => placeInitialCellDraftCaret(event.currentTarget, initialCaretPending)}
       onChange={(event) => {
         finished.current = false;
+        if (!commitFailed.current) {
+          setValidationError(null);
+          onInvalidDraftChange?.(false);
+        }
         setDraft(event.target.value);
       }}
-      onBlur={commit}
+      onBlur={(event) => {
+        if (!commit()) {
+          const element = event.currentTarget;
+          requestAnimationFrame(() => element.isConnected && element.focus({ preventScroll: true }));
+        }
+      }}
       onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
         if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
           event.preventDefault();
-          commit();
+          if (!commit()) return;
           event.currentTarget.blur();
           if (gridMode && onCommitAndMove) {
             onCommitAndMove('stay');
           }
+          return;
         }
         if (event.key === 'Escape') {
+          event.preventDefault();
           canceling.current = true;
           setDraft(null);
+          setValidationError(null);
+          commitFailed.current = false;
+          onInvalidDraftChange?.(false);
           event.currentTarget.blur();
           if (gridMode && onCancelEdit) {
             onCancelEdit();
           }
+          return;
         }
         if (event.key === 'Tab' && gridMode && onCommitAndMove) {
           event.preventDefault();
-          commit();
+          if (!commit()) return;
           event.currentTarget.blur();
           onCommitAndMove(event.shiftKey ? 'prev' : 'next');
+          return;
+        }
+        if (event.key === 'Enter' && gridMode && !event.shiftKey) {
+          event.preventDefault();
+          if (!commit()) return;
+          event.currentTarget.blur();
+          onCommitAndMove?.('down');
         }
       }}
     />
@@ -1060,6 +1412,9 @@ function OptionPicker({
   row,
   selected,
   anchor,
+  initialQuery,
+  editable,
+  canEditNow,
   onGridTab,
   onClose,
 }: {
@@ -1068,16 +1423,20 @@ function OptionPicker({
   row: PageMeta;
   selected: string[];
   anchor: HTMLElement;
+  initialQuery?: string;
+  editable: boolean;
+  canEditNow?: () => boolean;
   onGridTab?: (direction: 'next' | 'prev') => void;
   onClose: () => void;
 }) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(() => initialQuery ?? '');
   const multi = prop.type === 'multiSelect';
   const shown = prop.options.filter((option) =>
     option.name.toLowerCase().includes(query.trim().toLowerCase()),
   );
   const exact = prop.options.some((option) => option.name.toLowerCase() === query.trim().toLowerCase());
   const choose = (id: string) => {
+    if (!isCellEditableNow(editable, canEditNow)) return;
     if (multi) {
       const next = selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id];
       setValue(row.id, prop.id, next.length ? next : null);
@@ -1093,6 +1452,7 @@ function OptionPicker({
     onGridTab(event.shiftKey ? 'prev' : 'next');
   };
   const create = () => {
+    if (!isCellEditableNow(editable, canEditNow)) return;
     const option = ensureOption(dbId, prop.id, query);
     if (!option) return;
     setQuery('');
@@ -1156,6 +1516,7 @@ function OptionPicker({
               className="option-row muted"
               onKeyDown={handleGridTab}
               onClick={() => {
+                if (!isCellEditableNow(editable, canEditNow)) return;
                 setValue(row.id, prop.id, null);
                 onClose();
               }}
@@ -1270,6 +1631,9 @@ export function RelationPicker({
   prop,
   targets,
   anchor,
+  initialQuery,
+  editable = true,
+  canEditNow,
   onGridTab,
   onClose,
   onChange,
@@ -1278,12 +1642,15 @@ export function RelationPicker({
   prop: PropDef;
   targets: string[];
   anchor: HTMLElement;
+  initialQuery?: string;
+  editable?: boolean;
+  canEditNow?: () => boolean;
   onGridTab?: (direction: 'next' | 'prev') => void;
   onClose: () => void;
   onChange?: (targets: string[]) => void;
 }) {
   const state = useWorkspace();
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(() => initialQuery ?? '');
   const chosen = new Set(targets);
   const found = relationOptions(state, prop, query).slice(0, 100);
   const multi = prop.relation?.multiple === true;
@@ -1294,6 +1661,7 @@ export function RelationPicker({
     onGridTab(event.shiftKey ? 'prev' : 'next');
   };
   const toggle = (targetId: string) => {
+    if (!isCellEditableNow(editable, canEditNow)) return;
     if (!multi) {
       if (onChange) onChange(chosen.has(targetId) ? [] : [targetId]);
       else if (row) setValue(row.id, prop.id, chosen.has(targetId) ? null : targetId);

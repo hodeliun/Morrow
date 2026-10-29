@@ -94,7 +94,8 @@ export function PropertySettings({
         ({ ownerId, candidate }) =>
           (ownerId !== dbId || candidate.id !== prop.id) &&
           [...(candidate.formulaBindings ?? []), ...(candidate.defaultFormulaBindings ?? [])].some(
-            (binding) => binding.kind === 'property' && binding.databaseId === dbId && binding.propertyId === prop.id,
+            (binding) =>
+              binding.kind === 'property' && binding.databaseId === dbId && binding.propertyId === prop.id,
           ),
       )?.candidate;
     if (dependentFormula) {
@@ -214,13 +215,25 @@ export function PropertySettings({
       label={t('database.propertyAria', { name: prop.name })}
       className={`db-panel${prop.type === 'formula' || prop.type === 'relation' || prop.type === 'button' ? ' is-wide' : ''}`}
     >
-      <div className="field-inline prop-name-icon-row" style={{ display: 'flex', alignItems: 'flex-end', gap: '8px' }}>
+      <div
+        className="field-inline prop-name-icon-row"
+        style={{ display: 'flex', alignItems: 'flex-end', gap: '8px' }}
+      >
         <button
           type="button"
           className="icon-button prop-icon-trigger"
           aria-label={t('database.changePropertyIcon')}
           title={t('database.changePropertyIcon')}
-          style={{ width: '32px', height: '32px', marginBottom: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border)', borderRadius: '6px' }}
+          style={{
+            width: '32px',
+            height: '32px',
+            marginBottom: '2px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: '1px solid var(--border)',
+            borderRadius: '6px',
+          }}
           onClick={() =>
             openDialog({
               kind: 'icon',
@@ -270,16 +283,21 @@ export function PropertySettings({
       </div>
       <div className="field">
         <span>{t('database.type')}</span>
-        <PropertyTypeSelect
-          value={prop.type}
-          onChange={(type) => changeType(type, Date.now())}
-        />
+        <PropertyTypeSelect value={prop.type} onChange={(type) => changeType(type, Date.now())} />
       </div>
-      {focusSection === 'formula' && prop.type !== 'formula' && prop.fillMode !== 'calculated' &&
-        prop.type !== 'button' && prop.type !== 'createdTime' && prop.type !== 'lastEditedTime' &&
+      {focusSection === 'formula' &&
+        prop.type !== 'formula' &&
+        prop.fillMode !== 'calculated' &&
+        prop.type !== 'button' &&
+        prop.type !== 'createdTime' &&
+        prop.type !== 'lastEditedTime' &&
         !isMediaProperty(prop.type) && (
-          <button type="button" className="button small" data-autofocus
-            onClick={() => setFillMode(dbId, prop, 'calculated')}>
+          <button
+            type="button"
+            className="button small"
+            data-autofocus
+            onClick={() => setFillMode(dbId, prop, 'calculated')}
+          >
             {t('database.enableColumnFormula')}
           </button>
         )}
@@ -297,27 +315,30 @@ export function PropertySettings({
         />
       </label>
       {prop.type === 'button' && <ButtonActionSettings dbId={dbId} prop={prop} database={database} />}
-      {prop.type !== 'button' && prop.type !== 'formula' && prop.type !== 'createdTime' && prop.type !== 'lastEditedTime' && (
-        <div className="field">
-          <span>{t('database.fillMode')}</span>
-          <div className="segmented" role="radiogroup" aria-label={t('database.fillMode')}>
-            {(['manual', 'default', 'calculated'] as const)
-              .filter((mode) => !isMediaProperty(prop.type) || mode !== 'calculated')
-              .map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  role="radio"
-                  aria-checked={(prop.fillMode ?? 'manual') === mode}
-                  className={(prop.fillMode ?? 'manual') === mode ? 'is-active' : ''}
-                  onClick={() => setFillMode(dbId, prop, mode)}
-                >
-                  {t(mode === 'default' ? 'database.defaultMode' : `database.${mode}`)}
-                </button>
-              ))}
+      {prop.type !== 'button' &&
+        prop.type !== 'formula' &&
+        prop.type !== 'createdTime' &&
+        prop.type !== 'lastEditedTime' && (
+          <div className="field">
+            <span>{t('database.fillMode')}</span>
+            <div className="segmented" role="radiogroup" aria-label={t('database.fillMode')}>
+              {(['manual', 'default', 'calculated'] as const)
+                .filter((mode) => !isMediaProperty(prop.type) || mode !== 'calculated')
+                .map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={(prop.fillMode ?? 'manual') === mode}
+                    className={(prop.fillMode ?? 'manual') === mode ? 'is-active' : ''}
+                    onClick={() => setFillMode(dbId, prop, mode)}
+                  >
+                    {t(mode === 'default' ? 'database.defaultMode' : `database.${mode}`)}
+                  </button>
+                ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
       {prop.fillMode === 'default' && (
         <div className="field">
           {isMediaProperty(prop.type) ? (
@@ -326,7 +347,13 @@ export function PropertySettings({
             <>
               <span>{t('database.defaultSource')}</span>
               <div className="segmented" role="radiogroup" aria-label={t('database.defaultSource')}>
-                {(['literal', 'formula', ...(isNumericPropertyType(prop.type) ? ['sequence' as const] : [])] as const).map((source) => {
+                {(
+                  [
+                    'literal',
+                    'formula',
+                    ...(isNumericPropertyType(prop.type) ? ['sequence' as const] : []),
+                  ] as const
+                ).map((source) => {
                   const selected =
                     source === 'formula'
                       ? prop.defaultFormula !== undefined
@@ -342,7 +369,13 @@ export function PropertySettings({
                       className={selected ? 'is-active' : ''}
                       onClick={() => setDefaultSource(dbId, prop, source)}
                     >
-                      {t(source === 'formula' ? 'database.typeFormula' : source === 'sequence' ? 'database.sequence' : 'database.literal')}
+                      {t(
+                        source === 'formula'
+                          ? 'database.typeFormula'
+                          : source === 'sequence'
+                            ? 'database.sequence'
+                            : 'database.literal',
+                      )}
                     </button>
                   );
                 })}
@@ -386,8 +419,12 @@ export function PropertySettings({
           />
         </div>
       )}
-      {prop.type !== 'button' && <PropertyFormatSettings key={`${prop.id}:${prop.type}`} dbId={dbId} prop={prop} />}
-      {isMediaProperty(prop.type) && <MediaPropertyOptions prop={prop} dbId={dbId} rows={rowsOf(state, dbId)} />}
+      {prop.type !== 'button' && (
+        <PropertyFormatSettings key={`${prop.id}:${prop.type}`} dbId={dbId} prop={prop} />
+      )}
+      {isMediaProperty(prop.type) && (
+        <MediaPropertyOptions prop={prop} dbId={dbId} rows={rowsOf(state, dbId)} />
+      )}
       {(
         ['number', 'currency', 'percent', 'slider', 'progress', 'scale', 'duration', 'formula'] as PropType[]
       ).includes(prop.type) && (
@@ -861,7 +898,12 @@ function SequenceNumberField({
 }) {
   return (
     <label className="field">
-      <span>{label} <span title={help} aria-label={help} tabIndex={0}>ⓘ</span></span>
+      <span>
+        {label}{' '}
+        <span title={help} aria-label={help} tabIndex={0}>
+          ⓘ
+        </span>
+      </span>
       <DraftInput
         type="number"
         label={label}
@@ -908,8 +950,10 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
   };
   const dirty = numeric && JSON.stringify(draftFormat) !== JSON.stringify(prop.format ?? {});
   const saveNumericFormat = () => {
-    if ((format.min !== undefined && format.max !== undefined && format.min > format.max) ||
-        (format.step !== undefined && format.step <= 0)) {
+    if (
+      (format.min !== undefined && format.max !== undefined && format.min > format.max) ||
+      (format.step !== undefined && format.step <= 0)
+    ) {
       toast(t('database.invalidNumericFormat'), { tone: 'error' });
       return;
     }
@@ -930,7 +974,14 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
   const linkLike = ['email', 'url', 'phone'].includes(effectiveType);
   const localeField = (dateOrNumber: boolean) => (
     <label className="field">
-      <span>{t('database.locale')} {numeric && <span title={t('database.localeHelp')} aria-label={t('database.localeHelp')} tabIndex={0}>ⓘ</span>}</span>
+      <span>
+        {t('database.locale')}{' '}
+        {numeric && (
+          <span title={t('database.localeHelp')} aria-label={t('database.localeHelp')} tabIndex={0}>
+            ⓘ
+          </span>
+        )}
+      </span>
       <DraftInput
         type="text"
         label={t('database.locale')}
@@ -1121,10 +1172,24 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
       {numeric && (
         <div className="field">
           <span>{t('database.numberPreview')}</span>
-          <output>{formatValue({ ...prop, type: effectiveType, format }, effectiveType === 'percent' ? 0.25 : 1234.5)}</output>
+          <output>
+            {formatValue(
+              { ...prop, type: effectiveType, format },
+              effectiveType === 'percent' ? 0.25 : 1234.5,
+            )}
+          </output>
           <div className="field-inline">
-            <button type="button" className="button small" disabled={!dirty} onClick={saveNumericFormat}>{t('common.save')}</button>
-            <button type="button" className="button small" disabled={!dirty} onClick={() => setDraftFormat(prop.format ?? {})}>{t('common.cancel')}</button>
+            <button type="button" className="button small" disabled={!dirty} onClick={saveNumericFormat}>
+              {prop.type === 'formula' ? t('formulaUx.applyFormat') : t('common.save')}
+            </button>
+            <button
+              type="button"
+              className="button small"
+              disabled={!dirty}
+              onClick={() => setDraftFormat(prop.format ?? {})}
+            >
+              {prop.type === 'formula' ? t('formulaUx.cancelFormat') : t('common.cancel')}
+            </button>
           </div>
         </div>
       )}
@@ -1173,7 +1238,14 @@ function FormatNumberField({
 }) {
   return (
     <label className="field">
-      <span>{label} {help && <span title={help} aria-label={help} tabIndex={0}>ⓘ</span>}</span>
+      <span>
+        {label}{' '}
+        {help && (
+          <span title={help} aria-label={help} tabIndex={0}>
+            ⓘ
+          </span>
+        )}
+      </span>
       <DraftInput
         type="number"
         label={label}
@@ -1255,12 +1327,14 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
   ).length;
 
   const [inverseMode, setInverseMode] = useState<'none' | 'create' | 'link'>(() =>
-    relation.inversePropertyId ? 'link' : 'none'
+    relation.inversePropertyId ? 'link' : 'none',
   );
   const [newInverseName, setNewInverseName] = useState(() => displayTitle(state.pages[dbId]));
   const [selectedLinkTarget, setSelectedLinkTarget] = useState<string | null>(relation.inversePropertyId);
 
-  const selectedTargetProp = target?.database?.properties.find((candidate) => candidate.id === selectedLinkTarget);
+  const selectedTargetProp = target?.database?.properties.find(
+    (candidate) => candidate.id === selectedLinkTarget,
+  );
   const unionPreview = useMemo(() => {
     if (!target?.database || !selectedLinkTarget) return null;
     return previewRelationPairUnion(
@@ -1270,7 +1344,7 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
       relation.multiple,
       target.id,
       selectedLinkTarget,
-      selectedTargetProp?.relation?.multiple
+      selectedTargetProp?.relation?.multiple,
     );
   }, [state, dbId, prop.id, relation.multiple, target, selectedLinkTarget, selectedTargetProp]);
 
@@ -1478,9 +1552,21 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
               </label>
 
               {unionPreview && selectedLinkTarget && selectedLinkTarget !== relation.inversePropertyId && (
-                <div className="db-relation-preview-box" style={{ padding: '8px 10px', background: 'var(--surface-hover)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+                <div
+                  className="db-relation-preview-box"
+                  style={{
+                    padding: '8px 10px',
+                    background: 'var(--surface-hover)',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border)',
+                  }}
+                >
                   {unionPreview.conflicts.length > 0 ? (
-                    <p className="db-relation-warning" role="alert" style={{ margin: 0, color: 'var(--danger)' }}>
+                    <p
+                      className="db-relation-warning"
+                      role="alert"
+                      style={{ margin: 0, color: 'var(--danger)' }}
+                    >
                       {unionPreview.conflicts[0]}
                     </p>
                   ) : (
@@ -1492,11 +1578,7 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
                           target: unionPreview.targetPairsCount,
                         })}
                       </p>
-                      <button
-                        type="button"
-                        className="button small"
-                        onClick={linkExistingInverse}
-                      >
+                      <button type="button" className="button small" onClick={linkExistingInverse}>
                         {t('database.relationLinkAndMerge')}
                       </button>
                     </>

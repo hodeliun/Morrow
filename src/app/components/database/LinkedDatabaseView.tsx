@@ -1,6 +1,8 @@
 import { ArrowUpRight, ChevronDown, ChevronRight, Eye, Trash2 } from 'lucide-react';
+import type { Editor } from '@tiptap/core';
 import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
+import { useCallback, useEffect, useState } from 'react';
 import { newView } from '../../../core/database';
 import { linkedViewSourceError, wouldCreateLinkedViewCycle } from '../../../core/linkedViews';
 import type { DatabaseDef, ViewDef } from '../../../core/model';
@@ -13,6 +15,86 @@ import { DatabaseView } from './DatabaseView';
 import { DraftInput } from './PropertyValue';
 import { t } from '../../i18n';
 import { displayTitle } from '../../../core/model';
+
+type EditableEditor = Pick<Editor, 'isEditable' | 'isDestroyed' | 'view' | 'on' | 'off'>;
+
+export function linkedViewCollapseEnabled(view: ViewDef | null): boolean {
+  return view !== null && view.collapseEnabled !== false;
+}
+
+export function withLinkedViewCollapseEnabled<T extends object>(
+  view: T,
+  enabled: boolean,
+): T & { collapseEnabled: boolean } {
+  return { ...view, collapseEnabled: enabled };
+}
+
+export function linkedViewSourceSelectionAttributes(
+  hostPageId: string,
+  sourceDatabaseId: string,
+  blockId: string,
+  view: ViewDef,
+) {
+  return { hostPageId, sourceDatabaseId, blockId, view, viewRawState: null };
+}
+
+export function subscribeToEditorEditable(
+  editor: EditableEditor,
+  onChange: (editable: boolean) => void,
+): () => void {
+  let previous: boolean | null = null;
+  const sync = () => {
+    if (editor.isDestroyed || previous === editor.isEditable) return;
+    previous = editor.isEditable;
+    onChange(previous);
+  };
+
+  editor.on('update', sync);
+  const observer = typeof MutationObserver === 'undefined' ? null : new MutationObserver(sync);
+  observer?.observe(editor.view.dom, { attributes: true, attributeFilter: ['contenteditable'] });
+  sync();
+
+  return () => {
+    editor.off('update', sync);
+    observer?.disconnect();
+  };
+}
+
+function useEditorEditable(editor: EditableEditor): { editable: boolean; revision: number } {
+  const [state, setState] = useState(() => ({ editable: editor.isEditable, revision: 0 }));
+
+  useEffect(
+    () =>
+      subscribeToEditorEditable(editor, (editable) => {
+        setState((previous) =>
+          previous.editable === editable ? previous : { editable, revision: previous.revision + 1 },
+        );
+      }),
+    [editor],
+  );
+
+  return state;
+}
+
+export function runIfEditorEditable(
+  editor: Pick<Editor, 'isEditable'>,
+  action: () => void,
+  canEditNow?: () => boolean,
+): boolean {
+  if (canEditNow ? !canEditNow() : !editor.isEditable) return false;
+  action();
+  return true;
+}
+
+export function runLinkedViewLayoutAction(
+  editor: Pick<Editor, 'isEditable'> & Partial<Pick<Editor, 'isDestroyed'>>,
+  persist: () => void,
+  keepLocal: () => void,
+  canEditNow?: () => boolean,
+): void {
+  if (canEditNow ? canEditNow() : editor.isEditable) persist();
+  else if (!editor.isDestroyed) keepLocal();
+}
 
 export function LinkedDatabaseViewNode({
   node,
@@ -30,11 +112,40 @@ export function LinkedDatabaseViewNode({
         ? node.attrs.hostPageId
         : '';
   const blockId = typeof node.attrs.blockId === 'string' ? node.attrs.blockId : null;
+  const editableState = useEditorEditable(editor);
+  const canEditNow = useCallback(() => !editor.isDestroyed && editor.isEditable, [editor]);
   const sourceId = typeof node.attrs.sourceDatabaseId === 'string' ? node.attrs.sourceDatabaseId : null;
   const source = sourceId ? state.pages[sourceId] : undefined;
   const view = node.attrs.view && typeof node.attrs.view === 'object' ? (node.attrs.view as ViewDef) : null;
-  const hideTitle = view?.hideTitle === true;
-  const collapsed = view?.collapsed === true;
+  const collapseEnabled = linkedViewCollapseEnabled(view);
+  const [localLayout, setLocalLayout] = useState<{
+    blockId: string | null;
+    revision: number;
+    hideTitle: boolean | null;
+    collapsed: boolean | null;
+  }>({ blockId, revision: editableState.revision, hideTitle: null, collapsed: null });
+  const localLayoutApplies =
+    !editableState.editable &&
+    localLayout.blockId === blockId &&
+    localLayout.revision === editableState.revision;
+  const hideTitle =
+    localLayoutApplies && localLayout.hideTitle !== null ? localLayout.hideTitle : view?.hideTitle === true;
+  const collapsed = collapseEnabled
+    ? localLayoutApplies && localLayout.collapsed !== null
+      ? localLayout.collapsed
+      : view?.collapsed === true
+    : false;
+  const displayView = view ? { ...view, hideTitle, collapsed } : null;
+
+  const updateLocalLayout = (change: Partial<Pick<typeof localLayout, 'hideTitle' | 'collapsed'>>) => {
+    setLocalLayout((previous) => {
+      const base =
+        previous.blockId === blockId && previous.revision === editableState.revision
+          ? previous
+          : { blockId, revision: editableState.revision, hideTitle: null, collapsed: null };
+      return { ...base, ...change };
+    });
+  };
 
   const candidates = Object.values(state.pages).filter(
     (page) =>
@@ -50,38 +161,48 @@ export function LinkedDatabaseViewNode({
       : t('database.sourceUnavailable')
     : null;
   const selectSource = (id: string) => {
-    const database = state.pages[id]?.database as DatabaseDef | undefined;
-    if (!database) return;
-    const linkedView = newView('table', database, newId);
-    linkedView.name = t('database.linkedView');
-    updateAttributes({
-      hostPageId,
-      sourceDatabaseId: id,
-      blockId: blockId ?? newId(),
-      view: linkedView,
-    });
+    runIfEditorEditable(
+      editor,
+      () => {
+        const database = state.pages[id]?.database as DatabaseDef | undefined;
+        if (!database) return;
+        const linkedView = newView('table', database, newId);
+        linkedView.name = t('database.linkedView');
+        updateAttributes(linkedViewSourceSelectionAttributes(hostPageId, id, blockId ?? newId(), linkedView));
+      },
+      canEditNow,
+    );
   };
 
   const toggleCollapsed = () => {
-    if (view) {
-      updateAttributes({ view: { ...view, collapsed: !collapsed } });
-    }
+    if (!view || !collapseEnabled) return;
+    const nextCollapsed = !collapsed;
+    runLinkedViewLayoutAction(
+      editor,
+      () => updateAttributes({ view: { ...view, collapsed: nextCollapsed } }),
+      () => updateLocalLayout({ collapsed: nextCollapsed }),
+      canEditNow,
+    );
   };
 
   const showTitle = () => {
-    if (view) {
-      updateAttributes({ view: { ...view, hideTitle: false } });
-    }
+    if (!view) return;
+    runLinkedViewLayoutAction(
+      editor,
+      () => updateAttributes({ view: { ...view, hideTitle: false } }),
+      () => updateLocalLayout({ hideTitle: false }),
+      canEditNow,
+    );
   };
 
   return (
     <NodeViewWrapper className="linked-database-block" contentEditable={false}>
       <section className="linked-database-view" aria-label={t('database.linkedView')}>
         <header className="linked-database-head">
-          {view && (
+          {view && collapseEnabled && (
             <button
               type="button"
-              className="icon-button tiny"
+              className="icon-button tiny linked-database-collapse"
               aria-label={collapsed ? t('database.expandDatabase') : t('database.collapseDatabase')}
               title={collapsed ? t('database.expandDatabase') : t('database.collapseDatabase')}
               onClick={toggleCollapsed}
@@ -120,7 +241,7 @@ export function LinkedDatabaseViewNode({
               <ArrowUpRight size={14} aria-hidden="true" />
             </button>
           )}
-          {!hideTitle && source && view && editor.isEditable && (
+          {!hideTitle && source && view && editableState.editable && (
             <DraftInput
               type="text"
               label={t('database.viewName')}
@@ -128,11 +249,15 @@ export function LinkedDatabaseViewNode({
               value={view.name}
               editable
               onCommit={(name) =>
-                updateAttributes({ view: { ...view, name: name.trim() || t('database.linkedView') } })
+                runIfEditorEditable(
+                  editor,
+                  () => updateAttributes({ view: { ...view, name: name.trim() || t('database.linkedView') } }),
+                  canEditNow,
+                )
               }
             />
           )}
-          {editor.isEditable && (!hideTitle || !source) && (
+          {editableState.editable && (!hideTitle || !source) && (
             <select
               className="text-input small linked-database-picker"
               aria-label={t('database.chooseSource')}
@@ -150,13 +275,13 @@ export function LinkedDatabaseViewNode({
               ))}
             </select>
           )}
-          {editor.isEditable && (
+          {editableState.editable && (
             <button
               type="button"
               className="icon-button small"
               title={t('database.removeLinkedView')}
               aria-label={t('database.removeLinkedView')}
-              onClick={deleteNode}
+              onClick={() => runIfEditorEditable(editor, deleteNode, canEditNow)}
             >
               <Trash2 size={14} />
             </button>
@@ -166,13 +291,22 @@ export function LinkedDatabaseViewNode({
           <p className="db-readonly-note" role="status">
             {readableIssue}
           </p>
-        ) : source?.database && view && !collapsed ? (
+        ) : source?.database && displayView && !collapsed ? (
           <DatabaseView
             page={source}
-            editable={editor.isEditable}
+            editable={editableState.editable}
+            canEditNow={canEditNow}
             hostPageId={hostPageId}
-            embeddedView={view}
-            onEmbeddedViewChange={(change) => updateAttributes({ view: change(view) })}
+            embeddedView={displayView}
+            onEmbeddedViewChange={(change) =>
+              runIfEditorEditable(
+                editor,
+                () => {
+                  if (view) updateAttributes({ view: change(view) });
+                },
+                canEditNow,
+              )
+            }
           />
         ) : !source?.database && !issue ? (
           <p className="muted db-hint">{t('database.chooseSourceHint')}</p>

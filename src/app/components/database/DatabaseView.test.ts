@@ -10,7 +10,7 @@ import { t } from '../../i18n';
 import { getPreferences, setPreferences } from '../../platform/preferences';
 import { setSession } from '../../workspace';
 import { updateProp } from './data';
-import { DatabaseView } from './DatabaseView';
+import { DatabaseView, withoutConditionalFormatRule } from './DatabaseView';
 
 describe('database column descriptions', () => {
   it('shows descriptions in database and linked view headers and keeps them current across reopen', async () => {
@@ -214,5 +214,108 @@ describe('database column descriptions', () => {
     expect(afterRemovalMarkup).not.toContain('class="db-header-info"');
     expect(afterRemovalMarkup).not.toContain('An updated synthetic description.');
     await reopenedAfterRemoval.close();
+  });
+});
+
+describe('database view toolbar', () => {
+  it('keeps the add-view action outside the scrollable tabs and collapses linked views', async () => {
+    let nextId = 0;
+    const newId = () => `toolbar-${++nextId}`;
+    const opened = await WorkspaceSession.open(new VaultRepository(new MemoryVault(), newId), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    setSession(session);
+
+    const database: DatabaseDef = { properties: [], views: [] };
+    const tableView = newView('table', database, newId);
+    tableView.name = 'Synthetic table view';
+    const boardView = newView('board', database, newId);
+    boardView.name = 'Synthetic linked view';
+    database.views = [tableView, boardView];
+    const created = session.execute({
+      type: 'page.create',
+      id: 'toolbar-database',
+      parentId: null,
+      title: 'Synthetic toolbar database',
+      kind: 'database',
+      database,
+      now: 1,
+    });
+    if (!created.ok) throw new Error(created.error);
+    const host = session.execute({
+      type: 'page.create',
+      id: 'toolbar-host',
+      parentId: null,
+      title: 'Synthetic linked-view host',
+      doc: {
+        type: 'doc',
+        content: [
+          {
+            type: 'linkedDatabaseView',
+            attrs: {
+              hostPageId: 'toolbar-host',
+              sourceDatabaseId: 'toolbar-database',
+              blockId: 'toolbar-linked-view',
+              view: boardView,
+            },
+          },
+        ],
+      },
+      now: 2,
+    });
+    if (!host.ok) throw new Error(host.error);
+
+    const originalLocale = getPreferences().locale;
+    try {
+      setPreferences({ locale: 'en' });
+      const markup = renderToStaticMarkup(
+        createElement(DatabaseView, { page: session.getState().pages['toolbar-database']!, editable: true }),
+      );
+      const tabsStart = markup.indexOf('<div class="db-tabs"');
+      const tabsEnd = markup.indexOf('</div>', tabsStart);
+      const addViewIndex = markup.indexOf('class="icon-button small db-add-view"');
+      expect(tabsStart).toBeGreaterThanOrEqual(0);
+      expect(tabsEnd).toBeGreaterThan(tabsStart);
+      expect(addViewIndex).toBeGreaterThan(tabsEnd);
+      expect(markup.match(/role="tab"/g)).toHaveLength(2);
+      expect(markup).toContain('Synthetic table view');
+      expect(markup).toContain('Synthetic linked view');
+      expect(markup).toContain(
+        `aria-label="${t('database.linkedViews', undefined, 'en')}"`,
+      );
+      expect(markup).toMatch(/class="db-linked-views-toggle" aria-expanded="false" aria-controls=/);
+      expect(markup).toMatch(/class="db-linked-views-list"[^>]*hidden=""/);
+    } finally {
+      setPreferences({ locale: originalLocale });
+      await session.close();
+    }
+  });
+});
+
+describe('conditional format rule removal', () => {
+  it('removes the selected stable rule ID after reordering and preserves siblings and opaque entries', () => {
+    const database: DatabaseDef = { properties: [], views: [] };
+    const base = newView('table', database, () => 'conditional-rules-view');
+    const target = { id: 'target-rule', prop: 'score', op: 'gt' as const, value: 90, scope: 'row' as const };
+    const firstSibling = { id: 'first-sibling', prop: 'score', op: 'gt' as const, value: 80, scope: 'cell' as const };
+    const secondSibling = { id: 'second-sibling', prop: 'score', op: 'lt' as const, value: 10, scope: 'row' as const };
+    const opaque = [{ index: 1, raw: { futureStyle: 'glow' }, reason: 'future style' }];
+    const reorderedView = {
+      ...base,
+      conditionalFormats: [secondSibling, target, firstSibling],
+      unsupportedConditionalFormats: opaque,
+    };
+
+    const updated = withoutConditionalFormatRule(reorderedView, target.id);
+
+    expect(updated.conditionalFormats?.map((rule) => rule.id)).toEqual(['second-sibling', 'first-sibling']);
+    expect(updated.unsupportedConditionalFormats).toBe(opaque);
+    expect(reorderedView.conditionalFormats?.map((rule) => rule.id)).toEqual([
+      'second-sibling',
+      'target-rule',
+      'first-sibling',
+    ]);
   });
 });

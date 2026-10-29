@@ -1,4 +1,10 @@
-import type { DatabaseDef, FormulaReferenceBinding, PageId, PropDef, WorkspaceState } from '../../../core/model';
+import type {
+  DatabaseDef,
+  FormulaReferenceBinding,
+  PageId,
+  PropDef,
+  WorkspaceState,
+} from '../../../core/model';
 import { displayTitle } from '../../../core/model';
 import { parseFormula } from '../../../core/formula';
 import type { Expr } from '../../../core/formula';
@@ -29,15 +35,39 @@ export interface FormulaSuggestion {
   replaceStart: number;
   replaceEnd: number;
   binding?:
-    | { kind: 'database'; databaseId: PageId }
-    | { kind: 'property'; databaseId: PageId; propertyId: string };
+    { kind: 'database'; databaseId: PageId } | { kind: 'property'; databaseId: PageId; propertyId: string };
   caretOffset?: number;
 }
 
 export interface FormulaDecoration {
   start: number;
   end: number;
-  kind: 'database' | 'property' | 'ambiguous' | 'function' | 'context';
+  kind: 'database' | 'relation' | 'property' | 'control' | 'result' | 'ambiguous' | 'function' | 'context';
+}
+
+export interface FormulaDiagnosticMessages {
+  memberAfterDot: (token: string) => string;
+  unexpectedToken: (token: string) => string;
+  invalidSummary: string;
+}
+
+export interface FormulaDiagnosticPresentation {
+  primary: string;
+  technicalDetail: string | null;
+}
+
+export function presentFormulaDiagnostic(
+  error: string,
+  messages: FormulaDiagnosticMessages,
+): FormulaDiagnosticPresentation {
+  const missingMember = /^Expected a field or function name after “(.+)”$/su.exec(error);
+  if (missingMember) return { primary: messages.memberAfterDot(missingMember[1]!), technicalDetail: null };
+
+  const unexpectedToken = /^Unexpected “(.+)”$/su.exec(error);
+  if (unexpectedToken)
+    return { primary: messages.unexpectedToken(unexpectedToken[1]!), technicalDetail: null };
+
+  return { primary: messages.invalidSummary, technicalDetail: error };
 }
 
 export function formulaIdentifier(name: string): string {
@@ -133,10 +163,35 @@ function tokenAtCursor(source: string, caret: number): { start: number; end: num
   return { start, end: safeCaret + suffixMatch.length, prefix: prefixMatch };
 }
 
-type FormulaSourceKind = 'row' | 'rows' | 'table' | 'scalar';
+type FormulaSourceKind = 'row' | 'rows' | 'table' | 'list' | 'scalar';
 interface FormulaSource {
   databaseId: PageId | null;
   kind: FormulaSourceKind;
+  itemType?: PropDef['type'];
+}
+
+function scalarSource(itemType?: PropDef['type']): FormulaSource {
+  return { databaseId: null, kind: 'scalar', ...(itemType ? { itemType } : {}) };
+}
+
+function listSource(itemType?: PropDef['type'], databaseId: PageId | null = null): FormulaSource {
+  return { databaseId, kind: 'list', ...(itemType ? { itemType } : {}) };
+}
+
+function propertyValueSource(base: FormulaSource, property: PropDef, state: WorkspaceState): FormulaSource {
+  if (property.type === 'relation') {
+    const target = relationConfig(property).targetDatabaseId;
+    if (!target || !state.pages[target]?.database) return scalarSource(property.type);
+    if (base.kind === 'row')
+      return { databaseId: target, kind: property.relation?.multiple ? 'rows' : 'row' };
+    return listSource('relation', target);
+  }
+  const valueType =
+    property.type === 'formula' && property.formulaResultType ? property.formulaResultType : property.type;
+  if (base.kind === 'row' && valueType === 'multiSelect') return listSource('text');
+  if (base.kind === 'table' || base.kind === 'rows' || (base.kind === 'list' && base.databaseId))
+    return listSource(valueType);
+  return valueType === 'multiSelect' ? listSource('text') : scalarSource(valueType);
 }
 
 function bindingAt(
@@ -155,24 +210,34 @@ function databaseForIdentifier(
   bindings: FormulaReferenceBinding[],
 ): FormulaSource {
   const folded = name.trim().toLocaleLowerCase();
-  if (folded === 'thisrow' || folded === 'currentvalue')
-    return { databaseId: ownerDatabaseId, kind: 'row' };
-
-  const ownerProp = state.pages[ownerDatabaseId]?.database?.properties.find(
-    (property) => property.name.trim().toLocaleLowerCase() === folded,
-  );
-  if (ownerProp?.type === 'relation') {
-    const target = relationConfig(ownerProp).targetDatabaseId;
-    if (target && state.pages[target]?.database) {
-      return { databaseId: target, kind: ownerProp.relation?.multiple ? 'rows' : 'row' };
-    }
-  }
-
   const binding = bindingAt(bindings, span.start, span.end);
   if (binding?.kind === 'database')
     return state.pages[binding.databaseId]?.database
       ? { databaseId: binding.databaseId, kind: 'table' }
-      : { databaseId: null, kind: 'scalar' };
+      : scalarSource();
+  if (binding?.kind === 'property') {
+    const property = state.pages[binding.databaseId]?.database?.properties.find(
+      (item) => item.id === binding.propertyId,
+    );
+    return property
+      ? propertyValueSource({ databaseId: binding.databaseId, kind: 'row' }, property, state)
+      : scalarSource();
+  }
+  if (binding?.kind === 'control') {
+    const control = state.pages[binding.pageId]?.controls.find((item) => item.id === binding.controlId);
+    const target = control?.type === 'relation' ? control.relation?.targetDatabaseId : null;
+    if (target && state.pages[target]?.database)
+      return { databaseId: target, kind: control?.relation?.multiple ? 'rows' : 'row' };
+    return scalarSource();
+  }
+  if (binding?.kind === 'result' || binding?.kind === 'ambiguous') return scalarSource();
+  if (folded === 'thisrow' || folded === 'currentvalue') return { databaseId: ownerDatabaseId, kind: 'row' };
+
+  const ownerProp = state.pages[ownerDatabaseId]?.database?.properties.find(
+    (property) => property.name.trim().toLocaleLowerCase() === folded,
+  );
+  if (ownerProp) return propertyValueSource({ databaseId: ownerDatabaseId, kind: 'row' }, ownerProp, state);
+
   const matches = Object.values(state.pages).filter(
     (page) =>
       page.kind === 'database' &&
@@ -180,9 +245,7 @@ function databaseForIdentifier(
       !isEffectivelyTrashed(state.pages, page.id) &&
       displayTitle(page).trim().toLocaleLowerCase() === folded,
   );
-  return matches.length === 1
-    ? { databaseId: matches[0]!.id, kind: 'table' }
-    : { databaseId: null, kind: 'scalar' };
+  return matches.length === 1 ? { databaseId: matches[0]!.id, kind: 'table' } : scalarSource();
 }
 
 function propertyForMember(
@@ -211,9 +274,14 @@ function formulaSource(
 ): FormulaSource {
   if (expression.kind === 'identifier')
     return databaseForIdentifier(expression.name, expression, ownerDatabaseId, state, bindings);
+  if (expression.kind === 'list') {
+    const first = expression.items[0];
+    const itemType = first?.kind === 'literal' && typeof first.value === 'number' ? 'number' : undefined;
+    return listSource(itemType);
+  }
   if (expression.kind === 'member') {
     const base = formulaSource(expression.object, ownerDatabaseId, state, bindings);
-    if (!base.databaseId) return { databaseId: null, kind: 'scalar' };
+    if (!base.databaseId || !['row', 'rows', 'table', 'list'].includes(base.kind)) return scalarSource();
     const property = propertyForMember(
       base.databaseId,
       expression.name,
@@ -221,34 +289,55 @@ function formulaSource(
       state,
       bindings,
     );
-    if (property?.type !== 'relation') return { databaseId: null, kind: 'scalar' };
-    const target = relationConfig(property).targetDatabaseId;
-    return target && state.pages[target]?.database
-      ? { databaseId: target, kind: property.relation?.multiple ? 'rows' : 'row' }
-      : { databaseId: null, kind: 'scalar' };
+    return property ? propertyValueSource(base, property, state) : scalarSource();
   }
   if (expression.kind === 'call') {
     if (expression.callee.kind === 'member') {
       const base = formulaSource(expression.callee.object, ownerDatabaseId, state, bindings);
       const method = expression.callee.name.toLocaleLowerCase();
-      if (base.databaseId && ['filter', 'formulamap', 'foreach', 'unique'].includes(method))
+      if (base.databaseId && ['rows', 'table'].includes(base.kind) && method === 'filter')
         return { databaseId: base.databaseId, kind: 'rows' };
-      if (base.databaseId && method === 'first')
-        return { databaseId: base.databaseId, kind: base.kind === 'table' || base.kind === 'rows' ? 'row' : 'scalar' };
-      return { databaseId: null, kind: 'scalar' };
+      if (base.databaseId && ['rows', 'list'].includes(base.kind) && method === 'first')
+        return { databaseId: base.databaseId, kind: 'row' };
+      if (base.databaseId && base.kind === 'rows' && method === 'unique')
+        return listSource('relation', base.databaseId);
+      if (base.kind === 'list' && method === 'unique') return base;
+      return scalarSource(
+        ['sum', 'average', 'avg', 'min', 'max', 'count'].includes(method) ? 'number' : undefined,
+      );
     }
-    if (
-      expression.callee.kind === 'identifier' &&
-      expression.callee.name.toLocaleLowerCase() === 'first' &&
-      expression.args[0]
-    ) {
+    if (expression.callee.kind === 'identifier' && expression.args[0]) {
+      const name = expression.callee.name.toLocaleLowerCase();
       const base = formulaSource(expression.args[0], ownerDatabaseId, state, bindings);
-      return base.databaseId && (base.kind === 'table' || base.kind === 'rows')
-        ? { databaseId: base.databaseId, kind: 'row' }
-        : { databaseId: null, kind: 'scalar' };
+      if (name === 'first') {
+        if (base.databaseId && ['table', 'rows', 'list'].includes(base.kind))
+          return { databaseId: base.databaseId, kind: 'row' };
+        return scalarSource(base.itemType);
+      }
+      if (name === 'unique')
+        return base.databaseId && ['table', 'rows'].includes(base.kind)
+          ? listSource('relation', base.databaseId)
+          : base.kind === 'list'
+            ? base
+            : listSource(base.itemType);
+      if (['formulamap', 'foreach', 'list', 'sequence'].includes(name))
+        return listSource(name === 'sequence' ? 'number' : undefined);
+      if (name === 'prop') {
+        const argument = expression.args[0];
+        const propertyName =
+          argument?.kind === 'literal' && typeof argument.value === 'string'
+            ? argument.value.trim().toLocaleLowerCase()
+            : '';
+        const property = state.pages[ownerDatabaseId]?.database?.properties.find(
+          (item) => item.name.trim().toLocaleLowerCase() === propertyName,
+        );
+        return property
+          ? propertyValueSource({ databaseId: ownerDatabaseId, kind: 'row' }, property, state)
+          : scalarSource();
+      }
     }
   }
-  return { databaseId: null, kind: 'scalar' };
+  return scalarSource();
 }
 
 function trailingExpressionStart(source: string): number {
@@ -283,7 +372,39 @@ function trailingExpressionStart(source: string): number {
   return 0;
 }
 
-const COLLECTION_METHODS = ['Filter', 'FormulaMap', 'ForEach', 'First', 'Unique'];
+const ROW_COLLECTION_METHODS = ['Filter', 'First', 'Unique', 'Count', 'Contains'];
+const VALUE_COLLECTION_METHODS = ['First', 'Unique', 'Count', 'Contains'];
+const NUMERIC_COLLECTION_METHODS = ['Sum', 'Average', 'Min', 'Max'];
+
+const NUMERIC_PROPERTY_TYPES = new Set<PropDef['type']>([
+  'number',
+  'currency',
+  'percent',
+  'slider',
+  'progress',
+  'scale',
+  'duration',
+]);
+
+function addMethodSuggestions(
+  methods: string[],
+  prefix: string,
+  replaceStart: number,
+  replaceEnd: number,
+  candidates: FormulaSuggestion[],
+) {
+  for (const method of methods) {
+    if (method.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase()))
+      candidates.push({
+        kind: 'function',
+        label: `${method}()`,
+        insertText: `${method}()`,
+        replaceStart,
+        replaceEnd,
+        caretOffset: method.length + 1,
+      });
+  }
+}
 
 export function formulaSuggestions(
   source: string,
@@ -305,9 +426,16 @@ export function formulaSuggestions(
     const receiverText = beforeDot.slice(receiverStart);
     try {
       const receiverExpr = parseFormula(receiverText);
-      const receiver = formulaSource(receiverExpr, ownerDatabaseId, state, bindings);
+      const receiverBindings = bindings
+        .filter((binding) => binding.start >= receiverStart && binding.end <= dot)
+        .map((binding) => ({
+          ...binding,
+          start: binding.start - receiverStart,
+          end: binding.end - receiverStart,
+        }));
+      const receiver = formulaSource(receiverExpr, ownerDatabaseId, state, receiverBindings);
       const target = receiver.databaseId ? state.pages[receiver.databaseId]?.database : undefined;
-      if (target) {
+      if (target && ['row', 'rows', 'table', 'list'].includes(receiver.kind))
         for (const property of target.properties) {
           if (property.name.toLocaleLowerCase().startsWith(token.prefix.toLocaleLowerCase()))
             candidates.push({
@@ -320,20 +448,14 @@ export function formulaSuggestions(
               binding: { kind: 'property', databaseId: receiver.databaseId!, propertyId: property.id },
             });
         }
-        if (receiver.kind === 'rows' || receiver.kind === 'table') {
-          for (const method of COLLECTION_METHODS) {
-            if (method.toLocaleLowerCase().startsWith(token.prefix.toLocaleLowerCase()))
-              candidates.push({
-                kind: 'function',
-                label: `${method}()`,
-                description: undefined,
-                insertText: `${method}()`,
-                replaceStart: token.start,
-                replaceEnd: token.end,
-                caretOffset: method.length + 1,
-              });
-          }
-        }
+      if (receiver.kind === 'table')
+        addMethodSuggestions(['Filter'], token.prefix, token.start, token.end, candidates);
+      else if (receiver.databaseId && ['rows', 'list'].includes(receiver.kind))
+        addMethodSuggestions(ROW_COLLECTION_METHODS, token.prefix, token.start, token.end, candidates);
+      else if (receiver.kind === 'list') {
+        addMethodSuggestions(VALUE_COLLECTION_METHODS, token.prefix, token.start, token.end, candidates);
+        if (receiver.itemType && NUMERIC_PROPERTY_TYPES.has(receiver.itemType))
+          addMethodSuggestions(NUMERIC_COLLECTION_METHODS, token.prefix, token.start, token.end, candidates);
       }
     } catch {
       return [];
@@ -402,7 +524,11 @@ function addFunctionDecorations(expression: Expr, decorations: FormulaDecoration
     if (expression.callee.kind === 'identifier' && known.has(expression.callee.name.toLocaleLowerCase()))
       decorations.push({ start: expression.callee.start, end: expression.callee.end, kind: 'function' });
     else if (expression.callee.kind === 'member' && known.has(expression.callee.name.toLocaleLowerCase()))
-      decorations.push({ start: expression.callee.nameStart, end: expression.callee.nameEnd, kind: 'function' });
+      decorations.push({
+        start: expression.callee.nameStart,
+        end: expression.callee.nameEnd,
+        kind: 'function',
+      });
     addFunctionDecorations(expression.callee, decorations, known);
     for (const argument of expression.args) addFunctionDecorations(argument, decorations, known);
   } else if (expression.kind === 'member') addFunctionDecorations(expression.object, decorations, known);
@@ -418,6 +544,7 @@ function addFunctionDecorations(expression: Expr, decorations: FormulaDecoration
 export function formulaDecorations(
   source: string,
   bindings: FormulaReferenceBinding[],
+  state?: WorkspaceState,
 ): FormulaDecoration[] {
   const decorations: FormulaDecoration[] = bindings
     .filter((binding) => binding.start >= 0 && binding.end <= source.length && binding.end > binding.start)
@@ -425,11 +552,21 @@ export function formulaDecorations(
       start: binding.start,
       end: binding.end,
       kind:
-        binding.kind === 'database' || binding.kind === 'property' || binding.kind === 'ambiguous'
-          ? binding.kind
-          : 'ambiguous',
+        binding.kind === 'database'
+          ? 'database'
+          : binding.kind === 'property'
+            ? state?.pages[binding.databaseId]?.database?.properties.find(
+                (property) => property.id === binding.propertyId,
+              )?.type === 'relation'
+              ? 'relation'
+              : 'property'
+            : binding.kind === 'control' || binding.kind === 'result' || binding.kind === 'ambiguous'
+              ? binding.kind
+              : 'ambiguous',
     }));
-  const knownFunctions = new Set([...FORMULA_FUNCTIONS.split(', '), 'prop'].map((name) => name.toLocaleLowerCase()));
+  const knownFunctions = new Set(
+    [...FORMULA_FUNCTIONS.split(', '), 'prop'].map((name) => name.toLocaleLowerCase()),
+  );
   try {
     const root = parseFormula(source);
     addFunctionDecorations(root, decorations, knownFunctions);
@@ -442,7 +579,8 @@ export function formulaDecorations(
       if (
         expression.kind === 'identifier' &&
         ['thisrow', 'currentvalue'].includes(expression.name.toLocaleLowerCase())
-      ) decorations.push({ start: expression.start, end: expression.end, kind: 'context' });
+      )
+        decorations.push({ start: expression.start, end: expression.end, kind: 'context' });
       else if (expression.kind === 'member') addContextIdentifiers(expression.object);
       else if (expression.kind === 'call') {
         addContextIdentifiers(expression.callee);
@@ -459,10 +597,13 @@ export function formulaDecorations(
     // Keep useful bindings visible while the rest of the expression is incomplete.
   }
   const priority: Record<FormulaDecoration['kind'], number> = {
-    ambiguous: 5,
-    property: 4,
-    database: 3,
-    function: 2,
+    ambiguous: 7,
+    control: 6,
+    result: 6,
+    relation: 5,
+    property: 5,
+    database: 4,
+    function: 3,
     context: 1,
   };
   const unique = new Map<string, FormulaDecoration>();

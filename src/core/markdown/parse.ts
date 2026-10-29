@@ -13,7 +13,7 @@ import {
   validImageAlign,
 } from '../model';
 import type { ColorName, ColorValue, DocMark, DocNode, ImageAlign, ImageCrop, PageId } from '../model';
-import { inlineText } from '../doc';
+import { inlineText, isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
 
 export interface ParseOptions {
@@ -408,18 +408,24 @@ function parseLinkedViewMarker(source: string): Record<string, unknown> | null {
   const match = LINKED_VIEW.exec(source);
   if (!match) return null;
   try {
-    const value = JSON.parse(decodeURIComponent(match[1]!)) as Record<string, unknown>;
+    const value = JSON.parse(decodeURIComponent(match[1]!)) as unknown;
     const validId = (id: unknown) =>
       id === null || (typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id));
-    if (!value || typeof value !== 'object' || !validId(value.sourceDatabaseId) || !validId(value.blockId))
+    if (!isRecord(value) || !validId(value.sourceDatabaseId) || !validId(value.blockId))
       return null;
     const normalizedView = value.view
       ? (normalizeDatabase({ properties: [], views: [value.view] })?.views[0] ?? null)
       : null;
+    const baseline = {
+      sourceDatabaseId: value.sourceDatabaseId,
+      blockId: value.blockId,
+      view: normalizedView,
+    };
     return {
       sourceDatabaseId: value.sourceDatabaseId,
       blockId: value.blockId,
       view: normalizedView,
+      viewRawState: { raw: value, baseline },
     };
   } catch {
     return null;
@@ -491,16 +497,55 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
       return;
     }
   }
-  const details = /^<details[^>]*>/i.exec(html);
+  const details = /^<details([^>]*)>/i.exec(html);
   const aside = /^<aside[^>]*>/i.exec(html);
   if (details) {
     const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(html);
-    const title = decodeEntities((summary?.[1] ?? '').replace(/<[^>]+>/g, '')).trim();
+    const summaryTag = /<summary([^>]*)>/i.exec(html);
+    const summaryBackgroundAttr = /(?:^|\s)data-block-background\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(
+      summaryTag?.[1] ?? '',
+    );
+    const summaryBackgroundValue =
+      summaryBackgroundAttr?.[1] ?? summaryBackgroundAttr?.[2] ?? summaryBackgroundAttr?.[3];
+    const summaryBackground = validBlockBackground(summaryBackgroundValue);
+    const summaryFormatAttr = /(?:^|\s)data-morrow-summary-format\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(
+      summaryTag?.[1] ?? '',
+    );
+    const summaryFormat = summaryFormatAttr?.[1] ?? summaryFormatAttr?.[2] ?? summaryFormatAttr?.[3];
+    const summaryContent =
+      summaryFormat === 'markdown'
+        ? inlineNodes(md.parseInline(summary?.[1] ?? '', {})[0]?.children ?? [], options)
+        : (() => {
+            const title = decodeEntities((summary?.[1] ?? '').replace(/<[^>]+>/g, '')).trim();
+            return title ? [{ type: 'text', text: title }] : [];
+          })();
+    const blockIdAttr = /(?:^|\s)data-block-id\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(
+      details[1] ?? '',
+    );
+    const blockId = blockIdAttr?.[1] ?? blockIdAttr?.[2] ?? blockIdAttr?.[3];
+    const tableToggleAttr = /(?:^|\s)data-morrow-table-toggle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(
+      details[1] ?? '',
+    );
+    const tableToggleTitle = tableToggleAttr?.[1] ?? tableToggleAttr?.[2] ?? tableToggleAttr?.[3];
     const body: DocNode = { type: 'detailsContent', content: [] };
     const node: DocNode = {
       type: 'details',
-      attrs: { open: false },
-      content: [{ type: 'detailsSummary', content: title ? [{ type: 'text', text: title }] : [] }, body],
+      attrs: {
+        // Opening state was added to serialized details later; absence keeps legacy files closed.
+        open: /(?:^|\s)open(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?(?:\s|$)/i.test(details[1] ?? ''),
+        ...(blockId && /^[A-Za-z0-9-]{1,64}$/.test(blockId) ? { blockId } : {}),
+        ...(tableToggleTitle && ['Table', 'Tabela', 'Tabla'].includes(tableToggleTitle)
+          ? { tableToggleTitle }
+          : {}),
+      },
+      content: [
+        {
+          type: 'detailsSummary',
+          ...(summaryBackground ? { attrs: { blockBackground: summaryBackground } } : {}),
+          content: summaryContent,
+        },
+        body,
+      ],
     };
     b.push(node);
     const after = html.slice(summary ? summary.index + summary[0].length : details[0].length);
@@ -559,7 +604,7 @@ function inlineNodes(tokens: Token[], options: ParseOptions, pendingImageAttrs?:
     const index = marks.map((mark) => mark.type).lastIndexOf(type);
     if (index !== -1) marks.splice(index, 1);
   };
-  let pageTarget: { id: PageId; label: string } | null = null;
+  let pageTarget: { id: PageId; label: string; href: string; anchor: string | null } | null = null;
 
   for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
     const token = tokens[tokenIndex]!;
@@ -615,8 +660,20 @@ function inlineNodes(tokens: Token[], options: ParseOptions, pendingImageAttrs?:
         const href = String(token.attrGet('href') ?? '');
         const pageId = options.resolveLink?.(href) ?? null;
         const file = pageId ? null : (options.resolveFile?.(href) ?? null);
-        if (pageId) pageTarget = { id: pageId, label: '' };
-        else if (file) marks.push({ type: 'link', attrs: { href, fileRef: file } });
+        if (pageId) {
+          let anchor: string | null = null;
+          const hash = href.indexOf('#');
+          if (hash !== -1) {
+            const fragment = href.slice(hash + 1);
+            try {
+              anchor = decodeURIComponent(fragment);
+            } catch {
+              anchor = fragment;
+            }
+          }
+          pageTarget = { id: pageId, label: '', href, anchor };
+        } else if (file)
+          marks.push({ type: 'link', attrs: { href, fileRef: { ...file, markdownHref: href } } });
         else marks.push({ type: 'link', attrs: { href } });
         break;
       }
@@ -634,7 +691,13 @@ function inlineNodes(tokens: Token[], options: ParseOptions, pendingImageAttrs?:
         break;
       case 'link_close':
         if (pageTarget) {
-          out.push({ type: 'pageLink', attrs: { id: pageTarget.id, label: pageTarget.label.trim() } });
+          const attrs: Record<string, unknown> = {
+            id: pageTarget.id,
+            label: pageTarget.label.trim(),
+            markdownHref: pageTarget.href,
+          };
+          if (pageTarget.anchor !== null) attrs.anchor = pageTarget.anchor;
+          out.push({ type: 'pageLink', attrs });
           pageTarget = null;
         } else remove('link');
         break;
@@ -652,7 +715,7 @@ function inlineNodes(tokens: Token[], options: ParseOptions, pendingImageAttrs?:
         const alt = token.content || String(token.attrGet('alt') ?? '');
         const file = options.resolveFile?.(src) ?? null;
         let attrs: Record<string, unknown> = file?.image
-          ? { fileId: file.fileId, alt }
+          ? { fileId: file.fileId, alt, markdownHref: src }
           : { fileId: null, src, alt };
         const lastMarkerIndex = out.findLastIndex((n) => n.type === 'imageMarker');
         if (lastMarkerIndex !== -1) {
@@ -662,7 +725,8 @@ function inlineNodes(tokens: Token[], options: ParseOptions, pendingImageAttrs?:
           attrs = { ...attrs, ...pendingImageAttrs };
           pendingImageAttrs = null;
         }
-        if (file && !file.image) add(alt || file.name, [{ type: 'link', attrs: { href: src, fileRef: file } }]);
+        if (file && !file.image)
+          add(alt || file.name, [{ type: 'link', attrs: { href: src, fileRef: { ...file, markdownHref: src } } }]);
         else out.push({ type: 'image', attrs });
         break;
       }
@@ -854,7 +918,8 @@ function liftMedia(node: DocNode): DocNode[] {
   // a lone link to a stored file is shown as an attachment
   const refs = new Set(meaningful.map((child) => fileRefOf(child)));
   const ref = refs.size === 1 ? [...refs][0] : undefined;
-  if (ref && meaningful.every((child) => fileRefOf(child) === ref)) return [mediaBlock(ref)];
+  if (ref && meaningful.every((child) => fileRefOf(child) === ref))
+    return [mediaBlock(ref, meaningful.map((child) => child.text ?? '').join(''))];
   if (!meaningful.some((child) => child.type === 'image' || fileRefOf(child)?.embed)) {
     return [{ ...node, content: children.map(plainFileLink) }];
   }
@@ -885,10 +950,17 @@ function liftMedia(node: DocNode): DocNode[] {
   return out.length ? out : [{ ...node, content: [] }];
 }
 
-function mediaBlock(ref: { fileId: string; name: string; image: boolean }): DocNode {
+function mediaBlock(
+  ref: { fileId: string; name: string; image: boolean; markdownHref?: string },
+  markdownLabel = '',
+): DocNode {
+  const markdown =
+    typeof ref.markdownHref === 'string'
+      ? { markdownHref: ref.markdownHref, markdownLabel }
+      : {};
   return ref.image
-    ? { type: 'image', attrs: { fileId: ref.fileId, alt: '' } }
-    : { type: 'fileAttachment', attrs: { fileId: ref.fileId, name: ref.name } };
+    ? { type: 'image', attrs: { fileId: ref.fileId, alt: markdownLabel, ...markdown } }
+    : { type: 'fileAttachment', attrs: { fileId: ref.fileId, name: ref.name, ...markdown } };
 }
 
 // a link to a file inside a sentence stays an ordinary link to it
@@ -902,9 +974,9 @@ function plainFileLink(child: DocNode): DocNode {
 
 function fileRefOf(
   node: DocNode,
-): { fileId: string; name: string; image: boolean; embed?: boolean } | undefined {
+): { fileId: string; name: string; image: boolean; embed?: boolean; markdownHref?: string } | undefined {
   const ref = node.marks?.find((mark) => mark.attrs?.fileRef)?.attrs?.fileRef;
-  return ref as { fileId: string; name: string; image: boolean; embed?: boolean } | undefined;
+  return ref as { fileId: string; name: string; image: boolean; embed?: boolean; markdownHref?: string } | undefined;
 }
 
 // a quote that starts with [!type] is a callout, the rest of that first line is its title

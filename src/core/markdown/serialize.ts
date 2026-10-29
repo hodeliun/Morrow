@@ -7,18 +7,165 @@ import {
   validColor,
   validImageAlign,
 } from '../model';
-import type { ColorName, DocMark, DocNode, ImageCrop, PageId } from '../model';
+import type {
+  ColorName,
+  ConditionalFormatRule,
+  DocMark,
+  DocNode,
+  ImageCrop,
+  PageId,
+  UnsupportedConditionalFormat,
+  ViewDef,
+} from '../model';
+import { isRecord } from '../doc';
+import { normalizeDatabase } from '../migrations';
+import { serializeConditionalFormats } from '../conditionalFormats';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
   titleOf?: (id: PageId) => string | null;
   // how a wiki link names its page, a file name or a vault path, defaults to the title
   linkTarget?: (id: PageId) => string | null;
+  // current path for a Markdown page link, preserving its relative or root-relative style
+  markdownLinkTarget?: (id: PageId, originalHref: string) => string | null;
   // relative path an exported file is written to, null when it is not exported
-  filePath?: (fileId: string) => string | null;
+  filePath?: (fileId: string, originalHref?: string) => string | null;
 }
 
 const MARK_ORDER = ['link', 'bold', 'italic', 'strike', 'underline', 'highlight', 'textColor'];
+const LINKED_VIEW_FIELDS = [
+  'id',
+  'name',
+  'type',
+  'filters',
+  'sorts',
+  'groupBy',
+  'dateProp',
+  'hidden',
+  'widths',
+  'frozenThrough',
+  'rowHeight',
+  'hideTitle',
+  'collapsed',
+  'collapseEnabled',
+  'filterGroups',
+  'filterGroupLogic',
+  'search',
+  'order',
+  'wrap',
+  'align',
+  'summaries',
+  'conditionalFormats',
+  'cardProperties',
+  'cardImageProp',
+] as const;
+
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => [key, stableJsonValue(value[key])]),
+  );
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(stableJsonValue(left)) === JSON.stringify(stableJsonValue(right));
+}
+
+function validLinkedViewId(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value));
+}
+
+function normalizeLinkedView(value: unknown): ViewDef | null {
+  if (!isRecord(value)) return null;
+  return normalizeDatabase({ properties: [], views: [value] })?.views[0] ?? null;
+}
+
+function markerViewWithoutInternalState(
+  value: unknown,
+  unsupported?: UnsupportedConditionalFormat[],
+): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const output = { ...value };
+  const embeddedUnsupported = Array.isArray(output.unsupportedConditionalFormats)
+    ? (output.unsupportedConditionalFormats as UnsupportedConditionalFormat[])
+    : undefined;
+  delete output.unsupportedConditionalFormats;
+  if (unsupported?.length || embeddedUnsupported?.length) {
+    output.conditionalFormats = serializeConditionalFormats(
+      Array.isArray(value.conditionalFormats)
+        ? (value.conditionalFormats as ConditionalFormatRule[])
+        : undefined,
+      unsupported?.length ? unsupported : embeddedUnsupported,
+    );
+  }
+  return output;
+}
+
+function linkedViewMarkerEnvelope(attrs: Record<string, unknown>): Record<string, unknown> {
+  const sourceCandidate = attrs.sourceDatabaseId;
+  const blockCandidate = attrs.blockId;
+  const sourceDatabaseId = validLinkedViewId(sourceCandidate) ? sourceCandidate : null;
+  const blockId = validLinkedViewId(blockCandidate) ? blockCandidate : null;
+  const view = attrs.view;
+  const rawState = attrs.viewRawState;
+  if (!isRecord(rawState) || !isRecord(rawState.raw) || !isRecord(rawState.baseline)) {
+    return {
+      sourceDatabaseId,
+      blockId,
+      view: markerViewWithoutInternalState(view),
+    };
+  }
+
+  const baseline = rawState.baseline;
+  const output = { ...rawState.raw };
+  delete output.viewRawState;
+  if (!sameJsonValue(sourceDatabaseId, baseline.sourceDatabaseId) && validLinkedViewId(sourceCandidate)) {
+    output.sourceDatabaseId = sourceDatabaseId;
+  }
+  if (!sameJsonValue(blockId, baseline.blockId) && validLinkedViewId(blockCandidate)) output.blockId = blockId;
+
+  const baselineView = isRecord(baseline.view) ? baseline.view : null;
+  const currentView = normalizeLinkedView(view);
+  const invalidCurrentView = !currentView && view !== null && view !== undefined;
+  const rawView = isRecord(output.view) ? { ...output.view } : null;
+  if (invalidCurrentView) {
+    // Invalid edits do not replace a previously safe raw view configuration.
+  } else if (!baselineView && !currentView) {
+    // Keep a raw invalid view opaque when it did not become a valid editable view.
+  } else if (baselineView && !currentView) {
+    delete output.view;
+  } else if (!baselineView && currentView) {
+    output.view = markerViewWithoutInternalState(currentView);
+  } else if (baselineView && currentView && rawView) {
+    const serializedView = markerViewWithoutInternalState(rawView)!;
+    for (const field of LINKED_VIEW_FIELDS) {
+      const previous = baselineView[field];
+      const next = currentView[field];
+      if (sameJsonValue(previous, next)) continue;
+      if (field === 'conditionalFormats') {
+        const rules = currentView.conditionalFormats;
+        const combined = serializeConditionalFormats(
+          rules,
+          baselineView.unsupportedConditionalFormats as UnsupportedConditionalFormat[] | undefined,
+        );
+        if (Array.isArray(combined) && combined.length === 0) delete serializedView.conditionalFormats;
+        else serializedView.conditionalFormats = combined;
+      } else if (Object.prototype.hasOwnProperty.call(currentView, field)) {
+        serializedView[field] = next;
+      } else {
+        delete serializedView[field];
+      }
+    }
+    output.view = serializedView;
+  } else if (baselineView && currentView) {
+    output.view = markerViewWithoutInternalState(currentView);
+  }
+  return output;
+}
 const hexOf = (palette: Record<ColorName, string>, mark: DocMark) => {
   const color = validColor(mark.attrs?.color);
   return color ? (color.startsWith('#') ? color : palette[color as ColorName]) : null;
@@ -121,10 +268,20 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
       return table(node, options);
     case 'image': {
       const alt = String(node.attrs?.alt ?? '').replace(/[[\]]/g, '');
-      const target =
-        typeof node.attrs?.fileId === 'string' ? options.filePath?.(node.attrs.fileId) : undefined;
-      const src = target ?? (typeof node.attrs?.src === 'string' ? node.attrs.src : null);
-      const markdown = src ? `![${alt}](${formatHref(src)})` : `*[image${alt ? `: ${alt}` : ''}]*`;
+      const fileId = typeof node.attrs?.fileId === 'string' ? node.attrs.fileId : null;
+      const originalHref = typeof node.attrs?.markdownHref === 'string' ? node.attrs.markdownHref : null;
+      const target = fileId ? options.filePath?.(fileId, originalHref ?? undefined) : undefined;
+      const src =
+        originalHref !== null
+          ? storedFileHref(originalHref, target)
+          : target ?? (typeof node.attrs?.src === 'string' ? node.attrs.src : null);
+      const markdownLabel = node.attrs?.markdownLabel;
+      const markdown =
+        src && typeof markdownLabel === 'string'
+          ? `[${formatLinkLabel(markdownLabel)}](${formatHref(src)})`
+          : src
+            ? `![${alt}](${formatHref(src)})`
+            : `*[image${alt ? `: ${alt}` : ''}]*`;
       const align = validImageAlign(node.attrs?.align);
       const caption =
         typeof node.attrs?.caption === 'string' && node.attrs.caption.trim()
@@ -141,9 +298,16 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
       return markdown;
     }
     case 'fileAttachment': {
-      const name = escapeText(String(node.attrs?.name ?? 'file'));
-      const target = options.filePath?.(String(node.attrs?.fileId ?? ''));
-      return target ? `[${name}](${formatHref(target)})` : `*[attachment: ${name}]*`;
+      const originalHref = typeof node.attrs?.markdownHref === 'string' ? node.attrs.markdownHref : null;
+      const target = options.filePath?.(String(node.attrs?.fileId ?? ''), originalHref ?? undefined);
+      const href = originalHref !== null ? storedFileHref(originalHref, target) : target;
+      const label =
+        typeof node.attrs?.markdownLabel === 'string'
+          ? node.attrs.markdownLabel
+          : String(node.attrs?.name ?? 'file');
+      return href
+        ? `[${formatLinkLabel(label)}](${formatHref(href)})`
+        : `*[attachment: ${escapeText(label)}]*`;
     }
     case 'callout': {
       const kind =
@@ -158,10 +322,9 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
     case 'tableOfContents':
       return '<!-- toc -->';
     case 'linkedDatabaseView': {
-      const source = typeof node.attrs?.sourceDatabaseId === 'string' ? node.attrs.sourceDatabaseId : null;
-      const block = typeof node.attrs?.blockId === 'string' ? node.attrs.blockId : null;
-      const view = node.attrs?.view && typeof node.attrs.view === 'object' ? node.attrs.view : null;
-      const attrs = encodeURIComponent(JSON.stringify({ sourceDatabaseId: source, blockId: block, view }));
+      const marker = linkedViewMarkerEnvelope(node.attrs ?? {});
+      const source = typeof marker.sourceDatabaseId === 'string' ? marker.sourceDatabaseId : null;
+      const attrs = encodeURIComponent(JSON.stringify(marker));
       const title = source ? options.titleOf?.(source) : null;
       const fallback = source
         ? `**Linked database view:** [[${(title ?? source).replaceAll('[', '').replaceAll(']', '')}]] — open in Morrow to edit shared rows.`
@@ -178,10 +341,23 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'details': {
       const [summary, content] = node.content ?? [];
-      const title = summary ? escapeHtml(inline(summary.content ?? [], options)) : '';
+      const title = summary ? inline(summary.content ?? [], options, false, true) : '';
       const body = content ? blocks(content.content ?? [], options) : '';
-      return `<details>
-<summary>${title}</summary>
+      const open = node.attrs?.open === true ? ' open' : '';
+      const summaryBackground = validBlockBackground(summary?.attrs?.blockBackground);
+      const summaryAttrs = summaryBackground ? ` data-block-background="${summaryBackground}"` : '';
+      const summaryFormat = ' data-morrow-summary-format="markdown"';
+      const blockId =
+        typeof node.attrs?.blockId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(node.attrs.blockId)
+          ? ` data-block-id="${node.attrs.blockId}"`
+          : '';
+      const tableToggleTitle =
+        typeof node.attrs?.tableToggleTitle === 'string' &&
+        ['Table', 'Tabela', 'Tabla'].includes(node.attrs.tableToggleTitle)
+          ? ` data-morrow-table-toggle="${node.attrs.tableToggleTitle}"`
+          : '';
+      return `<details${open}${blockId}${tableToggleTitle}>
+<summary${summaryAttrs}${summaryFormat}>${title}</summary>
 
 ${body}
 
@@ -267,7 +443,7 @@ export function wikiLink(node: DocNode, options: SerializeOptions, inTable = fal
   return `${embed}[[${target.replace(/[[\]|]/g, '')}${anchor}${alias.replace(/[[\]]/g, '')}]]`;
 }
 
-function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): string {
+function inline(nodes: DocNode[], options: SerializeOptions, inTable = false, escapeAmpersands = false): string {
   let out = '';
   const open: DocMark[] = [];
   let pendingSpace = '';
@@ -275,7 +451,10 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
   const closeTo = (keep: number) => {
     while (open.length > keep) {
       const mark = open.pop()!;
-      out += MARK_CLOSE[mark.type]!(mark);
+        out +=
+          escapeAmpersands && mark.type === 'link'
+            ? `](${formatHref(String(mark.attrs?.href ?? ''), true)})`
+            : MARK_CLOSE[mark.type]!(mark);
     }
   };
 
@@ -288,7 +467,16 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
     }
     if (node.type === 'pageLink') {
       closeTo(0);
-      out += pendingSpace + wikiLink(node, options, inTable);
+      const markdownHref = node.attrs?.markdownHref;
+      if (typeof markdownHref === 'string') {
+        const label = String(node.attrs?.alias ?? node.attrs?.label ?? '');
+        const id = typeof node.attrs?.id === 'string' ? node.attrs.id : null;
+        const target = id ? options.markdownLinkTarget?.(id, markdownHref) : null;
+        const href = target ? retargetMarkdownHref(markdownHref, target) : markdownHref;
+        out += `${pendingSpace}[${formatLinkLabel(label, inTable, escapeAmpersands)}](${formatHref(href, escapeAmpersands)})`;
+      } else {
+        out += pendingSpace + wikiLink(node, options, inTable);
+      }
       pendingSpace = '';
       continue;
     }
@@ -435,8 +623,74 @@ function escapeLineStart(text: string): string {
     .replace(/^(\s*\d+)([.)])(?=\s)/, '$1\\$2');
 }
 
-function formatHref(href: string): string {
-  return /[\s()<>]/.test(href) ? `<${href.replace(/[<>]/g, encodeURIComponent)}>` : href;
+function formatHref(href: string, escapeAmpersands = false): string {
+  const formatted = /[\s()<>]/.test(href) ? `<${href.replace(/[<>]/g, encodeURIComponent)}>` : href;
+  return escapeAmpersands ? formatted.replace(/&/g, '&amp;') : formatted;
+}
+
+function formatLinkLabel(label: string, inTable = false, escapeAmpersands = false): string {
+  let out = '';
+  for (const char of label) {
+    if (char === '\n' || char === '\r') {
+      out += ' ';
+      continue;
+    }
+    if ('\\[]`*_~=$<'.includes(char) || (inTable && char === '|')) out += '\\';
+    out += char;
+  }
+  return escapeAmpersands ? out.replace(/&/g, '&amp;') : out;
+}
+
+function storedFileHref(originalHref: string, target: string | null | undefined): string {
+  if (!target) return originalHref;
+  const suffixIndex = originalHref.search(/[?#]/);
+  const originalPath = suffixIndex === -1 ? originalHref : originalHref.slice(0, suffixIndex);
+  const suffix = suffixIndex === -1 ? '' : originalHref.slice(suffixIndex);
+  if (normalizeMarkdownPath(decodeUrlPath(originalPath)) === normalizeMarkdownPath(target)) return originalHref;
+  return `${encodeMarkdownPath(target)}${suffix}`;
+}
+
+export function retargetMarkdownHref(originalHref: string, targetPath: string): string {
+  const suffixIndex = originalHref.search(/[?#]/);
+  const originalPath = suffixIndex === -1 ? originalHref : originalHref.slice(0, suffixIndex);
+  const suffix = suffixIndex === -1 ? '' : originalHref.slice(suffixIndex);
+  if (!targetPath || normalizeMarkdownPath(decodeUrlPath(originalPath)) === normalizeMarkdownPath(targetPath))
+    return originalHref;
+
+  const rootRelative = originalPath.startsWith('/') && !originalPath.startsWith('//');
+  const explicitRelative = originalPath.startsWith('./') || targetPath.startsWith('./');
+  const cleanTarget = targetPath.replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+  const prefix = rootRelative
+    ? '/'
+    : explicitRelative && !cleanTarget.startsWith('../')
+      ? './'
+      : '';
+  const encodedTarget = encodeMarkdownPath(cleanTarget);
+  return `${prefix}${encodedTarget}${suffix}`;
+}
+
+function decodeUrlPath(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // malformed escapes stay literal, as they do in Markdown
+    return value;
+  }
+}
+
+function normalizeMarkdownPath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+}
+
+function encodeMarkdownPath(value: string): string {
+  return value
+    .split('/')
+    .map((segment) =>
+      encodeURIComponent(segment).replace(/[!'()*]/g, (char) =>
+        `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+      ),
+    )
+    .join('/');
 }
 
 function prefixLines(text: string, prefix: string, emptyPrefix: string): string {

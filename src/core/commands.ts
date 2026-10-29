@@ -1,9 +1,9 @@
 // every workspace change goes through here, pure and never throwing
 import { isRecord, validateDoc } from './doc';
 import { findKey, normalizeExtra, normalizeTag } from './vault/frontmatter';
-import { writeProperty } from './vault/pageFile';
+import { sameValue, writeProperty } from './vault/pageFile';
 import { validPageIcon } from './icons';
-import { normalizeDatabase } from './migrations';
+import { conditionalFormatRulesProblem, normalizeDatabase } from './migrations';
 import {
   DEFAULT_COVER_POSITION,
   displayTitle,
@@ -34,7 +34,11 @@ import type {
 import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
 import { previewRelationPairUnion, relationIds } from './relations';
-import { bindFormulaReferences, formulaResult } from './database';
+import {
+  bindFormulaReferences,
+  conditionalFormatRuleConfigurationProblem,
+  formulaResult,
+} from './database';
 import { isNumericPropertyType, propertyValueError, scalarValueError } from './typedValues';
 import { MAX_ATTACHMENT_VALUE_LENGTH, MAX_RICH_CANVAS_BYTES } from './propertyMedia';
 import type { FormulaRuntimeValue, FormulaValue } from './formula';
@@ -322,7 +326,48 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       if (page.value.database?.unsupportedProperties?.length)
         return fail('This database contains column types from a newer version and is read only.');
       if (hasInvalidSequenceDefinition(command.database)) return fail('Invalid numeric sequence configuration.');
-      const database = normalizeDatabase(command.database);
+      const previousViews = new Map((page.value.database?.views ?? []).map((view) => [view.id, view] as const));
+      for (const view of command.database.views) {
+        const conditionalFormatProblem = conditionalFormatRulesProblem(view.conditionalFormats);
+        if (conditionalFormatProblem)
+          return fail(`Invalid conditional formatting configuration: ${conditionalFormatProblem}`);
+        const previousRules = new Map(
+          (previousViews.get(view.id)?.conditionalFormats ?? []).map((rule) => [rule.id, rule] as const),
+        );
+        for (const rule of view.conditionalFormats ?? []) {
+          // Keep unchanged legacy rules even when their property context is invalid; the resolver
+          // reports them and does not apply them. Any new or edited invalid rule is rejected.
+          if (sameValue(rule, previousRules.get(rule.id))) continue;
+          const configurationProblem = conditionalFormatRuleConfigurationProblem(rule, command.database, state);
+          if (configurationProblem)
+            return fail(`Invalid conditional formatting configuration: ${configurationProblem}`);
+        }
+      }
+      const previousOpaqueRules = new Map(
+        (page.value.database?.views ?? []).map((view) => [view.id, view.unsupportedConditionalFormats] as const),
+      );
+      if (command.database.views.some((view) => {
+        const previous = previousViews.get(view.id);
+        return previous?.unsupportedConditionalFormats?.some((entry) => entry.wholeList) === true &&
+          !sameValue(view.conditionalFormats ?? [], previous.conditionalFormats ?? []);
+      }))
+        return fail('This view has an unsupported conditional formatting list and cannot accept rule edits.');
+      if (command.database.views.some((view) =>
+        view.unsupportedConditionalFormats !== undefined &&
+        !sameValue(view.unsupportedConditionalFormats, previousOpaqueRules.get(view.id) ?? []),
+      ))
+        return fail('Opaque conditional formatting entries cannot be added or changed by this version.');
+      const databaseInput: DatabaseDef = {
+        ...command.database,
+        views: command.database.views.map((view) => {
+          const previous = previousOpaqueRules.get(view.id);
+          if (previous?.length) return { ...view, unsupportedConditionalFormats: previous };
+          const supportedView = { ...view };
+          delete supportedView.unsupportedConditionalFormats;
+          return supportedView;
+        }),
+      };
+      const database = normalizeDatabase(databaseInput);
       if (!database) return fail('Invalid database.');
       const removed = (page.value.database?.properties ?? []).filter(
         (property) => !database.properties.some((candidate) => candidate.id === property.id),

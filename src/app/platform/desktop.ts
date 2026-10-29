@@ -1,3 +1,8 @@
+import { getLocale, t } from '../i18n';
+import { toast } from '../ui';
+import { fileHandlerErrorKey } from './fileHandlerMessages';
+import { createChooseBrowserOnceAction } from './externalOpenErrorActions';
+
 export interface CloudFolder {
   provider: string;
   path: string;
@@ -151,8 +156,81 @@ export interface DesktopMcpApi {
   isEnabled(): Promise<boolean>;
 }
 
+export interface DesktopClipboardContents {
+  text: string;
+  hasGridPayload: boolean;
+  gridPayloadJson: string | null;
+}
+
+export interface DesktopClipboardApi {
+  readText(): Promise<string>;
+  readGrid(): Promise<DesktopClipboardContents>;
+  writeText(text: string): Promise<boolean>;
+  writeGrid(text: string, envelopeJson: string): Promise<boolean>;
+}
+
+export type DesktopFileHandlerMode = 'system' | 'internal' | 'application';
+export type DesktopBrowserHandlerMode = 'system' | 'application';
+export type DesktopFileHandlerLocale = 'en' | 'es' | 'pt';
+export type DesktopRecoveryAction = 'choose-application' | 'open-folder';
+
+export interface DesktopExternalOpenError {
+  url: string | null;
+  code: string;
+  canChooseBrowser: boolean;
+}
+
+export interface DesktopFileHandlerPreference {
+  mode: DesktopFileHandlerMode;
+  applicationName?: string;
+  needsReselection?: boolean;
+}
+
+export interface DesktopBrowserHandlerPreference {
+  mode: DesktopBrowserHandlerMode;
+  applicationName?: string;
+  needsReselection?: boolean;
+}
+
+export type DesktopFileHandlerResult =
+  | { ok: true; destination?: DesktopFileHandlerMode | DesktopBrowserHandlerMode }
+  | { ok: false; code: string; message: string; recovery?: DesktopRecoveryAction[] };
+
+export interface DesktopFileHandlerPreferences {
+  files: Record<string, DesktopFileHandlerPreference>;
+  browser: DesktopBrowserHandlerPreference;
+  internalExtensions: string[];
+}
+
+export interface DesktopFileHandlersApi {
+  getPreferences(): Promise<
+    | { ok: true; preferences: DesktopFileHandlerPreferences }
+    | Extract<DesktopFileHandlerResult, { ok: false }>
+  >;
+  setFileHandler(
+    extension: string,
+    mode: DesktopFileHandlerMode | 'reset',
+    locale?: DesktopFileHandlerLocale,
+  ): Promise<DesktopFileHandlerResult>;
+  setBrowserHandler(
+    mode: DesktopBrowserHandlerMode | 'reset',
+    locale?: DesktopFileHandlerLocale,
+  ): Promise<DesktopFileHandlerResult>;
+  openFile(
+    path: string,
+    options?: { chooseOnce?: boolean; locale?: DesktopFileHandlerLocale },
+  ): Promise<DesktopFileHandlerResult>;
+  openUrl(
+    url: string,
+    options?: { chooseOnce?: boolean; locale?: DesktopFileHandlerLocale },
+  ): Promise<DesktopFileHandlerResult>;
+  openContainingFolder(path: string): Promise<DesktopFileHandlerResult>;
+}
+
 export interface DesktopBridge {
   assistant?: DesktopAssistantApi;
+  clipboard?: DesktopClipboardApi;
+  fileHandlers?: DesktopFileHandlersApi;
   mcp?: DesktopMcpApi;
   vault?: DesktopVaultApi;
   sync?: DesktopSyncApi;
@@ -160,9 +238,10 @@ export interface DesktopBridge {
   version: string;
   dataPath: string;
   onCommand(listener: (id: string) => void): () => void;
+  onExternalOpenError?(listener: (error: DesktopExternalOpenError) => void): () => void;
   setTheme(theme: 'light' | 'dark'): void;
   paintTitleBar(color: string, symbolColor: string): void;
-  openExternal(url: string): Promise<void>;
+  openExternal(url: string): Promise<DesktopFileHandlerResult | void>;
   showDataFolder(): Promise<void>;
   writeAutoBackup(json: string): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
   showBackupsFolder(): Promise<void>;
@@ -276,13 +355,15 @@ export function dialogOpened(): () => void {
   };
 }
 
-// the desktop app copies through electron, which works whether or not the window has focus. the web
-// clipboard needs a focused page, so it is only the fallback
+// the desktop app uses its narrow main-process bridge; browsers use the web clipboard
 export async function copyText(text: string): Promise<boolean> {
-  try {
-    if (desktop?.copyText && (await desktop.copyText(text)) !== false) return true;
-  } catch {
-    // falls back to the web clipboard
+  if (desktop) {
+    try {
+      if (desktop.clipboard) return await desktop.clipboard.writeText(text);
+      return desktop.copyText ? (await desktop.copyText(text)) !== false : false;
+    } catch {
+      return false;
+    }
   }
   try {
     await navigator.clipboard.writeText(text);
@@ -292,8 +373,49 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
+async function openExternalWeb(url: string, chooseOnce = false): Promise<void> {
+  if (!desktop) return;
+  try {
+    const handlers = desktop.fileHandlers;
+    const locale = getLocale();
+    const result = handlers
+      ? await handlers.openUrl(url, { locale, ...(chooseOnce ? { chooseOnce: true } : {}) })
+      : await desktop.openExternal(url);
+    if (!result || result.ok || result.code === 'cancelled') return;
+    const action =
+      !chooseOnce && result.recovery?.includes('choose-application') && handlers
+        ? {
+            label: t('fileCatalog.chooseAnotherBrowser'),
+            run: () => void openExternalWeb(url, true),
+          }
+        : undefined;
+    toast(t(fileHandlerErrorKey(result.code)), { tone: 'error', ...(action ? { action } : {}) });
+  } catch {
+    toast(t('fileCatalog.openFailed'), { tone: 'error' });
+  }
+}
+
 export function openExternal(url: string): void {
   if (!/^(https?:|mailto:|tel:)/i.test(url)) return;
-  if (desktop) void desktop.openExternal(url);
-  else window.open(url, '_blank', 'noopener,noreferrer');
+  if (desktop) {
+    if (/^https?:/i.test(url)) void openExternalWeb(url);
+    else
+      void desktop
+        .openExternal(url)
+        .then((result) => {
+          if (result && !result.ok) toast(t(fileHandlerErrorKey(result.code)), { tone: 'error' });
+        })
+        .catch(() => toast(t('fileCatalog.openFailed'), { tone: 'error' }));
+  } else window.open(url, '_blank', 'noopener,noreferrer');
 }
+
+desktop?.onExternalOpenError?.((error) => {
+  const action = desktop?.fileHandlers
+    ? createChooseBrowserOnceAction(
+        error,
+        t('fileCatalog.chooseAnotherBrowser'),
+        (url) => void openExternalWeb(url, true),
+      )
+    : undefined;
+  toast(t(fileHandlerErrorKey(error.code)), { tone: 'error', ...(action ? { action } : {}) });
+});

@@ -24,20 +24,22 @@ function desktopShell(): Plugin {
     configureServer(server) {
       if (server.config.mode !== 'desktop') return;
       server.httpServer?.once('listening', () => {
-        const shellBuild = spawnSync(
-          process.execPath,
-          [
-            // vite exports no path to its cli, so it is found beside its package.json
-            path.join(path.dirname(require.resolve('vite/package.json')), 'bin', 'vite.js'),
-            'build',
-            '--config',
-            'vite.electron.config.ts',
-            '--logLevel',
-            'warn',
-          ],
-          { stdio: 'inherit' },
-        );
-        if (shellBuild.status !== 0) process.exit(shellBuild.status ?? 1);
+        for (const config of ['vite.electron.config.ts', 'vite.preload.config.ts']) {
+          const shellBuild = spawnSync(
+            process.execPath,
+            [
+              // vite exports no path to its cli, so it is found beside its package.json
+              path.join(path.dirname(require.resolve('vite/package.json')), 'bin', 'vite.js'),
+              'build',
+              '--config',
+              config,
+              '--logLevel',
+              'warn',
+            ],
+            { stdio: 'inherit' },
+          );
+          if (shellBuild.status !== 0) process.exit(shellBuild.status ?? 1);
+        }
         const address = server.httpServer?.address();
         const port = typeof address === 'object' && address ? address.port : 5173;
         const electron = require('electron') as string;

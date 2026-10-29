@@ -33,6 +33,67 @@ const database: DatabaseDef = {
 };
 
 describe('Markdown export', () => {
+  it('retargets stable page links to the actual nested export path and collision name', () => {
+    let state = run(emptyWorkspace(), {
+      type: 'page.create',
+      id: 'export-folder',
+      parentId: null,
+      now: 1,
+      title: 'Folder',
+    });
+    state = run(state, {
+      type: 'page.create',
+      id: 'export-target-first',
+      parentId: 'export-folder',
+      now: 2,
+      title: 'Target',
+    });
+    state = run(state, {
+      type: 'page.create',
+      id: 'export-target-linked',
+      parentId: 'export-folder',
+      now: 3,
+      title: 'Target',
+    });
+    state = run(state, {
+      type: 'page.create',
+      id: 'export-host',
+      parentId: null,
+      now: 4,
+      title: 'Host',
+    });
+    state = run(state, {
+      type: 'page.setDoc',
+      id: 'export-host',
+      now: 5,
+      doc: {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'pageLink',
+                attrs: {
+                  id: 'export-target-linked',
+                  alias: 'Section',
+                  markdownHref: './Target.md?view=old#part%20two',
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const exported = workspaceMarkdownFiles(state).files;
+    const host = exported.find((file) => file.path === 'Host.md');
+    const linkedTarget = exported.find((file) => file.path === 'Folder/Target (2).md');
+
+    expect(host?.content).toContain('[Section](./Folder/Target%20%282%29.md?view=old#part%20two)');
+    expect(linkedTarget?.path).toBe('Folder/Target (2).md');
+  });
+
   it('includes page metadata, media references, database rows, views and dynamic snapshots', () => {
     let state = run(emptyWorkspace(), {
       type: 'page.create',

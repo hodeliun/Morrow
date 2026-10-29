@@ -1,22 +1,12 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
-import type {
-  DatabaseDef,
-  FormulaReferenceBinding,
-  PageId,
-  PageMeta,
-  PropDef,
-} from '../../../core/model';
+import type { DatabaseDef, FormulaReferenceBinding, PageId, PageMeta, PropDef } from '../../../core/model';
 import { displayTitle, newPageMeta } from '../../../core/model';
-import {
-  bindFormulaReferences,
-  formulaResult,
-  formulaValueText,
-  rowsOf,
-} from '../../../core/database';
+import { bindFormulaReferences, formulaResult, formulaValueText, rowsOf } from '../../../core/database';
 import { isEffectivelyTrashed } from '../../../core/tree';
 import { t } from '../../i18n';
 import { tr } from '../../i18n/rich';
+import './FormulaEditor.css';
 import { updateProp } from './data';
 import { useWorkspace } from '../../workspace';
 import {
@@ -25,6 +15,7 @@ import {
   FORMULA_FUNCTIONS,
   formulaDecorations,
   formulaIdentifier,
+  presentFormulaDiagnostic,
   formulaSuggestions,
 } from './formulaEditorModel';
 import type { FormulaDecoration, FormulaSuggestion } from './formulaEditorModel';
@@ -42,7 +33,25 @@ export interface FormulaSelectionRange {
   end: number;
 }
 
-export function formulaSelectionChanged(previous: FormulaSelectionRange, next: FormulaSelectionRange): boolean {
+export function preserveFormulaEditorFocusOnActionMouseDown(event: { preventDefault(): void }): void {
+  event.preventDefault();
+}
+
+function syncFormulaHighlightScrollbarGutter(
+  textarea: HTMLTextAreaElement | null,
+  highlight: HTMLPreElement | null,
+) {
+  if (!textarea || !highlight) return;
+  const gutter = Math.max(0, highlight.clientWidth - textarea.clientWidth);
+  const nextValue = `${gutter}px`;
+  if (highlight.style.getPropertyValue('--formula-scrollbar-gutter') !== nextValue)
+    highlight.style.setProperty('--formula-scrollbar-gutter', nextValue);
+}
+
+export function formulaSelectionChanged(
+  previous: FormulaSelectionRange,
+  next: FormulaSelectionRange,
+): boolean {
   return previous.start !== next.start || previous.end !== next.end;
 }
 
@@ -80,9 +89,7 @@ export function applyFormulaSuggestion(
   suggestion: FormulaSuggestion,
 ): { source: string; bindings: FormulaReferenceBinding[]; caret: number } {
   const nextSource =
-    source.slice(0, suggestion.replaceStart) +
-    suggestion.insertText +
-    source.slice(suggestion.replaceEnd);
+    source.slice(0, suggestion.replaceStart) + suggestion.insertText + source.slice(suggestion.replaceEnd);
   let nextBindings = adjustFormulaBindings(source, nextSource, bindings);
   if (suggestion.binding)
     nextBindings = [
@@ -151,6 +158,7 @@ export function FormulaEditor({
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(0);
   const [focused, setFocused] = useState(false);
+  const [applied, setApplied] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const selectionRangeRef = useRef<FormulaSelectionRange>({ start: formula.length, end: formula.length });
@@ -159,12 +167,28 @@ export function FormulaEditor({
   const inputId = `${prop.id}-${defaultFormula ? 'default-formula' : 'formula'}`;
 
   useLayoutEffect(() => {
+    syncFormulaHighlightScrollbarGutter(textareaRef.current, highlightRef.current);
     const pendingCaret = pendingCaretRef.current;
     if (pendingCaret === null || !textareaRef.current) return;
     textareaRef.current.focus();
     textareaRef.current.setSelectionRange(pendingCaret, pendingCaret);
     pendingCaretRef.current = null;
   });
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const syncScrollbarGutter = () =>
+      syncFormulaHighlightScrollbarGutter(textareaRef.current, highlightRef.current);
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncScrollbarGutter);
+    resizeObserver?.observe(textarea);
+    window.addEventListener('resize', syncScrollbarGutter);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', syncScrollbarGutter);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
@@ -174,9 +198,7 @@ export function FormulaEditor({
   const liveRows = rowsOf(state, dbId);
   const hasRows = liveRows.length > 0;
   const previewRow = liveRows[0] ?? makePreviewRow(dbId, database);
-  const previewState = hasRows
-    ? state
-    : { ...state, pages: { ...state.pages, [previewRow.id]: previewRow } };
+  const previewState = hasRows ? state : { ...state, pages: { ...state.pages, [previewRow.id]: previewRow } };
   const preview = draft.trim()
     ? formulaResult(
         previewRow,
@@ -186,6 +208,13 @@ export function FormulaEditor({
         previewState,
       )
     : null;
+  const formulaDiagnostic = preview?.error
+    ? presentFormulaDiagnostic(preview.error, {
+        memberAfterDot: (token) => t('formulaUx.memberAfterDot', { token }),
+        unexpectedToken: (token) => t('formulaUx.unexpectedToken', { token }),
+        invalidSummary: t('formulaUx.invalidSummary'),
+      })
+    : null;
   const tables = Object.values(state.pages)
     .filter(
       (page) => page.kind === 'database' && page.database && !isEffectivelyTrashed(state.pages, page.id),
@@ -193,11 +222,12 @@ export function FormulaEditor({
     .sort((left, right) => displayTitle(left).localeCompare(displayTitle(right)));
   const assistTable = state.pages[assistTableId];
   const assistProperties = assistTable?.database?.properties ?? database.properties;
-  const suggestions = focused && suggestionsOpen
-    ? formulaSuggestions(draft, caret, dbId, database, state, previewBindings)
-    : [];
+  const suggestions =
+    focused && suggestionsOpen
+      ? formulaSuggestions(draft, caret, dbId, database, state, previewBindings)
+      : [];
   const selectedSuggestion = suggestions[activeSuggestion];
-  const decorations = formulaDecorations(draft, previewBindings);
+  const decorations = formulaDecorations(draft, previewBindings, state);
   const dirty = draft !== formula || JSON.stringify(previewBindings) !== JSON.stringify(savedBindings);
 
   const setDraftSource = (source: string, nextBindings = draftBindings, nextCaret = source.length) => {
@@ -209,11 +239,13 @@ export function FormulaEditor({
       caret: nextCaret,
     });
     setActiveSuggestion(0);
+    setApplied(false);
   };
 
   const insertAtEnd = (
     text: string,
-    binding?: { kind: 'database'; databaseId: PageId } | { kind: 'property'; databaseId: PageId; propertyId: string },
+    binding?:
+      { kind: 'database'; databaseId: PageId } | { kind: 'property'; databaseId: PageId; propertyId: string },
     bindingText = text,
     caretOffset = text.length,
   ) => {
@@ -239,16 +271,15 @@ export function FormulaEditor({
 
   const save = () => {
     const bindings = bindFormulaReferences(draft, dbId, state, draftBindings);
-    if (
-      draft !== formula ||
-      JSON.stringify(bindings) !== JSON.stringify(savedBindings)
-    )
+    const saved =
+      !(draft !== formula || JSON.stringify(bindings) !== JSON.stringify(savedBindings)) ||
       updateProp(dbId, prop.id, (current) =>
         defaultFormula
           ? { ...current, defaultFormula: draft, defaultFormulaBindings: bindings }
           : { ...current, formula: draft, formulaBindings: bindings },
       );
     setDraftSource(draft, bindings, caret);
+    setApplied(saved);
     setSuggestionsOpen(false);
   };
 
@@ -297,6 +328,7 @@ export function FormulaEditor({
       bindings,
       caret: nextCaret,
     });
+    setApplied(false);
     setSuggestionsOpen(true);
     setActiveSuggestion(0);
   };
@@ -311,7 +343,7 @@ export function FormulaEditor({
   const insertFunction = (name: string) => insertAtEnd(`${name}()`, undefined, `${name}()`, name.length + 1);
 
   return (
-    <div className="field formula-field">
+    <div className="field formula-field formula-editor">
       <span>{defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title')}</span>
       <div className="formula-source-shell">
         <pre className="formula-highlight" aria-hidden="true" ref={highlightRef}>
@@ -327,6 +359,7 @@ export function FormulaEditor({
           value={draft}
           placeholder='prop("Price") * prop("Count")'
           aria-label={defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title')}
+          aria-describedby={`${inputId}-legend`}
           aria-autocomplete="list"
           aria-expanded={suggestions.length > 0}
           aria-controls={suggestions.length > 0 ? `${inputId}-suggestions` : undefined}
@@ -383,6 +416,29 @@ export function FormulaEditor({
           onKeyDown={onTextareaKeyDown}
         />
       </div>
+      <div
+        className="formula-editor-legend"
+        id={`${inputId}-legend`}
+        role="group"
+        aria-label={t('formulaUx.legend')}
+      >
+        {(
+          [
+            ['database', t('formulaUx.table')],
+            ['relation', t('formulaUx.relation')],
+            ['property', t('formulaUx.property')],
+            ['control', t('formulaUx.control')],
+            ['result', t('formulaUx.result')],
+            ['function', t('formulaUx.function')],
+            ['ambiguous', t('formulaUx.ambiguous')],
+          ] as const
+        ).map(([kind, label]) => (
+          <span className="formula-editor-legend-item" key={kind}>
+            <span aria-hidden="true" className={`formula-editor-swatch formula-editor-swatch-${kind}`} />
+            {label}
+          </span>
+        ))}
+      </div>
       <div className="formula-assist" aria-label={t('database.formulaAssist')}>
         <label className="visually-hidden" htmlFor={`${inputId}-function`}>
           {t('database.formulaFunction')}
@@ -415,7 +471,11 @@ export function FormulaEditor({
             const field = database.properties.find((item) => item.id === event.target.value);
             if (!field) return;
             const name = formulaIdentifier(field.name);
-            insertAtEnd(`thisRow.${name}`, { kind: 'property', databaseId: dbId, propertyId: field.id }, name);
+            insertAtEnd(
+              `thisRow.${name}`,
+              { kind: 'property', databaseId: dbId, propertyId: field.id },
+              name,
+            );
           }}
         >
           <option value="">{t('database.formulaField')}</option>
@@ -461,7 +521,11 @@ export function FormulaEditor({
               const field = assistProperties.find((item) => item.id === event.target.value);
               if (!field) return;
               const name = formulaIdentifier(field.name);
-              insertAtEnd(`.${name}`, { kind: 'property', databaseId: assistTableId, propertyId: field.id }, name);
+              insertAtEnd(
+                `.${name}`,
+                { kind: 'property', databaseId: assistTableId, propertyId: field.id },
+                name,
+              );
             }}
           >
             <option value="">{t('database.formulaTableField')}</option>
@@ -497,15 +561,25 @@ export function FormulaEditor({
           ))}
         </div>
       )}
-      {preview?.error ? (
-        <span className="formula-error" role="alert" aria-live="polite">
-          {preview.error}
-        </span>
+      {formulaDiagnostic ? (
+        <div className="formula-error" role="alert" aria-live="polite">
+          <span className="formula-error-primary">{formulaDiagnostic.primary}</span>
+          {formulaDiagnostic.technicalDetail !== null && (
+            <details className="formula-error-details">
+              <summary>{t('formulaUx.technicalDetails')}</summary>
+              <code dir="auto">{formulaDiagnostic.technicalDetail}</code>
+            </details>
+          )}
+        </div>
       ) : preview ? (
         <div className="formula-preview" role="status" aria-live="polite">
           <span>
             {tr('database.formulaPreview', {
-              value: <strong>{formulaValueText(prop, preview.value, previewState) || t('database.emptyValue')}</strong>,
+              value: (
+                <strong>
+                  {formulaValueText(prop, preview.value, previewState) || t('database.emptyValue')}
+                </strong>
+              ),
               type: <span className="formula-preview-type">{formulaTypeLabel(preview.value)}</span>,
             })}
           </span>
@@ -513,12 +587,29 @@ export function FormulaEditor({
         </div>
       ) : null}
       <div className="field-inline formula-actions">
-        <button type="button" className="button small" disabled={!dirty} onClick={save}>
-          {t('common.save')}
+        <button
+          type="button"
+          className="button small"
+          disabled={!dirty}
+          onMouseDown={preserveFormulaEditorFocusOnActionMouseDown}
+          onClick={save}
+        >
+          {t('formulaUx.apply')}
         </button>
-        <button type="button" className="button small" disabled={!dirty} onClick={cancel}>
+        <button
+          type="button"
+          className="button small"
+          disabled={!dirty}
+          onMouseDown={preserveFormulaEditorFocusOnActionMouseDown}
+          onClick={cancel}
+        >
           {t('common.cancel')}
         </button>
+        {applied && (
+          <span className="muted small formula-editor-applied" role="status">
+            {t('formulaUx.applied')}
+          </span>
+        )}
       </div>
       <details className="formula-help">
         <summary>{t('database.howFormulasWork')}</summary>
@@ -615,7 +706,10 @@ function FormulaSource({ source, decorations }: { source: string; decorations: F
     if (decoration.start < cursor || decoration.end > source.length) continue;
     if (decoration.start > cursor) pieces.push(source.slice(cursor, decoration.start));
     pieces.push(
-      <span key={`${decoration.start}:${decoration.end}`} className={`formula-token formula-token-${decoration.kind}`}>
+      <span
+        key={`${decoration.start}:${decoration.end}`}
+        className={`formula-token formula-token-${decoration.kind}`}
+      >
         {source.slice(decoration.start, decoration.end)}
       </span>,
     );

@@ -1,0 +1,145 @@
+.formula-editor .formula-input,
+.formula-editor .formula-highlight {
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 400;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings:
+    'liga' 0,
+    'calt' 0;
+  letter-spacing: 0;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.formula-editor .formula-input {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text);
+}
+
+.formula-editor .formula-highlight {
+  color: var(--text);
+  padding-right: calc(10px + var(--formula-scrollbar-gutter, 0px));
+}
+
+.formula-editor .formula-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.formula-editor .formula-error-details {
+  max-width: 100%;
+}
+
+.formula-editor .formula-error-details code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.formula-editor .formula-token {
+  display: inline;
+  box-sizing: content-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  font: inherit;
+  letter-spacing: inherit;
+  vertical-align: baseline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.formula-editor .formula-token-database,
+.formula-editor .formula-editor-swatch-database {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--text-muted) 45%, transparent);
+}
+
+.formula-editor .formula-token-relation,
+.formula-editor .formula-editor-swatch-relation {
+  color: color-mix(in srgb, var(--accent) 58%, #167caa);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--accent) 48%, #167caa);
+}
+
+.formula-editor .formula-token-property,
+.formula-editor .formula-editor-swatch-property {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+.formula-editor .formula-token-control,
+.formula-editor .formula-editor-swatch-control {
+  color: color-mix(in srgb, var(--accent) 55%, #2f8f5b);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--accent) 48%, #2f8f5b);
+}
+
+.formula-editor .formula-token-result,
+.formula-editor .formula-editor-swatch-result {
+  color: color-mix(in srgb, var(--accent) 55%, #b36d08);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--accent) 48%, #b36d08);
+}
+
+.formula-editor .formula-token-function,
+.formula-editor .formula-editor-swatch-function {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+.formula-editor .formula-token-context {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+}
+
+.formula-editor .formula-token-ambiguous,
+.formula-editor .formula-editor-swatch-ambiguous {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.formula-editor-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 12px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.formula-editor-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.formula-editor-swatch {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.formula-editor .formula-editor-applied {
+  align-self: center;
+}

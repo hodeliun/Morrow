@@ -20,6 +20,7 @@ import type {
   DatabaseDef,
   DocNode,
   FilterOp,
+  FilterRule,
   FilterGroup,
   PageId,
   PageKind,
@@ -30,12 +31,15 @@ import type {
   PropType,
   PropValue,
   RelationConfig,
+  ConditionalFormatRule,
+  UnsupportedConditionalFormat,
   ViewDef,
   ViewType,
   SummaryOperation,
 } from './model';
 import { normalizeNamedControls } from './controls';
 import { isNumericPropertyType } from './typedValues';
+import { parseFormula } from './formula';
 import { fail, ok } from './result';
 import type { Result } from './result';
 
@@ -75,6 +79,8 @@ const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
   9: (data) => data,
   // version 11 adds view-local frozen columns, bounded row heights and database display labels
   10: (data) => data,
+  // version 12 adds typed conditional text styles while keeping legacy background colors
+  11: (data) => data,
 };
 
 export function migrate(version: number, data: RawWorkspace): Result<RawWorkspace> {
@@ -355,6 +361,144 @@ function normalizeFormulaBindings(source: string, raw: unknown): FormulaReferenc
   return result;
 }
 
+const MAX_CONDITIONAL_FORMATS = 100;
+const CONDITIONAL_FORMAT_FIELDS = new Set([
+  'id', 'prop', 'op', 'value', 'controlRef', 'formula', 'formulaBindings', 'scope', 'color', 'mode',
+  'textColor', 'bold', 'italic',
+]);
+
+interface ConditionalFormatParse {
+  rule: ConditionalFormatRule | null;
+  reason: string | null;
+}
+
+function parseConditionalFormatRule(raw: unknown): ConditionalFormatParse {
+  if (!isRecord(raw)) return { rule: null, reason: 'Rule must be an object.' };
+  if (Object.keys(raw).some((key) => !CONDITIONAL_FORMAT_FIELDS.has(key)))
+    return { rule: null, reason: 'Rule contains fields this version does not understand.' };
+  if (!validId(raw.id)) return { rule: null, reason: 'Rule has an invalid ID.' };
+  if (typeof raw.prop !== 'string' || !raw.prop || raw.prop.length > 64)
+    return { rule: null, reason: 'Rule has an invalid property reference.' };
+  if (raw.scope !== 'row' && raw.scope !== 'cell')
+    return { rule: null, reason: 'Rule scope must be row or cell.' };
+  if (!FILTER_OPS.has(raw.op as FilterOp)) return { rule: null, reason: 'Rule has an invalid condition operator.' };
+  const value = normalizeValue(raw.value);
+  if (value === undefined) return { rule: null, reason: 'Rule has an invalid condition value.' };
+  if (raw.mode !== undefined && raw.mode !== 'simple' && raw.mode !== 'formula')
+    return { rule: null, reason: 'Rule mode must be simple or formula.' };
+  if (raw.formula !== undefined && (typeof raw.formula !== 'string' || raw.formula.length > 2000))
+    return { rule: null, reason: 'Rule formula must be text up to 2000 characters.' };
+
+  const mode = raw.mode === 'formula'
+    ? 'formula'
+    : raw.mode === 'simple'
+      ? 'simple'
+      : typeof raw.formula === 'string' && raw.formula.trim()
+        ? 'formula'
+        : 'simple';
+  const formula = typeof raw.formula === 'string' ? raw.formula : '';
+  if (mode === 'formula' && !formula.trim())
+    return { rule: null, reason: 'Formula mode requires a non-empty formula.' };
+  if (mode === 'formula') {
+    try {
+      parseFormula(formula);
+    } catch (error) {
+      return {
+        rule: null,
+        reason: `Formula is invalid: ${error instanceof Error ? error.message : 'syntax error.'}`,
+      };
+    }
+  }
+
+  let controlRef: FilterRule['controlRef'];
+  if (raw.controlRef !== undefined) {
+    if (
+      !isRecord(raw.controlRef) ||
+      Object.keys(raw.controlRef).some((key) => key !== 'pageId' && key !== 'controlId') ||
+      !validId(raw.controlRef.pageId) ||
+      !validId(raw.controlRef.controlId)
+    ) return { rule: null, reason: 'Rule has an invalid control reference.' };
+    controlRef = { pageId: raw.controlRef.pageId, controlId: raw.controlRef.controlId };
+  }
+
+  let formulaBindings: FormulaReferenceBinding[] | undefined;
+  if (raw.formulaBindings !== undefined) {
+    if (!Array.isArray(raw.formulaBindings) || raw.formulaBindings.length > 500)
+      return { rule: null, reason: 'Rule has invalid formula bindings.' };
+    const allowedBindingFields = [
+      'start', 'end', 'source', 'kind', 'databaseId', 'propertyId', 'pageId', 'controlId', 'resultId',
+    ];
+    if (raw.formulaBindings.some((binding) =>
+      !isRecord(binding) || Object.keys(binding).some((key) => !allowedBindingFields.includes(key))))
+      return { rule: null, reason: 'Rule has formula bindings with fields this version does not understand.' };
+    formulaBindings = normalizeFormulaBindings(formula, raw.formulaBindings);
+    if (formulaBindings.length !== raw.formulaBindings.length)
+      return { rule: null, reason: 'Rule has invalid formula bindings.' };
+  }
+
+  const color = raw.color === undefined ? null : validColor(raw.color);
+  if (raw.color !== undefined && !color) return { rule: null, reason: 'Rule has an invalid background color.' };
+  const textColor = raw.textColor === undefined ? null : validColor(raw.textColor);
+  if (raw.textColor !== undefined && !textColor)
+    return { rule: null, reason: 'Rule has an invalid text color.' };
+  if (raw.bold !== undefined && typeof raw.bold !== 'boolean')
+    return { rule: null, reason: 'Rule bold style must be true or false.' };
+  if (raw.italic !== undefined && typeof raw.italic !== 'boolean')
+    return { rule: null, reason: 'Rule italic style must be true or false.' };
+  if (color === null && textColor === null && raw.bold === undefined && raw.italic === undefined)
+    return { rule: null, reason: 'Rule does not specify a style.' };
+
+  return {
+    rule: {
+      id: raw.id,
+      prop: raw.prop,
+      op: raw.op as FilterOp,
+      value,
+      scope: raw.scope,
+      ...(controlRef ? { controlRef } : {}),
+      mode,
+      formula,
+      ...(formulaBindings ? { formulaBindings } : {}),
+      ...(color ? { color } : {}),
+      ...(textColor ? { textColor } : {}),
+      ...(raw.bold !== undefined ? { bold: raw.bold } : {}),
+      ...(raw.italic !== undefined ? { italic: raw.italic } : {}),
+    },
+    reason: null,
+  };
+}
+
+export function conditionalFormatRulesProblem(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) return 'Conditional formatting rules must be a list.';
+  if (raw.length > MAX_CONDITIONAL_FORMATS)
+    return `A view can contain at most ${MAX_CONDITIONAL_FORMATS} conditional formatting rules.`;
+  const ids = new Set<string>();
+  for (const entry of raw) {
+    const parsed = parseConditionalFormatRule(entry);
+    if (!parsed.rule) return parsed.reason ?? 'Conditional formatting rule is invalid.';
+    if (ids.has(parsed.rule.id)) return `Conditional formatting rule ID “${parsed.rule.id}” is duplicated.`;
+    ids.add(parsed.rule.id);
+  }
+  return null;
+}
+
+function copyUnsupportedConditionalFormats(raw: unknown): UnsupportedConditionalFormat[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (!isRecord(entry) || !Number.isInteger(entry.index) || (entry.index as number) < 0 ||
+      !Object.prototype.hasOwnProperty.call(entry, 'raw') || typeof entry.reason !== 'string') return [];
+    return [{
+      index: entry.index as number,
+      raw: entry.raw,
+      reason: entry.reason,
+      ...(entry.wholeList === true ? { wholeList: true } : {}),
+      ...(validId(entry.beforeRuleId) ? { beforeRuleId: entry.beforeRuleId } : {}),
+      ...(validId(entry.afterRuleId) ? { afterRuleId: entry.afterRuleId } : {}),
+    }];
+  });
+}
+
 function normalizePropertyFormat(raw: unknown): PropertyFormat | null {
   if (!isRecord(raw)) return null;
   const finite = (value: unknown, min: number, max: number) =>
@@ -489,37 +633,74 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
           .filter(([key, value]) => key.length <= 64 && summaryOps.has(value as SummaryOperation)),
       ) as Record<string, SummaryOperation>)
     : undefined;
-  const conditionalFormats = records(raw.conditionalFormats)
-    .slice(0, 100)
-    .flatMap((rule) => {
-      const prop = propRef(rule.prop);
-      const value = normalizeValue(rule.value);
-      const color = validColor(rule.color);
-      const mode = rule.mode === 'formula' ? ('formula' as const) : ('simple' as const);
-      const formula = typeof rule.formula === 'string' ? rule.formula.slice(0, 2000) : '';
-      if (
-        !validId(rule.id) ||
-        !prop ||
-        !color ||
-        (rule.scope !== 'row' && rule.scope !== 'cell') ||
-        (mode === 'simple' && (!FILTER_OPS.has(rule.op as FilterOp) || value === undefined))
-      )
-        return [];
-      return [
-        {
-          id: rule.id,
-          prop,
-          op: (FILTER_OPS.has(rule.op as FilterOp) ? rule.op : 'is') as FilterOp,
-          value: value ?? null,
-          scope: rule.scope as 'row' | 'cell',
-          color,
-          mode,
-          ...(formula
-            ? { formula, formulaBindings: normalizeFormulaBindings(formula, rule.formulaBindings) }
-            : { formula: '' }),
-        },
-      ];
+  const conditionalFormats: ConditionalFormatRule[] = [];
+  const unsupportedConditionalFormats = copyUnsupportedConditionalFormats(raw.unsupportedConditionalFormats);
+  if (raw.conditionalFormats !== undefined && !Array.isArray(raw.conditionalFormats)) {
+    unsupportedConditionalFormats.push({
+      index: 0,
+      raw: raw.conditionalFormats,
+      reason: 'Conditional formatting rules must be a list.',
+      wholeList: true,
     });
+  }
+  const conditionalFormatEntries = Array.isArray(raw.conditionalFormats) ? raw.conditionalFormats : [];
+  const supportedRuleIds = new Set<string>();
+  const parsedWithinLimit: Array<{
+    entry: unknown;
+    index: number;
+    ruleId?: string;
+    unsupportedReason?: string;
+    opaque?: UnsupportedConditionalFormat;
+  }> = [];
+  for (let index = 0; index < Math.min(conditionalFormatEntries.length, MAX_CONDITIONAL_FORMATS); index++) {
+    const entry = conditionalFormatEntries[index];
+    const parsed = parseConditionalFormatRule(entry);
+    if (!parsed.rule) {
+      parsedWithinLimit.push({ entry, index, unsupportedReason: parsed.reason ?? 'Rule is invalid.' });
+      continue;
+    }
+    if (supportedRuleIds.has(parsed.rule.id)) {
+      parsedWithinLimit.push({ entry, index, unsupportedReason: 'Rule ID is duplicated.' });
+      continue;
+    }
+    supportedRuleIds.add(parsed.rule.id);
+    parsedWithinLimit.push({ entry, index, ruleId: parsed.rule.id });
+    conditionalFormats.push(parsed.rule);
+  }
+  let previousRuleId: string | undefined;
+  for (const entry of parsedWithinLimit) {
+    if (entry.ruleId) {
+      previousRuleId = entry.ruleId;
+      continue;
+    }
+    const opaque: UnsupportedConditionalFormat = {
+      index: entry.index,
+      raw: entry.entry,
+      reason: entry.unsupportedReason!,
+      ...(previousRuleId ? { beforeRuleId: previousRuleId } : {}),
+    };
+    entry.opaque = opaque;
+    unsupportedConditionalFormats.push(opaque);
+  }
+  const lastSupportedRuleId = previousRuleId;
+  let nextRuleId: string | undefined;
+  for (let index = parsedWithinLimit.length - 1; index >= 0; index--) {
+    const entry = parsedWithinLimit[index]!;
+    if (entry.ruleId) {
+      nextRuleId = entry.ruleId;
+      continue;
+    }
+    if (entry.opaque && nextRuleId) entry.opaque.afterRuleId = nextRuleId;
+  }
+  for (let index = MAX_CONDITIONAL_FORMATS; index < conditionalFormatEntries.length; index++) {
+    const entry = conditionalFormatEntries[index];
+    unsupportedConditionalFormats.push({
+      index,
+      raw: entry,
+      reason: `Rule is beyond this version's ${MAX_CONDITIONAL_FORMATS}-rule limit.`,
+      ...(lastSupportedRuleId ? { beforeRuleId: lastSupportedRuleId } : {}),
+    });
+  }
   const align = isRecord(raw.align)
     ? (Object.fromEntries(
         Object.entries(raw.align)
@@ -548,6 +729,7 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
       : {}),
     ...(raw.hideTitle === true ? { hideTitle: true } : {}),
     ...(raw.collapsed === true ? { collapsed: true } : {}),
+    ...(raw.collapseEnabled === false ? { collapseEnabled: false } : {}),
     ...(filterGroups.length ? { filterGroups } : {}),
     ...(raw.filterGroupLogic === 'and' || raw.filterGroupLogic === 'or'
       ? { filterGroupLogic: raw.filterGroupLogic }
@@ -562,6 +744,7 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     ...(align && Object.keys(align).length ? { align } : {}),
     ...(summaries && Object.keys(summaries).length ? { summaries } : {}),
     ...(conditionalFormats.length ? { conditionalFormats } : {}),
+    ...(unsupportedConditionalFormats.length ? { unsupportedConditionalFormats } : {}),
     ...(Array.isArray(raw.cardProperties)
       ? {
           cardProperties: [

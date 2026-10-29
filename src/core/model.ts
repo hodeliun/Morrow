@@ -1,7 +1,7 @@
 // workspace data model, plain json shared by storage, search, export and the editor
 
 // bump when the persisted shape changes and add a migration in migrations.ts
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const MAX_TITLE_LENGTH = 500;
 // includes compact Lucide names and local attachment references; plain emoji remain much shorter
@@ -263,8 +263,22 @@ export type SummaryOperation = 'sum' | 'average' | 'median' | 'min' | 'max' | 'r
 
 export interface ConditionalFormatRule extends FilterRule {
   scope: 'row' | 'cell';
-  color: ColorValue;
+  // Legacy `color` remains the background field; style attributes are independently optional.
+  color?: ColorValue;
+  textColor?: ColorValue;
+  bold?: boolean;
+  italic?: boolean;
   mode?: 'simple' | 'formula';
+}
+
+export interface UnsupportedConditionalFormat {
+  // Position in the original list; neighbor IDs keep the opaque entry near its source on edits.
+  index: number;
+  raw: unknown;
+  reason: string;
+  wholeList?: boolean;
+  beforeRuleId?: string;
+  afterRuleId?: string;
 }
 
 export interface SortRule {
@@ -293,6 +307,8 @@ export interface ViewDef {
   rowHeight?: number;
   hideTitle?: boolean;
   collapsed?: boolean;
+  // Absence keeps the legacy table collapse control enabled; false opts out without discarding its state.
+  collapseEnabled?: boolean;
   // Each group combines its rules with AND/OR; the view combines groups with AND/OR.
   filterGroups?: FilterGroup[];
   filterGroupLogic?: 'and' | 'or';
@@ -304,6 +320,8 @@ export interface ViewDef {
   align?: Record<string, 'left' | 'center' | 'right'>;
   summaries?: Record<string, SummaryOperation>;
   conditionalFormats?: ConditionalFormatRule[];
+  // Invalid or future entries remain opaque and are never evaluated by the current version.
+  unsupportedConditionalFormats?: UnsupportedConditionalFormat[];
   cardProperties?: string[];
   cardImageProp?: string | null;
 }

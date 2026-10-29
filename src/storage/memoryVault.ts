@@ -1,6 +1,6 @@
 // an in memory vault with the same rules as the desktop shell, used by tests
 import type { VaultScan } from '../core/vault/load';
-import { dirname, isHiddenPath, isPageFile, MORROW_DIR } from '../core/vault/paths';
+import { dirname, extension, isHiddenPath, isPageFile, MORROW_DIR } from '../core/vault/paths';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import type { VaultBridge, VaultChange, VaultFileInfo } from './vaultBridge';
 
@@ -34,10 +34,20 @@ export class MemoryVault implements VaultBridge {
   async scan(): Promise<VaultScan> {
     const files = [];
     const others = [];
+    const resources = [];
     for (const [path, data] of this.files) {
       if (typeof data === 'string' && isPageFile(path) && !isHiddenPath(path)) {
         files.push({ path, text: data, mtime: this.clock, birthtime: this.clock });
-      } else if (!isHiddenPath(path)) others.push(path);
+      } else if (!isHiddenPath(path)) {
+        others.push(path);
+        if (!isPageFile(path))
+          resources.push({
+            path,
+            extension: extension(path),
+            size: typeof data === 'string' ? new TextEncoder().encode(data).byteLength : data.byteLength,
+            mtime: this.clock,
+          });
+      }
     }
     const folders = [...this.dirs]
       .filter((dir) => !isHiddenPath(dir) || dir === '.trash')
@@ -54,6 +64,7 @@ export class MemoryVault implements VaultBridge {
       files,
       folders,
       others,
+      resources,
       registry: json(`${MORROW_DIR}/workspace.json`),
       recent: json(`${MORROW_DIR}/recent.json`),
     };
@@ -75,12 +86,20 @@ export class MemoryVault implements VaultBridge {
 
   // what the file watcher would report for files already on disk
   report(paths: string[]): void {
-    const reported: VaultChange[] = paths.map((path) => ({
-      path,
-      text: this.text(path) ?? null,
-      mtime: Date.now(),
-      birthtime: Date.now(),
-    }));
+    const reported: VaultChange[] = paths.map((path) => {
+      const data = this.files.get(path);
+      const mtime = Date.now();
+      return {
+        path,
+        text: typeof data === 'string' ? data : data === undefined ? null : '',
+        mtime,
+        birthtime: mtime,
+        ...(!isPageFile(path) ? { other: true } : {}),
+        ...(data !== undefined
+          ? { size: typeof data === 'string' ? new TextEncoder().encode(data).byteLength : data.byteLength }
+          : {}),
+      };
+    });
     for (const listener of this.listeners) listener(reported);
   }
 
@@ -182,7 +201,16 @@ export class MemoryVault implements VaultBridge {
     for (const [path, text] of Object.entries(changes)) {
       if (text === null) this.files.delete(path);
       else this.put(path, text);
-      reported.push({ path, text, mtime: this.clock, birthtime: this.clock });
+      reported.push({
+        path,
+        text,
+        mtime: this.clock,
+        birthtime: this.clock,
+        ...(!isPageFile(path) ? { other: true } : {}),
+        ...(text !== null && !isPageFile(path)
+          ? { size: new TextEncoder().encode(text).byteLength }
+          : {}),
+      });
     }
     for (const listener of this.listeners) listener(reported);
   }
@@ -190,9 +218,27 @@ export class MemoryVault implements VaultBridge {
   // a folder that is no longer there, reported the way the file watcher reports it
   folderGone(path: string): void {
     this.clock += 1000;
+    for (const file of [...this.files.keys()])
+      if (file === path || file.startsWith(`${path}/`)) this.files.delete(file);
+    for (const dir of [...this.dirs])
+      if (dir === path || dir.startsWith(`${path}/`)) this.dirs.delete(dir);
     const reported: VaultChange[] = [
       { path, text: null, mtime: this.clock, birthtime: 0, dir: true, other: true },
     ];
     for (const listener of this.listeners) listener(reported);
+  }
+
+  emptyFolder(path: string): void {
+    for (let dir = path; dir; dir = dirname(dir)) this.dirs.add(dir);
+    this.clock += 1000;
+    const change: VaultChange = {
+      path,
+      text: '',
+      mtime: this.clock,
+      birthtime: this.clock,
+      dir: true,
+      emptyFolder: true,
+    };
+    for (const listener of this.listeners) listener([change]);
   }
 }

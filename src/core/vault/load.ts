@@ -10,6 +10,7 @@ import type { DocNode, PageId, PageMeta, WorkspaceState } from '../model';
 import { foldText } from '../search';
 import { compareSiblings } from '../tree';
 import type { Layout, Placement } from './layout';
+import type { VaultResource } from './fileCatalog';
 import { readPageText, takeProperties } from './pageFile';
 import type { PageSource } from './pageFile';
 import { impliedTitle } from './pageFile';
@@ -48,6 +49,8 @@ export interface VaultScan {
   folders: ScannedFolder[];
   // every other file, such as images and pdfs
   others: string[];
+  // metadata for the visible file catalog; scanning records stat data without reading these files
+  resources?: VaultResource[];
   // parsed contents of .morrow/workspace.json and .morrow/recent.json, or null
   registry: unknown;
   recent: unknown;

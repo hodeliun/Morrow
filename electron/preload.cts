@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { dispatchExternalOpenError } from './externalOpenErrors.js';
 
 type Listener = (id: string) => void | Promise<void>;
 
@@ -26,15 +27,47 @@ contextBridge.exposeInMainWorld('morrow', {
     listeners.add(listener);
     return () => listeners.delete(listener);
   },
+  onExternalOpenError(
+    listener: (error: { url: string | null; code: string; canChooseBrowser: boolean }) => void,
+  ) {
+    if (typeof listener !== 'function') return () => undefined;
+    const handler = (_event: unknown, value: unknown) => {
+      dispatchExternalOpenError(value, listener);
+    };
+    ipcRenderer.on('morrow:external-open-error', handler);
+    return () => ipcRenderer.removeListener('morrow:external-open-error', handler);
+  },
   setTheme: (theme: 'light' | 'dark') => ipcRenderer.send('morrow:theme', theme),
   paintTitleBar: (color: string, symbolColor: string) =>
     ipcRenderer.send('morrow:title-bar', color, symbolColor),
   openExternal: (url: string) => ipcRenderer.invoke('morrow:open-external', url),
+  fileHandlers: {
+    getPreferences: () => ipcRenderer.invoke('file-handlers:get-preferences'),
+    setFileHandler: (
+      extension: string,
+      mode: 'system' | 'internal' | 'application' | 'reset',
+      locale?: 'en' | 'es' | 'pt',
+    ) => ipcRenderer.invoke('file-handlers:set-file', extension, mode, locale),
+    setBrowserHandler: (mode: 'system' | 'application' | 'reset', locale?: 'en' | 'es' | 'pt') =>
+      ipcRenderer.invoke('file-handlers:set-browser', mode, locale),
+    openFile: (path: string, options?: { chooseOnce?: boolean; locale?: 'en' | 'es' | 'pt' }) =>
+      ipcRenderer.invoke('file-handlers:open-file', path, options),
+    openUrl: (url: string, options?: { chooseOnce?: boolean; locale?: 'en' | 'es' | 'pt' }) =>
+      ipcRenderer.invoke('file-handlers:open-url', url, options),
+    openContainingFolder: (path: string) => ipcRenderer.invoke('file-handlers:open-folder', path),
+  },
   showDataFolder: () => ipcRenderer.invoke('morrow:show-data-folder'),
   showBackupsFolder: () => ipcRenderer.invoke('morrow:show-backups'),
   writeAutoBackup: (json: string) => ipcRenderer.invoke('morrow:write-backup', json),
   exportPdf: (name: string) => ipcRenderer.invoke('morrow:export-pdf', name),
   copyText: (text: string) => ipcRenderer.invoke('morrow:copy-text', text),
+  clipboard: {
+    readText: () => ipcRenderer.invoke('morrow:clipboard-read-text'),
+    readGrid: () => ipcRenderer.invoke('morrow:clipboard-read-grid'),
+    writeText: (text: string) => ipcRenderer.invoke('morrow:copy-text', text),
+    writeGrid: (text: string, envelopeJson: string) =>
+      ipcRenderer.invoke('morrow:clipboard-write-grid', text, envelopeJson),
+  },
   sync: {
     status: () => ipcRenderer.invoke('sync:status'),
     enable: (enabled: boolean) => ipcRenderer.invoke('sync:enable', enabled),

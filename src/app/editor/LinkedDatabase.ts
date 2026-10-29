@@ -3,7 +3,7 @@ import { ReactNodeViewRenderer } from '@tiptap/react';
 import { Plugin } from '@tiptap/pm/state';
 import { newId } from '../platform/files';
 import { LinkedDatabaseViewNode } from '../components/database/LinkedDatabaseView';
-import { shouldStopLinkedDatabaseControlEvent } from './linkedDatabaseEvents';
+import { shouldStopLinkedDatabaseNodeViewEvent } from './linkedDatabaseEvents';
 
 interface LinkedDatabaseOptions {
   hostPageId: string;
@@ -14,7 +14,7 @@ export const LinkedDatabaseView = Node.create<LinkedDatabaseOptions>({
   group: 'block',
   atom: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addOptions() {
     return { hostPageId: '' };
@@ -49,6 +49,12 @@ export const LinkedDatabaseView = Node.create<LinkedDatabaseOptions>({
         },
         renderHTML: (attributes) => ({ 'data-view-config': JSON.stringify(attributes.view ?? null) }),
       },
+      // Markdown compatibility state stays in the document model and is never exposed as HTML.
+      viewRawState: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: () => ({}),
+      },
     };
   },
 
@@ -66,7 +72,7 @@ export const LinkedDatabaseView = Node.create<LinkedDatabaseOptions>({
 
   addNodeView() {
     return ReactNodeViewRenderer(LinkedDatabaseViewNode, {
-      stopEvent: ({ event }) => shouldStopLinkedDatabaseControlEvent(event),
+      stopEvent: ({ event }) => shouldStopLinkedDatabaseNodeViewEvent(event),
     });
   },
 

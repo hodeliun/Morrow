@@ -1,19 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   applyFormulaSuggestion,
   formulaSelectionChanged,
   formulaSuggestionForCommitKey,
   moveFormulaSuggestionIndex,
+  preserveFormulaEditorFocusOnActionMouseDown,
   shouldResetFormulaSuggestionIndexOnKeyUp,
   updateFormulaDraftCaret,
 } from './FormulaEditor';
 import type { FormulaDraftState } from './FormulaEditor';
+import { bindFormulaReferences } from '../../../core/database';
 import { emptyDoc, newPageMeta } from '../../../core/model';
 import type { DatabaseDef, PageMeta, PropDef, WorkspaceState } from '../../../core/model';
 import { formulaSuggestions } from './formulaEditorModel';
 import type { FormulaSuggestion } from './formulaEditorModel';
 
-function relationSuggestions(): FormulaSuggestion[] {
+function relationSuggestions(source = 'Autor.', caret = source.length): FormulaSuggestion[] {
   const authors: PropDef[] = [
     { id: 'author-name', name: 'Author Name', type: 'text', options: [] },
     { id: 'biography-long', name: 'Biography Long', type: 'text', options: [] },
@@ -60,10 +62,27 @@ function relationSuggestions(): FormulaSuggestion[] {
     pages: { authors: authorPage, books: booksPage } as Record<string, PageMeta>,
     docs: { authors: emptyDoc(), books: emptyDoc() },
   };
-  return formulaSuggestions('Autor.', 'Autor.'.length, 'books', booksDatabase, state, []);
+  return formulaSuggestions(
+    source,
+    caret,
+    'books',
+    booksDatabase,
+    state,
+    bindFormulaReferences(source, 'books', state),
+  );
 }
 
 const suggestions = relationSuggestions();
+
+describe('FormulaEditor Apply and Cancel pointer behavior', () => {
+  it('prevents mouse-down focus transfer so both native actions remain under the pointer', () => {
+    const preventDefault = vi.fn();
+
+    preserveFormulaEditorFocusOnActionMouseDown({ preventDefault });
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+  });
+});
 
 describe('FormulaEditor keyboard suggestions', () => {
   it('moves to a suggestion after the first and wraps in both directions', () => {
@@ -108,12 +127,34 @@ describe('FormulaEditor keyboard suggestions', () => {
     expect(afterKeyUp.caret).toBe(insertion.caret);
   });
 
+  it('commits a partial after-dot suggestion with Tab and preserves the rest of the expression', () => {
+    const source = 'Autor.Bio + 5';
+    const caret = 'Autor.Bio'.length;
+    const partialSuggestions = relationSuggestions(source, caret);
+    expect(partialSuggestions.map((item) => item.label)).toEqual(['Biography Long']);
+
+    const selected = formulaSuggestionForCommitKey('Tab', partialSuggestions, 0);
+    const insertion = applyFormulaSuggestion(source, [], selected!);
+
+    expect(insertion.source).toBe('Autor.`Biography Long` + 5');
+    expect(insertion.bindings).toContainEqual(
+      expect.objectContaining({
+        kind: 'property',
+        databaseId: 'authors',
+        propertyId: 'biography-long',
+        source: '`Biography Long`',
+      }),
+    );
+  });
+
   it('does not treat suggestion navigation as a commit key', () => {
     expect(formulaSuggestionForCommitKey('ArrowDown', suggestions, 1)).toBeUndefined();
   });
 
   it('keeps the active suggestion during arrow navigation and resets after other keys', () => {
-    expect(shouldResetFormulaSuggestionIndexOnKeyUp('ArrowDown', false, true, suggestions.length)).toBe(false);
+    expect(shouldResetFormulaSuggestionIndexOnKeyUp('ArrowDown', false, true, suggestions.length)).toBe(
+      false,
+    );
     expect(shouldResetFormulaSuggestionIndexOnKeyUp('ArrowUp', false, true, suggestions.length)).toBe(false);
     expect(shouldResetFormulaSuggestionIndexOnKeyUp('ArrowLeft', true, true, suggestions.length)).toBe(true);
     expect(shouldResetFormulaSuggestionIndexOnKeyUp('ArrowDown', true, false, 0)).toBe(true);

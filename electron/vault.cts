@@ -39,6 +39,8 @@ interface VaultChange {
   birthtime: number;
   dir?: boolean;
   other?: boolean;
+  size?: number;
+  emptyFolder?: boolean;
 }
 
 interface VaultList {
@@ -57,6 +59,7 @@ const listFile = () => path.join(app.getPath('userData'), 'vaults.json');
 
 let root: string | null = null;
 let realRoot: string | null = null;
+let vaultGeneration = 0;
 let watcher: FSWatcher | null = null;
 // on linux every folder gets its own watcher, see startWatching
 const folderWatchers = new Map<string, FSWatcher>();
@@ -195,12 +198,17 @@ async function exists(target: string): Promise<boolean> {
 
 export async function openVault(dir: string, onChanges: (changes: VaultChange[]) => void): Promise<void> {
   closeVault();
-  root = path.resolve(dir);
-  realRoot = await realpath(root);
+  const generation = vaultGeneration;
+  const nextRoot = path.resolve(dir);
+  const nextRealRoot = await realpath(nextRoot);
+  if (generation !== vaultGeneration) return;
+  root = nextRoot;
+  realRoot = nextRealRoot;
   startWatching(onChanges);
 }
 
 export function closeVault(): void {
+  vaultGeneration++;
   watcher?.close();
   watcher = null;
   for (const folder of folderWatchers.values()) folder.close();
@@ -211,6 +219,11 @@ export function closeVault(): void {
 
 export function currentVault(): string | null {
   return root;
+}
+
+// Process-main only: callers can bind asynchronous work to this vault generation and real root.
+export function currentVaultContext(): { root: string; realRoot: string; generation: number } | null {
+  return root && realRoot ? { root, realRoot, generation: vaultGeneration } : null;
 }
 
 // a vault relative path to an absolute one, refusing anything that would leave the vault
@@ -246,13 +259,31 @@ const isPage = (relative: string) => /\.(md|canvas)$/i.test(relative);
 
 export async function scanVault(): Promise<unknown> {
   if (!root) throw new Error('No vault is open.');
+  const scanRoot = root;
+  const scanRealRoot = realRoot;
+  const scanGeneration = vaultGeneration;
+  if (!scanRealRoot) throw new Error('No vault is open.');
   const files: Array<{ path: string; text: string; mtime: number; birthtime: number }> = [];
   const folders: Array<{ path: string; mtime: number; empty: boolean }> = [];
   const others: string[] = [];
+  const resources: Array<{ path: string; extension: string; size: number | null; mtime: number }> = [];
   let count = 0;
+  const relativeToScanRoot = (absolute: string) =>
+    path.relative(scanRoot, absolute).split(path.sep).join('/');
+  const insideScanRoot = async (absolute: string) => {
+    const real = await realpath(absolute).catch(() => null);
+    return (
+      vaultGeneration === scanGeneration &&
+      root === scanRoot &&
+      realRoot === scanRealRoot &&
+      real !== null &&
+      isInside(real, scanRealRoot)
+    );
+  };
   // files are read many at a time, which is far quicker than one by one on every kind of disk, and capped
   // so a folder of thousands never runs out of file handles
   const readPage = async (absolute: string, relative: string): Promise<void> => {
+    if (root !== scanRoot || !(await insideScanRoot(absolute))) return;
     const info = await stat(absolute).catch(() => null);
     if (!info || info.size > MAX_TEXT_BYTES) {
       others.push(relative);
@@ -269,13 +300,22 @@ export async function scanVault(): Promise<unknown> {
     pending.add(run);
   };
   const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > MAX_DEPTH || count > MAX_FILES) return;
+    if (
+      depth > MAX_DEPTH ||
+      count >= MAX_FILES ||
+      root !== scanRoot ||
+      realRoot !== scanRealRoot ||
+      vaultGeneration !== scanGeneration
+    )
+      return;
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (++count > MAX_FILES) return;
+      if (count >= MAX_FILES) return;
+      count++;
       const absolute = path.join(dir, entry.name);
-      const relative = toRelative(absolute);
+      const relative = relativeToScanRoot(absolute);
       if (entry.name.includes(TEMP_MARK) || entry.isSymbolicLink() || isHidden(relative)) continue;
+      if (!(await insideScanRoot(absolute))) continue;
       if (entry.isDirectory()) {
         const info = await stat(absolute).catch(() => null);
         const children = await readdir(absolute).catch(() => ['?']);
@@ -283,25 +323,43 @@ export async function scanVault(): Promise<unknown> {
         await walk(absolute, depth + 1);
       } else if (entry.isFile()) {
         if (isPage(relative)) await queue(() => readPage(absolute, relative));
-        else others.push(relative);
+        else {
+          others.push(relative);
+          const info = await stat(absolute).catch(() => null);
+          resources.push({
+            path: relative,
+            extension: path.extname(entry.name).replace(/^\./, '').toLowerCase(),
+            size: info?.size ?? null,
+            mtime: info?.mtimeMs ?? 0,
+          });
+        }
       }
     }
   };
-  await walk(root, 0);
+  await walk(scanRoot, 0);
   await Promise.all(pending);
+  if (root !== scanRoot || realRoot !== scanRealRoot || vaultGeneration !== scanGeneration)
+    throw new Error('The vault changed during the scan.');
   const json = async (relative: string) => {
     try {
-      return JSON.parse(await readFile(path.join(root!, relative), 'utf8')) as unknown;
+      const absolute = path.join(scanRoot, relative);
+      if (!(await insideScanRoot(absolute))) return null;
+      return JSON.parse(await readFile(absolute, 'utf8')) as unknown;
     } catch {
       return null;
     }
   };
+  const registry = await json('.morrow/workspace.json');
+  const recent = await json('.morrow/recent.json');
+  if (root !== scanRoot || realRoot !== scanRealRoot || vaultGeneration !== scanGeneration)
+    throw new Error('The vault changed during the scan.');
   return {
     files,
     folders,
     others,
-    registry: await json('.morrow/workspace.json'),
-    recent: await json('.morrow/recent.json'),
+    resources,
+    registry,
+    recent,
   };
 }
 
@@ -612,23 +670,39 @@ export function vaultFilePath(relative: string): string | null {
 
 // changes are gathered for a moment, then each path is looked at once
 function startWatching(onChanges: (changes: VaultChange[]) => void): void {
-  if (!root) return;
+  if (!root || !realRoot) return;
+  const watchRoot = root;
+  const watchRealRoot = realRoot;
+  const watchGeneration = vaultGeneration;
   const pending = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const queue = (relative: string) => {
-    if (!relative || relative.includes(TEMP_MARK) || isHidden(relative)) return;
+    const segments = relative.split('/');
+    if (
+      root !== watchRoot ||
+      vaultGeneration !== watchGeneration ||
+      !relative ||
+      relative.startsWith('/') ||
+      relative.includes('\\') ||
+      segments.some((part) => !part || part === '.' || part === '..') ||
+      relative.includes(TEMP_MARK) ||
+      isHidden(relative)
+    )
+      return;
     pending.add(relative);
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void flush(), 150);
   };
   const flush = async () => {
     timer = null;
+    if (root !== watchRoot || realRoot !== watchRealRoot || vaultGeneration !== watchGeneration) return;
     const paths = [...pending];
     pending.clear();
     const changes: VaultChange[] = [];
     for (const relative of paths) {
-      if (!root) return;
-      const absolute = path.join(root, relative);
+      if (root !== watchRoot || realRoot !== watchRealRoot || vaultGeneration !== watchGeneration) return;
+      const absolute = path.join(watchRoot, relative);
+      if (await hasSymlinkComponent(absolute, watchRoot)) continue;
       const info = await stat(absolute).catch(() => null);
       if (!info) {
         unwatchFolders(absolute);
@@ -640,23 +714,34 @@ function startWatching(onChanges: (changes: VaultChange[]) => void): void {
           dir: !isPage(relative),
           other: !isPage(relative),
         });
+      } else if (!(await isSafeWatcherPath(absolute, watchRoot, watchRealRoot, watchGeneration))) {
+        continue;
       } else if (info.isDirectory()) {
         // a folder moved in from elsewhere arrives as one event, its contents are reported one by one
-        if (perFolder) await watchTree(absolute, queue);
-        changes.push(...(await describeFolder(absolute)));
+        if (perFolder) await watchTree(absolute, queue, 0, watchRoot, watchRealRoot, watchGeneration);
+        changes.push(...(await describeFolder(absolute, 0, watchRoot, watchRealRoot, watchGeneration)));
       } else if (info.isFile()) {
         changes.push(
-          ...(await describeFile(absolute, info.mtimeMs, info.birthtimeMs || info.ctimeMs, info.size)),
+          ...(await describeFile(
+            absolute,
+            info.mtimeMs,
+            info.birthtimeMs || info.ctimeMs,
+            info.size,
+            watchRoot,
+            watchRealRoot,
+            watchGeneration,
+          )),
         );
       }
     }
+    if (root !== watchRoot || realRoot !== watchRealRoot || vaultGeneration !== watchGeneration) return;
     if (changes.length) onChanges(changes);
   };
   // linux's recursive watching follows files by inode and loses a file once it is replaced by a save,
   // watching each folder sees every name that changes inside it, however the file was written
   const perFolder = process.platform === 'linux';
   if (perFolder) {
-    void watchTree(root, queue);
+    void watchTree(watchRoot, queue, 0, watchRoot, watchRealRoot, watchGeneration);
     return;
   }
   try {
@@ -669,9 +754,66 @@ function startWatching(onChanges: (changes: VaultChange[]) => void): void {
   }
 }
 
-async function watchTree(dir: string, queue: (relative: string) => void, depth = 0): Promise<void> {
-  if (!root || depth > MAX_DEPTH || folderWatchers.size >= MAX_WATCHED_FOLDERS) return;
-  const relative = toRelative(dir);
+async function isInsideCurrentVault(
+  absolute: string,
+  expectedRealRoot: string,
+  expectedGeneration: number,
+): Promise<boolean> {
+  const real = await realpath(absolute).catch(() => null);
+  return (
+    root !== null &&
+    realRoot === expectedRealRoot &&
+    vaultGeneration === expectedGeneration &&
+    real !== null &&
+    isInside(real, expectedRealRoot)
+  );
+}
+
+async function hasSymlinkComponent(absolute: string, watchRoot: string): Promise<boolean> {
+  const relative = path.relative(watchRoot, absolute);
+  if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) return true;
+  if (!relative) return false;
+
+  let current = watchRoot;
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    const info = await lstat(current).catch(() => null);
+    if (!info) return false;
+    if (info.isSymbolicLink()) return true;
+  }
+  return false;
+}
+
+async function isSafeWatcherPath(
+  absolute: string,
+  watchRoot: string,
+  watchRealRoot: string,
+  watchGeneration: number,
+): Promise<boolean> {
+  if (await hasSymlinkComponent(absolute, watchRoot)) return false;
+  return isInsideCurrentVault(absolute, watchRealRoot, watchGeneration);
+}
+
+async function watchTree(
+  dir: string,
+  queue: (relative: string) => void,
+  depth = 0,
+  watchRoot = root,
+  watchRealRoot = realRoot,
+  watchGeneration = vaultGeneration,
+): Promise<void> {
+  if (
+    !watchRoot ||
+    !watchRealRoot ||
+    root !== watchRoot ||
+    realRoot !== watchRealRoot ||
+    vaultGeneration !== watchGeneration ||
+    depth > MAX_DEPTH ||
+    folderWatchers.size >= MAX_WATCHED_FOLDERS ||
+    !(await isSafeWatcherPath(dir, watchRoot, watchRealRoot, watchGeneration))
+  )
+    return;
+  const relative = path.relative(watchRoot, dir).split(path.sep).join('/');
   if (relative && isHidden(relative)) return;
   if (!folderWatchers.has(dir)) {
     try {
@@ -686,8 +828,11 @@ async function watchTree(dir: string, queue: (relative: string) => void, depth =
   }
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
-    if (entry.isDirectory() && !entry.isSymbolicLink())
-      await watchTree(path.join(dir, entry.name), queue, depth + 1);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      const child = path.join(dir, entry.name);
+      if (await isSafeWatcherPath(child, watchRoot, watchRealRoot, watchGeneration))
+        await watchTree(child, queue, depth + 1, watchRoot, watchRealRoot, watchGeneration);
+    }
   }
 }
 
@@ -705,28 +850,94 @@ async function describeFile(
   mtime: number,
   birthtime: number,
   size: number,
+  watchRoot = root,
+  watchRealRoot = realRoot,
+  watchGeneration = vaultGeneration,
 ): Promise<VaultChange[]> {
-  const relative = toRelative(absolute);
-  if (!isPage(relative)) return [{ path: relative, text: '', mtime, birthtime, other: true }];
+  if (
+    !watchRoot ||
+    !watchRealRoot ||
+    root !== watchRoot ||
+    realRoot !== watchRealRoot ||
+    vaultGeneration !== watchGeneration ||
+    !(await isSafeWatcherPath(absolute, watchRoot, watchRealRoot, watchGeneration))
+  )
+    return [];
+  const relative = path.relative(watchRoot, absolute).split(path.sep).join('/');
+  if (!isPage(relative)) return [{ path: relative, text: '', mtime, birthtime, other: true, size }];
   if (size > MAX_TEXT_BYTES) return [];
   const text = await readFile(absolute, 'utf8').catch(() => null);
+  if (
+    root !== watchRoot ||
+    realRoot !== watchRealRoot ||
+    vaultGeneration !== watchGeneration ||
+    !(await isSafeWatcherPath(absolute, watchRoot, watchRealRoot, watchGeneration))
+  )
+    return [];
   return text === null ? [] : [{ path: relative, text, mtime, birthtime }];
 }
 
-async function describeFolder(dir: string, depth = 0): Promise<VaultChange[]> {
-  if (depth > 16) return [];
+async function describeFolder(
+  dir: string,
+  depth = 0,
+  watchRoot = root,
+  watchRealRoot = realRoot,
+  watchGeneration = vaultGeneration,
+  budget = { count: 0 },
+): Promise<VaultChange[]> {
+  if (
+    !watchRoot ||
+    !watchRealRoot ||
+    root !== watchRoot ||
+    realRoot !== watchRealRoot ||
+    vaultGeneration !== watchGeneration ||
+    depth > MAX_DEPTH ||
+    budget.count >= MAX_FILES ||
+    !(await isSafeWatcherPath(dir, watchRoot, watchRealRoot, watchGeneration))
+  )
+    return [];
   const changes: VaultChange[] = [];
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  if (entries.length === 0) {
+    const relative = path.relative(watchRoot, dir).split(path.sep).join('/');
+    if (relative) {
+      const info = await stat(dir).catch(() => null);
+      if (info)
+        changes.push({
+          path: relative,
+          text: '',
+          mtime: info.mtimeMs,
+          birthtime: info.birthtimeMs || info.ctimeMs,
+          dir: true,
+          emptyFolder: true,
+        });
+    }
+    return changes;
+  }
   for (const entry of entries) {
+    if (budget.count >= MAX_FILES) break;
+    budget.count++;
     const absolute = path.join(dir, entry.name);
-    const relative = toRelative(absolute);
+    const relative = path.relative(watchRoot, absolute).split(path.sep).join('/');
     if (entry.name.includes(TEMP_MARK) || entry.isSymbolicLink() || isHidden(relative)) continue;
-    if (entry.isDirectory()) changes.push(...(await describeFolder(absolute, depth + 1)));
+    if (!(await isSafeWatcherPath(absolute, watchRoot, watchRealRoot, watchGeneration))) continue;
+    if (entry.isDirectory())
+      changes.push(
+        ...(await describeFolder(absolute, depth + 1, watchRoot, watchRealRoot, watchGeneration, budget)),
+      );
     else if (entry.isFile()) {
       const info = await stat(absolute).catch(() => null);
       if (info)
         changes.push(
-          ...(await describeFile(absolute, info.mtimeMs, info.birthtimeMs || info.ctimeMs, info.size)),
+          ...(await describeFile(
+            absolute,
+            info.mtimeMs,
+            info.birthtimeMs || info.ctimeMs,
+            info.size,
+            watchRoot,
+            watchRealRoot,
+            watchGeneration,
+          )),
         );
     }
   }

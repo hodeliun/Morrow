@@ -3,6 +3,7 @@ import { dailyTitle, parseDateKey } from '../daily';
 import { isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
 import { normalizeNamedControls } from '../controls';
+import { serializeConditionalFormats } from '../conditionalFormats';
 import { validPageIcon } from '../icons';
 import {
   COLORS,
@@ -498,13 +499,14 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(view.rowHeight ? { rowHeight: view.rowHeight } : {}),
       ...(view.hideTitle ? { hideTitle: true } : {}),
       ...(view.collapsed ? { collapsed: true } : {}),
+      ...(view.collapseEnabled === false ? { collapseEnabled: false } : {}),
       ...(view.search ? { search: view.search } : {}),
       ...(view.order?.length ? { order: [...view.order] } : {}),
       ...(view.wrap?.length ? { wrap: [...view.wrap] } : {}),
       ...(view.align && Object.keys(view.align).length ? { align: { ...view.align } } : {}),
       ...(view.summaries && Object.keys(view.summaries).length ? { summaries: { ...view.summaries } } : {}),
-      ...(view.conditionalFormats?.length
-        ? { conditionalFormats: view.conditionalFormats.map((rule) => ({ ...rule })) }
+      ...(view.conditionalFormats?.length || view.unsupportedConditionalFormats?.length
+        ? { conditionalFormats: serializeConditionalFormats(view.conditionalFormats, view.unsupportedConditionalFormats) }
         : {}),
       ...(view.cardProperties?.length ? { cardProperties: [...view.cardProperties] } : {}),
       ...(view.cardImageProp !== undefined ? { cardImageProp: view.cardImageProp } : {}),

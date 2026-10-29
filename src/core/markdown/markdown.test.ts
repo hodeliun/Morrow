@@ -114,6 +114,25 @@ describe('markdown import', () => {
     expect(plain.content![0]!.content).toEqual([text('See [[Nowhere]].')]);
   });
 
+  it('preserves resolved Markdown page-link text, href encoding, and anchor', () => {
+    const source = '[abrir o coração](./Refer%C3%AAncia%20%C3%81rvore.md#cora%C3%A7%C3%A3o-da-%C3%A1rvore)';
+    const doc = markdownToDoc(source, { resolveLink: () => 'reference' });
+    const link = doc.content![0]!.content![0]!;
+
+    expect(link).toMatchObject({
+      type: 'pageLink',
+      attrs: {
+        id: 'reference',
+        label: 'abrir o coração',
+        markdownHref: './Refer%C3%AAncia%20%C3%81rvore.md#cora%C3%A7%C3%A3o-da-%C3%A1rvore',
+        anchor: 'coração-da-árvore',
+      },
+    });
+    expect(docToMarkdown(doc)).toBe(`${source}\n`);
+    // A title change without a file move keeps this relative Markdown target valid.
+    expect(docToMarkdown(doc, { titleOf: () => 'Referência Atualizada' })).toBe(`${source}\n`);
+  });
+
   it('splits mixed task and bullet lists', () => {
     const doc = markdownToDoc('- [ ] task\n- plain\n- [x] done\n- [ ]');
     expect(doc.content!.map((node) => node.type)).toEqual(['taskList', 'bulletList', 'taskList']);

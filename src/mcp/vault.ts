@@ -15,7 +15,7 @@ import { collectTags } from '../core/tags';
 import type { TagSummary } from '../core/tags';
 import { buildGraph, DEFAULT_GRAPH_OPTIONS } from '../core/graph';
 import type { GraphOptions, GraphNode, GraphLink } from '../core/graph';
-import { loadVault } from '../core/vault/load';
+import { loadVault, makeResolver } from '../core/vault/load';
 import type { ScannedFile, ScannedFolder, VaultScan, RegistryEntry } from '../core/vault/load';
 import { linkTargets, placePages } from '../core/vault/layout';
 import type { Placement } from '../core/vault/layout';
@@ -25,6 +25,7 @@ import { basename, dirname, isInTrash, isPageFile, MORROW_DIR, TRASH_DIR } from 
 import { childrenOf, livePages } from '../core/tree';
 import { markdownToDoc } from '../core/markdown/parse';
 import { docToMarkdown } from '../core/markdown/serialize';
+import { markdownPathParseOptions, markdownTargetFromPaths } from '../core/vault/markdownLinks';
 import {
   dailyInsertIndex,
   dailyTitle,
@@ -202,6 +203,14 @@ export class McpVaultManager {
         : docToMarkdown(doc, {
             linkTarget: (id) => linkTargets(this.layout).get(id) ?? null,
             titleOf: (id) => (this.state.pages[id] ? displayTitle(this.state.pages[id]!) : null),
+            markdownLinkTarget: (id, originalHref) => {
+              const target = this.layout.get(id);
+              return markdownTargetFromPaths(
+                placement?.file ?? placement?.folder ?? null,
+                target?.file ?? target?.folder ?? null,
+                originalHref,
+              );
+            },
           });
 
     return { page, markdown, path: filePath };
@@ -281,7 +290,12 @@ export class McpVaultManager {
     }
 
     const now = Date.now();
-    const doc = markdownToDoc(params.content);
+    const sourcePath = this.layout.get(page.id)?.file ?? this.layout.get(page.id)?.folder ?? '';
+    const resolver = makeResolver(this.state, this.layout, this.sources);
+    const doc = markdownToDoc(
+      params.content,
+      markdownPathParseOptions(dirname(sourcePath), resolver),
+    );
 
     const command: Command = {
       type: 'page.setDoc',

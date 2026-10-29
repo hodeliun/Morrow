@@ -7,6 +7,7 @@ import {
   Calculator,
   Calendar,
   ChevronLeft,
+  ChevronDown,
   ChevronRight,
   Columns3,
   Copy,
@@ -33,6 +34,7 @@ import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, us
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { dateKey } from '../../../core/daily';
+import { parseFormula } from '../../../core/formula';
 import {
   planColumnDuplicate,
   planColumnDuplicateUndo,
@@ -40,10 +42,11 @@ import {
 } from '../../../core/columnDuplicate';
 import {
   bindPageFormulaReferences,
+  conditionalFormatRuleConfigurationIssue,
   filterOpsFor,
   calendarDayForRow,
-  conditionalFormatForCell,
-  conditionalFormatForRow,
+  resolveConditionalFormatForCell,
+  resolveConditionalFormatForRow,
   formatDisplayValue,
   groupRows,
   propType,
@@ -54,9 +57,9 @@ import {
   newView,
   summarizeProperty,
   valueOf,
-  formulaResult,
 } from '../../../core/database';
-import { BACKGROUND_HEX, validHexColor, COLORS, displayTitle, VIEW_TYPES } from '../../../core/model';
+import type { ConditionalFormatDiagnostic, ResolvedConditionalFormatStyle } from '../../../core/database';
+import { BACKGROUND_HEX, TEXT_HEX, validHexColor, COLORS, displayTitle, VIEW_TYPES } from '../../../core/model';
 import { unclaimedKeys } from '../../../core/properties';
 import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from '../../../core/migrations';
 import type {
@@ -78,6 +81,12 @@ import type {
   SummaryOperation,
 } from '../../../core/model';
 import { fileUrl } from '../../platform/attachments';
+import {
+  readClipboardText,
+  readGridClipboard,
+  writeClipboardText,
+  writeGridClipboard,
+} from '../../platform/clipboard';
 import { newId } from '../../platform/files';
 import { openPage } from '../../router';
 import { getSession, getState, run, runAll, useWorkspace } from '../../workspace';
@@ -88,12 +97,15 @@ import { PageGlyph } from '../Emoji';
 import { PageIcon } from '../Sidebar';
 import { addColumnsFromPages, createRow, setValue, updateDatabase, updateView } from './data';
 import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from './PropertyValue';
+import { cellEditStartKey, cellPickerStartProps } from './cellEditing';
 import { PropertySettings } from './PropertySettings';
 import { PropertyGlyph, PropertyTypeSelect } from './PropertyTypeSelect';
+import { presentFormulaDiagnostic } from './formulaEditorModel';
+import type { FormulaDiagnosticPresentation } from './formulaEditorModel';
 import { TableActionRecoveryNotice } from './TableActionCell';
 import { dateLocale, getLocale, t, tp } from '../../i18n';
 import { colorLabel, filterLabel, propLabel, viewLabel, viewName } from '../../i18n/labels';
-import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
+import { durationUnitFactor, isNumericPropertyType, scalarValueError } from '../../../core/typedValues';
 import { linkedViewReferences } from '../../../core/linkedViews';
 import { namedControlIdentifier } from '../../../core/controls';
 import { childrenOf, descendantsOf } from '../../../core/tree';
@@ -108,6 +120,7 @@ import {
   revalidateActiveCell,
   serializeGridClipboard,
   parseGridClipboard,
+  validateGridClipboardEnvelope,
 } from '../../../core/gridOperations';
 import type {
   GridCoord,
@@ -119,7 +132,7 @@ import type {
 import type { ColumnInsertPosition } from './columnActions';
 import type { Command } from '../../../core/commands';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
-import { toast } from '../../ui';
+import { confirmAction, toast } from '../../ui';
 import {
   asTableActionPlan,
   planDuplicateRows,
@@ -144,9 +157,15 @@ import { executeTableAction } from '../../../storage/tableActions';
 
 const nowTimestamp = (): number => Date.now();
 
-const gridClipboardCache = new Map<string, GridClipboardPayload>();
 const ROW_CONTROLS_WIDTH = 68;
 const ROW_CLIPBOARD_VERSION_MARKER = ROW_CLIPBOARD_PREFIX.slice(0, -1);
+
+export function withoutConditionalFormatRule(view: ViewDef, ruleId: string): ViewDef {
+  return {
+    ...view,
+    conditionalFormats: (view.conditionalFormats ?? []).filter((rule) => rule.id !== ruleId),
+  };
+}
 
 interface RowMappingDialogState {
   mode: 'copy' | 'move';
@@ -350,6 +369,71 @@ function conditionalColorStyle(color: ColorValue): CSSProperties {
   } as CSSProperties;
 }
 
+function conditionalFormatStyle(style: ResolvedConditionalFormatStyle): CSSProperties {
+  const result: CSSProperties = {};
+  if (style.backgroundColor !== undefined) Object.assign(result, conditionalColorStyle(style.backgroundColor));
+  if (style.textColor !== undefined) {
+    const foreground = validHexColor(style.textColor) ?? TEXT_HEX[style.textColor as ColorName] ?? style.textColor;
+    Object.assign(result, {
+      color: foreground,
+      '--text': foreground,
+      '--text-muted': foreground,
+      '--text-faint': foreground,
+    });
+  }
+  if (style.bold !== undefined) result.fontWeight = style.bold ? 700 : 400;
+  if (style.italic !== undefined) result.fontStyle = style.italic ? 'italic' : 'normal';
+  return result;
+}
+
+function localizedFormulaDiagnostic(error: string): FormulaDiagnosticPresentation {
+  return presentFormulaDiagnostic(error, {
+    memberAfterDot: (token) => t('formulaUx.memberAfterDot', { token }),
+    unexpectedToken: (token) => t('formulaUx.unexpectedToken', { token }),
+    invalidSummary: t('formulaUx.invalidSummary'),
+  });
+}
+
+function conditionalDiagnosticText(diagnostic: ConditionalFormatDiagnostic): string {
+  const params = diagnostic.params ?? {};
+  const property = params.property ?? '';
+  switch (diagnostic.code) {
+    case 'propertyUnavailable':
+      return t('database.conditionalRulePropertyUnavailable', { property });
+    case 'operatorUnsupported':
+      return t('database.conditionalRuleOperatorUnsupported', {
+        operator: filterLabel((params.operator ?? 'is') as FilterOp),
+        property,
+      });
+    case 'controlStateUnavailable':
+    case 'controlUnavailable':
+      return t('database.conditionalRuleControlUnavailable');
+    case 'calculatedStateUnavailable':
+    case 'formulaStateUnavailable':
+      return t('database.conditionalRuleContextUnavailable');
+    case 'finiteNumberRequired':
+      return t('database.conditionalRuleNumberRequired', { property });
+    case 'formulaRequired':
+      return t('database.conditionalRuleFormulaRequired');
+    case 'formulaEvaluationFailed':
+      return localizedFormulaDiagnostic(params.detail ?? '').primary;
+    case 'formulaMustBeBoolean':
+      return t('database.formulaMustReturnBoolean');
+    case 'unsupportedRule':
+      return t('database.conditionalRuleUnsupported', {
+        index: String((diagnostic.index ?? 0) + 1),
+      });
+    default:
+      return t('database.conditionalRuleValueInvalid', { property });
+  }
+}
+
+function conditionalDiagnosticTechnicalDetail(diagnostic: ConditionalFormatDiagnostic): string | null {
+  return diagnostic.code === 'formulaEvaluationFailed'
+    ? localizedFormulaDiagnostic(diagnostic.params?.detail ?? '').technicalDetail
+    : null;
+}
+
 function useViewUpdater(dbId: PageId, viewId: string) {
   const linkedUpdate = useContext(ViewChangeContext);
   return (change: (view: ViewDef) => ViewDef) =>
@@ -362,12 +446,14 @@ const EMPTY_QUICK_FILTERS: QuickFilterDraft[] = [];
 export function DatabaseView({
   page,
   editable,
+  canEditNow,
   hostPageId,
   embeddedView,
   onEmbeddedViewChange,
 }: {
   page: PageMeta;
   editable: boolean;
+  canEditNow?: () => boolean;
   hostPageId?: PageId;
   embeddedView?: ViewDef;
   onEmbeddedViewChange?: (change: (view: ViewDef) => ViewDef) => void;
@@ -376,6 +462,21 @@ export function DatabaseView({
   const database = useMemo(() => page.database ?? { properties: [], views: [] }, [page.database]);
   const canEdit = editable && !database.unsupportedProperties?.length;
   const [viewId, setViewId] = useState<string | null>(() => readViewChoice(page.id));
+  const tabsViewportRef = useRef<HTMLDivElement>(null);
+  const [tabScrollHints, setTabScrollHints] = useState({ left: false, right: false });
+  const updateTabScrollHints = useCallback(() => {
+    const viewport = tabsViewportRef.current;
+    if (!viewport) return;
+    const next = {
+      left: viewport.scrollLeft > 1,
+      right: viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - 1,
+    };
+    setTabScrollHints((current) =>
+      current.left === next.left && current.right === next.right ? current : next,
+    );
+  }, []);
+  const linkedViewsListId = useId();
+  const [linkedViewsExpanded, setLinkedViewsExpanded] = useState(false);
   const view =
     embeddedView ?? database.views.find((candidate) => candidate.id === viewId) ?? database.views[0] ?? null;
   const [quickFiltersByView, setQuickFiltersByView] = useState<Record<string, QuickFilterDraft[]>>({});
@@ -398,6 +499,22 @@ export function DatabaseView({
   const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
   const [filterRequest, setFilterRequest] = useState<{ propId: string; token: string } | null>(null);
   const [formatRequest, setFormatRequest] = useState<{ propId: string; token: string } | null>(null);
+
+  useEffect(() => {
+    const viewport = tabsViewportRef.current;
+    const tabs = viewport?.firstElementChild;
+    if (!viewport || !tabs) return;
+    updateTabScrollHints();
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateTabScrollHints);
+    observer?.observe(viewport);
+    observer?.observe(tabs);
+    window.addEventListener('resize', updateTabScrollHints);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateTabScrollHints);
+    };
+  }, [database.views, updateTabScrollHints]);
 
   const choose = (id: string) => {
     setViewId(id);
@@ -439,34 +556,44 @@ export function DatabaseView({
         <TableActionRecoveryNotice dbId={page.id} />
         <div className="db-bar">
           {!embeddedView && (
-            <div className="db-tabs" role="tablist" aria-label={t('database.views')}>
-              {database.views.map((candidate) => {
-                const Icon = VIEW_ICONS[candidate.type];
-                return (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={candidate.id === view.id}
-                    className={`db-tab${candidate.id === view.id ? ' is-active' : ''}`}
-                    onClick={() => choose(candidate.id)}
-                    onContextMenu={(event) => {
-                      if (!canEdit) return;
-                      event.preventDefault();
-                      setTabMenu({ view: candidate, anchor: event.currentTarget });
-                    }}
-                    onDoubleClick={(event) =>
-                      canEdit && setTabMenu({ view: candidate, anchor: event.currentTarget })
-                    }
-                  >
-                    <Icon size={14} /> {viewName(candidate)}
-                  </button>
-                );
-              })}
+            <div className="db-view-controls">
+              <div
+                ref={tabsViewportRef}
+                className={`db-tabs-viewport${tabScrollHints.left ? ' has-left-overflow' : ''}${
+                  tabScrollHints.right ? ' has-right-overflow' : ''
+                }`}
+                onScroll={updateTabScrollHints}
+              >
+                <div className="db-tabs" role="tablist" aria-label={t('database.views')}>
+                  {database.views.map((candidate) => {
+                    const Icon = VIEW_ICONS[candidate.type];
+                    return (
+                      <button
+                        key={candidate.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={candidate.id === view.id}
+                        className={`db-tab${candidate.id === view.id ? ' is-active' : ''}`}
+                        onClick={() => choose(candidate.id)}
+                        onContextMenu={(event) => {
+                          if (!canEdit) return;
+                          event.preventDefault();
+                          setTabMenu({ view: candidate, anchor: event.currentTarget });
+                        }}
+                        onDoubleClick={(event) =>
+                          canEdit && setTabMenu({ view: candidate, anchor: event.currentTarget })
+                        }
+                      >
+                        <Icon size={14} /> {viewName(candidate)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               {canEdit && (
                 <button
                   type="button"
-                  className="icon-button small"
+                  className="icon-button small db-add-view"
                   aria-label={t('database.addAView')}
                   onClick={(event) => setAddMenu(event.currentTarget)}
                 >
@@ -501,6 +628,7 @@ export function DatabaseView({
             rows={rows}
             props={visible}
             editable={canEdit}
+            canEditNow={canEditNow}
             onRequestFilter={(propId) => setFilterRequest({ propId, token: newId() })}
             onRequestFormat={(propId) => setFormatRequest({ propId, token: newId() })}
           />
@@ -511,7 +639,7 @@ export function DatabaseView({
         {view.type === 'calendar' && (
           <CalendarView dbId={page.id} database={database} view={view} rows={rows} editable={canEdit} />
         )}
-        {view.type === 'list' && <ListView rows={rows} props={visible} database={database} />}
+        {view.type === 'list' && <ListView rows={rows} props={visible} database={database} view={view} />}
         {view.type === 'gallery' && <GalleryView rows={rows} database={database} view={view} />}
         {allRows.length > 0 && rows.length === 0 && (
           <p className="db-empty-results muted small" role="status">
@@ -530,21 +658,37 @@ export function DatabaseView({
         </p>
 
         {!embeddedView && linkedViews.length > 0 && (
-          <nav className="db-linked-views" aria-label={t('database.linkedViews')}>
-            <span className="muted small">{t('database.linkedViews')}</span>
-            {linkedViews.map((reference, index) => {
-              const host = state.pages[reference.hostPageId];
-              return host ? (
-                <button
-                  key={`${reference.hostPageId}:${reference.blockId ?? index}`}
-                  type="button"
-                  onClick={() => openPage(host.id)}
-                >
-                  {displayTitle(host)} · {reference.viewName || t('database.linkedView')}
-                </button>
-              ) : null;
-            })}
-          </nav>
+          <section className="db-linked-views">
+            <button
+              type="button"
+              className="db-linked-views-toggle"
+              aria-expanded={linkedViewsExpanded}
+              aria-controls={linkedViewsListId}
+              onClick={() => setLinkedViewsExpanded((expanded) => !expanded)}
+            >
+              <ChevronRight size={14} aria-hidden="true" />
+              <span>{t('database.linkedViews')}</span>
+            </button>
+            <nav
+              id={linkedViewsListId}
+              className="db-linked-views-list"
+              aria-label={t('database.linkedViews')}
+              hidden={!linkedViewsExpanded}
+            >
+              {linkedViews.map((reference, index) => {
+                const host = state.pages[reference.hostPageId];
+                return host ? (
+                  <button
+                    key={`${reference.hostPageId}:${reference.blockId ?? index}`}
+                    type="button"
+                    onClick={() => openPage(host.id)}
+                  >
+                    {displayTitle(host)} · {reference.viewName || t('database.linkedView')}
+                  </button>
+                ) : null;
+              })}
+            </nav>
+          </section>
         )}
 
         {!embeddedView && addMenu && (
@@ -756,24 +900,28 @@ function QuickFilterBar({
           }
         }
         return (
-          <div
-            key={rule.id}
-            className={`db-filter-chip${draft.enabled ? ' is-active' : ''}`}
-            onClick={(event) => {
-              if ((event.target as HTMLElement).closest('.db-filter-chip-remove')) return;
-              setActivePopover({ id: rule.id, anchor: event.currentTarget });
-            }}
-          >
-            <span className="db-filter-chip-prop">{propName}</span>
-            <span className="db-filter-chip-op muted">{opLabel}</span>
-            {valueText && <span className="db-filter-chip-val">{valueText}</span>}
+          <div key={rule.id} className={`db-filter-chip${draft.enabled ? ' is-active' : ''}`}>
+            <button
+              type="button"
+              className="db-filter-chip-edit"
+              aria-label={`${propName}: ${opLabel}${valueText ? ` ${valueText}` : ''}, ${t(
+                draft.enabled ? 'database.searchActive' : 'database.searchInactive',
+              )}. ${t('database.quickFilters')}`}
+              aria-haspopup="dialog"
+              aria-expanded={activePopover?.id === rule.id}
+              onClick={(event) => setActivePopover({ id: rule.id, anchor: event.currentTarget })}
+            >
+              <span className="db-filter-chip-prop">{propName}</span>
+              <span className="db-filter-chip-state">
+                {t(draft.enabled ? 'database.searchActive' : 'database.searchInactive')}
+              </span>
+            </button>
             <button
               type="button"
               className="db-filter-chip-remove"
               aria-label={t('database.removeFilter')}
               title={t('database.removeFilter')}
-              onClick={(event) => {
-                event.stopPropagation();
+              onClick={() => {
                 if (activePopover?.id === rule.id) setActivePopover(null);
                 onChange(drafts.filter((candidate) => candidate.rule.id !== rule.id));
               }}
@@ -801,6 +949,9 @@ function QuickFilterBar({
       >
         {t('database.resetFilters')}
       </button>
+      <span className="db-filter-temporary-note" role="note">
+        <Info size={12} aria-hidden="true" /> {t('database.quickFiltersHint')}
+      </span>
 
       {activePopover && activeDraft && (
         <Popover
@@ -1018,12 +1169,46 @@ function Toolbar({
     saveView((current) => withFilterGroups(current, change(filterGroupsForView(current))));
   const optionsButton = useRef<HTMLButtonElement>(null);
   const handledFormatRequest = useRef<string | null>(null);
+  const formatDismissReasonRef = useRef<'escape' | 'dismiss' | null>(null);
+  const formatEscapeCloseHandledRef = useRef(false);
   const [formatDefaultProp, setFormatDefaultProp] = useState(TITLE_PROP);
+  const [formulaDrafts, setFormulaDrafts] = useState<Record<string, string>>({});
+  const [formulaDraftErrors, setFormulaDraftErrors] = useState<Record<string, FormulaDiagnosticPresentation>>({});
+  const [simpleValueDrafts, setSimpleValueDrafts] = useState<Record<string, string>>({});
+  const [ruleDraftErrors, setRuleDraftErrors] = useState<Record<string, string>>({});
+  const [conditionalColorDrafts, setConditionalColorDrafts] = useState<Record<string, string>>({});
+  const [conditionalColorDraftErrors, setConditionalColorDraftErrors] = useState<Record<string, true>>({});
+  const [collapsedConditionalRules, setCollapsedConditionalRules] = useState<Set<string>>(() => new Set());
+  const conditionalRuleContentPrefix = useId();
   const handledFilterRequest = useRef<string | null>(null);
   const updateGroupsRef = useRef(updateGroups);
   useEffect(() => {
     updateGroupsRef.current = updateGroups;
   });
+  useEffect(() => {
+    formatDismissReasonRef.current = null;
+    formatEscapeCloseHandledRef.current = false;
+    if (panel?.kind !== 'format') return;
+    const markEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      formatDismissReasonRef.current = 'escape';
+      formatEscapeCloseHandledRef.current = false;
+    };
+    const clearUnhandledEscape = (event: KeyboardEvent) => {
+      if (
+        event.key === 'Escape' &&
+        formatDismissReasonRef.current === 'escape' &&
+        !formatEscapeCloseHandledRef.current
+      )
+        formatDismissReasonRef.current = null;
+    };
+    window.addEventListener('keydown', markEscape, true);
+    window.addEventListener('keyup', clearUnhandledEscape, true);
+    return () => {
+      window.removeEventListener('keydown', markEscape, true);
+      window.removeEventListener('keyup', clearUnhandledEscape, true);
+    };
+  }, [panel?.kind]);
   useEffect(() => {
     const anchor = optionsButton.current;
     if (
@@ -1064,6 +1249,89 @@ function Toolbar({
     setFormatDefaultProp(requestedFormat.propId);
     setPanel({ kind: 'format', anchor: optionsButton.current });
   }, [database, editable, requestedFormat]);
+  const closeFormatPanel = () => {
+    const cancelDrafts = formatDismissReasonRef.current === 'escape';
+    formatDismissReasonRef.current = cancelDrafts ? 'escape' : 'dismiss';
+    formatEscapeCloseHandledRef.current = cancelDrafts;
+
+    if (!cancelDrafts) {
+      const pendingPatches = new Map<string, Partial<ConditionalFormatRule>>();
+      for (const [key, value] of Object.entries(conditionalColorDrafts)) {
+        const field = key.endsWith(':textColor')
+          ? 'textColor'
+          : key.endsWith(':color')
+            ? 'color'
+            : null;
+        if (!field) continue;
+        const ruleId = key.slice(0, -(field.length + 1));
+        const rule = view.conditionalFormats?.find((candidate) => candidate.id === ruleId);
+        const hex = validHexColor(value);
+        if (!rule || !hex) continue;
+
+        const patch = { ...(pendingPatches.get(ruleId) ?? {}) };
+        if (field === 'color') patch.color = hex;
+        else patch.textColor = hex;
+        if (conditionalFormatRuleConfigurationIssue({ ...rule, ...patch }, database, state)) continue;
+        pendingPatches.set(ruleId, patch);
+      }
+
+      if (pendingPatches.size > 0) {
+        saveView((current) => ({
+          ...current,
+          conditionalFormats: (current.conditionalFormats ?? []).map((rule) => {
+            const patch = pendingPatches.get(rule.id);
+            return patch ? { ...rule, ...patch } : rule;
+          }),
+        }));
+      }
+    }
+
+    setConditionalColorDrafts({});
+    setConditionalColorDraftErrors({});
+    setPanel(null);
+  };
+  const removeConditionalRule = (ruleId: string) => {
+    setFormulaDrafts((current) => {
+      const next = { ...current };
+      delete next[ruleId];
+      return next;
+    });
+    setFormulaDraftErrors((current) => {
+      const next = { ...current };
+      delete next[ruleId];
+      return next;
+    });
+    setSimpleValueDrafts((current) => {
+      const next = { ...current };
+      delete next[ruleId];
+      return next;
+    });
+    setRuleDraftErrors((current) => {
+      const next = { ...current };
+      delete next[ruleId];
+      return next;
+    });
+    setConditionalColorDrafts((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([key]) => key !== `${ruleId}:color` && key !== `${ruleId}:textColor`,
+        ),
+      ),
+    );
+    setConditionalColorDraftErrors((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([key]) => key !== `${ruleId}:color` && key !== `${ruleId}:textColor`,
+        ),
+      ),
+    );
+    setCollapsedConditionalRules((current) => {
+      const next = new Set(current);
+      next.delete(`${view.id}:${ruleId}`);
+      return next;
+    });
+    saveView((current) => withoutConditionalFormatRule(current, ruleId));
+  };
   return (
     <div className="db-tools">
       <button
@@ -1124,7 +1392,11 @@ function Toolbar({
       {panel?.kind === 'options' && (
         <Popover
           anchor={panel.anchor}
-          onClose={() => setPanel(null)}
+          onClose={() => {
+            setConditionalColorDrafts({});
+            setConditionalColorDraftErrors({});
+            setPanel(null);
+          }}
           label={t('database.tableOptions')}
           className="db-panel"
         >
@@ -1884,168 +2156,323 @@ function Toolbar({
       {panel?.kind === 'format' && (
         <Popover
           anchor={panel.anchor}
-          onClose={() => setPanel(null)}
+          onClose={closeFormatPanel}
           label={t('database.conditionalFormatting')}
           className="db-panel"
         >
+          {(view.unsupportedConditionalFormats ?? []).map((entry) => (
+            <div
+              key={`unsupported-${entry.index}-${entry.beforeRuleId ?? ''}-${entry.afterRuleId ?? ''}`}
+              className="db-formula-diagnostic warning"
+              role="status"
+            >
+              {conditionalDiagnosticText({
+                code: 'unsupportedRule',
+                index: entry.index,
+                message: entry.reason,
+              })}
+            </div>
+          ))}
           {(view.conditionalFormats ?? []).map((rule, ruleIndex) => {
             const prop = database.properties.find((candidate) => candidate.id === rule.prop);
             const type = propType(database, rule.prop) ?? 'text';
-            const value = ruleValueForInput(rule.value, prop, type);
+            const criterionType: PropType | 'title' = type === 'title'
+              ? 'text'
+              : type === 'formula'
+                ? prop?.formulaResultType && prop.formulaResultType !== 'formula'
+                  ? prop.formulaResultType
+                  : 'text'
+                : type;
+            const value = ruleValueForInput(rule.value, prop, criterionType);
+            const displayedValue = simpleValueDrafts[rule.id] ?? value;
             const needsValue = !['empty', 'notEmpty', 'checked', 'unchecked'].includes(rule.op);
-            const editRule = (patch: Partial<ConditionalFormatRule>) =>
+            const canClearBackground = rule.textColor !== undefined || rule.bold !== undefined || rule.italic !== undefined;
+            const canClearTextColor = rule.color !== undefined || rule.bold !== undefined || rule.italic !== undefined;
+            const editRule = (patch: Partial<ConditionalFormatRule>) => {
+              const candidate = { ...rule, ...patch };
+              const issue = conditionalFormatRuleConfigurationIssue(candidate, database, state);
+              if (issue) {
+                setRuleDraftErrors((current) => ({
+                  ...current,
+                  [rule.id]: conditionalDiagnosticText({ ...issue, ruleId: rule.id }),
+                }));
+                return false;
+              }
+              setRuleDraftErrors((current) => {
+                const next = { ...current };
+                delete next[rule.id];
+                return next;
+              });
+              setSimpleValueDrafts((current) => {
+                const next = { ...current };
+                delete next[rule.id];
+                return next;
+              });
               saveView((current) => ({
                 ...current,
                 conditionalFormats: (current.conditionalFormats ?? []).map((candidate) =>
                   candidate.id === rule.id ? { ...candidate, ...patch } : candidate,
                 ),
               }));
-
-            // Formula real-time diagnostics
-            let formulaError: string | null = null;
-            let formulaNonBoolean = false;
-            if (rule.mode === 'formula' && rule.formula?.trim()) {
-              const sampleRow = rows[0] ?? ({ id: 'sample', properties: {} } as PageMeta);
-              const testResult = formulaResult(
-                sampleRow,
-                {
-                  id: `test-${rule.id}`,
-                  name: 'test',
-                  type: 'formula',
-                  options: [],
-                  formula: rule.formula,
-                  formulaBindings: rule.formulaBindings,
-                },
-                database,
-                0,
-                state,
-              );
-              if (testResult.error) {
-                formulaError = testResult.error;
-              } else if (typeof testResult.value !== 'boolean') {
-                formulaNonBoolean = true;
+              return true;
+            };
+            const colorDraftKey = (field: 'color' | 'textColor') => `${rule.id}:${field}`;
+            const updateColorDraft = (field: 'color' | 'textColor', value: string) => {
+              const key = colorDraftKey(field);
+              setConditionalColorDrafts((current) => ({ ...current, [key]: value }));
+              setConditionalColorDraftErrors((current) => {
+                const next = { ...current };
+                if (validHexColor(value)) delete next[key];
+                else next[key] = true;
+                return next;
+              });
+            };
+            const clearColorDraft = (field: 'color' | 'textColor') => {
+              const key = colorDraftKey(field);
+              setConditionalColorDrafts((current) => {
+                const next = { ...current };
+                delete next[key];
+                return next;
+              });
+              setConditionalColorDraftErrors((current) => {
+                const next = { ...current };
+                delete next[key];
+                return next;
+              });
+            };
+            const commitColorDraft = (field: 'color' | 'textColor') => {
+              const key = colorDraftKey(field);
+              const value = conditionalColorDrafts[key];
+              if (value === undefined) return;
+              const hex = validHexColor(value);
+              if (!hex) {
+                setConditionalColorDraftErrors((current) => ({ ...current, [key]: true }));
+                return;
               }
-            }
+              const saved = field === 'color' ? editRule({ color: hex }) : editRule({ textColor: hex });
+              if (saved) clearColorDraft(field);
+            };
+            const changeRuleProperty = (propId: string) => {
+              const property = database.properties.find((candidate) => candidate.id === propId);
+              const rawType = propType(database, propId) ?? 'text';
+              const criterionType = rawType === 'title'
+                ? 'text'
+                : rawType === 'formula'
+                  ? property?.formulaResultType && property.formulaResultType !== 'formula'
+                    ? property.formulaResultType
+                    : 'text'
+                  : rawType;
+              const op = filterOpsFor(criterionType)[0] ?? 'contains';
+              const alternatives: PropValue[] = [null, 0, '', dateKey(new Date()), '00:00', new Date().toISOString()];
+              const value = alternatives.find((candidate) =>
+                !conditionalFormatRuleConfigurationIssue({ ...rule, prop: propId, op, value: candidate }, database, state),
+              ) ?? null;
+              editRule({ prop: propId, op, value });
+            };
+            const sampleRow = rows[0] ?? ({ id: 'sample', properties: {} } as PageMeta);
+            const diagnosticView = { ...view, conditionalFormats: [rule], unsupportedConditionalFormats: [] };
+            const resolvedRule = rule.scope === 'cell'
+              ? resolveConditionalFormatForCell(sampleRow, rule.prop, diagnosticView, database, state)
+              : resolveConditionalFormatForRow(sampleRow, diagnosticView, database, state);
+            const ruleDiagnostic = resolvedRule.diagnostics.find((diagnostic) => diagnostic.ruleId === rule.id);
+            const formulaDraftError = formulaDraftErrors[rule.id];
+            const ruleDraftError = ruleDraftErrors[rule.id];
+            const backgroundColorDraftKey = colorDraftKey('color');
+            const textColorDraftKey = colorDraftKey('textColor');
+            const backgroundColorDraftError = conditionalColorDraftErrors[backgroundColorDraftKey];
+            const textColorDraftError = conditionalColorDraftErrors[textColorDraftKey];
+            const formulaErrorDetail = formulaDraftError
+              ? formulaDraftError.technicalDetail
+              : ruleDraftError
+                ? null
+                : ruleDiagnostic
+                  ? conditionalDiagnosticTechnicalDetail(ruleDiagnostic)
+                  : null;
+            const collapsedRuleKey = `${view.id}:${rule.id}`;
+            const isCollapsed = collapsedConditionalRules.has(collapsedRuleKey);
+            const contentId = `${conditionalRuleContentPrefix}-rule-${ruleIndex}`;
+            const propertyName = prop?.name ?? rule.prop;
+            const summaryCriterion = rule.mode === 'formula' ? t('database.formulaCondition') : filterLabel(rule.op);
+            const summaryValue = rule.mode === 'formula'
+              ? formulaDrafts[rule.id] ?? rule.formula ?? '—'
+              : displayedValue || '—';
+            const summarizeColor = (color: ColorValue | undefined, field: 'color' | 'textColor') => {
+              const draft = conditionalColorDrafts[colorDraftKey(field)];
+              if (draft !== undefined) return draft;
+              if (color === undefined) return t(field === 'color' ? 'database.noBackground' : 'database.noTextColor');
+              return validHexColor(color) ?? colorLabel(color as ColorName);
+            };
+            const appearanceSummary = [
+              `${t('database.backgroundColor')}: ${summarizeColor(rule.color, 'color')}`,
+              `${t('database.textColor')}: ${summarizeColor(rule.textColor, 'textColor')}`,
+              `${t('database.bold')}: ${rule.bold === undefined ? t('database.conditionalStyleDefault') : rule.bold ? t('database.conditionalStyleOn') : t('database.conditionalStyleOff')}`,
+              `${t('database.italic')}: ${rule.italic === undefined ? t('database.conditionalStyleDefault') : rule.italic ? t('database.conditionalStyleOn') : t('database.conditionalStyleOff')}`,
+            ].join(', ');
+            const summary = t('database.conditionalRuleSummary', {
+              property: propertyName,
+              criterion: summaryCriterion,
+              value: summaryValue,
+              scope: t(rule.scope === 'row' ? 'database.entireRow' : 'database.matchingCell'),
+              appearance: appearanceSummary,
+            });
+            const previewBackgroundDraft = conditionalColorDrafts[backgroundColorDraftKey];
+            const previewTextDraft = conditionalColorDrafts[textColorDraftKey];
+            const previewBackground = validHexColor(previewBackgroundDraft) ?? rule.color;
+            const previewText = validHexColor(previewTextDraft) ?? rule.textColor;
+            const previewStyle = conditionalFormatStyle({
+              backgroundColor: previewBackground,
+              textColor: previewText,
+              bold: rule.bold,
+              italic: rule.italic,
+              matchedRuleIds: [],
+              diagnostics: [],
+            });
+            const backgroundSample = previewBackground === undefined
+              ? null
+              : validHexColor(previewBackground) ?? BACKGROUND_HEX[previewBackground as ColorName] ?? '#fbf3db';
+            const textSample = previewText === undefined
+              ? null
+              : validHexColor(previewText) ?? TEXT_HEX[previewText as ColorName] ?? '#202124';
 
             return (
-              <div key={rule.id} className="db-conditional-rule" style={{ marginBottom: '10px' }}>
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '4px' }}>
-                  <span
-                    className="muted small"
-                    style={{
-                      fontWeight: 600,
-                      minWidth: '22px',
-                      fontSize: '11px',
-                      padding: '1px 4px',
-                      borderRadius: '4px',
-                      backgroundColor: 'var(--bg-subtle, rgba(128,128,128,0.1))',
-                      textAlign: 'center',
-                    }}
-                    title={t('database.rulePreview')}
-                  >
-                    #{ruleIndex + 1}
-                  </span>
-                  <select
-                    className="text-input small"
-                    aria-label={t('database.ruleMode')}
-                    value={rule.mode ?? 'simple'}
-                    onChange={(event) =>
-                      editRule({
-                        mode: event.target.value === 'formula' ? 'formula' : 'simple',
-                        formula: rule.formula ?? '',
-                      })
-                    }
-                  >
-                    <option value="simple">{t('database.simpleCondition')}</option>
-                    <option value="formula">{t('database.formulaCondition')}</option>
-                  </select>
-
-                  <select
-                    className="text-input small"
-                    aria-label={t('database.conditionScope')}
-                    value={rule.scope}
-                    onChange={(event) => editRule({ scope: event.target.value === 'cell' ? 'cell' : 'row' })}
-                  >
-                    <option value="row">{t('database.entireRow')}</option>
-                    <option value="cell">{t('database.matchingCell')}</option>
-                  </select>
-
-                  {rule.scope === 'cell' && (
-                    <select
-                      className="text-input small"
-                      aria-label={t('database.property')}
-                      value={rule.prop}
-                      onChange={(event) => editRule({ prop: event.target.value })}
-                    >
-                      {names.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  <button
-                    type="button"
-                    className="icon-button tiny"
-                    aria-label={t('database.removeFilter')}
-                    style={{ marginLeft: 'auto' }}
-                    onClick={() =>
-                      saveView((current) => ({
-                        ...current,
-                        conditionalFormats: (current.conditionalFormats ?? []).filter(
-                          (candidate) => candidate.id !== rule.id,
-                        ),
-                      }))
-                    }
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-
-                {rule.mode === 'formula' ? (
-                  <div style={{ marginBottom: '4px' }}>
-                    <input
-                      type="text"
-                      className="text-input small"
-                      style={{ width: '100%' }}
-                      placeholder="e.g. Score >= 50 and Status = 'Done'"
-                      aria-label={t('database.ruleFormula')}
-                      value={rule.formula ?? ''}
-                      onChange={(event) => {
-                        const formula = event.target.value;
-                        const formulaBindings = bindPageFormulaReferences(
-                          formula,
-                          scopePageId,
-                          state,
-                          dbId,
-                          rule.formulaBindings ?? [],
-                        );
-                        editRule({ formula, formulaBindings });
-                      }}
-                    />
-                    {formulaError && <div className="db-formula-diagnostic error">{formulaError}</div>}
-                    {formulaNonBoolean && (
-                      <div className="db-formula-diagnostic warning">
-                        {t('database.formulaMustReturnBoolean')}
-                      </div>
-                    )}
+              <section
+                key={rule.id}
+                data-conditional-format-rule={rule.id}
+                className="db-conditional-rule"
+                aria-labelledby={`${contentId}-heading`}
+              >
+                <header className="db-conditional-rule-header">
+                  <div className="db-conditional-rule-heading">
+                    <strong id={`${contentId}-heading`}>
+                      {t('database.conditionalRuleCard', { number: ruleIndex + 1 })}
+                    </strong>
+                    <div className="db-conditional-rule-summary" role="group" aria-label={summary}>
+                      <span>{propertyName}</span>
+                      <span>{summaryCriterion}</span>
+                      <span>{summaryValue}</span>
+                      <span>{t(rule.scope === 'row' ? 'database.entireRow' : 'database.matchingCell')}</span>
+                      {backgroundSample && (
+                        <span
+                          className="db-conditional-color-swatch"
+                          style={{ backgroundColor: backgroundSample }}
+                          aria-hidden="true"
+                        />
+                      )}
+                      {textSample && (
+                        <span
+                          className="db-conditional-text-swatch"
+                          style={{ color: textSample }}
+                          aria-hidden="true"
+                        >
+                          Aa
+                        </span>
+                      )}
+                      <span
+                        className="db-conditional-summary-preview"
+                        style={previewStyle}
+                        aria-hidden="true"
+                      >
+                        Aa
+                      </span>
+                    </div>
                   </div>
-                ) : (
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '4px' }}>
-                    {rule.scope !== 'cell' && (
+                  <div className="db-conditional-rule-actions">
+                    <button
+                      type="button"
+                      className="icon-button tiny"
+                      data-conditional-rule-toggle="true"
+                      aria-controls={contentId}
+                      aria-expanded={!isCollapsed}
+                      aria-label={t(
+                        isCollapsed ? 'database.expandConditionalRule' : 'database.collapseConditionalRule',
+                        {
+                          number: ruleIndex + 1,
+                        },
+                      )}
+                      onClick={() =>
+                        setCollapsedConditionalRules((current) => {
+                          const next = new Set(current);
+                          if (next.has(collapsedRuleKey)) next.delete(collapsedRuleKey);
+                          else next.add(collapsedRuleKey);
+                          return next;
+                        })
+                      }
+                    >
+                      {isCollapsed ? (
+                        <ChevronRight size={14} aria-hidden="true" />
+                      ) : (
+                        <ChevronDown size={14} aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button tiny danger"
+                      aria-label={t('database.removeConditionalRule')}
+                      onClick={() => {
+                        const targetRuleId = rule.id;
+                        confirmAction({
+                          title: t('database.removeConditionalRuleConfirmTitle', { number: ruleIndex + 1 }),
+                          body: t('database.removeConditionalRuleConfirmBody', { summary }),
+                          confirmLabel: t('common.remove'),
+                          danger: true,
+                          onConfirm: () => removeConditionalRule(targetRuleId),
+                        });
+                      }}
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                </header>
+                <div id={contentId} className="db-conditional-rule-content" hidden={isCollapsed}>
+                  <div className="db-conditional-rule-targets">
+                    <label className="db-conditional-field">
+                      <span>{t('database.ruleMode')}</span>
+                      <select
+                        className="text-input small"
+                        aria-label={t('database.ruleMode')}
+                        value={rule.mode ?? 'simple'}
+                        onChange={(event) => {
+                          if (event.target.value === 'formula') {
+                            const formula = rule.formula?.trim() ? rule.formula : 'false';
+                            setFormulaDrafts((current) => ({ ...current, [rule.id]: formula }));
+                            setFormulaDraftErrors((current) => {
+                              const next = { ...current };
+                              delete next[rule.id];
+                              return next;
+                            });
+                            setRuleDraftErrors((current) => ({ ...current, [rule.id]: '' }));
+                            editRule({ mode: 'formula', formula });
+                          } else {
+                            setFormulaDrafts((current) => {
+                              const next = { ...current };
+                              delete next[rule.id];
+                              return next;
+                            });
+                            setFormulaDraftErrors((current) => {
+                              const next = { ...current };
+                              delete next[rule.id];
+                              return next;
+                            });
+                            setRuleDraftErrors((current) => {
+                              const next = { ...current };
+                              delete next[rule.id];
+                              return next;
+                            });
+                            editRule({ mode: 'simple', formula: '', formulaBindings: undefined });
+                          }
+                        }}
+                      >
+                        <option value="simple">{t('database.simpleCondition')}</option>
+                        <option value="formula">{t('database.formulaCondition')}</option>
+                      </select>
+                    </label>
+                    <label className="db-conditional-field">
+                      <span>{t('database.property')}</span>
                       <select
                         className="text-input small"
                         aria-label={t('database.property')}
                         value={rule.prop}
-                        onChange={(event) => {
-                          const nextType = propType(database, event.target.value) ?? 'text';
-                          editRule({
-                            prop: event.target.value,
-                            op: filterOpsFor(nextType === 'title' ? 'text' : nextType)[0]!,
-                            value: null,
-                          });
-                        }}
+                        onChange={(event) => changeRuleProperty(event.target.value)}
                       >
                         {names.map((item) => (
                           <option key={item.id} value={item.id}>
@@ -2053,152 +2480,453 @@ function Toolbar({
                           </option>
                         ))}
                       </select>
-                    )}
-                    <select
-                      className="text-input small"
-                      aria-label={t('database.condition')}
-                      value={rule.op}
-                      onChange={(event) => editRule({ op: event.target.value as FilterOp, value: null })}
-                    >
-                      {filterOpsFor(type === 'title' ? 'text' : type).map((op) => (
-                        <option key={op} value={op}>
-                          {filterLabel(op)}
-                        </option>
-                      ))}
-                    </select>
-                    {needsValue &&
-                      (prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+                    </label>
+                    <label className="db-conditional-field">
+                      <span>{t('database.conditionScope')}</span>
+                      <select
+                        className="text-input small"
+                        aria-label={t('database.conditionScope')}
+                        value={rule.scope}
+                        onChange={(event) =>
+                          editRule({ scope: event.target.value === 'cell' ? 'cell' : 'row' })
+                        }
+                      >
+                        <option value="row">{t('database.entireRow')}</option>
+                        <option value="cell">{t('database.matchingCell')}</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {rule.mode === 'formula' ? (
+                    <label className="db-conditional-field db-conditional-field-full">
+                      <span>{t('database.ruleFormula')}</span>
+                      <input
+                        type="text"
+                        className="text-input small"
+                        placeholder="e.g. Score >= 50 and Status = 'Done'"
+                        aria-label={t('database.ruleFormula')}
+                        value={formulaDrafts[rule.id] ?? rule.formula ?? ''}
+                        onChange={(event) => {
+                          const formula = event.target.value;
+                          setFormulaDrafts((current) => ({ ...current, [rule.id]: formula }));
+                          if (!formula.trim()) {
+                            setFormulaDraftErrors((current) => ({
+                              ...current,
+                              [rule.id]: {
+                                primary: t('database.conditionalRuleFormulaRequired'),
+                                technicalDetail: null,
+                              },
+                            }));
+                            return;
+                          }
+                          try {
+                            parseFormula(formula);
+                          } catch (error) {
+                            setFormulaDraftErrors((current) => ({
+                              ...current,
+                              [rule.id]: localizedFormulaDiagnostic(
+                                error instanceof Error ? error.message : String(error),
+                              ),
+                            }));
+                            return;
+                          }
+                          setFormulaDraftErrors((current) => {
+                            const next = { ...current };
+                            delete next[rule.id];
+                            return next;
+                          });
+                          const formulaBindings = bindPageFormulaReferences(
+                            formula,
+                            scopePageId,
+                            state,
+                            dbId,
+                            rule.formulaBindings ?? [],
+                          );
+                          editRule({ formula, formulaBindings });
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <div className="db-conditional-rule-conditions">
+                      <label className="db-conditional-field">
+                        <span>{t('database.condition')}</span>
                         <select
                           className="text-input small"
-                          aria-label={t('database.value')}
-                          value={String(rule.value ?? '')}
-                          onChange={(event) => editRule({ value: event.target.value || null })}
+                          aria-label={t('database.condition')}
+                          value={rule.op}
+                          onChange={(event) => {
+                            const op = event.target.value as FilterOp;
+                            let nextValue = rule.value;
+                            if (
+                              conditionalFormatRuleConfigurationIssue(
+                                { ...rule, op, value: nextValue },
+                                database,
+                                state,
+                              )
+                            ) {
+                              const alternatives: PropValue[] = [
+                                null,
+                                0,
+                                '',
+                                dateKey(new Date()),
+                                '00:00',
+                                new Date().toISOString(),
+                              ];
+                              nextValue =
+                                alternatives.find(
+                                  (candidate) =>
+                                    !conditionalFormatRuleConfigurationIssue(
+                                      { ...rule, op, value: candidate },
+                                      database,
+                                      state,
+                                    ),
+                                ) ?? null;
+                            }
+                            editRule({ op, value: nextValue });
+                          }}
                         >
-                          <option value="">{t('database.choose')}</option>
-                          {prop.options.map((option) => (
-                            <option key={option.id} value={option.id}>
-                              {option.name}
+                          {filterOpsFor(criterionType).map((op) => (
+                            <option key={op} value={op}>
+                              {filterLabel(op)}
                             </option>
                           ))}
                         </select>
-                      ) : (
-                        <input
+                      </label>
+                      <label className="db-conditional-field">
+                        <span>{t('database.value')}</span>
+                        {needsValue ? (
+                          prop && (prop.type === 'select' || prop.type === 'multiSelect') ? (
+                            <select
+                              className="text-input small"
+                              aria-label={t('database.value')}
+                              value={String(rule.value ?? '')}
+                              onChange={(event) => editRule({ value: event.target.value || null })}
+                            >
+                              <option value="">{t('database.choose')}</option>
+                              {prop.options.map((option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              className="text-input small"
+                              aria-label={t('database.value')}
+                              type={
+                                isNumericPropertyType(criterionType)
+                                  ? 'number'
+                                  : criterionType === 'datetime' ||
+                                      criterionType === 'createdTime' ||
+                                      criterionType === 'lastEditedTime'
+                                    ? 'datetime-local'
+                                    : criterionType === 'date' || criterionType === 'time'
+                                      ? criterionType
+                                      : 'text'
+                              }
+                              step={isNumericPropertyType(criterionType) ? 'any' : undefined}
+                              value={displayedValue}
+                              onChange={(event) => {
+                                setSimpleValueDrafts((current) => ({
+                                  ...current,
+                                  [rule.id]: event.target.value,
+                                }));
+                                editRule({
+                                  value: ruleValueFromInput(
+                                    event.target.value,
+                                    rule.value,
+                                    prop,
+                                    criterionType,
+                                  ),
+                                });
+                              }}
+                            />
+                          )
+                        ) : (
+                          <span className="db-conditional-value-not-required">—</span>
+                        )}
+                      </label>
+                    </div>
+                  )}
+
+                  {(formulaDraftError || ruleDraftError || ruleDiagnostic) && (
+                    <div className="db-formula-diagnostic error" role="alert">
+                      <span className="formula-error-primary">
+                        {formulaDraftError?.primary ||
+                          ruleDraftError ||
+                          conditionalDiagnosticText(ruleDiagnostic!)}
+                      </span>
+                      {formulaErrorDetail !== null && (
+                        <details className="formula-error-details">
+                          <summary>{t('formulaUx.technicalDetails')}</summary>
+                          <code dir="auto">{formulaErrorDetail}</code>
+                        </details>
+                      )}
+                    </div>
+                  )}
+
+                  <fieldset className="db-conditional-appearance">
+                    <legend>{t('database.conditionalAppearance')}</legend>
+                    <div className="db-conditional-style-controls">
+                      <label className="db-conditional-style-field">
+                        <span>{t('database.backgroundColor')}</span>
+                        <select
                           className="text-input small"
-                          aria-label={t('database.value')}
-                          type={
-                            prop && isNumericPropertyType(prop.type)
-                              ? 'number'
-                              : type === 'datetime' || type === 'createdTime' || type === 'lastEditedTime'
-                                ? 'datetime-local'
-                                : prop?.type === 'date' || prop?.type === 'time'
-                                  ? prop.type
-                                  : 'text'
-                          }
-                          step={prop && isNumericPropertyType(prop.type) ? 'any' : undefined}
-                          value={value}
+                          aria-label={t('database.backgroundColor')}
+                          value={validHexColor(rule.color) ? 'custom' : (rule.color ?? '')}
+                          onChange={(event) => {
+                            if (event.target.value === '' && canClearBackground) {
+                              clearColorDraft('color');
+                              editRule({ color: undefined });
+                            } else if (event.target.value && event.target.value !== 'custom') {
+                              clearColorDraft('color');
+                              editRule({ color: event.target.value as ColorName });
+                            }
+                          }}
+                        >
+                          <option value="" disabled={!canClearBackground}>
+                            {t('database.noBackground')}
+                          </option>
+                          {COLORS.map((color) => (
+                            <option key={color} value={color}>
+                              {colorLabel(color)}
+                            </option>
+                          ))}
+                          <option value="custom">{t('database.customHexColor')}</option>
+                        </select>
+                        <span className="db-conditional-color-inputs">
+                          {backgroundSample && (
+                            <span
+                              className="db-conditional-color-swatch"
+                              style={{ backgroundColor: backgroundSample }}
+                              aria-hidden="true"
+                            />
+                          )}
+                          <input
+                            type="text"
+                            className="text-input small"
+                            aria-label={t('database.backgroundColor')}
+                            placeholder="#RRGGBB"
+                            aria-invalid={Boolean(backgroundColorDraftError)}
+                            value={
+                              conditionalColorDrafts[backgroundColorDraftKey] ??
+                              validHexColor(rule.color) ??
+                              ''
+                            }
+                            onChange={(event) => {
+                              updateColorDraft('color', event.target.value);
+                            }}
+                            onBlur={(event) => {
+                              if (
+                                event.relatedTarget instanceof HTMLElement &&
+                                event.relatedTarget.closest('[data-conditional-rule-toggle]')
+                              )
+                                return;
+                              if (formatDismissReasonRef.current === null) commitColorDraft('color');
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                commitColorDraft('color');
+                              }
+                            }}
+                          />
+                          <input
+                            type="color"
+                            aria-label={t('database.customHexColor')}
+                            value={
+                              validHexColor(rule.color) ??
+                              (BACKGROUND_HEX[rule.color as ColorName] || '#fbf3db')
+                            }
+                            onChange={(event) => {
+                              const hex = validHexColor(event.target.value);
+                              if (hex) {
+                                clearColorDraft('color');
+                                editRule({ color: hex });
+                              }
+                            }}
+                          />
+                          {rule.color !== undefined && (
+                            <button
+                              type="button"
+                              className="link-button"
+                              aria-label={t('database.clearBackground')}
+                              disabled={!canClearBackground}
+                              onClick={() => {
+                                clearColorDraft('color');
+                                editRule({ color: undefined });
+                              }}
+                            >
+                              {t('database.noBackground')}
+                            </button>
+                          )}
+                        </span>
+                        {backgroundColorDraftError && (
+                          <div
+                            className="db-formula-diagnostic error"
+                            role="alert"
+                            data-conditional-color-error="color"
+                          >
+                            {t('database.conditionalColorInvalid')}
+                          </div>
+                        )}
+                      </label>
+
+                      <label className="db-conditional-style-field">
+                        <span>{t('database.textColor')}</span>
+                        <select
+                          className="text-input small"
+                          aria-label={t('database.textColor')}
+                          value={validHexColor(rule.textColor) ? 'custom' : (rule.textColor ?? '')}
+                          onChange={(event) => {
+                            if (event.target.value === '' && canClearTextColor) {
+                              clearColorDraft('textColor');
+                              editRule({ textColor: undefined });
+                            } else if (event.target.value && event.target.value !== 'custom') {
+                              clearColorDraft('textColor');
+                              editRule({ textColor: event.target.value as ColorName });
+                            }
+                          }}
+                        >
+                          <option value="" disabled={!canClearTextColor}>
+                            {t('database.noTextColor')}
+                          </option>
+                          {COLORS.map((color) => (
+                            <option key={color} value={color}>
+                              {colorLabel(color)}
+                            </option>
+                          ))}
+                          <option value="custom">{t('database.customHexColor')}</option>
+                        </select>
+                        <span className="db-conditional-color-inputs">
+                          {textSample && (
+                            <span
+                              className="db-conditional-text-swatch"
+                              style={{ color: textSample }}
+                              aria-hidden="true"
+                            >
+                              Aa
+                            </span>
+                          )}
+                          <input
+                            type="text"
+                            className="text-input small"
+                            aria-label={t('database.textColor')}
+                            placeholder="#RRGGBB"
+                            aria-invalid={Boolean(textColorDraftError)}
+                            value={
+                              conditionalColorDrafts[textColorDraftKey] ?? validHexColor(rule.textColor) ?? ''
+                            }
+                            onChange={(event) => {
+                              updateColorDraft('textColor', event.target.value);
+                            }}
+                            onBlur={(event) => {
+                              if (
+                                event.relatedTarget instanceof HTMLElement &&
+                                event.relatedTarget.closest('[data-conditional-rule-toggle]')
+                              )
+                                return;
+                              if (formatDismissReasonRef.current === null) commitColorDraft('textColor');
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                commitColorDraft('textColor');
+                              }
+                            }}
+                          />
+                          <input
+                            type="color"
+                            aria-label={t('database.textColor')}
+                            value={
+                              validHexColor(rule.textColor) ??
+                              (TEXT_HEX[rule.textColor as ColorName] || '#202124')
+                            }
+                            onChange={(event) => {
+                              const hex = validHexColor(event.target.value);
+                              if (hex) {
+                                clearColorDraft('textColor');
+                                editRule({ textColor: hex });
+                              }
+                            }}
+                          />
+                          {rule.textColor !== undefined && (
+                            <button
+                              type="button"
+                              className="link-button"
+                              aria-label={t('database.clearTextColor')}
+                              disabled={!canClearTextColor}
+                              onClick={() => {
+                                clearColorDraft('textColor');
+                                editRule({ textColor: undefined });
+                              }}
+                            >
+                              {t('database.noTextColor')}
+                            </button>
+                          )}
+                        </span>
+                        {textColorDraftError && (
+                          <div
+                            className="db-formula-diagnostic error"
+                            role="alert"
+                            data-conditional-color-error="textColor"
+                          >
+                            {t('database.conditionalColorInvalid')}
+                          </div>
+                        )}
+                      </label>
+
+                      <label className="db-conditional-style-field">
+                        <span>{t('database.bold')}</span>
+                        <select
+                          className="text-input small"
+                          aria-label={t('database.bold')}
+                          value={rule.bold === undefined ? 'default' : rule.bold ? 'on' : 'off'}
                           onChange={(event) =>
                             editRule({
-                              value: ruleValueFromInput(event.target.value, rule.value, prop, type),
+                              bold:
+                                event.target.value === 'default' ? undefined : event.target.value === 'on',
                             })
                           }
-                        />
-                      ))}
-                  </div>
-                )}
+                        >
+                          <option value="default">{t('database.conditionalStyleDefault')}</option>
+                          <option value="on">{t('database.conditionalStyleOn')}</option>
+                          <option value="off">{t('database.conditionalStyleOff')}</option>
+                        </select>
+                      </label>
+                      <label className="db-conditional-style-field">
+                        <span>{t('database.italic')}</span>
+                        <select
+                          className="text-input small"
+                          aria-label={t('database.italic')}
+                          value={rule.italic === undefined ? 'default' : rule.italic ? 'on' : 'off'}
+                          onChange={(event) =>
+                            editRule({
+                              italic:
+                                event.target.value === 'default' ? undefined : event.target.value === 'on',
+                            })
+                          }
+                        >
+                          <option value="default">{t('database.conditionalStyleDefault')}</option>
+                          <option value="on">{t('database.conditionalStyleOn')}</option>
+                          <option value="off">{t('database.conditionalStyleOff')}</option>
+                        </select>
+                      </label>
+                    </div>
+                  </fieldset>
 
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: '6px',
-                    alignItems: 'center',
-                    margin: '4px 0',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <select
-                    className="text-input small"
-                    aria-label={t('database.backgroundColor')}
-                    value={validHexColor(rule.color) ? 'custom' : rule.color}
-                    onChange={(event) => {
-                      if (event.target.value !== 'custom') {
-                        editRule({ color: event.target.value as ColorName });
-                      }
-                    }}
+                  <div
+                    className="db-format-preview"
+                    role="group"
+                    aria-label={t('database.rulePreview')}
+                    style={previewStyle}
                   >
-                    {COLORS.map((color) => (
-                      <option key={color} value={color}>
-                        {colorLabel(color)}
-                      </option>
-                    ))}
-                    <option value="custom">{t('database.customHexColor')}</option>
-                  </select>
-
-                  <input
-                    type="text"
-                    className="text-input small"
-                    style={{ width: '85px' }}
-                    placeholder="#RRGGBB"
-                    value={validHexColor(rule.color) ?? ''}
-                    onChange={(event) => {
-                      const hex = validHexColor(event.target.value);
-                      if (hex) editRule({ color: hex });
-                    }}
-                  />
-
-                  <input
-                    type="color"
-                    aria-label={t('database.customHexColor')}
-                    value={
-                      validHexColor(rule.color) ?? (BACKGROUND_HEX[rule.color as ColorName] || '#fbf3db')
-                    }
-                    onChange={(event) => {
-                      const hex = validHexColor(event.target.value);
-                      if (hex) editRule({ color: hex });
-                    }}
-                    style={{
-                      width: '24px',
-                      height: '24px',
-                      padding: 0,
-                      border: '1px solid var(--border-subtle, #ccc)',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      background: 'none',
-                    }}
-                  />
-
-                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                    {COLORS.map((color) => (
-                      <button
-                        key={color}
-                        type="button"
-                        aria-label={colorLabel(color)}
-                        title={colorLabel(color)}
-                        onClick={() => editRule({ color })}
-                        style={{
-                          width: '18px',
-                          height: '18px',
-                          borderRadius: '50%',
-                          border:
-                            rule.color === color
-                              ? '2px solid var(--text, #333)'
-                              : '1px solid var(--border-subtle, #ccc)',
-                          backgroundColor: BACKGROUND_HEX[color] || '#eee',
-                          cursor: 'pointer',
-                          padding: 0,
-                          outline: 'none',
-                        }}
-                      />
-                    ))}
+                    <strong>{t('database.rulePreview')}</strong>
+                    <span className="db-format-preview-sample">Aa</span>
+                    <span>{t(rule.scope === 'row' ? 'database.entireRow' : 'database.matchingCell')}</span>
                   </div>
                 </div>
-
-                <div className="db-format-preview" style={conditionalColorStyle(rule.color)}>
-                  <span>
-                    {t('database.rulePreview')}:{' '}
-                    {rule.scope === 'row' ? t('database.entireRow') : t('database.matchingCell')}
-                  </span>
-                </div>
-              </div>
+              </section>
             );
           })}
           <button
@@ -2381,24 +3109,33 @@ interface ViewProps {
   rows: PageMeta[];
   props: PropDef[];
   editable: boolean;
+  canEditNow?: () => boolean;
 }
 
 function RowTitle({
   row,
   editable,
+  canEditNow,
   autoFocus,
   gridMode,
   isEditing,
+  initialText,
   onCommitAndMove,
   onCancelEdit,
+  onDoneEdit,
+  onInvalidDraftChange,
 }: {
   row: PageMeta;
   editable: boolean;
+  canEditNow?: () => boolean;
   autoFocus?: boolean;
   gridMode?: boolean;
   isEditing?: boolean;
+  initialText?: string;
   onCommitAndMove?: (direction: 'down' | 'up' | 'next' | 'prev' | 'stay') => void;
   onCancelEdit?: () => void;
+  onDoneEdit?: () => void;
+  onInvalidDraftChange?: (invalid: boolean) => void;
 }) {
   return (
     <div className="db-title">
@@ -2427,10 +3164,14 @@ function RowTitle({
           value={row.title}
           placeholder={t('page.untitled')}
           editable={editable}
+          canEditNow={canEditNow}
           autoFocus={gridMode ? true : autoFocus}
           gridMode={gridMode}
+          initialDraft={initialText}
           onCommitAndMove={onCommitAndMove}
           onCancelEdit={onCancelEdit}
+          onDone={onDoneEdit}
+          onInvalidDraftChange={onInvalidDraftChange}
           onCommit={(title) => run({ type: 'page.rename', id: row.id, title, now: nowTimestamp() })}
         />
       )}
@@ -2665,6 +3406,7 @@ function TableView({
   rows,
   props,
   editable,
+  canEditNow,
   onRequestFilter,
   onRequestFormat,
 }: ViewProps & {
@@ -2673,6 +3415,7 @@ function TableView({
 }) {
   const saveView = useViewUpdater(dbId, view.id);
   const state = useWorkspace();
+  const canEditImmediately = () => editable && (canEditNow?.() ?? true);
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
 
@@ -2759,6 +3502,7 @@ function TableView({
     restoreRowDialogFocus();
   };
 
+  const invalidEditingCellRef = useRef<string | null>(null);
   const clearRowSelection = () => {
     if (
       selectedRowIds.length === 0 &&
@@ -2773,6 +3517,7 @@ function TableView({
     setActiveCell(null);
     activeCellRef.current = null;
     setSelectionRange(null);
+    invalidEditingCellRef.current = null;
     setEditingCell(null);
     setSelectedRowIds(update);
   };
@@ -2844,7 +3589,9 @@ function TableView({
     const c = visibleColIds[0];
     return r && c ? { anchor: { rowId: r, colId: c }, focus: { rowId: r, colId: c } } : null;
   });
-  const [editingCell, setEditingCell] = useState<GridCoord | null>(null);
+  const [editingCell, setEditingCell] = useState<
+    (GridCoord & { initialText?: string; openPickerOnEdit?: boolean }) | null
+  >(null);
   const [fillPreview, setFillPreview] = useState<{
     sourceRange: GridRange;
     targetRange: GridRange;
@@ -3017,6 +3764,7 @@ function TableView({
     colId: string,
     direction: 'down' | 'up' | 'next' | 'prev' | 'stay',
   ) => {
+    invalidEditingCellRef.current = null;
     setEditingCell(null);
     if (direction === 'stay') {
       const cellKey = `${rowId}:${colId}`;
@@ -3027,15 +3775,21 @@ function TableView({
   };
 
   const handleCancelEdit = (rowId: PageId, colId: string) => {
+    invalidEditingCellRef.current = null;
     setEditingCell(null);
     tdRefs.current.get(`${rowId}:${colId}`)?.focus({ preventScroll: true });
+  };
+
+  const handleDoneEdit = () => {
+    invalidEditingCellRef.current = null;
+    setEditingCell(null);
   };
 
   const applyBatchPlan = (
     plan: GridOperationPlan,
     successKey: 'database.clearBatchSuccess' | 'database.pasteBatchSuccess',
   ) => {
-    if (!editable) {
+    if (!canEditImmediately()) {
       toast(t('database.unsupportedSchema'), { tone: 'error' });
       return false;
     }
@@ -3051,6 +3805,7 @@ function TableView({
       action: {
         label: t('toasts.undo'),
         run: () => {
+          if (!canEditImmediately()) return;
           const undone = runAll(plan.undoCommands);
           if (!undone.ok) {
             toast(undone.error, { tone: 'error' });
@@ -3064,7 +3819,7 @@ function TableView({
   };
 
   const handleBatchClear = () => {
-    if (!editable) {
+    if (!canEditImmediately()) {
       toast(t('database.unsupportedSchema'), { tone: 'error' });
       return;
     }
@@ -3092,49 +3847,50 @@ function TableView({
       return;
     }
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(serialized.value.tsv);
-      }
-      gridClipboardCache.clear();
-      gridClipboardCache.set(serialized.value.tsv, serialized.value.payload);
-    } catch (error) {
-      gridClipboardCache.clear();
-      toast(error instanceof Error ? error.message : t('database.clipboardWriteFailed'), { tone: 'error' });
+      await writeGridClipboard(serialized.value.tsv, serialized.value.payload);
+    } catch {
+      toast(t('database.clipboardWriteFailed'), { tone: 'error' });
     }
   };
 
   const handleBatchPaste = async () => {
-    if (!editable) {
+    if (!canEditImmediately()) {
       toast(t('database.unsupportedSchema'), { tone: 'error' });
       return;
     }
     if (!activeCell || !selectionRange) return;
-    let payload: GridClipboardPayload | null = null;
-    let clipboardRead = false;
-    let clipboardReadFailed = false;
-    if (navigator.clipboard?.readText) {
-      try {
-        const text = await navigator.clipboard.readText();
-        clipboardRead = true;
-        if (!text) return;
-        const cachedPayload = gridClipboardCache.get(text);
-        if (cachedPayload) {
-          payload = cachedPayload;
-        } else {
-          const parsed = parseGridClipboard(text);
-          if (!parsed.ok) {
-            toast(parsed.error, { tone: 'error' });
-            return;
-          }
-          payload = parsed.value;
-        }
-      } catch {
-        clipboardReadFailed = true;
-      }
+    let clipboardContents: Awaited<ReturnType<typeof readGridClipboard>>;
+    try {
+      clipboardContents = await readGridClipboard();
+    } catch {
+      toast(t('database.clipboardReadFailed'), { tone: 'error' });
+      return;
     }
-    if (!clipboardRead) payload = gridClipboardCache.values().next().value ?? null;
-    if (!payload && clipboardReadFailed) toast(t('database.clipboardReadFailed'), { tone: 'error' });
-    if (!payload) return;
+    if (!clipboardContents.text && !clipboardContents.hasGridPayload) return;
+
+    let payload: GridClipboardPayload;
+    if (clipboardContents.hasGridPayload) {
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(clipboardContents.gridPayloadJson ?? '');
+      } catch {
+        toast(t('database.clipboardReadFailed'), { tone: 'error' });
+        return;
+      }
+      const validated = validateGridClipboardEnvelope(envelope, clipboardContents.text);
+      if (!validated.ok) {
+        toast(t('database.clipboardReadFailed'), { tone: 'error' });
+        return;
+      }
+      payload = validated.value;
+    } else {
+      const parsed = parseGridClipboard(clipboardContents.text);
+      if (!parsed.ok) {
+        toast(parsed.error, { tone: 'error' });
+        return;
+      }
+      payload = parsed.value;
+    }
 
     const planResult = planGridPaste(
       state,
@@ -3380,6 +4136,27 @@ function TableView({
     colId: string,
   ) => {
     if (event.defaultPrevented || editingCell) return;
+    const startKey = cellEditStartKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      altGraph: event.getModifierState('AltGraph'),
+      isComposing: event.nativeEvent.isComposing,
+      keyCode: event.nativeEvent.keyCode,
+    });
+    const cellProp = database.properties.find((candidate) => candidate.id === colId);
+    const editableColumn =
+      canEditImmediately() &&
+      !isColumnReadOnly(colId, database) &&
+      !['image', 'file', 'richCanvas'].includes(cellProp?.type ?? '');
+    if (startKey.kind === 'composition') {
+      if (editableColumn) {
+        invalidEditingCellRef.current = null;
+        setEditingCell({ rowId, colId, ...cellPickerStartProps(cellProp?.type, startKey) });
+      }
+      return;
+    }
 
     if (event.altKey && event.shiftKey && event.key === 'ArrowDown') {
       event.preventDefault();
@@ -3413,9 +4190,13 @@ function TableView({
     } else if (event.key === 'Tab') {
       event.preventDefault();
       navigateCell(event.shiftKey ? 'prev' : 'next', false);
-    } else if (event.key === 'Enter' || event.key === 'F2') {
+    } else if (event.key === 'Enter') {
       event.preventDefault();
-      if (editable && !isColumnReadOnly(colId, database)) {
+      navigateCell(event.shiftKey ? 'up' : 'down', false);
+    } else if (event.key === 'F2') {
+      event.preventDefault();
+      if (editableColumn) {
+        invalidEditingCellRef.current = null;
         setEditingCell({ rowId, colId });
       }
     } else if (event.key === 'Delete' || event.key === 'Backspace') {
@@ -3433,7 +4214,7 @@ function TableView({
       ['z', 'y'].includes(event.key.toLowerCase())
     ) {
       const isRedo = event.key.toLowerCase() === 'y' || event.shiftKey;
-      if (!editable) {
+      if (!canEditImmediately()) {
         event.preventDefault();
         toast(t('database.unsupportedSchema'), { tone: 'error' });
         return;
@@ -3451,12 +4232,56 @@ function TableView({
           setLastBatchApplied(false);
         } else toast(result.error, { tone: 'error' });
       }
+    } else if (startKey.kind === 'text' && editableColumn) {
+      const prop = cellProp;
+      const isTextEditor =
+        colId === TITLE_PROP || ['text', 'email', 'url', 'phone'].includes(prop?.type ?? '');
+      const isNumberEditor = ['number', 'currency', 'percent', 'duration', 'progress'].includes(prop?.type ?? '');
+      if (isNumberEditor && !/^[0-9.,+-]$/.test(startKey.text)) return;
+      event.preventDefault();
+      const initialText = startKey.text;
+      const pickerStartProps = cellPickerStartProps(prop?.type, startKey);
+      const initialValidationValue =
+        prop && isNumberEditor
+          ? (() => {
+              const multiplier =
+                prop.type === 'percent'
+                  ? 100
+                  : prop.type === 'duration'
+                    ? 1 / durationUnitFactor(prop.format?.durationUnit ?? 'minutes')
+                    : 1;
+              const number = Number(initialText);
+              return initialText.trim() && Number.isFinite(number)
+                ? number / multiplier
+                : initialText.trim()
+                  ? Number.NaN
+                  : null;
+            })()
+          : prop && ['email', 'url', 'phone'].includes(prop.type)
+            ? initialText.trim() || null
+            : null;
+      const hasInitialValidation =
+        Boolean(prop && (isNumberEditor || ['email', 'url', 'phone'].includes(prop.type)));
+      invalidEditingCellRef.current =
+        hasInitialValidation && prop && scalarValueError(prop, initialValidationValue)
+          ? `${rowId}:${colId}`
+          : null;
+      setEditingCell({
+        rowId,
+        colId,
+        ...(isTextEditor || isNumberEditor ? { initialText } : {}),
+        ...pickerStartProps,
+      });
     }
   };
 
   const handleCellMouseDown = (rowId: PageId, colId: string, event: React.MouseEvent) => {
     if (event.button !== 0) return;
     if ((event.target as HTMLElement).closest('.db-fill-handle')) return;
+    if (invalidEditingCellRef.current) {
+      event.preventDefault();
+      return;
+    }
     if (editingCell?.rowId === rowId && editingCell?.colId === colId) return;
 
     clearRowSelection();
@@ -3464,13 +4289,19 @@ function TableView({
     const coord: GridCoord = { rowId, colId };
     setActiveCell(coord);
     setSelectionRange({ anchor: coord, focus: coord });
-    setEditingCell(null);
     cancelFillPreview();
   };
 
   const handleCellDoubleClick = (rowId: PageId, colId: string) => {
+    if (invalidEditingCellRef.current) return;
     clearRowSelection();
-    if (editable && !isColumnReadOnly(colId, database)) {
+    const prop = database.properties.find((candidate) => candidate.id === colId);
+    if (
+      editable &&
+      !isColumnReadOnly(colId, database) &&
+      !['image', 'file', 'richCanvas'].includes(prop?.type ?? '')
+    ) {
+      invalidEditingCellRef.current = null;
       setEditingCell({ rowId, colId });
     }
   };
@@ -3689,11 +4520,10 @@ function TableView({
       return;
     }
     try {
-      if (!navigator.clipboard?.writeText) throw new Error(t('database.rowClipboardUnavailable'));
-      await navigator.clipboard.writeText(serialized.value);
+      await writeClipboardText(serialized.value);
       toast(t('database.rowClipboardCopied', { count: rowIds.length }));
-    } catch (error) {
-      toast(error instanceof Error ? error.message : t('database.rowClipboardCopyFailed'), { tone: 'error' });
+    } catch {
+      toast(t('database.rowClipboardCopyFailed'), { tone: 'error' });
     }
   };
   const openRowMapping = (
@@ -3738,8 +4568,7 @@ function TableView({
   const pasteRowsAfter = async (afterRowId: PageId) => {
     captureRowDialogFocus();
     try {
-      if (!navigator.clipboard?.readText) throw new Error(t('database.rowClipboardUnavailable'));
-      const text = await navigator.clipboard.readText();
+      const text = await readClipboardText();
       const parsed = parseRowClipboardText(text);
       if (!parsed.ok) {
         toast(parsed.error, { tone: 'error' });
@@ -3753,18 +4582,15 @@ function TableView({
         dbId,
         afterRowId,
       );
-    } catch (error) {
-      toast(error instanceof Error ? error.message : t('database.rowClipboardPasteFailed'), {
-        tone: 'error',
-      });
+    } catch {
+      toast(t('database.rowClipboardPasteFailed'), { tone: 'error' });
     }
   };
   const routeKeyboardPaste = async (afterRowId: PageId | null) => {
     captureRowDialogFocus();
     let text: string;
     try {
-      if (!navigator.clipboard?.readText) throw new Error(t('database.rowClipboardUnavailable'));
-      text = await navigator.clipboard.readText();
+      text = await readClipboardText();
     } catch {
       if (activeCell && selectionRange) {
         void handleBatchPaste();
@@ -3796,7 +4622,7 @@ function TableView({
   const handleRowClipboardShortcut = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (
       event.defaultPrevented ||
-      !editable ||
+      !canEditImmediately() ||
       rowMappingDialog !== null ||
       rowTrashConfirmation !== null ||
       !(event.ctrlKey || event.metaKey) ||
@@ -4098,12 +4924,12 @@ function TableView({
           </thead>
           <tbody>
             {rows.map((row) => {
-              const rowRule = conditionalFormatForRow(row, view.conditionalFormats, database, state);
-              const rowStyle = rowRule ? conditionalColorStyle(rowRule.color) : undefined;
-              const titleRule = conditionalFormatForCell(
+              const rowFormat = resolveConditionalFormatForRow(row, view, database, state);
+              const rowStyle = conditionalFormatStyle(rowFormat);
+              const titleFormat = resolveConditionalFormatForCell(
                 row,
                 TITLE_PROP,
-                view.conditionalFormats,
+                view,
                 database,
                 state,
               );
@@ -4126,7 +4952,10 @@ function TableView({
                   onDrop={(event) => dropRowsOn(event, row.id)}
                 >
                   {editable && (
-                    <td className="db-row-controls" style={{ position: 'sticky', left: 0, zIndex: 3 }}>
+                    <td
+                      className="db-row-controls"
+                      style={{ ...rowStyle, position: 'sticky', left: 0, zIndex: 3 }}
+                    >
                       <div className="db-row-tools">
                         <input
                           ref={(element) => {
@@ -4216,7 +5045,7 @@ function TableView({
                     className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}${isTitleActive ? ' is-grid-active' : ''}${isTitleSelected ? ' is-grid-selected' : ''}${isTitleFill ? ' is-fill-preview' : ''}`}
                     style={{
                       ...rowStyle,
-                      ...(titleRule ? conditionalColorStyle(titleRule.color) : {}),
+                      ...conditionalFormatStyle(titleFormat),
                       ...frozenStyle(-1),
                     }}
                     onFocus={clearRowSelection}
@@ -4237,11 +5066,24 @@ function TableView({
                       <RowTitle
                         row={row}
                         editable={editable}
+                        canEditNow={canEditNow}
                         autoFocus={focusNew === row.id}
                         gridMode={true}
                         isEditing={editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP}
+                        initialText={
+                          editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP
+                            ? editingCell.initialText
+                            : undefined
+                        }
                         onCommitAndMove={(dir) => handleCommitAndMove(row.id, TITLE_PROP, dir)}
                         onCancelEdit={() => handleCancelEdit(row.id, TITLE_PROP)}
+                        onDoneEdit={handleDoneEdit}
+                        onInvalidDraftChange={(invalid) => {
+                          const cellKey = `${row.id}:${TITLE_PROP}`;
+                          if (invalid) invalidEditingCellRef.current = cellKey;
+                          else if (invalidEditingCellRef.current === cellKey)
+                            invalidEditingCellRef.current = null;
+                        }}
                       />
                     )}
                     {isBottomRightCell(row.id, TITLE_PROP) &&
@@ -4261,10 +5103,10 @@ function TableView({
                       )}
                   </td>
                   {props.map((prop) => {
-                    const cellRule = conditionalFormatForCell(
+                    const cellFormat = resolveConditionalFormatForCell(
                       row,
                       prop.id,
-                      view.conditionalFormats,
+                      view,
                       database,
                       state,
                     );
@@ -4291,7 +5133,7 @@ function TableView({
                         className={`${props.indexOf(prop) <= frozenIndex ? 'db-frozen ' : ''}${isCellActive ? 'is-grid-active ' : ''}${isCellSelected ? 'is-grid-selected ' : ''}${isCellFill ? 'is-fill-preview' : ''}`}
                         style={{
                           ...rowStyle,
-                          ...(cellRule ? conditionalColorStyle(cellRule.color) : {}),
+                          ...conditionalFormatStyle(cellFormat),
                           textAlign: view.align?.[prop.id] ?? 'left',
                           whiteSpace: view.wrap?.includes(prop.id) ? 'normal' : 'nowrap',
                           ...frozenStyle(props.indexOf(prop)),
@@ -4334,10 +5176,28 @@ function TableView({
                                 prop={prop}
                                 row={row}
                                 editable={editable}
+                                canEditNow={canEditNow}
                                 gridMode={true}
                                 isEditing={editingCell?.rowId === row.id && editingCell?.colId === prop.id}
+                                initialText={
+                                  editingCell?.rowId === row.id && editingCell?.colId === prop.id
+                                    ? editingCell.initialText
+                                    : undefined
+                                }
+                                openPickerOnEdit={
+                                  editingCell?.rowId === row.id && editingCell?.colId === prop.id
+                                    ? editingCell.openPickerOnEdit
+                                    : undefined
+                                }
                                 onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
                                 onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
+                                onDoneEdit={handleDoneEdit}
+                                onInvalidDraftChange={(invalid) => {
+                                  const cellKey = `${row.id}:${prop.id}`;
+                                  if (invalid) invalidEditingCellRef.current = cellKey;
+                                  else if (invalidEditingCellRef.current === cellKey)
+                                    invalidEditingCellRef.current = null;
+                                }}
                               />
                             )}
                           </div>
@@ -4366,10 +5226,28 @@ function TableView({
                             prop={prop}
                             row={row}
                             editable={editable}
+                            canEditNow={canEditNow}
                             gridMode={true}
                             isEditing={editingCell?.rowId === row.id && editingCell?.colId === prop.id}
+                            initialText={
+                              editingCell?.rowId === row.id && editingCell?.colId === prop.id
+                                ? editingCell.initialText
+                                : undefined
+                            }
+                            openPickerOnEdit={
+                              editingCell?.rowId === row.id && editingCell?.colId === prop.id
+                                ? editingCell.openPickerOnEdit
+                                : undefined
+                            }
                             onCommitAndMove={(dir) => handleCommitAndMove(row.id, prop.id, dir)}
                             onCancelEdit={() => handleCancelEdit(row.id, prop.id)}
+                            onDoneEdit={handleDoneEdit}
+                            onInvalidDraftChange={(invalid) => {
+                              const cellKey = `${row.id}:${prop.id}`;
+                              if (invalid) invalidEditingCellRef.current = cellKey;
+                              else if (invalidEditingCellRef.current === cellKey)
+                                invalidEditingCellRef.current = null;
+                            }}
                           />
                         )}
                         {view.rowHeight && view.wrap?.includes(prop.id) && (
@@ -5094,8 +5972,8 @@ function Card({
     return node ? String(node.attrs!.fileId) : null;
   }, [cover, imageProp, state.docs, row.id]);
   const progress = useMemo(() => taskProgress(state.docs[row.id]), [state.docs, row.id]);
-  const rowRule = conditionalFormatForRow(row, view.conditionalFormats, database, state);
-  const rowStyle = rowRule ? conditionalColorStyle(rowRule.color) : undefined;
+  const rowFormat = resolveConditionalFormatForRow(row, view, database, state);
+  const rowStyle = conditionalFormatStyle(rowFormat);
   useEffect(() => {
     let live = true;
     if (firstImage) void fileUrl(firstImage).then((url) => live && setImage(url));
@@ -5116,15 +5994,18 @@ function Card({
           )}
         </span>
       )}
-      <span className="db-card-title">
+      <span
+        className="db-card-title"
+        style={conditionalFormatStyle(resolveConditionalFormatForCell(row, TITLE_PROP, view, database, state))}
+      >
         {row.icon && <PageGlyph icon={row.icon} className="db-card-icon" />}
         {displayTitle(row)}
       </span>
       <span className="db-card-props">
         {props.map((prop) => {
-          const cellRule = conditionalFormatForCell(row, prop.id, view.conditionalFormats, database, state);
+          const cellFormat = resolveConditionalFormatForCell(row, prop.id, view, database, state);
           return (
-            <span key={prop.id} style={cellRule ? conditionalColorStyle(cellRule.color) : undefined}>
+            <span key={prop.id} style={conditionalFormatStyle(cellFormat)}>
               <PropertyDisplay prop={prop} value={valueOf(row, prop.id, database, state)} />
             </span>
           );
@@ -5334,6 +6215,9 @@ function CalendarView({ dbId, database, view, rows, editable }: Omit<ViewProps, 
                   draggable={editable}
                   onDragStart={(event) => event.dataTransfer.setData(DRAG, row.id)}
                   onClick={() => openPage(row.id)}
+                  style={conditionalFormatStyle(
+                    resolveConditionalFormatForCell(row, TITLE_PROP, view, database, state),
+                  )}
                 >
                   {displayTitle(row)}
                 </button>
@@ -5356,20 +6240,40 @@ function CalendarView({ dbId, database, view, rows, editable }: Omit<ViewProps, 
   );
 }
 
-function ListView({ rows, props, database }: { rows: PageMeta[]; props: PropDef[]; database: DatabaseDef }) {
+function ListView({ rows, props, database, view }: {
+  rows: PageMeta[];
+  props: PropDef[];
+  database: DatabaseDef;
+  view: ViewDef;
+}) {
   const state = useWorkspace();
   return (
     <ul className="link-list db-list">
       {rows.map((row) => (
         <li key={row.id}>
-          <button type="button" className="link-row" onClick={() => openPage(row.id)}>
+          <button
+            type="button"
+            className="link-row"
+            style={conditionalFormatStyle(resolveConditionalFormatForRow(row, view, database, state))}
+            onClick={() => openPage(row.id)}
+          >
             <span className="tree-icon">
               <PageIcon page={row} />
             </span>
-            <span className="link-row-title">{displayTitle(row)}</span>
+            <span
+              className="link-row-title"
+              style={conditionalFormatStyle(resolveConditionalFormatForCell(row, TITLE_PROP, view, database, state))}
+            >
+              {displayTitle(row)}
+            </span>
             <span className="db-card-props">
               {props.map((prop) => (
-                <PropertyDisplay key={prop.id} prop={prop} value={valueOf(row, prop.id, database, state)} />
+                <span
+                  key={prop.id}
+                  style={conditionalFormatStyle(resolveConditionalFormatForCell(row, prop.id, view, database, state))}
+                >
+                  <PropertyDisplay prop={prop} value={valueOf(row, prop.id, database, state)} />
+                </span>
               ))}
             </span>
           </button>

@@ -5,7 +5,7 @@ import type { PageKey } from '../core/crypto';
 import { isDocEmpty, isRecord, validateDoc, walk } from '../core/doc';
 import { snapshotsToPrune } from '../core/history';
 import { parseWikiLink } from '../core/markdown/parse';
-import { docToMarkdown } from '../core/markdown/serialize';
+import { docToMarkdown, retargetMarkdownHref } from '../core/markdown/serialize';
 import { markdownToDoc } from '../core/markdown/parse';
 import { displayTitle, emptyDoc, newPageMeta } from '../core/model';
 import type {
@@ -23,6 +23,8 @@ import type { Result } from '../core/result';
 import { childrenOf } from '../core/tree';
 import { linkTargets, placePages } from '../core/vault/layout';
 import type { Placement } from '../core/vault/layout';
+import { createFileCatalog } from '../core/vault/fileCatalog';
+import type { FileCatalogSnapshot, VaultResource } from '../core/vault/fileCatalog';
 import {
   loadVault,
   makeResolver,
@@ -77,6 +79,11 @@ function localDay(date: Date): string {
 const DATE_NAME = /^\d{4}-\d{2}-\d{2}$/;
 const WIKI_LINK = /(!?)\[\[([^[\]\n]{0,400}?)\]\]/g;
 
+function persistedMetadata(page: PageMeta): string {
+  // Opening a page is tracked in recent.json, not in its Markdown file.
+  return JSON.stringify({ ...page, lastOpenedAt: null });
+}
+
 export class VaultRepository implements WorkspaceRepository {
   private layout = new Map<PageId, Placement>();
   private folderOnly = new Set<PageId>();
@@ -105,9 +112,14 @@ export class VaultRepository implements WorkspaceRepository {
   private readonly historyCleared = new Set<PageId>();
   // saves per day, for the activity chart on the home page
   private readonly days = new Map<string, number>();
+  // metadata confirmed by a loaded source, accepted external change, or successful write
+  private readonly persistedMetadataByPage = new Map<PageId, string>();
   private registryDirty = false;
   private readonly history = new Map<PageId, Snapshot[]>();
   private readonly listeners = new Set<(patch: ExternalPatch) => PageId[]>();
+  private readonly fileCatalogListeners = new Set<() => void>();
+  private resources = new Map<string, VaultResource>();
+  private fileCatalog: FileCatalogSnapshot = createFileCatalog([]);
   private stopWatching: (() => void) | null = null;
   private currentState: () => WorkspaceState | null = () => null;
   private lastState: WorkspaceState | null = null;
@@ -119,6 +131,17 @@ export class VaultRepository implements WorkspaceRepository {
 
   get location(): string {
     return this.bridge.root;
+  }
+
+  getFileCatalog = (): FileCatalogSnapshot => this.fileCatalog;
+
+  onFileCatalogChange = (listener: () => void): (() => void) => {
+    this.fileCatalogListeners.add(listener);
+    return () => this.fileCatalogListeners.delete(listener);
+  };
+
+  private catalogPathKey(path: string): string {
+    return /^(?:[a-z]:\\|\\\\)/i.test(this.bridge.root) ? path.toLowerCase() : path;
   }
 
   pathOf(id: PageId): string | null {
@@ -136,7 +159,16 @@ export class VaultRepository implements WorkspaceRepository {
       const scan = await this.bridge.scan();
       const loaded = loadVault(scan, this.newId);
       this.adopt(loaded);
+      this.persistedMetadataByPage.clear();
+      for (const page of loaded.pages) this.persistedMetadataByPage.set(page.id, persistedMetadata(page));
       this.others = new Set(scan.others);
+      this.replaceFileCatalogResources(
+        scan.resources ??
+          scan.others
+            .filter((path) => !isPageFile(path))
+            .map((path) => ({ path, extension: extension(path), size: null, mtime: 0 })),
+        false,
+      );
       this.registryText = scan.registry === null ? null : JSON.stringify(scan.registry);
       this.recentText = scan.recent === null ? null : JSON.stringify(scan.recent);
       const activity = (scan.recent as { activity?: unknown } | null)?.activity;
@@ -188,10 +220,16 @@ export class VaultRepository implements WorkspaceRepository {
     this.lastState = state;
     const docChanged = new Set(batch.docs.map((record) => record.id));
     const metaChanged = new Set(batch.pages.map((page) => page.id));
+    const fileMetadataChanged = new Set(
+      [...metaChanged].filter((id) => {
+        const page = state.pages[id];
+        return !page || this.persistedMetadataByPage.get(id) !== persistedMetadata(page);
+      }),
+    );
     const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
 
     // a folder that gains content or properties gets a note of its own
-    for (const id of [...docChanged, ...metaChanged]) {
+    for (const id of [...docChanged, ...fileMetadataChanged]) {
       if (this.folderOnly.has(id) && this.wantsFile(state, id)) this.folderOnly.delete(id);
     }
 
@@ -221,22 +259,21 @@ export class VaultRepository implements WorkspaceRepository {
         movedPages.add(id);
     }
 
-    const candidates = new Set<PageId>([...docChanged, ...metaChanged]);
+    const candidates = new Set<PageId>([...docChanged, ...fileMetadataChanged]);
     for (const [id, placement] of next)
       if (!previous.has(id) || movedPages.has(id) || (placement.file && !this.texts.has(id)))
         candidates.add(id);
     if (retargeted.size > 0 || movedPages.size > 0) {
       for (const [id, doc] of Object.entries(state.docs)) {
-        if (linksTo(doc, retargeted) || (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages)))
-          candidates.add(id);
+        if (linksTo(doc, retargeted) || linksTo(doc, movedPages)) candidates.add(id);
       }
     }
-    for (const id of metaChanged) {
+    for (const id of fileMetadataChanged) {
       if (state.pages[id]?.kind === 'database')
         for (const child of childrenOf(state.pages, id, true)) candidates.add(child.id);
     }
 
-    const resolveOld = retargeted.size > 0 ? makeResolver(state, previous, this.sources) : null;
+    const resolveOld = retargeted.size > 0 || movedPages.size > 0 ? makeResolver(state, previous, this.sources) : null;
     for (const id of candidates) {
       const placement = next.get(id);
       if (!state.pages[id] || !placement?.file || this.locked.has(id)) continue;
@@ -249,6 +286,7 @@ export class VaultRepository implements WorkspaceRepository {
         previous.get(id),
         resolveOld,
         retargeted,
+        movedPages,
       );
       if (text === null) continue;
       let written = text;
@@ -270,7 +308,7 @@ export class VaultRepository implements WorkspaceRepository {
       });
     }
     // turning encryption on removes the plain versions kept in page history
-    for (const id of metaChanged) {
+    for (const id of fileMetadataChanged) {
       if (
         state.pages[id]?.encrypted &&
         this.layout.has(id) &&
@@ -314,7 +352,15 @@ export class VaultRepository implements WorkspaceRepository {
       if (!folderPages.has(folder.toLowerCase())) ops.push({ op: 'rmdir', path: folder });
     }
 
-    await this.run(ops, next);
+    await this.run(ops, next, () => {
+      for (const id of metaChanged) {
+        const page = state.pages[id];
+        if (!page) this.persistedMetadataByPage.delete(id);
+        else if (!this.locked.has(id) && (!page.encrypted || this.keys.has(id)))
+          this.persistedMetadataByPage.set(id, persistedMetadata(page));
+      }
+      for (const id of removed) this.persistedMetadataByPage.delete(id);
+    });
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
     this.registryDirty = false;
@@ -345,14 +391,21 @@ export class VaultRepository implements WorkspaceRepository {
     before: Placement | undefined,
     resolveOld: Resolver | null,
     retargeted: Set<PageId>,
+    movedPages: Set<PageId>,
   ): string | null {
     const page = state.pages[id]!;
     const placement = layout.get(id)!;
-    if (page.kind === 'canvas')
+    if (page.kind === 'canvas') {
+      const original = this.texts.get(id);
+      const doc = state.docs[id] ?? emptyDoc();
+      if (original !== undefined && !edited && !linksTo(doc, retargeted) && !linksTo(doc, movedPages))
+        return original;
       return writeCanvas(canvasFromDoc(state.docs[id]), (pageId) => layout.get(pageId)?.file ?? null);
+    }
     // a folder that just got a note of its own, for its tags, properties or kind, has no text yet
     const doc = state.docs[id] ?? emptyDoc();
     const dir = dirname(placement.file!);
+    const sourceDir = before ? dirname(before.folder) : dir;
     let source = this.sources.get(id) ?? null;
     const movedDir = before !== undefined && dirname(before.folder) !== dirname(placement.folder);
     if (source && source.body !== null && (edited || (movedDir && hasFileRefs(doc)))) {
@@ -362,10 +415,24 @@ export class VaultRepository implements WorkspaceRepository {
     let body: string;
     if (source && source.body !== null) {
       body = resolveOld
-        ? retargetLinks(source.body, (target) => {
-            const found = resolveOld.resolve(target, before ? dirname(before.folder) : dir);
-            return found && retargeted.has(found) ? (targets.get(found) ?? null) : null;
-          })
+        ? retargetLinks(
+            source.body,
+            (target) => {
+              const found = resolveOld.resolve(target, sourceDir);
+              return found && retargeted.has(found) ? (targets.get(found) ?? null) : null;
+            },
+            (href) => {
+              if (isExternalMarkdownHref(href)) return null;
+              const found = resolveOld.resolve(markdownLinkPath(href), sourceDir);
+              if (!found) return null;
+              const target = layout.get(found);
+              if (!target || isInTrash(target.folder)) return null;
+              const targetPath = target.file ?? target.folder;
+              return href.startsWith('/') && !href.startsWith('//')
+                ? `/${targetPath}`
+                : relativePath(dir, targetPath);
+            },
+          )
         : source.body;
       if (body !== source.body) {
         source = { ...source, body };
@@ -374,6 +441,15 @@ export class VaultRepository implements WorkspaceRepository {
     } else {
       body = docToMarkdown(doc, {
         linkTarget: (pageId) => targets.get(pageId) ?? null,
+        markdownLinkTarget: (pageId, originalHref) => {
+          if (isExternalMarkdownHref(originalHref)) return null;
+          const target = layout.get(pageId);
+          if (!target || isInTrash(target.folder)) return null;
+          const targetPath = target.file ?? target.folder;
+          return originalHref.startsWith('/') && !originalHref.startsWith('//')
+            ? `/${targetPath}`
+            : relativePath(dir, targetPath);
+        },
         titleOf: (pageId) => (state.pages[pageId] ? displayTitle(state.pages[pageId]) : null),
         filePath: (fileId) =>
           fileId.includes('/') || fileId.includes('.') ? relativePath(dir, fileId) : null,
@@ -402,12 +478,14 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   // carries out the operations and keeps track of what reached the disk, even when something fails halfway
-  private async run(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async run(ops: VaultOp[], next: Map<PageId, Placement>, onCommitted: () => void): Promise<void> {
     const started = Date.now();
     for (const op of ops) if (op.op === 'write') this.wroteAt.set(op.path.toLowerCase(), started);
     this.saving++;
     try {
       await this.runOps(ops, next);
+      // Commit our confirmed baseline before a held watcher event can advance it further.
+      onCommitted();
     } finally {
       this.saving--;
       if (this.saving === 0 && this.held.length > 0) {
@@ -609,11 +687,13 @@ export class VaultRepository implements WorkspaceRepository {
     if (!opened) return fail('That password is not right.');
     const read = this.readFile(placement.file, opened.plain, base, state, this.layout);
     if (!read.ok) return fail('The page was decrypted but could not be read.');
+    const page = { ...read.page, encrypted: true };
     this.keys.set(id, opened.pageKey);
     this.plainTexts.set(id, opened.plain);
+    this.persistedMetadataByPage.set(id, persistedMetadata(page));
     if (read.source) this.sources.set(id, read.source);
     this.locked.delete(id);
-    return ok({ page: { ...read.page, encrypted: true }, doc: read.doc });
+    return ok({ page, doc: read.doc });
   }
 
   private async historyOp(snapshot: Snapshot): Promise<VaultOp> {
@@ -677,6 +757,16 @@ export class VaultRepository implements WorkspaceRepository {
       }
       await this.bridge.createFile(path, file.data);
       this.others.add(path);
+      this.updateFileCatalog([
+        {
+          path,
+          text: '',
+          mtime: Date.now(),
+          birthtime: Date.now(),
+          other: true,
+          size: file.data.byteLength,
+        },
+      ]);
       metas.push({ ...file.meta, id: path, name: basename(path) });
     }
     return metas;
@@ -705,7 +795,11 @@ export class VaultRepository implements WorkspaceRepository {
 
   async deleteFiles(ids: FileId[]): Promise<void> {
     const results = await this.bridge.apply(ids.map((path) => ({ op: 'remove', path })));
-    for (const id of ids) this.others.delete(id);
+    const removed = ids.filter((_, index) => results[index]?.ok);
+    for (const id of removed) this.others.delete(id);
+    this.updateFileCatalog(
+      removed.map((path) => ({ path, text: null, mtime: Date.now(), birthtime: 0, other: true })),
+    );
     const failed = results.find((result) => !result.ok);
     if (failed && !failed.ok) throw new Error(failed.message);
   }
@@ -713,11 +807,92 @@ export class VaultRepository implements WorkspaceRepository {
   close(): void {
     this.stopWatching?.();
     this.stopWatching = null;
+    this.fileCatalogListeners.clear();
   }
 
   onExternalChange(listener: (patch: ExternalPatch) => PageId[]): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  private replaceFileCatalogResources(resources: readonly VaultResource[], notify = true): void {
+    this.resources = new Map(
+      resources.map((resource) => [this.catalogPathKey(resource.path), { ...resource }]),
+    );
+    const next = createFileCatalog([...this.resources.values()]);
+    const current = this.fileCatalog;
+    const sameFiles =
+      current.files.length === next.files.length &&
+      current.files.every((file, index) => {
+        const candidate = next.files[index];
+        return (
+          candidate?.path === file.path &&
+          candidate.extension === file.extension &&
+          candidate.size === file.size &&
+          candidate.mtime === file.mtime
+        );
+      });
+    const sameFolders =
+      current.folders.length === next.folders.length &&
+      current.folders.every((folder, index) => folder === next.folders[index]);
+    if (sameFiles && sameFolders) return;
+    this.fileCatalog = next;
+    if (notify) for (const listener of this.fileCatalogListeners) listener();
+  }
+
+  private updateOtherFiles(changes: readonly VaultChange[]): void {
+    for (const change of changes) {
+      if (!change.other) continue;
+      const key = this.catalogPathKey(change.path);
+      if (change.text === null && change.dir) {
+        const prefix = `${key}/`;
+        for (const path of this.others)
+          if (this.catalogPathKey(path) === key || this.catalogPathKey(path).startsWith(prefix))
+            this.others.delete(path);
+      } else if (change.text === null) {
+        for (const path of this.others) if (this.catalogPathKey(path) === key) this.others.delete(path);
+      } else if (!change.dir) {
+        for (const path of this.others) if (this.catalogPathKey(path) === key) this.others.delete(path);
+        this.others.add(change.path);
+      }
+    }
+  }
+
+  private updateFileCatalog(changes: readonly VaultChange[]): void {
+    let changed = false;
+    for (const change of changes) {
+      if (!change.other) continue;
+      const lower = this.catalogPathKey(change.path);
+      if (change.text === null && change.dir) {
+        for (const key of this.resources.keys())
+          if (key === lower || key.startsWith(`${lower}/`)) {
+            this.resources.delete(key);
+            changed = true;
+          }
+      } else if (change.text === null) {
+        changed = this.resources.delete(lower) || changed;
+      } else if (!change.dir && !isPageFile(change.path)) {
+        const size = typeof change.size === 'number' && Number.isFinite(change.size) ? change.size : null;
+        const current = this.resources.get(lower);
+        const next: VaultResource = {
+          path: change.path,
+          extension: extension(change.path),
+          size,
+          mtime: change.mtime || 0,
+        };
+        if (
+          !current ||
+          current.path !== next.path ||
+          current.extension !== next.extension ||
+          current.size !== next.size ||
+          current.mtime !== next.mtime
+        ) {
+          this.resources.set(lower, next);
+          changed = true;
+        }
+      }
+    }
+    if (changed) this.replaceFileCatalogResources([...this.resources.values()]);
   }
 
   // ---- edits made by other apps, sync tools or git
@@ -727,6 +902,8 @@ export class VaultRepository implements WorkspaceRepository {
       this.held.push(...changes);
       return;
     }
+    this.updateOtherFiles(changes);
+    this.updateFileCatalog(changes);
     const state = this.currentState() ?? this.lastState;
     if (!state || this.listeners.size === 0) return;
     const result = this.readChanges(changes, state);
@@ -745,14 +922,12 @@ export class VaultRepository implements WorkspaceRepository {
       if (isHiddenPath(change.path)) continue;
       latest.set(change.path, change);
     }
-    for (const change of latest.values()) {
-      if (!change.other) continue;
-      if (change.text === null) this.others.delete(change.path);
-      else this.others.add(change.path);
-    }
     // a path that disappeared may have been a folder of pages
     const pageChanges = [...latest.values()].filter(
-      (change) => (change.dir && change.text === null) || (!change.other && isPageFile(change.path)),
+      (change) =>
+        (change.dir && change.text === null) ||
+        change.emptyFolder ||
+        (!change.other && isPageFile(change.path)),
     );
     if (pageChanges.length === 0) return null;
 
@@ -839,6 +1014,26 @@ export class VaultRepository implements WorkspaceRepository {
       return id;
     };
 
+    for (const change of pageChanges.filter((item) => item.emptyFolder && item.text !== null)) {
+      const folder = change.path;
+      if (ownerOf(folder)) continue;
+      const parentFolder = dirname(folder);
+      const trashed = parentFolder === TRASH_DIR;
+      const id = this.newId();
+      const page = newPageMeta({
+        id,
+        parentId: trashed ? null : ensureFolder(parentFolder),
+        title: basename(folder),
+        createdAt: change.birthtime || change.mtime || Date.now(),
+        order: Number.MAX_SAFE_INTEGER,
+      });
+      if (trashed) page.trashedAt = change.mtime || Date.now();
+      pages.set(id, page);
+      docs[id] = emptyDoc();
+      layout.set(id, { file: null, folder });
+      becameFolders.add(id);
+    }
+
     for (const change of written) {
       const text = change.text!;
       const ours = this.wroteAt.get(change.path.toLowerCase());
@@ -894,6 +1089,7 @@ export class VaultRepository implements WorkspaceRepository {
       commit: (accepted) => {
         for (const id of accepted) {
           if (removed.has(id)) {
+            this.persistedMetadataByPage.delete(id);
             this.layout.delete(id);
             this.texts.delete(id);
             this.sources.delete(id);
@@ -903,6 +1099,8 @@ export class VaultRepository implements WorkspaceRepository {
           }
           const placement = layout.get(id);
           if (placement) this.layout.set(id, placement);
+          const page = pages.get(id);
+          if (page) this.persistedMetadataByPage.set(id, persistedMetadata(page));
           if (becameFolders.has(id)) this.folderOnly.add(id);
           else this.folderOnly.delete(id);
           if (texts.has(id)) this.texts.set(id, texts.get(id)!);
@@ -1028,33 +1226,312 @@ function hasFileRefs(doc: DocNode): boolean {
   return found;
 }
 
-// rewrites [[links]] in a file morrow has not otherwise touched, outside code
-export function retargetLinks(body: string, newTarget: (target: string) => string | null): string {
-  let fenced = false;
-  return body
-    .split('\n')
-    .map((line) => {
-      if (/^\s*(```|~~~)/.test(line)) {
-        fenced = !fenced;
-        return line;
+// rewrites page links in a file morrow has not otherwise touched, outside code
+export function retargetLinks(
+  body: string,
+  newWikiTarget: (target: string) => string | null,
+  newMarkdownTarget?: (href: string) => string | null,
+): string {
+  const rewrite = (text: string) => {
+    const markdown = newMarkdownTarget ? retargetMarkdownPageLinks(text, newMarkdownTarget) : text;
+    return mapOutsideCode(markdown, (plain) =>
+      plain.replace(WIKI_LINK, (match, bang: string, inner: string) => {
+        const link = parseWikiLink(inner, bang === '!');
+        const target = newWikiTarget(link.target);
+        if (!target || target === link.target) return match;
+        const rest = inner.slice(inner.indexOf(link.target) + link.target.length);
+        return `${bang}[[${target}${rest}]]`;
+      }),
+    );
+  };
+
+  const fences = markdownFenceRanges(body);
+  if (fences.length === 0) return rewrite(body);
+  let result = '';
+  let sourceIndex = 0;
+  for (const fence of fences) {
+    if (fence.start > sourceIndex) result += rewrite(body.slice(sourceIndex, fence.start));
+    result += body.slice(fence.start, fence.end);
+    sourceIndex = fence.end;
+  }
+  return result + rewrite(body.slice(sourceIndex));
+}
+
+function markdownLinkPath(href: string): string {
+  const path = href.split(/[?#]/, 1)[0]!;
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+function isExternalMarkdownHref(href: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//');
+}
+
+function retargetMarkdownPageLinks(
+  text: string,
+  newTarget: (href: string) => string | null,
+): string {
+  return mapOutsideCode(text, (plain) => retargetMarkdownPageLinksPlain(plain, newTarget));
+}
+
+const MAX_MARKDOWN_LABEL_DEPTH = 4096;
+const MAX_MARKDOWN_CODE_RUNS = 10_000;
+
+function retargetMarkdownPageLinksPlain(
+  text: string,
+  newTarget: (href: string) => string | null,
+): string {
+  let result = '';
+  let sourceIndex = 0;
+  const labels: Array<{ inImage: boolean }> = [];
+  let scanBudget = text.length + 1024;
+  let slashRun = 0;
+  let previousEscaped = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    const escaped = slashRun % 2 === 1;
+    if (char === '\\') {
+      slashRun++;
+      previousEscaped = escaped;
+      continue;
+    }
+    slashRun = 0;
+
+    if (char === '[' && !escaped) {
+      if (labels.length >= MAX_MARKDOWN_LABEL_DEPTH) break;
+      const parentImage = labels.at(-1)?.inImage ?? false;
+      const image = text[index - 1] === '!' && !previousEscaped;
+      labels.push({ inImage: parentImage || image });
+    } else if (char === ']' && !escaped) {
+      const label = labels.pop();
+      if (label && !label.inImage && text[index + 1] === '(') {
+        if (scanBudget <= 0) break;
+        const scanned = markdownLinkDestination(text, index + 1, scanBudget);
+        scanBudget -= scanned.scanned;
+        const destination = scanned.destination;
+        if (!destination) {
+          if (scanBudget <= 0) break;
+          previousEscaped = false;
+          continue;
+        }
+        const href = text.slice(destination.start, destination.end);
+        const target = newTarget(href);
+        if (target) {
+          const updated = retargetMarkdownHref(href, target);
+          if (updated !== href) {
+            result += text.slice(sourceIndex, destination.start) + updated;
+            sourceIndex = destination.end;
+          }
+        }
+        index = destination.close;
+        previousEscaped = false;
+        continue;
       }
-      if (fenced || !line.includes('[[')) return line;
-      return line
-        .split(/(`[^`]*`)/)
-        .map((part, index) =>
-          index % 2 === 1
-            ? part
-            : part.replace(WIKI_LINK, (match, bang: string, inner: string) => {
-                const link = parseWikiLink(inner, bang === '!');
-                const target = newTarget(link.target);
-                if (!target || target === link.target) return match;
-                const rest = inner.slice(inner.indexOf(link.target) + link.target.length);
-                return `${bang}[[${target}${rest}]]`;
-              }),
-        )
-        .join('');
-    })
-    .join('\n');
+    }
+    previousEscaped = escaped;
+  }
+  return result + text.slice(sourceIndex);
+}
+
+function markdownLinkDestination(
+  text: string,
+  open: number,
+  scanBudget: number,
+): { destination: { start: number; end: number; close: number } | null; scanned: number } {
+  let scanned = 0;
+  const charge = () => {
+    if (scanned >= scanBudget) return false;
+    scanned++;
+    return true;
+  };
+  const closeAfter = (start: number): number | null => {
+    let index = start;
+    while (/\s/.test(text[index] ?? '')) {
+      if (!charge()) return null;
+      index++;
+    }
+    if (!charge()) return null;
+    if (text[index] === ')') return index;
+
+    const quote = text[index];
+    if (quote === '"' || quote === "'") {
+      index++;
+      while (index < text.length) {
+        if (!charge()) return null;
+        if (text[index] === quote) break;
+        if (text[index] === '\\' && index + 1 < text.length) {
+          index++;
+          if (!charge()) return null;
+        }
+        index++;
+      }
+      if (text[index] !== quote) return null;
+      index++;
+    } else if (quote === '(') {
+      let depth = 1;
+      index++;
+      while (index < text.length && depth > 0) {
+        if (!charge()) return null;
+        if (text[index] === '\\' && index + 1 < text.length) {
+          index++;
+          if (!charge()) return null;
+        } else if (text[index] === '(') depth++;
+        else if (text[index] === ')') depth--;
+        index++;
+      }
+      if (depth !== 0) return null;
+    } else return null;
+
+    while (/\s/.test(text[index] ?? '')) {
+      if (!charge()) return null;
+      index++;
+    }
+    if (!charge() || text[index] !== ')') return null;
+    return index;
+  };
+
+  let index = open + 1;
+  while (/\s/.test(text[index] ?? '')) {
+    if (!charge()) return { destination: null, scanned };
+    index++;
+  }
+  if (index >= text.length || !charge()) return { destination: null, scanned };
+
+  if (text[index] === '<') {
+    const start = ++index;
+    while (index < text.length) {
+      if (!charge()) return { destination: null, scanned };
+      if (text[index] === '\\' && index + 1 < text.length) {
+        index++;
+        if (!charge()) return { destination: null, scanned };
+      } else if (text[index] === '>') break;
+      else if (/\s/.test(text[index]!)) return { destination: null, scanned };
+      index++;
+    }
+    if (text[index] !== '>') return { destination: null, scanned };
+    const end = index;
+    const close = closeAfter(index + 1);
+    return {
+      destination: close === null ? null : { start, end, close },
+      scanned,
+    };
+  }
+
+  const start = index;
+  let depth = 0;
+  while (index < text.length) {
+    if (!charge()) return { destination: null, scanned };
+    const char = text[index]!;
+    if (char === '\\' && index + 1 < text.length) {
+      index++;
+      if (!charge()) return { destination: null, scanned };
+    } else if (char === '(') depth++;
+    else if (char === ')') {
+      if (depth === 0)
+        return { destination: { start, end: index, close: index }, scanned };
+      depth--;
+    } else if (/\s/.test(char) && depth === 0) {
+      const close = closeAfter(index);
+      return {
+        destination: close === null ? null : { start, end: index, close },
+        scanned,
+      };
+    }
+    index++;
+  }
+  return { destination: null, scanned };
+}
+
+function mapOutsideCode(text: string, transform: (plain: string) => string): string {
+  const closes = markdownCodeSpanCloses(text);
+  if (!closes) return text;
+  let result = '';
+  let plainStart = 0;
+  let slashRun = 0;
+  for (let index = 0; index < text.length; ) {
+    if (text[index] === '`') {
+      let end = index + 1;
+      while (text[end] === '`') end++;
+      const length = end - index;
+      const close = closes.get(index);
+      if (close !== undefined && slashRun % 2 === 0) {
+        const codeEnd = close + length;
+        result += transform(text.slice(plainStart, index)) + text.slice(index, codeEnd);
+        plainStart = codeEnd;
+        index = codeEnd;
+        slashRun = 0;
+        continue;
+      }
+      index = end;
+      slashRun = 0;
+      continue;
+    }
+    slashRun = text[index] === '\\' ? slashRun + 1 : 0;
+    index++;
+  }
+  return result + transform(text.slice(plainStart));
+}
+
+function markdownCodeSpanCloses(text: string): Map<number, number> | null {
+  const closes = new Map<number, number>();
+  const lastByLength = new Map<number, number>();
+  let runCount = 0;
+  for (let index = 0; index < text.length; ) {
+    if (text[index] !== '`') {
+      index++;
+      continue;
+    }
+    const start = index;
+    while (text[index] === '`') index++;
+    if (++runCount > MAX_MARKDOWN_CODE_RUNS) return null;
+    const length = index - start;
+    const previous = lastByLength.get(length);
+    if (previous !== undefined) closes.set(previous, start);
+    lastByLength.set(length, start);
+  }
+  return closes;
+}
+
+function markdownFenceRanges(text: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let open: { start: number; char: '`' | '~'; length: number } | null = null;
+  for (let lineStart = 0; lineStart < text.length; ) {
+    const newline = text.indexOf('\n', lineStart);
+    const lineEnd = newline === -1 ? text.length : newline;
+    const line = text.slice(lineStart, lineEnd).replace(/\r$/, '');
+    const marker = markdownFenceMarker(line);
+    const nextLine = newline === -1 ? text.length : newline + 1;
+    if (!open && marker && !(marker.char === '`' && marker.rest.includes('`'))) {
+      open = { start: lineStart, char: marker.char, length: marker.length };
+    } else if (
+      open &&
+      marker?.char === open.char &&
+      marker.length >= open.length &&
+      marker.rest.trim() === ''
+    ) {
+      ranges.push({ start: open.start, end: nextLine });
+      open = null;
+    }
+    if (newline === -1) break;
+    lineStart = nextLine;
+  }
+  if (open) ranges.push({ start: open.start, end: text.length });
+  return ranges;
+}
+
+function markdownFenceMarker(line: string): { char: '`' | '~'; length: number; rest: string } | null {
+  let index = 0;
+  while (line[index] === ' ' && index < 4) index++;
+  if (index > 3 || (line[index] !== '`' && line[index] !== '~')) return null;
+  const char = line[index] as '`' | '~';
+  const start = index;
+  while (line[index] === char) index++;
+  const length = index - start;
+  return length >= 3 ? { char, length, rest: line.slice(index) } : null;
 }
 
 function safeCanvas(text: string): DocNode | null {

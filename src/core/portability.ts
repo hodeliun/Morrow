@@ -18,6 +18,8 @@ import { findDailyNote, findJournal } from './daily';
 import { readImportedFile } from './importer';
 import { refreshLinkLabels } from './links';
 import { pageToMarkdown } from './markdown/serialize';
+import type { SerializeOptions } from './markdown/serialize';
+import { markdownTargetFromPaths } from './vault/markdownLinks';
 import { displayTitle, newPageMeta, PROP_TYPES, SCHEMA_VERSION } from './model';
 import type {
   DocNode,
@@ -263,14 +265,22 @@ export function pageMarkdown(
   id: PageId,
   filePath?: (fileId: FileId) => string | null,
   attachmentPath?: (fileId: FileId) => string | null,
+  markdownPagePath?: (pageId: PageId) => string | null,
 ): string {
   const page = state.pages[id];
   const doc = state.docs[id];
   if (!page || !doc) return '';
   const titleOf = (target: PageId) => (state.pages[target] ? displayTitle(state.pages[target]) : null);
+  const markdownLinkTarget: MarkdownPageLinkTarget = (targetId, originalHref) =>
+    markdownTargetFromPaths(
+      markdownPagePath?.(id) ?? null,
+      markdownPagePath?.(targetId) ?? null,
+      originalHref,
+    );
   const markdown = pageToMarkdown(displayTitle(page), refreshLinkLabels(doc, titleOf), {
     titleOf,
     ...(filePath ? { filePath } : {}),
+    markdownLinkTarget,
   });
   const frontmatterFiles = new Map<string, string>();
   for (const fileId of pageFileReferences(page, doc, state)) {
@@ -282,7 +292,12 @@ export function pageMarkdown(
   const managed = managedFrontmatter(exportedPage, safeFileName(displayTitle(page)), parentDatabase, state);
   managed.set('title', displayTitle(page));
   const frontmatter = composeFrontmatter(managed, page.extra, null);
-  const body = `${markdown}${dynamicSnapshot(state, page, filePath)}${databaseSnapshot(state, page, filePath)}`;
+  const body = `${markdown}${dynamicSnapshot(state, page, filePath, markdownLinkTarget)}${databaseSnapshot(
+    state,
+    page,
+    filePath,
+    markdownLinkTarget,
+  )}`;
   return joinFrontmatter(frontmatter, body);
 }
 
@@ -312,6 +327,8 @@ export interface ExportFile {
   content: string;
 }
 
+type MarkdownPageLinkTarget = NonNullable<SerializeOptions['markdownLinkTarget']>;
+
 // a page with subpages exports as title.md next to a folder named after it, files go in attachments
 export function workspaceMarkdownFiles(
   state: WorkspaceState,
@@ -326,6 +343,7 @@ export function workspaceMarkdownFiles(
   const attachments = new Map(
     [...attachmentNames(referenced, fileMetas)].map(([id, name]) => [id, `attachments/${name}`]),
   );
+  const markdownPagePaths = exportMarkdownPagePaths(state);
   const files: ExportFile[] = [];
   const visit = (parentId: PageId | null, folder: string, depth: number) => {
     if (depth > 32) return;
@@ -339,14 +357,36 @@ export function workspaceMarkdownFiles(
         return target ? `${up}${target}` : null;
       };
       files.push({
-        path: `${folder}${name}.md`,
-        content: pageMarkdown(state, page.id, filePath, (id) => attachments.get(id) ?? null),
+        path: markdownPagePaths.get(page.id) ?? `${folder}${name}.md`,
+        content: pageMarkdown(
+          state,
+          page.id,
+          filePath,
+          (id) => attachments.get(id) ?? null,
+          (id) => markdownPagePaths.get(id) ?? null,
+        ),
       });
       visit(page.id, `${folder}${name}/`, depth + 1);
     }
   };
   visit(null, '', 0);
   return { files, attachments };
+}
+
+function exportMarkdownPagePaths(state: WorkspaceState): Map<PageId, string> {
+  const paths = new Map<PageId, string>();
+  const visit = (parentId: PageId | null, folder: string, depth: number) => {
+    if (depth > 32) return;
+    const used = new Set<string>(['attachments']);
+    for (const page of childrenOf(state.pages, parentId)) {
+      if (page.encrypted) continue;
+      const name = uniqueName(safeFileName(displayTitle(page)), used);
+      paths.set(page.id, `${folder}${name}.md`);
+      visit(page.id, `${folder}${name}/`, depth + 1);
+    }
+  };
+  visit(null, '', 0);
+  return paths;
 }
 
 function pageFileReferences(page: PageMeta, doc: DocNode, state: WorkspaceState): FileId[] {
@@ -361,6 +401,7 @@ function dynamicSnapshot(
   state: WorkspaceState,
   page: PageMeta,
   filePath?: (fileId: FileId) => string | null,
+  markdownLinkTarget?: MarkdownPageLinkTarget,
 ): string {
   const doc = state.docs[page.id];
   if (!doc) return '';
@@ -429,7 +470,7 @@ function dynamicSnapshot(
     const normalized = normalizeDatabase({ properties: source.database.properties, views: [viewInfo] });
     const view = normalized?.views[0];
     if (!view) return `${header}\n`;
-    return `${header}\n${databaseTable(state, source, view, filePath)}\n`;
+    return `${header}\n${databaseTable(state, source, view, filePath, markdownLinkTarget)}\n`;
   });
   return [controls, resultSnapshot, ...linkedViewSnapshots].filter(Boolean).join('\n');
 }
@@ -438,12 +479,13 @@ function databaseSnapshot(
   state: WorkspaceState,
   page: PageMeta,
   filePath?: (fileId: FileId) => string | null,
+  markdownLinkTarget?: MarkdownPageLinkTarget,
 ): string {
   if (page.kind !== 'database' || !page.database) return '';
   const views = page.database.views.length
     ? ['## Saved views', '', ...page.database.views.map((view) => `- ${viewSummary(view)}`), ''].join('\n')
     : '';
-  const table = databaseTable(state, page, undefined, filePath);
+  const table = databaseTable(state, page, undefined, filePath, markdownLinkTarget);
   return `\n## Database snapshot\n\n${table}\n${views}`;
 }
 
@@ -452,6 +494,7 @@ function databaseTable(
   databasePage: PageMeta,
   view?: ViewDef,
   filePath?: (fileId: FileId) => string | null,
+  markdownLinkTarget?: MarkdownPageLinkTarget,
 ): string {
   const database = databasePage.database;
   if (!database) return '';
@@ -490,7 +533,10 @@ function databaseTable(
             if (prop.type === 'richCanvas') {
               const rich = parseRichCanvas(value);
               return rich
-                ? docToMarkdown(rich, { ...(filePath ? { filePath } : {}) }).trim()
+                ? docToMarkdown(rich, {
+                    ...(filePath ? { filePath } : {}),
+                    ...(markdownLinkTarget ? { markdownLinkTarget } : {}),
+                  }).trim()
                 : propertyMediaLabel(prop, value);
             }
             return formatValue(prop, value);
