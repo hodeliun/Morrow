@@ -20,3 +20,8 @@ Especificação e tickets preparados; nenhuma modificação funcional realizada.
 ## Contratos de segurança e compatibilidade
 
 Engine pura sem eval/ações; IDs estáveis; preservação de YAML/Markdown desconhecido; readonly real; zero/falso/vazio distintos; sem escrita ao abrir; journal de recuperação existente preservado. Nenhuma dependência de runtime nova está aprovada.
+
+
+## Ler também o adendo de arquivos
+
+Antes de qualquer execução futura, ler [arquivos, web e painéis](files-and-panes/HANDOFF.md). Total planejado: 37 itens e 39 tickets. O gate original #81 continua dos trinta itens iniciais; o novo gate cobre o adendo e depende de #81, sem bloqueio reverso. Nenhuma implementação iniciada.

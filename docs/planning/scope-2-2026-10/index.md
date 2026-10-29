@@ -27,3 +27,8 @@ O agrupamento pode ser ajustado pelo resultado entregue. Não publicar um commit
 Bloqueadores encerrados permitem atribuição apenas depois da autorização de desenvolvimento. Não existe ordem de execução automática pelo rótulo. Tickets com bloqueadores possuem vínculos nativos no GitHub; todos são sub-issues da especificação. O tracker é autoridade de status, não este snapshot.
 
 Nenhum código do aplicativo foi alterado ou validado nesta rodada. Vídeo, capturas e transcrição pessoais não foram publicados. A aceitação integrada é o último ticket, bloqueado por todas as entregas.
+
+
+## Ampliação posterior — arquivos, web e painéis
+
+[Adendo consolidado](files-and-panes/index.md): sete itens adicionais (S2-31–37), nove novos tickets (T31–T39) e spec https://github.com/hodeliun/Morrow/issues/82. Total atual: **37 itens e 39 tickets**. Os números anteriores nesta página registram a rodada inicial. Execução continua não iniciada nesta rodada.

@@ -1,0 +1,142 @@
+{
+  "planning_only": true,
+  "implementation_authorized": false,
+  "baseline": "11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f",
+  "extends_spec": 51,
+  "parent": {
+    "number": 82,
+    "id": 6089782196,
+    "html_url": "https://github.com/hodeliun/Morrow/issues/82"
+  },
+  "tickets": {
+    "31": {
+      "number": 83,
+      "id": 6089782669,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/83"
+    },
+    "32": {
+      "number": 84,
+      "id": 6089783014,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/84"
+    },
+    "33": {
+      "number": 85,
+      "id": 6089783345,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/85"
+    },
+    "34": {
+      "number": 86,
+      "id": 6089783670,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/86"
+    },
+    "35": {
+      "number": 87,
+      "id": 6089784023,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/87"
+    },
+    "36": {
+      "number": 88,
+      "id": 6089784311,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/88"
+    },
+    "37": {
+      "number": 89,
+      "id": 6089784695,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/89"
+    },
+    "38": {
+      "number": 90,
+      "id": 6089785056,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/90"
+    },
+    "39": {
+      "number": 91,
+      "id": 6089785343,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/91"
+    }
+  },
+  "children": [
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39
+  ],
+  "edges": [
+    [
+      32,
+      31
+    ],
+    [
+      33,
+      31
+    ],
+    [
+      34,
+      33
+    ],
+    [
+      35,
+      33
+    ],
+    [
+      36,
+      33
+    ],
+    [
+      38,
+      33
+    ],
+    [
+      38,
+      37
+    ],
+    [
+      39,
+      31
+    ],
+    [
+      39,
+      32
+    ],
+    [
+      39,
+      33
+    ],
+    [
+      39,
+      34
+    ],
+    [
+      39,
+      35
+    ],
+    [
+      39,
+      36
+    ],
+    [
+      39,
+      37
+    ],
+    [
+      39,
+      38
+    ],
+    [
+      39,
+      81
+    ]
+  ],
+  "external_blockers": {
+    "81": {
+      "number": 81,
+      "id": 6089552896,
+      "html_url": "https://github.com/hodeliun/Morrow/issues/81"
+    }
+  }
+}

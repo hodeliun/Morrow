@@ -87,3 +87,8 @@ Implementar nesta rodada; iniciar agentes executores; instalar/buildar/publicar 
 ## Further Notes
 
 Grilling e decisões explícitas: [GRILLING.md](GRILLING.md). Referências oficiais limitadas: [RESEARCH.md](RESEARCH.md). Cobertura verificável: [ACCEPTANCE.md](ACCEPTANCE.md). Os tickets e relações do GitHub são autoridade de status; a documentação não é prova de implementação. A política existente de commits e de release continua válida, com separação de novidades da base e do fork e mídia sintética demonstrativa. Ready-for-agent descreve preparação, não despacho.
+
+
+## Addendum — files, web and panes
+
+[Additional specification](files-and-panes/SPEC.md) extends this original thirty-item baseline to 37 source requirements and 39 tickets. Read both before executing. The original specification issue is preserved; the new specification is https://github.com/hodeliun/Morrow/issues/82. This is planning only.

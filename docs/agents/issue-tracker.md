@@ -34,3 +34,6 @@ remained open pending the final evidence and Sol review. Do not close either fro
 this local snapshot alone.
 
 Aumento de Escopo 2, 28 October 2026: specification #51 and thirty native child tickets #52–#81. See [planning](../planning/scope-2-2026-10/index.md). All remain planning-only; ready-for-agent does not authorize execution. Native blocking edges are authoritative on GitHub. No product implementation was performed in this planning round.
+
+
+Files, web and panes addendum: spec #82, native child tickets #83–#91. [Planning](../planning/scope-2-2026-10/files-and-panes/index.md). This adds seven source items and nine tickets; the previous thirty are preserved. The new acceptance gate is blocked by #81 and the eight new deliveries; no reverse blocking edge. Implementation remains outside this round.

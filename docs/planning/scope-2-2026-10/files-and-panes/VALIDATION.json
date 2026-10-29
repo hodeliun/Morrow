@@ -1,0 +1,18 @@
+{
+  "planning_only": true,
+  "product_tests_run": false,
+  "added_source_items": 7,
+  "total_source_items": 37,
+  "added_tickets": 9,
+  "total_tickets": 39,
+  "native_children_verified": 9,
+  "new_native_blocking_edges_verified": 16,
+  "combined_graph_edges": 63,
+  "cycles": false,
+  "old_acceptance_dependencies_preserved": true,
+  "local_links": "pass",
+  "coverage": "pass",
+  "remote_body_mirrors": "pass",
+  "sanitized_content_scan": "pass",
+  "original_scope_prefix_bytes_preserved": 48773
+}

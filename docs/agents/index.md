@@ -12,3 +12,6 @@
   links the interaction-expansion specification, tickets and handoff.
 
 - [Aumento de Escopo 2](../planning/scope-2-2026-10/index.md): internal grilling, spec and tickets; planning only, implementation not authorized.
+
+
+- [Files, web and four panes](../planning/scope-2-2026-10/files-and-panes/index.md): additive planning; 37 total source items and 39 total tickets, no implementation started.
