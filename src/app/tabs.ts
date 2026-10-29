@@ -1,119 +1,301 @@
-// tabs remember a place each, like a browser: the open tab follows wherever you go.
-// a tab can be split in two, each side with its own back and forward history
 import { createContext, useContext, useSyncExternalStore } from 'react';
+import {
+  applyPanePreset,
+  availablePaneTabs,
+  beginPaneResize as beginPaneResizeModel,
+  cancelPaneResize as cancelPaneResizeModel,
+  closePane,
+  createPaneLayout,
+  focusPane,
+  migrateLegacySplit,
+  movePaneTab,
+  previewPaneResize as previewPaneResizeModel,
+  removePaneTabs,
+  resetPaneSplit,
+  swapPaneTabs,
+  visiblePaneLeaves,
+} from './paneLayout';
+import type { PaneLayout, PanePreset, PaneResizeSession, PaneTabInstance } from './paneLayout';
+import { forgetTabScrollPositions } from './tabScroll';
+import {
+  MAX_PANE_TAB_INSTANCES,
+  PANE_TABS_STORAGE_KEY,
+  persistPaneTabsSnapshot,
+  readPaneTabsSnapshot,
+} from './paneLayoutStorage';
+import { getPreferences, setPreferences } from './platform/preferences';
 
-export type PaneId = 'main' | 'side';
+export type PaneId = string;
+type PaneTab = PaneTabInstance<string>;
+type PaneLayoutState = PaneLayout<PaneTab>;
 
 export interface PaneHistory {
-  hash: string;
-  back: string[];
-  forward: string[];
+  readonly hash: string;
+  readonly back: readonly string[];
+  readonly forward: readonly string[];
 }
 
-export interface Tab extends PaneHistory {
-  id: string;
-  // the second page shown beside the first, null when the tab is not split
-  side: PaneHistory | null;
+// Compatibility projection for existing tab controls while routes migrate to pane instances.
+export interface Tab extends PaneTab {
+  readonly hash: string;
+  readonly side: PaneHistory | null;
 }
 
-interface TabState {
-  tabs: Tab[];
-  active: string;
-  // the side of a split tab that navigation goes to, the one last clicked or typed in
-  pane: PaneId;
-  // recently closed tabs, newest last, so they can be opened again
-  closed: string[];
+export interface TabState {
+  readonly tabs: readonly Tab[];
+  // Most recently selected item; when the focused leaf is occupied this equals its tabId.
+  readonly active: string;
+  // Stable ID of the leaf receiving implicit navigation.
+  readonly pane: PaneId;
+  readonly layout: PaneLayoutState;
+  // Recently closed routes, newest last, for the existing reopen command.
+  readonly closed: readonly string[];
+  // Invalid or future persisted state is left untouched; this window remains memory-only.
+  readonly persistenceWritable: boolean;
 }
 
-const KEY = 'morrow.tabs';
-const MAX_TABS = 20;
+const KEY = PANE_TABS_STORAGE_KEY;
+const LAYOUT_ID = 'morrow-pane-layout';
+const MAX_TAB_GROUPS = 20;
 const MAX_HISTORY = 50;
 const MAX_CLOSED = 10;
+const EMPTY_HASH = '#/';
 const listeners = new Set<() => void>();
 let counter = 0;
-const newTabId = () => `t${Date.now().toString(36)}${(counter++).toString(36)}`;
+let state: TabState | null = null;
+let arriving: string | null = null;
+let lastNavigation = 0;
 
-const strings = (value: unknown, limit = MAX_HISTORY): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(-limit) : [];
+const newTabId = (used: ReadonlySet<string> = new Set()): string => {
+  let id: string;
+  do id = `t${Date.now().toString(36)}${(counter++).toString(36)}`;
+  while (used.has(id));
+  return id;
+};
 
-function readPane(raw: unknown): PaneHistory | null {
-  const value = raw as Partial<PaneHistory> | null;
-  if (typeof value?.hash !== 'string') return null;
-  return { hash: value.hash, back: strings(value.back), forward: strings(value.forward) };
+function emptyTab(id: string, target: string, groupId = id): PaneTab {
+  return { id, groupId, target, back: [], forward: [] };
 }
 
-function load(): TabState {
-  const here = window.location.hash || '#/';
-  try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Partial<TabState> | null;
-    const tabs = Array.isArray(raw?.tabs)
-      ? raw.tabs
-          .filter((tab): tab is Tab => typeof tab?.id === 'string' && typeof tab.hash === 'string')
-          .slice(0, MAX_TABS)
-          .map((tab) => ({ ...readPane(tab)!, id: tab.id, side: readPane(tab.side) }))
-      : [];
-    const active = tabs.find((tab) => tab.id === raw?.active) ?? tabs[0];
-    if (active) {
-      // the window opens where it was, so the open tab starts there too
-      if (active.hash !== here) active.back = [...active.back, active.hash].slice(-MAX_HISTORY);
-      active.hash = here;
-      return {
-        tabs,
-        active: active.id,
-        pane: raw?.pane === 'side' && active.side ? 'side' : 'main',
-        closed: strings(raw?.closed, MAX_CLOSED),
-      };
-    }
-  } catch {
-    // tabs are a convenience, a fresh start is fine
+function paneLeaf(layout: PaneLayoutState, paneId: PaneId) {
+  return visiblePaneLeaves(layout).find((leaf) => leaf.id === paneId) ?? null;
+}
+
+function tabForLeaf(layout: PaneLayoutState, paneId: PaneId): PaneTab | null {
+  const tabId = paneLeaf(layout, paneId)?.tabId;
+  return tabId ? (layout.tabs.find((tab) => tab.id === tabId) ?? null) : null;
+}
+
+function projectTabViews(layout: PaneLayoutState): Tab[] {
+  const legacyPairs = new Map<string, { main: PaneTab; side: PaneTab }>();
+  for (const tab of layout.tabs) {
+    const group = layout.tabs.filter((item) => item.groupId === tab.groupId);
+    const main = group.find((item) => item.id === item.groupId);
+    const side = group.find((item) => item.id !== item.groupId && item.id.startsWith(`${item.groupId}:side`));
+    if (group.length === 2 && main && side) legacyPairs.set(tab.groupId, { main, side });
   }
-  const id = newTabId();
+  return layout.tabs.map((tab) => {
+    const pair = legacyPairs.get(tab.groupId);
+    const sibling = pair ? (tab.id === pair.main.id ? pair.side : pair.main) : null;
+    return {
+      ...tab,
+      hash: tab.target,
+      side: sibling ? { hash: sibling.target, back: sibling.back, forward: sibling.forward } : null,
+    };
+  });
+}
+
+function stateFromLayout(
+  layout: PaneLayoutState,
+  closed: readonly string[],
+  persistenceWritable: boolean,
+  previousActive = '',
+): TabState {
+  const tabs = projectTabViews(layout);
+  const active =
+    tabForLeaf(layout, layout.focusedPaneId)?.id ??
+    (tabs.some((tab) => tab.id === previousActive) ? previousActive : (tabs[0]?.id ?? ''));
   return {
-    tabs: [{ id, hash: here, back: [], forward: [], side: null }],
-    active: id,
-    pane: 'main',
-    closed: [],
+    tabs,
+    active,
+    pane: layout.focusedPaneId,
+    layout,
+    closed: closed.slice(-MAX_CLOSED),
+    persistenceWritable,
   };
 }
 
-let state: TabState | null = null;
-const current = (): TabState => (state ??= load());
-
-function set(next: TabState): void {
+function writeState(next: TabState, persist = true): void {
   state = next;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    // not remembering tabs is harmless
+  if (persist && next.persistenceWritable) {
+    try {
+      persistPaneTabsSnapshot(localStorage, next.layout, next.closed, true);
+    } catch {
+      // A private or unavailable storage area leaves this window usable in memory.
+    }
   }
   for (const listener of listeners) listener();
 }
 
-const activeTab = (now = current()): Tab => now.tabs.find((tab) => tab.id === now.active) ?? now.tabs[0]!;
-
-function updateActive(change: (tab: Tab) => Tab, extra: Partial<TabState> = {}): void {
-  const now = current();
-  set({ ...now, ...extra, tabs: now.tabs.map((tab) => (tab.id === now.active ? change(tab) : tab)) });
+function visit(tab: PaneTab, target: string, replace: boolean): PaneTab {
+  if (tab.target === target) return tab;
+  if (replace) return { ...tab, target };
+  return {
+    ...tab,
+    target,
+    back: [...tab.back, tab.target].slice(-MAX_HISTORY),
+    forward: [],
+  };
 }
 
-// a hash the main side is about to show because of a tab switch or back and forward, not a new visit
-let arriving: string | null = null;
+function replaceTab(layout: PaneLayoutState, tabId: string, nextTab: PaneTab): PaneLayoutState {
+  if (!layout.tabs.some((tab) => tab.id === tabId)) return layout;
+  const tabs = layout.tabs.map((tab) => (tab.id === tabId ? nextTab : tab));
+  return { ...layout, tabs };
+}
+
+function tabIdSet(layout: PaneLayoutState): Set<string> {
+  return new Set(layout.tabs.map((tab) => tab.id));
+}
+
+function readCurrentHash(): string {
+  return window.location.hash || EMPTY_HASH;
+}
+
+function replaceBrowserHash(hash: string): void {
+  if (!hash || window.location.hash === hash || (hash === EMPTY_HASH && !window.location.hash)) return;
+  try {
+    window.history.replaceState(null, '', hash);
+  } catch {
+    // The in-memory pane state remains authoritative if the host rejects a URL replacement.
+  }
+}
 
 function go(hash: string): void {
-  if (window.location.hash === hash || (hash === '#/' && !window.location.hash)) return;
+  if (window.location.hash === hash || (hash === EMPTY_HASH && !window.location.hash)) return;
   arriving = hash;
   window.location.hash = hash;
 }
 
-function visit(pane: PaneHistory, hash: string, replace: boolean): PaneHistory {
-  if (pane.hash === hash) return pane;
-  if (replace) return { ...pane, hash };
-  return { hash, back: [...pane.back, pane.hash].slice(-MAX_HISTORY), forward: [] };
+function initialState(hash: string, persistenceWritable: boolean): TabState {
+  const id = newTabId();
+  const layout = createPaneLayout(LAYOUT_ID, [emptyTab(id, hash)], id) as PaneLayoutState;
+  return stateFromLayout(layout, [], persistenceWritable);
 }
 
-// a mouse's back button can reach the app both as a button press and as a window app command. whichever
-// comes first moves, the other one for the same press is let go
-let lastNavigation = 0;
+function load(): TabState {
+  const here = readCurrentHash();
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(KEY);
+  } catch {
+    return initialState(here, false);
+  }
+
+  const snapshot = readPaneTabsSnapshot(raw);
+  if (snapshot.kind === 'empty') return initialState(here, true);
+  if (snapshot.kind === 'current') {
+    const restored = stateFromLayout(snapshot.snapshot.layout, snapshot.snapshot.closed, true);
+    const focused = tabForLeaf(restored.layout, restored.pane);
+    if (focused) replaceBrowserHash(focused.target);
+    return restored;
+  }
+  if (snapshot.kind === 'legacy') {
+    const layout = migrateLegacySplit(LAYOUT_ID, snapshot.snapshot, getPreferences().splitShare);
+    const activeMainId = snapshot.snapshot.active;
+    const main = layout.tabs.find((tab) => tab.id === activeMainId);
+    const reconciled =
+      main && main.target !== here ? replaceTab(layout, main.id, visit(main, here, false)) : layout;
+    const migrated = stateFromLayout(reconciled, snapshot.snapshot.closed, true);
+    try {
+      persistPaneTabsSnapshot(localStorage, migrated.layout, migrated.closed, true);
+    } catch {
+      // Keep the validated in-memory migration; the legacy payload remains available if storage fails.
+    }
+    const focused = tabForLeaf(migrated.layout, migrated.pane);
+    if (focused) replaceBrowserHash(focused.target);
+    return migrated;
+  }
+
+  // A corrupt or future payload must never be silently replaced by a fresh default.
+  return initialState(here, false);
+}
+
+const current = (): TabState => (state ??= load());
+
+function makeStateWithLayout(
+  now: TabState,
+  layout: PaneLayoutState,
+  closed = now.closed,
+  active = now.active,
+): TabState {
+  return stateFromLayout(layout, closed, now.persistenceWritable, active);
+}
+
+export function getTabForPane(paneId: PaneId, tabs = current()): PaneTab | null {
+  return tabForLeaf(tabs.layout, paneId);
+}
+
+export function getVisiblePanes(tabs = current()) {
+  return visiblePaneLeaves(tabs.layout);
+}
+
+export function getAvailableTabs(tabs = current()): readonly PaneTab[] {
+  return availablePaneTabs(tabs.layout);
+}
+
+export function routeHashForPane(paneId: PaneId, tabs = current()): string {
+  return getTabForPane(paneId, tabs)?.target ?? EMPTY_HASH;
+}
+
+export function routeHashForTabId(
+  tabId: string,
+  tabs: readonly { readonly id: string; readonly target: string }[] = current().layout.tabs,
+): string {
+  return tabs.find((tab) => tab.id === tabId)?.target ?? EMPTY_HASH;
+}
+
+export function paneIdForTabId(tabId: string, tabs = current()): PaneId {
+  const leaves = visiblePaneLeaves(tabs.layout);
+  const assigned = leaves.find((leaf) => leaf.tabId === tabId);
+  if (assigned) return assigned.id;
+
+  // A cached host has no visible destination; don't let its callbacks address a pane another tab took over.
+  const visibleIds = new Set(leaves.map((leaf) => leaf.id));
+  const cacheKey = Array.from(tabId, (character) => character.codePointAt(0)!.toString(16)).join('-');
+  let cachedId = `morrow-cached-pane:${cacheKey}`;
+  while (visibleIds.has(cachedId)) cachedId += ':hidden';
+  return cachedId;
+}
+
+function activeTab(now = current()): PaneTab | null {
+  return getTabForPane(now.pane, now) ?? now.tabs.find((tab) => tab.id === now.active) ?? now.tabs[0] ?? null;
+}
+
+function makeAvailableTab(layout: PaneLayoutState, target: string): PaneTab | null {
+  if (layout.tabs.length >= MAX_PANE_TAB_INSTANCES) return null;
+  const id = newTabId(tabIdSet(layout));
+  const groupIds = new Set(layout.tabs.map((tab) => tab.groupId));
+  const active = layout.tabs.find((tab) => tab.id === activeTab(current())?.id);
+  const groupId = groupIds.size < MAX_TAB_GROUPS ? id : (active?.groupId ?? layout.tabs[0]?.groupId ?? id);
+  return emptyTab(id, target, groupId);
+}
+
+function insertAfterActive(tabs: readonly PaneTab[], activeId: string, tab: PaneTab): PaneTab[] {
+  const next = [...tabs];
+  const index = next.findIndex((item) => item.id === activeId);
+  next.splice(index < 0 ? next.length : index + 1, 0, tab);
+  return next;
+}
+
+function mirrorFocusedTarget(next: TabState, replace = false): void {
+  const tab = getTabForPane(next.pane, next);
+  if (tab) {
+    if (replace) replaceBrowserHash(tab.target);
+    else go(tab.target);
+  }
+}
+
 export function claimNavigation(): boolean {
   if (Date.now() - lastNavigation < 400) return false;
   lastNavigation = Date.now();
@@ -123,21 +305,29 @@ export function claimNavigation(): boolean {
 export function startTabs(): () => void {
   current();
   const onHash = () => {
-    const hash = window.location.hash || '#/';
-    const tab = activeTab();
+    const hash = readCurrentHash();
     const expected = arriving === hash;
     arriving = null;
-    if (tab.hash === hash) return;
-    updateActive((item) => (expected ? { ...item, hash } : { ...item, ...visit(item, hash, false) }));
+    if (expected) return;
+
+    const now = current();
+    const tab = getTabForPane(now.pane, now);
+    if (tab) {
+      if (tab.target === hash) return;
+      const layout = replaceTab(now.layout, tab.id, visit(tab, hash, false));
+      writeState(makeStateWithLayout(now, layout));
+      return;
+    }
+    showInPane(hash, now.pane);
   };
-  // ctrl or cmd click, or a middle click, on anything that points at a page opens it in a new tab,
-  // alt click opens it beside the page you are on
+
+  // Ctrl/Cmd click opens a new tab; Alt click explicitly fills another pane.
   const onClick = (event: MouseEvent) => {
     const newTab =
       event.type === 'auxclick' ? event.button === 1 : event.button === 0 && (event.ctrlKey || event.metaKey);
-    const toSide =
+    const toPane =
       event.type === 'click' && event.button === 0 && event.altKey && !event.ctrlKey && !event.metaKey;
-    if (!newTab && !toSide) return;
+    if (!newTab && !toPane) return;
     const target = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-page-id]');
     const id = target?.dataset.pageId;
     if (!id || target.closest('.tab-bar')) return;
@@ -147,13 +337,12 @@ export function startTabs(): () => void {
     if (newTab) openTab(hash);
     else openSide(hash);
   };
-  // a mouse's back and forward buttons. chromium only reports their press and release, never a click, and
-  // windows may also send them to the window as app commands, which arrive as the go back action
   const onMouseButton = (event: MouseEvent) => {
     if (event.button !== 3 && event.button !== 4) return;
     event.preventDefault();
     if (event.type !== 'mouseup' || !claimNavigation()) return;
     const pane = paneAt(event.target);
+    setActivePane(pane);
     if (event.button === 3) goBack(pane);
     else goForward(pane);
   };
@@ -181,88 +370,124 @@ export function startTabs(): () => void {
 
 function paneAt(target: EventTarget | null): PaneId {
   const element = target instanceof Element ? target.closest<HTMLElement>('[data-pane]') : null;
-  return element?.dataset.pane === 'side' ? 'side' : element ? 'main' : current().pane;
+  return element?.dataset.pane ?? current().pane;
 }
 
-// where navigation goes: the side of a split tab when that side was used last
 export function targetPane(): PaneId {
-  const now = current();
-  return now.pane === 'side' && activeTab(now).side ? 'side' : 'main';
+  return current().layout.focusedPaneId;
 }
 
-// the hash shown in the pane navigation goes to
 export function activeHash(): string {
-  const tab = activeTab();
-  return targetPane() === 'side' ? tab.side!.hash : window.location.hash || '#/';
+  return routeHashForPane(targetPane());
 }
 
 export function setActivePane(pane: PaneId): void {
   const now = current();
-  const next = pane === 'side' && activeTab(now).side ? 'side' : 'main';
-  if (now.pane !== next) set({ ...now, pane: next });
+  const layout = focusPane(now.layout, pane);
+  if (layout === now.layout) return;
+  const next = makeStateWithLayout(now, layout);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
 }
 
-// shows a place in the main side, replacing keeps back and forward as they are
-export function showInMain(hash: string, replace = false): void {
-  if (window.location.hash === hash) return;
-  if (!replace) {
-    window.location.hash = hash;
-    return;
+export function showInPane(hash: string, pane = targetPane(), replace = false): void {
+  const now = current();
+  if (!paneLeaf(now.layout, pane)) return;
+
+  let layout = now.layout;
+  let tab = getTabForPane(pane, now);
+  if (!tab) {
+    tab = makeAvailableTab(layout, hash);
+    if (tab) {
+      layout = { ...layout, tabs: insertAfterActive(layout.tabs, now.active, tab) };
+    } else {
+      tab = availablePaneTabs(layout)[0] ?? null;
+      if (!tab) return;
+      layout = replaceTab(layout, tab.id, visit(tab, hash, replace));
+    }
+    if (!layout.tabs.some((item) => item.id === tab!.id)) layout = { ...layout, tabs: [...layout.tabs, tab] };
+    layout = movePaneTab(layout, tab.id, pane);
+  } else {
+    layout = replaceTab(layout, tab.id, visit(tab, hash, replace));
   }
-  updateActive((item) => ({ ...item, hash }));
-  history.replaceState(null, '', hash);
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  layout = focusPane(layout, pane);
+  const next = makeStateWithLayout(now, layout, now.closed, tab.id);
+  writeState(next);
+  if (next.pane === pane) {
+    if (replace) replaceBrowserHash(hash);
+    else go(hash);
+  }
 }
 
-// shows a place in the side of the split, used by navigation while that side is active
-export function showInSide(hash: string, replace = false): void {
-  const tab = activeTab();
-  if (!tab.side) return;
-  updateActive((item) => ({ ...item, side: visit(item.side!, hash, replace) }));
+export function setPanePreset(preset: PanePreset): void {
+  const now = current();
+  const layout = applyPanePreset(now.layout, preset);
+  if (layout === now.layout) return;
+  const next = makeStateWithLayout(now, layout);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
 }
 
-// splits the tab, the new side shows the given place and becomes where navigation goes
-export function openSide(hash = activeHash()): void {
-  updateActive((item) => ({ ...item, side: { hash, back: [], forward: [] } }), { pane: 'side' });
+export function openSide(hash?: string): void {
+  let now = current();
+  let layout = now.layout;
+  if (visiblePaneLeaves(layout).length === 1) layout = applyPanePreset(layout, 'two-columns');
+  const target = visiblePaneLeaves(layout).find((leaf) => leaf.id !== now.pane && leaf.tabId === null);
+  if (!target) return;
+  layout = focusPane(layout, target.id);
+  if (layout !== now.layout) {
+    now = makeStateWithLayout(now, layout);
+    writeState(now);
+  }
+  if (hash !== undefined) showInPane(hash, target.id);
+  else mirrorFocusedTarget(now, true);
 }
 
 export function closeSide(): void {
-  if (!activeTab().side) return;
-  updateActive((item) => ({ ...item, side: null }), { pane: 'main' });
+  const now = current();
+  if (visiblePaneLeaves(now.layout).length <= 1) return;
+  const layout = closePane(now.layout, now.pane);
+  if (layout === now.layout) return;
+  const next = makeStateWithLayout(now, layout);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
 }
 
 export function swapSides(): void {
-  const tab = activeTab();
-  if (!tab.side) return;
-  const main: PaneHistory = { hash: tab.hash, back: tab.back, forward: tab.forward };
-  const side = tab.side;
-  updateActive((item) => ({ ...item, ...side, side: main }));
-  go(side.hash);
+  const now = current();
+  const leaves = visiblePaneLeaves(now.layout);
+  if (leaves.length < 2) return;
+  const layout = swapPaneTabs(now.layout, leaves[0]!.id, leaves[1]!.id);
+  if (layout === now.layout) return;
+  const next = makeStateWithLayout(now, layout);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
 }
 
-function paneOf(tab: Tab, pane: PaneId): PaneHistory | null {
-  return pane === 'side' ? tab.side : tab;
-}
-
-export function canGo(tab: Tab, pane: PaneId, direction: 'back' | 'forward'): boolean {
-  return (paneOf(tab, pane)?.[direction].length ?? 0) > 0;
+export function canGo(
+  tab: Pick<PaneTab, 'id' | 'back' | 'forward'>,
+  pane: PaneId,
+  direction: 'back' | 'forward',
+): boolean {
+  const assigned = getTabForPane(pane);
+  return assigned?.id === tab.id && tab[direction].length > 0;
 }
 
 function step(pane: PaneId, direction: 'back' | 'forward'): void {
-  const tab = activeTab();
-  const history = paneOf(tab, pane);
-  if (!history || history[direction].length === 0) return;
-  const list = [...history[direction]];
-  const hash = list.pop()!;
-  const left = [...(direction === 'back' ? history.forward : history.back), history.hash].slice(-MAX_HISTORY);
-  const moved: PaneHistory =
-    direction === 'back' ? { hash, back: list, forward: left } : { hash, back: left, forward: list };
-  if (pane === 'side') {
-    updateActive((item) => ({ ...item, side: moved }), { pane: 'side' });
-    return;
-  }
-  updateActive((item) => ({ ...item, ...moved }), { pane: 'main' });
-  go(hash);
+  const now = current();
+  const tab = getTabForPane(pane, now);
+  if (!tab || tab[direction].length === 0) return;
+  const list = [...tab[direction]];
+  const target = list.pop()!;
+  const opposite = direction === 'back' ? tab.forward : tab.back;
+  const updated: PaneTab =
+    direction === 'back'
+      ? { ...tab, target, back: list, forward: [...opposite, tab.target].slice(-MAX_HISTORY) }
+      : { ...tab, target, back: [...opposite, tab.target].slice(-MAX_HISTORY), forward: list };
+  const layout = replaceTab(now.layout, tab.id, updated);
+  const next = makeStateWithLayout(now, layout, now.closed, tab.id);
+  writeState(next);
+  if (pane === next.pane) go(target);
 }
 
 export function goBack(pane: PaneId = targetPane()): void {
@@ -273,71 +498,106 @@ export function goForward(pane: PaneId = targetPane()): void {
   step(pane, 'forward');
 }
 
-export function openTab(hash = '#/'): void {
+export function openTab(hash = EMPTY_HASH): void {
   const now = current();
-  if (now.tabs.length >= MAX_TABS) {
-    go(hash);
+  const groups = new Set(now.tabs.map((tab) => tab.groupId));
+  const tab = groups.size < MAX_TAB_GROUPS ? makeAvailableTab(now.layout, hash) : null;
+  if (!tab) {
+    showInPane(hash, now.pane);
     return;
   }
-  const tab: Tab = { id: newTabId(), hash, back: [], forward: [], side: null };
-  const index = now.tabs.findIndex((item) => item.id === now.active);
-  const tabs = [...now.tabs];
-  tabs.splice(index + 1, 0, tab);
-  set({ ...now, tabs, active: tab.id, pane: 'main' });
+  let layout: PaneLayoutState = { ...now.layout, tabs: insertAfterActive(now.layout.tabs, now.active, tab) };
+  layout = movePaneTab(layout, tab.id, now.pane);
+  const next = makeStateWithLayout(now, layout, now.closed, tab.id);
+  writeState(next);
   go(hash);
 }
 
 export function activateTab(id: string): void {
   const now = current();
   const tab = now.tabs.find((item) => item.id === id);
-  if (!tab || id === now.active) return;
-  set({ ...now, active: id, pane: 'main' });
-  go(tab.hash);
+  if (!tab) return;
+  const alreadyVisible = visiblePaneLeaves(now.layout).find((leaf) => leaf.tabId === id);
+  const layout = alreadyVisible
+    ? focusPane(now.layout, alreadyVisible.id)
+    : movePaneTab(now.layout, id, now.pane);
+  if (layout === now.layout) return;
+  const next = makeStateWithLayout(now, layout, now.closed, id);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
+}
+
+function nextAfterRemoval(now: TabState, layout: PaneLayoutState, index: number): PaneLayoutState {
+  const nextTab = layout.tabs[Math.min(index, layout.tabs.length - 1)];
+  if (!nextTab) return layout;
+  const existingPane = visiblePaneLeaves(layout).find((leaf) => leaf.tabId === nextTab.id);
+  if (existingPane) return focusPane(layout, existingPane.id);
+  return movePaneTab(layout, nextTab.id, now.pane);
+}
+
+function closedWith(now: TabState, tabs: readonly Pick<PaneTab, 'target'>[]): string[] {
+  return [...now.closed, ...tabs.map((tab) => tab.target)].slice(-MAX_CLOSED);
 }
 
 export function closeTab(id = current().active): void {
   const now = current();
   if (now.tabs.length <= 1) return;
   const index = now.tabs.findIndex((tab) => tab.id === id);
-  if (index === -1) return;
-  const tabs = now.tabs.filter((tab) => tab.id !== id);
-  const closed = [...now.closed, now.tabs[index]!.hash].slice(-MAX_CLOSED);
-  if (id !== now.active) {
-    set({ ...now, tabs, closed });
-    return;
-  }
-  const next = tabs[Math.min(index, tabs.length - 1)]!;
-  set({ ...now, tabs, active: next.id, pane: 'main', closed });
-  go(next.hash);
+  if (index < 0) return;
+  const removed = now.tabs[index]!;
+  const layout = removePaneTabs(now.layout, new Set([id]));
+  const isFocused = getTabForPane(now.pane, now)?.id === id || now.active === id;
+  const nextLayout = isFocused ? nextAfterRemoval(now, layout, index) : layout;
+  const next = makeStateWithLayout(now, nextLayout, closedWith(now, [removed]));
+  forgetTabScrollPositions(id);
+  writeState(next);
+  if (isFocused) mirrorFocusedTarget(next);
 }
 
 export function closeOtherTabs(id = current().active): void {
   const now = current();
   const keep = now.tabs.find((tab) => tab.id === id);
   if (!keep) return;
-  const closed = [...now.closed, ...now.tabs.filter((tab) => tab.id !== id).map((tab) => tab.hash)];
-  set({ ...now, tabs: [keep], active: id, pane: 'main', closed: closed.slice(-MAX_CLOSED) });
-  go(keep.hash);
+  const removed = now.tabs.filter((tab) => tab.id !== id);
+  if (removed.length === 0) return;
+  removed.forEach((tab) => forgetTabScrollPositions(tab.id));
+  let layout = removePaneTabs(now.layout, new Set(removed.map((tab) => tab.id)));
+  const existingPane = visiblePaneLeaves(layout).find((leaf) => leaf.tabId === id);
+  layout = existingPane ? focusPane(layout, existingPane.id) : movePaneTab(layout, id, now.pane);
+  const next = makeStateWithLayout(now, layout, closedWith(now, removed), id);
+  writeState(next);
+  mirrorFocusedTarget(next);
 }
 
 export function closeTabsToRight(id = current().active): void {
   const now = current();
   const index = now.tabs.findIndex((tab) => tab.id === id);
-  if (index === -1) return;
-  const gone = now.tabs.slice(index + 1);
-  if (gone.length === 0) return;
-  const tabs = now.tabs.slice(0, index + 1);
-  const closed = [...now.closed, ...gone.map((tab) => tab.hash)].slice(-MAX_CLOSED);
-  const stays = tabs.some((tab) => tab.id === now.active);
-  set({ ...now, tabs, closed, active: stays ? now.active : id, pane: stays ? now.pane : 'main' });
-  if (!stays) go(tabs[index]!.hash);
+  if (index < 0) return;
+  const removed = now.tabs.slice(index + 1);
+  if (removed.length === 0) return;
+  removed.forEach((tab) => forgetTabScrollPositions(tab.id));
+  let layout = removePaneTabs(now.layout, new Set(removed.map((tab) => tab.id)));
+  const focused = getTabForPane(now.pane, now);
+  const focusedStillExists = focused && layout.tabs.some((tab) => tab.id === focused.id);
+  if (!focusedStillExists) {
+    const existingPane = visiblePaneLeaves(layout).find((leaf) => leaf.tabId === id);
+    layout = existingPane ? focusPane(layout, existingPane.id) : movePaneTab(layout, id, now.pane);
+  }
+  const next = makeStateWithLayout(
+    now,
+    layout,
+    closedWith(now, removed),
+    focusedStillExists ? now.active : id,
+  );
+  writeState(next);
+  if (!focusedStillExists) mirrorFocusedTarget(next);
 }
 
 export function reopenClosedTab(): void {
   const now = current();
   const hash = now.closed[now.closed.length - 1];
   if (!hash) return;
-  set({ ...now, closed: now.closed.slice(0, -1) });
+  writeState({ ...now, closed: now.closed.slice(0, -1) });
   openTab(hash);
 }
 
@@ -348,7 +608,6 @@ export function stepTab(direction: 1 | -1): void {
   activateTab(now.tabs[(index + direction + now.tabs.length) % now.tabs.length]!.id);
 }
 
-// the ninth asks for the last tab, like a browser
 export function activateTabAt(position: number): void {
   const tabs = current().tabs;
   const tab = position >= 9 ? tabs[tabs.length - 1] : tabs[position - 1];
@@ -357,11 +616,55 @@ export function activateTabAt(position: number): void {
 
 export function moveTab(id: string, to: number): void {
   const now = current();
-  const tab = now.tabs.find((item) => item.id === id);
+  const tab = now.layout.tabs.find((item) => item.id === id);
   if (!tab) return;
-  const tabs = now.tabs.filter((item) => item.id !== id);
+  const tabs = now.layout.tabs.filter((item) => item.id !== id);
   tabs.splice(Math.max(0, Math.min(tabs.length, to)), 0, tab);
-  set({ ...now, tabs });
+  writeState(makeStateWithLayout(now, { ...now.layout, tabs }));
+}
+
+export function beginPaneResize(splitId: string): PaneResizeSession | null {
+  return beginPaneResizeModel(nowLayout(), splitId);
+}
+
+function nowLayout(): PaneLayoutState {
+  return current().layout;
+}
+
+export function previewPaneResizeSession(session: PaneResizeSession, ratio: number): void {
+  const now = current();
+  const layout = previewPaneResizeModel(now.layout, session, ratio);
+  if (layout !== now.layout) writeState(makeStateWithLayout(now, layout), false);
+}
+
+function findSplitRatio(node: PaneLayoutState['root'], splitId: string): number | null {
+  if (node.kind === 'leaf') return null;
+  if (node.id === splitId) return node.ratio;
+  return findSplitRatio(node.first, splitId) ?? findSplitRatio(node.second, splitId);
+}
+
+export function commitPaneResizeSession(session: PaneResizeSession): void {
+  const now = current();
+  if (session.layoutId !== now.layout.id || session.topologyRevision !== now.layout.topologyRevision) return;
+  writeState(now);
+  if (now.layout.root.kind === 'split' && now.layout.root.id === session.splitId) {
+    const ratio = findSplitRatio(now.layout.root, session.splitId);
+    if (ratio !== null) setPreferences({ splitShare: ratio });
+  }
+}
+
+export function cancelPaneResizeSession(session: PaneResizeSession): void {
+  const now = current();
+  const layout = cancelPaneResizeModel(now.layout, session);
+  if (layout !== now.layout) writeState(makeStateWithLayout(now, layout), false);
+}
+
+export function resetPaneSplitRatio(splitId: string): void {
+  const now = current();
+  const layout = resetPaneSplit(now.layout, splitId);
+  if (layout === now.layout) return;
+  writeState(makeStateWithLayout(now, layout));
+  if (layout.root.kind === 'split' && layout.root.id === splitId) setPreferences({ splitShare: 0.5 });
 }
 
 export function useTabs(): TabState {
@@ -380,9 +683,17 @@ export function getTabs(): TabState {
   return current();
 }
 
-// which side of the split a view is drawn in
-export const PaneContext = createContext<PaneId>('main');
+export const PaneContext = createContext<PaneId | null>(null);
+export const PaneTabContext = createContext<string | null>(null);
 
 export function usePane(): PaneId {
-  return useContext(PaneContext);
+  const pane = useContext(PaneContext);
+  const tabId = useContext(PaneTabContext);
+  return tabId === null ? (pane ?? targetPane()) : paneIdForTabId(tabId);
+}
+
+export function usePaneTabId(): string | null {
+  const paneTabId = useContext(PaneTabContext);
+  const pane = usePane();
+  return paneTabId ?? getTabForPane(pane)?.id ?? null;
 }

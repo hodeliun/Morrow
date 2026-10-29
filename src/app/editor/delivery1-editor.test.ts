@@ -5,7 +5,13 @@ import type { Transaction } from '@tiptap/pm/state';
 import { EditorState } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { getImageCropAspectRatio, shouldResetCropOnImageReplace } from './Media';
-import { revealAncestorsForPosition } from './CollapsibleHeading';
+import {
+  createSectionFoldingPlugin,
+  resetTemporaryFolding,
+  revealAncestorsForPosition,
+  sectionFoldingKey,
+  toggleSectionCollapsed,
+} from './CollapsibleHeading';
 
 describe('Delivery 1: Editor extensions & interaction logic', () => {
   describe('Ticket #30 (Reviewer fix): Image aspect ratio preservation on replace', () => {
@@ -53,10 +59,15 @@ describe('Delivery 1: Editor extensions & interaction logic', () => {
       },
     });
 
-    function createMockView(docNode: ProsemirrorNode): EditorView {
-      let state = EditorState.create({ schema: testSchema, doc: docNode });
+    function createMockView(docNode: ProsemirrorNode, editable = true): EditorView {
+      let state = EditorState.create({
+        schema: testSchema,
+        doc: docNode,
+        plugins: [createSectionFoldingPlugin()],
+      });
       const view = {
         state,
+        editable,
         dispatch: (tr: Transaction) => {
           state = state.apply(tr);
           view.state = state;
@@ -73,11 +84,14 @@ describe('Delivery 1: Editor extensions & interaction logic', () => {
         testSchema.node('paragraph', null, [testSchema.text('Paragraph inside section 1')]),
       ]);
       const view = createMockView(doc);
+      const originalDoc = view.state.doc;
       const targetPos = 16;
       const changed = revealAncestorsForPosition(view, targetPos);
       expect(changed).toBe(true);
       const h1 = view.state.doc.child(0);
-      expect(h1.attrs.collapsed).toBe(false);
+      expect(h1.attrs.collapsed).toBe(true);
+      expect(view.state.doc).toBe(originalDoc);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(0)).toBe(false);
     });
 
     test('does NOT reopen earlier heading if intermediate heading of same or lower level closed it', () => {
@@ -97,8 +111,13 @@ describe('Delivery 1: Editor extensions & interaction logic', () => {
       expect(changed).toBe(true);
       const h1A = view.state.doc.child(0);
       const h1B = view.state.doc.child(2);
-      expect(h1B.attrs.collapsed).toBe(false);
+      expect(h1B.attrs.collapsed).toBe(true);
       expect(h1A.attrs.collapsed).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(0)).toBeUndefined();
+      const secondHeadingPosition = h1A.nodeSize + view.state.doc.child(1).nodeSize;
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(secondHeadingPosition)).toBe(
+        false,
+      );
     });
 
     test('reveals both parent and child heading when target is inside nested subsection', () => {
@@ -117,8 +136,103 @@ describe('Delivery 1: Editor extensions & interaction logic', () => {
       expect(changed).toBe(true);
       const h1 = view.state.doc.child(0);
       const h2 = view.state.doc.child(1);
-      expect(h1.attrs.collapsed).toBe(false);
-      expect(h2.attrs.collapsed).toBe(false);
+      expect(h1.attrs.collapsed).toBe(true);
+      expect(h2.attrs.collapsed).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(0)).toBe(false);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(h1.nodeSize)).toBe(false);
+    });
+
+    test('reveals a read-only target with decorations and leaves its document unchanged', () => {
+      const doc = testSchema.node('doc', null, [
+        testSchema.node('heading', { level: 1, collapsible: true, collapsed: true }, [
+          testSchema.text('Read-only heading'),
+        ]),
+        testSchema.node('paragraph', null, [testSchema.text('Read-only target')]),
+      ]);
+      const view = createMockView(doc, false);
+      const originalDoc = view.state.doc;
+      const originalDecorationCount = sectionFoldingKey.getState(view.state)?.decorations.find().length;
+
+      expect(originalDecorationCount).toBe(2);
+      expect(revealAncestorsForPosition(view, 24)).toBe(true);
+      expect(view.state.doc).toBe(originalDoc);
+      expect(view.state.doc.child(0).attrs.collapsed).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(1);
+
+      view.editable = true;
+      resetTemporaryFolding(view);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(2);
+      expect(view.state.doc.child(0).attrs.collapsed).toBe(true);
+    });
+
+    test('keeps a revealed section visible when edits map its heading and target positions', () => {
+      const doc = testSchema.node('doc', null, [
+        testSchema.node('paragraph', null, [testSchema.text('Intro')]),
+        testSchema.node('heading', { level: 1, collapsible: true, collapsed: true }, [
+          testSchema.text('Folded section'),
+        ]),
+        testSchema.node('paragraph', null, [testSchema.text('Target content')]),
+      ]);
+      const view = createMockView(doc);
+      const headingPosition = view.state.doc.child(0).nodeSize;
+      const targetParagraphPosition = headingPosition + view.state.doc.child(1).nodeSize;
+      const targetPosition = targetParagraphPosition + 1 + 4;
+
+      expect(revealAncestorsForPosition(view, targetPosition)).toBe(true);
+      view.dispatch(view.state.tr.insertText('X', 3));
+      const shiftedHeadingPosition = view.state.doc.child(0).nodeSize;
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(shiftedHeadingPosition)).toBe(
+        false,
+      );
+      expect(view.state.doc.child(1).attrs.collapsed).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(1);
+
+      const shiftedTargetPosition = shiftedHeadingPosition + view.state.doc.child(1).nodeSize + 1;
+      view.dispatch(view.state.tr.insertText('Y', shiftedTargetPosition + 4));
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(shiftedHeadingPosition)).toBe(
+        false,
+      );
+      expect(view.state.doc.child(1).attrs.collapsed).toBe(true);
+      expect(view.state.doc.child(2).textContent).toBe('TargYet content');
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(1);
+    });
+
+    test('persists explicit folding in edit mode and clears the temporary reveal override', () => {
+      const doc = testSchema.node('doc', null, [
+        testSchema.node('heading', { level: 1, collapsible: true, collapsed: true }, [
+          testSchema.text('Folded section'),
+        ]),
+        testSchema.node('paragraph', null, [testSchema.text('Target content')]),
+      ]);
+      const view = createMockView(doc);
+
+      expect(revealAncestorsForPosition(view, 20)).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(1);
+
+      toggleSectionCollapsed(view, 0);
+      expect(view.state.doc.child(0).attrs.collapsed).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.has(0)).toBe(false);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(2);
+
+      toggleSectionCollapsed(view, 0);
+      expect(view.state.doc.child(0).attrs.collapsed).toBe(false);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.has(0)).toBe(false);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(1);
+    });
+
+    test('keeps explicit fold changes local while the editor is read-only', () => {
+      const doc = testSchema.node('doc', null, [
+        testSchema.node('heading', { level: 1, collapsible: true, collapsed: false }, [
+          testSchema.text('Expanded section'),
+        ]),
+        testSchema.node('paragraph', null, [testSchema.text('Target content')]),
+      ]);
+      const view = createMockView(doc, false);
+
+      toggleSectionCollapsed(view, 0);
+      expect(view.state.doc.child(0).attrs.collapsed).toBe(false);
+      expect(sectionFoldingKey.getState(view.state)?.collapsedOverrides.get(0)).toBe(true);
+      expect(sectionFoldingKey.getState(view.state)?.decorations.find()).toHaveLength(2);
     });
   });
 });

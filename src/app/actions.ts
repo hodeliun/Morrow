@@ -62,7 +62,7 @@ import {
   closeOtherTabs,
   closeSide,
   closeTab,
-  getTabs,
+  getVisiblePanes,
   goBack,
   goForward,
   openSide,
@@ -98,8 +98,7 @@ export const ACTION_SHORTCUTS = {
 };
 
 const hasSplit = () => {
-  const { tabs, active } = getTabs();
-  return Boolean(tabs.find((tab) => tab.id === active)?.side);
+  return getVisiblePanes().length > 1;
 };
 
 const onLivePage = ({ pageId }: ActionContext) =>

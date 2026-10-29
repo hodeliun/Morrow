@@ -1,0 +1,221 @@
+/* Pane layout, resizer, and preset-menu styles are scoped to the new pane host. */
+.main > .panes {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.main > .panes > .pane {
+  position: absolute;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main > .panes > .pane.is-active {
+  z-index: 1;
+}
+
+.main > .panes > .pane.is-cached {
+  pointer-events: none;
+}
+
+html.is-printing .main > .panes > .pane:not([data-print-target]) {
+  display: none !important;
+}
+
+.main > .panes > .pane > * {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-empty {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.main > .panes > .split-resizer {
+  position: absolute;
+  z-index: 4;
+  width: 9px;
+  height: 0;
+  padding: 0;
+  transform: translateX(-50%);
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.main > .panes > .split-resizer.is-rows {
+  width: 0;
+  height: 9px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.main > .panes > .split-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 4px;
+  width: 1px;
+  background: var(--border);
+}
+
+.main > .panes > .split-resizer.is-rows::before {
+  inset: 4px 0;
+  width: auto;
+  height: 1px;
+}
+
+.main > .panes > .split-resizer:hover::before,
+.main > .panes > .split-resizer:active::before,
+.main > .panes > .split-resizer:focus-visible::before {
+  background: var(--accent);
+}
+
+.pane-layout-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.pane-layout-trigger {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+}
+
+.pane-layout-trigger:hover,
+.pane-layout-trigger.is-active {
+  background: var(--surface-hover);
+}
+
+.pane-layout-menu {
+  position: absolute;
+  z-index: 100;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  gap: 4px;
+  min-width: 240px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  box-shadow: var(--shadow-popover);
+}
+
+.pane-layout-option,
+.pane-layout-close {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-align: left;
+}
+
+.pane-layout-option:hover,
+.pane-layout-option[aria-pressed='true'],
+.pane-layout-close:hover {
+  background: var(--surface-hover);
+}
+
+.pane-layout-option[aria-pressed='true'] {
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.pane-layout-close {
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin-top: 3px;
+  padding-top: 9px;
+}
+
+.pane-layout-preview {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 2px;
+  width: 30px;
+  height: 22px;
+}
+
+.pane-layout-preview > i {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--text-muted);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.pane-layout-preview.is-single {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+.pane-layout-preview.is-two-columns {
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: 1fr;
+}
+
+.pane-layout-preview.is-one-left-two-right > i:first-child {
+  grid-row: 1 / span 2;
+}
+
+[data-desktop] .app.focus-mode .pane[data-pane-titlebar-right='true'] .topbar {
+  padding-right: calc(12px + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+}
+
+[data-desktop='darwin'] .app.focus-mode .pane[data-pane-primary='true'] .topbar {
+  padding-left: 84px;
+}
+
+@media (max-width: 800px) {
+  [data-desktop] .main:has(> .tab-bar.is-single) .pane[data-pane-titlebar-right='true'] .topbar {
+    padding-right: calc(12px + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  }
+
+  [data-desktop='darwin'] .main:has(> .tab-bar.is-single) .pane[data-pane-primary='true'] .topbar {
+    padding-left: 84px;
+  }
+
+  [data-desktop] .app:not(.focus-mode) .main:has(> .tab-bar.is-single) .pane[data-pane='main'] .topbar,
+  [data-desktop]
+    .app:not(.focus-mode)
+    .main:has(> .tab-bar.is-single)
+    .pane[data-pane-titlebar-right='true']
+    .topbar {
+    padding-right: 8px;
+  }
+
+  [data-desktop='darwin']
+    .app:not(.focus-mode)
+    .main:has(> .tab-bar.is-single)
+    .pane[data-pane='main']
+    .topbar,
+  [data-desktop='darwin']
+    .app:not(.focus-mode)
+    .main:has(> .tab-bar.is-single)
+    .pane[data-pane-primary='true']
+    .topbar {
+    padding-left: 10px;
+  }
+}

@@ -18,6 +18,11 @@ import { dateLocale, t } from '../i18n';
 import { MAX_PAGE_COLUMNS } from '../../core/model';
 import { toast } from '../ui';
 import { revealAncestorsForPosition } from './CollapsibleHeading';
+import {
+  closeColumnResizeHistory,
+  createColumnWidthsTransaction,
+  shouldCommitColumnWidthResize,
+} from './columnResize';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -108,6 +113,7 @@ export const Columns = Node.create({
       dom.append(contentDOM);
       const handles: HTMLDivElement[] = [];
       const cleanupFns: Array<() => void> = [];
+      const cancelActiveDrags: Array<() => void> = [];
 
       const reset = document.createElement('button');
       reset.type = 'button';
@@ -126,27 +132,21 @@ export const Columns = Node.create({
       resetIcon.innerHTML = '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>';
       reset.append(resetIcon);
       reset.addEventListener('click', () => {
-        previewWidths = null;
-        const position = getPos();
-        if (typeof position !== 'number') return;
-        view.dispatch(
-          view.state.tr.setNodeMarkup(position, undefined, { ...currentNode.attrs, widths: null }),
-        );
+        if (!view.editable) return;
+        commitWidths(normalizeColumnWidths(null, currentNode.childCount));
       });
       dom.append(reset);
 
       const commitWidths = (widths: number[]) => {
+        if (!view.editable) return;
         const position = getPos();
         if (typeof position !== 'number') return;
-        const encoded = formatColumnWidths(widths, currentNode.childCount);
         const normalized = normalizeColumnWidths(widths, currentNode.childCount);
+        const before = normalizeColumnWidths(currentNode.attrs.widths, currentNode.childCount);
+        if (!shouldCommitColumnWidthResize(view.editable, before, normalized)) return;
         previewWidths = null;
-        view.dispatch(
-          view.state.tr.setNodeMarkup(position, undefined, {
-            ...currentNode.attrs,
-            widths: encoded ? normalized : null,
-          }),
-        );
+        view.dispatch(createColumnWidthsTransaction(view.state.tr, position, currentNode, normalized));
+        view.dispatch(closeColumnResizeHistory(view.state.tr));
       };
 
       const makeHandle = (index: number) => {
@@ -178,7 +178,14 @@ export const Columns = Node.create({
           window.removeEventListener('pointercancel', cancelDrag, true);
           window.removeEventListener('mouseup', endDrag as EventListener, true);
         };
-        cleanupFns.push(removeWindowListeners);
+
+        const releasePointerCapture = (pointerId: number) => {
+          try {
+            if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+          } catch {
+            // pointer capture may not be supported by synthetic pointer devices
+          }
+        };
 
         const startDrag = (event: PointerEvent) => {
           if (!view.editable || event.button !== 0) return;
@@ -222,34 +229,46 @@ export const Columns = Node.create({
         const endDrag = (event: Event) => {
           if (!drag) return;
           if (event instanceof PointerEvent && drag.pointerId !== event.pointerId) return;
-          removeWindowListeners();
-          try {
-            if (event instanceof PointerEvent) handle.releasePointerCapture(event.pointerId);
-          } catch {
-            // pointer capture may not be supported by synthetic devices
+          if (!view.editable) {
+            cancelDrag(event);
+            return;
           }
-          const widths = previewWidths ?? drag.startWidths;
+          const startWidths = drag.startWidths;
+          const widths = previewWidths;
+          const pointerId = drag.pointerId;
+          removeWindowListeners();
+          releasePointerCapture(pointerId);
           drag = null;
-          commitWidths(widths);
+          previewWidths = null;
+          if (shouldCommitColumnWidthResize(view.editable, startWidths, widths)) commitWidths(widths);
+          else paint();
         };
         const cancelDrag = (event: Event) => {
           if (!drag) return;
           if (event instanceof PointerEvent && drag.pointerId !== event.pointerId) return;
+          const pointerId = drag.pointerId;
           removeWindowListeners();
-          try {
-            if (event instanceof PointerEvent) handle.releasePointerCapture(event.pointerId);
-          } catch {
-            // pointer capture may not be supported by synthetic devices
-          }
+          releasePointerCapture(pointerId);
           drag = null;
           previewWidths = null;
           paint();
         };
+        cancelActiveDrags.push(() => cancelDrag(new Event('cancel')));
+        cleanupFns.push(() => {
+          if (drag) cancelDrag(new Event('destroy'));
+          else removeWindowListeners();
+        });
         handle.addEventListener('pointerdown', startDrag);
         handle.addEventListener('pointermove', moveDrag);
         handle.addEventListener('pointerup', endDrag);
         handle.addEventListener('pointercancel', cancelDrag);
         handle.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape' && drag) {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelDrag(event);
+            return;
+          }
           if (!view.editable) return;
           const widths = normalizeColumnWidths(currentNode.attrs.widths, currentNode.childCount);
           const availableWidth = Math.max(
@@ -269,12 +288,7 @@ export const Columns = Node.create({
             commitWidths(resizeColumnWidths(widths, currentNode.childCount, index, delta, minShare));
           } else if (event.key.toLowerCase() === 'r' && !event.ctrlKey && !event.metaKey && !event.altKey) {
             event.preventDefault();
-            previewWidths = null;
-            const position = getPos();
-            if (typeof position === 'number')
-              view.dispatch(
-                view.state.tr.setNodeMarkup(position, undefined, { ...currentNode.attrs, widths: null }),
-              );
+            commitWidths(normalizeColumnWidths(null, currentNode.childCount));
           }
         });
         handle.dataset.separator = String(index + 1);
@@ -325,12 +339,22 @@ export const Columns = Node.create({
       const frame = requestAnimationFrame(paint);
       const observer = new ResizeObserver(paint);
       observer.observe(contentDOM);
+      const editabilityObserver = new MutationObserver(() => {
+        if (!view.editable) cancelActiveDrags.forEach((cancel) => cancel());
+        paint();
+      });
+      editabilityObserver.observe(view.dom, {
+        attributes: true,
+        attributeFilter: ['contenteditable'],
+        subtree: true,
+      });
 
       return {
         dom,
         contentDOM,
         update(updated) {
           if (updated.type !== currentNode.type || updated.childCount !== handles.length + 1) return false;
+          if (updated !== currentNode) cancelActiveDrags.forEach((cancel) => cancel());
           currentNode = updated;
           previewWidths = null;
           paint();
@@ -338,12 +362,22 @@ export const Columns = Node.create({
         },
         stopEvent: (event) =>
           dom !== event.target && !(event.target instanceof Element && contentDOM.contains(event.target)),
-        ignoreMutation: (mutation) =>
-          mutation.type === 'selection' ? false : !contentDOM.contains(mutation.target as HTMLElement),
+        ignoreMutation: (mutation) => {
+          if (mutation.type === 'selection') return false;
+          if (
+            mutation.type === 'attributes' &&
+            mutation.target === contentDOM &&
+            mutation.attributeName === 'style'
+          )
+            return true;
+          return !contentDOM.contains(mutation.target as HTMLElement);
+        },
         destroy() {
           cancelAnimationFrame(frame);
           observer.disconnect();
+          editabilityObserver.disconnect();
           cleanupFns.forEach((fn) => fn());
+          cancelActiveDrags.length = 0;
           previewWidths = null;
         },
       };

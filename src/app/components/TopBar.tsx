@@ -21,7 +21,18 @@ import { ACTION_SHORTCUTS, formatShortcut, runAction } from '../actions';
 import { toggleFavorite } from '../operations';
 import { usePreferences } from '../platform/preferences';
 import { openPage } from '../router';
-import { canGo, closeSide, goBack, goForward, openSide, swapSides, usePane, useTabs } from '../tabs';
+import {
+  canGo,
+  closeSide,
+  getTabForPane,
+  getVisiblePanes,
+  goBack,
+  goForward,
+  openSide,
+  swapSides,
+  usePane,
+  useTabs,
+} from '../tabs';
 import { setUi } from '../ui';
 import { getSession, useSaveStatus, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
@@ -61,8 +72,8 @@ export function SidebarToggle() {
 function HistoryButtons() {
   const { t } = useTranslation();
   const pane = usePane();
-  const { tabs, active } = useTabs();
-  const tab = tabs.find((item) => item.id === active);
+  useTabs();
+  const tab = getTabForPane(pane);
   const back = tab ? canGo(tab, pane, 'back') : false;
   const forward = tab ? canGo(tab, pane, 'forward') : false;
   return (
@@ -91,36 +102,37 @@ function HistoryButtons() {
   );
 }
 
-// opening a split from the first side, closing or swapping it from the second
+// Open a two-column layout, or close the focused pane while returning its tab to the list.
 function SplitButtons() {
   const { t } = useTranslation();
-  const pane = usePane();
-  const { tabs, active } = useTabs();
-  const split = Boolean(tabs.find((item) => item.id === active)?.side);
-  if (pane === 'side')
+  usePane();
+  useTabs();
+  const paneCount = getVisiblePanes().length;
+  if (paneCount > 1)
     return (
       <>
+        {paneCount === 2 && (
+          <button
+            type="button"
+            className="icon-button desktop-only"
+            aria-label={t('topBar.swapSplit')}
+            title={t('topBar.swapTheTwoSides')}
+            onClick={swapSides}
+          >
+            <ArrowRightLeft size={15} strokeWidth={1.75} />
+          </button>
+        )}
         <button
           type="button"
           className="icon-button desktop-only"
-          aria-label={t('topBar.swapSplit')}
-          title={t('topBar.swapTheTwoSides')}
-          onClick={swapSides}
-        >
-          <ArrowRightLeft size={15} strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          className="icon-button desktop-only"
-          aria-label={t('topBar.closeSplit')}
-          title={t('topBar.closeThisSide')}
+          aria-label={t('paneLayout.closePane')}
+          title={t('paneLayout.closePane')}
           onClick={closeSide}
         >
           <X size={16} strokeWidth={1.75} />
         </button>
       </>
     );
-  if (split) return null;
   return (
     <button
       type="button"
@@ -190,6 +202,11 @@ export function TopBar({
 }) {
   const state = useWorkspace();
   const pane = usePane();
+  const tabs = useTabs();
+  const visiblePanes = getVisiblePanes(tabs);
+  const primaryPane =
+    visiblePanes.find((visiblePane) => visiblePane.tabId !== null)?.id ?? visiblePanes[0]?.id;
+  const isPrimaryPane = pane === primaryPane;
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const { t } = useTranslation();
   const trail = page ? ancestorsOf(state.pages, page.id).reverse() : [];
@@ -197,7 +214,7 @@ export function TopBar({
   return (
     <header className="topbar">
       <div className="topbar-nav">
-        {pane === 'main' && <SidebarToggle />}
+        {isPrimaryPane && <SidebarToggle />}
         <HistoryButtons />
       </div>
       <div className="topbar-center">
@@ -232,7 +249,7 @@ export function TopBar({
       </div>
       <div className="topbar-actions">
         {/* saving is the same for both sides of a split, so it shows once */}
-        {pane === 'main' && <SaveIndicator editing={editing ?? false} />}
+        {isPrimaryPane && <SaveIndicator editing={editing ?? false} />}
         {page && (
           <>
             <span className="topbar-meta">{t('topBar.edited', { time: relativeTime(page.updatedAt) })}</span>

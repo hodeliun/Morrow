@@ -576,7 +576,14 @@
 }
 @media (max-width: 800px) {
   .tab-bar.is-single {
+    align-items: center;
+  }
+  .tab-bar.is-single .tab-strip {
     display: none;
+  }
+  .tab-bar.is-single .tab-new {
+    align-self: center;
+    margin: 0 0 0 2px;
   }
 }
 .app.focus-mode .tab-bar {

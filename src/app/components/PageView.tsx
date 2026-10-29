@@ -14,7 +14,7 @@ import {
   ListTree,
 } from 'lucide-react';
 import { revealAncestorsForPosition } from '../editor/CollapsibleHeading';
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { docToPlainText, findUnknownTypes, inlineText, isDocEmpty } from '../../core/doc';
 import { backlinksTo, unlinkedMentions } from '../../core/links';
 import { displayTitle, emptyDoc } from '../../core/model';
@@ -36,7 +36,12 @@ import { PageTags } from './TagsView';
 import { deleteForever, restorePage, trashPage } from '../operations';
 import { legacyNoteStyle, usePreferences } from '../platform/preferences';
 import { navigate, openPage, routeHash } from '../router';
-import { openSide } from '../tabs';
+import { getTabs, openSide, usePane, usePaneTabId } from '../tabs';
+import { rememberTabScrollPosition, tabScrollPosition } from '../tabScroll';
+import {
+  shouldCancelPendingScrollRestoreForKeyboard,
+  shouldCancelPendingScrollRestoreForPointer,
+} from '../scrollRestoreIntent';
 import { getUi, openDialog, setUi, useUi } from '../ui';
 import { getSession, run, useWorkspace } from '../workspace';
 import type { MenuEntry } from './Menu';
@@ -77,6 +82,10 @@ function openFirstLine(editor: Editor, text: string) {
 export function PageView({ id, find, anchor }: { id: PageId; find: string | null; anchor?: string | null }) {
   const state = useWorkspace();
   const page = state.pages[id];
+  const doc = state.docs[id] ?? EMPTY_DOC;
+  const hasUnknownContent = useMemo(() => findUnknownTypes(doc).length > 0, [doc]);
+  const activeTabId = usePaneTabId() ?? 'unassigned';
+  const pane = usePane();
   const [editing, setEditing] = useState(false);
   const [coverPicker, setCoverPicker] = useState<HTMLElement | null>(null);
   const [stylePicker, setStylePicker] = useState<HTMLElement | null>(null);
@@ -86,10 +95,324 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const [databaseTextFor, setDatabaseTextFor] = useState<PageId | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<Editor | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollIdentity = JSON.stringify([activeTabId, pane, id]);
+  const scrollScopeRef = useRef({ tabId: activeTabId, pane, pageId: id });
+  const scrollRestoreRef = useRef({
+    identity: scrollIdentity,
+    status: anchor || find ? 'explicit' : 'pending',
+  });
   // enter in the title can arrive before the editor exists, focus it once it does
   const focusWhenReady = useRef(false);
   const prefs = usePreferences();
   const ui = useUi();
+
+  useLayoutEffect(() => {
+    const previous = scrollRestoreRef.current;
+    const previousScope = scrollScopeRef.current;
+    const nextScope = { tabId: activeTabId, pane, pageId: id };
+    if (
+      previousScope.tabId === activeTabId &&
+      previousScope.pageId === id &&
+      previousScope.pane !== pane &&
+      !anchor &&
+      !find
+    ) {
+      const position = tabScrollPosition(previousScope) ?? scrollRef.current?.scrollTop;
+      if (position !== undefined) {
+        rememberTabScrollPosition(previousScope, position);
+        rememberTabScrollPosition(nextScope, position);
+      }
+    }
+    scrollScopeRef.current = nextScope;
+    scrollRestoreRef.current = {
+      identity: scrollIdentity,
+      status:
+        previous.identity === scrollIdentity
+          ? anchor || find
+            ? 'explicit'
+            : previous.status
+          : anchor || find
+            ? 'explicit'
+            : 'pending',
+    };
+  }, [activeTabId, pane, id, scrollIdentity, anchor, find]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+
+    const scope = { tabId: activeTabId, pane, pageId: id };
+    const shouldRestore = scrollRestoreRef.current.status === 'pending';
+    let fontsReady = !shouldRestore || !document.fonts || document.fonts.status === 'loaded';
+    let restored = false;
+    let cancelled = false;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    const contentIsRendered = () => {
+      if (scroller.querySelector('.banner.is-error, .locked-page')) return true;
+      if (!fontsReady) return false;
+      if (
+        Array.from(scroller.querySelectorAll('img')).some(
+          (image) => image.loading !== 'lazy' && !image.complete,
+        )
+      )
+        return false;
+      if (scroller.querySelector('.database[aria-busy="true"]')) return false;
+      return Boolean(scroller.querySelector('.source-editor, .database, .editor-surface, .readonly-text'));
+    };
+    let userStarted = false;
+    let canSave = false;
+    let firstFrame = 0;
+    let secondFrame = 0;
+
+    const savePosition = () => {
+      rememberTabScrollPosition(scope, scroller.scrollTop);
+      canSave = true;
+    };
+    const onScroll = () => {
+      if (userStarted || scrollRestoreRef.current.status === 'explicit') savePosition();
+    };
+    const cancelFramesAndTimer = () => {
+      if (settleTimer) clearTimeout(settleTimer);
+      if (firstFrame) cancelAnimationFrame(firstFrame);
+      if (secondFrame) cancelAnimationFrame(secondFrame);
+      settleTimer = null;
+      firstFrame = 0;
+      secondFrame = 0;
+    };
+    const cancelPendingRestore = () => {
+      if (userStarted) return;
+      userStarted = true;
+      if (
+        scrollRestoreRef.current.identity === scrollIdentity &&
+        scrollRestoreRef.current.status === 'pending'
+      )
+        scrollRestoreRef.current.status = 'cancelled';
+      savePosition();
+      cancelFramesAndTimer();
+    };
+    // Trusted input in the capture phase wins before editor/grid handlers; focus and programmatic scroll stay inert.
+    const keyboardTargetIntent = (target: EventTarget | null) => {
+      const element = target instanceof HTMLElement ? target : null;
+      const canEdit = Boolean(
+        element &&
+        (element.isContentEditable ||
+          element.closest(
+            '[contenteditable="true"], [contenteditable="plaintext-only"], .db-table td[data-row-id][data-col-id]',
+          )),
+      );
+      const isTextControl = Boolean(
+        element?.closest(
+          'input:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), select:not([disabled]), [role="combobox"], [role="textbox"]',
+        ),
+      );
+      const preventsPageScroll = Boolean(element?.closest('input, textarea, select, [role="combobox"]'));
+      return { canEdit, isTextControl, preventsPageScroll };
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      const targetIntent = keyboardTargetIntent(event.target);
+      if (
+        shouldCancelPendingScrollRestoreForKeyboard({
+          eventType: 'keydown',
+          isTrusted: event.isTrusted,
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          altGraph: event.getModifierState('AltGraph'),
+          isComposing: event.isComposing,
+          targetCanEdit: targetIntent.canEdit,
+          targetIsTextControl: targetIntent.isTextControl,
+          targetPreventsPageScroll: targetIntent.preventsPageScroll,
+        })
+      ) {
+        cancelPendingRestore();
+      }
+    };
+    const onCompositionStart = (event: CompositionEvent) => {
+      const targetIntent = keyboardTargetIntent(event.target);
+      if (
+        shouldCancelPendingScrollRestoreForKeyboard({
+          eventType: 'compositionstart',
+          isTrusted: event.isTrusted,
+          key: '',
+          ctrlKey: false,
+          metaKey: false,
+          altKey: false,
+          altGraph: false,
+          isComposing: true,
+          targetCanEdit: targetIntent.canEdit,
+          targetIsTextControl: targetIntent.isTextControl,
+          targetPreventsPageScroll: targetIntent.preventsPageScroll,
+        })
+      ) {
+        cancelPendingRestore();
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const gutter = scroller.offsetWidth - scroller.clientWidth;
+      const rect = scroller.getBoundingClientRect();
+      if (
+        shouldCancelPendingScrollRestoreForPointer({
+          isTrusted: event.isTrusted,
+          targetIsPageContent: Boolean(
+            target?.closest('.ProseMirror, .readonly-text, .source-editor, .database, .locked-page'),
+          ),
+          targetIsNavigationControl: Boolean(
+            target?.closest('.page-outline-toggle, .page-outline, .heading-fold-btn'),
+          ),
+          targetIsInteractiveControl: Boolean(
+            target?.closest(
+              [
+                'a[href]',
+                'area[href]',
+                'audio[controls]',
+                'button',
+                'input',
+                'select',
+                'summary',
+                'textarea',
+                'video[controls]',
+                '[role="button"]',
+                '[role="checkbox"]',
+                '[role="combobox"]',
+                '[role="gridcell"]',
+                '[role="link"]',
+                '[role="menuitem"]',
+                '[role="menuitemcheckbox"]',
+                '[role="menuitemradio"]',
+                '[role="option"]',
+                '[role="radio"]',
+                '[role="scrollbar"]',
+                '[role="slider"]',
+                '[role="spinbutton"]',
+                '[role="switch"]',
+                '[role="tab"]',
+                '[role="textbox"]',
+                '[role="treeitem"]',
+                '[tabindex]:not([tabindex="-1"])',
+              ].join(', '),
+            ),
+          ),
+          inScrollbarGutter: gutter > 0 && event.clientX >= rect.right - gutter,
+        })
+      ) {
+        cancelPendingRestore();
+      }
+    };
+    const onClick = (event: MouseEvent) => {
+      if (!event.isTrusted) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.page-outline-toggle, .page-outline, .heading-fold-btn')) cancelPendingRestore();
+    };
+    const onImageSettled = () => scheduleRestore();
+
+    const scheduleRestore = () => {
+      if (
+        cancelled ||
+        restored ||
+        userStarted ||
+        scrollRestoreRef.current.identity !== scrollIdentity ||
+        scrollRestoreRef.current.status !== 'pending' ||
+        !contentIsRendered()
+      )
+        return;
+      cancelFramesAndTimer();
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        if (cancelled || restored || userStarted || !contentIsRendered()) return;
+        firstFrame = requestAnimationFrame(() => {
+          firstFrame = 0;
+          if (
+            cancelled ||
+            restored ||
+            userStarted ||
+            scrollRestoreRef.current.identity !== scrollIdentity ||
+            scrollRestoreRef.current.status !== 'pending' ||
+            !contentIsRendered()
+          )
+            return;
+          secondFrame = requestAnimationFrame(() => {
+            secondFrame = 0;
+            if (
+              cancelled ||
+              restored ||
+              userStarted ||
+              scrollRestoreRef.current.identity !== scrollIdentity ||
+              scrollRestoreRef.current.status !== 'pending' ||
+              !contentIsRendered()
+            )
+              return;
+            restored = true;
+            scrollRestoreRef.current.status = 'restored';
+            scroller.scrollTop = tabScrollPosition(scope) ?? 0;
+            observer?.disconnect();
+            resizeObserver?.disconnect();
+          });
+        });
+      }, 120);
+    };
+    const resizeObserver = shouldRestore ? new ResizeObserver(scheduleRestore) : null;
+    const observedSizeTargets = new WeakSet<Element>();
+    const observeSizeTargets = () => {
+      if (!resizeObserver) return;
+      for (const element of [scroller, ...scroller.querySelectorAll('.page, .database')]) {
+        if (observedSizeTargets.has(element)) continue;
+        resizeObserver.observe(element);
+        observedSizeTargets.add(element);
+      }
+    };
+    const observer = shouldRestore
+      ? new MutationObserver(() => {
+          observeSizeTargets();
+          scheduleRestore();
+        })
+      : null;
+
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    scroller.addEventListener('wheel', cancelPendingRestore, { passive: true });
+    scroller.addEventListener('touchstart', cancelPendingRestore, { passive: true });
+    scroller.addEventListener('pointerdown', onPointerDown, true);
+    scroller.addEventListener('click', onClick, true);
+    scroller.addEventListener('keydown', onKeyDown, true);
+    scroller.addEventListener('compositionstart', onCompositionStart, true);
+    scroller.addEventListener('load', onImageSettled, true);
+    scroller.addEventListener('error', onImageSettled, true);
+    if (observer) {
+      observer.observe(scroller, {
+        attributes: true,
+        attributeFilter: ['aria-busy'],
+        childList: true,
+        subtree: true,
+      });
+      observeSizeTargets();
+      if (document.fonts && !fontsReady) {
+        void document.fonts.ready.then(() => {
+          fontsReady = true;
+          scheduleRestore();
+        });
+      }
+      scheduleRestore();
+    }
+
+    return () => {
+      cancelled = true;
+      observer?.disconnect();
+      resizeObserver?.disconnect();
+      cancelFramesAndTimer();
+      scroller.removeEventListener('scroll', onScroll);
+      scroller.removeEventListener('wheel', cancelPendingRestore);
+      scroller.removeEventListener('touchstart', cancelPendingRestore);
+      scroller.removeEventListener('pointerdown', onPointerDown, true);
+      scroller.removeEventListener('click', onClick, true);
+      scroller.removeEventListener('keydown', onKeyDown, true);
+      scroller.removeEventListener('compositionstart', onCompositionStart, true);
+      scroller.removeEventListener('load', onImageSettled, true);
+      scroller.removeEventListener('error', onImageSettled, true);
+      if (canSave && getTabs().tabs.some((tab) => tab.id === scope.tabId)) savePosition();
+    };
+  }, [activeTabId, pane, id, scrollIdentity, anchor, find]);
 
   useEffect(() => {
     if (state.pages[id]) run({ type: 'page.markOpened', id, now: Date.now() });
@@ -117,7 +440,6 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const noteStyle = page.noteStyle ?? legacyNoteStyle(prefs.font, prefs.width);
   const unreadable = getSession().unreadable.has(id);
   const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
-  const doc = state.docs[id] ?? EMPTY_DOC;
 
   const menu = (): MenuEntry[] => {
     const words = docToPlainText(doc).split(/\s+/).filter(Boolean).length;
@@ -176,7 +498,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   return (
     <div className="view">
       <TopBar page={page} editing={editing} menu={menu} />
-      <div className="page-scroll">
+      <div ref={scrollRef} className="page-scroll">
         {trashed && (
           <div className="banner" role="note">
             <span>{t('page.pageInTrash')}</span>
@@ -196,7 +518,9 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             </button>
           </div>
         )}
-        {page.kind !== 'database' && !unreadable && <Outline doc={doc} editorRef={editorRef} />}
+        {page.kind !== 'database' && !unreadable && !hasUnknownContent && (
+          <Outline doc={doc} editorRef={editorRef} />
+        )}
         <CoverBanner page={page} editable={!trashed} />
         <article
           className={`page font-${noteStyle.font} width-${noteStyle.width}${page.cover ? ' has-cover' : ''}`}
@@ -625,10 +949,16 @@ interface Heading {
 }
 
 function headingsOf(doc: DocNode): Heading[] {
-  return (doc.content ?? [])
-    .filter((node) => node.type === 'heading')
-    .map((node) => ({ level: Number(node.attrs?.level ?? 1), text: inlineText(node).trim() }))
-    .filter((heading) => heading.text);
+  const headings: Heading[] = [];
+  const visit = (node: DocNode) => {
+    if (node.type === 'heading') {
+      const heading = { level: Number(node.attrs?.level ?? 1), text: inlineText(node).trim() };
+      if (heading.text) headings.push(heading);
+    }
+    node.content?.forEach(visit);
+  };
+  doc.content?.forEach(visit);
+  return headings;
 }
 
 // the room a view needs before the outline fits beside the page
@@ -638,9 +968,10 @@ const OUTLINE_ROOM = 1090;
 // marks the section being read, and a heading with smaller ones under it can fold them away
 function Outline({ doc, editorRef }: { doc: DocNode; editorRef?: React.RefObject<Editor | null> }) {
   const headings = useMemo(() => headingsOf(doc), [doc]);
+  const outlineId = useId();
   const ref = useRef<HTMLElement>(null);
   const [roomy, setRoomy] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [open, setOpen] = useState<boolean | null>(null);
   const [active, setActive] = useState(-1);
   const [top, setTop] = useState<number | null>(null);
   const [folded, setFolded] = useState<ReadonlySet<number>>(new Set());
@@ -648,7 +979,7 @@ function Outline({ doc, editorRef }: { doc: DocNode; editorRef?: React.RefObject
   const elements = () =>
     ref.current
       ?.closest('.view')
-      ?.querySelectorAll<HTMLElement>('.editor-surface .prose > :is(h1, h2, h3, h4, h5, h6)') ?? [];
+      ?.querySelectorAll<HTMLElement>('.editor-surface .prose :is(h1, h2, h3, h4, h5, h6)') ?? [];
   // measured on the view it sits in, checking right margin so outline never overlaps page content
   useEffect(() => {
     const view = ref.current?.closest('.view');
@@ -735,52 +1066,56 @@ function Outline({ doc, editorRef }: { doc: DocNode; editorRef?: React.RefObject
       if (!next.delete(index)) next.add(index);
       return next;
     });
-  const isVisible = roomy && !collapsed;
+  const isVisible = open ?? roomy;
   return (
     <>
       <button
         type="button"
         className={`page-outline-toggle${isVisible ? ' is-active' : ''}`}
         aria-label={t('editor.toggleOutline')}
+        aria-controls={outlineId}
+        aria-expanded={isVisible}
         title={t('editor.toggleOutline')}
-        onClick={() => setCollapsed((v) => !v)}
+        onClick={() => setOpen((current) => !(current ?? roomy))}
       >
         <ListTree size={14} />
       </button>
       <nav
         ref={ref}
-        className={`page-outline${isVisible ? ' is-roomy' : ''}`}
+        id={outlineId}
+        className={`page-outline${isVisible ? ' is-roomy' : ''}${roomy ? '' : ' is-overlay'}`}
+        hidden={!isVisible}
         style={top === null ? undefined : { top, maxHeight: `calc(100% - ${top + 46}px)` }}
         aria-label={t('page.outlineAria')}
       >
-      <p className="page-outline-title">{t('page.onThisPage')}</p>
-      <ul>
-        {headings.map((heading, index) =>
-          hidden.has(index) ? null : (
-            <li
-              key={index}
-              className={index === marked ? 'is-active' : undefined}
-              style={{ '--level': heading.level } as React.CSSProperties}
-            >
-              {hasChildren(index) && (
-                <button
-                  type="button"
-                  className="outline-fold"
-                  aria-expanded={!folded.has(index)}
-                  aria-label={folded.has(index) ? t('common.expand') : t('common.collapse')}
-                  onClick={() => toggle(index)}
-                >
-                  <ChevronRight size={12} />
+        <p className="page-outline-title">{t('page.onThisPage')}</p>
+        <ul>
+          {headings.map((heading, index) =>
+            hidden.has(index) ? null : (
+              <li
+                key={index}
+                className={index === marked ? 'is-active' : undefined}
+                style={{ '--level': heading.level } as React.CSSProperties}
+              >
+                {hasChildren(index) && (
+                  <button
+                    type="button"
+                    className="outline-fold"
+                    aria-expanded={!folded.has(index)}
+                    aria-label={folded.has(index) ? t('common.expand') : t('common.collapse')}
+                    onClick={() => toggle(index)}
+                  >
+                    <ChevronRight size={12} />
+                  </button>
+                )}
+                <button type="button" className="outline-link" onClick={() => jump(index)}>
+                  {heading.text}
                 </button>
-              )}
-              <button type="button" className="outline-link" onClick={() => jump(index)}>
-                {heading.text}
-              </button>
-            </li>
-          ),
-        )}
-      </ul>
-    </nav>
+              </li>
+            ),
+          )}
+        </ul>
+      </nav>
     </>
   );
 }

@@ -1,6 +1,15 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
-import { activeHash, getTabs, showInMain, showInSide, subscribeTabs, targetPane } from './tabs';
+import {
+  activeHash,
+  routeHashForPane,
+  routeHashForTabId,
+  showInPane,
+  subscribeTabs,
+  targetPane,
+  usePane,
+  usePaneTabId,
+} from './tabs';
 import type { PaneId } from './tabs';
 
 export type Route =
@@ -63,50 +72,31 @@ export function routeHash(route: Route): string {
   }
 }
 
-// goes to the side of a split tab that was used last, or the one named
+// Goes to the focused pane unless the caller names a pane explicitly.
 export function navigate(route: Route, options: { replace?: boolean; pane?: PaneId } = {}): void {
   const hash = routeHash(route);
   const pane = options.pane ?? targetPane();
-  if (pane === 'side' && getTabs().tabs.find((tab) => tab.id === getTabs().active)?.side) {
-    showInSide(hash, options.replace);
-    return;
-  }
-  showInMain(hash, options.replace);
+  showInPane(hash, pane, options.replace);
 }
 
 export function openPage(id: PageId, find: string | null = null, anchor: string | null = null): void {
   navigate({ name: 'page', id, find, anchor });
 }
 
-let cachedHash = '';
-let cachedRoute: Route = { name: 'home' };
-
-function snapshot(): Route {
-  const hash = window.location.hash;
-  if (hash !== cachedHash) {
-    cachedHash = hash;
-    cachedRoute = parseRoute(hash);
-  }
-  return cachedRoute;
-}
-
 export function useRoute(): Route {
-  return useSyncExternalStore((listener) => {
-    window.addEventListener('hashchange', listener);
-    return () => window.removeEventListener('hashchange', listener);
-  }, snapshot);
+  const pane = usePane();
+  const tabId = usePaneTabId();
+  const hash = useSyncExternalStore(
+    subscribeTabs,
+    () => (tabId === null ? routeHashForPane(pane) : routeHashForTabId(tabId)),
+    () => '#/',
+  );
+  return useMemo(() => parseRoute(hash), [hash]);
 }
 
 // the place shown where navigation goes, the side of a split tab when that side is in use
 export function useActiveRoute(): Route {
-  const hash = useSyncExternalStore((listener) => {
-    window.addEventListener('hashchange', listener);
-    const stop = subscribeTabs(listener);
-    return () => {
-      window.removeEventListener('hashchange', listener);
-      stop();
-    };
-  }, activeHash);
+  const hash = useSyncExternalStore(subscribeTabs, activeHash, () => '#/');
   return useMemo(() => parseRoute(hash), [hash]);
 }
 

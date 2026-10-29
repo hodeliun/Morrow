@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { validateDoc } from '../../core/doc';
 import { markdownToDoc } from '../../core/markdown/parse';
-import { docToMarkdown } from '../../core/markdown/serialize';
-import { displayTitle } from '../../core/model';
 import type { DocNode, FileMeta, PageId } from '../../core/model';
-import { resolveLinkTarget } from '../../core/search';
-import { getSession, getState, run } from '../workspace';
+import { dirname } from '../../core/vault/paths';
+import { getSession, run } from '../workspace';
 import { t } from '../i18n';
+import { sourceFileResolver, sourceMarkdown, sourceMarkdownParseOptions } from './sourceLinks';
 
 const SAVE_DELAY_MS = 500;
 
@@ -14,11 +13,10 @@ const SAVE_DELAY_MS = 500;
 export function SourceEditor({ pageId, doc, editable }: { pageId: PageId; doc: DocNode; editable: boolean }) {
   const [files, setFiles] = useState<FileMeta[] | null>(null);
   const initial = useMemo(
-    () =>
-      docToMarkdown(doc, {
-        titleOf: (id) => (getState().pages[id] ? displayTitle(getState().pages[id]!) : null),
-        filePath: (fileId) => fileId,
-      }),
+    () => {
+      const session = getSession();
+      return sourceMarkdown(doc, session.getState(), pageId, (id) => session.pathOf(id));
+    },
     // the text is only produced when the source opens, later changes come from typing here
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pageId],
@@ -48,15 +46,16 @@ export function SourceEditor({ pageId, doc, editable }: { pageId: PageId; doc: D
 
   const save = (value: string) => {
     if (!files) return;
-    const byId = new Map(files.map((file) => [file.id, file]));
-    const byName = new Map(files.map((file) => [file.name.toLowerCase(), file]));
+    const session = getSession();
+    const state = session.getState();
+    const sourcePath = session.pathOf(pageId);
     const parsed = markdownToDoc(value, {
-      resolvePage: (target) => resolveLinkTarget(getState(), target),
-      resolveFile: (href) => {
-        const clean = decodeURIComponent(href.replace(/^\.?\//, ''));
-        const file = byId.get(clean) ?? byName.get(clean.split('/').pop()!.toLowerCase());
-        return file ? { fileId: file.id, name: file.name, image: file.type.startsWith('image/') } : null;
-      },
+      ...sourceMarkdownParseOptions(
+        state,
+        pageId,
+        (id) => session.pathOf(id),
+        sourceFileResolver(files, sourcePath ? dirname(sourcePath) : null),
+      ),
     });
     const valid = validateDoc(parsed);
     if (!valid.ok) {

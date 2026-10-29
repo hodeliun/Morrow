@@ -41,6 +41,16 @@ export const Image = Node.create({
     return {
       fileId: { default: null, parseHTML: (element) => element.getAttribute('data-file-id') },
       src: { default: null, parseHTML: (element) => element.getAttribute('data-src') },
+      markdownHref: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-markdown-href'),
+        renderHTML: (attrs) => (attrs.markdownHref ? { 'data-markdown-href': attrs.markdownHref } : {}),
+      },
+      markdownLabel: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-markdown-label'),
+        renderHTML: (attrs) => (typeof attrs.markdownLabel === 'string' ? { 'data-markdown-label': attrs.markdownLabel } : {}),
+      },
       alt: { default: '', parseHTML: (element) => element.getAttribute('alt') ?? '' },
       align: {
         default: 'center',
@@ -73,6 +83,8 @@ export const Image = Node.create({
       mergeAttributes(HTMLAttributes, {
         'data-file-id': node.attrs.fileId,
         'data-src': node.attrs.src,
+        'data-markdown-href': node.attrs.markdownHref || undefined,
+        'data-markdown-label': typeof node.attrs.markdownLabel === 'string' ? node.attrs.markdownLabel : undefined,
         alt: node.attrs.alt,
         'data-align': node.attrs.align || 'center',
         'data-caption': node.attrs.caption || undefined,
@@ -711,6 +723,16 @@ export const FileAttachment = Node.create({
     return {
       fileId: { default: null, parseHTML: (element) => element.getAttribute('data-file-id') },
       name: { default: 'file', parseHTML: (element) => element.textContent ?? 'file' },
+      markdownHref: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-markdown-href'),
+        renderHTML: (attrs) => (attrs.markdownHref ? { 'data-markdown-href': attrs.markdownHref } : {}),
+      },
+      markdownLabel: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-markdown-label'),
+        renderHTML: (attrs) => (typeof attrs.markdownLabel === 'string' ? { 'data-markdown-label': attrs.markdownLabel } : {}),
+      },
       size: { default: null },
     };
   },

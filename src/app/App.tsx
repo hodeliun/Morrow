@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import './styles/panes.css';
 import { t } from './i18n';
 import { ACTIONS, matchesShortcut, runAction } from './actions';
 import { CommandPalette } from './components/CommandPalette';
@@ -18,24 +19,49 @@ import { ensureToday, writeAutoBackup } from './operations';
 import { startAutoSync, syncWith } from './sync';
 import { startUpdateChecks } from './updates';
 import { desktop, isMac, watchTitleBar } from './platform/desktop';
-import { getPreferences, resolvedTheme, setPreferences, usePreferences } from './platform/preferences';
-import { navigate, parseRoute, routeHash, useRoute } from './router';
+import { getPreferences, resolvedTheme, usePreferences } from './platform/preferences';
+import { navigate, parseRoute, routeHash, useActiveRoute } from './router';
 import type { Route } from './router';
 import { getUi, setUi, toast, useUi } from './ui';
 import { loadCustomCss } from './customCss';
 import {
   activateTabAt,
+  beginPaneResize,
+  cancelPaneResizeSession,
   claimNavigation,
+  commitPaneResizeSession,
   goBack,
+  paneIdForTabId,
   PaneContext,
+  PaneTabContext,
+  previewPaneResizeSession,
+  resetPaneSplitRatio,
   setActivePane,
   startTabs,
   useTabs,
 } from './tabs';
 import type { PaneId } from './tabs';
+import type { PaneNode, PaneSplit } from './paneLayout';
 import { getSession } from './workspace';
 
 const AUTO_BACKUP_MS = 10 * 60 * 1000;
+// Keep previously displayed route trees mounted while their tab instances remain open.
+interface PaneMountCache {
+  readonly sessionId: number;
+  readonly mountedTabIds: Set<string>;
+}
+
+const paneMountCaches = new WeakMap<object, PaneMountCache>();
+let nextPaneMountSessionId = 0;
+
+function paneMountCacheFor(session: object): PaneMountCache {
+  let cache = paneMountCaches.get(session);
+  if (!cache) {
+    cache = { sessionId: ++nextPaneMountSessionId, mountedTabIds: new Set() };
+    paneMountCaches.set(session, cache);
+  }
+  return cache;
+}
 
 // the assistant is only loaded for people who turned it on
 const AssistantPanel = lazy(() =>
@@ -206,69 +232,216 @@ function usePaneSize(ref: React.RefObject<HTMLElement | null>): PaneSize {
   return size;
 }
 
-// one side of the window's content, a split tab shows two of these
+interface PaneRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+interface VisiblePaneGeometry {
+  readonly id: string;
+  readonly tabId: string | null;
+  readonly rect: PaneRect;
+}
+
+interface SplitGeometry {
+  readonly split: PaneSplit;
+  readonly rect: PaneRect;
+}
+
+function collectPaneGeometry(
+  node: PaneNode,
+  rect: PaneRect = { left: 0, top: 0, width: 100, height: 100 },
+  panes: VisiblePaneGeometry[] = [],
+  splits: SplitGeometry[] = [],
+): { panes: VisiblePaneGeometry[]; splits: SplitGeometry[] } {
+  if (node.kind === 'leaf') {
+    panes.push({ id: node.id, tabId: node.tabId, rect });
+    return { panes, splits };
+  }
+  splits.push({ split: node, rect });
+  if (node.axis === 'columns') {
+    const firstWidth = rect.width * node.ratio;
+    collectPaneGeometry(node.first, { ...rect, width: firstWidth }, panes, splits);
+    collectPaneGeometry(
+      node.second,
+      { ...rect, left: rect.left + firstWidth, width: rect.width - firstWidth },
+      panes,
+      splits,
+    );
+  } else {
+    const firstHeight = rect.height * node.ratio;
+    collectPaneGeometry(node.first, { ...rect, height: firstHeight }, panes, splits);
+    collectPaneGeometry(
+      node.second,
+      { ...rect, top: rect.top + firstHeight, height: rect.height - firstHeight },
+      panes,
+      splits,
+    );
+  }
+  return { panes, splits };
+}
+
 function Pane({
   pane,
+  paneNumber,
+  primary,
+  titlebarEdgeRight,
+  tabId,
   route,
   active,
-  style,
+  rect,
+  hidden = false,
 }: {
   pane: PaneId;
-  route: Route;
+  paneNumber: number;
+  primary: boolean;
+  titlebarEdgeRight: boolean;
+  tabId: string | null;
+  route: Route | null;
   active: boolean;
-  style?: React.CSSProperties;
+  rect: PaneRect;
+  hidden?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
   const size = usePaneSize(ref);
   return (
     <PaneContext.Provider value={pane}>
-      <section
-        ref={ref}
-        className={`pane${active ? ' is-active' : ''}`}
-        data-pane={pane}
-        data-size={size}
-        style={style}
-        aria-label={pane === 'side' ? t('tabs.secondPage') : undefined}
-        onPointerDownCapture={() => setActivePane(pane)}
-        onFocusCapture={() => setActivePane(pane)}
-      >
-        <ErrorBoundary resetKey={routeHash(route)}>
-          <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
-        </ErrorBoundary>
-      </section>
+      <PaneTabContext.Provider value={tabId}>
+        <section
+          ref={ref}
+          className={`pane${active ? ' is-active' : ''}${hidden ? ' is-cached' : ''}`}
+          data-pane={pane}
+          data-pane-primary={primary || undefined}
+          data-pane-titlebar-right={titlebarEdgeRight || undefined}
+          data-tab-id={tabId ?? undefined}
+          data-size={size}
+          aria-label={t('paneLayout.paneNumber', { number: paneNumber })}
+          aria-hidden={hidden || undefined}
+          style={{
+            left: `${rect.left}%`,
+            top: `${rect.top}%`,
+            width: `${rect.width}%`,
+            height: `${rect.height}%`,
+            display: hidden ? 'none' : undefined,
+          }}
+          onPointerDownCapture={() => setActivePane(pane)}
+          onFocusCapture={() => setActivePane(pane)}
+        >
+          {route ? (
+            <ErrorBoundary resetKey={`${tabId}:${routeHash(route)}`}>
+              <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
+            </ErrorBoundary>
+          ) : (
+            <div className="pane-empty">{t('paneLayout.empty')}</div>
+          )}
+        </section>
+      </PaneTabContext.Provider>
     </PaneContext.Provider>
   );
 }
 
-// dragging the line between the two sides of a split, the share is remembered
-function SplitResizer() {
+function SplitResizer({ split, rect }: SplitGeometry) {
+  const sessionRef = useRef<ReturnType<typeof beginPaneResize>>(null);
+
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     const handle = event.currentTarget;
-    const panes = handle.parentElement!.getBoundingClientRect();
+    const viewport = handle.parentElement!.getBoundingClientRect();
+    const bounds = {
+      left: viewport.left + (viewport.width * rect.left) / 100,
+      top: viewport.top + (viewport.height * rect.top) / 100,
+      width: (viewport.width * rect.width) / 100,
+      height: (viewport.height * rect.height) / 100,
+    };
+    const session = beginPaneResize(split.id);
+    if (!session) return;
+    sessionRef.current = session;
     handle.setPointerCapture(event.pointerId);
     const move = (moved: PointerEvent) => {
-      const share = (moved.clientX - panes.left) / panes.width;
-      setPreferences({ splitShare: Math.min(0.8, Math.max(0.2, share)) });
+      const extent = split.axis === 'columns' ? bounds.width : bounds.height;
+      if (!extent) return;
+      const position = split.axis === 'columns' ? moved.clientX - bounds.left : moved.clientY - bounds.top;
+      previewPaneResizeSession(session, position / extent);
     };
-    const up = () => {
+    const finish = (cancel: boolean) => {
       handle.removeEventListener('pointermove', move);
       handle.removeEventListener('pointerup', up);
-      handle.removeEventListener('pointercancel', up);
+      handle.removeEventListener('pointercancel', cancelResize);
+      window.removeEventListener('keydown', onResizeKey, true);
+      sessionRef.current = null;
+      if (cancel) cancelPaneResizeSession(session);
+      else commitPaneResizeSession(session);
+    };
+    const up = () => finish(false);
+    const cancelResize = () => finish(true);
+    const onResizeKey = (key: KeyboardEvent) => {
+      if (key.key !== 'Escape') return;
+      key.preventDefault();
+      key.stopPropagation();
+      finish(true);
     };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', up);
-    handle.addEventListener('pointercancel', up);
+    handle.addEventListener('pointercancel', cancelResize);
+    window.addEventListener('keydown', onResizeKey, true);
   };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Home') {
+      event.preventDefault();
+      resetPaneSplitRatio(split.id);
+      return;
+    }
+    if (event.key === 'Escape' && sessionRef.current) {
+      event.preventDefault();
+      cancelPaneResizeSession(sessionRef.current);
+      sessionRef.current = null;
+      return;
+    }
+    const negative = split.axis === 'columns' ? 'ArrowLeft' : 'ArrowUp';
+    const positive = split.axis === 'columns' ? 'ArrowRight' : 'ArrowDown';
+    const step = event.key === negative ? -0.05 : event.key === positive ? 0.05 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const session = beginPaneResize(split.id);
+    if (!session) return;
+    previewPaneResizeSession(session, split.ratio + step);
+    commitPaneResizeSession(session);
+  };
+
+  const style: React.CSSProperties =
+    split.axis === 'columns'
+      ? {
+          left: `${rect.left + rect.width * split.ratio}%`,
+          top: `${rect.top}%`,
+          height: `${rect.height}%`,
+        }
+      : {
+          left: `${rect.left}%`,
+          top: `${rect.top + rect.height * split.ratio}%`,
+          width: `${rect.width}%`,
+        };
+
   return (
     <div
-      className="split-resizer"
+      className={`split-resizer is-${split.axis}`}
       role="separator"
-      aria-orientation="vertical"
-      aria-label={t('tabs.resizeSplit')}
+      tabIndex={0}
+      style={style}
+      data-axis={split.axis}
+      data-split-id={split.id}
+      aria-orientation={split.axis === 'columns' ? 'vertical' : 'horizontal'}
+      aria-label={t(split.axis === 'columns' ? 'paneLayout.resizeColumns' : 'paneLayout.resizeRows')}
+      aria-valuemin={20}
+      aria-valuemax={80}
+      aria-valuenow={Math.round(split.ratio * 100)}
+      title={t('paneLayout.resizeHelp')}
       onPointerDown={onPointerDown}
-      onDoubleClick={() => setPreferences({ splitShare: 0.5 })}
+      onKeyDown={onKeyDown}
+      onDoubleClick={() => resetPaneSplitRatio(split.id)}
     />
   );
 }
@@ -282,19 +455,48 @@ function useStartPage() {
     // a window opened at a particular place, or a brand new vault showing its guide, stays as it is
     if ((window.location.hash && window.location.hash !== '#/') || getSession().firstRun) return;
     const start = getPreferences().startPage;
-    if (start === 'last') goBack('main');
+    if (start === 'last') goBack();
     else if (start === 'today') {
       const id = ensureToday();
-      if (id) navigate({ name: 'page', id, find: null }, { replace: true, pane: 'main' });
+      if (id) navigate({ name: 'page', id, find: null }, { replace: true });
     }
   }, []);
 }
 
 export function App() {
-  const route = useRoute();
+  const mountCache = paneMountCacheFor(getSession());
+  const route = useActiveRoute();
   const ui = useUi();
   const prefs = usePreferences();
   const tabs = useTabs();
+  const geometry = useMemo(() => collectPaneGeometry(tabs.layout.root), [tabs.layout.root]);
+  const visibleAssignments = useMemo(
+    () =>
+      geometry.panes.filter((pane): pane is VisiblePaneGeometry & { tabId: string } => pane.tabId !== null),
+    [geometry.panes],
+  );
+  const registeredTabIds = useMemo(() => tabs.layout.tabs.map((tab) => tab.id), [tabs.layout.tabs]);
+  const primaryPaneId = visibleAssignments[0]?.id ?? geometry.panes[0]?.id;
+  const paneNumberByTabId = new Map<string, number>();
+  const topRowPanes = geometry.panes.filter((pane) => pane.rect.top === 0);
+  const titlebarRightPaneId = topRowPanes.reduce<string | null>((rightmost, pane) => {
+    const right = rightmost ? geometry.panes.find((candidate) => candidate.id === rightmost) : null;
+    return !right || pane.rect.left + pane.rect.width > right.rect.left + right.rect.width
+      ? pane.id
+      : rightmost;
+  }, null);
+  geometry.panes.forEach((pane, index) => {
+    if (pane.tabId) paneNumberByTabId.set(pane.tabId, index + 1);
+  });
+
+  useLayoutEffect(() => {
+    for (const pane of visibleAssignments) {
+      mountCache.mountedTabIds.add(pane.tabId);
+    }
+    const liveIds = new Set(registeredTabIds);
+    for (const id of mountCache.mountedTabIds) if (!liveIds.has(id)) mountCache.mountedTabIds.delete(id);
+  }, [mountCache, registeredTabIds, visibleAssignments]);
+
   useTheme(prefs.theme);
   useEffect(() => {
     document.documentElement.dataset.accent = prefs.accent;
@@ -309,8 +511,46 @@ export function App() {
     setUi({ mobileSidebar: false });
   }, [route]);
 
-  const side = tabs.tabs.find((tab) => tab.id === tabs.active)?.side ?? null;
-  const sideRoute = useMemo(() => (side ? parseRoute(side.hash) : null), [side]);
+  const visibleByTabId = new Map<string, VisiblePaneGeometry & { paneNumber: number }>();
+  geometry.panes.forEach((pane, index) => {
+    if (pane.tabId) visibleByTabId.set(pane.tabId, { ...pane, paneNumber: index + 1 });
+  });
+  const paneHosts = tabs.layout.tabs.flatMap((tab) => {
+    const visible = visibleByTabId.get(tab.id);
+    if (!visible && !mountCache.mountedTabIds.has(tab.id)) return [];
+    const pane = visible?.id ?? paneIdForTabId(tab.id, tabs);
+    return [
+      <Pane
+        key={`${mountCache.sessionId}:${tab.id}`}
+        pane={pane}
+        paneNumber={visible?.paneNumber ?? paneNumberByTabId.get(tab.id) ?? 0}
+        primary={pane === primaryPaneId}
+        titlebarEdgeRight={pane === titlebarRightPaneId}
+        tabId={tab.id}
+        route={parseRoute(tab.target)}
+        active={Boolean(visible && tabs.layout.focusedPaneId === visible.id)}
+        rect={visible?.rect ?? { left: 0, top: 0, width: 0, height: 0 }}
+        hidden={!visible}
+      />,
+    ];
+  });
+  const emptyPanes = geometry.panes.flatMap((pane, index) =>
+    pane.tabId === null
+      ? [
+          <Pane
+            key={`empty:${pane.id}`}
+            pane={pane.id}
+            paneNumber={index + 1}
+            primary={pane.id === primaryPaneId}
+            titlebarEdgeRight={pane.id === titlebarRightPaneId}
+            tabId={null}
+            route={null}
+            active={tabs.layout.focusedPaneId === pane.id}
+            rect={pane.rect}
+          />,
+        ]
+      : [],
+  );
 
   return (
     <div
@@ -320,24 +560,12 @@ export function App() {
       <div className="scrim" aria-hidden="true" onClick={() => setUi({ mobileSidebar: false })} />
       <main className="main">
         <TabBar />
-        <div className={`panes${sideRoute ? ' is-split' : ''}`}>
-          <Pane
-            pane="main"
-            route={route}
-            active={!sideRoute || tabs.pane === 'main'}
-            style={sideRoute ? { flexGrow: prefs.splitShare } : undefined}
-          />
-          {sideRoute && (
-            <>
-              <SplitResizer />
-              <Pane
-                pane="side"
-                route={sideRoute}
-                active={tabs.pane === 'side'}
-                style={{ flexGrow: 1 - prefs.splitShare }}
-              />
-            </>
-          )}
+        <div className={`panes${geometry.panes.length > 1 ? ' is-split' : ''}`}>
+          {paneHosts}
+          {emptyPanes}
+          {geometry.splits.map(({ split, rect }) => (
+            <SplitResizer key={split.id} split={split} rect={rect} />
+          ))}
         </div>
       </main>
       {prefs.assistant && prefs.assistantOpen && desktop?.assistant && (

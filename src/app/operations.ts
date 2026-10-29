@@ -50,7 +50,7 @@ import { newId, pickFiles, saveFile, stamp } from './platform/files';
 import { getPreferences, setPreferences } from './platform/preferences';
 import { navigate, openPage, parseRoute } from './router';
 import type { Route } from './router';
-import { getTabs } from './tabs';
+import { getTabForPane, getTabs, getVisiblePanes } from './tabs';
 import type { PaneId } from './tabs';
 import { dateLocale, t } from './i18n';
 import { confirmAction, setUi, toast } from './ui';
@@ -350,12 +350,11 @@ export function revealPage(id: PageId): void {
 
 // the sides of the open tab that show something, a split tab has two
 function panesShowing(match: (route: Route) => boolean): PaneId[] {
-  const { tabs, active } = getTabs();
-  const side = tabs.find((tab) => tab.id === active)?.side;
-  const panes: PaneId[] = [];
-  if (match(parseRoute(window.location.hash))) panes.push('main');
-  if (side && match(parseRoute(side.hash))) panes.push('side');
-  return panes;
+  const tabs = getTabs();
+  return getVisiblePanes(tabs).flatMap((pane) => {
+    const tab = getTabForPane(pane.id, tabs);
+    return tab && match(parseRoute(tab.target)) ? [pane.id] : [];
+  });
 }
 
 export function trashPage(id: PageId): void {
@@ -514,10 +513,14 @@ export async function exportPagePdf(id: PageId): Promise<void> {
   // pictures and diagrams get a moment to finish drawing
   await new Promise((resolve) => setTimeout(resolve, 400));
   // a split tab prints only the side with the page on it
-  const pane = showing[0] ?? (getTabs().pane === 'side' ? 'side' : 'main');
+  const pane = showing[0] ?? getTabs().pane;
+  const paneElement = Array.from(document.querySelectorAll<HTMLElement>('.pane[data-pane]')).find(
+    (element) => element.dataset.pane === pane,
+  );
   const root = document.documentElement;
   root.dataset.printPane = pane;
   root.classList.add('is-printing');
+  paneElement?.setAttribute('data-print-target', 'true');
   // paper is white, so a dark theme prints in the light one, with dark text
   const theme = root.dataset.theme;
   const scheme = root.style.colorScheme;
@@ -533,6 +536,7 @@ export async function exportPagePdf(id: PageId): Promise<void> {
   } finally {
     root.classList.remove('is-printing');
     delete root.dataset.printPane;
+    paneElement?.removeAttribute('data-print-target');
     if (theme) root.dataset.theme = theme;
     root.style.colorScheme = scheme;
   }

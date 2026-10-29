@@ -18,19 +18,25 @@ import { displayTitle } from '../../core/model';
 import type { WorkspaceState } from '../../core/model';
 import { formatShortcut } from '../actions';
 import { t } from '../i18n';
+import type { TranslationKey } from '../i18n';
 import { parseRoute } from '../router';
 import {
   activateTab,
   closeOtherTabs,
   closeTab,
   closeTabsToRight,
+  closeSide,
   moveTab,
   openSide,
   openTab,
   reopenClosedTab,
+  setPanePreset,
+  getVisiblePanes,
   useTabs,
 } from '../tabs';
 import type { Tab } from '../tabs';
+import type { PanePreset } from '../paneLayout';
+import { panePresetOf } from '../paneLayout';
 import { useWorkspace } from '../workspace';
 import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
@@ -80,12 +86,64 @@ function describe(hash: string, state: WorkspaceState): { title: string; icon: R
   return { title: label, icon: <Icon size={14} /> };
 }
 
+const PANE_PRESETS: Array<{
+  id: PanePreset;
+  label: 'single' | 'twoColumns' | 'oneLeftTwoRight' | 'twoByTwo';
+}> = [
+  { id: 'single', label: 'single' },
+  { id: 'two-columns', label: 'twoColumns' },
+  { id: 'one-left-two-right', label: 'oneLeftTwoRight' },
+  { id: 'two-by-two', label: 'twoByTwo' },
+];
+
+function PaneLayoutPreview({ preset }: { preset: PanePreset }) {
+  const count = preset === 'single' ? 1 : preset === 'two-columns' ? 2 : preset === 'two-by-two' ? 4 : 3;
+  return (
+    <span className={`pane-layout-preview is-${preset}`} aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => (
+        <i key={index} />
+      ))}
+    </span>
+  );
+}
+
 // every open tab, in the row the window's own buttons sit in
 export function TabBar() {
-  const { tabs, active, closed } = useTabs();
+  const { tabs, active, closed, layout } = useTabs();
   const state = useWorkspace();
   const [menu, setMenu] = useState<{ tab: Tab; at: DOMRect } | null>(null);
+  const [paneMenuOpen, setPaneMenuOpen] = useState(false);
   const strip = useRef<HTMLDivElement>(null);
+  const paneMenuRef = useRef<HTMLDivElement>(null);
+  const paneTriggerRef = useRef<HTMLButtonElement>(null);
+  const activePreset = panePresetOf(layout);
+  const paneCount = getVisiblePanes().length;
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (!paneMenuRef.current?.contains(event.target as Node)) setPaneMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, []);
+  useEffect(() => {
+    if (!paneMenuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const target = event.target;
+      if (
+        !(target instanceof Node) ||
+        (!paneMenuRef.current?.contains(target) && !paneTriggerRef.current?.contains(target))
+      )
+        return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPaneMenuOpen(false);
+      paneTriggerRef.current?.focus();
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [paneMenuOpen]);
   // the tab being shown stays in view when there are more tabs than room
   useEffect(() => {
     strip.current
@@ -97,13 +155,13 @@ export function TabBar() {
     const index = tabs.findIndex((item) => item.id === tab.id);
     return [
       { label: t('tabs.newTab'), icon: Plus, shortcut: formatShortcut('Mod+T'), onSelect: () => openTab() },
-      { label: t('tabs.duplicateTab'), icon: Copy, onSelect: () => openTab(tab.hash) },
+      { label: t('tabs.duplicateTab'), icon: Copy, onSelect: () => openTab(tab.target) },
       {
         label: t('tabs.openSplit'),
         icon: Columns2,
         onSelect: () => {
           activateTab(tab.id);
-          openSide(tab.hash);
+          openSide(tab.target);
         },
       },
       { separator: true },
@@ -135,14 +193,14 @@ export function TabBar() {
     <div className={`tab-bar${tabs.length < 2 ? ' is-single' : ''}`}>
       <div ref={strip} className="tab-strip" role="tablist" aria-label={t('tabs.openTabsAria')}>
         {tabs.map((tab, index) => {
-          const main = describe(tab.hash, state);
-          const side = tab.side ? describe(tab.side.hash, state) : null;
-          const title = side ? `${main.title} | ${side.title}` : main.title;
+          const main = describe(tab.target, state);
+          const title = main.title;
           return (
             <div
               key={tab.id}
               role="tab"
               tabIndex={0}
+              data-tab-id={tab.id}
               aria-selected={tab.id === active}
               className={`tab${tab.id === active ? ' is-active' : ''}`}
               title={title}
@@ -165,11 +223,6 @@ export function TabBar() {
             >
               <span className="tab-icon">{main.icon}</span>
               <span className="tab-title">{main.title}</span>
-              {side && (
-                <span className="tab-split" title={t('tabs.splitWith', { title: side.title })}>
-                  <Columns2 size={12} />
-                </span>
-              )}
               {tabs.length > 1 && (
                 <button
                   type="button"
@@ -196,6 +249,59 @@ export function TabBar() {
       >
         <Plus size={14} />
       </button>
+      <div ref={paneMenuRef} className="pane-layout-control">
+        <button
+          ref={paneTriggerRef}
+          type="button"
+          className={`icon-button pane-layout-trigger${paneMenuOpen ? ' is-active' : ''}`}
+          title={t('paneLayout.choose')}
+          aria-label={t('paneLayout.title')}
+          aria-expanded={paneMenuOpen}
+          aria-haspopup={true}
+          aria-controls="pane-layout-menu"
+          onClick={() => setPaneMenuOpen((open) => !open)}
+        >
+          <Columns2 size={15} />
+        </button>
+        {paneMenuOpen && (
+          <div
+            id="pane-layout-menu"
+            className="pane-layout-menu"
+            role="group"
+            aria-label={t('paneLayout.choose')}
+          >
+            {PANE_PRESETS.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                className="pane-layout-option"
+                data-pane-preset={id}
+                aria-pressed={activePreset === id}
+                onClick={() => {
+                  setPanePreset(id);
+                  setPaneMenuOpen(false);
+                }}
+              >
+                <PaneLayoutPreview preset={id} />
+                <span>{t(`paneLayout.${label}` as TranslationKey)}</span>
+              </button>
+            ))}
+            {paneCount > 1 && (
+              <button
+                type="button"
+                className="pane-layout-close"
+                onClick={() => {
+                  closeSide();
+                  setPaneMenuOpen(false);
+                }}
+              >
+                <X size={14} />
+                <span>{t('paneLayout.closePane')}</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
       {menu && (
         <Menu
           anchor={menu.at}

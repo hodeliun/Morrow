@@ -10,6 +10,7 @@ const MOVABLE_ITEMS = new Set(['listItem', 'taskItem']);
 export interface BlockMenuRequest {
   pos: number;
   rect: DOMRect;
+  trigger?: HTMLElement;
 }
 
 // finds the block the selection is in, preferring the nearest list item
@@ -149,16 +150,36 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       handle.type = 'button';
       handle.className = 'block-handle';
       handle.draggable = true;
-      handle.tabIndex = -1;
+      handle.tabIndex = view.editable ? 0 : -1;
       handle.setAttribute('aria-label', t('editor.dragToMoveAria'));
       handle.innerHTML = GRIP;
       const host = view.dom.parentElement;
       host?.appendChild(handle);
       let current: { element: HTMLElement; pos: number } | null = null;
+      let pointerFocusPending = false;
 
       const hide = () => {
         handle.classList.remove('is-visible');
         current = null;
+      };
+
+      const show = (target: HTMLElement, top: HTMLElement, pos: number) => {
+        current = { element: target, pos };
+        const hostRect = host!.getBoundingClientRect();
+        const rect = target.getBoundingClientRect();
+        const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 24;
+        const middle = firstTextMiddle(target) ?? rect.top + Math.min(rect.height, lineHeight) / 2;
+        handle.style.top = `${middle - hostRect.top - 11}px`;
+        // a nested block keeps its handle beside it, left of the bullet for a list item
+        const anchor =
+          target.tagName === 'LI'
+            ? (target.parentElement ?? target)
+            : target.tagName === 'SUMMARY'
+              ? (target.closest<HTMLElement>('[data-type="details"]') ?? target)
+              : target;
+        const indent = anchor.getBoundingClientRect().left - top.getBoundingClientRect().left;
+        handle.style.transform = indent > 0 ? `translateX(${indent}px)` : '';
+        handle.classList.add('is-visible');
       };
 
       const onMove = (event: MouseEvent) => {
@@ -177,20 +198,47 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
           pos = blockPosition(view, top, true);
         }
         if (pos === null) return;
-        current = { element: target, pos };
-        const hostRect = host.getBoundingClientRect();
-        const rect = target.getBoundingClientRect();
-        const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 24;
-        const middle = firstTextMiddle(target) ?? rect.top + Math.min(rect.height, lineHeight) / 2;
-        handle.style.top = `${middle - hostRect.top - 11}px`;
-        // a nested block keeps its handle beside it, left of the bullet for a list item
-        const anchor = target.tagName === 'LI' ? (target.parentElement ?? target) : target;
-        const indent = anchor.getBoundingClientRect().left - top.getBoundingClientRect().left;
-        handle.style.transform = indent > 0 ? `translateX(${indent}px)` : '';
-        handle.classList.add('is-visible');
+        show(target, top, pos);
+      };
+
+      const selectedBlockPosition = (): number | null => {
+        const { selection } = view.state;
+        if (selection instanceof NodeSelection) return selection.from;
+        const { $from } = selection;
+        for (let depth = $from.depth; depth > 0; depth--)
+          if ($from.node(depth).type.name === 'table') return $from.before(depth);
+        for (let depth = $from.depth; depth > 0; depth--)
+          if ($from.node(depth).isTextblock) return $from.before(depth);
+        return $from.depth > 0 ? $from.before(1) : null;
+      };
+
+      const onPointerDown = () => {
+        pointerFocusPending = true;
+      };
+
+      const onPointerEnd = () => {
+        pointerFocusPending = false;
+      };
+
+      const onFocus = () => {
+        if (!view.editable || !host) return;
+        if (pointerFocusPending) return;
+        const pos = selectedBlockPosition();
+        if (pos === null) return;
+        const element = view.nodeDOM(pos);
+        if (!(element instanceof HTMLElement)) return;
+        const top = Array.from(view.dom.children).find(
+          (child): child is HTMLElement => child instanceof HTMLElement && (child === element || child.contains(element)),
+        );
+        if (top) show(element, top, pos);
+      };
+
+      const onBlur = () => {
+        if (!host?.matches(':hover')) hide();
       };
 
       const onLeave = (event: MouseEvent) => {
+        if (document.activeElement === handle) return;
         if (
           event.relatedTarget instanceof Node &&
           (handle.contains(event.relatedTarget) || host?.contains(event.relatedTarget))
@@ -213,26 +261,42 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         view.dragging = { slice, move: true };
       };
 
+      const onDragEnd = () => {
+        pointerFocusPending = false;
+        hide();
+      };
+
       const onClick = () => {
         if (!current) return;
-        view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, current.pos)));
+        const selected = current;
+        const rect = handle.getBoundingClientRect();
+        view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, selected.pos)));
         view.focus();
-        onMenu({ pos: current.pos, rect: handle.getBoundingClientRect() });
+        onMenu({ pos: selected.pos, rect, trigger: handle });
       };
 
       host?.addEventListener('mousemove', onMove);
       host?.addEventListener('mouseleave', onLeave);
+      handle.addEventListener('pointerdown', onPointerDown, true);
+      document.addEventListener('pointerup', onPointerEnd, true);
+      document.addEventListener('pointercancel', onPointerEnd, true);
       handle.addEventListener('dragstart', onDragStart);
-      handle.addEventListener('dragend', hide);
+      handle.addEventListener('dragend', onDragEnd);
       handle.addEventListener('click', onClick);
+      handle.addEventListener('focus', onFocus);
+      handle.addEventListener('blur', onBlur);
 
       return {
         update() {
+          handle.tabIndex = view.editable ? 0 : -1;
           if (current && !current.element.isConnected) hide();
         },
         destroy() {
           host?.removeEventListener('mousemove', onMove);
           host?.removeEventListener('mouseleave', onLeave);
+          handle.removeEventListener('pointerdown', onPointerDown, true);
+          document.removeEventListener('pointerup', onPointerEnd, true);
+          document.removeEventListener('pointercancel', onPointerEnd, true);
           handle.remove();
         },
       };

@@ -24,7 +24,9 @@ import { BlockMenu, FormattingMenu, LinkMenu, openHref, TableMenu } from './Edit
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
 import { anchorSlice, isBlockAnchor } from '../../core/anchors';
-import { revealAncestorsForPosition } from './CollapsibleHeading';
+import { resetTemporaryFolding, revealAncestorsForPosition } from './CollapsibleHeading';
+import { PageEditorDocumentTracker } from './pageEditorCommit';
+import { handleModifiedExternalLinkClick, hasHttpExternalScheme } from './modifiedExternalLinkClick';
 
 interface Props {
   pageId: PageId;
@@ -122,9 +124,11 @@ function withoutTrailingEmpty(doc: ProseNode): ProseNode {
   return doc.copy(Fragment.from(children));
 }
 
-function sameContent(editor: Editor, saved: DocNode): boolean {
+function sameContent(editor: Editor, saved: DocNode, current?: ProseNode): boolean {
   try {
-    return withoutTrailingEmpty(editor.schema.nodeFromJSON(saved)).eq(withoutTrailingEmpty(editor.state.doc));
+    return withoutTrailingEmpty(editor.schema.nodeFromJSON(saved)).eq(
+      withoutTrailingEmpty(current ?? editor.state.doc),
+    );
   } catch {
     return false;
   }
@@ -153,6 +157,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   const [finding, setFinding] = useState(false);
   const pane = usePane();
   const committed = useRef<DocNode>(doc);
+  const documentTracker = useRef(new PageEditorDocumentTracker(doc));
   const callbacks = useRef({ onExitTop, onDirty, onReady });
   useEffect(() => {
     callbacks.current = { onExitTop, onDirty, onReady };
@@ -161,6 +166,9 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   useEffect(() => {
     let dirty = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const tracker = new PageEditorDocumentTracker(doc);
+    committed.current = doc;
+    documentTracker.current = tracker;
 
     const commit = () => {
       if (timer) clearTimeout(timer);
@@ -168,8 +176,13 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       if (!dirty || instance.isDestroyed) return;
       dirty = false;
       callbacks.current.onDirty(false);
-      if (sameContent(instance, committed.current)) return;
-      const next = instance.getJSON() as DocNode;
+      const pending = tracker.takePending();
+      if (
+        !pending ||
+        sameContent(instance, committed.current, instance.schema.nodeFromJSON(pending.document))
+      )
+        return;
+      const next = pending.document;
       committed.current = next;
       run({ type: 'page.setDoc', id: pageId, doc: next, now: Date.now() });
     };
@@ -280,6 +293,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
         attributes: { class: 'prose', 'aria-label': 'Page content', spellcheck: 'true' },
         clipboardTextSerializer: (slice) => plainTextOf(slice),
         handleDOMEvents: {
+          click: (view, event) => handleModifiedExternalLinkClick(view, event, openHref),
           // right click on a picture shows the same options as its handle, with copy and open
           contextmenu: (view, event) => {
             if (!(event.target instanceof Element) || !event.target.closest('.image-block')) return false;
@@ -295,11 +309,13 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           },
         },
         handleClickOn: (_view, _pos, node, _nodePos, event) => {
-          // ctrl or cmd click follows links like a browser would
           const href = node.marks?.find((mark) => mark.type.name === 'link')?.attrs.href;
           if (href && (event.ctrlKey || event.metaKey)) {
+            const value = String(href);
+            // web links use the DOM click path because this handler can run on mouseup first
+            if (hasHttpExternalScheme(value)) return false;
             event.preventDefault();
-            openHref(String(href));
+            openHref(value);
             return true;
           }
           return false;
@@ -307,7 +323,19 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       },
       // only real edits count, tiptap also reports an update when nothing in the page changed
       onUpdate: ({ transaction, appendedTransactions }) => {
-        if (!transaction.docChanged && !appendedTransactions.some((tr) => tr.docChanged)) return;
+        const documentChanged = transaction.docChanged || appendedTransactions.some((tr) => tr.docChanged);
+        const update = tracker.recordUpdate(
+          instance.isEditable,
+          documentChanged,
+          instance.getJSON() as DocNode,
+        );
+        if (update.type === 'none') return;
+        if (update.type === 'restore') {
+          if (!instance.schema.nodeFromJSON(update.document).eq(instance.state.doc)) {
+            instance.commands.setContent(update.document as JSONContent, { emitUpdate: false });
+          }
+          return;
+        }
         if (!dirty) callbacks.current.onDirty(true);
         dirty = true;
         if (timer) clearTimeout(timer);
@@ -337,11 +365,15 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   useEffect(() => {
     if (!editor || editor.isDestroyed || doc === committed.current) return;
     committed.current = doc;
+    documentTracker.current.syncFromSource(doc);
     editor.commands.setContent(doc as JSONContent, { emitUpdate: false });
   }, [doc, editor]);
 
   useEffect(() => {
-    if (editor && !editor.isDestroyed) editor.setEditable(editable, false);
+    if (editor && !editor.isDestroyed) {
+      editor.setEditable(editable, false);
+      if (editable) resetTemporaryFolding(editor.view);
+    }
   }, [editor, editable]);
 
   // opens with the search match selected and in view

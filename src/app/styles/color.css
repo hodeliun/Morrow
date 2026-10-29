@@ -313,11 +313,8 @@
   background: var(--c-red);
 }
 
-/* colourful style: on by default, turned off for a quieter page */
+/* colourful accents: on by default, turned off for a quieter page */
 
-:root[data-colorful='true'] .prose h1 {
-  color: var(--accent-strong);
-}
 :root[data-colorful='true'] .prose h2::before {
   content: '';
   display: inline-block;
@@ -327,9 +324,6 @@
   border-radius: 2px;
   background: var(--accent);
   vertical-align: -0.05em;
-}
-:root[data-colorful='true'] .prose h3 {
-  color: color-mix(in srgb, var(--accent-strong) 70%, var(--text));
 }
 :root[data-colorful='true'] .prose li::marker {
   color: var(--accent);

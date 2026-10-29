@@ -84,6 +84,7 @@ export const PageLink = Node.create<PageLinkOptions>({
       label: { default: '', parseHTML: (element) => element.textContent ?? '' },
       // the target as written, kept while the page does not exist
       target: optional('target'),
+      markdownHref: optional('markdown-href'),
       anchor: optional('anchor'),
       alias: optional('alias'),
       embed: {

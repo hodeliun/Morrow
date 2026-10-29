@@ -1,17 +1,18 @@
 import { Extension } from '@tiptap/core';
 import type { AnyExtension } from '@tiptap/core';
 import { Code } from '@tiptap/extension-code';
-import { Details, DetailsContent, DetailsSummary } from '@tiptap/extension-details';
+import { DetailsContent, DetailsSummary } from '@tiptap/extension-details';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
 import { Placeholder } from '@tiptap/extensions';
 import StarterKit from '@tiptap/starter-kit';
 import { t } from '../i18n';
+import { AttributeSafeDetails } from './AttributeSafeDetails';
 import { BlockHandle } from './BlockHandle';
 import { BlockBackground, Callout, FindReplace } from './Blocks';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
-import { CollapsibleHeading } from './CollapsibleHeading';
+import { CollapsibleHeading, TableToggleMarker } from './CollapsibleHeading';
 import type { BlockMenuRequest } from './BlockHandle';
 import { MarkdownPaste } from './MarkdownPaste';
 import { DatabasePaste } from './DatabasePaste';
@@ -39,13 +40,19 @@ const BlockIds = Extension.create({
   addGlobalAttributes() {
     return [
       {
-        types: ['paragraph'],
+        types: ['paragraph', 'details'],
         attributes: {
           blockId: {
             default: null,
             keepOnSplit: false,
-            parseHTML: (element) => element.getAttribute('data-block-id'),
-            renderHTML: (attrs) => (attrs.blockId ? { 'data-block-id': attrs.blockId } : {}),
+            parseHTML: (element) => {
+              const value = element.getAttribute('data-block-id');
+              return value && /^[A-Za-z0-9-]{1,64}$/.test(value) ? value : null;
+            },
+            renderHTML: (attrs) =>
+              typeof attrs.blockId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(attrs.blockId)
+                ? { 'data-block-id': attrs.blockId }
+                : {},
           },
         },
       },
@@ -61,6 +68,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
   return [
     BlockIds,
     BlockBackground,
+    TableToggleMarker,
     CollapsibleHeading,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
@@ -124,7 +132,26 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     Column,
     TableOfContents,
     DateMention.configure({ openDate: options.openDate, findPages: options.findPages }),
-    Details.configure({ persist: true, HTMLAttributes: { class: 'toggle' } }),
+    AttributeSafeDetails.configure({
+      persist: true,
+      HTMLAttributes: { class: 'toggle' },
+      renderToggleButton: ({ element, isOpen, node }) => {
+        const content = node.childCount > 1 ? node.child(1) : null;
+        const tableBlock =
+          typeof node.attrs.tableToggleTitle === 'string' &&
+          content?.type.name === 'detailsContent' &&
+          content.childCount === 1 &&
+          content.firstChild?.type.name === 'table';
+        element.setAttribute(
+          'aria-label',
+          tableBlock
+            ? t(isOpen ? 'editor.collapseTable' : 'editor.expandTable')
+            : isOpen
+              ? t('editor.foldSection')
+              : t('editor.unfoldSection'),
+        );
+      },
+    }),
     DetailsSummary,
     DetailsContent,
     FindReplace,

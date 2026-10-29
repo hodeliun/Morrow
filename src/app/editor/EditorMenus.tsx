@@ -1,5 +1,6 @@
 import type { Editor } from '@tiptap/core';
 import { findParentNode } from '@tiptap/core';
+import { Fragment } from '@tiptap/pm/model';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
 import { useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
@@ -53,6 +54,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { pageIdFromHref } from '../../core/links';
 import { BACKGROUND_HEX, COLORS, TEXT_HEX, validBlockBackground, validColor, validHexColor } from '../../core/model';
 import type { ColorName, ColorValue, HexColor } from '../../core/model';
+import { withLinkedViewCollapseEnabled } from '../components/database/LinkedDatabaseView';
 import { formatShortcut } from '../actions';
 import { Menu } from '../components/Menu';
 import { t } from '../i18n';
@@ -62,6 +64,13 @@ import { copyText, desktop, openExternal } from '../platform/desktop';
 import { openPage } from '../router';
 import { moveBlock } from './BlockHandle';
 import type { BlockMenuRequest } from './BlockHandle';
+import {
+  isTableToggle,
+  setHeadingCollapsible,
+  toggleSectionCollapsed,
+  unwrapDetailsToParagraph,
+  wrapBlockInDetails,
+} from './CollapsibleHeading';
 import { toast } from '../ui';
 import { colorLabel } from '../i18n/labels';
 
@@ -758,10 +767,12 @@ type TurnTarget =
   | { kind: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6 }
   | { kind: 'bulletList' | 'orderedList' | 'taskList' | 'blockquote' | 'codeBlock' | 'toggle' };
 
-// blocks the handle menu can turn into something else: lines of text, single list items, quotes and toggles
-const TURNABLE = new Set(['listItem', 'taskItem', 'blockquote', 'details']);
+// blocks the handle menu can turn into something else, including collapsible inline tables
+const TURNABLE = new Set(['listItem', 'taskItem', 'blockquote', 'details', 'table', 'linkedDatabaseView']);
 function turnable(editor: Editor, pos: number): boolean {
   const node = editor.state.doc.nodeAt(pos);
+  if (node?.type.name === 'linkedDatabaseView')
+    return !!node.attrs.view && typeof node.attrs.view === 'object';
   return !!node && (node.isTextblock || TURNABLE.has(node.type.name));
 }
 
@@ -784,6 +795,52 @@ function firstTextPosition(editor: Editor, pos: number): number | null {
 function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
   const node = editor.state.doc.nodeAt(pos);
   if (!node) return;
+  if (target.kind === 'toggle') {
+    if (!editor.isEditable) return;
+    if (node.type.name === 'heading') {
+      const tr = editor.state.tr;
+      if (setHeadingCollapsible(tr, pos, true)) editor.view.dispatch(tr.scrollIntoView());
+      return;
+    }
+    if (node.type.name === 'table') {
+      const tr = editor.state.tr;
+      const source = tr.doc.nodeAt(pos);
+      const label = tr.doc.type.schema.text(t('slash.items.table.title'));
+      if (
+        source &&
+        wrapBlockInDetails(tr, pos, Fragment.from(label), Fragment.from(source), {}, { tableToggleTitle: label.text })
+      ) {
+        tr.setSelection(TextSelection.create(tr.doc, pos + 2 + label.nodeSize));
+        editor.view.dispatch(tr.scrollIntoView());
+      }
+      return;
+    }
+    if (node.type.name === 'details') return;
+    const at = firstTextPosition(editor, pos);
+    if (at === null) return;
+    const line = editor.state.doc.resolve(at).parent;
+    if (!line.isTextblock || line.type.name === 'codeBlock') return;
+    const start = editor.state.doc.resolve(at).before();
+    const placeholder = editor.state.schema.nodes.paragraph?.create();
+    if (!placeholder) return;
+    const tr = editor.state.tr;
+    const summaryAttrs =
+      line.attrs.blockBackground !== undefined ? { blockBackground: line.attrs.blockBackground } : {};
+    if (wrapBlockInDetails(tr, start, line.content, Fragment.from(placeholder), summaryAttrs)) {
+      tr.setSelection(TextSelection.create(tr.doc, start + 2 + line.content.size));
+      editor.view.dispatch(tr.scrollIntoView());
+    }
+    return;
+  }
+  if (node.type.name === 'details' && target.kind === 'paragraph') {
+    if (!editor.isEditable) return;
+    const tr = editor.state.tr;
+    if (unwrapDetailsToParagraph(tr, pos)) {
+      tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(pos + 1, tr.doc.content.size))));
+      editor.view.dispatch(tr.scrollIntoView());
+    }
+    return;
+  }
   if (node.type.name === 'details') {
     // a toggle opens up into its title as a line followed by what was folded inside it
     const summary = firstTextPosition(editor, pos);
@@ -825,26 +882,6 @@ function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
     case 'codeBlock':
       chain.setCodeBlock().run();
       return;
-    case 'toggle':
-      // the line becomes the toggle's title, with an empty line folded under it
-      chain
-        .command(({ tr, state }) => {
-          const { $from } = tr.selection;
-          const line = $from.parent;
-          if (!line.isTextblock || line.type.name === 'codeBlock') return false;
-          const { details, detailsSummary, detailsContent, paragraph } = state.schema.nodes;
-          if (!details || !detailsSummary || !detailsContent || !paragraph) return false;
-          const start = $from.before();
-          const toggle = details.create({ open: true }, [
-            detailsSummary.create(null, line.content),
-            detailsContent.create(null, paragraph.create()),
-          ]);
-          tr.replaceWith(start, start + line.nodeSize, toggle);
-          tr.setSelection(TextSelection.create(tr.doc, start + 2 + line.content.size));
-          return true;
-        })
-        .run();
-      return;
   }
 }
 
@@ -862,25 +899,84 @@ export function BlockMenu({
   const turn = (target: TurnTarget) => () => turnInto(editor, request.pos, target);
   const selectedBlock = editor.state.doc.nodeAt(request.pos);
   const blockType = selectedBlock?.type.name;
+  const selectedView = selectedBlock?.attrs.view as { collapseEnabled?: boolean } | null | undefined;
   const currentBackground = validBlockBackground(selectedBlock?.attrs.blockBackground);
+  const turnIntoEntries: MenuEntry[] =
+    blockType === 'table'
+      ? [
+          { heading: t('editor.turnInto') },
+          {
+            label: t('editor.makeTableCollapsible'),
+            icon: ChevronRight,
+            onSelect: turn({ kind: 'toggle' }),
+          },
+          { separator: true },
+        ]
+      : blockType === 'linkedDatabaseView'
+        ? [
+            { heading: t('editor.turnInto') },
+            {
+              label:
+                selectedView?.collapseEnabled === false
+                  ? t('editor.makeTableCollapsible')
+                  : t('editor.removeTableCollapse'),
+              icon: ChevronRight,
+              onSelect: () => {
+                if (!editor.isEditable) return;
+                const node = editor.state.doc.nodeAt(request.pos);
+                const view = node?.attrs.view;
+                if (!node || node.type.name !== 'linkedDatabaseView' || !view || typeof view !== 'object')
+                  return;
+                const collapseEnabled =
+                  (view as { collapseEnabled?: boolean }).collapseEnabled !== false;
+                editor.view.dispatch(
+                  editor.state.tr.setNodeMarkup(request.pos, undefined, {
+                    ...node.attrs,
+                    view: withLinkedViewCollapseEnabled(view, !collapseEnabled),
+                  }),
+                );
+              },
+            },
+            { separator: true },
+          ]
+        : [
+            { heading: t('editor.turnInto') },
+            {
+              label:
+                blockType === 'details'
+                  ? isTableToggle(selectedBlock)
+                    ? t('editor.removeTableCollapse')
+                    : t('editor.disableCollapsible')
+                  : t('slash.items.text.title'),
+              icon: blockType === 'details' ? ChevronDown : Pilcrow,
+              onSelect: turn({ kind: 'paragraph' }),
+            },
+            ...([Heading1, Heading2, Heading3, Heading4, Heading5, Heading6] as const).map((icon, index) => {
+              const level = (index + 1) as 1 | 2 | 3 | 4 | 5 | 6;
+              return {
+                label: t(`slash.items.h${level}.title`),
+                icon,
+                onSelect: turn({ kind: 'heading', level }),
+              };
+            }),
+            { label: t('slash.items.bullet.title'), icon: List, onSelect: turn({ kind: 'bulletList' }) },
+            { label: t('slash.items.ordered.title'), icon: ListOrdered, onSelect: turn({ kind: 'orderedList' }) },
+            { label: t('slash.items.task.title'), icon: ListChecks, onSelect: turn({ kind: 'taskList' }) },
+            ...(blockType === 'heading' || blockType === 'details'
+              ? []
+              : [
+                  {
+                    label: t('editor.enableCollapsible'),
+                    icon: ChevronRight,
+                    onSelect: turn({ kind: 'toggle' }),
+                  },
+                ]),
+            { label: t('slash.items.quote.title'), icon: Quote, onSelect: turn({ kind: 'blockquote' }) },
+            { label: t('slash.items.code.title'), icon: Code2, onSelect: turn({ kind: 'codeBlock' }) },
+            { separator: true },
+          ];
   const entries: MenuEntry[] = [
-    { heading: t('editor.turnInto') },
-    { label: t('slash.items.text.title'), icon: Pilcrow, onSelect: turn({ kind: 'paragraph' }) },
-    ...([Heading1, Heading2, Heading3, Heading4, Heading5, Heading6] as const).map((icon, index) => {
-      const level = (index + 1) as 1 | 2 | 3 | 4 | 5 | 6;
-      return {
-        label: t(`slash.items.h${level}.title`),
-        icon,
-        onSelect: turn({ kind: 'heading', level }),
-      };
-    }),
-    { label: t('slash.items.bullet.title'), icon: List, onSelect: turn({ kind: 'bulletList' }) },
-    { label: t('slash.items.ordered.title'), icon: ListOrdered, onSelect: turn({ kind: 'orderedList' }) },
-    { label: t('slash.items.task.title'), icon: ListChecks, onSelect: turn({ kind: 'taskList' }) },
-    { label: t('slash.items.toggle.title'), icon: ChevronRight, onSelect: turn({ kind: 'toggle' }) },
-    { label: t('slash.items.quote.title'), icon: Quote, onSelect: turn({ kind: 'blockquote' }) },
-    { label: t('slash.items.code.title'), icon: Code2, onSelect: turn({ kind: 'codeBlock' }) },
-    { separator: true },
+    ...turnIntoEntries,
     { heading: t('editor.blockBackground') },
     {
       label: t('editor.noBlockBackground'),
@@ -967,50 +1063,28 @@ export function BlockMenu({
             label: t('editor.disableCollapsible'),
             icon: ChevronDown,
             onSelect: () => {
-              const node = editor.state.doc.nodeAt(request.pos);
-              if (node) {
-                editor.view.dispatch(
-                  editor.state.tr.setNodeMarkup(request.pos, undefined, {
-                    ...node.attrs,
-                    collapsible: false,
-                    collapsed: false,
-                  }),
-                );
-              }
+              if (!editor.isEditable) return;
+              const tr = editor.state.tr;
+              if (setHeadingCollapsible(tr, request.pos, false)) editor.view.dispatch(tr.scrollIntoView());
             },
           }
         : {
             label: t('editor.enableCollapsible'),
             icon: ChevronRight,
             onSelect: () => {
-              const node = editor.state.doc.nodeAt(request.pos);
-              if (node) {
-                editor.view.dispatch(
-                  editor.state.tr.setNodeMarkup(request.pos, undefined, {
-                    ...node.attrs,
-                    collapsible: true,
-                    collapsed: false,
-                  }),
-                );
-              }
+              if (!editor.isEditable) return;
+              const tr = editor.state.tr;
+              if (setHeadingCollapsible(tr, request.pos, true)) editor.view.dispatch(tr.scrollIntoView());
             },
           },
       ...(isCollapsible
         ? [
             {
-              label: t('editor.collapseSection'),
+              label: t(isCollapsed ? 'editor.unfoldSection' : 'editor.foldSection'),
               icon: ChevronRight,
               checked: isCollapsed,
               onSelect: () => {
-                const node = editor.state.doc.nodeAt(request.pos);
-                if (node) {
-                  editor.view.dispatch(
-                    editor.state.tr.setNodeMarkup(request.pos, undefined, {
-                      ...node.attrs,
-                      collapsed: !isCollapsed,
-                    }),
-                  );
-                }
+                toggleSectionCollapsed(editor.view, request.pos);
               },
             },
           ]
@@ -1241,7 +1315,7 @@ export function BlockMenu({
     : entries.filter((_entry, index) => index < firstTurnInto || index > afterTurnInto);
   return (
     <Menu
-      anchor={request.rect}
+      anchor={request.trigger ?? request.rect}
       entries={shown}
       onClose={onClose}
       placement="left-start"
