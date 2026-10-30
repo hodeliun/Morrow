@@ -1,5 +1,8 @@
 # Matriz de aceitação e procedência
 
+**Limite vigente:** somente os 15 tickets aceitos entram na integração 1.3; os outros 24 permanecem pausados. Veja [EXECUTION.md](EXECUTION.md).
+
+
 **Estado: não executada.** S2 identifica item de origem; T identifica ticket. Os materiais originais permanecem privados; reproduções públicas usam dados sintéticos. A versão gravada é desconhecida.
 
 | Item de origem | Tickets responsáveis |
@@ -271,7 +274,7 @@ Origem: S2-05, S2-27.
 
 **Cenários:** UI de navegação com sumário e duas abas longas; mudanças de posição medidas relativamente, sem mocks de scroll usados como prova final.
 
-**Evidência futura:** versão/commit, passos, esperado, observado, arquivo sintético/medição e resultado dos testes. **Resultado: não executado.**
+**Evidência:** [`docs/evidence/scope-2/t16/REPORT.md`](../../evidence/scope-2/t16/REPORT.md) registra o UI build-03 completo. Navegação e restauração passaram. A variação diária de `recent.json` (+1) aponta para a edição explícita do fold (`batch.docs`), mas build-03 não gravou checkpoints de fase; o harness foi instrumentado para confirmar se a contagem ficou estável durante abertura/navegação e mudou na edição. A classificação histórica permanece preservada. O gate build-03 continua falhando pela regravação de bytes de `workspace.json`. O follow-up de intenção de usuário está somente na fonte e aguarda o UI04 de build-04. **Resultado: falhou; ticket não aceito.**
 
 ### T17 — Títulos com cor padrão do tema
 

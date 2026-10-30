@@ -41,6 +41,8 @@ import { editMathNear } from './Extras';
 import { insertFiles } from './Media';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
+import { listItemAtCursor, turnListItem } from './turnInto';
+import type { TurnTarget } from './turnInto';
 import { getState, run } from '../workspace';
 
 interface BlockItem extends MenuItem {
@@ -79,6 +81,19 @@ const SAMPLE_DIAGRAM = `flowchart LR
 
 const chain = (editor: Editor, range: Range) => editor.chain().focus().deleteRange(range);
 
+// in the first line of a list item a block command changes only that item, the rest of the list stays.
+// asking a list item for the list it is already in is left to the usual toggle, which takes it out
+const turnItem = (editor: Editor, range: Range, target: TurnTarget): boolean => {
+  if (!editor.isEditable) return false;
+  const item = listItemAtCursor(editor);
+  if (item === null) return false;
+  const list = editor.state.doc.resolve(item).parent.type.name;
+  if (list === target.kind) return false;
+  chain(editor, range).run();
+  turnListItem(editor, item, target);
+  return true;
+};
+
 export const BLOCK_ITEMS: BlockItem[] = [
   {
     id: 'text',
@@ -86,7 +101,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
     description: 'Plain paragraph',
     icon: Pilcrow,
     keywords: 'paragraph plain',
-    run: (e, r) => chain(e, r).setParagraph().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'paragraph' }) || chain(e, r).setParagraph().run(),
   },
   {
     id: 'h1',
@@ -95,7 +110,8 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: Heading1,
     hint: '#',
     keywords: 'title h1',
-    run: (e, r) => chain(e, r).setHeading({ level: 1 }).run(),
+    run: (e, r) =>
+      turnItem(e, r, { kind: 'heading', level: 1 }) || chain(e, r).setHeading({ level: 1 }).run(),
   },
   {
     id: 'h2',
@@ -104,7 +120,8 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: Heading2,
     hint: '##',
     keywords: 'subtitle h2',
-    run: (e, r) => chain(e, r).setHeading({ level: 2 }).run(),
+    run: (e, r) =>
+      turnItem(e, r, { kind: 'heading', level: 2 }) || chain(e, r).setHeading({ level: 2 }).run(),
   },
   {
     id: 'h3',
@@ -113,7 +130,8 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: Heading3,
     hint: '###',
     keywords: 'h3',
-    run: (e, r) => chain(e, r).setHeading({ level: 3 }).run(),
+    run: (e, r) =>
+      turnItem(e, r, { kind: 'heading', level: 3 }) || chain(e, r).setHeading({ level: 3 }).run(),
   },
   ...([4, 5, 6] as const).map((level) => ({
     id: `h${level}`,
@@ -122,7 +140,8 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: Heading,
     hint: '#'.repeat(level),
     keywords: `h${level} subheading`,
-    run: (e: Editor, r: Range) => chain(e, r).setHeading({ level }).run(),
+    run: (e: Editor, r: Range) =>
+      turnItem(e, r, { kind: 'heading', level }) || chain(e, r).setHeading({ level }).run(),
   })),
   {
     id: 'bullet',
@@ -131,7 +150,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: List,
     hint: '-',
     keywords: 'unordered ul bullet',
-    run: (e, r) => chain(e, r).toggleBulletList().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'bulletList' }) || chain(e, r).toggleBulletList().run(),
   },
   {
     id: 'ordered',
@@ -140,7 +159,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: ListOrdered,
     hint: '1.',
     keywords: 'ordered ol',
-    run: (e, r) => chain(e, r).toggleOrderedList().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'orderedList' }) || chain(e, r).toggleOrderedList().run(),
   },
   {
     id: 'task',
@@ -149,7 +168,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: ListChecks,
     hint: '[ ]',
     keywords: 'todo task checkbox',
-    run: (e, r) => chain(e, r).toggleTaskList().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'taskList' }) || chain(e, r).toggleTaskList().run(),
   },
   {
     id: 'quote',
@@ -158,7 +177,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: Quote,
     hint: '>',
     keywords: 'blockquote citation',
-    run: (e, r) => chain(e, r).setBlockquote().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'blockquote' }) || chain(e, r).setBlockquote().run(),
   },
   {
     id: 'code',
@@ -167,7 +186,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
     icon: Code2,
     hint: '```',
     keywords: 'snippet pre',
-    run: (e, r) => chain(e, r).setCodeBlock().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'codeBlock' }) || chain(e, r).setCodeBlock().run(),
   },
   {
     id: 'divider',
@@ -192,8 +211,31 @@ export const BLOCK_ITEMS: BlockItem[] = [
     description: 'Content that folds away',
     icon: ChevronRight,
     keywords: 'details collapse fold accordion',
-    run: (e, r) => chain(e, r).setDetails().run(),
+    run: (e, r) => turnItem(e, r, { kind: 'toggle' }) || chain(e, r).setDetails().run(),
   },
+  ...([1, 2, 3] as const).map((level) => ({
+    id: `toggleH${level}`,
+    title: `Toggle heading ${level}`,
+    description: 'A heading that folds its section away',
+    icon: ChevronRight,
+    keywords: `toggle heading h${level} collapse fold section`,
+    run: (e: Editor, r: Range) => {
+      if (turnItem(e, r, { kind: 'toggle', level })) return;
+      chain(e, r)
+        .setDetails()
+        .command(({ tr }) => {
+          // the title is the line the cursor is now on
+          const { $from } = tr.selection;
+          if ($from.parent.type.name !== 'detailsSummary') return false;
+          tr.setNodeMarkup($from.before(), undefined, { ...$from.parent.attrs, level });
+          // open, so enter after the title goes into the section
+          const details = $from.node(-1);
+          tr.setNodeMarkup($from.before(-1), undefined, { ...details.attrs, open: true });
+          return true;
+        })
+        .run();
+    },
+  })),
   {
     id: 'image',
     title: 'Image',
@@ -487,6 +529,9 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
       'ordered',
       'task',
       'toggle',
+      'toggleH1',
+      'toggleH2',
+      'toggleH3',
       'quote',
       'callout',
       'divider',

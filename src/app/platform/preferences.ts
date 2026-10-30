@@ -9,6 +9,9 @@ export type WritingFont = 'serif' | 'sans' | 'mono';
 export type PageWidth = 'comfortable' | 'wide';
 // what morrow shows when it opens: today's note, the home page, or where you left off
 export type StartPage = 'today' | 'home' | 'last';
+// the views the sidebar lists, each one can be left out, daily notes turn off everywhere with theirs
+export const SIDEBAR_MODULES = ['daily', 'tasks', 'tags', 'review', 'graph'] as const;
+export type SidebarModule = (typeof SIDEBAR_MODULES)[number];
 // accent colours, each tuned for light and dark in features.css
 export const ACCENTS = ['ember', 'ocean', 'aqua', 'violet', 'forest', 'rose', 'amber', 'graphite'] as const;
 export type Accent = (typeof ACCENTS)[number];
@@ -26,6 +29,8 @@ export interface Preferences {
   // captured by notes created after this default is chosen
   defaultNoteStyle: NoteStyle;
   sidebarOpen: boolean;
+  // a hidden sidebar slides in while the pointer is at the window's left edge
+  sidebarPeek: boolean;
   sidebarWidth: number;
   expanded: string[];
   accent: Accent;
@@ -46,6 +51,12 @@ export interface Preferences {
   // look for a new version when morrow opens and once a day, off until turned on
   checkUpdates: boolean;
   mcpEnabled: boolean;
+  // the language last picked for a code block, a new block starts in it. empty for plain text
+  codeLanguage: string;
+  // red underlines under words the spellchecker does not know
+  spellcheck: boolean;
+  // views left out of the sidebar, they still open from search and their shortcuts
+  hiddenModules: SidebarModule[];
 }
 
 const KEY = 'morrow.preferences';
@@ -66,6 +77,7 @@ const defaults: Preferences = {
   width: 'comfortable',
   defaultNoteStyle: DEFAULT_NOTE_STYLE,
   sidebarOpen: true,
+  sidebarPeek: false,
   sidebarWidth: 264,
   expanded: [],
   accent: 'ocean',
@@ -79,6 +91,9 @@ const defaults: Preferences = {
   assistantAsk: true,
   checkUpdates: false,
   mcpEnabled: false,
+  codeLanguage: '',
+  spellcheck: true,
+  hiddenModules: [],
 };
 
 // pages created before per-note styling keep the typography they used with the old global controls
@@ -119,6 +134,7 @@ function read(): Preferences {
       width,
       defaultNoteStyle: normalizeNoteStyle(parsed.defaultNoteStyle, legacyStyle) ?? legacyStyle,
       sidebarOpen: parsed.sidebarOpen !== false,
+      sidebarPeek: parsed.sidebarPeek === true,
       accent: ACCENTS.includes(parsed.accent as Accent) ? parsed.accent! : defaults.accent,
       colorful: parsed.colorful !== false,
       name: typeof parsed.name === 'string' ? parsed.name.trim().slice(0, 60) : '',
@@ -140,10 +156,24 @@ function read(): Preferences {
       assistantAsk: parsed.assistantAsk !== false,
       checkUpdates: parsed.checkUpdates === true,
       mcpEnabled: parsed.mcpEnabled === true,
+      codeLanguage:
+        typeof parsed.codeLanguage === 'string' && /^[\w#+.-]{0,40}$/.test(parsed.codeLanguage)
+          ? parsed.codeLanguage
+          : '',
+      spellcheck: parsed.spellcheck !== false,
+      hiddenModules: Array.isArray(parsed.hiddenModules)
+        ? SIDEBAR_MODULES.filter((module) => parsed.hiddenModules!.includes(module))
+        : [],
     };
   } catch {
     return defaults;
   }
+}
+
+// every text field takes it from the page, the desktop app also turns the spellchecker itself off
+export function applySpellcheck(enabled: boolean): void {
+  if (typeof document !== 'undefined') document.documentElement.spellcheck = enabled;
+  desktop?.setSpellcheck?.(enabled);
 }
 
 export function getPreferences(): Preferences {
@@ -155,6 +185,7 @@ export function setPreferences(patch: Partial<Preferences>): void {
   if ('mcpEnabled' in patch && desktop?.mcp?.setEnabled) {
     void desktop.mcp.setEnabled(Boolean(patch.mcpEnabled));
   }
+  if ('spellcheck' in patch) applySpellcheck(current.spellcheck);
   try {
     localStorage.setItem(KEY, JSON.stringify(current));
   } catch {

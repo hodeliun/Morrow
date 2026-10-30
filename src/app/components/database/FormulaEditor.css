@@ -1,4 +1,4 @@
-.formula-editor .formula-input,
+.formula-editor .formula-input.text-input,
 .formula-editor .formula-highlight {
   box-sizing: border-box;
   padding: 9px 10px;

@@ -4,7 +4,7 @@ import type { Command } from './commands';
 import { bindFormulaReferences } from './database';
 import { emptyWorkspace } from './model';
 import type { DatabaseDef, DocNode, PropDef, WorkspaceState } from './model';
-import { childrenOf, isEffectivelyTrashed, livePages } from './tree';
+import { archivedPages, childrenOf, isEffectivelyTrashed, livePages } from './tree';
 
 function run(state: WorkspaceState, ...commands: Command[]): WorkspaceState {
   return commands.reduce((current, command) => {
@@ -265,6 +265,27 @@ describe('page fields replacement', () => {
     });
     expect(invalid.ok).toBe(false);
     expect(state.pages.row!.properties).toEqual({ note: 'old', amount: 4 });
+  });
+});
+
+describe('archive', () => {
+  const base = () => run(emptyWorkspace(), create('a'), create('b', 'a'));
+
+  it('archives a page and brings it back', () => {
+    const archived = run(base(), { type: 'page.setArchived', id: 'b', now: 5 });
+    expect(archivedPages(archived.pages).map((page) => page.id)).toEqual(['b']);
+    expect(livePages(archived.pages)).toHaveLength(2);
+    const back = run(archived, { type: 'page.setArchived', id: 'b', now: null });
+    expect(archivedPages(back.pages)).toHaveLength(0);
+  });
+
+  it('leaves archived pages inside the trash out of the archive', () => {
+    const state = run(
+      base(),
+      { type: 'page.setArchived', id: 'b', now: 5 },
+      { type: 'page.trash', id: 'a', now: 6 },
+    );
+    expect(archivedPages(state.pages)).toHaveLength(0);
   });
 });
 

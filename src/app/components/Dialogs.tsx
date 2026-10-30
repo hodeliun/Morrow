@@ -1,50 +1,95 @@
-import { useMemo, useState } from 'react';
-import { displayTitle } from '../../core/model';
-import type { PageId } from '../../core/model';
-import { foldText } from '../../core/search';
-import { ancestorsOf, childrenOf, flattenTree, isDescendantOf } from '../../core/tree';
-import { ACTIONS, formatShortcut } from '../actions';
-import { expandPage, movePage } from '../operations';
-import { closeDialog, useUi } from '../ui';
-import { run, useWorkspace } from '../workspace';
-import { CaptureDialog } from './CaptureDialog';
-import { EmojiPicker } from './EmojiPicker';
-import { EncryptDialog } from './EncryptDialog';
-import { HistoryDialog } from './HistoryDialog';
-import { MathDialog } from './MathDialog';
-import { Dialog } from './primitives';
-import { SettingsDialog } from './Settings';
-import { useTranslation } from '../i18n';
-import { SourceDialog } from './SourceDialog';
-import { PairDialog } from './SyncSettings';
-import { TemplateDialog } from './TemplateDialog';
+import { useMemo, useState } from "react";
+import { displayTitle } from "../../core/model";
+import type { PageId } from "../../core/model";
+import { foldText } from "../../core/search";
+import {
+  ancestorsOf,
+  childrenOf,
+  flattenTree,
+  isDescendantOf,
+} from "../../core/tree";
+import { ACTIONS, formatShortcut } from "../actions";
+import { expandPage, movePage } from "../operations";
+import { closeDialog, useUi } from "../ui";
+import { run, useWorkspace } from "../workspace";
+import { CaptureDialog } from "./CaptureDialog";
+import { EmojiPicker } from "./EmojiPicker";
+import { EncryptDialog } from "./EncryptDialog";
+import { HistoryDialog } from "./HistoryDialog";
+import { MathDialog } from "./MathDialog";
+import { Dialog } from "./primitives";
+import { SettingsDialog } from "./Settings";
+import { useTranslation } from "../i18n";
+import { SourceDialog } from "./SourceDialog";
+import { PairDialog } from "./SyncSettings";
+import { TemplateDialog } from "./TemplateDialog";
+
+function PageIconPicker({
+  pageId,
+  title,
+  currentIcon,
+  onPick,
+}: {
+  pageId?: PageId;
+  title?: string;
+  currentIcon?: string | null;
+  onPick?: (icon: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const pages = useWorkspace().pages;
+  const page = pageId ? pages[pageId] : undefined;
+  if ((pageId && !page) || (!pageId && !onPick)) return null;
+  return (
+    <EmojiPicker
+      title={
+        title
+          ? t("emoji.title", { title })
+          : page
+            ? t("emoji.title", { title: displayTitle(page) })
+            : t("emoji.iconTypes")
+      }
+      current={currentIcon !== undefined ? currentIcon : (page?.icon ?? null)}
+      onPick={
+        onPick ??
+        ((icon) =>
+          pageId &&
+          run({ type: "page.setIcon", id: pageId, icon, now: Date.now() }))
+      }
+    />
+  );
+}
 
 export function Dialogs() {
   const { t } = useTranslation();
   const { dialog } = useUi();
   if (!dialog) return null;
   switch (dialog.kind) {
-    case 'settings':
+    case "settings":
       return <SettingsDialog section={dialog.section} />;
-    case 'shortcuts':
+    case "shortcuts":
       return <ShortcutsDialog />;
-    case 'move':
+    case "move":
       return <MoveDialog pageId={dialog.pageId} />;
-    case 'history':
+    case "history":
       return <HistoryDialog pageId={dialog.pageId} />;
-    case 'icon':
+    case "icon":
       return (
-        <EmojiPicker
+        <PageIconPicker
           pageId={dialog.pageId}
-          currentIcon={dialog.currentIcon}
           title={dialog.title}
-          onPick={
-            dialog.onPick ??
-            ((icon) => dialog.pageId && run({ type: 'page.setIcon', id: dialog.pageId, icon, now: Date.now() }))
-          }
+          currentIcon={dialog.currentIcon}
+          onPick={dialog.onPick}
         />
       );
-    case 'source':
+    case "emoji":
+      return (
+        <EmojiPicker
+          title={dialog.title}
+          current={dialog.current}
+          onPick={dialog.onPick}
+        />
+      );
+    case "source":
       return (
         <SourceDialog
           title={dialog.title}
@@ -54,7 +99,7 @@ export function Dialogs() {
           onSave={dialog.onSave}
         />
       );
-    case 'math':
+    case "math":
       return (
         <MathDialog
           value={dialog.value}
@@ -63,20 +108,24 @@ export function Dialogs() {
           onCancel={dialog.onCancel}
         />
       );
-    case 'template':
+    case "template":
       return <TemplateDialog parentId={dialog.parentId} />;
-    case 'encrypt':
+    case "encrypt":
       return <EncryptDialog pageId={dialog.pageId} />;
-    case 'pair':
+    case "pair":
       return <PairDialog />;
-    case 'capture':
+    case "capture":
       return <CaptureDialog />;
-    case 'pasteDatabase':
+    case "pasteDatabase":
       return (
-        <Dialog title={t('database.pasteTitle', { title: dialog.title })} onClose={closeDialog} size="small">
-          <p className="muted">{t('database.pasteHint')}</p>
+        <Dialog
+          title={t("database.pasteTitle", { title: dialog.title })}
+          onClose={closeDialog}
+          size="small"
+        >
+          <p className="muted">{t("database.pasteHint")}</p>
           <div className="database-paste-options">
-            {(['structure', 'rows', 'view'] as const).map((mode) => (
+            {(["structure", "rows", "view"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
@@ -86,14 +135,22 @@ export function Dialogs() {
                   dialog.onChoose(mode);
                 }}
               >
-                <strong>{t(`database.paste${mode === 'structure' ? 'Structure' : mode === 'rows' ? 'Rows' : 'View'}`)}</strong>
-                <span>{t(`database.paste${mode === 'structure' ? 'StructureHint' : mode === 'rows' ? 'RowsHint' : 'ViewHint'}`)}</span>
+                <strong>
+                  {t(
+                    `database.paste${mode === "structure" ? "Structure" : mode === "rows" ? "Rows" : "View"}`,
+                  )}
+                </strong>
+                <span>
+                  {t(
+                    `database.paste${mode === "structure" ? "StructureHint" : mode === "rows" ? "RowsHint" : "ViewHint"}`,
+                  )}
+                </span>
               </button>
             ))}
           </div>
         </Dialog>
       );
-    case 'confirm':
+    case "confirm":
       return (
         <Dialog
           title={dialog.title}
@@ -102,11 +159,11 @@ export function Dialogs() {
           footer={
             <>
               <button type="button" className="button" onClick={closeDialog}>
-                {t('common.cancel')}
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
-                className={`button ${dialog.danger ? 'danger-solid' : 'primary'}`}
+                className={`button ${dialog.danger ? "danger-solid" : "primary"}`}
                 data-autofocus
                 onClick={() => {
                   closeDialog();
@@ -127,30 +184,30 @@ export function Dialogs() {
 function ShortcutsDialog() {
   const { t, tAction } = useTranslation();
   const editing: Array<[string, string]> = [
-    [t('dialogs.keyFormatting'), 'Mod+B  Mod+I  Mod+U'],
-    [t('dialogs.keyStrike'), 'Mod+Shift+S'],
-    [t('editor.code'), 'Mod+E'],
-    [t('dialogs.keyLink'), 'Mod+K'],
-    [t('dialogs.keyHeadings'), 'Mod+Alt+1  2  3'],
-    [t('dialogs.keyInsertBlock'), '/'],
-    [t('dialogs.keyLinkPage'), '[['],
-    [t('dialogs.keyMoveBlock'), 'Alt+Shift+↑  ↓'],
-    [t('dialogs.keyIndent'), 'Tab  Shift+Tab'],
-    [t('dialogs.keyUndo'), 'Mod+Z  Mod+Shift+Z'],
-    [t('dialogs.keySave'), 'Mod+S'],
-    [t('editor.findAndReplace'), 'Mod+F'],
-    [t('dialogs.keyAddFile'), t('dialogs.pasteOrDrop')],
+    [t("dialogs.keyFormatting"), "Mod+B  Mod+I  Mod+U"],
+    [t("dialogs.keyStrike"), "Mod+Shift+S"],
+    [t("editor.code"), "Mod+E"],
+    [t("dialogs.keyLink"), "Mod+K"],
+    [t("dialogs.keyHeadings"), "Mod+Alt+1  2  3"],
+    [t("dialogs.keyInsertBlock"), "/"],
+    [t("dialogs.keyLinkPage"), "[["],
+    [t("dialogs.keyMoveBlock"), "Alt+Shift+↑  ↓"],
+    [t("dialogs.keyIndent"), "Tab  Shift+Tab"],
+    [t("dialogs.keyUndo"), "Mod+Z  Mod+Shift+Z"],
+    [t("dialogs.keySave"), "Mod+S"],
+    [t("editor.findAndReplace"), "Mod+F"],
+    [t("dialogs.keyAddFile"), t("dialogs.pasteOrDrop")],
   ];
   const format = (keys: string) =>
     keys
-      .split('  ')
-      .map((part) => (part.includes('+') ? formatShortcut(part) : part))
-      .join('  ');
+      .split("  ")
+      .map((part) => (part.includes("+") ? formatShortcut(part) : part))
+      .join("  ");
   return (
-    <Dialog title={t('dialogs.shortcuts.title')} onClose={closeDialog}>
+    <Dialog title={t("dialogs.shortcuts.title")} onClose={closeDialog}>
       <div className="shortcut-columns">
         <section>
-          <h3>{t('dialogs.shortcuts.everywhere')}</h3>
+          <h3>{t("dialogs.shortcuts.everywhere")}</h3>
           <dl className="shortcut-list">
             {ACTIONS.filter((action) => action.shortcut).map((action) => (
               <div key={action.id}>
@@ -163,7 +220,7 @@ function ShortcutsDialog() {
           </dl>
         </section>
         <section>
-          <h3>{t('dialogs.shortcuts.writing')}</h3>
+          <h3>{t("dialogs.shortcuts.writing")}</h3>
           <dl className="shortcut-list">
             {editing.map(([label, keys]) => (
               <div key={label}>
@@ -183,12 +240,16 @@ function ShortcutsDialog() {
 function MoveDialog({ pageId }: { pageId: PageId }) {
   const { t } = useTranslation();
   const state = useWorkspace();
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState("");
   const page = state.pages[pageId];
   const targets = useMemo(() => {
     const folded = foldText(query.trim());
     return flattenTree(state.pages).filter(({ page: candidate }) => {
-      if (candidate.id === pageId || isDescendantOf(state.pages, candidate.id, pageId)) return false;
+      if (
+        candidate.id === pageId ||
+        isDescendantOf(state.pages, candidate.id, pageId)
+      )
+        return false;
       return !folded || foldText(displayTitle(candidate)).includes(folded);
     });
   }, [state.pages, pageId, query]);
@@ -202,16 +263,23 @@ function MoveDialog({ pageId }: { pageId: PageId }) {
   };
 
   return (
-    <Dialog title={t('dialogs.move.titleParam', { title: displayTitle(page) })} onClose={closeDialog}>
+    <Dialog
+      title={t("dialogs.move.titleParam", { title: displayTitle(page) })}
+      onClose={closeDialog}
+    >
       <input
         className="text-input"
-        placeholder={t('dialogs.move.placeholder')}
-        aria-label={t('dialogs.move.ariaDestination')}
+        placeholder={t("dialogs.move.placeholder")}
+        aria-label={t("dialogs.move.ariaDestination")}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         data-autofocus
       />
-      <ul className="move-list" role="listbox" aria-label={t('dialogs.move.ariaList')}>
+      <ul
+        className="move-list"
+        role="listbox"
+        aria-label={t("dialogs.move.ariaList")}
+      >
         {!query && (
           <li>
             <button
@@ -220,7 +288,7 @@ function MoveDialog({ pageId }: { pageId: PageId }) {
               disabled={page.parentId === null}
               onClick={() => move(null)}
             >
-              {t('dialogs.move.topLevel')}
+              {t("dialogs.move.topLevel")}
             </button>
           </li>
         )}
@@ -236,13 +304,18 @@ function MoveDialog({ pageId }: { pageId: PageId }) {
               {displayTitle(target)}
               {query && (
                 <span className="link-row-path">
-                  {ancestorsOf(state.pages, target.id).reverse().map(displayTitle).join(' / ')}
+                  {ancestorsOf(state.pages, target.id)
+                    .reverse()
+                    .map(displayTitle)
+                    .join(" / ")}
                 </span>
               )}
             </button>
           </li>
         ))}
-        {targets.length === 0 && query && <li className="muted move-empty">{t('dialogs.move.noMatches')}</li>}
+        {targets.length === 0 && query && (
+          <li className="muted move-empty">{t("dialogs.move.noMatches")}</li>
+        )}
       </ul>
     </Dialog>
   );

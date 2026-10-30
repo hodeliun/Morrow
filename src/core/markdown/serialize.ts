@@ -315,9 +315,16 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
           ? node.attrs.kind
           : String(node.attrs?.tone ?? 'note');
       const fold = node.attrs?.fold === '+' || node.attrs?.fold === '-' ? node.attrs.fold : '';
+      // a picked icon, or none, goes in obsidian's metadata after the type, [!note|icon:🔥]
+      const icon = calloutIcon(node.attrs?.icon);
+      const meta = [
+        ...(typeof node.attrs?.meta === 'string' && node.attrs.meta ? [node.attrs.meta] : []),
+        ...(icon ? [`icon:${icon}`] : []),
+      ];
+      const metadata = meta.length ? `|${meta.join('|')}` : '';
       const title = typeof node.attrs?.title === 'string' && node.attrs.title ? ` ${node.attrs.title}` : '';
       const body = blocks(node.content ?? [], options);
-      return prefixLines(`[!${kind}]${fold}${title}\n${body}`, '> ', '>');
+      return prefixLines(`[!${kind}${metadata}]${fold}${title}\n${body}`, '> ', '>');
     }
     case 'tableOfContents':
       return '<!-- toc -->';
@@ -341,12 +348,21 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'details': {
       const [summary, content] = node.content ?? [];
-      const title = summary ? inline(summary.content ?? [], options, false, true) : '';
+      const markdownTitle = summary ? inline(summary.content ?? [], options, false, true) : '';
+      const level = toggleLevel(summary?.attrs?.level);
+      // toggle heading titles use HTML, so escape their inline Markdown for the outer element
+      const title =
+        level && summary
+          ? `<h${level}>${escapeHtml(inline(summary.content ?? [], options))}</h${level}>`
+          : markdownTitle;
       const body = content ? blocks(content.content ?? [], options) : '';
       const open = node.attrs?.open === true ? ' open' : '';
       const summaryBackground = validBlockBackground(summary?.attrs?.blockBackground);
       const summaryAttrs = summaryBackground ? ` data-block-background="${summaryBackground}"` : '';
-      const summaryFormat = ' data-morrow-summary-format="markdown"';
+      const summaryFormat =
+        level && summary?.content?.every((child) => child.type === 'text')
+          ? ''
+          : ' data-morrow-summary-format="markdown"';
       const blockId =
         typeof node.attrs?.blockId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(node.attrs.blockId)
           ? ` data-block-id="${node.attrs.blockId}"`
@@ -412,6 +428,19 @@ function isList(node: DocNode): boolean {
   return node.type === 'bulletList' || node.type === 'orderedList' || node.type === 'taskList';
 }
 
+// a callout's own icon: an emoji, 'none' for no icon, or null for the one its type comes with
+export function calloutIcon(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const icon = value.trim();
+  return icon && icon.length <= 16 && !/[|\]\n]/.test(icon) ? icon : null;
+}
+
+export function toggleLevel(value: unknown): 1 | 2 | 3 | null {
+  return value === 1 || value === 2 || value === 3 ? value : null;
+}
+
+export const HEADER_COLUMN = '<!-- header-column -->';
+
 function table(node: DocNode, options: SerializeOptions): string {
   const rows = (node.content ?? []).map((row) =>
     (row.content ?? []).map((cell) =>
@@ -427,7 +456,12 @@ function table(node: DocNode, options: SerializeOptions): string {
   const pad = (row: string[]) => Array.from({ length: width }, (_, i) => row[i] ?? '');
   const line = (row: string[]) => `| ${pad(row).join(' | ')} |`;
   const [header, ...body] = rows;
-  return [line(header!), line(Array.from({ length: width }, () => '---')), ...body.map(line)].join('\n');
+  const lines = [line(header!), line(Array.from({ length: width }, () => '---')), ...body.map(line)];
+  // markdown has no header column, a comment above the table keeps it. every row past the first starts
+  // with a header cell when it is on
+  const later = (node.content ?? []).slice(1);
+  const headerColumn = later.length > 0 && later.every((row) => row.content?.[0]?.type === 'tableHeader');
+  return [...(headerColumn ? [HEADER_COLUMN] : []), ...lines].join('\n');
 }
 
 export function wikiLink(node: DocNode, options: SerializeOptions, inTable = false): string {

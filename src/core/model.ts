@@ -349,6 +349,8 @@ export interface PageMeta {
   updatedAt: number;
   // set only on the page that was trashed, its subpages are hidden with it
   trashedAt: number | null;
+  // archived pages leave the sidebar but stay searchable and linkable
+  archivedAt: number | null;
   favorite: boolean;
   dailyDate: string | null;
   lastOpenedAt: number | null;
@@ -753,6 +755,7 @@ export function newPageMeta(fields: Pick<PageMeta, 'id' | 'parentId'> & Partial<
     createdAt: now,
     updatedAt: fields.updatedAt ?? now,
     trashedAt: null,
+    archivedAt: null,
     favorite: false,
     dailyDate: null,
     lastOpenedAt: null,

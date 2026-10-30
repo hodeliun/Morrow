@@ -10,6 +10,24 @@ import {
 } from './paneLayoutStorage';
 
 describe('pane tab persistence boundary', () => {
+  it('retains pinned tabs when migrating legacy state and after a pane-layout restart', () => {
+    const parsed = readPaneTabsSnapshot(
+      JSON.stringify({
+        active: 'pin',
+        pane: 'main',
+        closed: [],
+        tabs: [{ id: 'pin', hash: '#/page/a', pinned: true, back: ['#/before'], forward: [], side: null }],
+      }),
+    );
+    expect(parsed.kind).toBe('legacy');
+    if (parsed.kind !== 'legacy') return;
+    const layout = migrateLegacySplit('pinned-layout', parsed.snapshot, 0.5);
+    expect(layout.tabs[0]).toMatchObject({ id: 'pin', pinned: true, back: ['#/before'] });
+    const reopened = readPaneTabsSnapshot(writePaneTabsSnapshot(layout, []));
+    expect(reopened.kind).toBe('current');
+    if (reopened.kind === 'current') expect(reopened.snapshot.layout.tabs[0]?.pinned).toBe(true);
+  });
+
   it('migrates all twenty legacy groups and up to forty main/side histories without truncation', () => {
     const legacy = {
       active: 'legacy-19',

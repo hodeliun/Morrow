@@ -7,6 +7,7 @@ import {
   markPasteRule,
   mergeAttributes,
   Node,
+  textblockTypeInputRule,
 } from '@tiptap/core';
 import type { Editor, NodeViewRenderer } from '@tiptap/core';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
@@ -20,7 +21,9 @@ import { CALLOUT_TONES, calloutTone, validColor } from '../../core/model';
 import type { CalloutTone, ColorValue } from '../../core/model';
 import { tagColor } from '../../core/tags';
 import { emojiElement } from '../components/Emoji';
+import { getPreferences, setPreferences } from '../platform/preferences';
 import { openDialog } from '../ui';
+import { calloutIcon } from '../../core/markdown/serialize';
 import { t } from '../i18n';
 import type { TranslationKey } from '../i18n';
 
@@ -373,8 +376,32 @@ export async function renderMermaid(source: string): Promise<{ html: string; err
   }
 }
 
+// a new code block starts in the language the last one was set to, so a page of python stays python
+const lastLanguage = () => getPreferences().codeLanguage || null;
+
 // highlighted code, the language is picked from a list above each block
 export const CodeBlock = CodeBlockLowlight.extend({
+  addCommands() {
+    return {
+      setCodeBlock:
+        (attributes) =>
+        ({ commands }) =>
+          commands.setNode(this.name, attributes ?? { language: lastLanguage() }),
+      toggleCodeBlock:
+        (attributes) =>
+        ({ commands }) =>
+          commands.toggleNode(this.name, 'paragraph', attributes ?? { language: lastLanguage() }),
+    };
+  },
+  addInputRules() {
+    return [/^```([a-z]+)?[\s\n]$/, /^~~~([a-z]+)?[\s\n]$/].map((find) =>
+      textblockTypeInputRule({
+        find,
+        type: this.type,
+        getAttributes: (match) => ({ language: match[1] ?? lastLanguage() }),
+      }),
+    );
+  },
   addNodeView() {
     return ({ node, getPos, editor }) => {
       let current = node;
@@ -410,9 +437,11 @@ export const CodeBlock = CodeBlockLowlight.extend({
         select.disabled = !editor.isEditable;
       };
       sync();
-      select.addEventListener('change', () =>
-        setAttrs(editor.view, getPos, { language: select.value || null }),
-      );
+      select.addEventListener('change', () => {
+        setAttrs(editor.view, getPos, { language: select.value || null });
+        // a diagram is a one off, the next block is still code
+        if (select.value !== 'mermaid') setPreferences({ codeLanguage: select.value });
+      });
       const pre = document.createElement('pre');
       const code = document.createElement('code');
       pre.append(code);
@@ -576,14 +605,22 @@ export function calloutNodeView(): NodeViewRenderer {
     body.className = 'callout-body';
     main.append(header, body);
     dom.append(icon, main);
+    let shown = '';
     const sync = () => {
       const tone = (CALLOUT_TONES as readonly string[]).includes(String(current.attrs.tone))
         ? (current.attrs.tone as CalloutTone)
         : 'note';
       dom.dataset.tone = tone;
-      icon.replaceChildren(emojiElement(calloutEmoji(String(current.attrs.kind ?? tone), tone)));
-      icon.title = t('editor.clickToChange', { tone: t(TONE_LABELS[tone]) });
-      icon.setAttribute('aria-label', icon.title);
+      const own = calloutIcon(current.attrs.icon);
+      icon.hidden = own === 'none';
+      dom.classList.toggle('no-icon', icon.hidden);
+      shown =
+        typeof own === 'string' && own !== 'none'
+          ? own
+          : calloutEmoji(String(current.attrs.kind ?? tone), tone);
+      icon.replaceChildren(emojiElement(shown));
+      icon.title = t('editor.changeIcon');
+      icon.setAttribute('aria-label', `${t(TONE_LABELS[tone])}, ${icon.title}`);
       const text = String(current.attrs.title ?? '');
       if (document.activeElement !== title) title.value = text;
       title.readOnly = !editor.isEditable;
@@ -596,13 +633,16 @@ export function calloutNodeView(): NodeViewRenderer {
       header.hidden = current.attrs.title == null && !current.attrs.fold;
     };
     sync();
+    // the icon is picked like a page's, taking it away leaves the callout without one. the colour is in
+    // the block's menu
     icon.addEventListener('click', () => {
       if (!editor.isEditable) return;
-      const tones = CALLOUT_TONES;
-      const next = tones[(tones.indexOf(current.attrs.tone as CalloutTone) + 1) % tones.length]!;
-      const kind = String(current.attrs.kind ?? '');
-      // a custom obsidian type keeps its name while it already looks right
-      setAttrs(editor.view, getPos, { tone: next, kind: kind && calloutTone(kind) === next ? kind : next });
+      openDialog({
+        kind: 'emoji',
+        title: t('editor.calloutIcon'),
+        current: shown,
+        onPick: (emoji) => setAttrs(editor.view, getPos, { icon: emoji ?? 'none' }),
+      });
     });
     title.addEventListener('change', () =>
       setAttrs(editor.view, getPos, { title: title.value.trim() || null }),

@@ -85,7 +85,14 @@ function readLegacySnapshot(root: UnknownRecord): LegacyTabsSnapshot | null {
       side = { hash: parsedSide.target, back: parsedSide.back, forward: parsedSide.forward };
     }
     ids.add(item.id);
-    tabs.push({ id: item.id, hash: main.target, back: main.back, forward: main.forward, side });
+    tabs.push({
+      id: item.id,
+      hash: main.target,
+      back: main.back,
+      forward: main.forward,
+      side,
+      ...(item.pinned === true ? { pinned: true } : {}),
+    });
   }
 
   if (typeof root.active !== 'string' || !ids.has(root.active)) return null;
@@ -149,12 +156,14 @@ function readCurrentSnapshot(root: UnknownRecord): CurrentTabsSnapshot | null {
       return null;
     const history = readHistory(item, 'target');
     if (!history) return null;
+    if (item.pinned !== undefined && typeof item.pinned !== 'boolean') return null;
     tabs.push({
       id: item.id,
       groupId: item.groupId,
       target: history.target,
       back: history.back,
       forward: history.forward,
+      ...(item.pinned === true ? { pinned: true } : {}),
     });
   }
 

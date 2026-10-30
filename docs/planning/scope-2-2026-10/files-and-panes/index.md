@@ -1,6 +1,10 @@
 # Adendo — arquivos, navegação web e quatro painéis
 
-**Planejamento publicado. Implementação não iniciada.**
+**Limite vigente:** somente os 15 tickets aceitos entram na integração 1.3; os outros 24 permanecem pausados. Veja [EXECUTION.md](../EXECUTION.md).
+
+
+**Execução autorizada posteriormente:** [EXECUTION.md](../EXECUTION.md).
+O conteúdo abaixo registra a rodada de planejamento, não conclusão do desenvolvimento.
 
 - [Especificação no GitHub](https://github.com/hodeliun/Morrow/issues/82).
 - [SPEC](SPEC.md), [grilling](GRILLING.md), [pesquisa](RESEARCH.md), [aceitação](ACCEPTANCE.md), [tickets](TICKETS.md) e [handoff](HANDOFF.md).

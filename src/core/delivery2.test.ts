@@ -10,7 +10,10 @@ import { normalizeDatabase } from './migrations';
 import { managedFrontmatter, composeFrontmatter, renderPageText, readPageText } from './vault/pageFile';
 import type { DatabaseDef, PageMeta, PropDef, PropValue, WorkspaceState } from './model';
 
-function testState(props: PropDef[], rowsData: Array<{ id: string; title: string; values: Record<string, PropValue> }>): {
+function testState(
+  props: PropDef[],
+  rowsData: Array<{ id: string; title: string; values: Record<string, PropValue> }>,
+): {
   database: DatabaseDef;
   rows: PageMeta[];
   state: WorkspaceState;
@@ -43,6 +46,7 @@ function testState(props: PropDef[], rowsData: Array<{ id: string; title: string
       createdAt: 1000,
       updatedAt: 1000,
       trashedAt: null,
+      archivedAt: null,
       favorite: false,
       dailyDate: null,
       lastOpenedAt: null,
@@ -69,6 +73,7 @@ function testState(props: PropDef[], rowsData: Array<{ id: string; title: string
       createdAt: 1000 + index,
       updatedAt: 1000 + index,
       trashedAt: null,
+      archivedAt: null,
       favorite: false,
       dailyDate: null,
       lastOpenedAt: null,
@@ -98,15 +103,21 @@ describe('Delivery 2: Column Summaries & Calculations (#39)', () => {
   const tagProp: PropDef = { id: 'tag', name: 'Tag', type: 'select', options: [] };
 
   it('calculates numeric sum, average, min, max, range, and median correctly', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: '1', title: 'Row 1', values: { score: 10 } },
-      { id: '2', title: 'Row 2', values: { score: 20 } },
-      { id: '3', title: 'Row 3', values: { score: 30 } },
-      { id: '4', title: 'Row 4', values: { score: 40 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [
+        { id: '1', title: 'Row 1', values: { score: 10 } },
+        { id: '2', title: 'Row 2', values: { score: 20 } },
+        { id: '3', title: 'Row 3', values: { score: 30 } },
+        { id: '4', title: 'Row 4', values: { score: 40 } },
+      ],
+    );
 
     expect(summarizeProperty(rows, scoreProp, 'sum', database, state)).toEqual({ value: 100, error: null });
-    expect(summarizeProperty(rows, scoreProp, 'average', database, state)).toEqual({ value: 25, error: null });
+    expect(summarizeProperty(rows, scoreProp, 'average', database, state)).toEqual({
+      value: 25,
+      error: null,
+    });
     expect(summarizeProperty(rows, scoreProp, 'min', database, state)).toEqual({ value: 10, error: null });
     expect(summarizeProperty(rows, scoreProp, 'max', database, state)).toEqual({ value: 40, error: null });
     expect(summarizeProperty(rows, scoreProp, 'range', database, state)).toEqual({ value: 30, error: null });
@@ -114,76 +125,139 @@ describe('Delivery 2: Column Summaries & Calculations (#39)', () => {
     expect(summarizeProperty(rows, scoreProp, 'median', database, state)).toEqual({ value: 25, error: null });
 
     // Odd number of elements
-    const { rows: oddRows } = testState([scoreProp], [
-      { id: '1', title: 'Row 1', values: { score: 5 } },
-      { id: '2', title: 'Row 2', values: { score: 15 } },
-      { id: '3', title: 'Row 3', values: { score: 100 } },
-    ]);
-    expect(summarizeProperty(oddRows, scoreProp, 'median', database, state)).toEqual({ value: 15, error: null });
+    const { rows: oddRows } = testState(
+      [scoreProp],
+      [
+        { id: '1', title: 'Row 1', values: { score: 5 } },
+        { id: '2', title: 'Row 2', values: { score: 15 } },
+        { id: '3', title: 'Row 3', values: { score: 100 } },
+      ],
+    );
+    expect(summarizeProperty(oddRows, scoreProp, 'median', database, state)).toEqual({
+      value: 15,
+      error: null,
+    });
   });
 
   it('treats 0 as a valid filled numeric value and handles empty set without NaN', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: '1', title: 'Row 1', values: { score: 0 } },
-      { id: '2', title: 'Row 2', values: { score: 10 } },
-      { id: '3', title: 'Row 3', values: { score: null } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [
+        { id: '1', title: 'Row 1', values: { score: 0 } },
+        { id: '2', title: 'Row 2', values: { score: 10 } },
+        { id: '3', title: 'Row 3', values: { score: null } },
+      ],
+    );
 
     expect(summarizeProperty(rows, scoreProp, 'sum', database, state)).toEqual({ value: 10, error: null });
     expect(summarizeProperty(rows, scoreProp, 'average', database, state)).toEqual({ value: 5, error: null });
     expect(summarizeProperty(rows, scoreProp, 'min', database, state)).toEqual({ value: 0, error: null });
-    expect(summarizeProperty(rows, scoreProp, 'countValues', database, state)).toEqual({ value: 2, error: null });
-    expect(summarizeProperty(rows, scoreProp, 'countEmpty', database, state)).toEqual({ value: 1, error: null });
+    expect(summarizeProperty(rows, scoreProp, 'countValues', database, state)).toEqual({
+      value: 2,
+      error: null,
+    });
+    expect(summarizeProperty(rows, scoreProp, 'countEmpty', database, state)).toEqual({
+      value: 1,
+      error: null,
+    });
 
     // Empty rows set
     expect(summarizeProperty([], scoreProp, 'sum', database, state)).toEqual({ value: null, error: null });
-    expect(summarizeProperty([], scoreProp, 'average', database, state)).toEqual({ value: null, error: null });
+    expect(summarizeProperty([], scoreProp, 'average', database, state)).toEqual({
+      value: null,
+      error: null,
+    });
     expect(summarizeProperty([], scoreProp, 'median', database, state)).toEqual({ value: null, error: null });
     expect(summarizeProperty([], scoreProp, 'range', database, state)).toEqual({ value: null, error: null });
-    expect(summarizeProperty([], scoreProp, 'percentEmpty', database, state)).toEqual({ value: null, error: null });
+    expect(summarizeProperty([], scoreProp, 'percentEmpty', database, state)).toEqual({
+      value: null,
+      error: null,
+    });
   });
 
   it('calculates counts, unique values, and percentages', () => {
-    const { database, rows, state } = testState([tagProp], [
-      { id: '1', title: 'Row 1', values: { tag: 'apple' } },
-      { id: '2', title: 'Row 2', values: { tag: 'banana' } },
-      { id: '3', title: 'Row 3', values: { tag: 'apple' } },
-      { id: '4', title: 'Row 4', values: { tag: null } },
-    ]);
+    const { database, rows, state } = testState(
+      [tagProp],
+      [
+        { id: '1', title: 'Row 1', values: { tag: 'apple' } },
+        { id: '2', title: 'Row 2', values: { tag: 'banana' } },
+        { id: '3', title: 'Row 3', values: { tag: 'apple' } },
+        { id: '4', title: 'Row 4', values: { tag: null } },
+      ],
+    );
 
     expect(summarizeProperty(rows, tagProp, 'count', database, state)).toEqual({ value: 4, error: null });
-    expect(summarizeProperty(rows, tagProp, 'countValues', database, state)).toEqual({ value: 3, error: null });
-    expect(summarizeProperty(rows, tagProp, 'countUnique', database, state)).toEqual({ value: 2, error: null });
-    expect(summarizeProperty(rows, tagProp, 'countEmpty', database, state)).toEqual({ value: 1, error: null });
-    expect(summarizeProperty(rows, tagProp, 'percentEmpty', database, state)).toEqual({ value: 25, error: null });
-    expect(summarizeProperty(rows, tagProp, 'percentNotEmpty', database, state)).toEqual({ value: 75, error: null });
+    expect(summarizeProperty(rows, tagProp, 'countValues', database, state)).toEqual({
+      value: 3,
+      error: null,
+    });
+    expect(summarizeProperty(rows, tagProp, 'countUnique', database, state)).toEqual({
+      value: 2,
+      error: null,
+    });
+    expect(summarizeProperty(rows, tagProp, 'countEmpty', database, state)).toEqual({
+      value: 1,
+      error: null,
+    });
+    expect(summarizeProperty(rows, tagProp, 'percentEmpty', database, state)).toEqual({
+      value: 25,
+      error: null,
+    });
+    expect(summarizeProperty(rows, tagProp, 'percentNotEmpty', database, state)).toEqual({
+      value: 75,
+      error: null,
+    });
   });
 
   it('calculates checkbox checked, unchecked, and percentChecked (treating false as filled)', () => {
-    const { database, rows, state } = testState([doneProp], [
-      { id: '1', title: 'Row 1', values: { done: true } },
-      { id: '2', title: 'Row 2', values: { done: false } },
-      { id: '3', title: 'Row 3', values: { done: true } },
-      { id: '4', title: 'Row 4', values: { done: false } },
-    ]);
+    const { database, rows, state } = testState(
+      [doneProp],
+      [
+        { id: '1', title: 'Row 1', values: { done: true } },
+        { id: '2', title: 'Row 2', values: { done: false } },
+        { id: '3', title: 'Row 3', values: { done: true } },
+        { id: '4', title: 'Row 4', values: { done: false } },
+      ],
+    );
 
     expect(summarizeProperty(rows, doneProp, 'checked', database, state)).toEqual({ value: 2, error: null });
-    expect(summarizeProperty(rows, doneProp, 'unchecked', database, state)).toEqual({ value: 2, error: null });
-    expect(summarizeProperty(rows, doneProp, 'percentChecked', database, state)).toEqual({ value: 50, error: null });
+    expect(summarizeProperty(rows, doneProp, 'unchecked', database, state)).toEqual({
+      value: 2,
+      error: null,
+    });
+    expect(summarizeProperty(rows, doneProp, 'percentChecked', database, state)).toEqual({
+      value: 50,
+      error: null,
+    });
     // False is filled, so countValues is 4 and countEmpty is 0
-    expect(summarizeProperty(rows, doneProp, 'countValues', database, state)).toEqual({ value: 4, error: null });
-    expect(summarizeProperty(rows, doneProp, 'countEmpty', database, state)).toEqual({ value: 0, error: null });
+    expect(summarizeProperty(rows, doneProp, 'countValues', database, state)).toEqual({
+      value: 4,
+      error: null,
+    });
+    expect(summarizeProperty(rows, doneProp, 'countEmpty', database, state)).toEqual({
+      value: 0,
+      error: null,
+    });
   });
 
   it('calculates min, max, and range (in days) for date properties', () => {
-    const { database, rows, state } = testState([dateProp], [
-      { id: '1', title: 'Row 1', values: { date: '2026-10-01' } },
-      { id: '2', title: 'Row 2', values: { date: '2026-10-15' } },
-      { id: '3', title: 'Row 3', values: { date: '2026-10-05' } },
-    ]);
+    const { database, rows, state } = testState(
+      [dateProp],
+      [
+        { id: '1', title: 'Row 1', values: { date: '2026-10-01' } },
+        { id: '2', title: 'Row 2', values: { date: '2026-10-15' } },
+        { id: '3', title: 'Row 3', values: { date: '2026-10-05' } },
+      ],
+    );
 
-    expect(summarizeProperty(rows, dateProp, 'min', database, state)).toEqual({ value: '2026-10-01', error: null });
-    expect(summarizeProperty(rows, dateProp, 'max', database, state)).toEqual({ value: '2026-10-15', error: null });
+    expect(summarizeProperty(rows, dateProp, 'min', database, state)).toEqual({
+      value: '2026-10-01',
+      error: null,
+    });
+    expect(summarizeProperty(rows, dateProp, 'max', database, state)).toEqual({
+      value: '2026-10-15',
+      error: null,
+    });
     expect(summarizeProperty(rows, dateProp, 'range', database, state)).toEqual({ value: 14, error: null });
   });
 });
@@ -193,10 +267,13 @@ describe('Delivery 2: Conditional Formatting with Formulas & Custom Colors (#38)
   const statusProp: PropDef = { id: 'status', name: 'Status', type: 'text', options: [] };
 
   it('matches simple criteria rules for cell and row', () => {
-    const { database, rows, state } = testState([scoreProp, statusProp], [
-      { id: '1', title: 'High', values: { score: 100, status: 'active' } },
-      { id: '2', title: 'Low', values: { score: 10, status: 'pending' } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp, statusProp],
+      [
+        { id: '1', title: 'High', values: { score: 100, status: 'active' } },
+        { id: '2', title: 'Low', values: { score: 10, status: 'pending' } },
+      ],
+    );
 
     const rowRule = {
       id: 'rule-1',
@@ -223,10 +300,13 @@ describe('Delivery 2: Conditional Formatting with Formulas & Custom Colors (#38)
   });
 
   it('evaluates boolean formulas with thisRow context and custom hex colors', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: '1', title: 'Pass', values: { score: 85 } },
-      { id: '2', title: 'Fail', values: { score: 45 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [
+        { id: '1', title: 'Pass', values: { score: 85 } },
+        { id: '2', title: 'Fail', values: { score: 45 } },
+      ],
+    );
 
     const formulaRule = {
       id: 'rule-formula-1',
@@ -244,9 +324,10 @@ describe('Delivery 2: Conditional Formatting with Formulas & Custom Colors (#38)
   });
 
   it('does not format when formula yields non-boolean, error, or null', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: '1', title: 'Row 1', values: { score: 85 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [{ id: '1', title: 'Row 1', values: { score: 85 } }],
+    );
 
     // Formula returning string, not boolean
     const stringRule = {
@@ -276,9 +357,10 @@ describe('Delivery 2: Conditional Formatting with Formulas & Custom Colors (#38)
   });
 
   it('respects rule priority order (first matching rule wins)', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: '1', title: 'High', values: { score: 95 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [{ id: '1', title: 'High', values: { score: 95 } }],
+    );
 
     const firstRule = {
       id: 'rule-1',
@@ -304,31 +386,50 @@ describe('Delivery 2: Conditional Formatting with Formulas & Custom Colors (#38)
 describe('T09: conditional formatting resolution', () => {
   const scoreProp: PropDef = { id: 'score', name: 'Score', type: 'number', options: [] };
   const baseView = {
-    id: 'view-1', name: 'Default', type: 'table' as const,
-    filters: [], sorts: [], groupBy: null, dateProp: null, hidden: [],
+    id: 'view-1',
+    name: 'Default',
+    type: 'table' as const,
+    filters: [],
+    sorts: [],
+    groupBy: null,
+    dateProp: null,
+    hidden: [],
   };
 
   it('uses normalized simple mode with formula: empty and applies numeric thresholds strictly', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: 'above', title: 'Above', values: { score: 91 } },
-      { id: 'equal', title: 'Equal', values: { score: 90 } },
-      { id: 'below', title: 'Below', values: { score: 89 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [
+        { id: 'above', title: 'Above', values: { score: 91 } },
+        { id: 'equal', title: 'Equal', values: { score: 90 } },
+        { id: 'below', title: 'Below', values: { score: 89 } },
+      ],
+    );
     const normalized = normalizeDatabase({
       properties: [scoreProp],
-      views: [{
-        ...baseView,
-        conditionalFormats: [{
-          id: 'above-90', prop: 'score', op: 'gt', value: 90, scope: 'row', color: 'green',
-          mode: 'simple', formula: '',
-        }],
-      }],
+      views: [
+        {
+          ...baseView,
+          conditionalFormats: [
+            {
+              id: 'above-90',
+              prop: 'score',
+              op: 'gt',
+              value: 90,
+              scope: 'row',
+              color: 'green',
+              mode: 'simple',
+              formula: '',
+            },
+          ],
+        },
+      ],
     })!;
     const view = normalized.views[0]!;
     expect(view.conditionalFormats?.[0]).toMatchObject({ mode: 'simple', formula: '' });
-    expect(
-      conditionalFormatForRow(rows[0]!, view.conditionalFormats, database, state),
-    ).toBe(view.conditionalFormats![0]);
+    expect(conditionalFormatForRow(rows[0]!, view.conditionalFormats, database, state)).toBe(
+      view.conditionalFormats![0],
+    );
     expect(conditionalFormatForRow(rows[1]!, view.conditionalFormats, database, state)).toBeNull();
     expect(resolveConditionalFormatForRow(rows[0]!, view, database, state).backgroundColor).toBe('green');
     expect(resolveConditionalFormatForRow(rows[1]!, view, database, state).matchedRuleIds).toEqual([]);
@@ -337,14 +438,18 @@ describe('T09: conditional formatting resolution', () => {
 
   it('diagnoses context-invalid simple rules and keeps numeric-string thresholds compatible', () => {
     const labelProp: PropDef = { id: 'label', name: 'Label', type: 'text', options: [] };
-    const { database, rows, state } = testState([scoreProp, labelProp], [
-      { id: 'above', title: 'Above', values: { score: 95, label: 'ready' } },
-      { id: 'equal', title: 'Equal', values: { score: 90, label: 'ready' } },
-    ]);
-    const makeView = (rule: Record<string, unknown>) => normalizeDatabase({
-      properties: [scoreProp, labelProp],
-      views: [{ ...baseView, conditionalFormats: [{ scope: 'row', color: 'red', ...rule }] }],
-    })!.views[0]!;
+    const { database, rows, state } = testState(
+      [scoreProp, labelProp],
+      [
+        { id: 'above', title: 'Above', values: { score: 95, label: 'ready' } },
+        { id: 'equal', title: 'Equal', values: { score: 90, label: 'ready' } },
+      ],
+    );
+    const makeView = (rule: Record<string, unknown>) =>
+      normalizeDatabase({
+        properties: [scoreProp, labelProp],
+        views: [{ ...baseView, conditionalFormats: [{ scope: 'row', color: 'red', ...rule }] }],
+      })!.views[0]!;
     const invalidRules = [
       { id: 'bad-not', prop: 'score', op: 'isNot', value: 'oops' },
       { id: 'bad-gt', prop: 'score', op: 'gt', value: ' ' },
@@ -359,24 +464,45 @@ describe('T09: conditional formatting resolution', () => {
     }
 
     const numericStringRule = makeView({ id: 'numeric-string', prop: 'score', op: 'gt', value: '90' });
-    expect(resolveConditionalFormatForRow(rows[0]!, numericStringRule, database, state).matchedRuleIds)
-      .toEqual(['numeric-string']);
-    expect(resolveConditionalFormatForRow(rows[1]!, numericStringRule, database, state).matchedRuleIds).toEqual([]);
+    expect(
+      resolveConditionalFormatForRow(rows[0]!, numericStringRule, database, state).matchedRuleIds,
+    ).toEqual(['numeric-string']);
+    expect(
+      resolveConditionalFormatForRow(rows[1]!, numericStringRule, database, state).matchedRuleIds,
+    ).toEqual([]);
   });
 
   it('validates control references before matching and uses a resolved control value', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: 'above', title: 'Above', values: { score: 95 } },
-    ]);
-    const makeView = (controlRef: { pageId: string; controlId: string }) => normalizeDatabase({
-      properties: [scoreProp],
-      views: [{ ...baseView, conditionalFormats: [{
-        id: 'controlled', prop: 'score', op: 'gt', value: 0, scope: 'row', color: 'red', controlRef,
-      }] }],
-    })!.views[0]!;
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [{ id: 'above', title: 'Above', values: { score: 95 } }],
+    );
+    const makeView = (controlRef: { pageId: string; controlId: string }) =>
+      normalizeDatabase({
+        properties: [scoreProp],
+        views: [
+          {
+            ...baseView,
+            conditionalFormats: [
+              {
+                id: 'controlled',
+                prop: 'score',
+                op: 'gt',
+                value: 0,
+                scope: 'row',
+                color: 'red',
+                controlRef,
+              },
+            ],
+          },
+        ],
+      })!.views[0]!;
 
     const unresolved = resolveConditionalFormatForRow(
-      rows[0]!, makeView({ pageId: 'missing-page', controlId: 'threshold' }), database, state,
+      rows[0]!,
+      makeView({ pageId: 'missing-page', controlId: 'threshold' }),
+      database,
+      state,
     );
     expect(unresolved.matchedRuleIds).toEqual([]);
     expect(unresolved.diagnostics[0]?.message).toContain('control is unavailable');
@@ -388,88 +514,159 @@ describe('T09: conditional formatting resolution', () => {
         ...state.pages,
         'test-db': {
           ...databasePage,
-          controls: [{
-            id: 'threshold', name: 'Threshold', type: 'number', value: 90, defaultValue: 90,
-            options: [],
-          }],
+          controls: [
+            {
+              id: 'threshold',
+              name: 'Threshold',
+              type: 'number',
+              value: 90,
+              defaultValue: 90,
+              options: [],
+            },
+          ],
         },
       },
     };
     const resolved = resolveConditionalFormatForRow(
-      rows[0]!, makeView({ pageId: 'test-db', controlId: 'threshold' }), database, controlState,
+      rows[0]!,
+      makeView({ pageId: 'test-db', controlId: 'threshold' }),
+      database,
+      controlState,
     );
     expect(resolved.matchedRuleIds).toEqual(['controlled']);
   });
 
   it('composes row and cell styles in one global order, with later values overriding per attribute', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: 'row', title: 'Row', values: { score: 95 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [{ id: 'row', title: 'Row', values: { score: 95 } }],
+    );
     const rowRule = {
-      id: 'row-rule', prop: 'score', op: 'gt', value: 0, scope: 'row', color: 'blue',
-      textColor: 'yellow', bold: true, italic: true,
+      id: 'row-rule',
+      prop: 'score',
+      op: 'gt',
+      value: 0,
+      scope: 'row',
+      color: 'blue',
+      textColor: 'yellow',
+      bold: true,
+      italic: true,
     };
     const cellRule = {
-      id: 'cell-rule', prop: 'score', op: 'gt', value: 0, scope: 'cell', color: 'red',
-      bold: false, italic: false,
+      id: 'cell-rule',
+      prop: 'score',
+      op: 'gt',
+      value: 0,
+      scope: 'cell',
+      color: 'red',
+      bold: false,
+      italic: false,
     };
-    const makeView = (conditionalFormats: unknown[]) => normalizeDatabase({
-      properties: [scoreProp], views: [{ ...baseView, conditionalFormats }],
-    })!.views[0]!;
+    const makeView = (conditionalFormats: unknown[]) =>
+      normalizeDatabase({
+        properties: [scoreProp],
+        views: [{ ...baseView, conditionalFormats }],
+      })!.views[0]!;
 
     const rowThenCell = resolveConditionalFormatForCell(
-      rows[0]!, 'score', makeView([rowRule, cellRule]), database, state,
+      rows[0]!,
+      'score',
+      makeView([rowRule, cellRule]),
+      database,
+      state,
     );
     expect(rowThenCell).toMatchObject({
-      backgroundColor: 'red', textColor: 'yellow', bold: false, italic: false,
+      backgroundColor: 'red',
+      textColor: 'yellow',
+      bold: false,
+      italic: false,
       matchedRuleIds: ['row-rule', 'cell-rule'],
     });
-    expect(resolveConditionalFormatForRow(rows[0]!, makeView([rowRule, cellRule]), database, state))
-      .toMatchObject({ backgroundColor: 'blue', bold: true, italic: true, matchedRuleIds: ['row-rule'] });
+    expect(
+      resolveConditionalFormatForRow(rows[0]!, makeView([rowRule, cellRule]), database, state),
+    ).toMatchObject({ backgroundColor: 'blue', bold: true, italic: true, matchedRuleIds: ['row-rule'] });
 
     const cellThenRow = resolveConditionalFormatForCell(
-      rows[0]!, 'score', makeView([cellRule, rowRule]), database, state,
+      rows[0]!,
+      'score',
+      makeView([cellRule, rowRule]),
+      database,
+      state,
     );
     expect(cellThenRow).toMatchObject({
-      backgroundColor: 'blue', textColor: 'yellow', bold: true, italic: true,
+      backgroundColor: 'blue',
+      textColor: 'yellow',
+      bold: true,
+      italic: true,
       matchedRuleIds: ['cell-rule', 'row-rule'],
     });
   });
 
   it('reports formula errors and non-boolean results without treating them as matches', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: 'row', title: 'Row', values: { score: 95 } },
-    ]);
-    const makeView = (formula: string) => normalizeDatabase({
-      properties: [scoreProp],
-      views: [{ ...baseView, conditionalFormats: [{
-        id: 'formula-rule', prop: 'score', op: 'is', value: null, scope: 'row', mode: 'formula', formula, color: 'red',
-      }] }],
-    })!.views[0]!;
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [{ id: 'row', title: 'Row', values: { score: 95 } }],
+    );
+    const makeView = (formula: string) =>
+      normalizeDatabase({
+        properties: [scoreProp],
+        views: [
+          {
+            ...baseView,
+            conditionalFormats: [
+              {
+                id: 'formula-rule',
+                prop: 'score',
+                op: 'is',
+                value: null,
+                scope: 'row',
+                mode: 'formula',
+                formula,
+                color: 'red',
+              },
+            ],
+          },
+        ],
+      })!.views[0]!;
 
     const nonBoolean = resolveConditionalFormatForRow(rows[0]!, makeView('"hello"'), database, state);
     expect(nonBoolean.matchedRuleIds).toEqual([]);
     expect(nonBoolean.diagnostics[0]?.message).toContain('must return true or false');
     expect(nonBoolean.diagnostics[0]?.code).toBe('formulaMustBeBoolean');
 
-    const broken = resolveConditionalFormatForRow(rows[0]!, makeView('MissingProperty > 10'), database, state);
+    const broken = resolveConditionalFormatForRow(
+      rows[0]!,
+      makeView('MissingProperty > 10'),
+      database,
+      state,
+    );
     expect(broken.matchedRuleIds).toEqual([]);
     expect(broken.diagnostics).toHaveLength(1);
   });
 
   it('does not evaluate unsupported future rules and exposes a diagnostic', () => {
-    const { database, rows, state } = testState([scoreProp], [
-      { id: 'row', title: 'Row', values: { score: 95 } },
-    ]);
+    const { database, rows, state } = testState(
+      [scoreProp],
+      [{ id: 'row', title: 'Row', values: { score: 95 } }],
+    );
     const view = normalizeDatabase({
       properties: [scoreProp],
-      views: [{
-        ...baseView,
-        conditionalFormats: [{
-          id: 'future-rule', prop: 'score', op: 'gt', value: 0, scope: 'row', color: 'red',
-          futureStyle: 'glow',
-        }],
-      }],
+      views: [
+        {
+          ...baseView,
+          conditionalFormats: [
+            {
+              id: 'future-rule',
+              prop: 'score',
+              op: 'gt',
+              value: 0,
+              scope: 'row',
+              color: 'red',
+              futureStyle: 'glow',
+            },
+          ],
+        },
+      ],
     })!.views[0]!;
 
     const resolved = resolveConditionalFormatForRow(rows[0]!, view, database, state);
@@ -477,7 +674,9 @@ describe('T09: conditional formatting resolution', () => {
     expect(resolved.backgroundColor).toBeUndefined();
     expect(resolved.diagnostics).toMatchObject([
       {
-        code: 'unsupportedRule', ruleId: 'future-rule', index: 0,
+        code: 'unsupportedRule',
+        ruleId: 'future-rule',
+        index: 0,
         message: 'Rule contains fields this version does not understand.',
       },
     ]);
@@ -531,7 +730,7 @@ describe('Delivery 2: View Presentation, hideTitle, and collapsed (#28, #29)', (
     expect(view?.conditionalFormats?.[0]?.mode).toBe('formula');
     expect(view?.conditionalFormats?.[0]?.formula).toBe('Score > 50');
 
-        // Frontmatter serialization preserves hideTitle and collapsed
+    // Frontmatter serialization preserves hideTitle and collapsed
     const dummyPage: PageMeta = {
       id: 'db-1',
       parentId: null,
@@ -542,6 +741,7 @@ describe('Delivery 2: View Presentation, hideTitle, and collapsed (#28, #29)', (
       createdAt: 1000,
       updatedAt: 1000,
       trashedAt: null,
+      archivedAt: null,
       favorite: false,
       dailyDate: null,
       lastOpenedAt: null,

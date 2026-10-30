@@ -114,15 +114,20 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
 ## Status
 
-This fork uses **Morrow 1.2.1** as its official base and tracks its own changes as
-**fork 1.0.0**. The package version `1.2.1-fork.1.0.0` identifies both. The old
-fork label `1.2.4` did not mean that the official 1.2.1 fixes were present.
-See [the fork changelog](CHANGELOG-FORK.md) for the two version histories.
+This fork tracks the official Morrow base and its own version separately.
+The source integrates official **1.3.0** at `13ce190` with fork changes **1.2.0**,
+identified as `1.3.0-fork.1.2.0`. The integrated source passed its build and targeted runtime validation; see
+[the integration report](docs/integration/1.3.0-fork-1.2.0.md) for evidence and limits.
+This source update does not publish a downloadable release. Exact metadata is recorded in
+`package.json` and [the fork changelog](CHANGELOG-FORK.md).
+The old fork label `1.2.4` did not mean that the official1.2.1 fixes were present.
 
 Pages stay in a folder you choose as Markdown. Earlier builds kept them inside
 the app; on first open, the app offers to copy those pages into the folder and
 leaves the original copy untouched. Choose a separate folder for the synthetic
 demo vault in [demo/](demo/) and follow [the guide](docs/GUIA.md).
+Official Morrow supports Windows, macOS and Linux. Fork validation and available
+artifacts are reported separately; source integration does not publish a release.
 
 ## Coming from Obsidian
 

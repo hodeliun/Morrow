@@ -1,4 +1,5 @@
 import {
+  Archive,
   CalendarCheck,
   Columns2,
   Copy,
@@ -6,6 +7,8 @@ import {
   Hash,
   Home,
   Network,
+  Pin,
+  PinOff,
   Plus,
   RotateCcw,
   Search,
@@ -32,11 +35,13 @@ import {
   reopenClosedTab,
   setPanePreset,
   getVisiblePanes,
+  setTabPinned,
   useTabs,
 } from '../tabs';
 import type { Tab } from '../tabs';
 import type { PanePreset } from '../paneLayout';
 import { panePresetOf } from '../paneLayout';
+import { setUi } from '../ui';
 import { useWorkspace } from '../workspace';
 import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
@@ -46,6 +51,7 @@ const VIEW_ICONS: Record<string, LucideIcon> = {
   home: Home,
   tasks: CalendarCheck,
   trash: Trash2,
+  archive: Archive,
   tags: Hash,
   review: GraduationCap,
   graph: Network,
@@ -60,6 +66,8 @@ function getViewTitle(name: string): string {
       return t('sidebar.tasks');
     case 'trash':
       return t('sidebar.trash');
+    case 'archive':
+      return t('sidebar.archive');
     case 'tags':
       return t('sidebar.tags');
     case 'review':
@@ -155,6 +163,9 @@ export function TabBar() {
     const index = tabs.findIndex((item) => item.id === tab.id);
     return [
       { label: t('tabs.newTab'), icon: Plus, shortcut: formatShortcut('Mod+T'), onSelect: () => openTab() },
+      tab.pinned
+        ? { label: t('tabs.unpinTab'), icon: PinOff, onSelect: () => setTabPinned(tab.id, false) }
+        : { label: t('tabs.pinTab'), icon: Pin, onSelect: () => setTabPinned(tab.id, true) },
       { label: t('tabs.duplicateTab'), icon: Copy, onSelect: () => openTab(tab.target) },
       {
         label: t('tabs.openSplit'),
@@ -169,7 +180,7 @@ export function TabBar() {
         label: t('tabs.closeTab'),
         icon: X,
         shortcut: formatShortcut('Mod+W'),
-        disabled: tabs.length < 2,
+        disabled: tabs.length < 2 || tab.pinned,
         onSelect: () => closeTab(tab.id),
       },
       { label: t('tabs.closeOtherTabs'), disabled: tabs.length < 2, onSelect: () => closeOtherTabs(tab.id) },
@@ -202,7 +213,7 @@ export function TabBar() {
               tabIndex={0}
               data-tab-id={tab.id}
               aria-selected={tab.id === active}
-              className={`tab${tab.id === active ? ' is-active' : ''}`}
+              className={`tab${tab.id === active ? ' is-active' : ''}${tab.pinned ? ' is-pinned' : ''}`}
               title={title}
               draggable
               onDragStart={(event) => event.dataTransfer.setData('text/x-morrow-tab', tab.id)}
@@ -214,7 +225,7 @@ export function TabBar() {
                 if (id) moveTab(id, index);
               }}
               onClick={() => activateTab(tab.id)}
-              onAuxClick={(event) => event.button === 1 && closeTab(tab.id)}
+              onAuxClick={(event) => event.button === 1 && !tab.pinned && closeTab(tab.id)}
               onContextMenu={(event) => {
                 event.preventDefault();
                 setMenu({ tab, at: new DOMRect(event.clientX, event.clientY, 0, 0) });
@@ -222,8 +233,8 @@ export function TabBar() {
               onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && activateTab(tab.id)}
             >
               <span className="tab-icon">{main.icon}</span>
-              <span className="tab-title">{main.title}</span>
-              {tabs.length > 1 && (
+              {!tab.pinned && <span className="tab-title">{main.title}</span>}
+              {tabs.length > 1 && !tab.pinned && (
                 <button
                   type="button"
                   className="tab-close"
@@ -245,7 +256,11 @@ export function TabBar() {
         className="icon-button tab-new"
         title={t('tabs.newTabTitle', { shortcut: formatShortcut('Mod+T') })}
         aria-label={t('tabs.newTab')}
-        onClick={() => openTab()}
+        onClick={() => {
+          // a new tab starts at search, to find a page or make one straight away
+          openTab();
+          setUi({ palette: true });
+        }}
       >
         <Plus size={14} />
       </button>

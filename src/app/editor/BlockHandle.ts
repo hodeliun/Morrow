@@ -4,6 +4,7 @@ import type { Node as PMNode } from '@tiptap/pm/model';
 import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
+import { selectedBlocks } from './BlockSelect';
 
 const MOVABLE_ITEMS = new Set(['listItem', 'taskItem']);
 
@@ -116,6 +117,9 @@ function innerBlock(element: HTMLElement, y: number): HTMLElement {
   return element;
 }
 
+const BOXED = '.callout, .code-block';
+const BOXED_INSET = 6;
+
 // the middle of a block's first line of text, which sits lower than its top in a callout, quote or
 // code block with padding around it. null for a block with no text, such as a picture
 function firstTextMiddle(block: HTMLElement): number | null {
@@ -168,7 +172,11 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         const hostRect = host!.getBoundingClientRect();
         const rect = target.getBoundingClientRect();
         const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 24;
-        const middle = firstTextMiddle(target) ?? rect.top + Math.min(rect.height, lineHeight) / 2;
+        // a boxed block, a callout or code, has its handle at the top of the box, where the block begins,
+        // whatever the text inside it starts with
+        const middle = target.matches(BOXED)
+          ? rect.top + BOXED_INSET + 11
+          : (firstTextMiddle(target) ?? rect.top + Math.min(rect.height, lineHeight) / 2);
         handle.style.top = `${middle - hostRect.top - 11}px`;
         // a nested block keeps its handle beside it, left of the bullet for a list item
         const anchor =
@@ -213,7 +221,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       };
 
       const onPointerDown = () => {
-        pointerFocusPending = true;
+        pointerFocusPending = view.editable;
       };
 
       const onPointerEnd = () => {
@@ -248,7 +256,10 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       };
 
       const onDragStart = (event: DragEvent) => {
-        if (!current || !event.dataTransfer) return;
+        if (!view.editable || !current || !event.dataTransfer) {
+          event.preventDefault();
+          return;
+        }
         const selection = NodeSelection.create(view.state.doc, current.pos);
         view.dispatch(view.state.tr.setSelection(selection));
         const slice = selection.content();
@@ -268,9 +279,13 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
 
       const onClick = () => {
         if (!current) return;
+        if (!view.editable) return;
         const selected = current;
         const rect = handle.getBoundingClientRect();
-        view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, selected.pos)));
+        // a block among several picked in the margin opens the menu for all of them
+        const picked = selectedBlocks(view.state);
+        if (!picked || selected.pos < picked.from || selected.pos >= picked.to)
+          view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, selected.pos)));
         view.focus();
         onMenu({ pos: selected.pos, rect, trigger: handle });
       };
@@ -289,6 +304,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       return {
         update() {
           handle.tabIndex = view.editable ? 0 : -1;
+          if (!view.editable) hide();
           if (current && !current.element.isConnected) hide();
         },
         destroy() {

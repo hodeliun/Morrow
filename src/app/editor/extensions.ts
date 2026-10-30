@@ -10,6 +10,8 @@ import { t } from '../i18n';
 import { AttributeSafeDetails } from './AttributeSafeDetails';
 import { BlockHandle } from './BlockHandle';
 import { BlockBackground, Callout, FindReplace } from './Blocks';
+import { BlockSelect } from './BlockSelect';
+import { EmojiSuggest } from './EmojiSuggest';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
 import { CollapsibleHeading, TableToggleMarker } from './CollapsibleHeading';
@@ -19,6 +21,7 @@ import { DatabasePaste } from './DatabasePaste';
 import { PageLink } from './PageLink';
 import type { PageLinkOptions } from './PageLink';
 import { SlashCommand } from './SlashCommand';
+import { IndentedLines } from './turnInto';
 import { Column, Columns, DateMention, TableOfContents } from './Structure';
 import { LinkedDatabaseView } from './LinkedDatabase';
 import { CalculatedResult, NamedControl } from './NamedData';
@@ -60,6 +63,23 @@ const BlockIds = Extension.create({
   },
 });
 
+// a toggle's title can be a heading, the way notion's toggle headings fold a whole section away. the level
+// lives on the title, so opening and closing the toggle never touches it
+const ToggleSummary = DetailsSummary.extend({
+  addAttributes() {
+    return {
+      level: {
+        default: null,
+        parseHTML: (element) => {
+          const level = Number(element.getAttribute('data-level'));
+          return level >= 1 && level <= 3 ? level : null;
+        },
+        renderHTML: (attributes) => (attributes.level ? { 'data-level': String(attributes.level) } : {}),
+      },
+    };
+  },
+});
+
 // inline code can be bold, italic, struck through or coloured like any other text, as it can in notion and
 // in markdown. tiptap's own code shuts every other mark out
 const InlineCode = Code.extend({ excludes: '' });
@@ -94,6 +114,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     Tags(options.openTag),
     TaskList,
     TaskItem.configure({ nested: true }),
+    IndentedLines,
     Table.configure({ resizable: false }),
     TableRow,
     TableHeader,
@@ -103,7 +124,10 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
       includeChildren: false,
       placeholder: ({ node, editor }) => {
         if (node.type.name === 'heading') return t('editor.headingPlaceholder', { level: node.attrs.level });
-        if (node.type.name === 'detailsSummary') return t('editor.toggleTitlePlaceholder');
+        if (node.type.name === 'detailsSummary')
+          return node.attrs.level
+            ? t('editor.headingPlaceholder', { level: node.attrs.level })
+            : t('editor.toggleTitlePlaceholder');
         if (editor.isEmpty) return t('editor.placeholderEmpty');
         return t('editor.placeholder');
       },
@@ -124,6 +148,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     CalculatedResult.configure({ hostPageId: options.pageId ?? '' }),
     SlashCommand.configure({ createChild: options.createChild, hostPageId: options.pageId ?? '' }),
     LinkedDatabaseView.configure({ hostPageId: options.pageId ?? '' }),
+    EmojiSuggest,
     Image,
     FileAttachment,
     FileDrop,
@@ -152,10 +177,11 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
         );
       },
     }),
-    DetailsSummary,
+    ToggleSummary,
     DetailsContent,
     FindReplace,
     BlockHandle.configure({ onMenu: options.onBlockMenu }),
+    BlockSelect,
     MarkdownPaste.configure({ resolvePage: options.resolvePage }),
     DatabasePaste.configure({ hostPageId: options.pageId ?? '' }),
   ];

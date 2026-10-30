@@ -33,6 +33,49 @@ async function run(session: WorkspaceSession, command: Parameters<WorkspaceSessi
 }
 
 describe('Markdown links to moved pages', () => {
+  it('resolves relative Markdown links with query and fragment without writing during open', async () => {
+    const href = './Target%20Name.md?view=compact%2Fmobile&mode=quick#section%20one';
+    const source = `[Compact view](${href})\n`;
+    const vault = new MemoryVault({
+      'Folder/Host.md': source,
+      'Folder/Target Name.md': 'Target body.\n',
+      'Moved.md': 'Moved body.\n',
+    });
+    const initialFiles = [...vault.files.entries()];
+    const session = await open(vault);
+    const movedHref = '../Moved/Target%20Name.md?view=compact%2Fmobile&mode=quick#section%20one';
+    try {
+      const host = idOf(session, 'Host');
+      const target = idOf(session, 'Target Name');
+      const link = session.getState().docs[host]!.content![0]!.content![0]!;
+
+      expect(link).toMatchObject({
+        type: 'pageLink',
+        attrs: { id: target, label: 'Compact view', markdownHref: href, anchor: 'section one' },
+      });
+      expect([...vault.files.entries()]).toEqual(initialFiles);
+
+      await run(session, { type: 'page.move', id: target, parentId: idOf(session, 'Moved') });
+      expect(vault.text('Folder/Host.md')).toBe(`[Compact view](${movedHref})\n`);
+    } finally {
+      await session.close();
+    }
+
+    const movedFiles = [...vault.files.entries()];
+    const reopened = await open(vault);
+    try {
+      const host = idOf(reopened, 'Host');
+      const target = idOf(reopened, 'Target Name');
+      expect(reopened.getState().docs[host]!.content![0]!.content![0]!).toMatchObject({
+        type: 'pageLink',
+        attrs: { id: target, markdownHref: movedHref, anchor: 'section one' },
+      });
+      expect([...vault.files.entries()]).toEqual(movedFiles);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it('updates only the moved stable target while preserving Markdown labels, encoding, and fragments', () => {
     const source =
       '[Manual de campo](./Manuais/Manual%20antigo.md#p%C3%A1gina-4) and [Registro](/keep/Registro%20est%C3%A1tico.md#topo)';

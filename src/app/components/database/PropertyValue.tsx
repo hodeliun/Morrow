@@ -11,7 +11,7 @@ import {
   resolveRelationReference,
 } from '../../../core/relations';
 import { openPage } from '../../router';
-import { useWorkspace } from '../../workspace';
+import { propertyChangeCount, stepProperties, useWorkspace } from '../../workspace';
 import { PageIcon } from '../Sidebar';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
 import { newId } from '../../platform/files';
@@ -1066,6 +1066,8 @@ export function DraftInput({
   // nothing of values set from outside the field and can empty it instead
   const undone = useRef<Array<{ before: string; after: string }>>([]);
   const redone = useRef<Array<{ before: string; after: string }>>([]);
+  // Enter, Tab, and Escape settle the draft before the blur they cause runs.
+  const settled = useRef(false);
   const commit = (): boolean => {
     if (finished.current) return true;
     finished.current = true;
@@ -1078,6 +1080,7 @@ export function DraftInput({
       onDone?.();
       return true;
     }
+    const propertyChanges = propertyChangeCount();
     const attempt = attemptCellDraftCommit({
       editable,
       canEditNow,
@@ -1110,8 +1113,11 @@ export function DraftInput({
         onInvalidDraftChange?.(true);
         return false;
       }
-      undone.current.push({ before: value, after: attempt.draft });
-      redone.current = [];
+      // Property edits use the shared workspace history; keep local steps for fields outside it.
+      if (propertyChangeCount() === propertyChanges) {
+        undone.current.push({ before: value, after: attempt.draft });
+        redone.current = [];
+      }
     }
     commitFailed.current = false;
     setValidationError(null);
@@ -1144,7 +1150,14 @@ export function DraftInput({
     if (!isCellEditableNow(editable, canEditNow)) return;
     const [from, to] = direction === 'undo' ? [undone, redone] : [redone, undone];
     const change = from.current.pop();
-    if (!change) return;
+    if (!change) {
+      setDraft(null);
+      setValidationError(null);
+      commitFailed.current = false;
+      onInvalidDraftChange?.(false);
+      stepProperties(direction);
+      return;
+    }
     to.current.push(change);
     setDraft(null);
     onCommit(direction === 'undo' ? change.before : change.after);
@@ -1195,6 +1208,10 @@ export function DraftInput({
         setDraft(next);
       }}
       onBlur={(event) => {
+        if (settled.current) {
+          settled.current = false;
+          return;
+        }
         if (!commit()) {
           const element = event.currentTarget;
           const pane = element.closest<HTMLElement>('.pane[data-pane]');
@@ -1221,6 +1238,7 @@ export function DraftInput({
         if (event.key === 'Enter') {
           event.preventDefault();
           if (!commit()) return;
+          settled.current = true;
           event.currentTarget.blur();
           if (gridMode && onCommitAndMove) {
             onCommitAndMove(event.shiftKey ? 'up' : 'down');
@@ -1229,16 +1247,16 @@ export function DraftInput({
         if (event.key === 'Tab' && gridMode && onCommitAndMove) {
           event.preventDefault();
           if (!commit()) return;
+          settled.current = true;
           event.currentTarget.blur();
           onCommitAndMove(event.shiftKey ? 'prev' : 'next');
         }
         if (event.key === 'Escape') {
           event.preventDefault();
           canceling.current = true;
-          setDraft(null);
-          setValidationError(null);
-          commitFailed.current = false;
-          onInvalidDraftChange?.(false);
+          finished.current = false;
+          settled.current = true;
+          commit();
           event.currentTarget.blur();
           if (gridMode && onCancelEdit) {
             onCancelEdit();

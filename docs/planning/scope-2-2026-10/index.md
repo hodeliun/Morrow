@@ -1,6 +1,10 @@
 # Aumento de Escopo 2 — planejamento
 
-**Somente planejamento; execução não autorizada.**
+**Limite vigente:** somente os 15 tickets aceitos entram na integração 1.3; os outros 24 permanecem pausados. Veja [EXECUTION.md](EXECUTION.md).
+
+
+**Execução autorizada posteriormente:** veja [EXECUTION.md](EXECUTION.md).
+O conteúdo abaixo preserva o snapshot de planejamento e não declara entregas concluídas.
 
 [Especificação no GitHub](https://github.com/hodeliun/Morrow/issues/51) · [SPEC.md](SPEC.md) · [Grilling interno](GRILLING.md) · [Pesquisa](RESEARCH.md) · [Aceitação](ACCEPTANCE.md) · [Tickets](TICKETS.md) · [Handoff](HANDOFF.md)
 

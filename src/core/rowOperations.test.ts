@@ -150,6 +150,7 @@ describe('row clipboard and row operation plans', () => {
       'source-hidden': 'hidden value',
     });
     expect(parsed.value.rows[0]?.page.extra).toEqual({ Frontmatter: 'kept' });
+    expect(parsed.value.rows[0]?.page.archivedAt).toBeNull();
     expect(parsed.value.rows[0]?.doc.content?.[0]?.content?.[0]?.text).toBe('Body to copy');
 
     const windowsClipboardText = serialized.value.replace(/\n/g, '\r\n');
@@ -171,6 +172,60 @@ describe('row clipboard and row operation plans', () => {
       'morrow-row-clipboard:v1\r\r\n{"version":1,"kind":"wrong"}',
     );
     expect(malformedHeader.ok).toBe(false);
+  });
+
+  it('round trips archive timestamps and accepts legacy clipboard rows without archivedAt', () => {
+    const payload = createRowClipboardPayload(makeState(), 'source-db', ['row-one']);
+    expect(payload.ok).toBe(true);
+    if (!payload.ok) return;
+
+    const timestamp = 1_790_000_000_000;
+    const current = structuredClone(payload.value);
+    current.rows[0]!.page.archivedAt = timestamp;
+    const serialized = serializeRowClipboard(current);
+    expect(serialized.ok).toBe(true);
+    if (!serialized.ok) return;
+    const parsed = parseRowClipboardText(serialized.value);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.rows[0]?.page.archivedAt).toBe(timestamp);
+
+    const legacy = structuredClone(payload.value);
+    delete (legacy.rows[0]!.page as Partial<PageMeta>).archivedAt;
+    const validatedLegacy = validateRowClipboardPayload(legacy);
+    expect(validatedLegacy.ok).toBe(true);
+    if (validatedLegacy.ok) expect(validatedLegacy.value.rows[0]?.page.archivedAt).toBeNull();
+  });
+
+  it('rejects malformed archive timestamps, unknown row fields and future clipboard versions atomically', () => {
+    const state = makeState();
+    const payload = createRowClipboardPayload(state, 'source-db', ['row-one']);
+    expect(payload.ok).toBe(true);
+    if (!payload.ok) return;
+
+    const malformedTimestamp = structuredClone(payload.value);
+    malformedTimestamp.rows[0]!.page.archivedAt = { timestamp: 'later' } as never;
+    const before = structuredClone(state);
+    const rejectedPlan = planPasteRows(
+      state,
+      'destination-db',
+      malformedTimestamp,
+      {},
+      () => 'unused-copy-id',
+      61,
+      '(copy)',
+    );
+    expect(rejectedPlan.ok).toBe(false);
+    if (!rejectedPlan.ok) expect(rejectedPlan.error).toContain('archivedAt');
+    expect(state).toEqual(before);
+
+    const unknownField = structuredClone(payload.value);
+    Object.assign(unknownField.rows[0]!.page, { unsupportedFutureField: true });
+    const rejectedField = validateRowClipboardPayload(unknownField);
+    expect(rejectedField.ok).toBe(false);
+    if (!rejectedField.ok) expect(rejectedField.error).toContain('unsupported row fields');
+
+    const futureVersion: unknown = { ...payload.value, version: 2 };
+    expect(validateRowClipboardPayload(futureVersion).ok).toBe(false);
   });
 
   it('rejects invalid property values before normalization can silently drop them', () => {

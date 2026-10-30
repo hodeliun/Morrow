@@ -416,6 +416,15 @@
     outline: none !important;
     box-shadow: none !important;
   }
+  /* the hover tint is gone on paper, header cells keep a fill of their own */
+  .prose th {
+    background: #f1f1ef !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  .prose tr:not(:first-child) > th:first-child {
+    background: #f1f1ef !important;
+  }
   html,
   body,
   #root,
@@ -521,6 +530,13 @@
 }
 .tab:hover {
   background: var(--hover);
+}
+/* a pinned tab is just its icon */
+.tab.is-pinned {
+  min-width: 0;
+  flex: none;
+  justify-content: center;
+  padding-inline: 10px;
 }
 .tab.is-active {
   background: var(--bg);

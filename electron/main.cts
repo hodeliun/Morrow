@@ -30,6 +30,7 @@ import { createFileHandlerModule, createSpawnLauncher } from './fileHandlers.js'
 import type { FileHandlerModule } from './fileHandlers.js';
 import { nativeApplicationDialogFilterName, nativeApplicationDialogTitle } from './fileHandlerDialogs.js';
 import { sendExternalOpenError } from './externalOpenErrors.js';
+import { readBoundedImage } from './imageFetch.js';
 import {
   applyOps,
   chooseFolder,
@@ -303,7 +304,9 @@ async function createWindow(): Promise<void> {
   mainWindow = window;
   readyToClose = false;
   if (state.maximized) window.maximize();
-  if (!HIDDEN) window.once('ready-to-show', () => window.show());
+  // the window shows at once in the colour of the app rather than after the page's first paint, so opening
+  // morrow never looks like nothing happened
+  if (!HIDDEN) window.show();
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     openExternal(url, window.webContents);
@@ -433,6 +436,8 @@ function toWindow(channel: string, payload: unknown): void {
     mainWindow.webContents.send(channel, payload);
 }
 
+const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024;
+
 function fromApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   const url = event.senderFrame?.url ?? '';
   return isAppUrl(url);
@@ -546,6 +551,10 @@ function registerIpc(): void {
     if (!HEX.test(color) || !HEX.test(symbolColor)) return;
     window.setTitleBarOverlay({ color, symbolColor });
   });
+  ipcMain.on('morrow:spellcheck', (event, enabled: unknown) => {
+    if (fromApp(event) && typeof enabled === 'boolean')
+      session.defaultSession.setSpellCheckerEnabled(enabled);
+  });
   ipcMain.handle('morrow:open-external', async (event, url: unknown) => {
     if (!fromApp(event) || typeof url !== 'string')
       return { ok: false, code: 'not-allowed', message: 'Not allowed.' };
@@ -586,6 +595,23 @@ function registerIpc(): void {
     (event) => fromApp(event as IpcMainInvokeEvent),
     (data) => new ClipboardItem(data),
   );
+  // text and html together, so pictures copied with the words reach other apps too
+  ipcMain.handle('morrow:copy-rich', async (event, text: unknown, html: unknown) => {
+    if (!fromApp(event) || typeof text !== 'string' || typeof html !== 'string') return false;
+    await clipboard.write([new ClipboardItem({ 'text/plain': text, 'text/html': html })]);
+    return true;
+  });
+  // a picture pasted from the web or another app is saved into the vault, so it stays when its link expires.
+  // fetched here rather than in the page, which most image hosts would refuse
+  ipcMain.handle('morrow:fetch-image', async (event, url: unknown) => {
+    if (!fromApp(event) || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
+    try {
+      const response = await net.fetch(url, { redirect: 'follow' });
+      return await readBoundedImage(response, MAX_PASTED_IMAGE_BYTES);
+    } catch {
+      return null;
+    }
+  });
   ipcMain.handle('morrow:show-data-folder', async (event) => {
     if (fromApp(event)) await shell.openPath(app.getPath('userData'));
   });
@@ -617,7 +643,9 @@ function registerIpc(): void {
         printBackground: true,
         pageSize: 'A4',
         margins: { top: 0.6, bottom: 0.6, left: 0.6, right: 0.6 },
+        // chromium builds the bookmarks pdf readers show beside the page from a tagged pdf's headings
         generateDocumentOutline: true,
+        generateTaggedPDF: true,
       });
       await writeFile(choice.filePath, data);
       return { ok: true, path: choice.filePath };

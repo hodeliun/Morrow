@@ -2,6 +2,32 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Modificações do fork 1.2.0 — base Morrow 1.3.0 (fontes validadas, não lançado)
+
+Identificação do código: `1.3.0-fork.1.2.0`. A base oficial avança para
+[`13ce190`](https://github.com/Aarav2709/Morrow/commit/13ce1908ac7777a16161b5ef0c013de5eadcb3a1),
+preservando os 39 commits oficiais desde a base 1.2.1. Esta entrada não representa
+um instalador, tag ou release publicada.
+
+### Mudanças oficiais integradas
+
+- A validação integrada do build 23 passou com 771 testes, seleção de células, fórmulas a 100/125/150%, painéis condicionais e smoke do pacote. O painel de fórmulas mantém o cursor alinhado e permanece dentro da janela com zoom. As provas e limitações constam no [relatório da integração](docs/integration/1.3.0-fork-1.2.0.md).
+
+- Arquivamento de páginas, abas fixadas, histórico de propriedades e preferências de módulos da barra lateral e verificação ortográfica.
+- Seleção de blocos pela margem, conversão de itens de lista, títulos de toggles e melhorias de emojis, imagens e conteúdo rico.
+- Restauração da posição e do cursor ao reabrir. A integração usa uma única autoridade de leitura, com isolamento por cofre, aba e painel.
+- A abertura distingue um endereço explícito das abas restauradas: respeita Home/Hoje, preserva o estado de “Onde parei” e mantém os demais painéis e históricos.
+
+### Melhorias do fork nesta rodada
+
+- Ponte nativa para clipboard tipado, edição de células, diagnósticos de fórmulas, regras condicionais e controles de visualizações.
+- Preservação reversível de seções e títulos, estilos de página e colunas de conteúdo; layouts de até quatro painéis com rascunhos e leitura independentes.
+- Catálogo de arquivos e preferências locais de abertura, com validação do recurso e do dispositivo; compatibilidade de links Markdown ao mover e renomear arquivos.
+
+Escopo desta integração: T01, T02, T06, T08, T09, T10, T11, T14, T15, T16,
+T17, T19, T31, T32 e T37. Os outros 24 tickets permanecem sem início e pausados.
+O aceite anterior desses quinze tickets não substitui a validação da árvore integrada.
+
 ## Modificações do fork 1.1.1 — base Morrow 1.2.1 (28/10/2026)
 
 Pacote: `1.2.1-fork.1.1.1`. A base oficial continua no commit

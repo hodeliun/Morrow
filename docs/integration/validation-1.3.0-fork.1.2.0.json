@@ -1,0 +1,425 @@
+{
+  "schemaVersion": 1,
+  "packageVersion": "1.3.0-fork.1.2.0",
+  "build": "scope-2-build-23",
+  "publicationStatus": "validated-source-integration",
+  "scope": {
+    "acceptedBeforeIntegration": [
+      "T01",
+      "T02",
+      "T06",
+      "T08",
+      "T09",
+      "T10",
+      "T11",
+      "T14",
+      "T15",
+      "T16",
+      "T17",
+      "T19",
+      "T31",
+      "T32",
+      "T37"
+    ],
+    "otherTicketsPaused": 24
+  },
+  "automatedGate": {
+    "status": "passed",
+    "tests": 771,
+    "testFiles": 98,
+    "nodePreflightTests": 10,
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "priorAttempt": {
+      "build": "scope-2-build-21",
+      "failure": "Unchanged scanner test exceeded default5000ms at5225ms",
+      "isolatedSameCasePassedSeconds": 1.04,
+      "testAndTimeoutUnchanged": true,
+      "finalFullGatePassed": true
+    }
+  },
+  "integrity": {
+    "sourceFiles": 380,
+    "artifactFiles": 3597,
+    "sourceSha256": "adeedf92f74a6e9770603528b6c419d5ae29354e415f8820017db8ea3f455ec1",
+    "artifactsSha256": "2d9eb017bcee812f783c23c5d69b58abc34bd7581841738aca82936ebe1e53f2",
+    "snapshotManifestEntries": 3977,
+    "additionalSnapshotIcon": {
+      "path": "build/icon.png",
+      "sha256": "e75757e856e06db08bcf37c5f1652d4f71e4de9ba9bf8a779db256565443d474"
+    },
+    "snapshotInventory": 3978,
+    "bothSnapshotCopiesVerified": true,
+    "publicProductSources": 331,
+    "publicProductManifest": "runtime-sources-1.3.0-fork.1.2.0.json",
+    "publicProductManifestSha256": "dba1d399b228c64c00382cef4d6ebb6ab6c144d70f9a0ed22c44ddccbdf7f75b",
+    "identitySha256": "fee82e92140b39d8c6fc7fc9f069a56a09c393ddb82b52b30940f7ee17e90f2d"
+  },
+  "officialRuntime": {
+    "status": "passed",
+    "rawReportSha256": "91eaa920a84c115fdcb77a455962b29e66e29c84c13e37a9b4ff044eba867ce4",
+    "readingPlace": {
+      "scrollBefore": 3432,
+      "scrollAfter": 3432,
+      "scrollDelta": 0,
+      "savedCursorFrom": 2837,
+      "savedCursorTo": 2837,
+      "cursorRestored": true,
+      "cursorOffset": 59,
+      "sameTabId": true,
+      "sameVaultStorageScope": true
+    },
+    "verifiedFeatures": [
+      "new-tab palette",
+      "pinned-tab close guard and persistence",
+      "archive/unarchive sidebar projection",
+      "spellcheck preference persisted and guard"
+    ],
+    "childrenExitZero": 3,
+    "activeProcessesAfter": 0,
+    "rendererErrors": 0,
+    "externalRequests": 0,
+    "clipboardAccessed": false,
+    "fixtureCleaned": true,
+    "sourceAndArtifactStable": true,
+    "captures": [
+      {
+        "file": "reading-place-before-restart.png",
+        "sha256": "b937af3c02354b7190d580316406fa16f5323c1837ed64109544a240a72cbf41",
+        "bytes": 237746
+      },
+      {
+        "file": "new-tab-palette.png",
+        "sha256": "34a967c57d5686d974fce097be1095d9b845068ad0946bbb3aa6c920f967e0ec",
+        "bytes": 115565
+      },
+      {
+        "file": "pinned-tab-close-guard.png",
+        "sha256": "9a9856082d4f746a518d0d42c8160e27742c53ef5b9b40e5b2dc94ac69904a89",
+        "bytes": 255131
+      },
+      {
+        "file": "reading-place-after-restart.png",
+        "sha256": "7633213b4e7b451ca391e4fb8cdabe0f2f1ea720d9f055fbe8b8837a219e6d01",
+        "bytes": 236338
+      },
+      {
+        "file": "archive-sidebar.png",
+        "sha256": "2c1b687af12be5c9b6017cf0afec6310ba215a798a061ba031ecf0c5abde9b50",
+        "bytes": 62034
+      },
+      {
+        "file": "spellcheck-setting.png",
+        "sha256": "5995c4594aa3acebac50267936d6db71a043fa7d1e7bc6739f739ad4058f3bef",
+        "bytes": 205589
+      },
+      {
+        "file": "spellcheck-persisted.png",
+        "sha256": "5a24576fc5f1cd0bfdece364d0a00492a771fb3c1d97c30b04e33eb206ac0198",
+        "bytes": 199461
+      }
+    ],
+    "build": "scope-2-build-20"
+  },
+  "panesRuntime": {
+    "status": "passed",
+    "rawReportSha256": "8ec1d5cb87b2d2230ca191f0b4bd6181a7e0df41ffc72c40e2dc1d3f35773310",
+    "assertionGroups": 25,
+    "assertionNames": [
+      "startupPreferenceSelectedThroughUi",
+      "syntheticPagesOpen",
+      "preset:single:1",
+      "preset:two-columns:2",
+      "preset:one-left-two-right:3",
+      "preset:two-by-two:4",
+      "fourPaneAssignments",
+      "keyboardResize",
+      "independentRowResize",
+      "pointerResizeCancel",
+      "pointerResizeCommitDetails",
+      "pointerResizeCommit",
+      "printTargetOnly",
+      "narrowSidebarSettled",
+      "narrowWindow",
+      "scrollAndOutlineAcrossPaneMove",
+      "pendingPageDraft",
+      "invalidCellDraftBeforeReduction",
+      "invalidCellDraftFocusTrace",
+      "invalidCellDraft",
+      "pageDraftAfterRestart",
+      "vaultSwitchDraftBoundary",
+      "singleTabNarrowControls",
+      "singleTabNarrowControlSummary",
+      "layoutRestoredAfterRestart"
+    ],
+    "failures": 0,
+    "pageErrors": 0,
+    "childrenExitZero": 3,
+    "activeProcessesAfter": 0,
+    "fixtureCleaned": true,
+    "capturesInspected": 9,
+    "driverRepair": {
+      "observedFailure": "configure-last-startup-preference could not assign startupPreference",
+      "onlyEvidenceRecipientInitializationChanged": true,
+      "templateAndProductUnchanged": true,
+      "afterDriverSha256": "40d2f97984aac6ac9d83f032d469472559d60eb56274ed6bd7332b42d9b55683",
+      "beforeDriverSha256": "bfee3971de7404d347432cd0907ac7f75ea5ff6ee3f3566477e394373bc46c23",
+      "failedAttemptPreserved": true,
+      "comparisonBy": "technical coordinator",
+      "normalizedSourceComparison": "prior build19 adapter relabeled20 equals current20 with only main result provenance initialization removed"
+    },
+    "build": "scope-2-build-20",
+    "readingPlace": {
+      "before": 700,
+      "restored": 700,
+      "headingBefore": "T37 Reading detail 5",
+      "headingRestored": "T37 Reading detail 5"
+    }
+  },
+  "tableIntegrityRuntime": {
+    "status": "passed",
+    "rawReportSha256": "88c8d26bf1eddf2e7d3e309f00e78ce3b06bc3457d623e5911fcc0152c97cf85",
+    "verified": [
+      "future database readonly byte preservation",
+      "page byte preservation across opens and idles",
+      "unknown metadata and body preservation",
+      "SourceEditor rename identity, href fragment and reopen",
+      "unrelated file unchanged"
+    ],
+    "fixtureCleaned": true,
+    "capturesProduced": 0,
+    "individualChildExitCodes": "not recorded by original driver",
+    "build": "scope-2-build-20",
+    "operationalEvidence": {
+      "source": "executor command output and post-run process query, reviewed by technical coordinator",
+      "verifierExitCode": 0,
+      "activeProcessesAfter": 0
+    }
+  },
+  "reuseBoundaries": {
+    "T15": "Integrated build16 UI and persistence proof plus final equivalence review. PageEditor only exported and renamed existing comparison; other35 editor files,7 stylesheets and pane/column modules unchanged. Shared Popover positioning was separately retested with T08/T09/T10/T11 on23; editor and column behavior unchanged.",
+    "T19": "Integrated build16 UI and persistence proof plus same final equivalence review. New PageView restore separately verified on build20. Shared Popover consumers separately retested on23.",
+    "T17": "Specific heading/theme/reopen criteria passed18 cases on build17; full harness FAILED inherited auxiliary registry mtime guard with same bytes. Markdown bytes,size,mtime unchanged. No registry fix in this scope.",
+    "T01_T32": "Prior accepted native clipboard/device opening evidence retained with compatibility review; no new host clipboard or external app test. Row clipboard archivedAt compatibility separately covered by26 regressions.",
+    "T02": "Build20 typed-cell proof retained; product changes20→23 limited to formula metrics CSS and shared Popover, whose consumers were separately retested on23."
+  },
+  "remainingRuntimeVerification": [],
+  "runtimeEvidenceBoundary": {
+    "retainedRuntimeBuild": "scope-2-build-20",
+    "finalBuild": "scope-2-build-23",
+    "changedProductFiles": [
+      "src/app/components/database/FormulaEditor.css",
+      "src/app/components/Popover.tsx"
+    ],
+    "changes": [
+      "Formula input selector specificity preserves textarea and overlay metrics.",
+      "Popover shift also constrains the placement axis so the large scrollable panel stays inside the viewport."
+    ],
+    "finalSpecificRuntimeVerification": [
+      "T06",
+      "T08",
+      "T09",
+      "T10",
+      "T11",
+      "packaged smoke"
+    ],
+    "otherProductModulesIdentical": true
+  },
+  "databaseRuntime": {
+    "T09": {
+      "build": "scope-2-build-23",
+      "status": "passed",
+      "rawReportSha256": "8bf14753d48e2347d861cc021633ee566d95d08a1091ad2163b2c19d42149c4e",
+      "verifierExitCode": 0,
+      "maximumConcurrentOwnedApps": 1,
+      "activeOwnedProcessesAfter": 0,
+      "rootViewedCaptures": 3,
+      "visualReview": "All three narrow dark-theme captures in Portuguese, English and Spanish; wide light-theme cases checked by the verifier."
+    },
+    "T10": {
+      "build": "scope-2-build-23",
+      "status": "passed",
+      "rawReportSha256": "2b0cf28bb173c3a1a643c618f89e0c34ad822f5b2d029711b565ccf46aaf8a5a",
+      "verifierExitCode": 0,
+      "maximumConcurrentOwnedApps": 1,
+      "activeOwnedProcessesAfter": 0,
+      "rootViewedCaptures": 3,
+      "visualReview": "All three narrow dark-theme captures in Portuguese, English and Spanish; wide light-theme cases checked by the verifier."
+    },
+    "T11": {
+      "build": "scope-2-build-23",
+      "status": "passed",
+      "rawReportSha256": "bcd9bf0dc4f6cd31747218df814682cc49f3824eff47c91e3bf97781f3fe438c",
+      "verifierExitCode": 0,
+      "maximumConcurrentOwnedApps": 1,
+      "activeOwnedProcessesAfter": 0,
+      "rootViewedCaptures": 3,
+      "visualReview": "All three narrow dark-theme captures in Portuguese, English and Spanish; wide light-theme cases checked by the verifier."
+    },
+    "T02": {
+      "build": "scope-2-build-20",
+      "status": "passed",
+      "rawReportSha256": "c221263af594414114019ea4299983e23ef09c9c36c6d1e304ad2aabb530dcdd",
+      "verifierExitCode": 0,
+      "maximumConcurrentOwnedApps": 1,
+      "activeOwnedProcessesAfter": 0
+    },
+    "T06": {
+      "build": "scope-2-build-23",
+      "status": "passed",
+      "rawReportSha256": "09cb6ef2218e1d57720167f05faadb3a686e8715c40e4c2782671d9fb393fd0b",
+      "verifierExitCode": 0,
+      "assertions": 27,
+      "allAssertionsPassed": true,
+      "snapshotBeforeAllMatch": true,
+      "snapshotAfterAllMatch": true,
+      "fixtureCleaned": true,
+      "childrenExitZero": 4,
+      "lifecycleEvidence": "Playwright process logs reviewed by coordinator",
+      "capturesProduced": 0,
+      "templateSha256": "b4a7bd00bff4436a4e3bddc52d9439608d8e840c51ba62dff9f3e3d7f2211841",
+      "privateDriverSha256": "01a8004c9ff056babd3bc4e37be14647994dff796af004635598320a1a2f0ce1",
+      "original27AssertionsSha256": "fb142f5e9215d39dfd50cf21329b9ba532690bf57a73a818f4c51f4ef49717df",
+      "adaptations": [
+        "Explicit coordinated snapshot and project-root binding.",
+        "Observe stable scroll geometry and hit-test current visible cells before pointer gestures; preserve the original rows-ready wheel deadline under120ms.",
+        "Accept only one details wrapper with known boolean open state matching the editor, exact summary content/known Markdown attribute and unchanged linked-view identities."
+      ],
+      "earlierFailuresPreserved": [
+        "Output parameter format and absent output parent prevented two report writes; no product change.",
+        "Complete earlier report passed26/27 and rejected the official details open attribute in a literal legacy observer."
+      ]
+    },
+    "T08": {
+      "build": "scope-2-build-23",
+      "status": "passed",
+      "rawReportSha256": "0b26fe99140dc4ff70877606e0b477afb1b080bbeb3aa4386eed548f828c6878",
+      "verifierExitCode": 0,
+      "templateSha256": "f8fe1019a06534fe5fc583d29127cef08eea16c215de66df5bf8c35821f5b704",
+      "actualPrivateDriverSha256": "a8d06174b1438e5404b86dcb84b1b024cfd746f0e26e7527812bb3aa8659652d",
+      "allOriginalAssertionsPreserved": true,
+      "zooms": [
+        {
+          "zoom": 100,
+          "panel": {
+            "x": 125.5,
+            "y": 8,
+            "right": 645.5,
+            "bottom": 892
+          },
+          "caretClickMatches": true
+        },
+        {
+          "zoom": 125,
+          "panel": {
+            "x": 48,
+            "y": 8,
+            "right": 568,
+            "bottom": 712
+          },
+          "caretClickMatches": true
+        },
+        {
+          "zoom": 150,
+          "panel": {
+            "x": 24,
+            "y": 8,
+            "right": 472,
+            "bottom": 592
+          },
+          "caretClickMatches": true
+        }
+      ],
+      "allWindowsStayedHidden": true,
+      "clipboardAccessed": false,
+      "childrenExitZero": 2,
+      "ownedProcessesAfter": 0,
+      "sourceArtifactIdentityBeforeAfterMatches": true,
+      "capturesProduced": 3,
+      "uniqueCapturesReviewed": 2,
+      "duplicateCaptureBytesIdentical": true,
+      "physicalIme": "Not claimed; Chromium composition and key guards tested."
+    }
+  },
+  "catalogRuntime": {
+    "build": "scope-2-build-20",
+    "status": "passed_canvas_bytes_preserved",
+    "rawLogSha256": "a4b40113bfd2ce114ddd1ebc941c06f2544b1560495c61b162feee90a20c8ca0",
+    "driverSha256": "c331914fa2bc899c2e1d090dc33f6c6f6c24b5ceb729acd7357774401be70636",
+    "templateSha256": "c47dd39693903f112f7922e1ee4232268756f3433c42ed9eb5e3524d74f59f0a",
+    "fixtureBaselineFiles": 426,
+    "watcherCreateRemovePassed": true,
+    "filterAndPerVaultPreferencesPassed": true,
+    "batchFiles": 405,
+    "canvasFutureFieldsAndBytesPreservedOnReopen": true,
+    "onlyExpectedRecentMetadataChanged": true,
+    "childrenExitZero": 3,
+    "activeOwnedProcessesAfter": 0,
+    "fixtureCleaned": true,
+    "capturesProduced": 0,
+    "externalFilesOpened": 0,
+    "clipboardActions": 0,
+    "priorTwoLegacySelectorFailuresPreserved": true
+  },
+  "packagedPreflight": {
+    "expectedVersion": "1.3.0-fork.1.2.0",
+    "packagedVersion": "1.3.0-fork.1.2.0",
+    "mainEntry": "dist-electron/main.cjs",
+    "asarReaderVersion": "3.4.1",
+    "sha256": {
+      "executable": "11013fabe225d562d0aab3b8aa168ccd5f2963e92d1b9d2ea32db5cb0f218dc1",
+      "appAsar": "7a7996478d133319f2343a365310292f783da0aea1ec004bc2df7f6c946382c4",
+      "main": "b736ff821f2bb3ab1ddc1c08c8b1efe30fc50507e24ae96cd28d3ad1220ad1c0",
+      "trustedMain": "b736ff821f2bb3ab1ddc1c08c8b1efe30fc50507e24ae96cd28d3ad1220ad1c0"
+    },
+    "build": "scope-2-build-23",
+    "artifactComparison": {
+      "build": "scope-2-build-23",
+      "artifactsVerified": 3597,
+      "allMatch": true,
+      "asarSha256": "7a7996478d133319f2343a365310292f783da0aea1ec004bc2df7f6c946382c4",
+      "readerVersion": "3.4.1"
+    },
+    "smoke": {
+      "status": "passed",
+      "rawReportSha256": "b312decf5d9cd8ab962582cb682a64247618969db014215b34b88c4dca3d0d4e",
+      "verifierExitCode": 0,
+      "launchCount": 2,
+      "appCloseCount": 2,
+      "allWindowsHidden": true,
+      "noteSaveAndReopen": true,
+      "cleanupVerified": true,
+      "runtimeErrors": [],
+      "childrenExitZero": 2
+    }
+  },
+  "curatedCaptures": [
+    {
+      "file": "assets/1.3.0-fork-1.2.0/four-panes-wide.png",
+      "build": "scope-2-build-20",
+      "sha256": "2d1203825ba913c07129f9c437e2bd74aec2a8ed2342ae1c52e6c3d8eef18e69"
+    },
+    {
+      "file": "assets/1.3.0-fork-1.2.0/four-panes-narrow.png",
+      "build": "scope-2-build-20",
+      "sha256": "4899a242015ba9b81a5b24149b67d2712762cc23718e71327586959397c13af8"
+    },
+    {
+      "file": "assets/1.3.0-fork-1.2.0/reversible-headings-narrow.png",
+      "build": "scope-2-build-16",
+      "sha256": "959499890a798a8eb85188a37907592a72dae92ca6314e8812c587f2dcd52bba"
+    },
+    {
+      "file": "assets/1.3.0-fork-1.2.0/content-columns.png",
+      "build": "scope-2-build-16",
+      "sha256": "3bc1582fa342548ec67277a0ca5598ccc5d267ac4eec5bb807e9936e41622036"
+    }
+  ],
+  "historicalAttempts": {
+    "policyRejection": "An earlier build22 invocation was rejected before shell execution; preserved as historical evidence. Subsequent authorized normal runs completed.",
+    "t08Build22": "The original panel-fit150 assertion failed. A diagnostic measured bottom616.229px against600px and remained unchanged after fonts.ready,two frames and300ms. Corrected by shift crossAxis and original final23 runner passed.",
+    "executorContext": "A later executor-context Electron process failed before inspector handshake. The same executable and driver ran normally in the coordinator context; no policy,ACL,token or elevation change.",
+    "gate21": "One unchanged scanner test exceeded its5s deadline. It passed isolated in1.04s and full gates22/23 passed without changing the test."
+  }
+}

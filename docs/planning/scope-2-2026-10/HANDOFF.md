@@ -1,6 +1,10 @@
 # Handoff — planejamento do Aumento de Escopo 2
 
-**PLANEJAMENTO SOMENTE. EXECUÇÃO NÃO AUTORIZADA.**
+**Limite vigente:** somente os 15 tickets aceitos entram na integração 1.3; os outros 24 permanecem pausados. Veja [EXECUTION.md](EXECUTION.md).
+
+
+**Snapshot de planejamento.** A autorização posterior dos 39 tickets está em
+[EXECUTION.md](EXECUTION.md) e supera os avisos históricos abaixo.
 
 Leia SPEC, GRILLING, ACCEPTANCE e TICKETS desta pasta, além de AGENTS, ARCHITECTURE, CONTRIBUTING e políticas de commits/release do projeto. Baseline 0e1a9417aaef9a0f0f11d094ed2f09a56f988e4e, pacote 1.2.1-fork.1.1.1.
 

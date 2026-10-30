@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  Archive,
   CalendarDays,
   CheckSquare,
   ChevronDown,
@@ -37,6 +38,7 @@ import {
   effectiveParent,
   isDescendantOf,
   livePages,
+  archivedPages,
   trashedPages,
 } from '../../core/tree';
 import { collectCards, dueCards } from '../../core/flashcards';
@@ -52,6 +54,7 @@ import { getSession } from '../workspace';
 import { createPage, expandPage, importMarkdown, movePage, openToday, trashPage } from '../operations';
 import { getPreferences, setPreferences, usePreferences } from '../platform/preferences';
 import { useFileCatalogPreferences } from '../platform/fileCatalogPreferences';
+import type { SidebarModule } from '../platform/preferences';
 import { navigate, openPage, useActiveRoute } from '../router';
 import { openDialog, setUi, useUi } from '../ui';
 import { run, useWorkspace } from '../workspace';
@@ -166,6 +169,7 @@ export function Sidebar() {
     [live, visiblePageIds],
   );
   const trashCount = useMemo(() => trashedPages(state.pages).length, [state.pages]);
+  const archiveCount = useMemo(() => archivedPages(state.pages).length, [state.pages]);
   const openTasks = useMemo(() => collectTasks(state).filter((task) => !task.checked).length, [state]);
   const tagCount = useMemo(() => collectTags(state).length, [state]);
   const reviewLog = useReviewLog();
@@ -196,6 +200,8 @@ export function Sidebar() {
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
   };
+
+  const shown = (module: SidebarModule) => !prefs.hiddenModules.includes(module);
 
   const go = (fn: () => void) => () => {
     fn();
@@ -253,45 +259,55 @@ export function Sidebar() {
           hint={formatShortcut('Mod+K')}
           onClick={() => setUi({ palette: true, mobileSidebar: false })}
         />
-        <NavItem
-          icon={CalendarDays}
-          label={t('sidebar.today')}
-          active={isToday}
-          onClick={go(() => openToday())}
-        />
+        {shown('daily') && (
+          <NavItem
+            icon={CalendarDays}
+            label={t('sidebar.today')}
+            active={isToday}
+            onClick={go(() => openToday())}
+          />
+        )}
         <NavItem
           icon={Home}
           label={t('settings.general.startPages.home')}
           active={route.name === 'home'}
           onClick={go(() => navigate({ name: 'home' }))}
         />
-        <NavItem
-          icon={CheckSquare}
-          label={t('sidebar.tasks')}
-          active={route.name === 'tasks'}
-          count={openTasks}
-          onClick={go(() => navigate({ name: 'tasks' }))}
-        />
-        <NavItem
-          icon={Hash}
-          label={t('sidebar.tags')}
-          active={route.name === 'tags' || route.name === 'tag'}
-          count={tagCount}
-          onClick={go(() => navigate({ name: 'tags' }))}
-        />
-        <NavItem
-          icon={GraduationCap}
-          label={t('sidebar.review')}
-          active={route.name === 'review'}
-          count={dueCount}
-          onClick={go(() => navigate({ name: 'review' }))}
-        />
-        <NavItem
-          icon={Network}
-          label={t('sidebar.graph')}
-          active={route.name === 'graph'}
-          onClick={go(() => navigate({ name: 'graph', focus: null }))}
-        />
+        {shown('tasks') && (
+          <NavItem
+            icon={CheckSquare}
+            label={t('sidebar.tasks')}
+            active={route.name === 'tasks'}
+            count={openTasks}
+            onClick={go(() => navigate({ name: 'tasks' }))}
+          />
+        )}
+        {shown('tags') && (
+          <NavItem
+            icon={Hash}
+            label={t('sidebar.tags')}
+            active={route.name === 'tags' || route.name === 'tag'}
+            count={tagCount}
+            onClick={go(() => navigate({ name: 'tags' }))}
+          />
+        )}
+        {shown('review') && (
+          <NavItem
+            icon={GraduationCap}
+            label={t('sidebar.review')}
+            active={route.name === 'review'}
+            count={dueCount}
+            onClick={go(() => navigate({ name: 'review' }))}
+          />
+        )}
+        {shown('graph') && (
+          <NavItem
+            icon={Network}
+            label={t('sidebar.graph')}
+            active={route.name === 'graph'}
+            onClick={go(() => navigate({ name: 'graph', focus: null }))}
+          />
+        )}
         {prefs.assistant && desktop?.assistant && (
           <NavItem
             icon={Sparkles}
@@ -363,6 +379,15 @@ export function Sidebar() {
 
       <div className="sidebar-footer">
         <NavItem icon={FileUp} label={t('sidebar.import')} onClick={() => void importMarkdown()} />
+        {(archiveCount > 0 || route.name === 'archive') && (
+          <NavItem
+            icon={Archive}
+            label={t('sidebar.archive')}
+            active={route.name === 'archive'}
+            count={archiveCount}
+            onClick={go(() => navigate({ name: 'archive' }))}
+          />
+        )}
         <NavItem
           icon={Trash2}
           label={t('sidebar.trash')}
@@ -443,6 +468,7 @@ const SUBPAGES_SHOWN = 50;
 
 function PageTree({ state, activeId, expanded, visiblePageIds }: TreeProps) {
   const ui = useUi();
+  const hideJournal = usePreferences().hiddenModules.includes('daily');
   const [drop, setDrop] = useState<{ id: PageId; zone: DropZone } | null>(null);
   const [menu, setMenu] = useState<{ id: PageId; anchor: HTMLElement } | null>(null);
   const dragging = useRef<PageId | null>(null);
@@ -464,6 +490,8 @@ function PageTree({ state, activeId, expanded, visiblePageIds }: TreeProps) {
         for (const page of childrenOf(state.pages, actualParentId)) {
           if (visited.has(page.id)) continue;
           visited.add(page.id);
+          if (page.archivedAt !== null || (actualParentId === null && page.kind === 'journal' && hideJournal))
+            continue;
           if (visiblePageIds.has(page.id)) {
             visible.push(page);
             visualParentById.set(page.id, parentId);
@@ -477,7 +505,7 @@ function PageTree({ state, activeId, expanded, visiblePageIds }: TreeProps) {
 
     buildChildren(null);
     return { childrenByParent, visualParentById };
-  }, [state.pages, visiblePageIds]);
+  }, [state.pages, visiblePageIds, hideJournal]);
 
   const ancestorIds = useMemo(
     () => new Set(activeId ? ancestorsOf(state.pages, activeId).map((page) => page.id) : []),

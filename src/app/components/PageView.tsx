@@ -1,6 +1,7 @@
 import type { Editor } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import {
+  ArchiveRestore,
   ArrowUpRight,
   Columns2,
   FileWarning,
@@ -24,7 +25,7 @@ import { findTemplatesPage } from '../../core/templates';
 import { RepeatBar } from './RepeatBar';
 import { findDatabaseOf } from '../../core/database';
 import { basename, conflictOriginal, stripExtension } from '../../core/vault/paths';
-import { PageEditor } from '../editor/PageEditor';
+import { PageEditor, pageEditorMatchesDocument } from '../editor/PageEditor';
 import { SourceEditor } from './SourceEditor';
 import { CoverBanner, CoverPicker } from './Cover';
 import { NoteStylePopover } from './NoteStylePopover';
@@ -33,8 +34,9 @@ import { PageGlyph } from './Emoji';
 import { LockedPage } from './EncryptDialog';
 import { PageProperties } from './PageProperties';
 import { PageTags } from './TagsView';
-import { deleteForever, restorePage, trashPage } from '../operations';
+import { deleteForever, restorePage, setArchived, trashPage } from '../operations';
 import { legacyNoteStyle, usePreferences } from '../platform/preferences';
+import { rememberScopedPlace, resolveReadingPlace, sessionReadingPlace } from '../readingPlace';
 import { navigate, openPage, routeHash } from '../router';
 import { getTabs, openSide, usePane, usePaneTabId } from '../tabs';
 import { rememberTabScrollPosition, tabScrollPosition } from '../tabScroll';
@@ -43,11 +45,11 @@ import {
   shouldCancelPendingScrollRestoreForPointer,
 } from '../scrollRestoreIntent';
 import { getUi, openDialog, setUi, useUi } from '../ui';
-import { getSession, run, useWorkspace } from '../workspace';
+import { getSession, getState, run, useWorkspace } from '../workspace';
 import type { MenuEntry } from './Menu';
 import { getLocale, t } from '../i18n';
 import { pageMenuEntries } from './pageMenu';
-import { relativeTime, useShowMore } from './primitives';
+import { exactTime, relativeTime, useShowMore } from './primitives';
 import { PageIcon } from './Sidebar';
 import { TopBar } from './TopBar';
 
@@ -79,6 +81,9 @@ function openFirstLine(editor: Editor, text: string) {
   view.focus();
 }
 
+// the first page shown after morrow opens also gets its cursor back, the way a document reopens
+let firstPage = true;
+
 export function PageView({ id, find, anchor }: { id: PageId; find: string | null; anchor?: string | null }) {
   const state = useWorkspace();
   const page = state.pages[id];
@@ -96,32 +101,35 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const editorRef = useRef<Editor | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const scrollIdentity = JSON.stringify([activeTabId, pane, id]);
-  const scrollScopeRef = useRef({ tabId: activeTabId, pane, pageId: id });
+  const vaultKey = getSession().location ?? '';
+  const scrollIdentity = JSON.stringify([vaultKey, activeTabId, pane, id]);
+  const scrollScopeRef = useRef({ tabId: activeTabId, pane, pageId: id, vaultKey });
   const scrollRestoreRef = useRef({
     identity: scrollIdentity,
     status: anchor || find ? 'explicit' : 'pending',
   });
   // enter in the title can arrive before the editor exists, focus it once it does
   const focusWhenReady = useRef(false);
+  const requestRestoreRef = useRef<(() => void) | null>(null);
+  const startupFocus = useRef(false);
   const prefs = usePreferences();
   const ui = useUi();
 
   useLayoutEffect(() => {
     const previous = scrollRestoreRef.current;
     const previousScope = scrollScopeRef.current;
-    const nextScope = { tabId: activeTabId, pane, pageId: id };
+    const nextScope = { tabId: activeTabId, pane, pageId: id, vaultKey };
     if (
       previousScope.tabId === activeTabId &&
       previousScope.pageId === id &&
+      previousScope.vaultKey === vaultKey &&
       previousScope.pane !== pane &&
       !anchor &&
       !find
     ) {
       const position = tabScrollPosition(previousScope) ?? scrollRef.current?.scrollTop;
       if (position !== undefined) {
-        rememberTabScrollPosition(previousScope, position);
-        rememberTabScrollPosition(nextScope, position);
+        rememberScopedPlace(nextScope, { ...sessionReadingPlace(previousScope), scroll: position });
       }
     }
     scrollScopeRef.current = nextScope;
@@ -136,16 +144,18 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             ? 'explicit'
             : 'pending',
     };
-  }, [activeTabId, pane, id, scrollIdentity, anchor, find]);
+  }, [activeTabId, pane, id, vaultKey, scrollIdentity, anchor, find]);
 
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller) return;
 
-    const scope = { tabId: activeTabId, pane, pageId: id };
+    const scope = { tabId: activeTabId, pane, pageId: id, vaultKey };
     const shouldRestore = scrollRestoreRef.current.status === 'pending';
     let fontsReady = !shouldRestore || !document.fonts || document.fonts.status === 'loaded';
     let restored = false;
+    let selectionPrepared = false;
+    const place = resolveReadingPlace(scope);
     let cancelled = false;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
     const contentIsRendered = () => {
@@ -321,20 +331,55 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
       cancelFramesAndTimer();
       settleTimer = setTimeout(() => {
         settleTimer = null;
-        if (cancelled || restored || userStarted || !contentIsRendered()) return;
-        firstFrame = requestAnimationFrame(() => {
-          firstFrame = 0;
+        if (
+          cancelled ||
+          restored ||
+          userStarted ||
+          scrollRestoreRef.current.identity !== scrollIdentity ||
+          scrollRestoreRef.current.status !== 'pending' ||
+          !contentIsRendered()
+        )
+          return;
+        // Let content hydrate before preparing selection, then let ProseMirror finish its
+        // deferred focus synchronization before the final viewport restoration.
+        if (!selectionPrepared) {
+          const editor = editorRef.current;
           if (
-            cancelled ||
-            restored ||
-            userStarted ||
-            scrollRestoreRef.current.identity !== scrollIdentity ||
-            scrollRestoreRef.current.status !== 'pending' ||
-            !contentIsRendered()
+            scroller.querySelector('.editor-surface') &&
+            (!editor ||
+              editor.isDestroyed ||
+              !pageEditorMatchesDocument(editor, getState().docs[id] ?? EMPTY_DOC))
           )
             return;
-          secondFrame = requestAnimationFrame(() => {
-            secondFrame = 0;
+          selectionPrepared = true;
+          if (place && editor && !editor.isDestroyed) {
+            const { doc: editorDoc, tr } = editor.state;
+            const size = editorDoc.content.size;
+            editor.view.dispatch(
+              tr.setSelection(
+                TextSelection.between(
+                  editorDoc.resolve(Math.min(place.from, size)),
+                  editorDoc.resolve(Math.min(place.to, size)),
+                ),
+              ),
+            );
+            const focused = document.activeElement;
+            if (
+              startupFocus.current &&
+              getTabs().pane === pane &&
+              (focused === document.body || focused === editor.view.dom) &&
+              !getUi().dialog &&
+              !getUi().palette &&
+              !getUi().focusTitle
+            )
+              editor.view.dom.focus({ preventScroll: true });
+            startupFocus.current = false;
+          }
+        }
+        settleTimer = setTimeout(() => {
+          settleTimer = null;
+          firstFrame = requestAnimationFrame(() => {
+            firstFrame = 0;
             if (
               cancelled ||
               restored ||
@@ -344,13 +389,25 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               !contentIsRendered()
             )
               return;
-            restored = true;
-            scrollRestoreRef.current.status = 'restored';
-            scroller.scrollTop = tabScrollPosition(scope) ?? 0;
-            observer?.disconnect();
-            resizeObserver?.disconnect();
+            secondFrame = requestAnimationFrame(() => {
+              secondFrame = 0;
+              if (
+                cancelled ||
+                restored ||
+                userStarted ||
+                scrollRestoreRef.current.identity !== scrollIdentity ||
+                scrollRestoreRef.current.status !== 'pending' ||
+                !contentIsRendered()
+              )
+                return;
+              restored = true;
+              scrollRestoreRef.current.status = 'restored';
+              scroller.scrollTop = place?.scroll ?? 0;
+              observer?.disconnect();
+              resizeObserver?.disconnect();
+            });
           });
-        });
+        }, 32);
       }, 120);
     };
     const resizeObserver = shouldRestore ? new ResizeObserver(scheduleRestore) : null;
@@ -369,6 +426,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
           scheduleRestore();
         })
       : null;
+    requestRestoreRef.current = scheduleRestore;
 
     scroller.addEventListener('scroll', onScroll, { passive: true });
     scroller.addEventListener('wheel', cancelPendingRestore, { passive: true });
@@ -398,6 +456,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
 
     return () => {
       cancelled = true;
+      if (requestRestoreRef.current === scheduleRestore) requestRestoreRef.current = null;
       observer?.disconnect();
       resizeObserver?.disconnect();
       cancelFramesAndTimer();
@@ -412,7 +471,12 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
       scroller.removeEventListener('error', onImageSettled, true);
       if (canSave && getTabs().tabs.some((tab) => tab.id === scope.tabId)) savePosition();
     };
-  }, [activeTabId, pane, id, scrollIdentity, anchor, find]);
+  }, [activeTabId, pane, id, vaultKey, scrollIdentity, anchor, find]);
+
+  // A local draft can reach the workspace without changing editor DOM.
+  useEffect(() => {
+    requestRestoreRef.current?.();
+  }, [doc]);
 
   useEffect(() => {
     if (state.pages[id]) run({ type: 'page.markOpened', id, now: Date.now() });
@@ -448,6 +512,10 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         words: words.toLocaleString(getLocale()),
         time: relativeTime(page.createdAt),
       }),
+      title: [
+        t('topBar.created', { time: exactTime(page.createdAt) }),
+        t('topBar.edited', { time: exactTime(page.updatedAt) }),
+      ].join('\n'),
     };
     if (trashed) return [info];
     return [info, ...pageMenuEntries(id, () => titleRef.current?.focus())];
@@ -515,6 +583,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               onClick={() => deleteForever(findTrashedAncestor(state.pages, id) ?? id)}
             >
               <Trash2 size={14} /> {t('page.deleteForever')}
+            </button>
+          </div>
+        )}
+        {!trashed && page.archivedAt !== null && (
+          <div className="banner" role="note">
+            <span>{t('page.pageArchived')}</span>
+            <button type="button" className="button small" onClick={() => setArchived(id, false)}>
+              <ArchiveRestore size={14} /> {t('page.unarchive')}
             </button>
           </div>
         )}
@@ -663,7 +739,26 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                 }}
                 onReady={(editor) => {
                   editorRef.current = editor;
-                  if (!focusWhenReady.current) return;
+                  editor.on('selectionUpdate', ({ editor: current }) => {
+                    const scope = scrollScopeRef.current;
+                    if (
+                      scrollRestoreRef.current.status === 'pending' ||
+                      getTabs().pane !== scope.pane ||
+                      !current.view.dom.closest('.view')?.checkVisibility()
+                    )
+                      return;
+                    const { from, to } = current.state.selection;
+                    rememberScopedPlace(scope, { from, to });
+                  });
+                  if (firstPage && getTabs().pane === scrollScopeRef.current.pane) {
+                    startupFocus.current = true;
+                    firstPage = false;
+                  }
+                  if (!focusWhenReady.current) {
+                    requestRestoreRef.current?.();
+                    return;
+                  }
+                  scrollRestoreRef.current.status = 'cancelled';
                   focusWhenReady.current = false;
                   requestAnimationFrame(() => focusStart(editor));
                 }}

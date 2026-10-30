@@ -1,13 +1,21 @@
-import { HardDrive, Info, MessageSquareText, Palette, RefreshCw, SlidersHorizontal, X } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { formatShortcut } from '../actions';
-import { AssistantSettings } from '../assistant/AssistantSettings';
-import { previewCustomCss, saveCustomCss, useCustomCss } from '../customCss';
-import { openHref } from '../editor/EditorMenus';
-import { SUPPORTED_LOCALES, useTranslation } from '../i18n';
-import type { SupportedLocale, TranslationKey } from '../i18n';
-import { copyLegacyInto, legacyPageCount } from '../legacy';
+import {
+  HardDrive,
+  Info,
+  MessageSquareText,
+  Palette,
+  RefreshCw,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { formatShortcut } from "../actions";
+import { AssistantSettings } from "../assistant/AssistantSettings";
+import { previewCustomCss, saveCustomCss, useCustomCss } from "../customCss";
+import { openHref } from "../editor/EditorMenus";
+import { SUPPORTED_LOCALES, useTranslation } from "../i18n";
+import type { SupportedLocale, TranslationKey } from "../i18n";
+import { copyLegacyInto, legacyPageCount } from "../legacy";
 import {
   deleteUnusedFiles,
   exportAllMarkdown,
@@ -15,25 +23,30 @@ import {
   importMarkdown,
   restoreBackup,
   unusedFiles,
-} from '../operations';
-import { formatBytes } from '../platform/attachments';
-import { desktop } from '../platform/desktop';
-import { ACCENTS, setPreferences, usePreferences } from '../platform/preferences';
-import type { StartPage, ThemePreference } from '../platform/preferences';
-import { closeDialog, openDialog, toast } from '../ui';
-import type { SettingsSection } from '../ui';
-import { chooseVaultFolder } from '../vaults';
-import { getSession, runAll, useWorkspace } from '../workspace';
-import { Dialog, Logo, Switch } from './primitives';
-import { Select } from './Select';
-import { SettingRow, SettingsGroup } from './SettingsRows';
-import { CloudSettings, NetworkSettings } from './SyncSettings';
-import { t } from '../i18n';
-import { displayTitle } from '../../core/model';
-import type { NoteStyle, PageId } from '../../core/model';
-import { isEffectivelyTrashed } from '../../core/tree';
-import { NoteStyleControls } from './NoteStyleControls';
-import { FileCatalogSettings } from './FileCatalogSettings';
+} from "../operations";
+import { formatBytes } from "../platform/attachments";
+import { desktop } from "../platform/desktop";
+import {
+  ACCENTS,
+  SIDEBAR_MODULES,
+  setPreferences,
+  usePreferences,
+} from "../platform/preferences";
+import type { StartPage, ThemePreference } from "../platform/preferences";
+import { closeDialog, openDialog, toast } from "../ui";
+import type { SettingsSection } from "../ui";
+import { chooseVaultFolder } from "../vaults";
+import { getSession, runAll, useWorkspace } from "../workspace";
+import { Dialog, Logo, Switch } from "./primitives";
+import { Select } from "./Select";
+import { SettingRow, SettingsGroup } from "./SettingsRows";
+import { CloudSettings, NetworkSettings } from "./SyncSettings";
+import { t } from "../i18n";
+import { displayTitle } from "../../core/model";
+import type { NoteStyle, PageId } from "../../core/model";
+import { isEffectivelyTrashed } from "../../core/tree";
+import { NoteStyleControls } from "./NoteStyleControls";
+import { FileCatalogSettings } from "./FileCatalogSettings";
 
 interface SectionDef {
   id: SettingsSection;
@@ -42,12 +55,16 @@ interface SectionDef {
 }
 
 const SECTIONS: SectionDef[] = [
-  { id: 'general', key: 'settings.sections.general', icon: SlidersHorizontal },
-  { id: 'appearance', key: 'settings.sections.appearance', icon: Palette },
-  { id: 'assistant', key: 'settings.sections.assistant', icon: MessageSquareText },
-  { id: 'sync', key: 'settings.sections.sync', icon: RefreshCw },
-  { id: 'vault', key: 'settings.sections.vault', icon: HardDrive },
-  { id: 'about', key: 'settings.sections.about', icon: Info },
+  { id: "general", key: "settings.sections.general", icon: SlidersHorizontal },
+  { id: "appearance", key: "settings.sections.appearance", icon: Palette },
+  {
+    id: "assistant",
+    key: "settings.sections.assistant",
+    icon: MessageSquareText,
+  },
+  { id: "sync", key: "settings.sections.sync", icon: RefreshCw },
+  { id: "vault", key: "settings.sections.vault", icon: HardDrive },
+  { id: "about", key: "settings.sections.about", icon: Info },
 ];
 
 function Segmented<T extends string>({
@@ -69,7 +86,7 @@ function Segmented<T extends string>({
           type="button"
           role="radio"
           aria-checked={value === option}
-          className={value === option ? 'is-active' : ''}
+          className={value === option ? "is-active" : ""}
           onClick={() => onChange(option)}
         >
           {text}
@@ -81,18 +98,18 @@ function Segmented<T extends string>({
 
 export function SettingsDialog({ section }: { section?: SettingsSection }) {
   const { t } = useTranslation();
-  const [current, setCurrent] = useState<SettingsSection>(section ?? 'general');
+  const [current, setCurrent] = useState<SettingsSection>(section ?? "general");
   const shown = SECTIONS.find((item) => item.id === current) ?? SECTIONS[0]!;
   return (
     <Dialog
-      title={t('settings.title')}
+      title={t("settings.title")}
       size="large"
       className="settings-dialog"
       hideTitle
       onClose={closeDialog}
     >
-      <nav className="settings-nav" aria-label={t('settings.title')}>
-        <p className="settings-nav-title">{t('settings.title')}</p>
+      <nav className="settings-nav" aria-label={t("settings.title")}>
+        <p className="settings-nav-title">{t("settings.title")}</p>
         {SECTIONS.map((item) => {
           const Icon = item.icon;
           const label = t(item.key);
@@ -100,8 +117,8 @@ export function SettingsDialog({ section }: { section?: SettingsSection }) {
             <button
               key={item.id}
               type="button"
-              className={`settings-nav-item${item.id === current ? ' is-active' : ''}`}
-              aria-current={item.id === current ? 'page' : undefined}
+              className={`settings-nav-item${item.id === current ? " is-active" : ""}`}
+              aria-current={item.id === current ? "page" : undefined}
               onClick={() => setCurrent(item.id)}
             >
               <Icon size={15} /> {label}
@@ -115,23 +132,23 @@ export function SettingsDialog({ section }: { section?: SettingsSection }) {
           <button
             type="button"
             className="icon-button"
-            aria-label={t('settings.closeSettings')}
+            aria-label={t("settings.closeSettings")}
             onClick={closeDialog}
           >
             <X size={16} />
           </button>
         </header>
-        {current === 'general' && <GeneralSettings />}
-        {current === 'appearance' && <AppearanceSettings />}
-        {current === 'assistant' && <AssistantSettings />}
-        {current === 'sync' && (
+        {current === "general" && <GeneralSettings />}
+        {current === "appearance" && <AppearanceSettings />}
+        {current === "assistant" && <AssistantSettings />}
+        {current === "sync" && (
           <>
             <NetworkSettings />
             <CloudSettings />
           </>
         )}
-        {current === 'vault' && <VaultSettings />}
-        {current === 'about' && <AboutSettings />}
+        {current === "vault" && <VaultSettings />}
+        {current === "about" && <AboutSettings />}
       </div>
     </Dialog>
   );
@@ -142,9 +159,12 @@ function GeneralSettings() {
   const prefs = usePreferences();
   return (
     <SettingsGroup>
-      <SettingRow label={t('settings.general.language')} help={t('settings.general.languageHelp')}>
+      <SettingRow
+        label={t("settings.general.language")}
+        help={t("settings.general.languageHelp")}
+      >
         <Select<SupportedLocale>
-          label={t('settings.general.language')}
+          label={t("settings.general.language")}
           value={prefs.locale}
           options={SUPPORTED_LOCALES.map((locale) => ({
             value: locale.id,
@@ -153,33 +173,61 @@ function GeneralSettings() {
           onChange={(locale) => setPreferences({ locale })}
         />
       </SettingRow>
-      <SettingRow label={t('settings.general.yourName')} help={t('settings.general.yourNameHelp')}>
+      <SettingRow
+        label={t("settings.general.yourName")}
+        help={t("settings.general.yourNameHelp")}
+      >
         <input
           className="text-input small settings-input"
-          placeholder={t('settings.general.yourNamePlaceholder')}
-          aria-label={t('settings.general.yourName')}
+          placeholder={t("settings.general.yourNamePlaceholder")}
+          aria-label={t("settings.general.yourName")}
           maxLength={60}
           defaultValue={prefs.name}
-          onBlur={(event) => setPreferences({ name: event.target.value.trim() })}
-          onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+          onBlur={(event) =>
+            setPreferences({ name: event.target.value.trim() })
+          }
+          onKeyDown={(event) =>
+            event.key === "Enter" && event.currentTarget.blur()
+          }
         />
       </SettingRow>
       <SettingRow
-        label={t('settings.general.whenOpens')}
-        help={t('settings.general.whenOpensHelp', {
-          shortcutDaily: formatShortcut('Alt+D'),
-          shortcutCapture: formatShortcut('Mod+Alt+M'),
+        label={t("settings.general.whenOpens")}
+        help={t("settings.general.whenOpensHelp", {
+          shortcutDaily: formatShortcut("Alt+D"),
+          shortcutCapture: formatShortcut("Mod+Alt+M"),
         })}
       >
         <Segmented<StartPage>
-          label={t('settings.general.whenOpens')}
-          value={prefs.startPage}
+          label={t("settings.general.whenOpens")}
+          value={
+            prefs.startPage === "today" && prefs.hiddenModules.includes("daily")
+              ? "home"
+              : prefs.startPage
+          }
           options={[
-            ['today', t('settings.general.startPages.today')],
-            ['home', t('settings.general.startPages.home')],
-            ['last', t('settings.general.startPages.last')],
+            ...(prefs.hiddenModules.includes("daily")
+              ? []
+              : [
+                  ["today", t("settings.general.startPages.today")] as [
+                    StartPage,
+                    string,
+                  ],
+                ]),
+            ["home", t("settings.general.startPages.home")],
+            ["last", t("settings.general.startPages.last")],
           ]}
           onChange={(startPage) => setPreferences({ startPage })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("settings.general.spellcheck")}
+        help={t("settings.general.spellcheckHelp")}
+      >
+        <Switch
+          label={t("settings.general.spellcheck")}
+          checked={prefs.spellcheck}
+          onChange={(spellcheck) => setPreferences({ spellcheck })}
         />
       </SettingRow>
     </SettingsGroup>
@@ -190,9 +238,11 @@ function AppearanceSettings() {
   const { t } = useTranslation();
   const prefs = usePreferences();
   const workspace = useWorkspace();
-  const [batchMode, setBatchMode] = useState<'preserve' | 'overwrite'>('preserve');
+  const [batchMode, setBatchMode] = useState<"preserve" | "overwrite">(
+    "preserve",
+  );
   const [preview, setPreview] = useState<{
-    mode: 'preserve' | 'overwrite';
+    mode: "preserve" | "overwrite";
     ids: PageId[];
     titles: string[];
     style: NoteStyle;
@@ -204,13 +254,15 @@ function AppearanceSettings() {
   } | null>(null);
   const eligiblePages = Object.values(workspace.pages).filter(
     (page) =>
-      ['page', 'journal', 'templates'].includes(page.kind) &&
+      ["page", "journal", "templates"].includes(page.kind) &&
       !isEffectivelyTrashed(workspace.pages, page.id) &&
       !page.encrypted &&
       !getSession().unreadable.has(page.id),
   );
   const makePreview = () => {
-    const targets = eligiblePages.filter((page) => batchMode === 'overwrite' || page.noteStyle === null);
+    const targets = eligiblePages.filter(
+      (page) => batchMode === "overwrite" || page.noteStyle === null,
+    );
     setPreview({
       mode: batchMode,
       ids: targets.map((page) => page.id),
@@ -226,27 +278,37 @@ function AppearanceSettings() {
       if (
         !page ||
         isEffectivelyTrashed(workspace.pages, id) ||
-        !['page', 'journal', 'templates'].includes(page.kind) ||
+        !["page", "journal", "templates"].includes(page.kind) ||
         page.encrypted ||
         getSession().unreadable.has(id) ||
-        (preview.mode === 'preserve' && page.noteStyle !== null) ||
+        (preview.mode === "preserve" && page.noteStyle !== null) ||
         JSON.stringify(page.noteStyle) === JSON.stringify(preview.style)
       )
         return [];
       before.push({ id, style: page.noteStyle });
-      return [{ type: 'page.setNoteStyle' as const, id, style: preview.style, now: Date.now() }];
+      return [
+        {
+          type: "page.setNoteStyle" as const,
+          id,
+          style: preview.style,
+          now: Date.now(),
+        },
+      ];
     });
     const result = runAll(commands);
     if (!result.ok) return;
-    setUndo(before.length ? { entries: before, appliedStyle: preview.style } : null);
+    setUndo(
+      before.length ? { entries: before, appliedStyle: preview.style } : null,
+    );
     setPreview({ ...preview, applied: true });
   };
   const undoBatch = () => {
     if (!undo) return;
     const commands = undo.entries.flatMap(({ id, style }) => {
       const page = workspace.pages[id];
-      return page && JSON.stringify(page.noteStyle) === JSON.stringify(undo.appliedStyle)
-        ? [{ type: 'page.setNoteStyle' as const, id, style, now: Date.now() }]
+      return page &&
+        JSON.stringify(page.noteStyle) === JSON.stringify(undo.appliedStyle)
+        ? [{ type: "page.setNoteStyle" as const, id, style, now: Date.now() }]
         : [];
     });
     if (runAll(commands).ok) {
@@ -257,26 +319,28 @@ function AppearanceSettings() {
   return (
     <>
       <SettingsGroup>
-        <SettingRow label={t('settings.appearance.theme')}>
+        <SettingRow label={t("settings.appearance.theme")}>
           <Segmented<ThemePreference>
-            label={t('settings.appearance.theme')}
+            label={t("settings.appearance.theme")}
             value={prefs.theme}
             options={[
-              ['system', t('settings.appearance.themes.system')],
-              ['light', t('settings.appearance.themes.light')],
-              ['dark', t('settings.appearance.themes.dark')],
+              ["system", t("settings.appearance.themes.system")],
+              ["light", t("settings.appearance.themes.light")],
+              ["dark", t("settings.appearance.themes.dark")],
             ]}
             onChange={(theme) => setPreferences({ theme })}
           />
         </SettingRow>
-        <SettingRow label={t('settings.appearance.accentColour')}>
+        <SettingRow label={t("settings.appearance.accentColour")}>
           <div
             className="accent-swatches"
             role="radiogroup"
-            aria-label={t('settings.appearance.accentColour')}
+            aria-label={t("settings.appearance.accentColour")}
           >
             {ACCENTS.map((accent) => {
-              const label = t(`settings.appearance.accents.${accent}` as TranslationKey);
+              const label = t(
+                `settings.appearance.accents.${accent}` as TranslationKey,
+              );
               return (
                 <button
                   key={accent}
@@ -293,17 +357,20 @@ function AppearanceSettings() {
           </div>
         </SettingRow>
         <SettingRow
-          label={t('settings.appearance.colourfulPages')}
-          help={t('settings.appearance.colourfulPagesHelp')}
+          label={t("settings.appearance.colourfulPages")}
+          help={t("settings.appearance.colourfulPagesHelp")}
         >
           <Switch
-            label={t('settings.appearance.colourfulPages')}
+            label={t("settings.appearance.colourfulPages")}
             checked={prefs.colorful}
             onChange={(colorful) => setPreferences({ colorful })}
           />
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title={t('settings.appearance.writingTitle')} help={t('page.style.defaultsHelp')}>
+      <SettingsGroup
+        title={t("settings.appearance.writingTitle")}
+        help={t("page.style.defaultsHelp")}
+      >
         <NoteStyleControls
           style={prefs.defaultNoteStyle}
           onChange={(defaultNoteStyle) => {
@@ -312,14 +379,17 @@ function AppearanceSettings() {
           }}
         />
       </SettingsGroup>
-      <SettingsGroup title={t('page.style.applyExistingTitle')} help={t('page.style.applyExistingHelp')}>
-        <SettingRow label={t('page.style.overrideBehavior')}>
-          <Segmented<'preserve' | 'overwrite'>
-            label={t('page.style.overrideBehavior')}
+      <SettingsGroup
+        title={t("page.style.applyExistingTitle")}
+        help={t("page.style.applyExistingHelp")}
+      >
+        <SettingRow label={t("page.style.overrideBehavior")}>
+          <Segmented<"preserve" | "overwrite">
+            label={t("page.style.overrideBehavior")}
             value={batchMode}
             options={[
-              ['preserve', t('page.style.preserveOverrides')],
-              ['overwrite', t('page.style.overwriteOverrides')],
+              ["preserve", t("page.style.preserveOverrides")],
+              ["overwrite", t("page.style.overwriteOverrides")],
             ]}
             onChange={(mode) => {
               setBatchMode(mode);
@@ -329,7 +399,7 @@ function AppearanceSettings() {
         </SettingRow>
         <div className="settings-actions">
           <button type="button" className="button small" onClick={makePreview}>
-            {t('page.style.previewBatch')}
+            {t("page.style.previewBatch")}
           </button>
           {preview && !preview.applied && (
             <button
@@ -338,40 +408,89 @@ function AppearanceSettings() {
               disabled={preview.ids.length === 0}
               onClick={applyBatch}
             >
-              {t('page.style.applyToCount', { count: preview.ids.length })}
+              {t("page.style.applyToCount", { count: preview.ids.length })}
             </button>
           )}
           {undo && (
             <button type="button" className="button small" onClick={undoBatch}>
-              {t('page.style.undoBatch')}
+              {t("page.style.undoBatch")}
             </button>
           )}
         </div>
         {preview && (
           <div className="style-batch-preview" role="status">
             <strong>
-              {t(preview.applied ? 'page.style.batchApplied' : 'page.style.batchPreviewCount', {
-                count: preview.ids.length,
-              })}
+              {t(
+                preview.applied
+                  ? "page.style.batchApplied"
+                  : "page.style.batchPreviewCount",
+                {
+                  count: preview.ids.length,
+                },
+              )}
             </strong>
-            {preview.titles.length > 0 && <span>{preview.titles.join(' · ')}</span>}
+            {preview.titles.length > 0 && (
+              <span>{preview.titles.join(" · ")}</span>
+            )}
             <div
               className={`note-style-preview font-${preview.style.font}`}
               style={
                 {
-                  '--note-font-size': `${preview.style.fontSize}px`,
-                  '--note-line-height': preview.style.lineHeight,
+                  "--note-font-size": `${preview.style.fontSize}px`,
+                  "--note-line-height": preview.style.lineHeight,
                 } as React.CSSProperties
               }
             >
-              <strong>{t('page.style.previewHeading')}</strong>
-              <span>{t('page.style.previewBody')}</span>
+              <strong>{t("page.style.previewHeading")}</strong>
+              <span>{t("page.style.previewBody")}</span>
             </div>
           </div>
         )}
       </SettingsGroup>
+      <SidebarSettings />
       <CustomCss />
     </>
+  );
+}
+
+// which views the sidebar lists
+function SidebarSettings() {
+  const { t } = useTranslation();
+  const prefs = usePreferences();
+  return (
+    <SettingsGroup title={t("settings.sidebar.title")}>
+      {SIDEBAR_MODULES.map((module) => {
+        const label = t(`sidebar.${module}` as TranslationKey);
+        return (
+          <SettingRow
+            key={module}
+            label={t("settings.sidebar.show", { name: label })}
+          >
+            <Switch
+              label={t("settings.sidebar.show", { name: label })}
+              checked={!prefs.hiddenModules.includes(module)}
+              onChange={(show) =>
+                setPreferences({
+                  hiddenModules: show
+                    ? prefs.hiddenModules.filter((item) => item !== module)
+                    : [...prefs.hiddenModules, module],
+                })
+              }
+            />
+          </SettingRow>
+        );
+      })}
+      <SettingRow
+        label={t("settings.sidebar.peek")}
+        help={t("settings.sidebar.peekHelp")}
+      >
+        <Switch
+          label={t("settings.sidebar.peek")}
+          checked={prefs.sidebarPeek}
+          onChange={(sidebarPeek) => setPreferences({ sidebarPeek })}
+        />
+      </SettingRow>
+    </SettingsGroup>
   );
 }
 
@@ -384,13 +503,21 @@ function CustomCss() {
   const text = draft ?? saved;
   return (
     <SettingsGroup>
-      <SettingRow label={t('settings.appearance.customCss')} help={t('settings.appearance.customCssHelp')}>
-        <button type="button" className="button small" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <SettingRow
+        label={t("settings.appearance.customCss")}
+        help={t("settings.appearance.customCssHelp")}
+      >
+        <button
+          type="button"
+          className="button small"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
           {open
-            ? t('settings.appearance.customCssClose')
+            ? t("settings.appearance.customCssClose")
             : saved.trim()
-              ? t('settings.appearance.customCssEdit')
-              : t('settings.appearance.customCssAdd')}
+              ? t("settings.appearance.customCssEdit")
+              : t("settings.appearance.customCssAdd")}
         </button>
       </SettingRow>
       {open && (
@@ -398,8 +525,10 @@ function CustomCss() {
           <textarea
             className="text-input css-input"
             spellCheck={false}
-            aria-label={t('settings.appearance.customCss')}
-            placeholder={'.page-title { letter-spacing: -0.03em; }\n:root { --accent: #e5484d; }'}
+            aria-label={t("settings.appearance.customCss")}
+            placeholder={
+              ".page-title { letter-spacing: -0.03em; }\n:root { --accent: #e5484d; }"
+            }
             value={text}
             onChange={(event) => {
               setDraft(event.target.value);
@@ -416,7 +545,7 @@ function CustomCss() {
                 previewCustomCss(saved);
               }}
             >
-              {t('settings.appearance.customCssDiscard')}
+              {t("settings.appearance.customCssDiscard")}
             </button>
             <button
               type="button"
@@ -426,12 +555,16 @@ function CustomCss() {
                 void saveCustomCss(text)
                   .then(() => {
                     setDraft(null);
-                    toast(t('settings.appearance.customCssSaved'));
+                    toast(t("settings.appearance.customCssSaved"));
                   })
-                  .catch(() => toast(t('settings.appearance.customCssFailed'), { tone: 'error' }))
+                  .catch(() =>
+                    toast(t("settings.appearance.customCssFailed"), {
+                      tone: "error",
+                    }),
+                  )
               }
             >
-              {t('settings.appearance.customCssSave')}
+              {t("settings.appearance.customCssSave")}
             </button>
           </div>
         </div>
@@ -444,14 +577,19 @@ function VaultSettings() {
   const { t, tp } = useTranslation();
   const vault = getSession().location;
   const [legacy, setLegacy] = useState(0);
-  const [files, setFiles] = useState<{ count: number; bytes: number; unused: number } | null>(null);
+  const [files, setFiles] = useState<{
+    count: number;
+    bytes: number;
+    unused: number;
+  } | null>(null);
   const countFiles = () => {
-    void Promise.all([getSession().listFiles(), unusedFiles()]).then(([all, unused]) =>
-      setFiles({
-        count: all.length,
-        bytes: all.reduce((sum, file) => sum + file.size, 0),
-        unused: unused.length,
-      }),
+    void Promise.all([getSession().listFiles(), unusedFiles()]).then(
+      ([all, unused]) =>
+        setFiles({
+          count: all.length,
+          bytes: all.reduce((sum, file) => sum + file.size, 0),
+          unused: unused.length,
+        }),
     );
   };
   useEffect(countFiles, []);
@@ -464,24 +602,32 @@ function VaultSettings() {
 
   return (
     <>
-      <SettingsGroup help={t('settings.vault.groupHelp')}>
+      <SettingsGroup help={t("settings.vault.groupHelp")}>
         <SettingRow
-          label={t('settings.vault.currentFolder')}
+          label={t("settings.vault.currentFolder")}
           help={<span className="settings-path">{vault}</span>}
         >
           {desktop?.vault && (
-            <button type="button" className="button small" onClick={() => void desktop?.vault?.reveal('')}>
-              {t('settings.vault.showFolder')}
+            <button
+              type="button"
+              className="button small"
+              onClick={() => void desktop?.vault?.reveal("")}
+            >
+              {t("settings.vault.showFolder")}
             </button>
           )}
-          <button type="button" className="button small" onClick={() => void chooseVaultFolder()}>
-            {t('settings.vault.chooseAnother')}
+          <button
+            type="button"
+            className="button small"
+            onClick={() => void chooseVaultFolder()}
+          >
+            {t("settings.vault.chooseAnother")}
           </button>
         </SettingRow>
         {legacy > 0 && (
           <SettingRow
-            label={t('settings.vault.copyLegacy')}
-            help={tp('settings.vault.copyLegacyHelp', legacy)}
+            label={t("settings.vault.copyLegacy")}
+            help={tp("settings.vault.copyLegacyHelp", legacy)}
           >
             <button
               type="button"
@@ -489,48 +635,78 @@ function VaultSettings() {
               onClick={() =>
                 void copyLegacyInto(getSession()).then((result) => {
                   if (result.ok) {
-                    toast(tp('settings.vault.copyLegacySuccess', result.value));
+                    toast(tp("settings.vault.copyLegacySuccess", result.value));
                     setLegacy(0);
-                  } else toast(result.error, { tone: 'error' });
+                  } else toast(result.error, { tone: "error" });
                 })
               }
             >
-              {t('settings.vault.copyLegacyButton')}
+              {t("settings.vault.copyLegacyButton")}
             </button>
           </SettingRow>
         )}
       </SettingsGroup>
       {vault && <FileCatalogSettings location={vault} />}
-      <SettingsGroup title={t('settings.vault.filesTitle')}>
-        <SettingRow label={t('settings.vault.exportBackup')} help={t('settings.vault.exportBackupHelp')}>
-          <button type="button" className="button small" onClick={() => void exportBackup()}>
-            {t('settings.vault.saveBackupButton')}
+      <SettingsGroup title={t("settings.vault.filesTitle")}>
+        <SettingRow
+          label={t("settings.vault.exportBackup")}
+          help={t("settings.vault.exportBackupHelp")}
+        >
+          <button
+            type="button"
+            className="button small"
+            onClick={() => void exportBackup()}
+          >
+            {t("settings.vault.saveBackupButton")}
           </button>
         </SettingRow>
-        <SettingRow label={t('settings.vault.restoreBackup')} help={t('settings.vault.restoreBackupHelp')}>
-          <button type="button" className="button small" onClick={() => void restoreBackup()}>
-            {t('settings.vault.restoreBackupButton')}
+        <SettingRow
+          label={t("settings.vault.restoreBackup")}
+          help={t("settings.vault.restoreBackupHelp")}
+        >
+          <button
+            type="button"
+            className="button small"
+            onClick={() => void restoreBackup()}
+          >
+            {t("settings.vault.restoreBackupButton")}
           </button>
         </SettingRow>
-        <SettingRow label={t('settings.vault.exportMarkdown')} help={t('settings.vault.exportMarkdownHelp')}>
-          <button type="button" className="button small" onClick={() => void exportAllMarkdown()}>
-            {t('settings.vault.exportMarkdownButton')}
+        <SettingRow
+          label={t("settings.vault.exportMarkdown")}
+          help={t("settings.vault.exportMarkdownHelp")}
+        >
+          <button
+            type="button"
+            className="button small"
+            onClick={() => void exportAllMarkdown()}
+          >
+            {t("settings.vault.exportMarkdownButton")}
           </button>
         </SettingRow>
-        <SettingRow label={t('settings.vault.importMarkdown')} help={t('settings.vault.importMarkdownHelp')}>
-          <button type="button" className="button small" onClick={() => void importMarkdown()}>
-            {t('settings.vault.importMarkdownButton')}
+        <SettingRow
+          label={t("settings.vault.importMarkdown")}
+          help={t("settings.vault.importMarkdownHelp")}
+        >
+          <button
+            type="button"
+            className="button small"
+            onClick={() => void importMarkdown()}
+          >
+            {t("settings.vault.importMarkdownButton")}
           </button>
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title={t('settings.vault.unusedFiles')}>
+      <SettingsGroup title={t("settings.vault.unusedFiles")}>
         <SettingRow
           label={
             files
-              ? tp('settings.vault.filesCount', files.count, { bytes: formatBytes(files.bytes) })
-              : t('settings.vault.counting')
+              ? tp("settings.vault.filesCount", files.count, {
+                  bytes: formatBytes(files.bytes),
+                })
+              : t("settings.vault.counting")
           }
-          help={t('settings.vault.unusedFilesHelp')}
+          help={t("settings.vault.unusedFilesHelp")}
         >
           <button
             type="button"
@@ -539,8 +715,8 @@ function VaultSettings() {
             onClick={() => void deleteUnusedFiles().then(countFiles)}
           >
             {files?.unused
-              ? t('settings.vault.cleanUnused', { count: files.unused })
-              : t('settings.vault.noneUnused')}
+              ? t("settings.vault.cleanUnused", { count: files.unused })
+              : t("settings.vault.noneUnused")}
           </button>
         </SettingRow>
       </SettingsGroup>
@@ -552,7 +728,10 @@ function VaultSettings() {
 function UpdateSettings() {
   return (
     <SettingsGroup>
-      <SettingRow label={t('updates.title')} help={t('updates.disabledPrivateBuild')} />
+      <SettingRow
+        label={t("updates.title")}
+        help={t("updates.disabledPrivateBuild")}
+      />
     </SettingsGroup>
   );
 }
@@ -564,34 +743,57 @@ function AboutSettings() {
       <div className="settings-about">
         <Logo size={36} />
         <div>
-          <strong>{t('settings.about.baseVersion', { version: __MORROW_BASE_VERSION__ })}</strong>
-          <span>{t('settings.about.forkVersion', { version: __FORK_VERSION__ })}</span>
-          <span>{t('settings.about.baseRevision', { commit: __MORROW_BASE_COMMIT__.slice(0, 7) })}</span>
-          <span>{t('settings.about.packageVersion', { version: desktop?.version ?? __APP_VERSION__ })}</span>
-          <span>{t('settings.about.description')}</span>
+          <strong>
+            {t("settings.about.baseVersion", {
+              version: __MORROW_BASE_VERSION__,
+            })}
+          </strong>
+          <span>
+            {t("settings.about.forkVersion", { version: __FORK_VERSION__ })}
+          </span>
+          <span>
+            {t("settings.about.baseRevision", {
+              commit: __MORROW_BASE_COMMIT__.slice(0, 7),
+            })}
+          </span>
+          <span>
+            {t("settings.about.packageVersion", {
+              version: desktop?.version ?? __APP_VERSION__,
+            })}
+          </span>
+          <span>{t("settings.about.description")}</span>
         </div>
       </div>
       <UpdateSettings />
       <SettingsGroup>
         <SettingRow
-          label={t('settings.about.shortcuts')}
-          help={t('settings.about.shortcutsHelp', { shortcut: formatShortcut('Mod+/') })}
+          label={t("settings.about.shortcuts")}
+          help={t("settings.about.shortcutsHelp", {
+            shortcut: formatShortcut("Mod+/"),
+          })}
         >
-          <button type="button" className="button small" onClick={() => openDialog({ kind: 'shortcuts' })}>
-            {t('settings.about.shortcutsButton')}
-          </button>
-        </SettingRow>
-        <SettingRow label={t('settings.about.sourceCode')} help={t('settings.about.sourceCodeHelp')}>
           <button
             type="button"
             className="button small"
-            onClick={() => openHref('https://github.com/hodeliun/Morrow')}
+            onClick={() => openDialog({ kind: "shortcuts" })}
           >
-            {t('settings.about.gitHubButton')}
+            {t("settings.about.shortcutsButton")}
+          </button>
+        </SettingRow>
+        <SettingRow
+          label={t("settings.about.sourceCode")}
+          help={t("settings.about.sourceCodeHelp")}
+        >
+          <button
+            type="button"
+            className="button small"
+            onClick={() => openHref("https://github.com/hodeliun/Morrow")}
+          >
+            {t("settings.about.gitHubButton")}
           </button>
         </SettingRow>
       </SettingsGroup>
-      <p className="settings-group-help">{t('settings.about.footer')}</p>
+      <p className="settings-group-help">{t("settings.about.footer")}</p>
     </>
   );
 }

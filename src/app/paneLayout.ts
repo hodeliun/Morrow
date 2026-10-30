@@ -15,6 +15,7 @@ export interface PaneTabInstance<TTarget = unknown> {
   readonly target: TTarget;
   readonly back: readonly TTarget[];
   readonly forward: readonly TTarget[];
+  readonly pinned?: boolean;
 }
 
 export interface PaneLeaf {
@@ -54,6 +55,7 @@ export interface LegacyPaneHistory {
 export interface LegacySplitTab extends LegacyPaneHistory {
   readonly id: string;
   readonly side?: LegacyPaneHistory | null;
+  readonly pinned?: boolean;
 }
 
 export interface LegacySplitState {
@@ -265,7 +267,7 @@ export function migrateLegacySplit(
     if (tab.side) sideIds.set(tab.id, allocateSideId(tab.id, usedIds));
   }
   const tabs = legacy.tabs.flatMap((tab) => {
-    const main = legacyTabInstance(tab.id, tab.id, tab);
+    const main = { ...legacyTabInstance(tab.id, tab.id, tab), ...(tab.pinned ? { pinned: true } : {}) };
     const sideId = sideIds.get(tab.id);
     return tab.side && sideId ? [main, legacyTabInstance(sideId, tab.id, tab.side)] : [main];
   });

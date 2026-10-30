@@ -2,10 +2,10 @@
   "name": "morrow",
   "productName": "Morrow",
   "private": true,
-  "version": "1.2.1-fork.1.1.1",
-  "morrowBaseVersion": "1.2.1",
-  "morrowBaseCommit": "5e6392bb6425924abd30eec8a99b42aa8c953577",
-  "forkVersion": "1.1.1",
+  "version": "1.3.0-fork.1.2.0",
+  "morrowBaseVersion": "1.3.0",
+  "morrowBaseCommit": "13ce1908ac7777a16161b5ef0c013de5eadcb3a1",
+  "forkVersion": "1.2.0",
   "description": "A Morrow fork with local databases, linked views and Markdown storage.",
   "desktopName": "morrow.desktop",
   "license": "Apache-2.0",
@@ -144,7 +144,8 @@
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-portable-${arch}.${ext}",
+      "splashImage": "build/splash.bmp"
     },
     "mac": {
       "target": [

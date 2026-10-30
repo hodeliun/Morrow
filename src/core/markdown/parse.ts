@@ -15,6 +15,7 @@ import {
 import type { ColorName, ColorValue, DocMark, DocNode, ImageAlign, ImageCrop, PageId } from '../model';
 import { inlineText, isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
+import { calloutIcon, HEADER_COLUMN, toggleLevel } from './serialize';
 
 export interface ParseOptions {
   // resolves a [[wiki link]] target, a title or a path inside the vault, to a page id
@@ -93,7 +94,7 @@ const MAX_INPUT = 5_000_000;
 // a checkbox is [ ] or [x], and notion's exports also write an empty box as [] or with a non-breaking space
 const TASK_PREFIX = /^\[([ \u00a0xX]?)\](?:\s+|$)/;
 // obsidian callouts and github alerts: > [!type]+ optional title
-const CALLOUT = /^\[!([A-Za-z][\w-]{0,30})\]([+-]?)[ \t]*/;
+const CALLOUT = /^\[!([A-Za-z][\w-]{0,30})(?:\|([^\]\n]{0,80}))?\]([+-]?)[ \t]*/;
 const WIKI = /^(!?)\[\[([^[\]\n]{0,400}?)\]\]/;
 const LINKED_VIEW = /^<!--\s*morrow:linked-view:v1:([A-Za-z0-9%._~!()*'()-]{1,200000})\s*-->$/i;
 
@@ -258,8 +259,12 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   const close = () => {
     if (stack.length > 1) stack.pop();
   };
+  // set by the comment morrow writes above a table whose first column is a header
+  let headerColumn = false;
+  let tableHasHeaderColumn = false;
 
   for (const token of tokens) {
+    if (token.type !== 'table_open' && token.type !== 'html_block') headerColumn = false;
     if (skipLinkedFallback) {
       if (token.type === 'paragraph_close') skipLinkedFallback = false;
       continue;
@@ -300,16 +305,21 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         open({ type: 'listItem', content: [] });
         break;
       case 'table_open':
+        tableHasHeaderColumn = headerColumn;
+        headerColumn = false;
         open({ type: 'table', content: [] });
         break;
       case 'tr_open':
         open({ type: 'tableRow', content: [] });
         break;
       case 'th_open':
-      case 'td_open':
-        open({ type: token.type === 'th_open' ? 'tableHeader' : 'tableCell', content: [] });
+      case 'td_open': {
+        const first = (top().content ?? []).length === 0;
+        const header = token.type === 'th_open' || (tableHasHeaderColumn && first);
+        open({ type: header ? 'tableHeader' : 'tableCell', content: [] });
         open({ type: 'paragraph', content: [] });
         break;
+      }
       case 'th_close':
       case 'td_close':
         close();
@@ -368,6 +378,10 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         push({ type: 'horizontalRule' });
         break;
       case 'html_block':
+        if (token.content.trim() === HEADER_COLUMN) {
+          headerColumn = true;
+          break;
+        }
         {
           const trimmed = token.content.trim();
           const linkedView = parseLinkedViewMarker(trimmed);
@@ -502,6 +516,10 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
   if (details) {
     const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(html);
     const summaryTag = /<summary([^>]*)>/i.exec(html);
+    const summaryMarkup = summary?.[1] ?? '';
+    const headingSummary = /^\s*<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>\s*$/i.exec(summaryMarkup);
+    // <summary><h2>…</h2></summary> is a toggle heading
+    const level = toggleLevel(Number(/^\s*<h([1-3])\b/i.exec(summaryMarkup)?.[1]));
     const summaryBackgroundAttr = /(?:^|\s)data-block-background\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(
       summaryTag?.[1] ?? '',
     );
@@ -512,13 +530,16 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
       summaryTag?.[1] ?? '',
     );
     const summaryFormat = summaryFormatAttr?.[1] ?? summaryFormatAttr?.[2] ?? summaryFormatAttr?.[3];
-    const summaryContent =
+    const title = decodeEntities(summaryMarkup.replace(/<[^>]+>/g, '')).trim();
+    const markdownTitle = headingSummary?.[2] ?? summaryMarkup;
+    const summaryNodes: DocNode[] =
       summaryFormat === 'markdown'
-        ? inlineNodes(md.parseInline(summary?.[1] ?? '', {})[0]?.children ?? [], options)
-        : (() => {
-            const title = decodeEntities((summary?.[1] ?? '').replace(/<[^>]+>/g, '')).trim();
-            return title ? [{ type: 'text', text: title }] : [];
-          })();
+        ? inlineNodes(md.parseInline(markdownTitle, {})[0]?.children ?? [], options)
+        : level
+          ? summaryContent(title, options)
+          : title
+            ? [{ type: 'text', text: title }]
+            : [];
     const blockIdAttr = /(?:^|\s)data-block-id\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(
       details[1] ?? '',
     );
@@ -541,8 +562,15 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
       content: [
         {
           type: 'detailsSummary',
-          ...(summaryBackground ? { attrs: { blockBackground: summaryBackground } } : {}),
-          content: summaryContent,
+          ...(summaryBackground || level
+            ? {
+                attrs: {
+                  ...(summaryBackground ? { blockBackground: summaryBackground } : {}),
+                  ...(level ? { level } : {}),
+                },
+              }
+            : {}),
+          content: summaryNodes,
         },
         body,
       ],
@@ -560,18 +588,41 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
     }
   } else if (aside) {
     const closed = /<\/aside>\s*$/i.test(html);
-    const inner = html
+    let inner = html
       .slice(aside[0].length)
       .replace(/<\/aside>\s*$/i, '')
       .trim()
       .replace(NOTION_ICON, '');
-    const node: DocNode = { type: 'callout', attrs: { tone: 'note', kind: 'note' }, content: [] };
+    // notion writes the callout's emoji as the first thing in it
+    const emoji =
+      /^(\p{Extended_Pictographic}[\uFE0F\u200D\p{Extended_Pictographic}\p{Emoji_Modifier}]*)\s+/u.exec(
+        inner,
+      );
+    const node: DocNode = {
+      type: 'callout',
+      attrs: { tone: 'note', kind: 'note', ...(emoji ? { icon: emoji[1] } : {}) },
+      content: [],
+    };
+    if (emoji) inner = inner.slice(emoji[0].length);
     if (inner) node.content!.push(...(markdownToDoc(inner, options).content ?? []));
     b.push(node);
     if (!closed) b.stack.push(node);
   } else if (/^<\/aside>/i.test(html)) {
     if (b.top().type === 'callout') b.close();
   } else if (html) b.push({ type: 'rawBlock', attrs: { text: source.replace(/\n+$/, '') } });
+}
+
+// a toggle's title is written as markdown, so links and bold in it come back as they were. it only holds
+// text, anything else in it, like a [[link]], is kept as its words
+function summaryContent(title: string, options: ParseOptions): DocNode[] {
+  if (!title) return [];
+  const tokens = md.parseInline(title, {})[0]?.children ?? [];
+  const nodes = inlineNodes(tokens, options).map((child): DocNode => {
+    if (child.type === 'text') return child;
+    const text = child.type === 'hardBreak' || child.type === 'softBreak' ? ' ' : inlineText(child);
+    return { type: 'text', text, ...(child.marks?.length ? { marks: child.marks } : {}) };
+  });
+  return mergeText(nodes.filter((child) => child.text));
 }
 
 // first level one heading becomes the page title
@@ -1001,7 +1052,13 @@ function toCallout(quote: DocNode): DocNode {
   const kind = match[1]!.toLowerCase();
   const attrs: Record<string, unknown> = { tone: calloutTone(kind), kind };
   if (title) attrs.title = title;
-  if (match[2]) attrs.fold = match[2];
+  if (match[3]) attrs.fold = match[3];
+  // morrow keeps a callout's icon as icon:🔥 in the metadata, anything else there is kept as it was
+  const meta = (match[2] ?? '').split('|').filter((part) => part.trim());
+  const icon = meta.find((part) => part.startsWith('icon:'));
+  if (icon && calloutIcon(icon.slice(5))) attrs.icon = calloutIcon(icon.slice(5));
+  const others = meta.filter((part) => part !== icon);
+  if (others.length) attrs.meta = others.join('|');
   const content = body.length ? [{ ...first, content: body }, ...rest] : rest;
   return {
     type: 'callout',

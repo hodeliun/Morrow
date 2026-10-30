@@ -1,10 +1,10 @@
-import { computePosition, flip, offset, shift, size } from '@floating-ui/dom';
-import type { Placement } from '@floating-ui/dom';
-import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
-import { useEffect, useLayoutEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { layerPortalTarget, useDismissableLayer } from './layers';
+import { computePosition, flip, offset, shift, size } from "@floating-ui/dom";
+import type { Placement } from "@floating-ui/dom";
+import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { layerPortalTarget, useDismissableLayer } from "./layers";
 
 export type MenuEntry =
   | {
@@ -18,7 +18,7 @@ export type MenuEntry =
       onSelect: () => void;
     }
   | { separator: true }
-  | { heading: string }
+  | { heading: string; title?: string }
   | { custom: ReactNode };
 
 interface MenuProps {
@@ -29,7 +29,13 @@ interface MenuProps {
   label: string;
 }
 
-export function Menu({ anchor, entries, onClose, placement = 'bottom-start', label }: MenuProps) {
+export function Menu({
+  anchor,
+  entries,
+  onClose,
+  placement = "bottom-start",
+  label,
+}: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useDismissableLayer({
@@ -42,10 +48,13 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const reference = anchor instanceof HTMLElement ? anchor : { getBoundingClientRect: () => anchor };
+    const reference =
+      anchor instanceof HTMLElement
+        ? anchor
+        : { getBoundingClientRect: () => anchor };
     void computePosition(reference, element, {
       placement,
-      strategy: 'fixed',
+      strategy: "fixed",
       middleware: [
         offset(4),
         flip({ padding: 8 }),
@@ -63,21 +72,23 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
     }).then(({ x, y }) => {
       element.style.left = `${x}px`;
       element.style.top = `${y}px`;
-      element.style.visibility = 'visible';
+      element.style.visibility = "visible";
     });
-    const firstButton = element.querySelector<HTMLButtonElement>('button:not(:disabled)');
+    const firstButton = element.querySelector<HTMLButtonElement>(
+      "button:not(:disabled)",
+    );
     firstButton?.focus();
-    firstButton?.scrollIntoView({ block: 'nearest' });
+    firstButton?.scrollIntoView({ block: "nearest" });
   }, [anchor, placement]);
 
   useEffect(() => {
     const trigger = anchor instanceof HTMLElement ? anchor : null;
     const onBlurWindow = () => onClose();
-    window.addEventListener('blur', onBlurWindow);
-    window.addEventListener('resize', onBlurWindow);
+    window.addEventListener("blur", onBlurWindow);
+    window.addEventListener("resize", onBlurWindow);
     return () => {
-      window.removeEventListener('blur', onBlurWindow);
-      window.removeEventListener('resize', onBlurWindow);
+      window.removeEventListener("blur", onBlurWindow);
+      window.removeEventListener("resize", onBlurWindow);
       // give focus back to whatever opened the menu
       if (trigger?.isConnected && document.activeElement === document.body)
         trigger.focus({ preventScroll: true });
@@ -86,30 +97,32 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     const buttons = Array.from(
-      ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [],
+      ref.current?.querySelectorAll<HTMLButtonElement>(
+        "button:not(:disabled)",
+      ) ?? [],
     );
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    if (event.key === 'ArrowDown') {
+    if (event.key === "ArrowDown") {
       event.preventDefault();
       const next = buttons[(index + 1) % buttons.length];
       next?.focus();
-      next?.scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'ArrowUp') {
+      next?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "ArrowUp") {
       event.preventDefault();
       const prev = buttons[(index - 1 + buttons.length) % buttons.length];
       prev?.focus();
-      prev?.scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'Home') {
+      prev?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Home") {
       event.preventDefault();
       const first = buttons[0];
       first?.focus();
-      first?.scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'End') {
+      first?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "End") {
       event.preventDefault();
       const last = buttons[buttons.length - 1];
       last?.focus();
-      last?.scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'Tab') {
+      last?.scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Tab") {
       event.preventDefault();
       event.stopPropagation();
       onClose();
@@ -123,17 +136,20 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
       role="menu"
       aria-label={label}
       onKeyDown={onKeyDown}
-      style={{ visibility: 'hidden' }}
+      style={{ visibility: "hidden" }}
     >
       {entries.map((entry, index) => {
-        if ('separator' in entry) return <div key={index} className="menu-separator" role="separator" />;
-        if ('heading' in entry)
+        if ("separator" in entry)
           return (
-            <div key={index} className="menu-section">
+            <div key={index} className="menu-separator" role="separator" />
+          );
+        if ("heading" in entry)
+          return (
+            <div key={index} className="menu-section" title={entry.title}>
               {entry.heading}
             </div>
           );
-        if ('custom' in entry)
+        if ("custom" in entry)
           return (
             <div key={index} className="menu-custom-entry">
               {entry.custom}
@@ -144,9 +160,9 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
           <button
             key={index}
             type="button"
-            role={entry.checked === undefined ? 'menuitem' : 'menuitemradio'}
+            role={entry.checked === undefined ? "menuitem" : "menuitemradio"}
             aria-checked={entry.checked}
-            className={`menu-item${entry.danger ? ' is-danger' : ''}`}
+            className={`menu-item${entry.danger ? " is-danger" : ""}`}
             disabled={entry.disabled}
             onClick={() => {
               onClose();
@@ -156,8 +172,12 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
             <span className="menu-icon">
               {entry.swatch ? (
                 <span
-                  className={`menu-swatch${entry.swatch === 'transparent' ? ' is-transparent' : ''}`}
-                  style={entry.swatch !== 'transparent' ? { backgroundColor: entry.swatch } : undefined}
+                  className={`menu-swatch${entry.swatch === "transparent" ? " is-transparent" : ""}`}
+                  style={
+                    entry.swatch !== "transparent"
+                      ? { backgroundColor: entry.swatch }
+                      : undefined
+                  }
                   aria-hidden="true"
                 />
               ) : (
@@ -166,7 +186,9 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
             </span>
             <span className="menu-label">{entry.label}</span>
             {entry.checked && <span className="menu-check">✓</span>}
-            {entry.shortcut && <kbd className="menu-shortcut">{entry.shortcut}</kbd>}
+            {entry.shortcut && (
+              <kbd className="menu-shortcut">{entry.shortcut}</kbd>
+            )}
           </button>
         );
       })}

@@ -34,6 +34,7 @@ const PAGE_KEYS = new Set([
   'createdAt',
   'updatedAt',
   'trashedAt',
+  'archivedAt',
   'favorite',
   'dailyDate',
   'lastOpenedAt',
@@ -187,6 +188,12 @@ export function validateRowClipboardPayload(value: unknown): Result<RowClipboard
       return fail('Clipboard data contains an invalid row.');
     if (!hasOnlyKeys(entry.page, [...PAGE_KEYS]))
       return fail('Clipboard data contains unsupported row fields.');
+    if (
+      Object.prototype.hasOwnProperty.call(entry.page, 'archivedAt') &&
+      entry.page.archivedAt !== null &&
+      (typeof entry.page.archivedAt !== 'number' || !Number.isFinite(entry.page.archivedAt))
+    )
+      return fail('Clipboard data contains an invalid archivedAt timestamp.');
     if (
       !isRecord(entry.page.properties) ||
       Object.entries(entry.page.properties).some(([key, item]) => !validId(key) || !isPropertyValue(item))

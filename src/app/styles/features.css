@@ -157,6 +157,13 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
+.prose .callout.no-icon {
+  grid-template-columns: minmax(0, 1fr);
+  padding-left: 16px;
+}
+.callout-icon[hidden] {
+  display: none;
+}
 .callout-icon:hover {
   background: var(--hover);
 }
@@ -2774,7 +2781,8 @@ td:hover .prop-empty,
   outline: none;
   cursor: text;
 }
-.canvas-page {
+/* the card's text only, the card itself carries the same class and keeps its edges and handles */
+.canvas-node > .canvas-page {
   padding: 12px 14px;
   /* the page runs on for as far as the card is stretched, and fades out where the card ends */
   mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
@@ -3009,7 +3017,10 @@ td:hover .prop-empty,
 }
 .outline-fold {
   position: absolute;
-  top: 5px;
+  /* centred on its row whatever the row's height, the arrow turns in place */
+  top: 0;
+  bottom: 0;
+  margin-block: auto;
   left: calc((var(--level) - 1) * 12px + 4px);
   display: grid;
   place-items: center;
@@ -3382,9 +3393,6 @@ td:hover .prop-empty,
 [data-desktop] .app.has-assistant .tab-bar {
   padding-right: 8px;
 }
-.assistant-header svg:first-child {
-  color: var(--accent);
-}
 .assistant-model {
   min-width: 0;
   overflow: hidden;
@@ -3406,6 +3414,10 @@ td:hover .prop-empty,
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+/* every message keeps its own height, the list scrolls instead of squeezing earlier ones as it grows */
+.assistant-messages > * {
+  flex-shrink: 0;
 }
 .assistant-empty {
   margin: auto 0;
@@ -3493,7 +3505,8 @@ td:hover .prop-empty,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  overflow: hidden;
+  /* clipped to its corners but never scrolled, so apply and decline always sit under the change */
+  overflow: clip;
 }
 .assistant-change.is-waiting {
   border-color: var(--accent);
@@ -3510,8 +3523,9 @@ td:hover .prop-empty,
   color: var(--accent);
   flex: none;
 }
-.assistant-diff {
-  max-height: 260px;
+/* the change scrolls inside its own box, short enough that its buttons stay in view */
+.diff.assistant-diff {
+  max-height: min(260px, 40vh);
   border-width: 1px 0;
   border-radius: 0;
   font-size: 12px;

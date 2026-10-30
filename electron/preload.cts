@@ -68,6 +68,9 @@ contextBridge.exposeInMainWorld('morrow', {
     writeGrid: (text: string, envelopeJson: string) =>
       ipcRenderer.invoke('morrow:clipboard-write-grid', text, envelopeJson),
   },
+  copyRich: (text: string, html: string) => ipcRenderer.invoke('morrow:copy-rich', text, html),
+  setSpellcheck: (enabled: boolean) => ipcRenderer.send('morrow:spellcheck', enabled),
+  fetchImage: (url: string) => ipcRenderer.invoke('morrow:fetch-image', url),
   sync: {
     status: () => ipcRenderer.invoke('sync:status'),
     enable: (enabled: boolean) => ipcRenderer.invoke('sync:enable', enabled),

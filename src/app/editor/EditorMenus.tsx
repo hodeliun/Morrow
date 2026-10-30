@@ -1,6 +1,7 @@
 import type { Editor } from '@tiptap/core';
 import { findParentNode } from '@tiptap/core';
 import { Fragment } from '@tiptap/pm/model';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
 import { useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
@@ -24,6 +25,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FolderOpen,
   Heading1,
   Heading2,
@@ -44,6 +47,7 @@ import {
   Pencil,
   Pilcrow,
   Quote,
+  Smile,
   Strikethrough,
   Trash2,
   Type,
@@ -71,7 +75,11 @@ import {
   unwrapDetailsToParagraph,
   wrapBlockInDetails,
 } from './CollapsibleHeading';
-import { toast } from '../ui';
+import { clearBlockSelection, selectedBlocks } from './BlockSelect';
+import type { BlockRange } from './BlockSelect';
+import { turnListItem } from './turnInto';
+import type { TurnTarget } from './turnInto';
+import { openDialog, toast } from '../ui';
 import { colorLabel } from '../i18n/labels';
 
 function ToolButton({
@@ -173,7 +181,8 @@ function LinkInput({ editor, onDone }: { editor: Editor; onDone: () => void }) {
 // bubble menu props must keep their identity, new objects make tiptap dispatch and rerender in a loop
 const showFormatting: BubbleMenuProps['shouldShow'] = ({ editor, state, from, to }) => {
   if (!editor.isEditable || from === to || state.selection instanceof NodeSelection) return false;
-  return !editor.isActive('codeBlock');
+  // whole blocks picked in the margin have the block menu instead
+  return !editor.isActive('codeBlock') && !selectedBlocks(state);
 };
 const showLink: BubbleMenuProps['shouldShow'] = ({ editor, from, to }) =>
   from === to && editor.isActive('link');
@@ -544,6 +553,17 @@ export function LinkMenu({ editor }: { editor: Editor }) {
               {href.replace(/^https?:\/\//, '').replace(/^#\/page\/.*/, t('editor.morrowPage'))}
             </button>
             <ToolButton label={t('editor.openLink')} icon={ExternalLink} onClick={() => openHref(href)} />
+            <ToolButton
+              label={t('editor.copyLink')}
+              icon={Copy}
+              onClick={() =>
+                void copyText(href).then((copied) =>
+                  copied
+                    ? toast(t('editor.linkCopied'), { durationMs: 2000 })
+                    : toast(t('editor.couldNotCopy'), { tone: 'error' }),
+                )
+              }
+            />
             <ToolButton label={t('editor.editLink')} icon={Pencil} onClick={() => setEditing(true)} />
             <ToolButton
               label={t('editor.removeLink')}
@@ -613,6 +633,14 @@ export function TableMenu({ editor }: { editor: Editor }) {
           onClick={() => editor.chain().focus().toggleHeaderRow().run()}
         >
           {t('editor.headerRow')}
+        </button>
+        <button
+          type="button"
+          className="text-tool"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
+        >
+          {t('editor.headerColumn')}
         </button>
         <button
           type="button"
@@ -756,16 +784,12 @@ function CustomBlockBackgroundRow({
 }
 
 function setBlockBackground(editor: Editor, pos: number, color: ColorValue | null): void {
+  if (!editor.isEditable) return;
   const node = editor.state.doc.nodeAt(pos);
   if (!node) return;
   const tr = editor.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, blockBackground: color });
   editor.view.dispatch(tr.scrollIntoView());
 }
-
-type TurnTarget =
-  | { kind: 'paragraph' }
-  | { kind: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6 }
-  | { kind: 'bulletList' | 'orderedList' | 'taskList' | 'blockquote' | 'codeBlock' | 'toggle' };
 
 // blocks the handle menu can turn into something else, including collapsible inline tables
 const TURNABLE = new Set(['listItem', 'taskItem', 'blockquote', 'details', 'table', 'linkedDatabaseView']);
@@ -790,13 +814,108 @@ function firstTextPosition(editor: Editor, pos: number): number | null {
   return found;
 }
 
+function turnListItemSafely(editor: Editor, pos: number, target: TurnTarget): boolean {
+  const item = editor.state.doc.nodeAt(pos);
+  if (!item || !['listItem', 'taskItem'].includes(item.type.name)) return false;
+  const line = item.firstChild;
+  if (!line?.isTextblock) return turnListItem(editor, pos, target);
+
+  const rawId = line.attrs.blockId;
+  const blockId =
+    typeof rawId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(rawId) ? rawId : null;
+  const itemBackground = validBlockBackground(item.attrs.blockBackground);
+  const lineBackground = validBlockBackground(line.attrs.blockBackground);
+  const blockBackground = lineBackground ?? itemBackground;
+  // These targets have no Markdown representation for a block id, so keep the source item intact.
+  if (blockId && (target.kind === 'heading' || target.kind === 'codeBlock')) return true;
+  if (
+    itemBackground &&
+    lineBackground &&
+    itemBackground !== lineBackground &&
+    target.kind !== 'toggle' &&
+    target.kind !== 'blockquote' &&
+    !['bulletList', 'orderedList', 'taskList'].includes(target.kind)
+  )
+    return true;
+  if (!turnListItem(editor, pos, target)) return false;
+
+  const { $from } = editor.state.selection;
+  const tr = editor.state.tr;
+  if (['bulletList', 'orderedList', 'taskList'].includes(target.kind)) {
+    if (itemBackground) {
+      for (let depth = $from.depth; depth > 0; depth--) {
+        if (['listItem', 'taskItem'].includes($from.node(depth).type.name)) {
+          const itemPos = $from.before(depth);
+          const convertedItem = tr.doc.nodeAt(itemPos);
+          if (convertedItem)
+            tr.setNodeMarkup(itemPos, undefined, {
+              ...convertedItem.attrs,
+              blockBackground: itemBackground,
+            });
+          break;
+        }
+      }
+    }
+    if (tr.docChanged) editor.view.dispatch(tr);
+    return true;
+  }
+  if (target.kind === 'toggle') {
+    let detailsPos: number | null = null;
+    let summaryPos: number | null = null;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      if ($from.node(depth).type.name === 'details') {
+        detailsPos = $from.before(depth);
+        summaryPos = detailsPos + 1;
+        break;
+      }
+    }
+    const details = detailsPos === null ? null : tr.doc.nodeAt(detailsPos);
+    const summary = summaryPos === null ? null : tr.doc.nodeAt(summaryPos);
+    if (details && (blockId || itemBackground) && detailsPos !== null) {
+      tr.setNodeMarkup(detailsPos, undefined, {
+        ...details.attrs,
+        ...(blockId ? { blockId } : {}),
+        ...(itemBackground ? { blockBackground: itemBackground } : {}),
+      });
+    }
+    if (summary && lineBackground && summaryPos !== null) {
+      tr.setNodeMarkup(summaryPos, undefined, { ...summary.attrs, blockBackground: lineBackground });
+    }
+  } else {
+    const node = $from.parent;
+    const nodePos = $from.before();
+    const targetBackground = target.kind === 'blockquote' ? lineBackground : blockBackground;
+    if (node && (targetBackground || (blockId && 'blockId' in node.attrs))) {
+      tr.setNodeMarkup(nodePos, undefined, {
+        ...node.attrs,
+        ...(targetBackground ? { blockBackground: targetBackground } : {}),
+        ...(blockId && 'blockId' in node.attrs ? { blockId } : {}),
+      });
+    }
+    if (target.kind === 'blockquote' && itemBackground) {
+      for (let depth = $from.depth; depth > 0; depth--) {
+        if ($from.node(depth).type.name === 'blockquote') {
+          const quotePos = $from.before(depth);
+          const quote = tr.doc.nodeAt(quotePos);
+          if (quote)
+            tr.setNodeMarkup(quotePos, undefined, { ...quote.attrs, blockBackground: itemBackground });
+          break;
+        }
+      }
+    }
+  }
+  if (tr.docChanged) editor.view.dispatch(tr);
+  return true;
+}
+
 // turns one block into another the way notion does: the block is first taken out of its list or quote, so a
 // single list item changes on its own and a line inside a toggle stays in the toggle
 function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
+  if (!editor.isEditable) return;
   const node = editor.state.doc.nodeAt(pos);
   if (!node) return;
+  if (turnListItemSafely(editor, pos, target)) return;
   if (target.kind === 'toggle') {
-    if (!editor.isEditable) return;
     if (node.type.name === 'heading') {
       const tr = editor.state.tr;
       if (setHeadingCollapsible(tr, pos, true)) editor.view.dispatch(tr.scrollIntoView());
@@ -815,6 +934,18 @@ function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
       }
       return;
     }
+    if (node.type.name === 'linkedDatabaseView') {
+      const view = node.attrs.view;
+      if (!view || typeof view !== 'object') return;
+      const collapseEnabled = (view as { collapseEnabled?: boolean }).collapseEnabled !== false;
+      editor.view.dispatch(
+        editor.state.tr.setNodeMarkup(pos, undefined, {
+          ...node.attrs,
+          view: withLinkedViewCollapseEnabled(view, !collapseEnabled),
+        }),
+      );
+      return;
+    }
     if (node.type.name === 'details') return;
     const at = firstTextPosition(editor, pos);
     if (at === null) return;
@@ -824,8 +955,12 @@ function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
     const placeholder = editor.state.schema.nodes.paragraph?.create();
     if (!placeholder) return;
     const tr = editor.state.tr;
-    const summaryAttrs =
-      line.attrs.blockBackground !== undefined ? { blockBackground: line.attrs.blockBackground } : {};
+    const summaryAttrs = {
+      ...(validBlockBackground(line.attrs.blockBackground)
+        ? { blockBackground: validBlockBackground(line.attrs.blockBackground) }
+        : {}),
+      ...(target.level ? { level: target.level } : {}),
+    };
     if (wrapBlockInDetails(tr, start, line.content, Fragment.from(placeholder), summaryAttrs)) {
       tr.setSelection(TextSelection.create(tr.doc, start + 2 + line.content.size));
       editor.view.dispatch(tr.scrollIntoView());
@@ -833,7 +968,6 @@ function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
     return;
   }
   if (node.type.name === 'details' && target.kind === 'paragraph') {
-    if (!editor.isEditable) return;
     const tr = editor.state.tr;
     if (unwrapDetailsToParagraph(tr, pos)) {
       tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(pos + 1, tr.doc.content.size))));
@@ -885,6 +1019,42 @@ function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
   }
 }
 
+// several blocks picked in the margin turn one by one from the last, so the ones before keep their place.
+// a list stands for its items, each of them turns the way one item on its own would
+function turnBlocks(editor: Editor, range: BlockRange, target: TurnTarget): void {
+  const positions: Array<{ node: ProseMirrorNode; pos: number }> = [];
+  editor.state.doc.forEach((node, pos) => {
+    if (pos < range.from || pos + node.nodeSize > range.to) return;
+    if (['bulletList', 'orderedList', 'taskList'].includes(node.type.name)) {
+      node.forEach((item, offset) => {
+        if (item.type.name === 'listItem' || item.type.name === 'taskItem')
+          positions.push({ node: item, pos: pos + 1 + offset });
+      });
+      return;
+    }
+    // These blocks contain their own document or data and are not text containers for bulk conversion.
+    if (['table', 'linkedDatabaseView', 'columns'].includes(node.type.name)) {
+      if (target.kind === 'toggle' && node.type.name !== 'columns') positions.push({ node, pos });
+      return;
+    }
+    positions.push({ node, pos });
+  });
+  // lines becoming a list join into one list rather than a list each
+  const list = target.kind === 'bulletList' || target.kind === 'orderedList' || target.kind === 'taskList';
+  for (const { node, pos } of positions.reverse()) {
+    if (isTableToggle(node) && target.kind !== 'paragraph') continue;
+    turnInto(editor, pos, target);
+    if (!list) continue;
+    const { state } = editor;
+    const $at = state.doc.resolve(Math.min(pos, state.doc.content.size));
+    const index = $at.index(0);
+    const here = state.doc.maybeChild(index);
+    const next = state.doc.maybeChild(index + 1);
+    if (here && next && here.type === next.type && here.type.name === target.kind)
+      editor.view.dispatch(state.tr.join($at.posAtIndex(index + 1, 0)));
+  }
+}
+
 export function BlockMenu({
   editor,
   request,
@@ -896,13 +1066,52 @@ export function BlockMenu({
   pageTitle: string;
   onClose: () => void;
 }) {
-  const turn = (target: TurnTarget) => () => turnInto(editor, request.pos, target);
-  const selectedBlock = editor.state.doc.nodeAt(request.pos);
+  const picked = selectedBlocks(editor.state);
+  const pickedRange = picked && request.pos >= picked.from && request.pos < picked.to ? picked : null;
+  let pickedCount = 0;
+  if (pickedRange)
+    editor.state.doc.forEach((node, pos) => {
+      if (pos >= pickedRange.from && pos + node.nodeSize <= pickedRange.to) pickedCount++;
+    });
+  const singlePickedBlock =
+    pickedRange && pickedCount === 1 ? editor.state.doc.nodeAt(pickedRange.from) : null;
+  const singlePickedList =
+    singlePickedBlock && ['bulletList', 'orderedList', 'taskList'].includes(singlePickedBlock.type.name);
+  const multiSelection = Boolean(pickedRange && (pickedCount > 1 || singlePickedList));
+  const range = pickedRange;
+  const selectedBlock = multiSelection ? null : editor.state.doc.nodeAt(request.pos);
   const blockType = selectedBlock?.type.name;
   const selectedView = selectedBlock?.attrs.view as { collapseEnabled?: boolean } | null | undefined;
   const currentBackground = validBlockBackground(selectedBlock?.attrs.blockBackground);
-  const turnIntoEntries: MenuEntry[] =
-    blockType === 'table'
+  const turn = (target: TurnTarget) => () => {
+    if (!editor.isEditable) return;
+    if (multiSelection && range) turnBlocks(editor, range, target);
+    else turnInto(editor, request.pos, target);
+  };
+  const allTurnEntries: MenuEntry[] = [
+    { heading: t('editor.turnInto') },
+    { label: t('slash.items.text.title'), icon: Pilcrow, onSelect: turn({ kind: 'paragraph' }) },
+    ...([Heading1, Heading2, Heading3, Heading4, Heading5, Heading6] as const).map((icon, index) => {
+      const level = (index + 1) as 1 | 2 | 3 | 4 | 5 | 6;
+      return { label: t(`slash.items.h${level}.title`), icon, onSelect: turn({ kind: 'heading', level }) };
+    }),
+    { label: t('slash.items.bullet.title'), icon: List, onSelect: turn({ kind: 'bulletList' }) },
+    { label: t('slash.items.ordered.title'), icon: ListOrdered, onSelect: turn({ kind: 'orderedList' }) },
+    { label: t('slash.items.task.title'), icon: ListChecks, onSelect: turn({ kind: 'taskList' }) },
+    { label: t('slash.items.toggle.title'), icon: ChevronRight, onSelect: turn({ kind: 'toggle' }) },
+    ...([1, 2, 3] as const).map((level) => ({
+      label: t(`slash.items.toggleH${level}.title`),
+      icon: ChevronRight,
+      onSelect: turn({ kind: 'toggle', level }),
+    })),
+    { label: t('slash.items.quote.title'), icon: Quote, onSelect: turn({ kind: 'blockquote' }) },
+    { label: t('slash.items.code.title'), icon: Code2, onSelect: turn({ kind: 'codeBlock' }) },
+    { separator: true },
+  ];
+  const tableToggle = blockType === 'details' && isTableToggle(selectedBlock);
+  const turnIntoEntries: MenuEntry[] = multiSelection
+    ? allTurnEntries
+    : blockType === 'table'
       ? [
           { heading: t('editor.turnInto') },
           {
@@ -939,14 +1148,22 @@ export function BlockMenu({
             },
             { separator: true },
           ]
-        : [
+        : tableToggle
+          ? [
+              { heading: t('editor.turnInto') },
+              {
+                label: t('editor.removeTableCollapse'),
+                icon: ChevronDown,
+                onSelect: turn({ kind: 'paragraph' }),
+              },
+              { separator: true },
+            ]
+          : [
             { heading: t('editor.turnInto') },
             {
               label:
                 blockType === 'details'
-                  ? isTableToggle(selectedBlock)
-                    ? t('editor.removeTableCollapse')
-                    : t('editor.disableCollapsible')
+                  ? t('editor.disableCollapsible')
                   : t('slash.items.text.title'),
               icon: blockType === 'details' ? ChevronDown : Pilcrow,
               onSelect: turn({ kind: 'paragraph' }),
@@ -971,49 +1188,67 @@ export function BlockMenu({
                     onSelect: turn({ kind: 'toggle' }),
                   },
                 ]),
+            ...(blockType === 'heading' || blockType === 'details'
+              ? []
+              : ([1, 2, 3] as const).map((level) => ({
+                  label: t(`slash.items.toggleH${level}.title`),
+                  icon: ChevronRight,
+                  onSelect: turn({ kind: 'toggle', level }),
+                }))),
             { label: t('slash.items.quote.title'), icon: Quote, onSelect: turn({ kind: 'blockquote' }) },
             { label: t('slash.items.code.title'), icon: Code2, onSelect: turn({ kind: 'codeBlock' }) },
             { separator: true },
           ];
-  const entries: MenuEntry[] = [
-    ...turnIntoEntries,
-    { heading: t('editor.blockBackground') },
-    {
-      label: t('editor.noBlockBackground'),
-      swatch: 'transparent',
-      checked: currentBackground === null,
-      onSelect: () => setBlockBackground(editor, request.pos, null),
-    },
-    ...COLORS.map((color) => ({
-      label: t('editor.colourBlockBackground', { colour: colorLabel(color) }),
-      swatch: BACKGROUND_HEX[color],
-      checked: currentBackground === color,
-      onSelect: () => setBlockBackground(editor, request.pos, color),
-    })),
-    {
-      custom: (
-        <CustomBlockBackgroundRow
-          initialColor={currentBackground}
-          onApply={(color) => setBlockBackground(editor, request.pos, color)}
-          onClear={() => setBlockBackground(editor, request.pos, null)}
-          onCancel={onClose}
-        />
-      ),
-    },
-    { separator: true },
-    {
-      label: t('editor.moveUp'),
-      icon: ArrowUp,
-      shortcut: formatShortcut('Alt+Shift+↑'),
-      onSelect: () => moveBlock(editor.state, editor.view.dispatch, -1),
-    },
-    {
-      label: t('editor.moveDown'),
-      icon: ArrowDown,
-      shortcut: formatShortcut('Alt+Shift+↓'),
-      onSelect: () => moveBlock(editor.state, editor.view.dispatch, 1),
-    },
-    ...(linkable(editor, request.pos)
+  const blockBackgroundEntries: MenuEntry[] = multiSelection
+    ? []
+    : [
+        { heading: t('editor.blockBackground') },
+        {
+          label: t('editor.noBlockBackground'),
+          swatch: 'transparent',
+          checked: currentBackground === null,
+          onSelect: () => setBlockBackground(editor, request.pos, null),
+        },
+        ...COLORS.map((color) => ({
+          label: t('editor.colourBlockBackground', { colour: colorLabel(color) }),
+          swatch: BACKGROUND_HEX[color],
+          checked: currentBackground === color,
+          onSelect: () => setBlockBackground(editor, request.pos, color),
+        })),
+        {
+          custom: (
+            <CustomBlockBackgroundRow
+              initialColor={currentBackground}
+              onApply={(color) => setBlockBackground(editor, request.pos, color)}
+              onClear={() => setBlockBackground(editor, request.pos, null)}
+              onCancel={onClose}
+            />
+          ),
+        },
+      ];
+  const moveEntries: MenuEntry[] = multiSelection
+    ? []
+    : [
+        { separator: true as const },
+        {
+          label: t('editor.moveUp'),
+          icon: ArrowUp,
+          shortcut: formatShortcut('Alt+Shift+↑'),
+          onSelect: () => {
+            if (editor.isEditable) moveBlock(editor.state, editor.view.dispatch, -1);
+          },
+        },
+        {
+          label: t('editor.moveDown'),
+          icon: ArrowDown,
+          shortcut: formatShortcut('Alt+Shift+↓'),
+          onSelect: () => {
+            if (editor.isEditable) moveBlock(editor.state, editor.view.dispatch, 1);
+          },
+        },
+      ];
+  const blockLinkEntries: MenuEntry[] =
+    !multiSelection && linkable(editor, request.pos)
       ? [
           {
             label: t('editor.copyLinkToBlock'),
@@ -1021,11 +1256,23 @@ export function BlockMenu({
             onSelect: () => copyBlockLink(editor, request.pos, pageTitle),
           },
         ]
-      : []),
+      : [];
+  const entries: MenuEntry[] = [
+    ...turnIntoEntries,
+    ...blockBackgroundEntries,
+    ...moveEntries,
+    ...blockLinkEntries,
     {
       label: t('editor.duplicate'),
       icon: Copy,
       onSelect: () => {
+        if (!editor.isEditable) return;
+        if (range) {
+          const blocks = editor.state.doc.slice(range.from, range.to).content;
+          editor.view.dispatch(editor.state.tr.insert(range.to, blocks));
+          clearBlockSelection(editor);
+          return;
+        }
         const node = editor.state.doc.nodeAt(request.pos);
         if (node)
           editor
@@ -1040,6 +1287,11 @@ export function BlockMenu({
       icon: Trash2,
       danger: true,
       onSelect: () => {
+        if (!editor.isEditable) return;
+        if (range) {
+          editor.chain().focus().deleteRange(range).run();
+          return;
+        }
         const node = editor.state.doc.nodeAt(request.pos);
         if (node)
           editor
@@ -1050,7 +1302,7 @@ export function BlockMenu({
       },
     },
   ];
-  const fileId = editor.state.doc.nodeAt(request.pos)?.attrs.fileId as string | null | undefined;
+  const fileId = selectedBlock?.attrs.fileId as string | null | undefined;
   const vault = desktop?.vault;
   if (blockType === 'heading') {
     const isCollapsible = Boolean(selectedBlock?.attrs.collapsible);
@@ -1226,12 +1478,30 @@ export function BlockMenu({
       },
     });
     const callout = editor.state.doc.nodeAt(request.pos);
+    const setIcon = (icon: string | null) =>
+      editor.chain().focus().setNodeSelection(request.pos).updateAttributes('callout', { icon }).run();
+    const hidden = callout?.attrs.icon === 'none';
     entries.unshift(
       { heading: t('editor.callout') },
       tone('note', t('editor.note')),
       tone('tip', t('editor.tip')),
       tone('warning', t('editor.warning')),
       tone('danger', t('editor.danger')),
+      { separator: true },
+      {
+        label: t('editor.changeIcon'),
+        icon: Smile,
+        onSelect: () =>
+          openDialog({
+            kind: 'emoji',
+            title: t('editor.calloutIcon'),
+            current: hidden ? null : ((callout?.attrs.icon as string | null) ?? null),
+            onPick: (icon) => setIcon(icon ?? 'none'),
+          }),
+      },
+      hidden
+        ? { label: t('editor.showIcon'), icon: Eye, onSelect: () => setIcon(null) }
+        : { label: t('editor.removeIcon'), icon: EyeOff, onSelect: () => setIcon('none') },
       ...(callout?.attrs.title
         ? []
         : [
@@ -1262,7 +1532,7 @@ export function BlockMenu({
       break;
     }
   }
-  if (selectedBlock?.type.name === 'columns') {
+  if (!multiSelection && selectedBlock?.type.name === 'columns') {
     insideColumns = true;
   }
 
@@ -1292,7 +1562,7 @@ export function BlockMenu({
         },
       },
     );
-  } else if ($pos.depth === 0 && blockType !== 'columns') {
+  } else if (!multiSelection && $pos.depth === 0 && blockType !== 'columns') {
     entries.push(
       { separator: true },
       {
@@ -1305,7 +1575,7 @@ export function BlockMenu({
     );
   }
 
-  const textual = turnable(editor, request.pos);
+  const textual = multiSelection || turnable(editor, request.pos);
   const firstTurnInto = entries.findIndex(
     (entry) => 'heading' in entry && entry.heading === t('editor.turnInto'),
   );

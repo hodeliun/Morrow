@@ -43,7 +43,7 @@ export function Popover({
         middleware: [
           offset(6),
           flip({ padding: 8 }),
-          shift({ padding: 8 }),
+          shift({ padding: 8, crossAxis: true }),
           size({
             padding: 8,
             apply({ availableHeight, availableWidth, elements }) {

@@ -39,6 +39,7 @@ export const en = {
     resizeHelp: 'Use the arrow keys to resize. Press Escape to cancel or Home to reset.',
   },
   sidebar: {
+    daily: 'Daily notes',
     sidebar: 'Sidebar',
     morrowHome: 'Morrow home',
     main: 'Main',
@@ -49,6 +50,7 @@ export const en = {
     graph: 'Graph',
     review: 'Review',
     trash: 'Trash',
+    archive: 'Archive',
     page: 'Page',
     database: 'Database',
     canvas: 'Canvas',
@@ -154,6 +156,7 @@ export const en = {
     saving: 'Saving…',
     saved: 'Saved',
     saveFailed: 'Could not save',
+    created: 'Created {time}',
     edited: 'Edited {time}',
   },
   home: {
@@ -211,11 +214,20 @@ export const en = {
       yourNamePlaceholder: 'Optional',
       whenOpens: 'When Morrow opens',
       whenOpensHelp: "{shortcutDaily} opens today's note, {shortcutCapture} jots into it from any app.",
+      spellcheck: 'Check spelling',
+      spellcheckHelp: 'Underlines words the spellchecker does not know as you type.',
       startPages: {
         today: "Today's note",
         home: 'Home',
         last: 'Where I left off',
       },
+    },
+    sidebar: {
+      title: 'Sidebar',
+      show: 'Show {name}',
+      peek: 'Show when pointing at the left edge',
+      peekHelp:
+        'With the sidebar hidden, it slides in while the pointer rests at the left edge of the window.',
     },
     appearance: {
       theme: 'Theme',
@@ -408,6 +420,7 @@ export const en = {
     changeIcon: 'Change icon',
     addIcon: 'Add icon',
     pageHistory: 'Page history',
+    studyFlashcards: 'Study flashcards',
     removeFromFavorites: 'Remove from favourites',
     addToFavorites: 'Add to favourites',
     duplicate: 'Duplicate',
@@ -428,6 +441,8 @@ export const en = {
     publishWebsite: 'Publish as a website',
     importMarkdownHere: 'Import Markdown here',
     moveToTrash: 'Move to trash',
+    archive: 'Archive',
+    unarchive: 'Unarchive',
     infoHeading: '{words} words · created {time}',
   },
   tabs: {
@@ -437,6 +452,8 @@ export const en = {
     openTabsAria: 'Open tabs',
     newTab: 'New tab',
     newTabTitle: 'New tab ({shortcut})',
+    pinTab: 'Pin tab',
+    unpinTab: 'Unpin tab',
     duplicateTab: 'Duplicate tab',
     openSplit: 'Open beside, in a split',
     closeTab: 'Close tab',
@@ -517,6 +534,7 @@ export const en = {
     searchPlaceholder: 'Search pages or commands…',
     noResults: 'No matching pages or commands',
     searchEverywhere: 'Search every page for “{query}”',
+    createNamed: 'Create a page called “{query}”',
     paletteAria: 'Search and commands',
     footer: {
       toMove: 'to move',
@@ -640,6 +658,8 @@ export const en = {
     linkedFromSingular: 'Linked from 1 page',
     linkedFromPlural: 'Linked from {count} pages',
     pageInTrash: 'This page is in the trash.',
+    pageArchived: 'This page is archived. It stays out of the sidebar but can still be found and linked.',
+    unarchive: 'Unarchive',
     canvasInTrash: 'This canvas is in the trash.',
     restore: 'Restore',
     deleteForever: 'Delete forever',
@@ -694,7 +714,10 @@ export const en = {
     invalidHexColor: 'Enter a valid six-digit hex colour, such as #2f80ed.',
     morrowPage: 'Morrow page',
     danger: 'Danger',
-    clickToChange: '{tone}, click to change',
+    changeIcon: 'Change icon',
+    removeIcon: 'Remove icon',
+    showIcon: 'Show icon',
+    calloutIcon: 'Callout icon',
     openNoteFor: 'Open the note for {date}',
     blockLinkCopied: 'Copied a link to this block.',
     couldNotCopy: 'Could not copy.',
@@ -726,6 +749,8 @@ export const en = {
     highlight: 'Highlight',
     colour: 'Colour',
     link: 'Link',
+    copyLink: 'Copy link',
+    linkCopied: 'Link copied.',
     openLink: 'Open link',
     editLink: 'Edit link',
     removeLink: 'Remove link',
@@ -742,6 +767,7 @@ export const en = {
     deleteRow: 'Delete row',
     deleteColumn: 'Delete column',
     headerRow: 'Header row',
+    headerColumn: 'Header column',
     deleteTable: 'Delete table',
     turnInto: 'Turn into',
     formattingAria: 'Formatting',
@@ -868,6 +894,21 @@ export const en = {
         title: 'Toggle',
         description: 'Content that folds away',
         keywords: 'details collapse fold accordion',
+      },
+      toggleH1: {
+        title: 'Toggle heading 1',
+        description: 'A heading that folds its section away',
+        keywords: 'toggle heading collapse section h1',
+      },
+      toggleH2: {
+        title: 'Toggle heading 2',
+        description: 'A heading that folds its section away',
+        keywords: 'toggle heading collapse section h2',
+      },
+      toggleH3: {
+        title: 'Toggle heading 3',
+        description: 'A heading that folds its section away',
+        keywords: 'toggle heading collapse section h3',
       },
       image: {
         title: 'Image',
@@ -1014,6 +1055,13 @@ export const en = {
     restore: 'Restore',
     deleteForever: 'Delete forever',
   },
+  archive: {
+    title: 'Archive',
+    subtitle:
+      'Pages you are done with but want to keep. They stay out of the sidebar and still show up in search and links.',
+    emptyMessage: 'Nothing is archived. Archive a page from its page menu.',
+    archivedAt: 'Archived {time}',
+  },
   tags: {
     title: 'Tags',
     subtitle:
@@ -1027,6 +1075,7 @@ export const en = {
     tagPlaceholder: 'tag',
   },
   review: {
+    deckCardsOne: '{count} card',
     allDoneOne: 'All done, {count} card reviewed',
     cardsDueTomorrowOne: '{count} card due tomorrow',
     cardsDueDayOne: '{count} card due {day}',
@@ -1050,6 +1099,9 @@ export const en = {
     cardsDueDay: '{count} cards due {day}',
     newCardsHelp: 'New cards show up here as soon as you write them.',
     openCardPage: 'Open the page this card is on',
+    deck: 'Cards from',
+    allPages: 'All pages',
+    deckCards: '{count} cards',
     showAnswer: 'Show answer',
     gradesAria: 'How well did you remember it?',
     grades: {
@@ -1117,10 +1169,12 @@ export const en = {
       '{count} pages were changed on both computers. Both versions are kept, look for “conflict” in the name.',
     syncConflictsOne:
       '{count} page was changed on both computers. Both versions are kept, look for “conflict” in the name.',
+    textCopied: 'Text copied to clipboard.',
     imageCopied: 'Image copied.',
     couldNotCopyTheImage: 'Could not copy the image.',
     syncFailed: 'Sync with {name} failed: {error}',
     movedToTrash: 'Moved “{title}” to the trash',
+    archived: 'Archived “{title}”',
     restoredPage: 'Restored “{title}”',
     open: 'Open',
     savedAsTemplate: 'Saved “{title}” as a template.',

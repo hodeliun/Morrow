@@ -298,7 +298,9 @@ export function docToHtml(doc: DocNode, context: RenderContext): string {
       }
       case 'details': {
         const [summary, content] = node.content ?? [];
-        return `<details><summary>${inline(summary?.content, context)}</summary>${(content?.content ?? []).map(block).join('\n')}</details>`;
+        const level = Number(summary?.attrs?.level);
+        const title = inline(summary?.content, context);
+        return `<details><summary>${level >= 1 && level <= 3 ? `<h${level}>${title}</h${level}>` : title}</summary>${(content?.content ?? []).map(block).join('\n')}</details>`;
       }
       case 'codeBlock': {
         const language =
@@ -397,7 +399,7 @@ main{max-width:760px;width:100%;margin:0 auto;padding:56px 32px}h1{font-size:2.2
 .page-link{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}.page-link.missing{color:var(--muted);background:none;text-decoration-style:dotted}
 code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--code);border-radius:5px}code{padding:.1em .3em}pre{padding:14px 16px;overflow:auto}pre code{padding:0;background:none}
 blockquote{margin:0;padding-left:16px;border-left:3px solid var(--line);color:var(--muted)}mark{background:rgba(214,160,40,.3);color:inherit}
-.callout{padding:10px 16px;margin:1em 0;border-left:3px solid #4f7aa8;background:rgba(79,122,168,.09);border-radius:6px}.tone-tip{border-color:#4d8a5c;background:rgba(77,138,92,.1)}.tone-warning{border-color:#b7791f;background:rgba(183,121,31,.11)}.tone-danger{border-color:#b3261e;background:rgba(179,38,30,.08)}.callout-title{font-weight:600;margin:0}
+.callout{padding:10px 16px;margin:1em 0;border-left:3px solid #4f7aa8;background:rgba(79,122,168,.09);border-radius:6px}.tone-tip{border-color:#4d8a5c;background:rgba(77,138,92,.1)}.tone-warning{border-color:#b7791f;background:rgba(183,121,31,.11)}.tone-danger{border-color:#b3261e;background:rgba(179,38,30,.08)}.callout-title{font-weight:600;margin:0}summary>h1,summary>h2,summary>h3{display:inline}
 .table{overflow:auto}table{border-collapse:collapse;font:15px/1.5 system-ui,sans-serif}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left}th{color:var(--muted);font-weight:500}
 ul.tasks{list-style:none;padding-left:4px}img{max-width:100%;border-radius:6px}figure{margin:1em 0}.math-block{overflow:auto;text-align:center}
 .columns{display:grid;grid-template-columns:var(--column-widths,repeat(var(--columns),minmax(160px,1fr)));gap:28px}.column{min-width:0}

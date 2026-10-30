@@ -13,13 +13,13 @@ import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
 import { Sidebar } from './components/Sidebar';
 import { HomeView } from './components/Home';
-import { TasksView, TrashView } from './components/Views';
-import { commitEditors, undoRedo } from './editor/commits';
+import { ArchiveView, TasksView, TrashView } from './components/Views';
+import { commitEditors, ownsUndo, undoRedo } from './editor/commits';
 import { ensureToday, writeAutoBackup } from './operations';
 import { startAutoSync, syncWith } from './sync';
 import { startUpdateChecks } from './updates';
 import { desktop, isMac, watchTitleBar } from './platform/desktop';
-import { getPreferences, resolvedTheme, usePreferences } from './platform/preferences';
+import { applySpellcheck, getPreferences, resolvedTheme, usePreferences } from './platform/preferences';
 import { navigate, parseRoute, routeHash, useActiveRoute } from './router';
 import type { Route } from './router';
 import { getUi, setUi, toast, useUi } from './ui';
@@ -30,7 +30,7 @@ import {
   cancelPaneResizeSession,
   claimNavigation,
   commitPaneResizeSession,
-  goBack,
+  initialLaunchHash,
   paneIdForTabId,
   PaneContext,
   PaneTabContext,
@@ -42,7 +42,9 @@ import {
 } from './tabs';
 import type { PaneId } from './tabs';
 import type { PaneNode, PaneSplit } from './paneLayout';
-import { getSession } from './workspace';
+import { flushPlaces } from './readingPlace';
+import { clearPropertyHistory, getSession } from './workspace';
+import { startupDestination } from './startupNavigation';
 
 const AUTO_BACKUP_MS = 10 * 60 * 1000;
 // Keep previously displayed route trees mounted while their tab instances remain open.
@@ -99,6 +101,14 @@ function useGlobalShortcuts() {
         setUi({ focusMode: false });
         return;
       }
+      if (!ownsUndo(event.target)) {
+        const redo = matchesShortcut(event, 'Mod+Shift+Z') || matchesShortcut(event, 'Mod+Y');
+        if (redo || matchesShortcut(event, 'Mod+Z')) {
+          event.preventDefault();
+          undoRedo(redo ? 'redo' : 'undo');
+          return;
+        }
+      }
       // ctrl or cmd and a number picks a tab, nine is always the last one
       const digit = /^Digit([1-9])$/.exec(event.code);
       if (digit && (isMac ? event.metaKey : event.ctrlKey) && !event.altKey && !event.shiftKey) {
@@ -125,6 +135,29 @@ function useGlobalShortcuts() {
   }, []);
 }
 
+// copying text says so at the bottom of the window, the way copying a picture does. a copy that put
+// nothing on the clipboard says nothing
+function useCopyToast() {
+  useEffect(() => {
+    const onCopy = (event: ClipboardEvent) => {
+      const data = event.clipboardData;
+      const field = document.activeElement;
+      const copied = event.defaultPrevented
+        ? Boolean(data && data.types.length > 0)
+        : field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement
+          ? field.selectionStart !== field.selectionEnd
+          : Boolean(document.getSelection()?.toString());
+      if (!copied) return;
+      // one toast however fast it is pressed again
+      const message = t('toasts.textCopied');
+      if (getUi().toasts.some((entry) => entry.message === message)) return;
+      toast(message, { durationMs: 2000 });
+    };
+    document.addEventListener('copy', onCopy);
+    return () => document.removeEventListener('copy', onCopy);
+  }, []);
+}
+
 // pending edits are written before the window goes away
 function useLifecycle() {
   useEffect(() => {
@@ -146,6 +179,7 @@ function useLifecycle() {
     const unsubscribe = desktop?.onCommand(async (id) => {
       if (id === 'app.prepareToClose') {
         commitEditors();
+        flushPlaces();
         await session.flush();
         await writeAutoBackup();
         return;
@@ -201,12 +235,14 @@ function viewFor(route: Route) {
       return <TasksView />;
     case 'trash':
       return <TrashView />;
+    case 'archive':
+      return <ArchiveView />;
     case 'tags':
       return <TagsView />;
     case 'tag':
       return <TagView tag={route.tag} />;
     case 'review':
-      return <ReviewView />;
+      return <ReviewView key={route.deck ?? ''} deck={route.deck ?? null} />;
     case 'graph':
       return <GraphView key={route.focus ?? 'all'} focus={route.focus} />;
     case 'search':
@@ -447,18 +483,43 @@ function SplitResizer({ split, rect }: SplitGeometry) {
 }
 
 // the first view after opening, once per window
+// the peeking sidebar goes once the pointer moves well clear of it, but not while one of its menus is open
+function useSidebarPeek(peeking: boolean) {
+  useEffect(() => {
+    if (!peeking) return;
+    const onMove = (event: PointerEvent) => {
+      const sidebar = document.querySelector('.sidebar');
+      if (!sidebar || document.querySelector('.floating-layer')) return;
+      if (event.clientX > sidebar.getBoundingClientRect().right + 24) setUi({ sidebarPeek: false });
+    };
+    const onLeave = () => {
+      if (!document.querySelector('.floating-layer')) setUi({ sidebarPeek: false });
+    };
+    window.addEventListener('pointermove', onMove);
+    document.documentElement.addEventListener('pointerleave', onLeave);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      document.documentElement.removeEventListener('pointerleave', onLeave);
+    };
+  }, [peeking]);
+}
+
 let started = false;
 function useStartPage() {
   useEffect(() => {
     if (started) return;
     started = true;
-    // a window opened at a particular place, or a brand new vault showing its guide, stays as it is
-    if ((window.location.hash && window.location.hash !== '#/') || getSession().firstRun) return;
-    const start = getPreferences().startPage;
-    if (start === 'last') goBack();
-    else if (start === 'today') {
+    const { startPage: start, hiddenModules } = getPreferences();
+    const destination = startupDestination({
+      launchHash: initialLaunchHash(),
+      firstRun: getSession().firstRun,
+      preference: start,
+      dailyEnabled: !hiddenModules.includes('daily'),
+    });
+    if (destination === 'home') navigate({ name: 'home' });
+    else if (destination === 'today') {
       const id = ensureToday();
-      if (id) navigate({ name: 'page', id, find: null }, { replace: true });
+      if (id) navigate({ name: 'page', id, find: null });
     }
   }, []);
 }
@@ -503,13 +564,18 @@ export function App() {
     document.documentElement.dataset.colorful = prefs.colorful ? 'true' : 'false';
   }, [prefs.accent, prefs.colorful]);
   useGlobalShortcuts();
+  useCopyToast();
+  useEffect(() => applySpellcheck(prefs.spellcheck), [prefs.spellcheck]);
   useEffect(() => startTabs(), []);
   useStartPage();
   useLifecycle();
 
   useEffect(() => {
-    setUi({ mobileSidebar: false });
+    setUi({ mobileSidebar: false, sidebarPeek: false });
+    // undoing a property change on a page no longer in view would happen out of sight
+    clearPropertyHistory();
   }, [route]);
+  useSidebarPeek(!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek);
 
   const visibleByTabId = new Map<string, VisiblePaneGeometry & { paneNumber: number }>();
   geometry.panes.forEach((pane, index) => {
@@ -554,9 +620,16 @@ export function App() {
 
   return (
     <div
-      className={`app${prefs.sidebarOpen ? '' : ' sidebar-collapsed'}${prefs.assistant && prefs.assistantOpen ? ' has-assistant' : ''}${ui.mobileSidebar ? ' mobile-sidebar-open' : ''}${ui.focusMode ? ' focus-mode' : ''}`}
+      className={`app${prefs.sidebarOpen ? '' : ' sidebar-collapsed'}${!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek ? ' sidebar-peeking' : ''}${prefs.assistant && prefs.assistantOpen ? ' has-assistant' : ''}${ui.mobileSidebar ? ' mobile-sidebar-open' : ''}${ui.focusMode ? ' focus-mode' : ''}`}
     >
       <Sidebar />
+      {!prefs.sidebarOpen && prefs.sidebarPeek && (
+        <div
+          className="sidebar-edge"
+          aria-hidden="true"
+          onPointerEnter={() => setUi({ sidebarPeek: true })}
+        />
+      )}
       <div className="scrim" aria-hidden="true" onClick={() => setUi({ mobileSidebar: false })} />
       <main className="main">
         <TabBar />

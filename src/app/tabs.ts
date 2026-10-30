@@ -63,6 +63,7 @@ const EMPTY_HASH = '#/';
 const listeners = new Set<() => void>();
 let counter = 0;
 let state: TabState | null = null;
+let launchHash = EMPTY_HASH;
 let arriving: string | null = null;
 let lastNavigation = 0;
 
@@ -185,6 +186,7 @@ function initialState(hash: string, persistenceWritable: boolean): TabState {
 
 function load(): TabState {
   const here = readCurrentHash();
+  launchHash = here;
   let raw: string | null;
   try {
     raw = localStorage.getItem(KEY);
@@ -195,25 +197,18 @@ function load(): TabState {
   const snapshot = readPaneTabsSnapshot(raw);
   if (snapshot.kind === 'empty') return initialState(here, true);
   if (snapshot.kind === 'current') {
-    const restored = stateFromLayout(snapshot.snapshot.layout, snapshot.snapshot.closed, true);
-    const focused = tabForLeaf(restored.layout, restored.pane);
-    if (focused) replaceBrowserHash(focused.target);
+    const restored = reconcileLaunchRoute(snapshot.snapshot.layout, snapshot.snapshot.closed, here);
+    if (here !== EMPTY_HASH) persistPaneTabsSnapshot(localStorage, restored.layout, restored.closed, true);
     return restored;
   }
   if (snapshot.kind === 'legacy') {
     const layout = migrateLegacySplit(LAYOUT_ID, snapshot.snapshot, getPreferences().splitShare);
-    const activeMainId = snapshot.snapshot.active;
-    const main = layout.tabs.find((tab) => tab.id === activeMainId);
-    const reconciled =
-      main && main.target !== here ? replaceTab(layout, main.id, visit(main, here, false)) : layout;
-    const migrated = stateFromLayout(reconciled, snapshot.snapshot.closed, true);
+    const migrated = reconcileLaunchRoute(layout, snapshot.snapshot.closed, here);
     try {
       persistPaneTabsSnapshot(localStorage, migrated.layout, migrated.closed, true);
     } catch {
       // Keep the validated in-memory migration; the legacy payload remains available if storage fails.
     }
-    const focused = tabForLeaf(migrated.layout, migrated.pane);
-    if (focused) replaceBrowserHash(focused.target);
     return migrated;
   }
 
@@ -222,6 +217,34 @@ function load(): TabState {
 }
 
 const current = (): TabState => (state ??= load());
+
+function reconcileLaunchRoute(layout: PaneLayoutState, closed: readonly string[], here: string): TabState {
+  let focused = tabForLeaf(layout, layout.focusedPaneId);
+  if (here !== EMPTY_HASH) {
+    if (!focused) {
+      const canCreate =
+        layout.tabs.length < MAX_PANE_TAB_INSTANCES &&
+        new Set(layout.tabs.map((tab) => tab.groupId)).size < MAX_TAB_GROUPS;
+      focused = canCreate
+        ? emptyTab(newTabId(tabIdSet(layout)), here)
+        : (availablePaneTabs(layout)[0] ?? null);
+      if (focused) {
+        if (!layout.tabs.some((tab) => tab.id === focused!.id))
+          layout = { ...layout, tabs: [...layout.tabs, focused] };
+        layout = movePaneTab(layout, focused.id, layout.focusedPaneId);
+      }
+    }
+    if (focused) layout = replaceTab(layout, focused.id, visit(focused, here, false));
+    return stateFromLayout(layout, closed, true);
+  }
+  if (focused) replaceBrowserHash(focused.target);
+  return stateFromLayout(layout, closed, true);
+}
+
+export function initialLaunchHash(): string {
+  current();
+  return launchHash;
+}
 
 function makeStateWithLayout(
   now: TabState,
@@ -285,7 +308,7 @@ function insertAfterActive(tabs: readonly PaneTab[], activeId: string, tab: Pane
   const next = [...tabs];
   const index = next.findIndex((item) => item.id === activeId);
   next.splice(index < 0 ? next.length : index + 1, 0, tab);
-  return next;
+  return pinnedFirst(next);
 }
 
 function mirrorFocusedTarget(next: TabState, replace = false): void {
@@ -539,11 +562,28 @@ function closedWith(now: TabState, tabs: readonly Pick<PaneTab, 'target'>[]): st
   return [...now.closed, ...tabs.map((tab) => tab.target)].slice(-MAX_CLOSED);
 }
 
+// pinned tabs come first, in the order they were pinned
+function pinnedFirst(tabs: readonly PaneTab[]): PaneTab[] {
+  return [...tabs.filter((tab) => tab.pinned), ...tabs.filter((tab) => !tab.pinned)];
+}
+
+export function setTabPinned(id: string, pinned: boolean): void {
+  const now = current();
+  const previous = now.layout.tabs.find((tab) => tab.id === id);
+  if (!previous) return;
+  const { pinned: _was, ...rest } = previous;
+  const moved: PaneTab = pinned ? { ...rest, pinned: true } : rest;
+  const others = now.layout.tabs.filter((tab) => tab.id !== id);
+  const at = others.filter((tab) => tab.pinned).length;
+  others.splice(at, 0, moved);
+  writeState(makeStateWithLayout(now, { ...now.layout, tabs: pinnedFirst(others) }));
+}
+
 export function closeTab(id = current().active): void {
   const now = current();
   if (now.tabs.length <= 1) return;
   const index = now.tabs.findIndex((tab) => tab.id === id);
-  if (index < 0) return;
+  if (index < 0 || now.tabs[index]!.pinned) return;
   const removed = now.tabs[index]!;
   const layout = removePaneTabs(now.layout, new Set([id]));
   const isFocused = getTabForPane(now.pane, now)?.id === id || now.active === id;
@@ -558,7 +598,7 @@ export function closeOtherTabs(id = current().active): void {
   const now = current();
   const keep = now.tabs.find((tab) => tab.id === id);
   if (!keep) return;
-  const removed = now.tabs.filter((tab) => tab.id !== id);
+  const removed = now.tabs.filter((tab) => tab.id !== id && !tab.pinned);
   if (removed.length === 0) return;
   removed.forEach((tab) => forgetTabScrollPositions(tab.id));
   let layout = removePaneTabs(now.layout, new Set(removed.map((tab) => tab.id)));
@@ -573,7 +613,7 @@ export function closeTabsToRight(id = current().active): void {
   const now = current();
   const index = now.tabs.findIndex((tab) => tab.id === id);
   if (index < 0) return;
-  const removed = now.tabs.slice(index + 1);
+  const removed = now.tabs.slice(index + 1).filter((tab) => !tab.pinned);
   if (removed.length === 0) return;
   removed.forEach((tab) => forgetTabScrollPositions(tab.id));
   let layout = removePaneTabs(now.layout, new Set(removed.map((tab) => tab.id)));
@@ -620,7 +660,7 @@ export function moveTab(id: string, to: number): void {
   if (!tab) return;
   const tabs = now.layout.tabs.filter((item) => item.id !== id);
   tabs.splice(Math.max(0, Math.min(tabs.length, to)), 0, tab);
-  writeState(makeStateWithLayout(now, { ...now.layout, tabs }));
+  writeState(makeStateWithLayout(now, { ...now.layout, tabs: pinnedFirst(tabs) }));
 }
 
 export function beginPaneResize(splitId: string): PaneResizeSession | null {

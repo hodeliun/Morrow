@@ -41,6 +41,7 @@ export const pt: TranslationSchema = {
     resizeHelp: 'Use as setas para redimensionar. Pressione Escape para cancelar ou Home para redefinir.',
   },
   sidebar: {
+    daily: 'Notas diárias',
     sidebar: 'Barra lateral',
     morrowHome: 'Início do Morrow',
     main: 'Principal',
@@ -51,6 +52,7 @@ export const pt: TranslationSchema = {
     graph: 'Gráfico',
     review: 'Revisão',
     trash: 'Lixeira',
+    archive: 'Arquivo',
     page: 'Página',
     database: 'Banco de dados',
     canvas: 'Quadro',
@@ -157,6 +159,7 @@ export const pt: TranslationSchema = {
     saving: 'Salvando…',
     saved: 'Salvo',
     saveFailed: 'Não foi possível salvar',
+    created: 'Criado {time}',
     edited: 'Editado {time}',
   },
   home: {
@@ -215,11 +218,20 @@ export const pt: TranslationSchema = {
       whenOpens: 'Ao abrir o Morrow',
       whenOpensHelp:
         '{shortcutDaily} abre a nota de hoje, {shortcutCapture} anota nela de qualquer aplicativo.',
+      spellcheck: 'Verificar ortografia',
+      spellcheckHelp: 'Sublinha as palavras que o corretor não conhece enquanto você escreve.',
       startPages: {
         today: 'Nota de hoje',
         home: 'Início',
         last: 'Onde parei',
       },
+    },
+    sidebar: {
+      title: 'Barra lateral',
+      show: 'Mostrar {name}',
+      peek: 'Mostrar ao apontar para a borda esquerda',
+      peekHelp:
+        'Com a barra lateral oculta, ela aparece enquanto o ponteiro está na borda esquerda da janela.',
     },
     appearance: {
       theme: 'Tema',
@@ -412,6 +424,7 @@ export const pt: TranslationSchema = {
     changeIcon: 'Alterar ícone',
     addIcon: 'Adicionar ícone',
     pageHistory: 'Histórico da página',
+    studyFlashcards: 'Estudar cartões',
     removeFromFavorites: 'Remover dos favoritos',
     addToFavorites: 'Adicionar aos favoritos',
     duplicate: 'Duplicar',
@@ -432,6 +445,8 @@ export const pt: TranslationSchema = {
     publishWebsite: 'Publicar como site',
     importMarkdownHere: 'Importar Markdown aqui',
     moveToTrash: 'Mover para a lixeira',
+    archive: 'Arquivar',
+    unarchive: 'Desarquivar',
     infoHeading: '{words} palavras · criada {time}',
   },
   tabs: {
@@ -441,6 +456,8 @@ export const pt: TranslationSchema = {
     openTabsAria: 'Abas abertas',
     newTab: 'Nova aba',
     newTabTitle: 'Nova aba ({shortcut})',
+    pinTab: 'Fixar aba',
+    unpinTab: 'Desafixar aba',
     duplicateTab: 'Duplicar aba',
     openSplit: 'Abrir ao lado, em divisão',
     closeTab: 'Fechar aba',
@@ -523,6 +540,7 @@ export const pt: TranslationSchema = {
     searchPlaceholder: 'Buscar páginas o comandos…',
     noResults: 'Nenhuma página ou comando encontrado',
     searchEverywhere: 'Buscar “{query}” em todas as páginas',
+    createNamed: 'Criar uma página chamada “{query}”',
     paletteAria: 'Busca e comandos',
     footer: {
       toMove: 'para mover',
@@ -646,6 +664,9 @@ export const pt: TranslationSchema = {
     linkedFromSingular: 'Vinculado a partir de 1 página',
     linkedFromPlural: 'Vinculado a partir de {count} páginas',
     pageInTrash: 'Esta página está na lixeira.',
+    pageArchived:
+      'Esta página está arquivada. Ela não aparece na barra lateral, mas ainda pode ser buscada e vinculada.',
+    unarchive: 'Desarquivar',
     canvasInTrash: 'Este quadro está na lixeira.',
     restore: 'Restaurar',
     deleteForever: 'Excluir definitivamente',
@@ -700,7 +721,10 @@ export const pt: TranslationSchema = {
     invalidHexColor: 'Informe uma cor hexadecimal válida com seis dígitos, como #2f80ed.',
     morrowPage: 'Página do Morrow',
     danger: 'Perigo',
-    clickToChange: '{tone}, clique para mudar',
+    changeIcon: 'Mudar ícone',
+    removeIcon: 'Remover ícone',
+    showIcon: 'Mostrar ícone',
+    calloutIcon: 'Ícone do destaque',
     openNoteFor: 'Abrir a nota de {date}',
     blockLinkCopied: 'Um link para este bloco foi copiado.',
     couldNotCopy: 'Não foi possível copiar.',
@@ -732,6 +756,8 @@ export const pt: TranslationSchema = {
     highlight: 'Destaque',
     colour: 'Cor',
     link: 'Link',
+    copyLink: 'Copiar link',
+    linkCopied: 'Link copiado.',
     openLink: 'Abrir link',
     editLink: 'Editar link',
     removeLink: 'Remover link',
@@ -748,6 +774,7 @@ export const pt: TranslationSchema = {
     deleteRow: 'Excluir linha',
     deleteColumn: 'Excluir coluna',
     headerRow: 'Linha de cabeçalho',
+    headerColumn: 'Coluna de cabeçalho',
     deleteTable: 'Excluir tabela',
     turnInto: 'Transformar em',
     formattingAria: 'Formatação',
@@ -874,6 +901,21 @@ export const pt: TranslationSchema = {
         title: 'Alternador',
         description: 'Conteúdo recolhível',
         keywords: 'alternador detalhes recolher dobrar acordeao toggle',
+      },
+      toggleH1: {
+        title: 'Título recolhível 1',
+        description: 'Um título que recolhe a sua seção',
+        keywords: 'recolhível título recolher seção h1',
+      },
+      toggleH2: {
+        title: 'Título recolhível 2',
+        description: 'Um título que recolhe a sua seção',
+        keywords: 'recolhível título recolher seção h2',
+      },
+      toggleH3: {
+        title: 'Título recolhível 3',
+        description: 'Um título que recolhe a sua seção',
+        keywords: 'recolhível título recolher seção h3',
       },
       image: {
         title: 'Imagem',
@@ -1021,6 +1063,13 @@ export const pt: TranslationSchema = {
     restore: 'Restaurar',
     deleteForever: 'Excluir definitivamente',
   },
+  archive: {
+    title: 'Arquivo',
+    subtitle:
+      'Páginas que você terminou mas quer guardar. Elas ficam fora da barra lateral e continuam aparecendo na busca e nos links.',
+    emptyMessage: 'Nada arquivado. Arquive uma página pelo menu da página.',
+    archivedAt: 'Arquivada {time}',
+  },
   tags: {
     title: 'Tags',
     subtitle:
@@ -1034,6 +1083,7 @@ export const pt: TranslationSchema = {
     tagPlaceholder: 'tag',
   },
   review: {
+    deckCardsOne: '{count} cartão',
     allDoneOne: 'Tudo pronto! {count} cartão revisado',
     cardsDueTomorrowOne: '{count} cartão para amanhã',
     cardsDueDayOne: '{count} cartão para {day}',
@@ -1058,6 +1108,9 @@ export const pt: TranslationSchema = {
     cardsDueDay: '{count} cartões para {day}',
     newCardsHelp: 'Novos cartões aparecerão aqui assim que você os escrever.',
     openCardPage: 'Abrir a página deste cartão',
+    deck: 'Cartões de',
+    allPages: 'Todas as páginas',
+    deckCards: '{count} cartões',
     showAnswer: 'Mostrar resposta',
     gradesAria: 'O quanto você se lembrou?',
     grades: {
@@ -1125,10 +1178,12 @@ export const pt: TranslationSchema = {
       '{count} páginas mudaram nos dois computadores. As duas versões foram mantidas; procure “conflict” no nome.',
     syncConflictsOne:
       '{count} página mudou nos dois computadores. As duas versões foram mantidas; procure “conflict” no nome.',
+    textCopied: 'Texto copiado para a área de transferência.',
     imageCopied: 'Imagem copiada.',
     couldNotCopyTheImage: 'Não foi possível copiar a imagem.',
     syncFailed: 'A sincronização com {name} falhou: {error}',
     movedToTrash: '“{title}” foi movida para a lixeira',
+    archived: '“{title}” foi arquivada',
     restoredPage: '“{title}” foi restaurada',
     open: 'Abrir',
     savedAsTemplate: '“{title}” salva como modelo.',

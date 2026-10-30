@@ -38,7 +38,7 @@ import { getSession, useSaveStatus, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
 import { dateLocale, useTranslation } from '../i18n';
 import type { MenuEntry } from './Menu';
-import { relativeTime } from './primitives';
+import { exactTime, relativeTime } from './primitives';
 
 export function SidebarToggle() {
   const { t } = useTranslation();
@@ -252,7 +252,15 @@ export function TopBar({
         {isPrimaryPane && <SaveIndicator editing={editing ?? false} />}
         {page && (
           <>
-            <span className="topbar-meta">{t('topBar.edited', { time: relativeTime(page.updatedAt) })}</span>
+            <span
+              className="topbar-meta"
+              title={[
+                t('topBar.edited', { time: exactTime(page.updatedAt) }),
+                t('topBar.created', { time: exactTime(page.createdAt) }),
+              ].join('\n')}
+            >
+              {t('topBar.edited', { time: relativeTime(page.updatedAt) })}
+            </span>
             <button
               type="button"
               className={`icon-button${page.favorite ? ' is-favorite' : ''}`}

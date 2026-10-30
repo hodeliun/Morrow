@@ -228,6 +228,13 @@
   margin: 0;
 }
 
+/* a list or a toggle keeps the same room from the text around it as any other block. inside a list item
+   a nested list stays snug under its line */
+:is(.prose, .prose :not(li, li > div)) > p + :is(ul, ol, .toggle),
+:is(.prose, .prose :not(li, li > div)) > :is(ul, ol, .toggle) + p {
+  margin-top: 0.55em;
+}
+
 .prose li + li {
   margin-top: 0.2em;
 }
@@ -309,6 +316,14 @@
   font-weight: 600;
 }
 
+/* a header column stays in view while a wide table scrolls sideways, drawn over the cells it passes */
+.prose tr:not(:first-child) > th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: linear-gradient(var(--hover), var(--hover)), var(--bg);
+}
+
 .prose td > * + *,
 .prose th > * + * {
   margin-top: 0.4em;
@@ -320,6 +335,17 @@
   inset: 0;
   background: var(--selection);
   pointer-events: none;
+}
+
+/* whole blocks picked by dragging in the margin */
+.prose .is-block-selected {
+  background: var(--selection);
+  border-radius: 4px;
+}
+
+.prose .is-block-selected ::selection,
+.prose .is-block-selected::selection {
+  background: transparent;
 }
 
 .prose .ProseMirror-selectednode {
@@ -555,6 +581,11 @@
   color: var(--text-muted);
 }
 
+.suggestion-icon .emoji-img {
+  width: 18px;
+  height: 18px;
+}
+
 .suggestion-item[aria-selected='true'] .suggestion-icon {
   color: var(--accent);
   border-color: var(--accent-line);
@@ -781,6 +812,31 @@
   display: block;
   list-style: none;
   font-weight: 600;
+}
+
+/* toggle headings, sized like the headings they stand for, with the arrow centred on the larger line */
+.prose .toggle summary[data-level] {
+  font-weight: 650;
+  line-height: 1.28;
+  letter-spacing: -0.012em;
+}
+.prose .toggle summary[data-level='1'] {
+  font-size: 1.72em;
+}
+.prose .toggle summary[data-level='2'] {
+  font-size: 1.36em;
+}
+.prose .toggle summary[data-level='3'] {
+  font-size: 1.13em;
+}
+.prose .toggle:has(> div > summary[data-level='1']) > button {
+  height: 2.2em;
+}
+.prose .toggle:has(> div > summary[data-level='2']) > button {
+  height: 1.74em;
+}
+.prose .toggle:has(> div > summary[data-level]) {
+  margin-top: 1em;
 }
 
 .prose .toggle summary::-webkit-details-marker {
