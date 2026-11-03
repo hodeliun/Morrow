@@ -43,6 +43,22 @@ export interface TableActionJournal {
   error?: string;
 }
 
+// The session-only history keeps the same typed action data as the recovery journal. It is not
+// persisted as a stack; the journal is written only while one history step is in flight.
+export type TableActionHistoryEntry = Pick<
+  TableActionJournal,
+  'id' | 'databaseId' | 'rowId' | 'propertyId' | 'label' | 'createdAt' | 'records' | 'commands'
+>;
+
+export type TableActionHistoryStepResult =
+  | { status: 'applied'; message: string; journal: TableActionJournal }
+  | {
+      status: 'pending' | 'conflict' | 'failed' | 'unavailable';
+      message: string;
+      journal?: TableActionJournal;
+    }
+  | { status: 'blocked'; reason: 'permission'; message: string; journal?: TableActionJournal };
+
 export type TableActionRunResult =
   | { status: 'saved'; message: string; journal: TableActionJournal }
   | { status: 'pending'; message: string; journal: TableActionJournal }
@@ -51,13 +67,19 @@ export type TableActionRunResult =
 export type TableActionRecoveryResult =
   | { status: 'none' }
   | { status: 'complete' | 'aborted' | 'undone'; journal: TableActionJournal; message: string }
-  | { status: 'pending' | 'conflict' | 'failed'; journal: TableActionJournal; message: string };
+  | { status: 'pending' | 'conflict' | 'failed' | 'blocked'; journal: TableActionJournal; message: string };
 
 const activeJournalLocks = new Set<string | WorkspaceSession>();
 
 export async function readTableActionJournal(session: WorkspaceSession): Promise<TableActionJournal | null> {
   const text = await session.readMeta(TABLE_ACTION_JOURNAL_META);
   return text ? parseJournalText(text) : null;
+}
+
+export async function restoreTableActionHistory(session: WorkspaceSession): Promise<void> {
+  const journal = await readTableActionJournal(session);
+  if (journal?.status === 'complete') session.restoreDataHistoryEntry(journal, 'undo');
+  else if (journal?.status === 'undone') session.restoreDataHistoryEntry(journal, 'redo');
 }
 
 export async function executeTableAction(
@@ -123,7 +145,16 @@ export async function executeTableAction(
         journal,
       };
     }
-    const applied = session.executeAll(plan.commands);
+    const tracked = session.executeAllWithDataHistory(plan.commands, {
+      id: journal.id,
+      databaseId: journal.databaseId,
+      rowId: journal.rowId,
+      propertyId: journal.propertyId,
+      label: journal.label,
+      pendingRecovery: true,
+      records: journal.records,
+    });
+    const applied = tracked.result;
     if (!applied.ok) {
       journal.status = 'aborted';
       journal.error = applied.error;
@@ -139,8 +170,10 @@ export async function executeTableAction(
     journal.status = 'complete';
     try {
       await saveJournal(session, journal);
+      if (tracked.historyEntryId) session.finishDataHistoryEntry(tracked.historyEntryId, 'ready');
       return { status: 'saved', message: 'Action saved.', journal };
     } catch (error) {
+      if (tracked.historyEntryId) session.finishDataHistoryEntry(tracked.historyEntryId, 'pending');
       return {
         status: 'pending',
         message: `The rows were saved, but the journal could not be updated: ${errorMessage(error)}`,
@@ -152,7 +185,303 @@ export async function executeTableAction(
   }
 }
 
-export async function recoverTableAction(session: WorkspaceSession): Promise<TableActionRecoveryResult> {
+// Applies a selected in-memory row action through the existing bounded recovery journal. The
+// expected state is checked as a whole before the first inverse/redo command is applied.
+export async function stepTableActionHistory(
+  session: WorkspaceSession,
+  entry: TableActionHistoryEntry,
+  direction: 'undo' | 'redo',
+  now = Date.now(),
+  canEditNow?: () => boolean,
+): Promise<TableActionHistoryStepResult> {
+  if (!isAllowedNow(canEditNow))
+    return { status: 'blocked', reason: 'permission', message: 'Editing is no longer allowed.' };
+  const lock = journalLockKey(session);
+  if (activeJournalLocks.has(lock)) return { status: 'pending', message: 'Another table action is still saving.' };
+  activeJournalLocks.add(lock);
+  try {
+    let observedJournalText = await session.readMeta(TABLE_ACTION_JOURNAL_META);
+    let existing = observedJournalText ? parseJournalText(observedJournalText) : null;
+    if (observedJournalText && !existing)
+      return { status: 'pending', message: 'The existing recovery journal is unreadable and was preserved.' };
+    if (existing && ['prepared', 'undoing', 'conflict'].includes(existing.status)) {
+      if (!isAllowedNow(canEditNow))
+        return { status: 'blocked', reason: 'permission', message: 'Editing is no longer allowed.' };
+      const recovered = await recoverTableActionUnlocked(session, canEditNow, true);
+      if (recovered.status === 'pending')
+        return { status: 'pending', message: recovered.message, journal: recovered.journal };
+      if (recovered.status === 'conflict')
+        return { status: 'conflict', message: recovered.message, journal: recovered.journal };
+      if (recovered.status === 'failed')
+        return { status: 'failed', message: recovered.message, journal: recovered.journal };
+      if (recovered.status === 'blocked')
+        return {
+          status: 'blocked',
+          reason: 'permission',
+          message: recovered.message,
+          journal: recovered.journal,
+        };
+      if (recovered.status === 'none')
+        return {
+          status: 'failed',
+          message: 'The recovery journal disappeared; no history change was applied.',
+        };
+      if (
+        'journal' in recovered &&
+        recovered.journal.id === entry.id &&
+        ((direction === 'undo' && recovered.status === 'undone') ||
+          (direction === 'redo' && recovered.status === 'complete'))
+      ) {
+        return { status: 'applied', message: recovered.message, journal: recovered.journal };
+      }
+      observedJournalText = await session.readMeta(TABLE_ACTION_JOURNAL_META);
+      existing = observedJournalText ? parseJournalText(observedJournalText) : null;
+      if (observedJournalText && !existing)
+        return { status: 'pending', message: 'The recovery journal changed and was preserved.' };
+    }
+
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', reason: 'permission', message: 'Editing is no longer allowed.' };
+    if (!(await session.flush()))
+      return { status: 'pending', message: 'Save the current changes before changing history.' };
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', reason: 'permission', message: 'Editing is no longer allowed.' };
+
+    const classify = (state: WorkspaceState) =>
+      direction === 'undo'
+        ? classifyRecords(state, entry.records, entry.propertyId === ROW_OPERATION_PROPERTY_ID)
+        : classifyUndoRecords(state, entry.records, entry.propertyId === ROW_OPERATION_PROPERTY_ID);
+    const beforeWrite = classify(session.getState());
+    const expectedCount = direction === 'undo' ? beforeWrite.after : beforeWrite.before;
+    const conflicts = [
+      ...beforeWrite.conflicts,
+      ...beforeWrite.partialDocIds,
+      ...(expectedCount === entry.records.length ? [] : entry.records
+        .filter((record) => !beforeWrite.conflicts.includes(record.id))
+        .map((record) => record.id)),
+    ];
+    if (conflicts.length) {
+      return { status: 'conflict', message: conflictMessage([...new Set(conflicts)]) };
+    }
+
+    const commands = direction === 'undo'
+      ? buildHistoryUndoCommands(session.getState(), entry, now)
+      : entry.commands;
+    if (!commands || commands.length === 0)
+      return { status: 'unavailable', message: 'This change cannot be reversed safely.' };
+    const journal = historyJournal(entry, direction === 'undo' ? 'undoing' : 'prepared', commands, []);
+    if (!normalizeJournal(journal))
+      return { status: 'unavailable', message: 'This change exceeds the safe recovery limit.' };
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', reason: 'permission', message: 'Editing is no longer allowed.' };
+    const journalBeforeWrite = await session.readMeta(TABLE_ACTION_JOURNAL_META);
+    if (journalBeforeWrite !== observedJournalText)
+      return { status: 'pending', message: 'The recovery journal changed and was preserved.' };
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', reason: 'permission', message: 'Editing is no longer allowed.' };
+    try {
+      await saveJournal(session, journal);
+    } catch (error) {
+      return { status: 'failed', message: `The recovery journal could not be saved: ${errorMessage(error)}` };
+    }
+    const persistedHistoryJournal = JSON.stringify(journal);
+    if ((await session.readMeta(TABLE_ACTION_JOURNAL_META)) !== persistedHistoryJournal)
+      return { status: 'pending', message: 'The recovery journal changed and was preserved.' };
+    if (!isAllowedNow(canEditNow)) {
+      const aborted = await abortOwnedHistoryJournal(session, persistedHistoryJournal, journal);
+      if (aborted)
+        return {
+          status: 'blocked',
+          reason: 'permission',
+          message: 'Editing is no longer allowed.',
+          journal: { ...journal, status: 'aborted', error: 'Editing permission changed before replay.' },
+        };
+      return { status: 'pending', message: 'The recovery action remains pending.', journal };
+    }
+
+    // Saving the journal is asynchronous, so revalidate immediately before the atomic command batch.
+    const immediatelyBeforeWrite = classify(session.getState());
+    const latestExpectedCount = direction === 'undo' ? immediatelyBeforeWrite.after : immediatelyBeforeWrite.before;
+    if (
+      immediatelyBeforeWrite.conflicts.length > 0 ||
+      immediatelyBeforeWrite.partialDocIds.length > 0 ||
+      latestExpectedCount !== entry.records.length
+    ) {
+      journal.status = 'conflict';
+      journal.conflicts = [...new Set([
+        ...immediatelyBeforeWrite.conflicts,
+        ...immediatelyBeforeWrite.partialDocIds,
+        ...entry.records
+          .filter((record) => !immediatelyBeforeWrite.conflicts.includes(record.id))
+          .map((record) => record.id),
+      ])];
+      journal.error = 'Records changed before the history step began; no inverse was applied.';
+      const recordedConflict = await saveOwnedHistoryJournal(session, persistedHistoryJournal, journal);
+      if (!recordedConflict)
+        return { status: 'pending', message: 'The recovery journal changed and was preserved.', journal };
+      return { status: 'conflict', message: conflictMessage(journal.conflicts), journal };
+    }
+
+    if (!isAllowedNow(canEditNow)) {
+      const aborted = await abortOwnedHistoryJournal(session, persistedHistoryJournal, journal);
+      if (aborted)
+        return {
+          status: 'blocked',
+          reason: 'permission',
+          message: 'Editing is no longer allowed.',
+          journal: { ...journal, status: 'aborted', error: 'Editing permission changed before replay.' },
+        };
+      return { status: 'pending', message: 'The recovery action remains pending.', journal };
+    }
+    const applied = session.executeDataHistoryReplay(commands);
+    if (!applied.ok) {
+      journal.status = 'conflict';
+      journal.error = applied.error;
+      const recordedConflict = await saveOwnedHistoryJournal(session, persistedHistoryJournal, journal);
+      if (!recordedConflict)
+        return { status: 'pending', message: 'The recovery journal changed and was preserved.', journal };
+      return { status: 'failed', message: applied.error, journal };
+    }
+    if (!(await session.flush()))
+      return { status: 'pending', message: 'The history change is waiting for the remaining files to save.', journal };
+
+    const finalCheck = classify(session.getState());
+    const finalExpectedCount = direction === 'undo' ? finalCheck.before : finalCheck.after;
+    if (
+      finalCheck.conflicts.length > 0 ||
+      finalCheck.partialDocIds.length > 0 ||
+      finalExpectedCount !== entry.records.length
+    ) {
+      journal.status = 'conflict';
+      journal.conflicts = [...new Set([...finalCheck.conflicts, ...finalCheck.partialDocIds])];
+      journal.error = 'Records changed while the history step was saving; they were preserved.';
+      const recordedConflict = await saveOwnedHistoryJournal(session, persistedHistoryJournal, journal);
+      if (!recordedConflict)
+        return { status: 'pending', message: 'The recovery journal changed and was preserved.', journal };
+      return { status: 'conflict', message: conflictMessage(journal.conflicts), journal };
+    }
+    journal.status = direction === 'undo' ? 'undone' : 'complete';
+    journal.undoCommands = direction === 'undo' ? commands : undefined;
+    journal.conflicts = [];
+    journal.error = undefined;
+    try {
+      if ((await session.readMeta(TABLE_ACTION_JOURNAL_META)) !== persistedHistoryJournal)
+        return { status: 'pending', message: 'The recovery journal changed and was preserved.', journal };
+      await saveJournal(session, journal);
+    } catch (error) {
+      return { status: 'pending', message: `The history change was saved, but its journal update failed: ${errorMessage(error)}`, journal };
+    }
+    return { status: 'applied', message: direction === 'undo' ? 'Change undone.' : 'Change redone.', journal };
+  } finally {
+    activeJournalLocks.delete(lock);
+  }
+}
+
+function buildHistoryUndoCommands(
+  state: WorkspaceState,
+  entry: TableActionHistoryEntry,
+  now: number,
+): Command[] | null {
+  const ids = new Set(entry.records.map((record) => record.id));
+  const conflicts: PageId[] = [];
+  const commands =
+    entry.propertyId === ROW_OPERATION_PROPERTY_ID
+      ? buildRowOperationUndo(state, entry.records, ids, conflicts, now)
+      : buildUndoCommands(state, entry.records, ids, conflicts, now);
+  return conflicts.length === 0 ? commands : null;
+}
+
+function historyJournal(
+  entry: TableActionHistoryEntry,
+  status: TableActionJournalStatus,
+  commands: Command[],
+  conflicts: PageId[],
+): TableActionJournal {
+  return {
+    format: JOURNAL_FORMAT,
+    version: 1,
+    id: entry.id,
+    status,
+    databaseId: entry.databaseId,
+    rowId: entry.rowId,
+    propertyId: entry.propertyId,
+    label: entry.label,
+    createdAt: entry.createdAt,
+    records: entry.records,
+    commands: entry.commands,
+    ...(status === 'undoing' ? { undoCommands: commands } : {}),
+    conflicts,
+  };
+}
+
+export function isTableActionHistoryEntryJournalable(entry: TableActionHistoryEntry): boolean {
+  const journal = historyJournal(entry, 'prepared', [], []);
+  return JSON.stringify(journal).length <= MAX_JOURNAL_TEXT && normalizeJournal(journal) !== null;
+}
+
+export function tableActionHistoryStateMatches(
+  state: WorkspaceState,
+  entry: TableActionHistoryEntry,
+  direction: 'undo' | 'redo',
+): boolean {
+  const classification =
+    direction === 'undo'
+      ? classifyRecords(state, entry.records, entry.propertyId === ROW_OPERATION_PROPERTY_ID)
+      : classifyUndoRecords(state, entry.records, entry.propertyId === ROW_OPERATION_PROPERTY_ID);
+  const expected = direction === 'undo' ? classification.after : classification.before;
+  return (
+    classification.conflicts.length === 0 &&
+    classification.partialDocIds.length === 0 &&
+    expected === entry.records.length
+  );
+}
+
+function isAllowedNow(canEditNow?: () => boolean): boolean {
+  try {
+    return canEditNow?.() ?? true;
+  } catch {
+    return false;
+  }
+}
+
+async function abortOwnedHistoryJournal(
+  session: WorkspaceSession,
+  expectedText: string,
+  journal: TableActionJournal,
+): Promise<boolean> {
+  try {
+    if ((await session.readMeta(TABLE_ACTION_JOURNAL_META)) !== expectedText) return false;
+    const aborted: TableActionJournal = {
+      ...journal,
+      status: 'aborted',
+      undoCommands: undefined,
+      error: 'Editing permission changed before the history commands were applied.',
+    };
+    await saveJournal(session, aborted);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function saveOwnedHistoryJournal(
+  session: WorkspaceSession,
+  expectedText: string,
+  journal: TableActionJournal,
+): Promise<boolean> {
+  try {
+    if ((await session.readMeta(TABLE_ACTION_JOURNAL_META)) !== expectedText) return false;
+    await saveJournal(session, journal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function recoverTableAction(
+  session: WorkspaceSession,
+  canEditNow?: () => boolean,
+): Promise<TableActionRecoveryResult> {
   const lock = journalLockKey(session);
   if (activeJournalLocks.has(lock)) {
     const journal = await readTableActionJournal(session);
@@ -162,13 +491,20 @@ export async function recoverTableAction(session: WorkspaceSession): Promise<Tab
   }
   activeJournalLocks.add(lock);
   try {
-    return await recoverTableActionUnlocked(session);
+    const result = await recoverTableActionUnlocked(session, canEditNow);
+    if (result.status === 'complete') session.restoreDataHistoryEntry(result.journal, 'undo');
+    else if (result.status === 'undone') session.restoreDataHistoryEntry(result.journal, 'redo');
+    return result;
   } finally {
     activeJournalLocks.delete(lock);
   }
 }
 
-async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<TableActionRecoveryResult> {
+async function recoverTableActionUnlocked(
+  session: WorkspaceSession,
+  canEditNow?: () => boolean,
+  dataHistoryReplay = false,
+): Promise<TableActionRecoveryResult> {
   const journal = await readTableActionJournal(session);
   if (!journal) return { status: 'none' };
   if (journal.status === 'complete')
@@ -177,7 +513,10 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
     return { status: 'undone', journal, message: conflictMessage(journal.conflicts) };
   if (journal.status === 'aborted')
     return { status: 'aborted', journal, message: journal.error ?? 'No action changes were written.' };
-  if (journal.status === 'undoing') return resumeUndo(session, journal);
+  if (journal.status === 'undoing') return resumeUndo(session, journal, canEditNow, dataHistoryReplay);
+
+  if (!isAllowedNow(canEditNow))
+    return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
 
   const current = session.getState();
   const classification = classifyRecords(
@@ -186,6 +525,8 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
     journal.propertyId === ROW_OPERATION_PROPERTY_ID,
   );
   if (classification.conflicts.length) {
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
     journal.status = 'conflict';
     journal.conflicts = classification.conflicts;
     journal.error = 'Some records changed after the partial save. They were preserved.';
@@ -199,11 +540,15 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
         journal,
         message: 'The action is complete in memory, but some files are still unsaved.',
       };
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
     journal.status = 'complete';
     await saveJournal(session, journal);
     return { status: 'complete', journal, message: 'The action was already saved.' };
   }
   if (classification.before === journal.records.length) {
+    if (!isAllowedNow(canEditNow))
+      return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
     journal.status = 'aborted';
     journal.error = 'The action journal was written, but no action records reached disk.';
     await saveJournal(session, journal);
@@ -245,6 +590,8 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
     if (!beforeIds.has(parentId) || !parentRecord?.before?.database || !parentRecord.after?.database)
       continue;
     if (!databaseChangeOnlyAdvancesSequences(parentRecord.before.database, parentRecord.after.database)) {
+      if (!isAllowedNow(canEditNow))
+        return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
       journal.status = 'conflict';
       journal.conflicts = [...new Set([...journal.conflicts, parentId])];
       journal.error = 'A created row changed its table in a way that cannot be recovered safely.';
@@ -258,7 +605,11 @@ async function recoverTableActionUnlocked(session: WorkspaceSession): Promise<Ta
       now: journal.createdAt,
     });
   }
-  const applied = session.executeAll(commands);
+  if (!isAllowedNow(canEditNow))
+    return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
+  const applied = dataHistoryReplay
+    ? session.executeDataHistoryReplay(commands)
+    : session.executeHistoryReplay(commands);
   if (!applied.ok) {
     journal.error = applied.error;
     await trySaveJournal(session, journal);
@@ -334,7 +685,11 @@ function journalLockKey(session: WorkspaceSession): string | WorkspaceSession {
 async function resumeUndo(
   session: WorkspaceSession,
   journal: TableActionJournal,
+  canEditNow?: () => boolean,
+  dataHistoryReplay = false,
 ): Promise<TableActionRecoveryResult> {
+  if (!isAllowedNow(canEditNow))
+    return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
   const current = session.getState();
   const normalizeEmptyRowTitle = journal.propertyId === ROW_OPERATION_PROPERTY_ID;
   const classification = classifyUndoRecords(current, journal.records, normalizeEmptyRowTitle);
@@ -351,7 +706,11 @@ async function resumeUndo(
       typeof command.value === 'string' ? [command.value] : Array.isArray(command.value) ? command.value : [];
     return !conflicts.has(command.id) && !valueIds.some((id) => conflicts.has(id));
   });
-  const applied = session.executeAll(safeCommands);
+  if (!isAllowedNow(canEditNow))
+    return { status: 'blocked', journal, message: 'Editing permission is no longer available.' };
+  const applied = dataHistoryReplay
+    ? session.executeDataHistoryReplay(safeCommands)
+    : session.executeHistoryReplay(safeCommands);
   if (!applied.ok) {
     journal.error = applied.error;
     journal.conflicts = [...conflicts];
@@ -427,6 +786,8 @@ function buildUndoCommands(
     }
     if (!record.after) continue;
     const page = record.after;
+    if (record.before.title !== page.title)
+      commands.push({ type: 'page.rename', id: record.id, title: record.before.title, now });
     const parent = page.parentId ? state.pages[page.parentId] : undefined;
     const props = parent?.database?.properties ?? [];
     const relations = new Map((sourceRelations.get(record.id) ?? []).map((item) => [item.propId, item]));
@@ -506,6 +867,10 @@ function buildRowOperationUndo(
   for (const record of existing) {
     if (record.before!.trashedAt === null && record.after!.trashedAt !== null)
       commands.push({ type: 'page.restore', id: record.id });
+    else if (record.before!.trashedAt !== null && record.after!.trashedAt === null)
+      commands.push({ type: 'page.trash', id: record.id, now });
+    if (record.before!.title !== record.after!.title)
+      commands.push({ type: 'page.rename', id: record.id, title: record.before!.title, now });
   }
   for (const record of moving) {
     commands.push({ type: 'page.setFields', id: record.id, properties: {}, now });
@@ -790,6 +1155,8 @@ function same(left: unknown, right: unknown): boolean {
   return canonical(withoutUpdatedAt(left)) === canonical(withoutUpdatedAt(right));
 }
 
+export { same as sameTableActionValue };
+
 function withoutUpdatedAt(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const { updatedAt: _updatedAt, ...stable } = value as Record<string, unknown>;
@@ -1022,6 +1389,12 @@ function normalizeActionCommand(
       ...(createdDoc ? { doc: createdDoc } : {}),
     };
   }
+  if (command.type === 'page.rename') {
+    const expected = phase === 'action' ? record?.after : record?.before;
+    if (!expected || now === null || typeof command.title !== 'string' || command.title !== expected.title)
+      return null;
+    return { type: 'page.rename', id, title: expected.title, now };
+  }
   if (command.type === 'page.move') {
     const targetParentId = phase === 'undo' ? record?.before?.parentId : record?.after?.parentId;
     if (
@@ -1094,13 +1467,23 @@ function normalizeActionCommand(
     if (
       (phase === 'action' &&
         (!record.before || record.before.trashedAt !== null || record.after.trashedAt === null)) ||
-      (phase === 'undo' && record.before !== null)
+      (phase === 'undo' &&
+        !(
+          record.before === null ||
+          (record.before.trashedAt !== null && record.after.trashedAt === null)
+        ))
     )
       return null;
     return { type: 'page.trash', id, now };
   }
   if (command.type === 'page.restore') {
-    if (phase !== 'undo' || !record?.before || !record.after || record.after.trashedAt === null) return null;
+    if (
+      !record?.before ||
+      !record.after ||
+      (phase === 'action' && !(record.before.trashedAt !== null && record.after.trashedAt === null)) ||
+      (phase === 'undo' && !(record.before.trashedAt === null && record.after.trashedAt !== null))
+    )
+      return null;
     return { type: 'page.restore', id };
   }
   if (command.type === 'page.deleteForever')

@@ -24,10 +24,12 @@ import {
   MoreHorizontal,
   Plus,
   Paintbrush,
+  Redo2,
   Search,
   Settings2,
   Table2,
   Trash2,
+  Undo2,
   X,
 } from 'lucide-react';
 import { computePosition, flip, offset, shift } from '@floating-ui/dom';
@@ -91,7 +93,15 @@ import {
 } from '../../platform/clipboard';
 import { newId } from '../../platform/files';
 import { openPage } from '../../router';
-import { getSession, getState, run, runAll, useWorkspace } from '../../workspace';
+import {
+  getSession,
+  getState,
+  registerDataHistoryEditGuard,
+  run,
+  runAll,
+  useDataHistory,
+  useWorkspace,
+} from '../../workspace';
 import { Menu } from '../Menu';
 import type { MenuEntry } from '../Menu';
 import { Popover } from '../Popover';
@@ -459,6 +469,85 @@ function useViewUpdater(dbId: PageId, viewId: string) {
     linkedUpdate ? linkedUpdate(change) : updateView(dbId, viewId, change);
 }
 
+function DatabaseHistoryControls({
+  dbId,
+  editable,
+  canEditNow,
+}: {
+  dbId: PageId;
+  editable: boolean;
+  canEditNow?: () => boolean;
+}) {
+  const history = useDataHistory(dbId);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const canRun = () => editable && (canEditNow?.() ?? true);
+  const actionLabel = (item: NonNullable<typeof history.undo>) =>
+    item.label === 'database.historyDataChange' ? t('database.historyDataChange') : item.label;
+  const step = async (direction: 'undo' | 'redo') => {
+    if (busy || !canRun()) return;
+    setBusy(true);
+    const result = await getSession().stepDataHistory(dbId, direction, canRun);
+    const nextNotice =
+      result.status === 'applied' || result.status === 'empty'
+        ? null
+        : result.status === 'blocked'
+          ? result.reason === 'related'
+            ? t('database.historyBlocked')
+            : t('database.historyPermissionChanged')
+          : result.status === 'conflict'
+            ? t('database.actionRecoveryConflict')
+            : result.status === 'unavailable'
+            ? t('database.dataHistoryUnavailable')
+            : t('database.actionRecoveryPending');
+    setNotice(nextNotice);
+    setBusy(false);
+  };
+  const undoLabel = history.undo
+    ? `${t('toasts.undo')}: ${actionLabel(history.undo)}`
+    : t('toasts.undo');
+  const redoLabel = history.redo
+    ? `${t('canvas.redo')}: ${actionLabel(history.redo)}`
+    : t('canvas.redo');
+  const historyMessage = (item: typeof history.undo) => {
+    if (!item) return null;
+    if (item.status === 'pending' || item.status === 'busy') return t('database.actionRecoveryPending');
+    if (item.status === 'blocked') return t('database.historyBlocked');
+    if (item.status === 'conflict') return t('database.actionRecoveryConflict');
+    if (item.status === 'unavailable') return t('database.dataHistoryUnavailable');
+    return null;
+  };
+  return (
+    <div className="db-data-history-controls" role="group" aria-label={t('database.dataHistory')}>
+      <button
+        type="button"
+        className="icon-button small"
+        aria-label={undoLabel}
+        title={undoLabel}
+        disabled={!canRun() || busy || !history.undo?.enabled}
+        onClick={() => void step('undo')}
+      >
+        <Undo2 size={14} aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        className="icon-button small"
+        aria-label={redoLabel}
+        title={redoLabel}
+        disabled={!canRun() || busy || !history.redo?.enabled}
+        onClick={() => void step('redo')}
+      >
+        <Redo2 size={14} aria-hidden="true" />
+      </button>
+      {(notice || historyMessage(history.undo) || historyMessage(history.redo)) && (
+        <span className="muted small" role="status" aria-live="polite">
+          {notice ?? historyMessage(history.undo) ?? historyMessage(history.redo)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 type QuickFilterDraft = { rule: FilterRule; enabled: boolean };
 const EMPTY_QUICK_FILTERS: QuickFilterDraft[] = [];
 
@@ -638,6 +727,7 @@ export function DatabaseView({
             requestedFilter={filterRequest}
             requestedFormat={formatRequest}
           />
+          <DatabaseHistoryControls dbId={page.id} editable={canEdit} canEditNow={canEditNow} />
         </div>
         <QuickFilterBar
           database={database}
@@ -3288,6 +3378,8 @@ function RowTitle({
           onCancelEdit={onCancelEdit}
           onDone={onDoneEdit}
           onInvalidDraftChange={onInvalidDraftChange}
+          dataHistoryManaged={Boolean(row.parentId)}
+          historyDatabaseId={gridMode && row.parentId ? row.parentId : undefined}
           onCommit={(title) => run({ type: 'page.rename', id: row.id, title, now: nowTimestamp() })}
         />
       )}
@@ -3542,7 +3634,16 @@ function TableView({
     type: 'text',
     options: [],
   };
-  const canEditImmediately = () => editable && (canEditNow?.() ?? true);
+  const canEditImmediately = useCallback(
+    () => editable && (canEditNow?.() ?? true),
+    [canEditNow, editable],
+  );
+  const historyRootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = historyRootRef.current;
+    if (!root) return;
+    return registerDataHistoryEditGuard(root, canEditImmediately);
+  }, [canEditImmediately]);
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
   const tableColumns = useMemo(() => {
@@ -3789,9 +3890,6 @@ function TableView({
   const [fillDragging, setFillDragging] = useState(false);
   const [fillAnchor, setFillAnchor] = useState<HTMLElement | null>(null);
   const [focusFillActions, setFocusFillActions] = useState(false);
-  const [lastBatchUndo, setLastBatchUndo] = useState<Command[] | null>(null);
-  const [lastBatchRedo, setLastBatchRedo] = useState<Command[] | null>(null);
-  const [lastBatchApplied, setLastBatchApplied] = useState(false);
   const [rowConfirmation, setRowConfirmation] = useState<{ count: number; onConfirm: () => void } | null>(
     null,
   );
@@ -3986,22 +4084,37 @@ function TableView({
       toast(result.error, { tone: 'error' });
       return false;
     }
-    setLastBatchUndo(plan.undoCommands);
-    setLastBatchRedo(plan.redoCommands);
-    setLastBatchApplied(true);
+    const historyEntry = getSession().getDataHistory(dbId).undo;
     toast(t(successKey, { count: plan.affectedCells }), {
-      action: {
-        label: t('toasts.undo'),
-        run: () => {
-          if (!canEditImmediately()) return;
-          const undone = runAll(plan.undoCommands);
-          if (!undone.ok) {
-            toast(undone.error, { tone: 'error' });
-            return;
+      ...(historyEntry
+        ? {
+            action: {
+              label: t('toasts.undo'),
+              run: () => {
+                if (!canEditImmediately()) return;
+                void getSession()
+                  .stepDataHistory(dbId, 'undo', canEditImmediately, historyEntry.id)
+                  .then((result) => {
+                    if (result.status === 'applied' || result.status === 'empty') return;
+                    const message =
+                      result.status === 'blocked'
+                        ? result.reason === 'related'
+                          ? t('database.historyBlocked')
+                          : t('database.historyPermissionChanged')
+                        : result.status === 'conflict'
+                          ? t('database.actionRecoveryConflict')
+                          : result.status === 'unavailable'
+                            ? t('database.dataHistoryUnavailable')
+                            : t('database.actionRecoveryPending');
+                    toast(message, {
+                      tone:
+                        result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info',
+                    });
+                  });
+              },
+            },
           }
-          setLastBatchApplied(false);
-        },
-      },
+        : {}),
     });
     return true;
   };
@@ -4411,24 +4524,10 @@ function TableView({
       !event.altKey &&
       ['z', 'y'].includes(event.key.toLowerCase())
     ) {
-      const isRedo = event.key.toLowerCase() === 'y' || event.shiftKey;
       if (!canEditImmediately()) {
         event.preventDefault();
         toast(t('database.unsupportedSchema'), { tone: 'error' });
         return;
-      }
-      if (isRedo && !lastBatchApplied && lastBatchRedo) {
-        event.preventDefault();
-        const result = runAll(lastBatchRedo);
-        if (result.ok) {
-          setLastBatchApplied(true);
-        } else toast(result.error, { tone: 'error' });
-      } else if (!isRedo && lastBatchApplied && lastBatchUndo) {
-        event.preventDefault();
-        const result = runAll(lastBatchUndo);
-        if (result.ok) {
-          setLastBatchApplied(false);
-        } else toast(result.error, { tone: 'error' });
       }
     } else if (startKey.kind === 'text' && editableColumn) {
       const prop = cellProp;
@@ -5114,7 +5213,10 @@ function TableView({
   };
   return (
     <div
+      ref={historyRootRef}
       className="db-table-view"
+      data-data-history-database={dbId}
+      data-data-history-editable={canEditImmediately() ? 'true' : 'false'}
       onKeyDownCapture={handleRowClipboardShortcut}
       tabIndex={editable && visibleRowIds.length === 0 ? 0 : undefined}
       role={editable && visibleRowIds.length === 0 ? 'group' : undefined}

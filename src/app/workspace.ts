@@ -6,6 +6,7 @@ import type { Result } from '../core/result';
 import type { FileCatalogSnapshot } from '../core/vault/fileCatalog';
 import type { SaveStatus } from '../storage/saveQueue';
 import type { WorkspaceSession } from '../storage/session';
+import type { DataHistorySnapshot } from '../storage/dataHistory';
 import { commandErrorMessage } from './commandMessages';
 import { getLocale } from './i18n';
 import { toast } from './ui';
@@ -13,6 +14,21 @@ import { getPreferences, legacyNoteStyle } from './platform/preferences';
 import { setReadingVaultScope } from './readingPlace';
 
 let session: WorkspaceSession | null = null;
+const dataHistoryEditGuards = new WeakMap<HTMLElement, () => boolean>();
+
+export function registerDataHistoryEditGuard(
+  element: HTMLElement,
+  canEditNow: () => boolean,
+): () => void {
+  dataHistoryEditGuards.set(element, canEditNow);
+  return () => {
+    if (dataHistoryEditGuards.get(element) === canEditNow) dataHistoryEditGuards.delete(element);
+  };
+}
+
+export function dataHistoryEditGuard(element: HTMLElement): (() => boolean) | null {
+  return dataHistoryEditGuards.get(element) ?? null;
+}
 
 export function setSession(next: WorkspaceSession): void {
   if (session !== next) clearPropertyHistory();
@@ -69,10 +85,19 @@ function snapshot(ids: PageId[]): Snapshot {
 
 function propertySnapshots(commands: Command[]): Snapshot | null {
   if (replaying || !session) return null;
+  const includesSchemaChange = commands.some((command) => command.type === 'database.set' || command.type === 'page.setKind');
   const ids = commands
     .filter((command) => PROPERTY_COMMANDS.has(command.type))
     .map((command) => ('id' in command ? command.id : null));
-  return ids.length > 0 ? snapshot([...new Set(ids.filter((id): id is PageId => id !== null))]) : null;
+  const uniqueIds = [...new Set(ids.filter((id): id is PageId => id !== null))];
+  const legacyIds = includesSchemaChange ? uniqueIds : uniqueIds.filter((id) => !isDatabaseRow(id));
+  return legacyIds.length > 0 ? snapshot(legacyIds) : null;
+}
+
+function isDatabaseRow(id: PageId): boolean {
+  const page = getState().pages[id];
+  const parent = page?.parentId ? getState().pages[page.parentId] : undefined;
+  return parent?.kind === 'database' && Boolean(parent.database);
 }
 
 function recordProperties(before: Snapshot): void {
@@ -111,9 +136,10 @@ export function stepProperties(direction: 'undo' | 'redo'): boolean {
   });
   replaying = true;
   try {
-    const result = getSession().executeAll(commands);
+    const result = getSession().executeHistoryReplay(commands);
     if (!result.ok) {
       toast(commandErrorMessage(result, pageTitle, getLocale()), { tone: 'error' });
+      from.push(step);
       return true;
     }
   } finally {
@@ -155,5 +181,14 @@ export function useSaveStatus(): SaveStatus {
   return useSyncExternalStore(
     (listener) => queue.subscribe(listener),
     () => queue.status,
+  );
+}
+
+export function useDataHistory(databaseId: PageId): DataHistorySnapshot {
+  const current = getSession();
+  return useSyncExternalStore(
+    (listener) => current.subscribeDataHistory(databaseId, listener),
+    () => current.getDataHistory(databaseId),
+    () => current.getDataHistory(databaseId),
   );
 }

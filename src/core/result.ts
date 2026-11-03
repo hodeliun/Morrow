@@ -1,9 +1,14 @@
 // explicit success or failure for operations the user should hear about
-export type ResultFailureReason = {
-  kind: 'linkedViewsBlockingTrash';
-  hostPageIds: string[];
-  referenceCount: number;
-};
+export type ResultFailureReason =
+  | {
+      kind: 'linkedViewsBlockingTrash';
+      hostPageIds: string[];
+      referenceCount: number;
+    }
+  | {
+      kind: 'dataHistoryBusy';
+      databaseIds: string[];
+    };
 
 export type ResultFailure = { ok: false; error: string; reason?: ResultFailureReason };
 

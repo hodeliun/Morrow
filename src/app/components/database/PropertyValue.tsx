@@ -11,7 +11,7 @@ import {
   resolveRelationReference,
 } from '../../../core/relations';
 import { openPage } from '../../router';
-import { propertyChangeCount, stepProperties, useWorkspace } from '../../workspace';
+import { getSession, propertyChangeCount, stepProperties, useWorkspace } from '../../workspace';
 import { PageIcon } from '../Sidebar';
 import { reservedPropertyName } from '../../../core/vault/pageFile';
 import { newId } from '../../platform/files';
@@ -552,6 +552,8 @@ export function PropertyInput({
           onCommitAndMove={onCommitAndMove}
           onCancelEdit={onCancelEdit}
           onInvalidDraftChange={onInvalidDraftChange}
+          dataHistoryManaged={true}
+          historyDatabaseId={gridMode ? dbId : undefined}
           validateDraft={(text) => {
             if (!text.trim()) return null;
             const number = parseNumber(text);
@@ -775,6 +777,8 @@ export function PropertyInput({
             onCommitAndMove={onCommitAndMove}
             onCancelEdit={onCancelEdit}
             onInvalidDraftChange={onInvalidDraftChange}
+            dataHistoryManaged={true}
+            historyDatabaseId={gridMode ? dbId : undefined}
             validateDraft={(text) => scalarValueError(prop, text.trim() || null)}
             onCommit={(text) => setValue(row.id, prop.id, text.trim() || null)}
           />
@@ -856,6 +860,8 @@ export function PropertyInput({
           onCommitAndMove={onCommitAndMove}
           onCancelEdit={onCancelEdit}
           onInvalidDraftChange={onInvalidDraftChange}
+          dataHistoryManaged={true}
+          historyDatabaseId={gridMode ? dbId : undefined}
           onCommit={(text) => setValue(row.id, prop.id, text)}
         />
       );
@@ -1027,6 +1033,8 @@ export function DraftInput({
   validateDraft,
   validateInAllModes,
   onInvalidDraftChange,
+  dataHistoryManaged,
+  historyDatabaseId,
 }: {
   type: 'text' | 'number' | 'url';
   inputMode?: InputHTMLAttributes<HTMLInputElement>['inputMode'];
@@ -1050,6 +1058,8 @@ export function DraftInput({
   validateDraft?: (text: string) => string | null;
   validateInAllModes?: boolean;
   onInvalidDraftChange?: (invalid: boolean) => void;
+  dataHistoryManaged?: boolean;
+  historyDatabaseId?: PageId;
 }) {
   const shouldValidateDraft = Boolean(gridMode || validateInAllModes);
   const [draft, setDraft] = useState<string | null>(() => initialDraft ?? null);
@@ -1114,7 +1124,7 @@ export function DraftInput({
         return false;
       }
       // Property edits use the shared workspace history; keep local steps for fields outside it.
-      if (propertyChangeCount() === propertyChanges) {
+      if (!dataHistoryManaged && propertyChangeCount() === propertyChanges) {
         undone.current.push({ before: value, after: attempt.draft });
         redone.current = [];
       }
@@ -1155,7 +1165,26 @@ export function DraftInput({
       setValidationError(null);
       commitFailed.current = false;
       onInvalidDraftChange?.(false);
-      stepProperties(direction);
+      if (historyDatabaseId)
+        void getSession()
+          .stepDataHistory(historyDatabaseId, direction, () => isCellEditableNow(editable, canEditNow))
+          .then((result) => {
+            if (result.status === 'applied' || result.status === 'empty') return;
+            const message =
+              result.status === 'blocked'
+                ? result.reason === 'related'
+                  ? t('database.historyBlocked')
+                  : t('database.historyPermissionChanged')
+                : result.status === 'conflict'
+                  ? t('database.actionRecoveryConflict')
+                  : result.status === 'unavailable'
+                    ? t('database.dataHistoryUnavailable')
+                    : t('database.actionRecoveryPending');
+            toast(message, {
+              tone: result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info',
+            });
+          });
+      else if (!dataHistoryManaged) stepProperties(direction);
       return;
     }
     to.current.push(change);

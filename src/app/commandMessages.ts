@@ -8,6 +8,7 @@ export function commandErrorMessage(
   locale: SupportedLocale,
 ): string {
   const reason = failure.reason;
+  if (reason?.kind === 'dataHistoryBusy') return t('database.dataHistoryBusy', undefined, locale);
   if (reason?.kind !== 'linkedViewsBlockingTrash') return failure.error;
 
   const pageNames = [...new Set(reason.hostPageIds)]

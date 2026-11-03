@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — histórico de dados por banco (fontes, sem novo download)
+
+Base oficial Morrow 1.3.0 e formato persistido 13 mantidos.
+
+- Views da mesma origem compartilham desfazer/refazer de dados, com rótulo do
+  próximo efeito e controles acessíveis; bancos diferentes conservam escopos próprios.
+- Dez ações recentes por banco durante a sessão e teto global de 32 MiB para
+  entradas concluídas, preservando recuperação pendente e conflitos.
+- Inversas tipadas revalidam dados/permissões; uma edição nova invalida redo
+  afetado. A recuperação persistida existente continua sem prometer dez ações após reiniciar.
+
+Detalhes e validação: [T21 — histórico limitado dos dados](docs/deliveries/T21-data-history.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — títulos próprios de visualizações (fontes, sem novo download)
 
 Base oficial Morrow 1.3.0 e formato persistido 13 mantidos.
