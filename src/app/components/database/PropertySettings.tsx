@@ -43,7 +43,7 @@ import { Popover } from '../Popover';
 import { Select } from '../Select';
 import { updateDatabase, updateProp, updateView } from './data';
 import { DraftInput, RelationPicker } from './PropertyValue';
-import { t } from '../../i18n';
+import { getLocale, t } from '../../i18n';
 import { colorLabel, filterLabel } from '../../i18n/labels';
 import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
 import { MediaPropertyDefault, MediaPropertyOptions } from './MediaProperty';
@@ -51,6 +51,16 @@ import { ViewChangeContext } from './viewContext';
 import { linkedViewReferences, viewUsesProperty } from '../../../core/linkedViews';
 import { ButtonActionSettings } from './ButtonActionSettings';
 import { FormulaEditor } from './FormulaEditor';
+import {
+  currencyCatalog,
+  currencyCatalogCodes,
+  currencyCatalogStatus,
+  isValidFormatLocale,
+  timeZoneCatalog,
+  timeZoneCatalogCodes,
+  timeZoneCatalogStatus,
+  withCurrentCatalogOption,
+} from './formatCatalogs';
 
 // rename a property, change its type, options or how it shows. opened from a column, or from a page's
 // properties, where there is no view to sort or hide in
@@ -930,6 +940,21 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
   );
   const [draftFormat, setDraftFormat] = useState<PropertyFormat>(prop.format ?? {});
   const format = numeric ? draftFormat : (prop.format ?? {});
+  const locale = getLocale();
+  const currencyCodes = useMemo(() => currencyCatalogCodes(), []);
+  const timeZoneCodes = useMemo(() => timeZoneCatalogCodes(), []);
+  const currency = format.currency ?? 'BRL';
+  const currencyStatus = currencyCatalogStatus(currency, currencyCodes);
+  const currencyOptions = useMemo(() => {
+    return withCurrentCatalogOption(currencyCatalog(locale, currencyCodes), currency);
+  }, [currency, currencyCodes, locale]);
+  const timeZone = format.timeZone ?? '';
+  const timeZoneStatus = timeZone ? timeZoneCatalogStatus(timeZone, timeZoneCodes) : null;
+  const timeZoneOptions = useMemo(() => {
+    const options = timeZoneCatalog(timeZoneCodes);
+    if (!timeZone) return options;
+    return withCurrentCatalogOption(options, timeZone);
+  }, [timeZone, timeZoneCodes]);
   const setFormat = (key: keyof PropertyFormat, value: PropertyFormat[keyof PropertyFormat] | undefined) => {
     if (numeric) {
       setDraftFormat((current) => {
@@ -990,15 +1015,18 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
         editable
         onCommit={(text) => {
           if (!text.trim()) return setFormat('locale', undefined);
-          try {
-            if (dateOrNumber) new Intl.NumberFormat(text.trim());
-            else new Intl.DateTimeFormat(text.trim());
+          if (isValidFormatLocale(text, dateOrNumber)) {
             setFormat('locale', text.trim());
-          } catch {
-            toast(t('database.locale') + ': invalid value', { tone: 'error' });
+          } else {
+            toast(t('database.localeInvalid'), { tone: 'error' });
           }
         }}
       />
+      {format.locale && !isValidFormatLocale(format.locale, dateOrNumber) && (
+        <small className="db-format-catalog-note" role="alert">
+          {t('database.localeStoredInvalid', { code: format.locale })}
+        </small>
+      )}
     </label>
   );
   if (!numeric && !dateLike && !linkLike) return null;
@@ -1015,19 +1043,37 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
       {numeric && (
         <div className="field-grid">
           {(prop.type === 'currency' || (prop.type === 'formula' && effectiveType === 'currency')) && (
-            <FormatTextField
-              label={t('database.currencyCode')}
-              value={format.currency ?? 'BRL'}
-              onCommit={(text) => {
-                const currency = text.trim().toUpperCase();
-                try {
-                  new Intl.NumberFormat(format.locale ?? 'en-US', { style: 'currency', currency });
-                  setFormat('currency', currency);
-                } catch {
-                  toast(t('database.currencyCode') + ': invalid value', { tone: 'error' });
+            <label className="field">
+              <span>{t('database.currencyCode')}</span>
+              <Select<string>
+                label={t('database.currencyCode')}
+                value={currency}
+                options={currencyOptions}
+                placeholder={t('database.selectCurrency')}
+                footer={
+                  format.currency !== undefined
+                    ? {
+                        label: t('database.useDefaultCurrency'),
+                        onSelect: () => setFormat('currency', undefined),
+                      }
+                    : undefined
                 }
-              }}
-            />
+                onChange={(code) => setFormat('currency', code)}
+              />
+              {currencyStatus !== 'listed' && (
+                <small
+                  className="db-format-catalog-note"
+                  role={currencyStatus === 'invalid' ? 'alert' : 'status'}
+                >
+                  {t(
+                    currencyStatus === 'invalid'
+                      ? 'database.currencyInvalid'
+                      : 'database.currencyValidUnlisted',
+                    { code: currency },
+                  )}
+                </small>
+              )}
+            </label>
           )}
           <FormatNumberField
             label={t('database.precision')}
@@ -1149,22 +1195,34 @@ function PropertyFormatSettings({ dbId, prop }: { dbId: PageId; prop: PropDef })
           {(effectiveType === 'datetime' || effectiveType.endsWith('Time')) && (
             <label className="field">
               <span>{t('database.timeZone')}</span>
-              <DraftInput
-                type="text"
+              <Select<string>
                 label={t('database.timeZone')}
-                className="text-input small"
-                value={format.timeZone ?? ''}
-                editable
-                onCommit={(text) => {
-                  if (!text.trim()) return setFormat('timeZone', undefined);
-                  try {
-                    new Intl.DateTimeFormat('en', { timeZone: text.trim() });
-                    setFormat('timeZone', text.trim());
-                  } catch {
-                    toast(t('database.timeZone') + ': invalid value', { tone: 'error' });
-                  }
-                }}
+                value={timeZone || null}
+                options={timeZoneOptions}
+                placeholder={t('database.selectTimeZone')}
+                footer={
+                  timeZone
+                    ? {
+                        label: t('database.useDefaultTimeZone'),
+                        onSelect: () => setFormat('timeZone', undefined),
+                      }
+                    : undefined
+                }
+                onChange={(zone) => setFormat('timeZone', zone)}
               />
+              {timeZoneStatus && timeZoneStatus !== 'listed' && (
+                <small
+                  className="db-format-catalog-note"
+                  role={timeZoneStatus === 'invalid' ? 'alert' : 'status'}
+                >
+                  {t(
+                    timeZoneStatus === 'invalid'
+                      ? 'database.timeZoneInvalid'
+                      : 'database.timeZoneValidUnlisted',
+                    { code: timeZone },
+                  )}
+                </small>
+              )}
             </label>
           )}
         </div>

@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T07",
+  "issue": "https://github.com/hodeliun/Morrow/issues/58",
+  "officialBaseVersion": "1.3.0",
+  "publicBase": "97cafd5113d8f2d3cd3ef018521457800a6b8fdb",
+  "scope": "Readable property creation/settings, searchable format catalogs and fill preview in shared layers; database format12 unchanged",
+  "isolatedGate": {
+    "build": "passed",
+    "sourceFiles": 389,
+    "testFiles": 114,
+    "lint": "passed",
+    "artifactFiles": 3597,
+    "artifactsSha256": "6af446fa4a70641ba28ac397a36b0f1412bfc6f1aef980a3002d5df18ae4c7ca",
+    "command": "npm run check",
+    "typecheck": "passed",
+    "snapshot": "T07-isolated-01",
+    "sourceUnchanged": true,
+    "sourceSha256": "9c47480f12e02d0d3f26e08cd341dc0cbf2f187af77d0035a2a2252388ff6233",
+    "tests": 931,
+    "status": "passed"
+  },
+  "packaged": {
+    "sha256": {
+      "executable": "cb0cb6ca688ac58d3a4394e67b787c90c3ebf724767a344263d6ed5b712879bb",
+      "appAsar": "303241e54385bcb85933a0ff9099ad6cdd74a05e5bc9f00c1c601dd0f8dcdd04",
+      "main": "e1cd2c31081235c7e8a7e5079efa5b9384d69d59ca2d561db9b705ee61d7daa7",
+      "trustedMain": "e1cd2c31081235c7e8a7e5079efa5b9384d69d59ca2d561db9b705ee61d7daa7"
+    },
+    "artifactsVerified": 3597,
+    "allMatch": true,
+    "version": "1.3.0-fork.1.2.0"
+  },
+  "runtime": {
+    "status": "passed",
+    "personalAppsUsed": false,
+    "allSixCriteriaVerified": true,
+    "playwrightVersion": "1.62.1",
+    "nativeClipboardUsed": false,
+    "platform": "Windows; isolated hidden Electron and synthetic vault",
+    "scenarios": [
+      {
+        "genericErrorBoundaries": 0,
+        "report": "ui-1793714316270",
+        "rawReportSha256": "52ba4205f58e4a39b4a4b43a1c4d00ede1ff36e29500d463b5aae8e7a10ca65b",
+        "status": "passed",
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "scenario": "main",
+        "packagedStableAfter": true,
+        "assertionNames": [
+          "openWithoutWrites",
+          "readOnlyBytesMtimeAndDisabledPropertyControls",
+          "manualCreateChangedPaths",
+          "manualCreateOpensSettingsAndCancelKeepsColumn",
+          "currencySearchByNameAndCodeAndFreeLocale",
+          "unlistedCurrencyChangedPaths",
+          "unlistedCurrencyPreservedWithoutOpeningWrite",
+          "unlistedTimezoneChangedPaths",
+          "validUnlistedTimezoneAliasPreserved",
+          "timezoneSearchByNameAndCode",
+          "invalidLocaleChangedPaths",
+          "validCustomLocaleAndRealCurrencyPreservedWithoutOpeningWrite",
+          "inverseLabelsFit-en-light-520",
+          "inverseLabelsFit-en-dark-520",
+          "inverseLabelsFit-pt-light-520",
+          "inverseLabelsFit-pt-dark-520",
+          "inverseLabelsFit-es-light-520",
+          "inverseLabelsFit-es-dark-520",
+          "settingsLocaleThemeMatrix520",
+          "fillPreviewEscapeRestoresFocusWithoutWrite",
+          "rightEdgePreviewClampedAndCancelNoWrite",
+          "fillApplyByKeyboardAndUndoByKeyboard",
+          "fillPreviewLabels-pt-light-520",
+          "fillPreviewLabels-pt-dark-520",
+          "fillPreviewLabels-es-light-520",
+          "fillPreviewLabels-es-dark-520",
+          "fillPreviewLocaleThemeMatrix520",
+          "settingsViewportThemesLocales",
+          "importDoesNotReopenSettings",
+          "duplicateDoesNotReopenSettings",
+          "databaseSettingsIDsUnknownsAndRoundTripAfterProcessReopen",
+          "importAndDuplicateIDsFilesAndPrimarySavedSurviveProcessReopen",
+          "fixtureOriginalByteSizes"
+        ],
+        "rendererErrors": 0,
+        "snapshotStableAfter": true
+      },
+      {
+        "genericErrorBoundaries": 0,
+        "report": "ui-1793714375343",
+        "rawReportSha256": "d94572d5d59e3b0a53591323cc5e92aeb93ac4fccbf887ddc10ac3cf1b34dd88",
+        "status": "passed",
+        "childrenExitCodes": [
+          0
+        ],
+        "scenario": "watcher-invalidation",
+        "packagedStableAfter": true,
+        "assertionNames": [
+          "realWatcherViewDeltaInvalidatesFillPreview",
+          "rowsUnchanged",
+          "originalDatabaseRestored"
+        ],
+        "rendererErrors": 0,
+        "snapshotStableAfter": true
+      }
+    ]
+  },
+  "formatCases": {
+    "ZZZ": "Intl-accepted currency syntax outside catalog; no claim of a real ISO currency",
+    "omittedValidCurrency": "Pure helper tests use a limited currency catalog to exercise valid-unlisted behavior",
+    "timezoneUsEastern": "Valid timezone alias absent from current catalog, preserved literally",
+    "CLP": "Real currency listed by active renderer Intl catalog; preserved without opening write",
+    "localeEn150": "Valid custom locale preserved without opening write"
+  },
+  "preservedNegatives": [
+    {
+      "status": "failed",
+      "runtime": "ui-1793714233560",
+      "productOrPackageChanged": false,
+      "reason": "Private driver expected a T21/T22 history toolbar not published in format12; switched to existing public fill Undo toast using focus+Enter, retaining exact value/byte restoration"
+    }
+  ],
+  "limitations": [
+    "Source delivery only; no installer, release or installation verification.",
+    "Watcher test performs a declared external view.hidden write on the synthetic target, not a public hide-column gesture; original bytes/mtime/column IDs are restored in finally.",
+    "Manual import uses a synthetic file-input selection; no native OS file chooser or personal file claim.",
+    "Published T12 opaque frozen-cell backing is preserved by unchanged hunks; this delivery does not claim repeating its seven alpha measurements or adding a fill-frozen-specific measurement.",
+    "No database schema13, unrelated feature, OS clipboard, personal app/profile/vault or remote service was exercised."
+  ],
+  "demonstrations": [
+    "assets/T07/fill-preview-pt-dark.png",
+    "assets/T07/inverse-labels-es.png",
+    "assets/T07/manual-property-settings.png"
+  ]
+}

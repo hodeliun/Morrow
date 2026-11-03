@@ -1552,10 +1552,12 @@ export function NewProperty({
   dbId,
   database,
   onDone,
+  onCreated,
 }: {
   dbId: PageId;
   database: DatabaseDef;
   onDone?: () => void;
+  onCreated?: (property: PropDef) => void;
 }) {
   const [name, setName] = useState('');
   const [type, setType] = useState<PropType>('text');
@@ -1569,28 +1571,28 @@ export function NewProperty({
       toast(t('toasts.propNameDuplicate', { name: clean }), { tone: 'error' });
       return;
     }
-    updateDatabase(dbId, (current) => ({
+    const property: PropDef = {
+      id: newId(),
+      name: clean,
+      type,
+      options: [],
+      ...(type === 'button'
+        ? { action: { label: clean, icon: 'play' as const, color: 'blue' as const, steps: [] } }
+        : {}),
+      ...(type === 'image' || type === 'file' ? { media: { multiple: false } } : {}),
+    };
+    const added = updateDatabase(dbId, (current) => ({
       ...current,
-      properties: [
-        ...current.properties,
-        {
-          id: newId(),
-          name: clean,
-          type,
-          options: [],
-          ...(type === 'button'
-            ? { action: { label: clean, icon: 'play' as const, color: 'blue' as const, steps: [] } }
-            : {}),
-          ...(type === 'image' || type === 'file' ? { media: { multiple: false } } : {}),
-        },
-      ],
+      properties: [...current.properties, property],
     }));
+    if (!added) return;
     setName('');
+    onCreated?.(property);
     onDone?.();
   };
   return (
     <form
-      className="db-rule"
+      className="db-new-property"
       onSubmit={(event) => {
         event.preventDefault();
         add();

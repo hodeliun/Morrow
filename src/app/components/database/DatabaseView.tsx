@@ -532,6 +532,11 @@ export function DatabaseView({
       updateDatabase(page.id, (current) => ({ ...current, views: [newView('table', current, newId)] }));
   }, [canEdit, database.views.length, embeddedView, page.id]);
 
+  const visible = useMemo(
+    () => (view ? orderedProperties(database, view).filter((prop) => !view.hidden.includes(prop.id)) : []),
+    [database, view],
+  );
+
   if (!view)
     return database.unsupportedProperties?.length ? (
       <section className="database" aria-label={t('sidebar.database')}>
@@ -540,7 +545,6 @@ export function DatabaseView({
         </p>
       </section>
     ) : null;
-  const visible = orderedProperties(database, view).filter((prop) => !view.hidden.includes(prop.id));
   const linkedViews = !embeddedView ? linkedViewReferences(state, page.id) : [];
 
   return (
@@ -1153,6 +1157,10 @@ function Toolbar({
   const saveView = useViewUpdater(dbId, view.id);
   const unclaimed = useMemo(() => unclaimedKeys(database, rows), [database, rows]);
   const [panel, setPanel] = useState<{ kind: ToolPanel; anchor: HTMLElement } | null>(null);
+  const [createdPropertySettings, setCreatedPropertySettings] = useState<{
+    prop: PropDef;
+    anchor: HTMLElement;
+  } | null>(null);
   const open = (kind: ToolPanel) => (event: React.MouseEvent<HTMLElement>) =>
     setPanel({ kind, anchor: event.currentTarget });
   const names = [{ id: TITLE_PROP, name: t('database.name'), type: 'text' as const }, ...database.properties];
@@ -3065,7 +3073,16 @@ function Toolbar({
               );
             })}
           </ul>
-          {editable && <NewProperty dbId={dbId} database={database} />}
+          {editable && (
+            <NewProperty
+              dbId={dbId}
+              database={database}
+              onCreated={(prop) => {
+                setPanel(null);
+                setCreatedPropertySettings({ prop, anchor: panel.anchor });
+              }}
+            />
+          )}
           {editable && unclaimed.length > 0 && (
             <>
               <p className="db-panel-heading">{t('database.inYourPages')}</p>
@@ -3097,6 +3114,16 @@ function Toolbar({
             </>
           )}
         </Popover>
+      )}
+      {createdPropertySettings && (
+        <PropertySettings
+          dbId={dbId}
+          database={database}
+          prop={createdPropertySettings.prop}
+          view={view}
+          anchor={createdPropertySettings.anchor}
+          onClose={() => setCreatedPropertySettings(null)}
+        />
       )}
     </div>
   );
@@ -3330,6 +3357,7 @@ function InsertColumnPopover({
   anchorPropId,
   position,
   onClose,
+  onCreated,
 }: {
   dbId: PageId;
   database: DatabaseDef;
@@ -3338,6 +3366,7 @@ function InsertColumnPopover({
   anchorPropId: string;
   position: ColumnInsertPosition;
   onClose: () => void;
+  onCreated: (property: PropDef) => void;
 }) {
   const [name, setName] = useState('');
   const [type, setType] = useState<PropType>('text');
@@ -3371,13 +3400,14 @@ function InsertColumnPopover({
     );
     if (!added) return;
     saveView((current) => ({ ...current, order: insertion.view.order }));
+    onCreated(property);
     onClose();
   };
 
   return (
     <Popover anchor={anchor} onClose={onClose} label={t('database.newProperty')} className="db-panel">
       <form
-        className="db-rule"
+        className="db-new-property"
         onSubmit={(event) => {
           event.preventDefault();
           add();
@@ -3605,6 +3635,8 @@ function TableView({
     canSequence: boolean;
     error?: string;
   } | null>(null);
+  const [fillDragging, setFillDragging] = useState(false);
+  const [fillAnchor, setFillAnchor] = useState<HTMLElement | null>(null);
   const [focusFillActions, setFocusFillActions] = useState(false);
   const [lastBatchUndo, setLastBatchUndo] = useState<Command[] | null>(null);
   const [lastBatchRedo, setLastBatchRedo] = useState<Command[] | null>(null);
@@ -3622,6 +3654,7 @@ function TableView({
   const fillDraggingRef = useRef<boolean>(false);
   const fillSourceRangeRef = useRef<GridRange | null>(null);
   const hasFillPreview = fillPreview !== null;
+  const showFillPreview = hasFillPreview && !fillDragging;
 
   useEffect(() => {
     if (!hasFillPreview || !focusFillActions) return;
@@ -3701,8 +3734,11 @@ function TableView({
         ?.focus({ preventScroll: true });
     }
     setFillPreview(null);
+    setFillAnchor(null);
+    setFillDragging(false);
     setFocusFillActions(false);
     fillSourceRangeRef.current = null;
+    fillDraggingRef.current = false;
   }, [visibleRowIds, visibleColIds, selectionRange]);
 
   const resolvedSelection = useMemo(
@@ -3945,6 +3981,9 @@ function TableView({
   const updateFillPreview = useCallback(
     (sourceRange: GridRange, targetRange: GridRange, mode: FillModeChoice) => {
       if (!editable) return;
+      setFillAnchor(
+        tdRefs.current.get(`${targetRange.focus.rowId}:${targetRange.focus.colId}`) ?? null,
+      );
       const plan = planGridFill(
         state,
         dbId,
@@ -4013,6 +4052,7 @@ function TableView({
     const targetRange: GridRange = { anchor: sourceRange.anchor, focus };
     fillSourceRangeRef.current = sourceRange;
     fillDraggingRef.current = false;
+    setFillDragging(false);
     setFocusFillActions(true);
     updateFillPreview(sourceRange, targetRange, 'copy');
   };
@@ -4042,6 +4082,8 @@ function TableView({
       setActiveCell(fillPreview.targetRange.focus);
       setSelectionRange(fillPreview.targetRange);
       setFillPreview(null);
+      setFillAnchor(null);
+      setFillDragging(false);
       setFocusFillActions(false);
       fillSourceRangeRef.current = null;
       tdRefs.current
@@ -4053,6 +4095,8 @@ function TableView({
   const cancelFillPreview = (restoreFocus = false) => {
     const returnTo = fillPreview?.sourceRange.focus ?? fillSourceRangeRef.current?.focus;
     setFillPreview(null);
+    setFillAnchor(null);
+    setFillDragging(false);
     setFocusFillActions(false);
     fillSourceRangeRef.current = null;
     fillDraggingRef.current = false;
@@ -4102,22 +4146,24 @@ function TableView({
       }
       if (fillDraggingRef.current) {
         fillDraggingRef.current = false;
+        setFillDragging(false);
         setFocusFillActions(true);
       }
     };
 
-    const onGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        const returnTo = fillSourceRangeRef.current?.focus;
-        fillDraggingRef.current = false;
-        setFillPreview(null);
-        setFocusFillActions(false);
-        fillSourceRangeRef.current = null;
-        if (returnTo) {
-          window.requestAnimationFrame(() =>
-            tdRefs.current.get(`${returnTo.rowId}:${returnTo.colId}`)?.focus({ preventScroll: true }),
-          );
-        }
+    const onGlobalKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !fillDraggingRef.current) return;
+      const returnTo = fillSourceRangeRef.current?.focus;
+      fillDraggingRef.current = false;
+      setFillDragging(false);
+      setFillPreview(null);
+      setFillAnchor(null);
+      setFocusFillActions(false);
+      fillSourceRangeRef.current = null;
+      if (returnTo) {
+        window.requestAnimationFrame(() =>
+          tdRefs.current.get(`${returnTo.rowId}:${returnTo.colId}`)?.focus({ preventScroll: true }),
+        );
       }
     };
 
@@ -5098,6 +5144,7 @@ function TableView({
                             event.stopPropagation();
                             event.preventDefault();
                             fillDraggingRef.current = true;
+                            setFillDragging(true);
                             fillSourceRangeRef.current = selectionRange;
                           }}
                         />
@@ -5278,6 +5325,7 @@ function TableView({
                                 event.stopPropagation();
                                 event.preventDefault();
                                 fillDraggingRef.current = true;
+                                setFillDragging(true);
                                 fillSourceRangeRef.current = selectionRange;
                               }}
                             />
@@ -5441,52 +5489,60 @@ function TableView({
             </tr>
           </tfoot>
         </table>
-        {fillPreview && (
-          <div className="db-fill-toolbar" role="group" aria-label={t('database.fillActions')}>
-            <span
-              className={fillPreview.error ? 'db-fill-error' : 'db-fill-status'}
-              role={fillPreview.error ? 'alert' : 'status'}
-            >
-              {fillPreview.error ?? t('database.fillPreview', { count: fillPreview.affectedCells })}
-            </span>
-            <div className="db-fill-actions">
-              <button
-                ref={fillCopyButtonRef}
-                type="button"
-                className="button small"
-                aria-pressed={fillPreview.mode === 'copy'}
-                disabled={!editable || Boolean(fillPreview.error)}
-                onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'copy')}
+        {showFillPreview && fillPreview && fillAnchor && (
+          <Popover
+            anchor={fillAnchor}
+            onClose={() => cancelFillPreview()}
+            placement="top-end"
+            label={t('database.fillActions')}
+            className="db-panel db-fill-preview-popover"
+          >
+            <div className="db-fill-toolbar" role="group" aria-label={t('database.fillActions')}>
+              <span
+                className={fillPreview.error ? 'db-fill-error' : 'db-fill-status'}
+                role={fillPreview.error ? 'alert' : 'status'}
               >
-                {t('database.fillCopy')}
-              </button>
-              {fillPreview.canSequence && (
+                {fillPreview.error ?? t('database.fillPreview', { count: fillPreview.affectedCells })}
+              </span>
+              <div className="db-fill-actions">
                 <button
+                  ref={fillCopyButtonRef}
                   type="button"
                   className="button small"
-                  aria-pressed={fillPreview.mode === 'sequence'}
-                  disabled={!editable}
-                  onClick={() =>
-                    updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'sequence')
-                  }
+                  aria-pressed={fillPreview.mode === 'copy'}
+                  disabled={!editable || Boolean(fillPreview.error)}
+                  onClick={() => updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'copy')}
                 >
-                  {t('database.fillSequence')}
+                  {t('database.fillCopy')}
                 </button>
-              )}
-              <button
-                type="button"
-                className="button small primary"
-                disabled={!editable || Boolean(fillPreview.error) || fillPreview.commands.length === 0}
-                onClick={applyFillPreview}
-              >
-                {t('database.fillApply')}
-              </button>
-              <button type="button" className="button small" onClick={() => cancelFillPreview(true)}>
-                {t('common.cancel')}
-              </button>
+                {fillPreview.canSequence && (
+                  <button
+                    type="button"
+                    className="button small"
+                    aria-pressed={fillPreview.mode === 'sequence'}
+                    disabled={!editable}
+                    onClick={() =>
+                      updateFillPreview(fillPreview.sourceRange, fillPreview.targetRange, 'sequence')
+                    }
+                  >
+                    {t('database.fillSequence')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="button small primary"
+                  disabled={!editable || Boolean(fillPreview.error) || fillPreview.commands.length === 0}
+                  onClick={applyFillPreview}
+                >
+                  {t('database.fillApply')}
+                </button>
+                <button type="button" className="button small" onClick={() => cancelFillPreview(true)}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+              <small className="db-fill-hint">{t('database.fillKeyboardHint')}</small>
             </div>
-            <small className="db-fill-hint">{t('database.fillKeyboardHint')}</small>
-          </div>
+          </Popover>
         )}
         {summaryAnchor && (
           <Popover
@@ -5918,7 +5974,12 @@ function TableView({
             label={t('database.newProperty')}
             className="db-panel"
           >
-            <NewProperty dbId={dbId} database={database} onDone={() => setAdding(null)} />
+            <NewProperty
+              dbId={dbId}
+              database={database}
+              onCreated={(prop) => setHeader({ prop, anchor: adding })}
+              onDone={() => setAdding(null)}
+            />
           </Popover>
         )}
         {inserting && (
@@ -5930,6 +5991,7 @@ function TableView({
             anchorPropId={inserting.prop.id}
             position={inserting.position}
             onClose={() => setInserting(null)}
+            onCreated={(prop) => setHeader({ prop, anchor: inserting.anchor })}
           />
         )}
         {rowConfirmation && (

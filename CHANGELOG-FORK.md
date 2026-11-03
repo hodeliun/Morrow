@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — painéis de propriedades e seletores (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- A criação manual separa tipo e Adicionar e abre a configuração após sucesso;
+  cancelar mantém a propriedade. Importar e duplicar não reabrem esse painel.
+- Moeda e fuso podem ser pesquisados por código/nome, mantendo entradas livres
+  apropriadas e valores válidos existentes que não aparecem no catálogo.
+- A prévia de preenchimento usa as camadas compartilhadas para manter suas ações
+  dentro da janela, inclusive no extremo direito da tabela, com foco e Escape.
+
+Detalhes e validação: [T07 — painéis e seletores legíveis](docs/deliveries/T07-readable-property-panels.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — rodapé compacto das tabelas (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

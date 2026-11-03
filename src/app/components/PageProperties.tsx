@@ -227,7 +227,12 @@ export function PageProperties({
               label={t('properties.newProperty')}
               className="db-panel"
             >
-              <NewProperty dbId={database.id} database={database.database} onDone={() => setMenu(null)} />
+              <NewProperty
+                dbId={database.id}
+                database={database.database}
+                onCreated={(prop) => setSettings({ prop, anchor: menu })}
+                onDone={() => setMenu(null)}
+              />
             </Popover>
           )}
         </>
