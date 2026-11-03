@@ -2,6 +2,19 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — fundo de resultados por nota (fontes, sem novo download)
+
+- Preferência do perfil começa ativada e é capturada em novas notas, inclusive
+  criações por tabela. Cada nota pode sobrescrever o fundo; o padrão não altera
+  notas existentes e a ausência legada mantém a apresentação anterior.
+- Resultados sem fundo preservam hover, foco e configuração. Cópias/importações
+  mantêm a origem e metadados desconhecidos continuam preservados.
+- Eventos antigos de gravação não recriam linhas desfeitas; erros de existência
+  são explícitos e recuperáveis, sem interpretar falha de acesso como ausência.
+
+Detalhes e validação: [T29 — fundo por nota](docs/deliveries/T29-formula-background.md).
+Formato13 preservado; sem instalador, tag ou release.
+
 ## Entrega sequencial — referências nomeadas entre páginas (fontes, sem novo download)
 
 - Pickers identificam controles e resultados por nome, tipo e página de origem;

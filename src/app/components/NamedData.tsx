@@ -983,6 +983,7 @@ export function CalculatedResultNode(props: NodeViewProps) {
       })
     : null;
   const display = valuePresentation.display;
+  const resultBackgroundEnabled = state.pages[pageId]?.calculatedResultBackground ?? true;
   const progress = valuePresentation.progress;
   const boundedOutputRange = outputType === 'scale' || outputType === 'progress'
     ? {
@@ -1205,7 +1206,7 @@ export function CalculatedResultNode(props: NodeViewProps) {
     <NodeViewWrapper
       ref={resultAnchorRef}
       as="span"
-      className={`named-data-result${diagnostic ? ' has-error' : ''}${unconfigured ? ' is-unconfigured' : ''}`}
+      className={`named-data-result${diagnostic ? ' has-error' : ''}${unconfigured ? ' is-unconfigured' : ''}${resultBackgroundEnabled ? ' has-background' : ''}`}
       contentEditable={false}
       onMouseDown={stop}
       onContextMenu={(event: React.MouseEvent<HTMLElement>) => {

@@ -685,6 +685,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                   page={page}
                   style={noteStyle}
                   defaults={prefs.defaultNoteStyle}
+                  resultBackgroundDefault={prefs.defaultCalculatedResultBackground}
                   anchor={stylePicker}
                   onClose={() => setStylePicker(null)}
                 />

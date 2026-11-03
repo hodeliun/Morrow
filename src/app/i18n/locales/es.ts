@@ -254,6 +254,8 @@ export const es: TranslationSchema = {
       colourfulPages: 'Páginas coloridas',
       colourfulPagesHelp: 'Títulos, listas, iconos y etiquetas coloreados.',
       writingTitle: 'Escritura',
+      resultBackgroundForNewNotes: 'Fondo para resultados de fórmulas en notas nuevas',
+      resultBackgroundForNewNotesHelp: 'Las notas nuevas guardan esta opción. Cambiarla no modifica las existentes.',
       font: 'Fuente',
       fonts: {
         serif: 'Serif',
@@ -709,6 +711,8 @@ export const es: TranslationSchema = {
       pixels: '{value} px',
       previewHeading: 'Vista previa del título',
       previewBody: 'Esta es una vista previa del texto.',
+      resultBackground: 'Mostrar un fondo discreto detrás de los resultados de fórmulas',
+      resultBackgroundHelp: 'Esta opción se guarda con esta nota y no sigue cambios globales posteriores.',
       reset: 'Restablecer valores predeterminados',
       defaultsHelp:
         'Estas opciones se guardan para las notas nuevas. Las notas existentes conservan su aspecto actual.',

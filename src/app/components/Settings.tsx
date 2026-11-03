@@ -378,6 +378,18 @@ function AppearanceSettings() {
             setPreview(null);
           }}
         />
+        <SettingRow
+          label={t("settings.appearance.resultBackgroundForNewNotes")}
+          help={t("settings.appearance.resultBackgroundForNewNotesHelp")}
+        >
+          <Switch
+            label={t("settings.appearance.resultBackgroundForNewNotes")}
+            checked={prefs.defaultCalculatedResultBackground}
+            onChange={(defaultCalculatedResultBackground) =>
+              setPreferences({ defaultCalculatedResultBackground })
+            }
+          />
+        </SettingRow>
       </SettingsGroup>
       <SettingsGroup
         title={t("page.style.applyExistingTitle")}

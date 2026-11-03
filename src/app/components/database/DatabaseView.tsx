@@ -1,3 +1,4 @@
+import { getPreferences } from '../../platform/preferences';
 import {
   ArrowLeft,
   ArrowRight,
@@ -5136,7 +5137,10 @@ function TableView({
   };
   const insertRowAt = (rowId: PageId, placement: 'before' | 'after') => {
     if (!canEditImmediately() || !visibleRowIdSet.has(rowId)) return;
-    const planned = planInsertRow(getState(), dbId, rowId, placement, newId(), nowTimestamp());
+    const planned = planInsertRow(
+      getState(), dbId, rowId, placement, newId(), nowTimestamp(),
+      getPreferences().defaultCalculatedResultBackground,
+    );
     if (!planned.ok) {
       toast(planned.error, { tone: 'error' });
       return;

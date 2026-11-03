@@ -201,9 +201,13 @@ function pageTitle(id: string): string | undefined {
 }
 
 function withNoteDefaults(command: Command): Command {
-  if (command.type !== 'page.create' || command.noteStyle !== undefined || command.kind === 'canvas')
-    return command;
+  if (command.type !== 'page.create' || command.kind === 'canvas') return command;
   const preferences = getPreferences();
+  command =
+    command.calculatedResultBackground === undefined
+      ? { ...command, calculatedResultBackground: preferences.defaultCalculatedResultBackground }
+      : command;
+  if (command.noteStyle !== undefined) return command;
   const style = preferences.defaultNoteStyle;
   if (command.kind === 'database') return { ...command, noteStyle: { ...style, width: 'full' } };
   // the legacy appearance is now fixed for existing pages, so its matching default needs no frontmatter

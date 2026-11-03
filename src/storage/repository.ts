@@ -43,6 +43,9 @@ export interface WorkspaceRepository {
   fileUrl?(id: FileId): string | null;
   // called with changes made outside morrow, returns the pages it accepted
   onExternalChange?(listener: (patch: ExternalPatch) => PageId[]): () => void;
+  // file-based repositories can report and explicitly retry watcher reconciliation failures
+  onExternalChangeError?(listener: (error: string | null) => void): () => void;
+  retryExternalChanges?(): Promise<boolean>;
   // a name for the storage location, shown in settings
   readonly location?: string;
   // file-based repositories may expose a separate read-only catalog of ordinary vault resources

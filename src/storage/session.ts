@@ -291,6 +291,7 @@ export class WorkspaceSession {
   private readonly listeners = new Set<() => void>();
   private readonly fileCatalogListeners = new Set<() => void>();
   private stopRepositoryFileCatalog: (() => void) | null = null;
+  private stopRepositoryChangeError: (() => void) | null = null;
   private readonly lastSnapshot = new Map<PageId, number>();
   // what each page held when it was last kept as a version, or when it was opened. a page saved with
   // nothing really different, such as only its edit time, gets no new version
@@ -344,6 +345,8 @@ export class WorkspaceSession {
       },
     );
     repository.onExternalChange?.((patch) => this.applyExternal(patch));
+    this.stopRepositoryChangeError =
+      repository.onExternalChangeError?.((error) => this.queue.setExternalError(error)) ?? null;
     this.stopRepositoryFileCatalog = repository.onFileCatalogChange?.(() => {
       for (const listener of this.fileCatalogListeners) listener();
     }) ?? null;
@@ -1043,8 +1046,9 @@ export class WorkspaceSession {
     return applied;
   }
 
-  flush(): Promise<boolean> {
-    return this.queue.flush();
+  async flush(): Promise<boolean> {
+    if (this.repository.retryExternalChanges && !(await this.repository.retryExternalChanges())) return false;
+    return await this.queue.flush();
   }
 
   markInitialized(): Promise<void> {
@@ -1174,6 +1178,8 @@ export class WorkspaceSession {
 
   async close(): Promise<void> {
     await this.queue.flush();
+    this.stopRepositoryChangeError?.();
+    this.stopRepositoryChangeError = null;
     this.queue.dispose();
     this.contextualHistorySnapshots.clear();
     this.stopRepositoryFileCatalog?.();
