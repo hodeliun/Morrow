@@ -64,3 +64,10 @@ A nota anterior permanece em sua aba e a imagem exibe nome, dimensões e control
 ![Visualizador em português, tema escuro e janela estreita](assets/T33/narrow-pt-dark.png)
 
 O visualizador se ajusta ao painel estreito; o espaço vizinho continua vazio.
+
+O CI inicial passou no Linux e encontrou uma preparação incorreta de caminho nos
+testes de recursos de imagem no Windows. Um diretório temporário sintético com
+nome abreviado reproduziu as seis falhas; normalizar o caminho real no helper de
+fixture fez os oito testes passarem. Somente esse arquivo de teste mudou. As
+fontes do produto e o pacote da verificação de interface permanecem idênticos;
+nenhuma regra de confinamento foi relaxada. O CI completo é reavaliado no PR.

@@ -117,5 +117,18 @@
   "demonstrations": [
     "assets/T33/image-file-tab.png",
     "assets/T33/narrow-pt-dark.png"
-  ]
+  ],
+  "ciFixtureCorrection": {
+    "initialRun": 41636184434,
+    "uiRerunForFixtureOnlyChange": 0,
+    "lint": "passed",
+    "testSha256": "2c4c523f626f6ab516ad79d70b814b51787ae97d2dfb725a372ccf6e10d3d1a2",
+    "cause": "Test fixture supplied a Windows short alias as realRoot; production correctly uses canonical realpath",
+    "allOtherSourceFilesMatchSealedSnapshot": true,
+    "reproduction": "Own short-alias TEMP/TMP:6 failures/2 passes before;8/8 after",
+    "windows": "failed",
+    "changedFile": "electron/imageResources.test.ts",
+    "runtimeProductUnchanged": true,
+    "ubuntu": "passed"
+  }
 }

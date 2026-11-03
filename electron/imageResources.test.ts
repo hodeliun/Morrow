@@ -3,11 +3,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,7 +18,7 @@ import type { ImageVaultContext } from './imageResources.js';
 const temporaryRoots: string[] = [];
 
 function makeRoot(prefix: string): string {
-  const root = mkdtempSync(path.join(os.tmpdir(), prefix));
+  const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), prefix)));
   temporaryRoots.push(root);
   return root;
 }
@@ -152,8 +153,7 @@ describe('image resource registry', () => {
     const issued = await registry.issue('image.png', vaultId);
     if (!issued.ok) throw new Error('Expected an image resource capability.');
 
-    const otherRoot = await mkdtemp(path.join(os.tmpdir(), 'morrow-other-vault-'));
-    temporaryRoots.push(otherRoot);
+    const otherRoot = makeRoot('morrow-other-vault-');
     const otherContext = { ...context, root: otherRoot, realRoot: otherRoot };
     const otherRegistry = createImageResourceRegistry({ getContext: () => otherContext, userDataPath });
     expect(await otherRegistry.getVaultId()).not.toBe(vaultId);
