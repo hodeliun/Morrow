@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemoryVault } from '../../../storage/memoryVault';
 import { WorkspaceSession } from '../../../storage/session';
 import { VaultRepository } from '../../../storage/vaultRepository';
 import { setSession } from '../../workspace';
-import { deleteProperty, titleAliasConflicts } from './data';
+import { deleteProperty, titleAliasConflicts, updateView } from './data';
 
 describe('database property deletion', () => {
   it('rejects a title alias that collides with another column by case or accent', () => {
@@ -189,5 +189,121 @@ Unrelated: preserved # keep unknown metadata comment
       'status',
     );
     await session.close();
+  });
+});
+
+describe('database view updates', () => {
+  it('reorders one view without changing row metadata or rewriting row Markdown', async () => {
+    let nextId = 0;
+    const newId = () => `view-order-${++nextId}`;
+    const vault = new MemoryVault({
+      'Records.md': `---
+kind: database
+database:
+  properties:
+    - id: status
+      name: Status
+      type: text
+    - id: notes
+      name: Notes
+      type: text
+    - id: owner
+      name: Owner
+      type: text
+  views:
+    - id: primary
+      name: Primary
+      type: table
+      sorts: []
+      filters: []
+      groupBy: null
+      dateProp: null
+      hidden: []
+      order: [status, title, notes, future-column, owner]
+    - id: secondary
+      name: Secondary
+      type: table
+      sorts: []
+      filters: []
+      groupBy: null
+      dateProp: null
+      hidden: []
+      order: [owner, notes, title, status]
+---
+`,
+      'Records/Row.md': `---
+Status: Open # keep the row's property comment
+Notes: Preserve this value
+Unrelated: Keep this unknown key
+---
+# Original row body
+`,
+    });
+    const open = async () => {
+      const opened = await WorkspaceSession.open(new VaultRepository(vault, newId), { delayMs: 0 });
+      if (!opened.ok) throw new Error(opened.error);
+      return opened.value;
+    };
+    const session = await open();
+    setSession(session);
+    const database = Object.values(session.getState().pages).find((page) => page.kind === 'database')!;
+    const row = Object.values(session.getState().pages).find((page) => page.parentId === database.id)!;
+    const rowUpdatedAt = row.updatedAt;
+    const originalRowText = vault.text('Records/Row.md');
+    const originalDatabaseText = vault.text('Records.md');
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 10_000);
+
+    updateView(database.id, 'primary', (view) => ({
+      ...view,
+      order: ['status', 'notes', 'title', 'future-column', 'owner'],
+    }));
+
+    const updated = session.getState();
+    expect(updated.pages[row.id]?.updatedAt).toBe(rowUpdatedAt);
+    expect(updated.pages[row.id]?.properties).toEqual(row.properties);
+    expect(updated.pages[row.id]?.extra).toEqual(row.extra);
+    expect(updated.pages[database.id]?.database?.views[0]?.order).toEqual([
+      'status',
+      'notes',
+      'title',
+      'future-column',
+      'owner',
+    ]);
+    expect(updated.pages[database.id]?.database?.views[1]?.order).toEqual([
+      'owner',
+      'notes',
+      'title',
+      'status',
+    ]);
+
+    expect(await session.flush()).toBe(true);
+    expect(vault.text('Records/Row.md')).toBe(originalRowText);
+    expect(vault.text('Records.md')).not.toBe(originalDatabaseText);
+    await session.close();
+    vi.restoreAllMocks();
+
+    const reopened = await open();
+    setSession(reopened);
+    const reopenedDatabase = Object.values(reopened.getState().pages).find(
+      (page) => page.kind === 'database',
+    )!;
+    const reopenedRow = Object.values(reopened.getState().pages).find(
+      (page) => page.parentId === reopenedDatabase.id,
+    )!;
+    expect(reopenedDatabase.database?.views[0]?.order).toEqual([
+      'status',
+      'notes',
+      'title',
+      'future-column',
+      'owner',
+    ]);
+    expect(reopenedDatabase.database?.views[1]?.order).toEqual(['owner', 'notes', 'title', 'status']);
+    expect(reopenedRow.id).toBe(row.id);
+    expect(reopenedRow.updatedAt).toBe(rowUpdatedAt);
+    expect(reopenedRow.properties).toEqual(row.properties);
+    expect(reopenedRow.extra).toEqual(row.extra);
+    expect(vault.text('Records/Row.md')).toBe(originalRowText);
+    await reopened.close();
   });
 });

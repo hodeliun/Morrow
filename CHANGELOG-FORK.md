@@ -2,6 +2,21 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — ordem de colunas por visualização (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0 e formato persistido 13; nenhuma sincronização
+upstream ou nova mudança de formato nesta entrega.
+
+- A alça do cabeçalho move Nome e propriedades comuns antes/depois de outra
+  coluna, com destino vertical único e cancelamento por Escape.
+- O menu acessível oferece movimento para esquerda/direita. Cabeçalho, corpo,
+  Novo e cálculos acompanham a ordem, inclusive com congelamento e rolagem.
+- Cada visualização mantém sua ordem ao reabrir, preservando o esquema,
+  valores das linhas e posições reservadas de colunas ocultas/desconhecidas.
+
+Detalhes e validação: [T04 — ordem por visualização](docs/deliveries/T04-view-column-order.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — Nome e propriedade de exibição (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

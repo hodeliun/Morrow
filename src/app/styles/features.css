@@ -1805,6 +1805,39 @@ textarea.text-input.small {
   gap: 4px;
   min-width: 0;
 }
+.db-column-move-handle {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 24px;
+  padding: 0;
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+}
+.db-column-move-handle:hover,
+.db-column-move-handle:focus-visible {
+  color: var(--text);
+}
+.db-column-move-handle:active {
+  cursor: grabbing;
+}
+.db-table th.db-column-drop-before::before,
+.db-table th.db-column-drop-after::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 8;
+  width: 3px;
+  background: var(--accent, #2563eb);
+  pointer-events: none;
+}
+.db-table th.db-column-drop-before::before {
+  left: -2px;
+}
+.db-table th.db-column-drop-after::before {
+  right: -2px;
+}
 .db-display-indicator {
   display: inline-flex;
   flex: 0 0 auto;

@@ -2021,6 +2021,11 @@ export const pt: TranslationSchema = {
     columnMenuAria: 'Opções da coluna {name}',
     columnMenuHint:
       'Clique para editar. Pressione Shift+F10 ou clique com o botão direito para ver as ações da coluna.',
+    dragColumn: 'Arraste para reordenar a coluna {name}',
+    moveColumnLeft: 'Mover coluna para a esquerda',
+    moveColumnRight: 'Mover coluna para a direita',
+    columnMoveBefore: 'Mover {name} antes de {target}',
+    columnMoveAfter: 'Mover {name} depois de {target}',
     editColumnSettings: 'Editar tipo, formato, fórmula ou descrição',
     filterColumn: 'Filtrar por esta coluna',
     insertColumnBefore: 'Inserir coluna antes',

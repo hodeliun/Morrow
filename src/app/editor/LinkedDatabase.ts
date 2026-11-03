@@ -3,7 +3,7 @@ import { ReactNodeViewRenderer } from '@tiptap/react';
 import { Plugin } from '@tiptap/pm/state';
 import { newId } from '../platform/files';
 import { LinkedDatabaseViewNode } from '../components/database/LinkedDatabaseView';
-import { shouldStopLinkedDatabaseNodeViewEvent } from './linkedDatabaseEvents';
+import { shouldDisableLinkedDatabaseDropCursor, shouldStopLinkedDatabaseNodeViewEvent } from './linkedDatabaseEvents';
 
 interface LinkedDatabaseOptions {
   hostPageId: string;
@@ -18,6 +18,14 @@ export const LinkedDatabaseView = Node.create<LinkedDatabaseOptions>({
 
   addOptions() {
     return { hostPageId: '' };
+  },
+
+  extendNodeSchema(extension) {
+    if (extension.name !== 'linkedDatabaseView') return {};
+    return {
+      disableDropCursor: (_view: unknown, _pos: unknown, event: Event) =>
+        shouldDisableLinkedDatabaseDropCursor(event),
+    };
   },
 
   addAttributes() {
