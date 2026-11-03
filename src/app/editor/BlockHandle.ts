@@ -5,6 +5,8 @@ import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/stat
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { selectedBlocks } from './BlockSelect';
+import { findColumnTarget } from './columnActions';
+import type { ColumnTarget } from './columnActions';
 
 const MOVABLE_ITEMS = new Set(['listItem', 'taskItem']);
 
@@ -12,6 +14,7 @@ export interface BlockMenuRequest {
   pos: number;
   rect: DOMRect;
   trigger?: HTMLElement;
+  columnTarget?: ColumnTarget;
 }
 
 // finds the block the selection is in, preferring the nearest list item
@@ -159,7 +162,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       handle.innerHTML = GRIP;
       const host = view.dom.parentElement;
       host?.appendChild(handle);
-      let current: { element: HTMLElement; pos: number } | null = null;
+      let current: { element: HTMLElement; pos: number; columnTarget?: ColumnTarget } | null = null;
       let pointerFocusPending = false;
 
       const hide = () => {
@@ -167,8 +170,13 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         current = null;
       };
 
-      const show = (target: HTMLElement, top: HTMLElement, pos: number) => {
-        current = { element: target, pos };
+      const show = (
+        target: HTMLElement,
+        top: HTMLElement,
+        pos: number,
+        columnTarget?: ColumnTarget,
+      ) => {
+        current = { element: target, pos, ...(columnTarget ? { columnTarget } : {}) };
         const hostRect = host!.getBoundingClientRect();
         const rect = target.getBoundingClientRect();
         const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 24;
@@ -192,6 +200,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
 
       const onMove = (event: MouseEvent) => {
         if (!view.editable || !host) return;
+        if (event.target instanceof Element && handle.contains(event.target)) return;
         const children = Array.from(view.dom.children) as HTMLElement[];
         const top = children.find((child) => {
           if (child.classList.contains('ProseMirror-gapcursor')) return false;
@@ -206,7 +215,32 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
           pos = blockPosition(view, top, true);
         }
         if (pos === null) return;
-        show(target, top, pos);
+        let columnTarget = findColumnTarget(view.state.doc, pos) ?? undefined;
+        if (target.matches('.columns-editor')) {
+          const columnsElement = target.querySelector<HTMLElement>(':scope > .columns');
+          const columns = Array.from(columnsElement?.children ?? []).filter(
+            (child): child is HTMLElement => child instanceof HTMLElement && child.matches('.column'),
+          );
+          const hovered = target.ownerDocument.elementFromPoint(event.clientX, event.clientY);
+          const hoveredColumn = hovered instanceof Element ? hovered.closest<HTMLElement>('.column') : null;
+          let index =
+            hoveredColumn && hoveredColumn.parentElement === columnsElement
+              ? columns.indexOf(hoveredColumn)
+              : -1;
+          if (index < 0 && columns.length) {
+            index = columns.reduce((nearest, column, candidate) => {
+              const rect = column.getBoundingClientRect();
+              const distance = Math.abs(rect.left + rect.width / 2 - event.clientX);
+              const nearestRect = columns[nearest]!.getBoundingClientRect();
+              const nearestDistance = Math.abs(
+                nearestRect.left + nearestRect.width / 2 - event.clientX,
+              );
+              return distance < nearestDistance ? candidate : nearest;
+            }, 0);
+          }
+          if (index >= 0) columnTarget = findColumnTarget(view.state.doc, pos, index) ?? undefined;
+        }
+        show(target, top, pos, columnTarget);
       };
 
       const selectedBlockPosition = (): number | null => {
@@ -238,7 +272,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         const top = Array.from(view.dom.children).find(
           (child): child is HTMLElement => child instanceof HTMLElement && (child === element || child.contains(element)),
         );
-        if (top) show(element, top, pos);
+        if (top) show(element, top, pos, findColumnTarget(view.state.doc, pos) ?? undefined);
       };
 
       const onBlur = () => {
@@ -287,7 +321,12 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         if (!picked || selected.pos < picked.from || selected.pos >= picked.to)
           view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, selected.pos)));
         view.focus();
-        onMenu({ pos: selected.pos, rect, trigger: handle });
+        onMenu({
+          pos: selected.pos,
+          rect,
+          trigger: handle,
+          ...(selected.columnTarget ? { columnTarget: selected.columnTarget } : {}),
+        });
       };
 
       host?.addEventListener('mousemove', onMove);

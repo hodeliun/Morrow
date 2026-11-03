@@ -2,6 +2,23 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — composição em colunas (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- O menu permite remover uma coluna vazia ou confirmar o destino de seu conteúdo:
+  preservar os blocos após o grupo ou descartá-los explicitamente. As larguras
+  restantes são redistribuídas; cancelar e desfazer preservam o documento.
+- A inserção de parágrafos antes/depois de imagens e grupos posiciona o foco no
+  novo texto. O arraste mostra um único destino coerente acima, abaixo ou ao lado.
+  Um parágrafo imediatamente anterior ao grupo pode ser solto na lateral para
+  criar uma coluna; esse destino válido deixa de ser cancelado por engano.
+- A leitura e a gravação mantêm os campos desconhecidos dos marcadores de imagem
+  ao transformar colunas. Essa preservação não ativa uma nova interface de resize.
+
+Detalhes, limites e validação: [T20 — composição em colunas](docs/deliveries/T20-layout-columns.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Modificações do fork 1.2.0 — base Morrow 1.3.0 (fontes validadas, não lançado)
 
 Identificação do código: `1.3.0-fork.1.2.0`. A base oficial avança para

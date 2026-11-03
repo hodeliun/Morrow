@@ -2,9 +2,10 @@ import { mergeAttributes, Node } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
 import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { Transaction } from '@tiptap/pm/state';
-import type { Node as ProsemirrorNode, Slice } from '@tiptap/pm/model';
+import { Fragment, type Node as ProsemirrorNode, type Slice } from '@tiptap/pm/model';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import type { EditorView } from '@tiptap/pm/view';
 import Suggestion from '@tiptap/suggestion';
 import { CalendarDays, FileText } from 'lucide-react';
 import {
@@ -25,6 +26,13 @@ import {
   createColumnWidthsTransaction,
   shouldCommitColumnWidthResize,
 } from './columnResize';
+import {
+  canApplyBlockDrop,
+  closestBlockDropSide,
+  createColumnRemovalTransaction,
+  emptyColumnAtBackspaceBoundary,
+  findColumnTarget,
+} from './columnActions';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -38,6 +46,24 @@ declare module '@tiptap/core' {
 }
 
 const COLUMN_GAP = 28;
+const COLUMNS_CUSTOM_DROP_CLASS = 'columns-block-drop-active';
+const columnsDropCursorOwners = new WeakMap<HTMLElement, number>();
+
+function retainColumnsDropCursorHost(host: HTMLElement): void {
+  const owners = columnsDropCursorOwners.get(host) ?? 0;
+  columnsDropCursorOwners.set(host, owners + 1);
+  host.classList.add(COLUMNS_CUSTOM_DROP_CLASS);
+}
+
+function releaseColumnsDropCursorHost(host: HTMLElement): void {
+  const owners = columnsDropCursorOwners.get(host) ?? 0;
+  if (owners <= 1) {
+    columnsDropCursorOwners.delete(host);
+    host.classList.remove(COLUMNS_CUSTOM_DROP_CLASS);
+  } else {
+    columnsDropCursorOwners.set(host, owners - 1);
+  }
+}
 
 function minColumnWidthFor(count: number): number {
   if (count >= 6) return 50;
@@ -514,8 +540,54 @@ export const Columns = Node.create({
     };
   },
 
+  addKeyboardShortcuts() {
+    return {
+      Backspace: ({ editor }) => {
+        const { state, view } = editor;
+        if (!editor.isEditable) return false;
+        const target = emptyColumnAtBackspaceBoundary(state.doc, state.selection);
+        if (!target) return false;
+        const transaction = createColumnRemovalTransaction(state, target, 'preserve');
+        if (!transaction) return false;
+        view.dispatch(transaction.scrollIntoView());
+        return true;
+      },
+    };
+  },
+
   addProseMirrorPlugins() {
     let indicator: HTMLDivElement | null = null;
+    let dropCursorHost: HTMLElement | null = null;
+    let dropCursorCleanup: number | null = null;
+    const setDropCursorSuppressed = (view: EditorView, active: boolean) => {
+      if (dropCursorCleanup !== null) {
+        window.clearTimeout(dropCursorCleanup);
+        dropCursorCleanup = null;
+      }
+      if (!active) {
+        if (dropCursorHost) releaseColumnsDropCursorHost(dropCursorHost);
+        dropCursorHost = null;
+        return;
+      }
+      const offsetParent = view.dom.offsetParent;
+      const host = offsetParent instanceof HTMLElement ? offsetParent : view.dom.parentElement;
+      if (dropCursorHost && dropCursorHost !== host) {
+        releaseColumnsDropCursorHost(dropCursorHost);
+        dropCursorHost = null;
+      }
+      if (host && dropCursorHost !== host) {
+        retainColumnsDropCursorHost(host);
+        dropCursorHost = host;
+      }
+    };
+    const releaseDropCursorAfterDefaultCleanup = (view: EditorView) => {
+      if (dropCursorCleanup !== null) window.clearTimeout(dropCursorCleanup);
+      // ProseMirror's default dropcursor schedules its DOM removal 20ms after drop/dragend.
+      dropCursorCleanup = window.setTimeout(() => {
+        dropCursorCleanup = null;
+        setDropCursorSuppressed(view, false);
+      }, 25);
+    };
     const getIndicator = () => {
       if (!indicator && typeof document !== 'undefined') {
         indicator = document.createElement('div');
@@ -529,11 +601,162 @@ export const Columns = Node.create({
       if (indicator) indicator.style.display = 'none';
     };
 
-    let activeDrop: { pos: number; side: 'left' | 'right'; inColumns: boolean; columnsPos: number; childCount: number } | null = null;
+    type ActiveDrop =
+      | {
+          kind: 'columns';
+          pos: number;
+          node: ProsemirrorNode;
+          columnIndex: number;
+          side: 'left' | 'right';
+          disabled: boolean;
+        }
+      | { kind: 'sibling'; pos: number; node: ProsemirrorNode; side: 'top' | 'bottom' }
+      | { kind: 'wrap'; pos: number; node: ProsemirrorNode; side: 'left' | 'right' };
+
+    let activeDrop: ActiveDrop | null = null;
+
+    const dropTarget = (view: EditorView, event: DragEvent): ActiveDrop | null => {
+      const transferTypes = Array.from(event.dataTransfer?.types ?? []);
+      if (
+        transferTypes.includes('Files') ||
+        transferTypes.some((type) => type.startsWith('application/x-morrow-'))
+      )
+        return null;
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        !target ||
+        target.closest('.linked-database-view, .inline-database, .database, table, [role="grid"]')
+      )
+        return null;
+      const nestedEditor = target.closest('.ProseMirror');
+      if (nestedEditor && nestedEditor !== view.dom) return null;
+
+      const columnElement = target.closest<HTMLElement>('.column');
+      const groupElement = target.closest<HTMLElement>('.columns-editor');
+      const anchor = columnElement ?? groupElement ?? target.closest<HTMLElement>('.editor-surface .prose > *');
+      if (!anchor) return null;
+      const point = view.posAtCoords({ left: event.clientX, top: event.clientY });
+      if (!point) return null;
+
+      let $pos;
+      try {
+        $pos = view.state.doc.resolve(point.pos);
+      } catch {
+        return null;
+      }
+      const rect = anchor.getBoundingClientRect();
+      const side = closestBlockDropSide(rect, event.clientX, event.clientY);
+      let columnsDepth = 0;
+      let columnDepth = 0;
+      for (let depth = $pos.depth; depth > 0; depth--) {
+        if (!columnDepth && $pos.node(depth).type.name === 'column') columnDepth = depth;
+        if ($pos.node(depth).type.name === 'columns') {
+          columnsDepth = depth;
+          break;
+        }
+      }
+
+      if ((side === 'left' || side === 'right') && (columnElement || groupElement)) {
+        if (!columnsDepth) return null;
+        const columns = $pos.node(columnsDepth);
+        const columnIndex = columnElement && columnDepth === columnsDepth + 1
+          ? $pos.index(columnsDepth)
+          : side === 'left'
+            ? 0
+            : columns.childCount - 1;
+        return {
+          kind: 'columns',
+          pos: $pos.before(columnsDepth),
+          node: columns,
+          columnIndex,
+          side,
+          disabled: columns.childCount >= MAX_PAGE_COLUMNS,
+        };
+      }
+
+      if (side === 'top' || side === 'bottom') {
+        if (columnElement) {
+          for (let depth = $pos.depth; depth > 0; depth--) {
+            if ($pos.node(depth - 1).type.name !== 'column') continue;
+            return {
+              kind: 'sibling',
+              pos: $pos.before(depth),
+              node: $pos.node(depth),
+              side,
+            };
+          }
+          return null;
+        }
+        if (groupElement && columnsDepth) {
+          return { kind: 'sibling', pos: $pos.before(columnsDepth), node: $pos.node(columnsDepth), side };
+        }
+        if ($pos.depth === 0) return null;
+        return { kind: 'sibling', pos: $pos.before(1), node: $pos.node(1), side };
+      }
+
+      if ($pos.depth === 0) return null;
+      if (columnsDepth) {
+        const columns = $pos.node(columnsDepth);
+        return {
+          kind: 'columns',
+          pos: $pos.before(columnsDepth),
+          node: columns,
+          columnIndex: side === 'left' ? 0 : columns.childCount - 1,
+          side,
+          disabled: columns.childCount >= MAX_PAGE_COLUMNS,
+        };
+      }
+      return { kind: 'wrap', pos: $pos.before(1), node: $pos.node(1), side };
+    };
+
+    const showIndicator = (side: 'top' | 'bottom' | 'left' | 'right', rect: DOMRect): void => {
+      const ind = getIndicator();
+      if (!ind) return;
+      ind.style.display = 'block';
+      if (side === 'top' || side === 'bottom') {
+        ind.style.left = `${rect.left}px`;
+        ind.style.top = `${(side === 'top' ? rect.top : rect.bottom) - 2}px`;
+        ind.style.width = `${rect.width}px`;
+        ind.style.height = '4px';
+      } else {
+        ind.style.left = `${(side === 'left' ? rect.left : rect.right) - 2}px`;
+        ind.style.top = `${rect.top}px`;
+        ind.style.width = '4px';
+        ind.style.height = `${rect.height}px`;
+      }
+    };
 
     return [
       new Plugin({
         key: new PluginKey('columnsDropAndCleanup'),
+        view(view) {
+          const onDocumentDragEnd = () => {
+            hideIndicator();
+            activeDrop = null;
+            releaseDropCursorAfterDefaultCleanup(view);
+          };
+          document.addEventListener('dragend', onDocumentDragEnd, true);
+          return {
+            update(currentView) {
+              if (!currentView.editable && (activeDrop || dropCursorHost)) {
+                hideIndicator();
+                activeDrop = null;
+                setDropCursorSuppressed(currentView, false);
+              }
+            },
+            destroy() {
+              document.removeEventListener('dragend', onDocumentDragEnd, true);
+              indicator?.remove();
+              indicator = null;
+              activeDrop = null;
+              if (dropCursorCleanup !== null) {
+                window.clearTimeout(dropCursorCleanup);
+                dropCursorCleanup = null;
+              }
+              setDropCursorSuppressed(view, false);
+            },
+          };
+        },
         appendTransaction(transactions, _oldState, newState) {
           if (!transactions.some((tr) => tr.docChanged)) return null;
           let tr: Transaction | null = null;
@@ -573,188 +796,166 @@ export const Columns = Node.create({
         },
 
         props: {
+          handleKeyDown(view, event) {
+            if (event.key !== 'Escape' || !activeDrop) return false;
+            hideIndicator();
+            activeDrop = null;
+            setDropCursorSuppressed(view, false);
+            return false;
+          },
           handleDOMEvents: {
             dragover(view, event) {
-              const el = (event.target as HTMLElement | null)?.closest?.('.column, .columns, .editor-surface .prose > *') as HTMLElement | null;
-              if (!el) {
+              const drag = (view as unknown as DraggingView).dragging;
+              const transferTypes = Array.from((event as DragEvent).dataTransfer?.types ?? []);
+              if (
+                !view.editable ||
+                !(view.state.selection instanceof NodeSelection) ||
+                !drag?.slice?.content?.childCount ||
+                transferTypes.includes('Files')
+              ) {
                 hideIndicator();
                 activeDrop = null;
+                setDropCursorSuppressed(view, false);
                 return false;
               }
-              const rect = el.getBoundingClientRect();
-              const relX = (event.clientX - rect.left) / Math.max(1, rect.width);
-              if (relX < 0.2 || relX > 0.8) {
-                const side = relX < 0.2 ? 'left' : 'right';
-                const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? 0;
-                const $pos = view.state.doc.resolve(pos);
-                let inColumns = false;
-                let columnsPos = -1;
-                let childCount = 0;
-                for (let d = $pos.depth; d > 0; d--) {
-                  if ($pos.node(d).type.name === 'columns') {
-                    inColumns = true;
-                    columnsPos = $pos.before(d);
-                    childCount = $pos.node(d).childCount;
-                    break;
+              const target = dropTarget(view, event as DragEvent);
+              if (!target) {
+                hideIndicator();
+                activeDrop = null;
+                setDropCursorSuppressed(view, false);
+                return false;
+              }
+              activeDrop = target;
+              setDropCursorSuppressed(view, true);
+              if (target.kind === 'columns' && target.disabled) {
+                if ((event as DragEvent).dataTransfer) (event as DragEvent).dataTransfer!.dropEffect = 'none';
+                hideIndicator();
+              } else {
+                let anchor: HTMLElement | null = null;
+                if (target.kind === 'columns') {
+                  const group = view.nodeDOM(target.pos);
+                  if (group instanceof HTMLElement) {
+                    const columns = group.querySelector<HTMLElement>(':scope > .columns');
+                    const column = columns?.children[target.columnIndex];
+                    anchor = column instanceof HTMLElement ? column : group;
                   }
+                } else {
+                  const targetDOM = view.nodeDOM(target.pos);
+                  if (targetDOM instanceof HTMLElement) anchor = targetDOM;
                 }
-
-                if (inColumns && childCount >= MAX_PAGE_COLUMNS) {
-                  if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+                if (!anchor) {
                   hideIndicator();
-                  activeDrop = { pos, side, inColumns, columnsPos, childCount };
+                  activeDrop = null;
+                  setDropCursorSuppressed(view, false);
                   return false;
                 }
-
-                const ind = getIndicator();
-                if (ind) {
-                  ind.style.display = 'block';
-                  ind.style.top = `${rect.top}px`;
-                  ind.style.height = `${rect.height}px`;
-                  ind.style.left = `${side === 'left' ? rect.left : rect.right - 4}px`;
-                }
-                activeDrop = { pos, side, inColumns, columnsPos, childCount };
-                event.preventDefault();
-                return true;
+                showIndicator(target.side, anchor.getBoundingClientRect());
+                if ((event as DragEvent).dataTransfer) (event as DragEvent).dataTransfer!.dropEffect = 'move';
               }
-              hideIndicator();
-              activeDrop = null;
-              return false;
+              event.preventDefault();
+              return true;
             },
-            dragleave() {
+            dragleave(view, event) {
+              // keep the marker while the pointer crosses children inside the editor
+              const relatedTarget = (event as DragEvent).relatedTarget;
+              if (relatedTarget instanceof Element && view.dom.contains(relatedTarget)) return false;
               hideIndicator();
               activeDrop = null;
+              setDropCursorSuppressed(view, false);
               return false;
             },
             drop(view, event) {
               hideIndicator();
-              if (!activeDrop) return false;
+              if (!activeDrop) {
+                setDropCursorSuppressed(view, false);
+                return false;
+              }
               const dropInfo = activeDrop;
               activeDrop = null;
-
-              if (dropInfo.inColumns && dropInfo.childCount >= MAX_PAGE_COLUMNS) {
-                toast(t('editor.maxColumnsReached', { max: MAX_PAGE_COLUMNS }), { tone: 'error' });
+              releaseDropCursorAfterDefaultCleanup(view);
+              const dragging = (view as unknown as DraggingView).dragging;
+              const cancelDrop = () => {
                 event.preventDefault();
                 clearDragging(view);
                 return true;
+              };
+              if (!canApplyBlockDrop(view.editable, view.state.doc, dropInfo.pos, dropInfo.node))
+                return cancelDrop();
+              if (dropInfo.kind === 'columns' && dropInfo.disabled) {
+                toast(t('editor.maxColumnsReached', { max: MAX_PAGE_COLUMNS }), { tone: 'error' });
+                return cancelDrop();
               }
-
+              if (
+                !view.editable ||
+                !(view.state.selection instanceof NodeSelection) ||
+                !dragging?.slice?.content?.childCount
+              )
+                return cancelDrop();
               const draggedNodes: ProsemirrorNode[] = [];
-              const dragging = (view as unknown as DraggingView).dragging;
-              if (dragging?.slice?.content?.childCount) {
-                dragging.slice.content.forEach((n: ProsemirrorNode) => {
-                  if (n.type.name === 'column') {
-                    n.forEach((c) => draggedNodes.push(c));
-                  } else {
-                    draggedNodes.push(n);
-                  }
-                });
-              }
               const sel = view.state.selection;
-              if (draggedNodes.length === 0 && sel instanceof NodeSelection) {
-                if (sel.node.type.name === 'column') {
-                  sel.node.forEach((c) => draggedNodes.push(c));
-                } else {
-                  draggedNodes.push(sel.node);
-                }
-              }
-              if (draggedNodes.length === 0 && !sel.empty) {
-                const slice = sel.content();
-                slice.content.forEach((n) => {
-                  if (n.type.name === 'column') {
-                    n.forEach((c) => draggedNodes.push(c));
-                  } else {
-                    draggedNodes.push(n);
-                  }
-                });
-              }
-              if (draggedNodes.length === 0) {
-                draggedNodes.push(view.state.schema.nodes.paragraph!.create());
-              }
+              dragging.slice.content.forEach((node: ProsemirrorNode) => {
+                if (node.type.name === 'column') node.forEach((child) => draggedNodes.push(child));
+                else draggedNodes.push(node);
+              });
+              if (!draggedNodes.length) return cancelDrop();
 
-              const hasSource = !sel.empty;
+              const hasSource = dragging.move === true && !sel.empty;
               const sourceFrom = sel.from;
               const sourceTo = sel.to;
-
-              if (hasSource && dropInfo.pos >= sourceFrom && dropInfo.pos <= sourceTo) {
-                event.preventDefault();
-                clearDragging(view);
-                return true;
-              }
-
               const tr = view.state.tr;
-              const newCol = view.state.schema.nodes.column!.create(null, draggedNodes);
+              if (hasSource && dropInfo.pos >= sourceFrom && dropInfo.pos < sourceTo) return cancelDrop();
+              if (hasSource) tr.delete(sourceFrom, sourceTo);
 
-              if (dropInfo.inColumns) {
-                if (hasSource) {
-                  tr.delete(sourceFrom, sourceTo);
-                }
-                const mappedColumnsPos = tr.mapping.map(dropInfo.columnsPos);
+              if (dropInfo.kind === 'columns') {
+                const mappedColumnsPos = tr.mapping.map(dropInfo.pos);
                 const currentColumns = tr.doc.nodeAt(mappedColumnsPos);
-                if (!currentColumns || currentColumns.type.name !== 'columns') {
-                  event.preventDefault();
-                  clearDragging(view);
-                  return true;
-                }
+                if (!currentColumns || currentColumns.type !== view.state.schema.nodes.columns)
+                  return cancelDrop();
                 if (currentColumns.childCount >= MAX_PAGE_COLUMNS) {
                   toast(t('editor.maxColumnsReached', { max: MAX_PAGE_COLUMNS }), { tone: 'error' });
-                  event.preventDefault();
-                  clearDragging(view);
-                  return true;
+                  return cancelDrop();
                 }
-
-                const mappedPos = tr.mapping.map(dropInfo.pos);
-                const $mappedPos = tr.doc.resolve(Math.min(mappedPos, tr.doc.content.size));
-                let insertOffset = 0;
-                let foundCol = false;
-                for (let d = $mappedPos.depth; d > 0; d--) {
-                  if ($mappedPos.node(d).type.name === 'column' && $mappedPos.node(d - 1).type.name === 'columns') {
-                    const colIndex = $mappedPos.index(d - 1);
-                    const insertColIdx = dropInfo.side === 'left' ? colIndex : colIndex + 1;
-                    for (let i = 0; i < insertColIdx && i < currentColumns.childCount; i++) {
-                      insertOffset += currentColumns.child(i).nodeSize;
-                    }
-                    foundCol = true;
-                    break;
-                  }
-                }
-                if (!foundCol) {
-                  insertOffset = dropInfo.side === 'left' ? 0 : currentColumns.content.size;
-                }
-
-                const insertPos = mappedColumnsPos + 1 + insertOffset;
-                tr.insert(insertPos, newCol);
-                const finalColumnsPos = tr.mapping.map(mappedColumnsPos);
-                const finalColNode = tr.doc.nodeAt(finalColumnsPos);
-                if (finalColNode && finalColNode.type.name === 'columns') {
-                  tr.setNodeMarkup(finalColumnsPos, undefined, { ...finalColNode.attrs, widths: null });
-                }
-              } else {
-                const $pos = view.state.doc.resolve(dropInfo.pos);
-                if ($pos.depth < 1) {
-                  event.preventDefault();
-                  clearDragging(view);
-                  return true;
-                }
-                const targetBlockPos = $pos.before(1);
-
+                let targetIndex = dropInfo.columnIndex;
                 if (hasSource) {
-                  tr.delete(sourceFrom, sourceTo);
+                  const sourceNode = view.state.doc.nodeAt(sourceFrom);
+                  const sourceColumn = findColumnTarget(view.state.doc, sourceFrom);
+                  if (
+                    sourceNode?.type.name === 'column' &&
+                    sourceColumn?.columnsPosition === dropInfo.pos &&
+                    sourceColumn.index < targetIndex
+                  )
+                    targetIndex -= 1;
                 }
-                const mappedTargetBlockPos = tr.mapping.map(targetBlockPos);
-                const mappedTargetBlock = tr.doc.nodeAt(mappedTargetBlockPos);
-                if (!mappedTargetBlock) {
-                  event.preventDefault();
-                  clearDragging(view);
-                  return true;
+                targetIndex = Math.max(0, Math.min(targetIndex, currentColumns.childCount - 1));
+                const insertIndex = targetIndex + (dropInfo.side === 'right' ? 1 : 0);
+                let insertOffset = 0;
+                for (let index = 0; index < insertIndex; index++) insertOffset += currentColumns.child(index).nodeSize;
+                const newColumn = view.state.schema.nodes.column!.create(null, draggedNodes);
+                const insertPosition = mappedColumnsPos + 1 + insertOffset;
+                const insertion = Fragment.from(newColumn);
+                const $insert = tr.doc.resolve(insertPosition);
+                if (!$insert.parent.canReplace($insert.index(), $insert.index(), insertion)) return cancelDrop();
+                tr.insert(insertPosition, insertion);
+                tr.setNodeMarkup(mappedColumnsPos, undefined, { ...currentColumns.attrs, widths: null });
+              } else {
+                const targetPosition = tr.mapping.map(dropInfo.pos);
+                const targetNode = tr.doc.nodeAt(targetPosition);
+                if (!targetNode || !targetNode.eq(dropInfo.node)) return cancelDrop();
+                if (dropInfo.kind === 'wrap') {
+                  const newColumn = view.state.schema.nodes.column!.create(null, draggedNodes);
+                  const targetColumn = view.state.schema.nodes.column!.create(null, [targetNode]);
+                  const columns = view.state.schema.nodes.columns!.create(
+                    null,
+                    dropInfo.side === 'left' ? [newColumn, targetColumn] : [targetColumn, newColumn],
+                  );
+                  tr.replaceWith(targetPosition, targetPosition + targetNode.nodeSize, columns);
+                } else {
+                  const insertPosition = dropInfo.side === 'top' ? targetPosition : targetPosition + targetNode.nodeSize;
+                  const $insert = tr.doc.resolve(insertPosition);
+                  const insertion = Fragment.fromArray(draggedNodes);
+                  if (!$insert.parent.canReplace($insert.index(), $insert.index(), insertion)) return cancelDrop();
+                  tr.insert(insertPosition, insertion);
                 }
-
-                const colTarget = view.state.schema.nodes.column!.create(null, [mappedTargetBlock]);
-                const columnsNode = view.state.schema.nodes.columns!.create(
-                  null,
-                  dropInfo.side === 'left' ? [newCol, colTarget] : [colTarget, newCol],
-                );
-                tr.replaceWith(mappedTargetBlockPos, mappedTargetBlockPos + mappedTargetBlock.nodeSize, columnsNode);
               }
 
               view.dispatch(tr);

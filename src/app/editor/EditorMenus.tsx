@@ -81,6 +81,12 @@ import { turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
 import { openDialog, toast } from '../ui';
 import { colorLabel } from '../i18n/labels';
+import {
+  createColumnRemovalTransaction,
+  createParagraphBesideBlockTransaction,
+  findColumnTarget,
+  isEmptyColumn,
+} from './columnActions';
 
 function ToolButton({
   label,
@@ -1055,6 +1061,25 @@ function turnBlocks(editor: Editor, range: BlockRange, target: TurnTarget): void
   }
 }
 
+function previewColumnContents(column: ProseMirrorNode): string {
+  const labels: string[] = [];
+  column.forEach((child) => {
+    const kind =
+      {
+        paragraph: t('editor.columnContentText'),
+        heading: t('editor.columnContentHeading'),
+        image: t('editor.columnContentImage'),
+        table: t('editor.columnContentTable'),
+        linkedDatabaseView: t('editor.columnContentLinkedView'),
+      }[child.type.name] ?? t('editor.columnContentOther');
+    const text = child.textContent.replace(/\s+/g, ' ').trim();
+    labels.push(text ? kind + ': “' + text.slice(0, 48) + (text.length > 48 ? '…' : '') + '”' : kind);
+  });
+  const shown = labels.slice(0, 4).join(', ');
+  return labels.length > 4
+    ? shown + ', ' + t('editor.columnContentMore', { count: labels.length - 4 })
+    : shown;
+}
 export function BlockMenu({
   editor,
   request,
@@ -1575,6 +1600,112 @@ export function BlockMenu({
     );
   }
 
+  if (editor.isEditable && !multiSelection && (blockType === 'image' || blockType === 'columns')) {
+    const canInsertBefore = createParagraphBesideBlockTransaction(editor.state, request.pos, 'before') !== null;
+    const canInsertAfter = createParagraphBesideBlockTransaction(editor.state, request.pos, 'after') !== null;
+    const insertParagraph = (side: 'before' | 'after') => () => {
+      if (!editor.isEditable) return;
+      const transaction = createParagraphBesideBlockTransaction(editor.state, request.pos, side);
+      if (transaction) {
+        editor.view.dispatch(transaction);
+        editor.view.focus();
+      }
+    };
+    const insertionEntries: MenuEntry[] = [];
+    if (canInsertBefore)
+      insertionEntries.push({
+        label: t('editor.insertParagraphBefore'),
+        icon: ArrowUp,
+        onSelect: insertParagraph('before'),
+      });
+    if (canInsertAfter)
+      insertionEntries.push({
+        label: t('editor.insertParagraphAfter'),
+        icon: ArrowDown,
+        onSelect: insertParagraph('after'),
+      });
+    if (insertionEntries.length) entries.push({ separator: true }, ...insertionEntries);
+  }
+
+  if (editor.isEditable && insideColumns && !multiSelection) {
+    const captured = request.columnTarget;
+    const current = captured
+      ? findColumnTarget(editor.state.doc, captured.columnsPosition, captured.index)
+      : findColumnTarget(editor.state.doc, request.pos);
+    const target = current &&
+      (!captured || (current.columns.eq(captured.columns) && current.column.eq(captured.column)))
+      ? current
+      : null;
+    if (target) {
+      const removeColumn = (mode: 'preserve' | 'discard') => () => {
+        if (!editor.isEditable) return;
+        const fresh = findColumnTarget(editor.state.doc, target.columnsPosition, target.index);
+        if (!fresh || !fresh.columns.eq(target.columns) || !fresh.column.eq(target.column)) return;
+        const apply = (expectedDoc?: ProseMirrorNode) => {
+          if (!editor.isEditable) return;
+          if (expectedDoc && !editor.state.doc.eq(expectedDoc)) {
+            toast(t('editor.columnChangedBeforeConfirm'), { tone: 'info' });
+            return;
+          }
+          const transaction = createColumnRemovalTransaction(editor.state, target, mode);
+          if (transaction) editor.view.dispatch(transaction.scrollIntoView());
+        };
+        if (mode === 'preserve') {
+          if (isEmptyColumn(target.column)) {
+            apply();
+            return;
+          }
+          const expectedDoc = editor.state.doc;
+          openDialog({
+            kind: 'confirm',
+            title: t('editor.removeColumnTitle'),
+            body: t('editor.removeColumnPreview', {
+              count: t(
+                target.column.childCount === 1 ? 'editor.oneColumnBlock' : 'editor.manyColumnBlocks',
+                { count: target.column.childCount },
+              ),
+              preview: previewColumnContents(target.column),
+            }),
+            confirmLabel: t('editor.removeColumn'),
+            onConfirm: () => apply(expectedDoc),
+          });
+          return;
+        }
+        const expectedDoc = editor.state.doc;
+        openDialog({
+          kind: 'confirm',
+          title: t('editor.discardColumnTitle'),
+          body: t('editor.discardColumnPreview', {
+            count: t(
+              target.column.childCount === 1 ? 'editor.oneColumnBlock' : 'editor.manyColumnBlocks',
+              { count: target.column.childCount },
+            ),
+            preview: previewColumnContents(target.column),
+          }),
+          confirmLabel: t('editor.discardColumnContents'),
+          danger: true,
+          onConfirm: () => apply(expectedDoc),
+        });
+      };
+      entries.push(
+        { separator: true },
+        { heading: t('editor.columnActionsFor', { column: target.index + 1 }) },
+        {
+          label: t('editor.removeColumn'),
+          icon: Columns2,
+          onSelect: removeColumn('preserve'),
+        },
+        ...(!isEmptyColumn(target.column)
+          ? [{
+              label: t('editor.discardColumnContents'),
+              icon: Trash2,
+              danger: true,
+              onSelect: removeColumn('discard'),
+            } satisfies MenuEntry]
+          : []),
+      );
+    }
+  }
   const textual = multiSelection || turnable(editor, request.pos);
   const firstTurnInto = entries.findIndex(
     (entry) => 'heading' in entry && entry.heading === t('editor.turnInto'),

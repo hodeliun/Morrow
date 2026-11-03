@@ -1,5 +1,18 @@
 # Execução autorizada — Aumento de Escopo 2
 
+## Diretriz vigente — entregas sequenciais, 03/11/2026
+
+O mantenedor determinou uma única entrega funcional ativa por vez, preferindo
+uma issue ou o menor grupo inseparável. Validar, publicar, confirmar CI e encerrar
+as issues dessa entrega antes de iniciar a seguinte. Os grupos históricos abaixo
+não autorizam frentes simultâneas. Preservar o restante do WIP em pausa e reutilizar
+evidências válidas; aceite local não equivale a entrega publicada.
+
+A primeira entrega isolada é T20 (#71): ações de colunas, inserção entre blocos e
+um único indicador de drop. Pré-requisitos estritos de preservação de conteúdo
+integram essa mesma entrega; a interface de resize do T18 e demais funcionalidades
+retomadas permanecem fora dela. Um commit coerente, sem nova release ou instalação.
+
 Em 28/10/2026 o mantenedor autorizou explicitamente implementar todos os 39
 tickets, incluindo o adendo de arquivos/web/painéis, com GPT 6 Luna max executor
 e GPT 6.1 Sol medium revisor. Esta autorização posterior supera os avisos de

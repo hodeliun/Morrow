@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T20",
+  "issue": "https://github.com/hodeliun/Morrow/issues/71",
+  "officialBaseVersion": "1.3.0",
+  "publicBase": "768bff00b63bd760c4e4836d5908ff87f76b2298",
+  "deliveryScope": "Layout column actions; no database schema migration or image resize UI",
+  "isolatedGate": {
+    "command": "npm run check",
+    "snapshot": "T20-isolated-02",
+    "status": "passed",
+    "tests": 787,
+    "testFiles": 99,
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "sourceUnchanged": true,
+    "sourceFiles": 357,
+    "artifactFiles": 3597,
+    "sourceSha256": "787bd1094670c9d6a522df4377ccdead0d9164af4050e1d48aacd9c759dbb9c6",
+    "artifactsSha256": "fbdd87cb419fa1bc765512b03d450447e3980123fbd2fb1d8c06e0f02078e335"
+  },
+  "isolatedRuntime": {
+    "status": "passed",
+    "report": "ui-1793703982712",
+    "rawReportSha256": "d67b867168c38699ef66f322e6e9aecf8a4f2d294a6b756705bcca917ac369da",
+    "startedUtc": "2026-11-03T11:06:22.71Z",
+    "finishedUtc": "2026-11-03T11:06:40.739Z",
+    "sourceSha256": "787bd1094670c9d6a522df4377ccdead0d9164af4050e1d48aacd9c759dbb9c6",
+    "artifactsSha256": "fbdd87cb419fa1bc765512b03d450447e3980123fbd2fb1d8c06e0f02078e335",
+    "allSixCriteriaVerified": true,
+    "actualDropOperations": [
+      {
+        "side": "top",
+        "structure": {
+          "sourceCount": 1,
+          "sourceIsTopLevel": false,
+          "sourceColumn": 3,
+          "tailColumn": 3,
+          "sourceBeforeTail": true,
+          "columnCount": 4
+        },
+        "undoRestoredExactBytes": true
+      },
+      {
+        "side": "right",
+        "structure": {
+          "sourceCount": 1,
+          "sourceIsTopLevel": false,
+          "sourceColumn": 4,
+          "tailColumn": 3,
+          "sourceBeforeTail": false,
+          "columnCount": 5
+        },
+        "undoRestoredExactBytes": true
+      }
+    ],
+    "assertions": {
+      "fourSideDropIndicatorGeometryAndEscapeCleanup": true,
+      "verticalAndLateralDropsPreserveIDsAndUndoExactBytes": true,
+      "normalTextBackspaceDoesNotRemoveColumnAndUndoRestoresBytes": true,
+      "emptyColumnActionAndUndo": true,
+      "emptyBoundaryBackspaceAndUndo": true,
+      "emptyColumnRemovedBeforePopulatedReflow": true,
+      "preserveAfterGroup": true,
+      "preserveInsideGroupIdsOrderBytesAndReflow": {
+        "fragmentPositions": [
+          1512,
+          1658,
+          1696,
+          1752,
+          1872
+        ],
+        "remainingIds": [
+          "t20-second-child",
+          "t20-tail-child"
+        ],
+        "remainingWidths": [
+          276.796875,
+          415.203125
+        ],
+        "remainingShare": 0.39999548410404623
+      },
+      "newParagraphImmediatelyBetweenGroupAndImage": true,
+      "explicitDiscardIsSeparate": true,
+      "reopenPreservesControlLinkedViewIdsImageAndSourceBytes": true,
+      "readOnlyColumnContentAndMarkdownBytesMtimeRemainUnchanged": true,
+      "coverageNote": "Identified isolated T20 scenario covers ordinary-text and empty-boundary Backspace, preserved IDs/markers, reflow, four destination indicators with Escape, actual vertical/lateral drops with public Undo, paragraph insertion and EN/PT/ES light/dark at520px. RESULT status records actual completion."
+    },
+    "snapshotStableAfter": true,
+    "packagedStableAfter": true,
+    "rendererErrors": 0,
+    "genericErrorBoundaries": 0,
+    "childrenExitCodes": [
+      0,
+      0
+    ],
+    "ownedProcessesAfter": 0,
+    "runtimeLeaseEnded": true,
+    "fixtureRemoved": false,
+    "fixtureRetention": "Synthetic fixture retained privately for acceptance audit; reassess after maintainer review",
+    "inputLimit": "Renderer gestures in hidden isolated Electron; no OS clipboard or physical Windows input claim",
+    "readiness": "Empty-paragraph Backspace waits for the real natural caret selection; no programmatic selection and no instantaneous-input claim"
+  },
+  "historicalRuntime": {
+    "build": "38",
+    "status": "passed",
+    "scope": "All6 criteria accepted on prior cumulative tree; not a substitute for isolated delivery verification"
+  },
+  "publication": {
+    "downloadableRelease": false,
+    "installed": false,
+    "otherTicketsIncluded": false
+  },
+  "packagedArtifact": {
+    "status": "passed",
+    "snapshot": "T20-isolated-02",
+    "artifactsVerified": 3597,
+    "allMatch": true,
+    "executableSha256": "bbb13e5c58331a8e269f1b2b451745375d00160a6747256515e69ec198114e7e",
+    "asarSha256": "1d6d7c1502a6e47d0b55e049b748ace5681752edb2039e438fa827973d1933a5",
+    "dependencyReader": "Pinned ASAR reader 3.4.1 from existing physical dependency root; isolated candidate verified"
+  },
+  "initialGate": {
+    "command": "npm run check",
+    "status": "passed",
+    "tests": 787,
+    "testFiles": 99,
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "sourceUnchanged": true,
+    "sourceFiles": 357,
+    "artifactFiles": 3597,
+    "sourceSha256": "f506d9a74f54a8417504237fbf55a4488b6ebd984570a9afc156f866665d1c26",
+    "artifactsSha256": "c1e32de909063e730e2b249f3e6391a7dacd29fdbaffb37a9de662cbb767ba73"
+  },
+  "initialRuntimeNegative": {
+    "status": "failed-in-initial-isolated-snapshot",
+    "verticalDropAndExactUndo": "passed",
+    "lateralAdjacentDrop": "cancelled unexpectedly; source bytes retained",
+    "diagnosis": "Self-drop guard incorrectly included the exclusive end of the source range",
+    "fix": "Keep the source end outside the rejected interval",
+    "initialSourceSha256": "f506d9a74f54a8417504237fbf55a4488b6ebd984570a9afc156f866665d1c26",
+    "nextVerification": "Corrected-source gate and T20 runtime required before publication"
+  },
+  "initialPackagedArtifact": {
+    "status": "passed",
+    "artifactsVerified": 3597,
+    "allMatch": true,
+    "executableSha256": "d124e364ee6c0352d3fa615082dba5ade93e095f8397f6ccbf8174ab3c37650c",
+    "asarSha256": "cc7de32922d6b75bd1e58a5ab79d9d0f64420b8b635c1f12e6c07b2c110c2abf",
+    "dependencyReader": "Pinned ASAR reader3.4.1 from existing physical dependency root; candidate remains isolated"
+  }
+}
