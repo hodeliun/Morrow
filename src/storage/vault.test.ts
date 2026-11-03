@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { canvasDoc, canvasFromDoc } from '../core/canvas';
 import type { Command } from '../core/commands';
 import type { DocNode, PageId, WorkspaceState } from '../core/model';
+import type { VaultOp } from '../core/vault/plan';
 import { encodeFileIcon, encodeLucideIcon, sanitizeSvg } from '../core/icons';
 import { sampleCommands } from '../core/sample';
 import { isPageTreeFileVisible, normalizeFileCatalogPreferences } from '../core/vault/fileCatalog';
@@ -122,6 +124,352 @@ function failAfterFirstPageWrite(vault: MemoryVault): VaultBridge {
 }
 
 describe('opening a folder of markdown files', () => {
+  it('keeps live and trashed sibling order separate through Journal startup writes', async () => {
+    const database = [
+      '---',
+      'kind: database',
+      'database:',
+      '  properties: []',
+      '  views: []',
+      '---',
+      '# Live records',
+      '',
+    ].join('\n');
+    const trashCopy = database.replace('# Live records', '# Trashed records');
+    const vault = new MemoryVault({
+      'T12 Records.md': database,
+      'T12 Records/Live row.md': 'A live table row.\n',
+      '.trash/T12 Records.md': trashCopy,
+      '.trash/T12 Records/Trashed row.md': 'A trashed table row.\n',
+      'Loose note.md': 'A separate live root.\n',
+      '.morrow/workspace.json': JSON.stringify({
+        version: 1,
+        pages: {
+          'T12 Records.md': { id: 't12-records', order: 0 },
+          'T12 Records/Live row.md': { id: 't12-live-row', order: 0 },
+          '.trash/T12 Records.md': { id: 't12-trash', order: 0, trashed: 10 },
+          '.trash/T12 Records/Trashed row.md': { id: 't12-trash-row', order: 0 },
+        },
+      }),
+    });
+    const operations: VaultOp[][] = [];
+    const bridge = new Proxy(vault as unknown as VaultBridge, {
+      get(target, property) {
+        if (property === 'apply')
+          return async (ops: Parameters<VaultBridge['apply']>[0]) => {
+            operations.push(ops);
+            return vault.apply(ops);
+          };
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(vault) : value;
+      },
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+
+    expect(session.getState().pages['t12-records']?.order).toBe(0);
+    expect(session.getState().pages['t12-trash']?.order).toBe(0);
+    expect(session.getState().pages['t12-live-row']?.parentId).toBe('t12-records');
+    expect(session.getState().pages['t12-trash-row']?.parentId).toBe('t12-trash');
+    await session.markInitialized();
+    await run(session, {
+      type: 'page.create', id: 'journal-root', parentId: null, now: 20, kind: 'journal', title: 'Journal',
+    });
+    await run(session, {
+      type: 'page.create', id: 'journal-day', parentId: 'journal-root', now: 21,
+      dailyDate: '2026-11-02', title: 'November 2, 2026',
+    });
+
+    expect(operations.flat().filter((op) => op.op === 'write' && op.path === 'T12 Records.md')).toEqual([]);
+    expect(vault.text('T12 Records.md')).toBe(database);
+    expect(vault.text('.trash/T12 Records.md')).toBe(trashCopy);
+    expect(vault.text('Journal/2026-11-02.md')).toBeDefined();
+    await session.close();
+  });
+
+  it('preserves database extensions on rename and database edits, without restoring removed entries', async () => {
+    const source = [
+      '---',
+      'kind: database',
+      'database:',
+      '  titleAlias: "  "',
+      '  displayPropertyId: obsolete',
+      '  futureDatabaseFlag:',
+      '    nested: [keep, exact]',
+      '  properties:',
+      '    - id: status',
+      '      name: Status',
+      '      type: select',
+      '      format:',
+      '        locale: en-US',
+      '        futureFormatFlag: keep-format',
+      '      options:',
+      '        - id: option-a',
+      '          name: Open',
+      '          color: green',
+      '          futureOptionFlag: keep-option-a',
+      '        - id: option-b',
+      '          name: Closed',
+      '          color: red',
+      '          futureOptionFlag: remove-with-option-b',
+      '      futurePropertyFlag:',
+      '        nested: keep-property',
+      '    - id: obsolete',
+      '      name: Obsolete',
+      '      type: text',
+      '      futureRemovedProperty: remove-with-property',
+      '    - id: run',
+      '      name: Add row',
+      '      type: button',
+      '      action:',
+      '        label: Add row',
+      '        icon: plus',
+      '        color: blue',
+      '        futureActionFlag: keep-action',
+      '        steps:',
+      '          - id: add-step',
+      '            type: addRows',
+      '            count:',
+      '              source: \'1\'',
+      '              bindings:',
+      '                - start: 0',
+      '                  end: 1',
+      '                  source: \'1\'',
+      '                  kind: database',
+      '                  databaseId: source-db',
+      '                  futureBindingFlag: keep-binding',
+      '            title:',
+      '              source: \'"New"\'',
+      '              bindings: []',
+      '            values: {}',
+      '            futureStepFlag: keep-step',
+      '  views:',
+      '    - id: keep-view',
+      '      name: Keep',
+      '      type: table',
+      '      filters: []',
+      '      sorts: []',
+      '      hidden: []',
+      '      futureViewFlag:',
+      '        nested: keep-view',
+      '    - id: remove-view',
+      '      name: Remove',
+      '      type: table',
+      '      filters: []',
+      '      sorts: []',
+      '      hidden: []',
+      '      futureRemovedView: remove-with-view',
+      '---',
+      '# Records',
+      '',
+    ].join('\n');
+    const vault = new MemoryVault({ 'Records.md': source });
+    const session = await open(vault);
+    const databaseId = idOf(session, 'Records');
+
+    await run(session, { type: 'page.rename', id: databaseId, title: 'Renamed records', now: 5 });
+    const renamed = vault.text('Renamed records.md')!;
+    const renamedRaw = parse(renamed.slice(4, renamed.indexOf('\n---', 4))) as {
+      database: {
+        futureDatabaseFlag: { nested: string[] };
+        properties: Array<Record<string, unknown> & { format?: { futureFormatFlag?: string } }>;
+      };
+    };
+    expect(renamedRaw.database.futureDatabaseFlag).toEqual({ nested: ['keep', 'exact'] });
+    expect(renamedRaw.database.properties[0]?.format?.futureFormatFlag).toBe('keep-format');
+    expect((renamedRaw.database.properties[2]?.action as Record<string, unknown>)?.futureActionFlag)
+      .toBe('keep-action');
+    const renamedAction = renamedRaw.database.properties[2]?.action as { steps: Array<Record<string, unknown>> };
+    expect(renamedAction.steps[0]?.futureStepFlag).toBe('keep-step');
+    const countFormula = renamedAction.steps[0]?.count as { bindings: Array<Record<string, unknown>> };
+    expect(countFormula.bindings[0]?.futureBindingFlag).toBe('keep-binding');
+    expect(renamed).toContain('futurePropertyFlag:');
+    expect(renamed).toContain('futureViewFlag:');
+
+    const database = session.getState().pages[databaseId]!.database!;
+    await run(session, {
+      type: 'database.set',
+      id: databaseId,
+      now: 6,
+      database: {
+        ...database,
+        properties: database.properties
+          .filter((property) => property.id !== 'obsolete')
+          .map((property) => property.id === 'status'
+            ? { ...property, options: property.options.filter((option) => option.id !== 'option-b') }
+            : property),
+        views: database.views.filter((view) => view.id !== 'remove-view'),
+      },
+    });
+
+    const saved = vault.text('Renamed records.md')!;
+    const raw = parse(saved.split('---\n')[1]!.split('\n---')[0]!) as {
+      database: {
+        titleAlias?: string;
+        displayPropertyId?: string;
+        futureDatabaseFlag: { nested: string[] };
+        properties: Array<Record<string, unknown>>;
+        views: Array<Record<string, unknown>>;
+      };
+    };
+    expect(raw.database.futureDatabaseFlag).toEqual({ nested: ['keep', 'exact'] });
+    // These fields are opaque in format 12; this delivery does not introduce the later title/display features.
+    expect(raw.database.titleAlias).toBe('  ');
+    expect(raw.database.displayPropertyId).toBe('obsolete');
+    expect(raw.database.properties.map((property) => property.id)).toEqual(['status', 'run']);
+    expect(raw.database.properties[0]?.futurePropertyFlag).toEqual({ nested: 'keep-property' });
+    expect((raw.database.properties[0]?.format as { futureFormatFlag?: string } | undefined)?.futureFormatFlag)
+      .toBe('keep-format');
+    expect(raw.database.properties[0]?.options).toEqual([
+      expect.objectContaining({ id: 'option-a', futureOptionFlag: 'keep-option-a' }),
+    ]);
+    expect(raw.database.views.map((view) => view.id)).toEqual(['keep-view']);
+    expect(raw.database.views[0]?.futureViewFlag).toEqual({ nested: 'keep-view' });
+    expect(saved).not.toContain('remove-with-property');
+    expect(saved).not.toContain('remove-with-option-b');
+    expect(saved).not.toContain('remove-with-view');
+
+    await session.close();
+    const reopened = await open(vault);
+    expect(idOf(reopened, 'Renamed records')).toBe(databaseId);
+    expect(vault.text('Renamed records.md')).toBe(saved);
+
+    const reopenedDatabase = reopened.getState().pages[databaseId]!.database!;
+    const status = reopenedDatabase.properties.find((property) => property.id === 'status')!;
+    await run(reopened, {
+      type: 'database.set',
+      id: databaseId,
+      now: 7,
+      database: {
+        ...reopenedDatabase,
+        properties: [
+          ...reopenedDatabase.properties.map((property) => property.id === 'status'
+            ? {
+                ...property,
+                format: undefined,
+                options: [...property.options, { id: 'option-b', name: 'Reopened', color: 'red' as const }],
+              }
+            : property),
+          { id: 'obsolete', name: 'New property', type: 'text', options: [] },
+        ],
+        views: [
+          ...reopenedDatabase.views,
+          { id: 'remove-view', name: 'New view', type: 'table', filters: [], sorts: [], groupBy: null,
+            dateProp: null, hidden: [] },
+        ],
+      },
+    });
+    const recreated = parse(vault.text('Renamed records.md')!.slice(4, vault.text('Renamed records.md')!.indexOf('\n---', 4))) as {
+      database: { properties: Array<Record<string, unknown>>; views: Array<Record<string, unknown>> };
+    };
+    expect(recreated.database.properties.find((property) => property.id === 'obsolete')?.futureRemovedProperty)
+      .toBeUndefined();
+    const recreatedStatus = recreated.database.properties.find((property) => property.id === 'status')!;
+    expect(recreatedStatus.format).toEqual({ futureFormatFlag: 'keep-format' });
+    expect((recreatedStatus.options as Array<Record<string, unknown>>).find((option) => option.id === 'option-b')?.futureOptionFlag)
+      .toBeUndefined();
+    expect(recreated.database.views.find((view) => view.id === 'remove-view')?.futureRemovedView).toBeUndefined();
+    expect(status.options.map((option) => option.id)).toEqual(['option-a']);
+    await reopened.close();
+  });
+
+  it('fails a write that would erase unknown sort metadata without touching the source', async () => {
+    const source = [
+      '---',
+      'kind: database',
+      'database:',
+      '  properties: []',
+      '  views:',
+      '    - id: main',
+      '      name: Main',
+      '      type: table',
+      '      filters: []',
+      '      sorts:',
+      '        - prop: title',
+      '          dir: desc',
+      '          futureSortHint: preserve-or-refuse',
+      '      hidden: []',
+      '---',
+      '# Sort metadata',
+      '',
+    ].join('\n');
+    const vault = new MemoryVault({ 'Sort metadata.md': source });
+    const operations: VaultOp[][] = [];
+    const bridge = new Proxy(vault as unknown as VaultBridge, {
+      get(target, property) {
+        if (property === 'apply')
+          return async (ops: Parameters<VaultBridge['apply']>[0]) => {
+            operations.push(ops);
+            return vault.apply(ops);
+          };
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(vault) : value;
+      },
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const databaseId = idOf(session, 'Sort metadata');
+    const database = session.getState().pages[databaseId]!.database!;
+    const changed = session.execute({
+      type: 'database.set',
+      id: databaseId,
+      now: 9,
+      database: {
+        ...database,
+        views: database.views.map((view) => ({ ...view, sorts: [] })),
+      },
+    });
+    expect(changed.ok).toBe(true);
+    await session.flush();
+
+    expect(session.saveStatus.state).toBe('error');
+    expect(session.saveStatus.error).toMatch(/sort fields this version cannot safely rewrite/);
+    expect(operations.flat().filter((op) => op.op === 'write' && op.path === 'Sort metadata.md')).toEqual([]);
+    expect(vault.text('Sort metadata.md')).toBe(source);
+    await session.close();
+  });
+
+  it('keeps an unsupported database view source exact and unwritten on open-only actions', async () => {
+    const source = [
+      '---',
+      'kind: database',
+      'database:',
+      '  futureDatabaseFlag: preserve-on-disk',
+      '  properties: []',
+      '  views:',
+      '    - id: future-view',
+      '      name: Future',
+      '      type: calendar-v99',
+      '---',
+      '# Future database',
+      '',
+    ].join('\n');
+    const vault = new MemoryVault({ 'Future database.md': source });
+    const operations: VaultOp[][] = [];
+    const bridge = new Proxy(vault as unknown as VaultBridge, {
+      get(target, property) {
+        if (property === 'apply')
+          return async (ops: Parameters<VaultBridge['apply']>[0]) => {
+            operations.push(ops);
+            return vault.apply(ops);
+          };
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(vault) : value;
+      },
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    await session.markInitialized();
+    await run(session, { type: 'page.markOpened', id: idOf(session, 'Future database'), now: 9 });
+
+    expect(operations.flat().filter((op) => op.op === 'write' && op.path === 'Future database.md')).toEqual([]);
+    expect(vault.text('Future database.md')).toBe(source);
+    await session.close();
+  });
+
   it('reads pages, folders, links, images and canvases', async () => {
     const vault = new MemoryVault(OBSIDIAN);
     const session = await open(vault);
@@ -1007,5 +1355,283 @@ describe('encrypted pages in files', () => {
     expect(vault.text('Diary.md')).toBe('---\ntags: [private]\n---\nThird secret.\n');
     await session.close();
     await reopened.close();
+  });
+});
+
+describe('workspace and recent metadata serialization', () => {
+  function recordingBridge(vault: MemoryVault, scan?: VaultBridge['scan']) {
+    const batches: VaultOp[][] = [];
+    const bridge = new Proxy(vault as unknown as VaultBridge, {
+      get(target, property) {
+        if (property === 'scan' && scan) return scan;
+        if (property === 'apply')
+          return async (ops: Parameters<VaultBridge['apply']>[0]) => {
+            batches.push(ops);
+            return vault.apply(ops);
+          };
+        const value = Reflect.get(target, property) as unknown;
+        return typeof value === 'function' ? value.bind(vault) : value;
+      },
+    });
+    return { bridge, batches };
+  }
+
+  it('uses the same canonical workspace baseline after reopen so markOpened writes only recent metadata', async () => {
+    const vault = new MemoryVault({ 'Registry note.md': 'A synthetic registry note.\n' });
+    const first = await open(vault);
+    const id = idOf(first, 'Registry note');
+    await first.markInitialized();
+    const canonicalRegistry = vault.text('.morrow/workspace.json');
+    expect(canonicalRegistry).toBeTruthy();
+    await first.close();
+
+    const { bridge, batches } = recordingBridge(vault);
+    const reopenedResult = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!reopenedResult.ok) throw new Error(reopenedResult.error);
+    const reopened = reopenedResult.value;
+    await run(reopened, { type: 'page.markOpened', id, now: 123 });
+
+    const operations = batches.flat();
+    expect(operations.filter((op) => op.op === 'write' && op.path === '.morrow/workspace.json')).toEqual([]);
+    expect(operations.filter((op) => op.op === 'write' && op.path === '.morrow/recent.json')).toHaveLength(1);
+    expect(vault.text('.morrow/workspace.json')).toBe(canonicalRegistry);
+    const batchesAfterMarkOpened = batches.length;
+    expect(await reopened.flush()).toBe(true);
+    expect(batches).toHaveLength(batchesAfterMarkOpened);
+    await reopened.close();
+  });
+
+  it('does not rewrite an unchanged canonical registry when extensions follow managed fields', async () => {
+    const workspace = {
+      version: 1,
+      pages: {
+        'Registry note.md': {
+          id: 't12-order-note',
+          created: 1,
+          order: 0,
+          futureEntryFlag: { keep: 'after managed entry fields' },
+        },
+      },
+      futureWorkspaceFlag: { keep: 'after pages' },
+    };
+    const workspaceText = JSON.stringify(workspace, null, 1) + '\n';
+    const vault = new MemoryVault({
+      'Registry note.md': 'A synthetic registry note.\n',
+      '.morrow/workspace.json': workspaceText,
+      '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }) + '\n',
+    });
+    const { bridge, batches } = recordingBridge(vault);
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const id = idOf(session, 'Registry note');
+
+    await run(session, { type: 'page.markOpened', id, now: 123 });
+
+    const operations = batches.flat();
+    expect(operations.filter((op) => op.op === 'write' && op.path === '.morrow/workspace.json')).toEqual([]);
+    expect(operations.filter((op) => op.op === 'write' && op.path === '.morrow/recent.json')).toHaveLength(1);
+    expect(vault.text('.morrow/workspace.json')).toBe(workspaceText);
+    await session.close();
+  });
+
+  it('does not rewrite unchanged recent metadata when extensions follow managed fields', async () => {
+    const workspace = {
+      version: 1,
+      pages: { 'Registry note.md': { id: 't12-recent-order-note', created: 1, order: 0 } },
+    };
+    const recent = {
+      version: 1,
+      opened: { 't12-recent-order-note': 5, 'future-opened-id': { keep: true } },
+      activity: { '2026-11-02': 4, 'future-activity-bucket': { keep: true } },
+      futureRecentFlag: { keep: 'after managed fields' },
+    };
+    const recentText = JSON.stringify(recent) + '\n';
+    const vault = new MemoryVault({
+      'Registry note.md': 'A synthetic registry note.\n',
+      '.morrow/workspace.json': JSON.stringify(workspace, null, 1) + '\n',
+      '.morrow/recent.json': recentText,
+    });
+    const { bridge, batches } = recordingBridge(vault);
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const id = idOf(session, 'Registry note');
+
+    await run(session, { type: 'page.rename', id, title: 'Renamed note', now: 2 });
+
+    expect(batches.flat().filter((op) => op.op === 'write' && op.path === '.morrow/recent.json')).toEqual([]);
+    expect(vault.text('.morrow/recent.json')).toBe(recentText);
+    await session.close();
+  });
+
+  it('preserves workspace and recent extensions by stable identity while canonical values and removals win', async () => {
+    const workspace = {
+      version: 1,
+      futureWorkspaceFlag: { nested: ['keep', 7] },
+      pages: {
+        'Registry note.md': {
+          id: 't12-stable-note',
+          created: 1,
+          order: 0,
+          favorite: true,
+          futureEntryFlag: { keep: 'through rename' },
+        },
+      },
+    };
+    const recent = {
+      version: 1,
+      opened: { 't12-stable-note': 1, 't12-opaque-open': 2 },
+      activity: { '2001-01-01': 7, 'future-activity-bucket': { keep: true } },
+      futureRecentFlag: { keep: 'recent extension' },
+    };
+    const vault = new MemoryVault({
+      'Registry note.md': 'A synthetic registry note.\n',
+      '.morrow/workspace.json': JSON.stringify(workspace, null, 1) + '\n',
+      '.morrow/recent.json': JSON.stringify(recent, null, 1) + '\n',
+    });
+    const session = await open(vault);
+    const id = idOf(session, 'Registry note');
+
+    await run(session, { type: 'page.rename', id, title: 'Registry renamed', now: 2 });
+    let savedWorkspace = JSON.parse(vault.text('.morrow/workspace.json')!);
+    expect(savedWorkspace.futureWorkspaceFlag).toEqual(workspace.futureWorkspaceFlag);
+    expect(savedWorkspace.pages['Registry renamed.md']).toMatchObject({
+      id,
+      futureEntryFlag: { keep: 'through rename' },
+    });
+    expect(savedWorkspace.pages['Registry note.md']).toBeUndefined();
+
+    await run(session, { type: 'page.setFavorite', id, favorite: false });
+    savedWorkspace = JSON.parse(vault.text('.morrow/workspace.json')!);
+    expect(savedWorkspace.pages['Registry renamed.md']!.favorite).toBeUndefined();
+    expect(savedWorkspace.pages['Registry renamed.md']!.futureEntryFlag).toEqual({ keep: 'through rename' });
+
+    await run(session, { type: 'page.markOpened', id, now: 9 });
+    const savedRecent = JSON.parse(vault.text('.morrow/recent.json')!);
+    expect(savedRecent.futureRecentFlag).toEqual(recent.futureRecentFlag);
+    expect(savedRecent.opened[id]).toBe(9);
+    expect(savedRecent.opened['t12-opaque-open']).toBe(2);
+    expect(savedRecent.activity['2001-01-01']).toBe(7);
+    expect(savedRecent.activity['future-activity-bucket']).toEqual({ keep: true });
+
+    await run(session, { type: 'page.trash', id, now: 10 });
+    await run(session, { type: 'page.deleteForever', id });
+    expect(Object.values(JSON.parse(vault.text('.morrow/workspace.json')!).pages)).not.toContainEqual(
+      expect.objectContaining({ id }),
+    );
+    expect(JSON.parse(vault.text('.morrow/recent.json')!).opened[id]).toBeUndefined();
+    const created = session.execute({
+      type: 'page.create',
+      id,
+      parentId: null,
+      title: 'Registry recreated',
+      doc: doc('Recreated synthetic note.'),
+      now: 20,
+    });
+    expect(created.ok).toBe(true);
+    await session.flush();
+    savedWorkspace = JSON.parse(vault.text('.morrow/workspace.json')!);
+    expect(savedWorkspace.pages['Registry recreated.md']!.id).toBe(id);
+    expect(savedWorkspace.pages['Registry recreated.md']!.futureEntryFlag).toBeUndefined();
+    expect(savedWorkspace.futureWorkspaceFlag).toEqual(workspace.futureWorkspaceFlag);
+    expect(JSON.parse(vault.text('.morrow/recent.json')!).opened[id]).toBeUndefined();
+    await session.close();
+  });
+
+  it('does not resurrect managed recent IDs or expired activity days when preserving opaque recent entries', async () => {
+    const paths = Array.from({ length: 301 }, (_, index) => `Registry ${String(index).padStart(3, '0')}.md`);
+    const workspacePages = Object.fromEntries(paths.map((path, index) => [
+      path,
+      { id: `recent-${String(index).padStart(3, '0')}`, created: 1, order: index },
+    ]));
+    const opened = Object.fromEntries(paths.map((_, index) => [
+      `recent-${String(index).padStart(3, '0')}`,
+      index + 1,
+    ]));
+    const activityDays = Array.from({ length: 401 }, (_, index) =>
+      new Date(Date.UTC(2020, 0, index + 1)).toISOString().slice(0, 10),
+    );
+    const activity = Object.fromEntries(activityDays.map((day, index) => [day, index + 1]));
+    const vault = new MemoryVault({
+      ...Object.fromEntries(paths.map((path) => [path, 'A synthetic registry page.\n'])),
+      '.morrow/workspace.json': JSON.stringify({ version: 1, pages: workspacePages }, null, 1) + '\n',
+      '.morrow/recent.json': JSON.stringify({
+        version: 1,
+        opened: { ...opened, 'future-opened-id': { keep: true } },
+        activity: { ...activity, 'future-activity-bucket': { keep: true } },
+      }, null, 1) + '\n',
+    });
+    const session = await open(vault);
+
+    await run(session, { type: 'page.markOpened', id: 'recent-300', now: 1_000 });
+    let savedRecent = JSON.parse(vault.text('.morrow/recent.json')!);
+    expect(Object.keys(savedRecent.opened)).toHaveLength(301);
+    expect(savedRecent.opened['recent-000']).toBeUndefined();
+    expect(savedRecent.opened['future-opened-id']).toEqual({ keep: true });
+    expect(savedRecent.activity[activityDays[0]!]).toBeUndefined();
+    expect(savedRecent.activity[activityDays.at(-1)!]).toBe(401);
+    expect(savedRecent.activity['future-activity-bucket']).toEqual({ keep: true });
+
+    await run(session, { type: 'page.markOpened', id: 'recent-299', now: 1_001 });
+    savedRecent = JSON.parse(vault.text('.morrow/recent.json')!);
+    expect(savedRecent.opened['recent-000']).toBeUndefined();
+    expect(savedRecent.activity[activityDays[0]!]).toBeUndefined();
+    expect(savedRecent.opened['future-opened-id']).toEqual({ keep: true });
+    expect(savedRecent.activity['future-activity-bucket']).toEqual({ keep: true });
+    await session.close();
+  });
+
+  it.each([
+    ['workspace registry', '.morrow/workspace.json', { version: 2, pages: { 'Registry note.md': { id: 't12-future' } } }],
+    ['recent history', '.morrow/recent.json', { version: 2, opened: {}, activity: {} }],
+  ])('rejects writes to an unsupported future %s without applying any operation', async (_label, path, value) => {
+    const source = JSON.stringify(value, null, 1) + '\n';
+    const vault = new MemoryVault({
+      'Registry note.md': 'A synthetic registry note.\n',
+      [path]: source,
+      ...(path === '.morrow/workspace.json'
+        ? {}
+        : { '.morrow/workspace.json': JSON.stringify({ version: 1, pages: { 'Registry note.md': { id: 't12-note', created: 1, order: 0 } } }, null, 1) + '\n' }),
+    });
+    const { bridge, batches } = recordingBridge(vault);
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const id = idOf(session, 'Registry note');
+    const changed = session.execute({ type: 'page.markOpened', id, now: 123 });
+    expect(changed.ok).toBe(true);
+    expect(await session.flush()).toBe(false);
+    expect(session.saveStatus.state).toBe('error');
+    expect(session.saveStatus.error).toMatch(/version|format|preserv/i);
+    expect(batches.flat()).toEqual([]);
+    expect(vault.text(path)).toBe(source);
+    await session.close();
+  });
+
+  it.each([
+    ['workspace registry', '.morrow/workspace.json', { version: 1, pages: [] }],
+    ['recent history', '.morrow/recent.json', { version: 1, opened: [], activity: {} }],
+  ])('rejects a malformed non-null %s shape before applying writes', async (_label, path, value) => {
+    const malformed = JSON.stringify(value);
+    const vault = new MemoryVault({
+      'Registry note.md': 'A synthetic registry note.\n',
+      [path]: malformed,
+      '.morrow/workspace.json': path === '.morrow/workspace.json'
+        ? malformed
+        : JSON.stringify({ version: 1, pages: { 'Registry note.md': { id: 't12-note', created: 1, order: 0 } } }, null, 1) + '\n',
+    });
+    const { bridge, batches } = recordingBridge(vault);
+    const opened = await WorkspaceSession.open(new VaultRepository(bridge, newId), { delayMs: 0 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const id = idOf(session, 'Registry note');
+    expect(session.execute({ type: 'page.markOpened', id, now: 123 }).ok).toBe(true);
+    expect(await session.flush()).toBe(false);
+    expect(session.saveStatus.state).toBe('error');
+    expect(session.saveStatus.error).toMatch(/JSON|malform|format|preserv/i);
+    expect(batches.flat()).toEqual([]);
+    expect(vault.text(path)).toBe(malformed);
+    await session.close();
   });
 });

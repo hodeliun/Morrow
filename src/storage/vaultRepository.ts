@@ -3,6 +3,7 @@ import { canvasDoc, canvasFromDoc, readCanvas, writeCanvas } from '../core/canva
 import { decryptPage, encryptPage, isEncryptedText, newPageKey } from '../core/crypto';
 import type { PageKey } from '../core/crypto';
 import { isDocEmpty, isRecord, validateDoc, walk } from '../core/doc';
+import { validPageIcon } from '../core/icons';
 import { snapshotsToPrune } from '../core/history';
 import { parseWikiLink } from '../core/markdown/parse';
 import { docToMarkdown, retargetMarkdownHref } from '../core/markdown/serialize';
@@ -39,6 +40,7 @@ import {
   impliedTitle,
   managedFrontmatter,
   readPageText,
+  sameValue,
   takeProperties,
   renderPageText,
 } from '../core/vault/pageFile';
@@ -71,6 +73,125 @@ export const RECENT_PATH = `${MORROW_DIR}/recent.json`;
 const HISTORY_DIR = `${MORROW_DIR}/history`;
 const MAX_RECENT = 300;
 const MAX_ACTIVITY_DAYS = 400;
+const PAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const WORKSPACE_REGISTRY_FIELDS = new Set(['version', 'pages']);
+const REGISTRY_ENTRY_FIELDS = new Set([
+  'id',
+  'created',
+  'order',
+  'favorite',
+  'archived',
+  'trashed',
+  'parent',
+  'icon',
+]);
+const RECENT_FIELDS = new Set(['version', 'opened', 'activity']);
+
+interface ParsedWorkspaceRegistry {
+  root: Record<string, unknown>;
+  pages: Record<string, unknown>;
+  entriesById: Map<PageId, Record<string, unknown>>;
+}
+
+interface ParsedRecentMetadata {
+  root: Record<string, unknown>;
+  opened: Record<string, unknown>;
+  activity: Record<string, unknown>;
+}
+
+function canonicalJson(value: unknown, space?: number): string {
+  const text = JSON.stringify(value, null, space);
+  if (text === undefined) throw new Error('The saved metadata could not be serialized safely.');
+  return `${text}\n`;
+}
+
+function sameJsonText(left: string | null, right: string): boolean {
+  if (left === null) return false;
+  return sameValue(JSON.parse(left) as unknown, JSON.parse(right) as unknown);
+}
+
+function registryWriteError(label: string, detail: string): Error {
+  return new Error(`The saved ${label} ${detail} and cannot be safely updated.`);
+}
+
+function parseWorkspaceRegistry(text: string): ParsedWorkspaceRegistry {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text) as unknown;
+  } catch {
+    throw registryWriteError('workspace registry JSON', 'is malformed');
+  }
+  if (
+    !isRecord(raw) ||
+    (raw.version !== undefined && raw.version !== 1) ||
+    (raw.pages !== undefined && !isRecord(raw.pages))
+  )
+    throw registryWriteError('workspace registry', 'has an unsupported version or malformed format');
+
+  // The loader treats an omitted pages field as an empty legacy registry; preserve that input shape
+  // safely while still refusing a present, malformed page map.
+  const pages = (raw.pages ?? {}) as Record<string, unknown>;
+  const entriesById = new Map<PageId, Record<string, unknown>>();
+  for (const value of Object.values(pages)) {
+    if (!isRecord(value) || typeof value.id !== 'string' || !PAGE_ID_PATTERN.test(value.id))
+      throw registryWriteError('workspace registry', 'contains a malformed page entry');
+    const id = value.id;
+    if (entriesById.has(id)) throw registryWriteError('workspace registry', 'contains duplicate page IDs');
+    for (const field of ['created', 'order', 'archived', 'trashed']) {
+      if (Object.hasOwn(value, field) && (typeof value[field] !== 'number' || !Number.isFinite(value[field])))
+        throw registryWriteError('workspace registry', `contains malformed ${field} metadata`);
+    }
+    if (Object.hasOwn(value, 'favorite') && typeof value.favorite !== 'boolean')
+      throw registryWriteError('workspace registry', 'contains malformed favorite metadata');
+    if (
+      Object.hasOwn(value, 'parent') &&
+      value.parent !== null &&
+      (typeof value.parent !== 'string' || !PAGE_ID_PATTERN.test(value.parent))
+    )
+      throw registryWriteError('workspace registry', 'contains malformed parent metadata');
+    if (Object.hasOwn(value, 'icon') && !validPageIcon(value.icon))
+      throw registryWriteError('workspace registry', 'contains unsupported icon metadata');
+    entriesById.set(id, value);
+  }
+  return { root: raw, pages, entriesById };
+}
+
+function parseRecentMetadata(text: string): ParsedRecentMetadata {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text) as unknown;
+  } catch {
+    throw registryWriteError('recent metadata JSON', 'is malformed');
+  }
+  if (
+    !isRecord(raw) ||
+    (raw.version !== undefined && raw.version !== 1) ||
+    (raw.opened !== undefined && !isRecord(raw.opened)) ||
+    (raw.activity !== undefined && !isRecord(raw.activity))
+  )
+    throw registryWriteError('recent metadata', 'has an unsupported version or malformed format');
+  // Older supported recent files may omit one or both managed maps.
+  return {
+    root: raw,
+    opened: (raw.opened ?? {}) as Record<string, unknown>,
+    activity: (raw.activity ?? {}) as Record<string, unknown>,
+  };
+}
+
+function setRecordValue(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { configurable: true, enumerable: true, value, writable: true });
+}
+
+function unknownFields(
+  source: Record<string, unknown> | undefined,
+  managedFields: ReadonlySet<string>,
+): Record<string, unknown> {
+  const result = Object.create(null) as Record<string, unknown>;
+  if (source)
+    for (const [key, value] of Object.entries(source))
+      if (!managedFields.has(key)) setRecordValue(result, key, value);
+  return result;
+}
 
 function localDay(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -169,8 +290,8 @@ export class VaultRepository implements WorkspaceRepository {
             .map((path) => ({ path, extension: extension(path), size: null, mtime: 0 })),
         false,
       );
-      this.registryText = scan.registry === null ? null : JSON.stringify(scan.registry);
-      this.recentText = scan.recent === null ? null : JSON.stringify(scan.recent);
+      this.registryText = scan.registry === null ? null : canonicalJson(scan.registry, 1);
+      this.recentText = scan.recent === null ? null : canonicalJson(scan.recent);
       const activity = (scan.recent as { activity?: unknown } | null)?.activity;
       if (activity && typeof activity === 'object') {
         for (const [day, count] of Object.entries(activity as Record<string, unknown>)) {
@@ -342,10 +463,10 @@ export class VaultRepository implements WorkspaceRepository {
       const day = localDay(new Date());
       this.days.set(day, (this.days.get(day) ?? 0) + edited);
     }
-    const registry = this.registryFor(state, next);
-    if (registry.workspace !== this.registryText)
+    const registry = this.registryFor(state, next, removed);
+    if (!sameJsonText(this.registryText, registry.workspace))
       ops.splice(afterPathOps, 0, { op: 'write', path: REGISTRY_PATH, text: registry.workspace });
-    if (registry.recent !== this.recentText)
+    if (!sameJsonText(this.recentText, registry.recent))
       ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent });
     // the shell only removes empty folders, a folder page keeps its folder because the folder is the page
     const folderPages = new Set(
@@ -571,32 +692,78 @@ export class VaultRepository implements WorkspaceRepository {
   private registryFor(
     state: WorkspaceState,
     layout: Map<PageId, Placement>,
+    removed: ReadonlySet<PageId>,
   ): { workspace: string; recent: string } {
-    const pages: Record<string, RegistryEntry> = {};
+    const previousRegistry = this.registryText === null ? null : parseWorkspaceRegistry(this.registryText);
+    const previousRecent = this.recentText === null ? null : parseRecentMetadata(this.recentText);
+    const pages = Object.create(null) as Record<string, unknown>;
     const opened: Array<[PageId, number]> = [];
     for (const [id, placement] of [...layout].sort(([, a], [, b]) =>
       (a.file ?? a.folder).localeCompare(b.file ?? b.folder),
     )) {
       const page = state.pages[id];
       if (!page) continue;
-      const entry: RegistryEntry = { id, created: page.createdAt, order: page.order };
-      if (page.favorite) entry.favorite = true;
-      if (page.archivedAt !== null) entry.archived = page.archivedAt;
+      const canonicalEntry: RegistryEntry = { id, created: page.createdAt, order: page.order };
+      if (page.favorite) canonicalEntry.favorite = true;
+      if (page.archivedAt !== null) canonicalEntry.archived = page.archivedAt;
       if (page.trashedAt !== null && isInTrash(placement.folder) && dirname(placement.folder) === TRASH_DIR) {
-        entry.trashed = page.trashedAt;
-        if (page.parentId) entry.parent = page.parentId;
+        canonicalEntry.trashed = page.trashedAt;
+        if (page.parentId) canonicalEntry.parent = page.parentId;
       }
-      if (page.icon && (page.kind === 'canvas' || placement.file === null)) entry.icon = page.icon;
-      pages[placement.file ?? placement.folder] = entry;
+      if (page.icon && (page.kind === 'canvas' || placement.file === null)) canonicalEntry.icon = page.icon;
+      const entry = unknownFields(previousRegistry?.entriesById.get(id), REGISTRY_ENTRY_FIELDS);
+      for (const [key, value] of Object.entries(canonicalEntry)) setRecordValue(entry, key, value);
+      setRecordValue(pages, placement.file ?? placement.folder, entry);
       if (page.lastOpenedAt !== null) opened.push([id, page.lastOpenedAt]);
     }
     opened.sort((a, b) => b[1] - a[1]);
-    const activity = Object.fromEntries(
+    const canonicalActivity = Object.fromEntries(
       [...this.days].sort(([a], [b]) => b.localeCompare(a)).slice(0, MAX_ACTIVITY_DAYS),
     );
+
+    const workspace = unknownFields(previousRegistry?.root, WORKSPACE_REGISTRY_FIELDS);
+    setRecordValue(workspace, 'version', 1);
+    setRecordValue(workspace, 'pages', pages);
+
+    const managedRecentIds = new Set<PageId>([
+      ...(previousRegistry ? previousRegistry.entriesById.keys() : []),
+      ...(Object.keys(state.pages) as PageId[]),
+      ...removed,
+    ]);
+    const openedValues = Object.create(null) as Record<string, unknown>;
+    for (const [id, value] of Object.entries(previousRecent?.opened ?? {})) {
+      const pageId = id as PageId;
+      if (managedRecentIds.has(pageId)) {
+        if (
+          state.pages[pageId] &&
+          !removed.has(pageId) &&
+          (typeof value !== 'number' || !Number.isFinite(value))
+        )
+          throw registryWriteError('recent metadata', 'contains a malformed opened timestamp');
+        continue;
+      }
+      setRecordValue(openedValues, id, value);
+    }
+    for (const [id, timestamp] of opened.slice(0, MAX_RECENT)) setRecordValue(openedValues, id, timestamp);
+
+    const activityValues = Object.create(null) as Record<string, unknown>;
+    for (const [day, value] of Object.entries(previousRecent?.activity ?? {})) {
+      if (DATE_NAME.test(day)) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+          throw registryWriteError('recent metadata', `contains malformed activity for ${day}`);
+        continue;
+      }
+      setRecordValue(activityValues, day, value);
+    }
+    for (const [day, count] of Object.entries(canonicalActivity)) setRecordValue(activityValues, day, count);
+
+    const recent = unknownFields(previousRecent?.root, RECENT_FIELDS);
+    setRecordValue(recent, 'version', 1);
+    setRecordValue(recent, 'opened', openedValues);
+    setRecordValue(recent, 'activity', activityValues);
     return {
-      workspace: `${JSON.stringify({ version: 1, pages }, null, 1)}\n`,
-      recent: `${JSON.stringify({ version: 1, opened: Object.fromEntries(opened.slice(0, MAX_RECENT)), activity })}\n`,
+      workspace: canonicalJson(workspace, 1),
+      recent: canonicalJson(recent),
     };
   }
 

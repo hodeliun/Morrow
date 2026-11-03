@@ -148,7 +148,9 @@ describe('database column descriptions', () => {
     expect(emptyMarkup).toContain('tabindex="0"');
     expect(emptyMarkup).toContain('role="group"');
 
-    const scoreCellTags = [...mainMarkup.matchAll(/<(?:td|th)\b[^>]*data-col-id="score"[^>]*>/g)].map(
+    const withoutNewActionRow = (markup: string) =>
+      markup.replace(/<tr\b[^>]*class="db-new-row-row"[\s\S]*?<\/tr>/g, '');
+    const scoreCellTags = [...withoutNewActionRow(mainMarkup).matchAll(/<(?:td|th)\b[^>]*data-col-id="score"[^>]*>/g)].map(
       ([tag]) => tag!,
     );
     expect(scoreCellTags).toHaveLength(3);
@@ -158,7 +160,7 @@ describe('database column descriptions', () => {
       database: { ...initialPage.database!, views: [{ ...view, align: { score: 'right' as const } }] },
     };
     const configuredScoreCellTags = [
-      ...render(alignedPage).matchAll(/<(?:td|th)\b[^>]*data-col-id="score"[^>]*>/g),
+      ...withoutNewActionRow(render(alignedPage)).matchAll(/<(?:td|th)\b[^>]*data-col-id="score"[^>]*>/g),
     ].map(([tag]) => tag!);
     expect(configuredScoreCellTags).toHaveLength(3);
     expect(configuredScoreCellTags.every((tag) => tag.includes('text-align:right'))).toBe(true);

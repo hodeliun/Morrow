@@ -2,6 +2,21 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — rodapé compacto das tabelas (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- A ação Novo aparece depois dos registros e antes dos cálculos, sem entrar nos
+  dados exportados ou nos resultados. Os resumos continuam por propriedade/view.
+- O rodapé acompanha o fundo da tabela; a configuração vazia aparece por hover
+  ou foco, e os resultados configurados permanecem legíveis.
+- A criação e a reabertura preservam metadados desconhecidos por identidade,
+  evitando regravações desnecessárias e a volta de itens removidos. Mapeamentos
+  de banco reconhecidos que não podem ser preservados ficam somente leitura.
+
+Detalhes e validação: [T12 — rodapé compacto das tabelas](docs/deliveries/T12-compact-table-footer.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — áudio e vídeo locais (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

@@ -49,6 +49,31 @@ import {
 
 export { MANAGED_KEYS };
 const FILE_KINDS = new Set<PageKind>(['journal', 'templates', 'database']);
+const DATABASE_FIELDS = new Set(['properties', 'views']);
+const PROPERTY_FIELDS = new Set([
+  'id', 'name', 'type', 'options', 'description', 'icon', 'formulaResultType', 'format', 'fillMode',
+  'defaultValue', 'defaultFormula', 'defaultSequence', 'sequenceNext', 'defaultFormulaBindings',
+  'formula', 'formulaBindings', 'display', 'max', 'relation', 'action', 'media',
+]);
+const FORMAT_FIELDS = new Set([
+  'locale', 'linkLabel', 'currency', 'precision', 'negativeFormat', 'min', 'max', 'step', 'dateStyle',
+  'timeStyle', 'timeZone', 'durationUnit', 'scaleIcon', 'color', 'showValue',
+]);
+const OPTION_FIELDS = new Set(['id', 'name', 'color']);
+const RELATION_FIELDS = new Set([
+  'targetDatabaseId', 'multiple', 'isInverse', 'displayPropertyId', 'inversePropertyId', 'filters',
+]);
+const ACTION_FIELDS = new Set(['label', 'icon', 'color', 'disabled', 'steps']);
+const ACTION_FORMULA_FIELDS = new Set(['source', 'bindings']);
+const VIEW_FIELDS = new Set([
+  'id', 'name', 'type', 'filters', 'sorts', 'groupBy', 'dateProp', 'hidden', 'widths', 'frozenThrough',
+  'rowHeight', 'hideTitle', 'collapsed', 'collapseEnabled', 'filterGroups', 'filterGroupLogic', 'search',
+  'order', 'wrap', 'align', 'summaries', 'conditionalFormats',
+  'cardProperties', 'cardImageProp',
+]);
+const FILTER_FIELDS = new Set(['id', 'prop', 'op', 'value', 'controlRef', 'formula', 'formulaBindings']);
+const FILTER_GROUP_FIELDS = new Set(['id', 'logic', 'filters']);
+const SORT_FIELDS = new Set(['prop', 'dir']);
 // a database property can not use a name morrow already gives a meaning to
 export function reservedPropertyName(name: string): boolean {
   return MANAGED_KEYS.has(name.trim()) || name.trim() === 'aliases';
@@ -102,6 +127,9 @@ export function readPageText(text: string): ReadPage {
   const normalizedExtra = normalizeExtra(rawExtra);
   const extra = normalizedExtra ?? {};
   const controls = normalizeNamedControls(data.morrowControls);
+  const database = kind === 'database' ? normalizeDatabase(data.database) : null;
+  const databaseProblem = kind === 'database' && data.database !== undefined
+    ? databaseSourceProblem(data.database, database) : null;
   const aliases = (
     Array.isArray(data.aliases) ? data.aliases : typeof data.aliases === 'string' ? [data.aliases] : []
   )
@@ -119,7 +147,7 @@ export function readPageText(text: string): ReadPage {
     controls: controls ?? [],
     kind,
     tags: readTags(data.tags ?? data.tag),
-    database: kind === 'database' ? normalizeDatabase(data.database) : null,
+    database,
     data,
     extra,
     source: {
@@ -134,10 +162,138 @@ export function readPageText(text: string): ReadPage {
     error:
       split.error ??
       (controls === null ? 'Named control metadata could not be read. The file was left read only.' : null) ??
+      (databaseProblem ? `Database metadata could not be preserved because ${databaseProblem}. The file was left read only.` : null) ??
       (normalizedExtra === null
         ? 'Some frontmatter values exceed safe editing limits. The file was left read only.'
         : null),
   };
+}
+
+function databaseSourceProblem(raw: unknown, database: DatabaseDef | null): string | null {
+  const validId = (value: unknown): value is string =>
+    typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+  if (!isRecord(raw) || !database) return 'database metadata is not a readable mapping';
+  if (raw.properties !== undefined && !Array.isArray(raw.properties)) return 'properties is not a list';
+  if (raw.views !== undefined && !Array.isArray(raw.views)) return 'views is not a list';
+  if (Array.isArray(raw.properties) && raw.properties.length > 200) return 'properties exceeds the supported limit';
+  const propertyIds = new Set<string>();
+  for (const entry of Array.isArray(raw.properties) ? raw.properties : []) {
+    if (!isRecord(entry) || !validId(entry.id)) continue;
+    if (propertyIds.has(entry.id)) return 'property IDs are ambiguous';
+    propertyIds.add(entry.id);
+    const property = database.properties.find((candidate) => candidate.id === entry.id);
+    if (!property) continue;
+    if (entry.format !== undefined && !isRecord(entry.format)) return 'property format is not a mapping';
+    if (isRecord(entry.format)) {
+      const normalizedFormat = property.format as Record<string, unknown> | undefined;
+      for (const field of FORMAT_FIELDS) {
+        if (!Object.hasOwn(entry.format, field)) continue;
+        if (
+          !normalizedFormat ||
+          !Object.hasOwn(normalizedFormat, field) ||
+          !sameValue(entry.format[field], normalizedFormat[field])
+        )
+          return 'a property format field could not be normalized';
+      }
+    }
+    if (entry.type !== 'button' && entry.options !== undefined) {
+      if (!Array.isArray(entry.options)) return 'property options is not a list';
+      const optionIds = new Set<string>();
+      for (const option of entry.options) {
+        if (!isRecord(option) || !validId(option.id) || optionIds.has(option.id))
+          return 'an option has no unique stable ID';
+        optionIds.add(option.id);
+      }
+      if (optionIds.size !== property.options.length) return 'a property option could not be normalized';
+    }
+    if (property.type === 'relation' && isRecord(entry.relation)) {
+      const problem = identifiedListProblem(
+        entry.relation.filters,
+        property.relation?.filters ?? [],
+        'relation filters',
+        validId,
+      );
+      if (problem) return problem;
+    } else if (property.type === 'relation' && entry.relation !== undefined) {
+      return 'relation settings are not a mapping';
+    }
+  }
+
+  const viewIds = new Set<string>();
+  for (const entry of Array.isArray(raw.views) ? raw.views : []) {
+    if (!isRecord(entry) || !validId(entry.id)) return 'a view has no stable ID';
+    if (viewIds.has(entry.id)) return 'view IDs are ambiguous';
+    viewIds.add(entry.id);
+    const view = database.views.find((candidate) => candidate.id === entry.id);
+    if (!view) return 'a view uses an unsupported type or structure';
+    const filtersProblem = identifiedListProblem(entry.filters, view.filters, 'view filters', validId);
+    if (filtersProblem) return filtersProblem;
+    const sortsProblem = sortListProblem(entry.sorts, view.sorts);
+    if (sortsProblem) return sortsProblem;
+    if (entry.filterGroups !== undefined) {
+      if (!Array.isArray(entry.filterGroups) || entry.filterGroups.length > 50)
+        return 'filter groups are not a supported list';
+      const groupIds = new Set<string>();
+      for (const group of entry.filterGroups) {
+        if (!isRecord(group) || !validId(group.id) || groupIds.has(group.id))
+          return 'a filter group has no unique stable ID';
+        groupIds.add(group.id);
+        const normalizedGroup = view.filterGroups?.find((candidate) => candidate.id === group.id);
+        if (!normalizedGroup) return 'a filter group could not be normalized';
+        const problem = identifiedListProblem(
+          group.filters,
+          normalizedGroup.filters,
+          'group filters',
+          validId,
+        );
+        if (problem) return problem;
+      }
+      if (groupIds.size !== (view.filterGroups?.length ?? 0)) return 'a filter group could not be normalized';
+    }
+    for (const field of ['hidden', 'order', 'wrap', 'cardProperties'] as const) {
+      if (entry[field] !== undefined && (!Array.isArray(entry[field]) || entry[field].some((id) => typeof id !== 'string')))
+        return `${field} is not a supported ID list`;
+    }
+    for (const field of ['widths', 'align', 'summaries'] as const) {
+      if (entry[field] !== undefined && !isRecord(entry[field])) return `${field} is not a mapping`;
+    }
+  }
+  return null;
+}
+
+function identifiedListProblem<T extends { id: string }>(
+  raw: unknown,
+  normalized: T[],
+  label: string,
+  validId: (value: unknown) => value is string,
+): string | null {
+  if (raw === undefined) return normalized.length === 0 ? null : `${label} source is missing`;
+  if (!Array.isArray(raw)) return `${label} is not a list`;
+  const normalizedIds = new Set(normalized.map((entry) => entry.id));
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!isRecord(entry) || !validId(entry.id) || seen.has(entry.id) || !normalizedIds.has(entry.id))
+      return `a ${label} entry could not be normalized by ID`;
+    seen.add(entry.id);
+  }
+  return seen.size === normalizedIds.size ? null : `a ${label} entry could not be normalized by ID`;
+}
+
+function sortListProblem(raw: unknown, normalized: DatabaseDef['views'][number]['sorts']): string | null {
+  if (raw === undefined) return normalized.length === 0 ? null : 'sort source is missing';
+  if (!Array.isArray(raw)) return 'sorts is not a list';
+  if (
+    raw.length !== normalized.length ||
+    raw.some(
+      (entry) =>
+        !isRecord(entry) ||
+        typeof entry.prop !== 'string' ||
+        entry.prop.length > 64 ||
+        (entry.dir !== undefined && entry.dir !== 'asc' && entry.dir !== 'desc'),
+    )
+  )
+    return 'a sort entry could not be normalized';
+  return null;
 }
 
 // the title a file implies on its own, so frontmatter only carries a title when it differs
@@ -180,6 +336,8 @@ export function composeFrontmatter(
   const keyOrder = source?.keyOrder ?? [];
   // morrow's own values win over other keys of the same name
   const values = new Map<string, unknown>(managed);
+  if (source?.rawData && values.has('database'))
+    values.set('database', preserveDatabaseYaml(values.get('database'), source.rawData.database));
   for (const [key, value] of Object.entries(extra)) if (!values.has(key)) values.set(key, value);
   // a key keeps the spelling its file already uses, so date stays date rather than turning into Date
   const spellings = new Map<string, string>();
@@ -472,6 +630,7 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
             }
           : {}),
         ...(prop.type === 'button' && prop.action ? { action: prop.action } : {}),
+        ...((prop.type === 'image' || prop.type === 'file') && prop.media ? { media: { ...prop.media } } : {}),
       })),
       ...(database.unsupportedProperties ?? []),
     ],
@@ -512,6 +671,220 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(view.cardImageProp !== undefined ? { cardImageProp: view.cardImageProp } : {}),
     })),
   };
+}
+
+function uniqueRecordsById(raw: unknown): Map<string, Record<string, unknown>> {
+  const result = new Map<string, Record<string, unknown>>();
+  const duplicates = new Set<string>();
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (!isRecord(entry) || typeof entry.id !== 'string') continue;
+    if (result.has(entry.id)) duplicates.add(entry.id);
+    else result.set(entry.id, entry);
+  }
+  for (const id of duplicates) result.delete(id);
+  return result;
+}
+
+function mergeUnknownFields<T extends Record<string, unknown>>(
+  canonical: T,
+  raw: unknown,
+  knownFields: ReadonlySet<string>,
+): T {
+  if (!isRecord(raw)) return canonical;
+  const merged = { ...canonical } as T;
+  for (const [key, value] of Object.entries(raw)) {
+    if (knownFields.has(key) || Object.hasOwn(canonical, key)) continue;
+    Object.defineProperty(merged, key, { value, enumerable: true, writable: true, configurable: true });
+  }
+  return merged;
+}
+
+function preserveDatabaseYaml(canonical: unknown, raw: unknown): unknown {
+  if (!isRecord(canonical) || !isRecord(raw)) return canonical;
+  const rawProperties = uniqueRecordsById(raw.properties);
+  const rawViews = uniqueRecordsById(raw.views);
+  const preserved = mergeUnknownFields({ ...canonical }, raw, DATABASE_FIELDS);
+  if (Array.isArray(canonical.properties))
+    preserved.properties = canonical.properties.map((entry) =>
+      isRecord(entry) ? preservePropertyYaml(entry, rawProperties.get(String(entry.id))) : entry,
+    );
+  if (Array.isArray(canonical.views))
+    preserved.views = canonical.views.map((entry) =>
+      isRecord(entry) ? preserveViewYaml(entry, rawViews.get(String(entry.id))) : entry,
+    );
+  return preserved;
+}
+
+function preservePropertyYaml(canonical: Record<string, unknown>, raw: Record<string, unknown> | undefined) {
+  const preserved = mergeUnknownFields({ ...canonical }, raw, PROPERTY_FIELDS);
+  if (isRecord(canonical.format))
+    preserved.format = mergeUnknownFields({ ...canonical.format }, raw?.format, FORMAT_FIELDS);
+  else if (isRecord(raw?.format)) {
+    const unknownFormat = mergeUnknownFields({}, raw.format, FORMAT_FIELDS);
+    if (Object.keys(unknownFormat).length) preserved.format = unknownFormat;
+  }
+  if (Array.isArray(canonical.options)) {
+    const rawOptions = uniqueRecordsById(raw?.options);
+    preserved.options = canonical.options.map((entry) =>
+      isRecord(entry) ? mergeUnknownFields({ ...entry }, rawOptions.get(String(entry.id)), OPTION_FIELDS) : entry,
+    );
+  }
+  if (isRecord(canonical.defaultSequence))
+    preserved.defaultSequence = mergeUnknownFields(
+      { ...canonical.defaultSequence },
+      raw?.defaultSequence,
+      new Set(['start', 'increment']),
+    );
+  if (isRecord(canonical.media))
+    preserved.media = mergeUnknownFields({ ...canonical.media }, raw?.media, new Set(['multiple']));
+  if (isRecord(canonical.action)) preserved.action = preserveActionYaml(canonical.action, raw?.action);
+  if (isRecord(canonical.relation) && isRecord(raw?.relation)) {
+    const relation = mergeUnknownFields({ ...canonical.relation }, raw.relation, RELATION_FIELDS);
+    if (Array.isArray(canonical.relation.filters)) {
+      const rawFilters = uniqueRecordsById(raw.relation.filters);
+      relation.filters = canonical.relation.filters.map((entry) =>
+        isRecord(entry) ? preserveFilterYaml(entry, rawFilters.get(String(entry.id))) : entry,
+      );
+    }
+    preserved.relation = relation;
+  }
+  for (const field of ['formulaBindings', 'defaultFormulaBindings'] as const) {
+    const bindings = preserveUnidentifiedList(canonical[field], raw?.[field], BINDING_FIELDS, 'formula binding');
+    if (bindings.length) preserved[field] = bindings;
+  }
+  return preserved;
+}
+
+function preserveActionYaml(canonical: Record<string, unknown>, raw: unknown) {
+  const preserved = mergeUnknownFields({ ...canonical }, raw, ACTION_FIELDS);
+  if (!isRecord(raw)) return preserved;
+  if (isRecord(canonical.disabled))
+    preserved.disabled = preserveActionFormulaYaml(canonical.disabled, raw.disabled);
+  if (Array.isArray(canonical.steps)) {
+    const rawSteps = uniqueRecordsById(raw.steps);
+    preserved.steps = canonical.steps.map((entry) => {
+      if (!isRecord(entry)) return entry;
+      const original = rawSteps.get(String(entry.id));
+      const fields = entry.type === 'addRows'
+        ? new Set(['id', 'type', 'count', 'title', 'values'])
+        : entry.type === 'modifyRows'
+          ? new Set(['id', 'type', 'target', 'where', 'values'])
+          : new Set(['id', 'type', 'controlIds']);
+      const step = mergeUnknownFields({ ...entry }, original, fields);
+      for (const field of ['count', 'title', 'where'] as const) {
+        if (isRecord(entry[field])) step[field] = preserveActionFormulaYaml(entry[field], original?.[field]);
+      }
+      if (isRecord(entry.values) && isRecord(original?.values)) {
+        const values: Record<string, unknown> = { ...entry.values };
+        for (const [propertyId, formula] of Object.entries(entry.values)) {
+          if (isRecord(formula))
+            values[propertyId] = preserveActionFormulaYaml(formula, original.values[propertyId]);
+        }
+        step.values = values;
+      }
+      return step;
+    });
+  }
+  return preserved;
+}
+
+function preserveActionFormulaYaml(canonical: Record<string, unknown>, raw: unknown) {
+  const preserved = mergeUnknownFields({ ...canonical }, raw, ACTION_FORMULA_FIELDS);
+  const rawBindings = isRecord(raw) ? raw.bindings : undefined;
+  const bindings = preserveUnidentifiedList(canonical.bindings, rawBindings, BINDING_FIELDS, 'formula binding');
+  preserved.bindings = bindings;
+  return preserved;
+}
+
+function preserveViewYaml(canonical: Record<string, unknown>, raw: Record<string, unknown> | undefined) {
+  const preserved = mergeUnknownFields({ ...canonical }, raw, VIEW_FIELDS);
+  if (Array.isArray(canonical.filters)) {
+    const rawFilters = uniqueRecordsById(raw?.filters);
+    preserved.filters = canonical.filters.map((entry) =>
+      isRecord(entry) ? preserveFilterYaml(entry, rawFilters.get(String(entry.id))) : entry,
+    );
+  }
+  if (Array.isArray(canonical.filterGroups)) {
+    const rawGroups = uniqueRecordsById(raw?.filterGroups);
+    preserved.filterGroups = canonical.filterGroups.map((entry) => {
+      if (!isRecord(entry)) return entry;
+      const rawGroup = rawGroups.get(String(entry.id));
+      const group = mergeUnknownFields({ ...entry }, rawGroup, FILTER_GROUP_FIELDS);
+      if (Array.isArray(entry.filters)) {
+        const rawFilters = uniqueRecordsById(rawGroup?.filters);
+        group.filters = entry.filters.map((filter) =>
+          isRecord(filter) ? preserveFilterYaml(filter, rawFilters.get(String(filter.id))) : filter,
+        );
+      }
+      return group;
+    });
+  }
+  const sorts = serializeSortRecords(canonical.sorts, raw?.sorts);
+  if (sorts.length) preserved.sorts = sorts;
+  return preserved;
+}
+
+function preserveFilterYaml(canonical: Record<string, unknown>, raw: Record<string, unknown> | undefined) {
+  const preserved = mergeUnknownFields({ ...canonical }, raw, FILTER_FIELDS);
+  if (isRecord(canonical.controlRef))
+    preserved.controlRef = mergeUnknownFields(
+      { ...canonical.controlRef },
+      raw?.controlRef,
+      new Set(['pageId', 'controlId']),
+    );
+  const bindings = preserveUnidentifiedList(
+    canonical.formulaBindings,
+    raw?.formulaBindings,
+    BINDING_FIELDS,
+    'formula binding',
+  );
+  if (bindings.length) preserved.formulaBindings = bindings;
+  return preserved;
+}
+
+const BINDING_FIELDS = new Set([
+  'start', 'end', 'source', 'kind', 'databaseId', 'propertyId', 'pageId', 'controlId', 'resultId',
+]);
+
+function preserveUnidentifiedList(
+  canonical: unknown,
+  raw: unknown,
+  knownFields: ReadonlySet<string>,
+  label: string,
+): unknown[] {
+  const current = Array.isArray(canonical) ? canonical : [];
+  if (!Array.isArray(raw)) return current;
+  const hasUnknownFields = raw.some(
+    (entry) => isRecord(entry) && Object.keys(entry).some((key) => !knownFields.has(key)),
+  );
+  if (!hasUnknownFields) return current;
+  const projection = raw.map((entry) => {
+    if (!isRecord(entry)) return entry;
+    return Object.fromEntries(Object.entries(entry).filter(([key]) => knownFields.has(key)));
+  });
+  if (!sameValue(projection, current))
+    throw new Error(`This database has ${label} fields this version cannot safely rewrite. The source was left unchanged.`);
+  return raw;
+}
+
+function serializeSortRecords(canonical: unknown, raw: unknown): Array<Record<string, unknown>> {
+  const current = Array.isArray(canonical)
+    ? canonical.filter(isRecord).map((entry) => ({ prop: entry.prop, dir: entry.dir as 'asc' | 'desc' }))
+    : [];
+  if (!Array.isArray(raw)) return current;
+  const hasUnknownFields = raw.some(
+    (entry) => isRecord(entry) && Object.keys(entry).some((key) => !SORT_FIELDS.has(key)),
+  );
+  if (!hasUnknownFields) return current;
+  const sameKnownEntries = raw.length === current.length && raw.every(
+    (entry, index) =>
+      isRecord(entry) &&
+      entry.prop === current[index]?.prop &&
+      (entry.dir === 'desc' ? 'desc' : 'asc') === current[index]?.dir,
+  );
+  if (!sameKnownEntries)
+    throw new Error('This database has sort fields this version cannot safely rewrite. The source was left unchanged.');
+  return raw as Array<Record<string, unknown>>;
 }
 
 export function sameValue(a: unknown, b: unknown): boolean {
