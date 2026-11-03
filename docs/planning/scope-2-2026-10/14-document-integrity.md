@@ -14,12 +14,12 @@ Reproduzir o desaparecimento visual e garantir que converter/editar blocos não 
 
 ## Acceptance criteria
 
-- [ ] Registrar pacote/versão e sequência mínima sintética que diferencie remover, ocultar e deslocar um bloco.
-- [ ] Conferir identidades, conteúdo do documento, schema, registros e arquivos antes/depois; não declarar perda de dados só por ausência visual.
-- [ ] Conversões de título/alternador, exclusão de contêiner e confirmação de célula não descartam filhos sem intenção.
-- [ ] Persistência e watcher preservam dados/desconhecidos; documento incompatível não é normalizado destrutivamente.
-- [ ] Desfazer e reabrir preservam vínculos e conteúdo; exclusão intencional tem resultado inequívoco.
-- [ ] Uma causa corrigida exige teste que falhe no caminho real; não fechar só por ausência de reprodução em outro ambiente.
+- [x] Registrar pacote/versão e sequência mínima sintética que diferencie remover, ocultar e deslocar um bloco.
+- [x] Conferir identidades, conteúdo do documento, schema, registros e arquivos antes/depois; não declarar perda de dados só por ausência visual.
+- [x] Conversões de título/alternador, exclusão de contêiner e confirmação de célula não descartam filhos sem intenção.
+- [x] Persistência e watcher preservam dados/desconhecidos; documento incompatível não é normalizado destrutivamente.
+- [x] Desfazer e reabrir preservam vínculos e conteúdo; exclusão intencional tem resultado inequívoco.
+- [x] Uma causa corrigida exige teste que falhe no caminho real; não fechar só por ausência de reprodução em outro ambiente.
 
 ## Blocked by
 
@@ -37,3 +37,5 @@ Respeitar arquitetura, IDs estáveis, engine pura, readonly, compatibilidade Mar
 
 [Spec e decisões](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/SPEC.md) · [Grilling](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/GRILLING.md) · [Aceitação](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/ACCEPTANCE.md)
 <!-- morrow-scope-2-2026-10:T14 -->
+
+Verified on unchanged main3e1b57c with the isolated T22 package: [delivery and evidence](../../deliveries/T14-document-integrity.md). Historical reconciliation; no new product fix or release claimed.
