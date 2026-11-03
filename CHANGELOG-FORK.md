@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — imagens em abas próprias (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- Imagens existentes no vault podem abrir em uma aba com zoom, ajuste à área e
+  informações do arquivo, sem criar notas nem copiar para attachments.
+- SVG é apresentado como imagem; cada aba recebe acesso ao recurso validado pelo
+  processo principal, liberado ao fechar ou trocar de cofre.
+- A expansão dos alvos preserva abas e rotas existentes. Endereços web recebem
+  uma mensagem de indisponibilidade nesta etapa; não carregam navegação remota.
+
+Detalhes e validação: [T33 — imagens em abas próprias](docs/deliveries/T33-image-file-tabs.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — tamanho individual de imagens (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

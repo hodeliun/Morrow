@@ -23,6 +23,7 @@ import {
   persistPaneTabsSnapshot,
   readPaneTabsSnapshot,
 } from './paneLayoutStorage';
+import { canonicalizeResourceTargetHash } from './resourceTargets';
 import { getPreferences, setPreferences } from './platform/preferences';
 
 export type PaneId = string;
@@ -126,11 +127,35 @@ function stateFromLayout(
   };
 }
 
+function canonicalizeTabTargets(tab: PaneTab): PaneTab {
+  const target = canonicalizeResourceTargetHash(tab.target);
+  const back = tab.back.map(canonicalizeResourceTargetHash);
+  const forward = tab.forward.map(canonicalizeResourceTargetHash);
+  if (
+    target === tab.target &&
+    back.every((item, index) => item === tab.back[index]) &&
+    forward.every((item, index) => item === tab.forward[index])
+  )
+    return tab;
+  return { ...tab, target, back, forward };
+}
+
+function canonicalizeTabState(next: TabState): TabState {
+  const tabs = next.layout.tabs.map(canonicalizeTabTargets);
+  const closed = next.closed.map(canonicalizeResourceTargetHash);
+  const layoutChanged = tabs.some((tab, index) => tab !== next.layout.tabs[index]);
+  const closedChanged = closed.some((target, index) => target !== next.closed[index]);
+  if (!layoutChanged && !closedChanged) return next;
+  const layout = layoutChanged ? { ...next.layout, tabs } : next.layout;
+  return stateFromLayout(layout, closed, next.persistenceWritable, next.active);
+}
+
 function writeState(next: TabState, persist = true): void {
-  state = next;
-  if (persist && next.persistenceWritable) {
+  const safe = canonicalizeTabState(next);
+  state = safe;
+  if (persist && safe.persistenceWritable) {
     try {
-      persistPaneTabsSnapshot(localStorage, next.layout, next.closed, true);
+      persistPaneTabsSnapshot(localStorage, safe.layout, safe.closed, true);
     } catch {
       // A private or unavailable storage area leaves this window usable in memory.
     }
@@ -139,6 +164,7 @@ function writeState(next: TabState, persist = true): void {
 }
 
 function visit(tab: PaneTab, target: string, replace: boolean): PaneTab {
+  target = canonicalizeResourceTargetHash(target);
   if (tab.target === target) return tab;
   if (replace) return { ...tab, target };
   return {
@@ -160,10 +186,14 @@ function tabIdSet(layout: PaneLayoutState): Set<string> {
 }
 
 function readCurrentHash(): string {
-  return window.location.hash || EMPTY_HASH;
+  const current = window.location.hash || EMPTY_HASH;
+  const safe = canonicalizeResourceTargetHash(current);
+  if (safe !== current) replaceBrowserHash(safe);
+  return safe;
 }
 
 function replaceBrowserHash(hash: string): void {
+  hash = canonicalizeResourceTargetHash(hash);
   if (!hash || window.location.hash === hash || (hash === EMPTY_HASH && !window.location.hash)) return;
   try {
     window.history.replaceState(null, '', hash);
@@ -173,12 +203,17 @@ function replaceBrowserHash(hash: string): void {
 }
 
 function go(hash: string): void {
+  hash = canonicalizeResourceTargetHash(hash);
+  const current = window.location.hash;
+  if (current && canonicalizeResourceTargetHash(current) !== current)
+    replaceBrowserHash(canonicalizeResourceTargetHash(current));
   if (window.location.hash === hash || (hash === EMPTY_HASH && !window.location.hash)) return;
   arriving = hash;
   window.location.hash = hash;
 }
 
 function initialState(hash: string, persistenceWritable: boolean): TabState {
+  hash = canonicalizeResourceTargetHash(hash);
   const id = newTabId();
   const layout = createPaneLayout(LAYOUT_ID, [emptyTab(id, hash)], id) as PaneLayoutState;
   return stateFromLayout(layout, [], persistenceWritable);
@@ -198,7 +233,8 @@ function load(): TabState {
   if (snapshot.kind === 'empty') return initialState(here, true);
   if (snapshot.kind === 'current') {
     const restored = reconcileLaunchRoute(snapshot.snapshot.layout, snapshot.snapshot.closed, here);
-    if (here !== EMPTY_HASH) persistPaneTabsSnapshot(localStorage, restored.layout, restored.closed, true);
+    if (here !== EMPTY_HASH || snapshot.snapshot.resourceTargetsChanged)
+      persistPaneTabsSnapshot(localStorage, restored.layout, restored.closed, true);
     return restored;
   }
   if (snapshot.kind === 'legacy') {
@@ -414,6 +450,7 @@ export function setActivePane(pane: PaneId): void {
 }
 
 export function showInPane(hash: string, pane = targetPane(), replace = false): void {
+  hash = canonicalizeResourceTargetHash(hash);
   const now = current();
   if (!paneLeaf(now.layout, pane)) return;
 

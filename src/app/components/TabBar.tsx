@@ -3,9 +3,11 @@ import {
   CalendarCheck,
   Columns2,
   Copy,
+  Globe,
   GraduationCap,
   Hash,
   Home,
+  Image as ImageIcon,
   Network,
   Pin,
   PinOff,
@@ -55,6 +57,8 @@ const VIEW_ICONS: Record<string, LucideIcon> = {
   tags: Hash,
   review: GraduationCap,
   graph: Network,
+  file: ImageIcon,
+  url: Globe,
   search: Search,
 };
 
@@ -76,6 +80,10 @@ function getViewTitle(name: string): string {
       return t('sidebar.graph');
     case 'search':
       return t('common.search');
+    case 'file':
+      return t('fileViewer.title');
+    case 'url':
+      return t('resourceTarget.urlTitle');
     default:
       return t('settings.general.startPages.home');
   }
@@ -86,6 +94,16 @@ function describe(hash: string, state: WorkspaceState): { title: string; icon: R
   const page = route.name === 'page' ? state.pages[route.id] : undefined;
   if (page) return { title: displayTitle(page), icon: <PageIcon page={page} /> };
   if (route.name === 'page') return { title: t('tabs.missingPage'), icon: <Home size={14} /> };
+  if (route.name === 'file')
+    return {
+      title: route.path?.split('/').at(-1) || t('fileViewer.title'),
+      icon: <ImageIcon size={14} />,
+    };
+  if (route.name === 'url')
+    return {
+      title: route.url ? new URL(route.url).host : t('resourceTarget.invalidUrlTitle'),
+      icon: <Globe size={14} />,
+    };
   if (route.name === 'tag') return { title: `#${route.tag}`, icon: <Hash size={14} /> };
   if (route.name === 'search' && route.query)
     return { title: `“${route.query}”`, icon: <Search size={14} /> };

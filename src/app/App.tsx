@@ -8,6 +8,7 @@ import { ReviewView } from './components/ReviewView';
 import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
+import { ImageFileView } from './components/ImageFileView';
 import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
@@ -231,6 +232,27 @@ function viewFor(route: Route) {
   switch (route.name) {
     case 'page':
       return <PageView key={route.id} id={route.id} find={route.find} anchor={route.anchor ?? null} />;
+    case 'file':
+      return (
+        <ImageFileView
+          key={`${route.vaultId ?? 'invalid'}:${route.path ?? 'invalid'}`}
+          vaultId={route.vaultId}
+          path={route.path}
+        />
+      );
+    case 'url':
+      return (
+        <section className="view resource-target-view" role="status" aria-live="polite">
+          <h2>
+            {route.url
+              ? t('resourceTarget.urlUnavailableTitle')
+              : t('resourceTarget.invalidUrlTitle')}
+          </h2>
+          <p>
+            {route.url ? t('resourceTarget.urlUnavailable') : t('resourceTarget.invalidUrl')}
+          </p>
+        </section>
+      );
     case 'tasks':
       return <TasksView />;
     case 'trash':

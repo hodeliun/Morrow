@@ -12,10 +12,11 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A primeira entrega isolada é T20 (#71): ações de colunas, inserção entre blocos e
-um único indicador de drop. Pré-requisitos estritos de preservação de conteúdo
-integram essa mesma entrega; a interface de resize do T18 e demais funcionalidades
-retomadas permanecem fora dela. Um commit coerente, sem nova release ou instalação.
+As primeiras entregas isoladas foram T20 (#71, PR #93) e T18 (#69, PR #94),
+integradas na main e encerradas após CI no Windows e Linux. T33 (#85), imagens
+existentes em abas próprias, é a próxima entrega ativa. Cada entrega inclui seus
+pré-requisitos estritos de preservação e validação, em um commit coerente, sem
+nova release ou instalação. Os outros tickets permanecem preservados até sua vez.
 
 Em 28/10/2026 o mantenedor autorizou explicitamente implementar todos os 39
 tickets, incluindo o adendo de arquivos/web/painéis, com GPT 6 Luna max executor
@@ -26,15 +27,15 @@ Baseline de início: 3961657c3d4a27ce3697b7b1c3d0b513202f94bc.
 Branch local: implementation/scope-2. Tracker: especificações #51/#82,
 tickets #52–#81 e #83–#91. Não duplicar tickets nem reiniciar planejamento.
 
-## Limite vigente após a integração oficial 1.3
+## Registro histórico da pausa após a integração oficial 1.3
 
 Esta rodada preserva somente T01, T02, T06, T08, T09, T10, T11, T14, T15,
 T16, T17, T19, T31, T32 e T37, aceitos antes da integração. A validação
 integrada está registrada no [relatório da integração](../../integration/1.3.0-fork-1.2.0.md).
-Os outros 24 tickets estão pausados e não devem ser despachados nem implementados
-por inferência da autorização histórica abaixo. Uma nova orientação do mantenedor
-é necessária para retomar essa fronteira. Esta atualização não autoriza release,
-instalação ou uso de dados e aplicativos pessoais.
+Os outros 24 tickets ficaram pausados nessa integração e exigiam nova orientação
+do mantenedor. A retomada posterior está autorizada pela diretriz sequencial acima;
+este registro histórico não a suspende. A retomada não autoriza release, instalação
+ou uso de dados e aplicativos pessoais.
 
 ## Regras de entrega
 

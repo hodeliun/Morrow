@@ -227,10 +227,25 @@ export interface DesktopFileHandlersApi {
   openContainingFolder(path: string): Promise<DesktopFileHandlerResult>;
 }
 
+export type DesktopImageViewerVaultResult =
+  { ok: true; vaultId: string } | { ok: false; code: 'not-allowed' | 'no-vault' };
+
+export type DesktopImageViewerIssueResult =
+  | { ok: true; token: string; mimeType: string; size: number }
+  | { ok: false; code: 'not-allowed' | 'no-vault' | 'vault-changed' | 'invalid-resource' };
+
+export interface DesktopImageViewerApi {
+  getVaultId(): Promise<DesktopImageViewerVaultResult>;
+  issue(vaultId: string, relativePath: string): Promise<DesktopImageViewerIssueResult>;
+  release(token: string): Promise<boolean>;
+  onVaultChanged(listener: () => void): () => void;
+}
+
 export interface DesktopBridge {
   assistant?: DesktopAssistantApi;
   clipboard?: DesktopClipboardApi;
   fileHandlers?: DesktopFileHandlersApi;
+  imageViewer?: DesktopImageViewerApi;
   mcp?: DesktopMcpApi;
   vault?: DesktopVaultApi;
   sync?: DesktopSyncApi;

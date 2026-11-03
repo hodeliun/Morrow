@@ -96,6 +96,88 @@ describe('pane tab persistence boundary', () => {
     expect(result.snapshot.closed).toEqual(['#/closed/a']);
   });
 
+  it('sanitizes URL routes in current snapshots while preserving legacy route hashes literally', () => {
+    const rejectedUrl = `#/url/${encodeURIComponent(
+      'https://synthetic-user:synthetic-pass@example.invalid/path?token=synthetic-sentinel',
+    )}`;
+    const legacyPage = '#/page/synthetic%20page?anchor=Section%20one';
+    const legacyFile = '#/file/synthetic-root/Images/100%25.png?download=0';
+    const search = '#/search?q=synthetic&sort=recent';
+    const layout = createPaneLayout(
+      'layout-resource-targets',
+      [
+        { id: 'tab-a', groupId: 'group-a', target: '#/page/initial', back: [], forward: [] },
+        { id: 'tab-b', groupId: 'group-b', target: '#/tags/initial', back: [], forward: [] },
+      ],
+      'tab-a',
+    );
+    const rawCurrent = JSON.parse(writePaneTabsSnapshot(layout, [])) as {
+      tabs: { id: string; target: string; back: string[]; forward: string[] }[];
+      closed: string[];
+    } & Record<string, unknown>;
+    rawCurrent.tabs[0] = {
+      ...rawCurrent.tabs[0]!,
+      target: rejectedUrl,
+      back: [legacyPage, rejectedUrl],
+      forward: [search, rejectedUrl],
+    };
+    rawCurrent.closed = [rejectedUrl, legacyFile];
+
+    const current = readPaneTabsSnapshot(JSON.stringify(rawCurrent));
+
+    expect(current.kind).toBe('current');
+    if (current.kind !== 'current') return;
+    expect(current.snapshot.resourceTargetsChanged).toBe(true);
+    expect(current.snapshot.layout.tabs[0]).toMatchObject({
+      target: '#/url/invalid',
+      back: [legacyPage, '#/url/invalid'],
+      forward: [search, '#/url/invalid'],
+    });
+    expect(current.snapshot.closed).toEqual(['#/url/invalid', legacyFile]);
+
+    const rewritten = writePaneTabsSnapshot(current.snapshot.layout, current.snapshot.closed);
+    expect(rewritten).not.toContain('synthetic-user');
+    expect(rewritten).not.toContain('synthetic-pass');
+    expect(rewritten).not.toContain('synthetic-sentinel');
+    expect(rewritten).toContain(legacyPage);
+    expect(rewritten).toContain(legacyFile);
+    expect(rewritten).toContain(search);
+    expect(readPaneTabsSnapshot(rewritten)).toMatchObject({
+      kind: 'current',
+      snapshot: { resourceTargetsChanged: false },
+    });
+  });
+
+  it('sanitizes rejected URL values in legacy target, history, side pane, and closed routes', () => {
+    const rejectedUrl = `#/url/${encodeURIComponent('https://user:pass@example.invalid/path?token=synthetic')}`;
+    const page = '#/page/legacy%20id?anchor=Heading';
+    const file = '#/file/root/Images/image.png?download=0';
+    const legacy = {
+      active: 'tab-a',
+      pane: 'side',
+      closed: [rejectedUrl, file],
+      tabs: [
+        {
+          id: 'tab-a',
+          hash: rejectedUrl,
+          back: [page, rejectedUrl],
+          forward: [rejectedUrl],
+          side: { hash: rejectedUrl, back: [file, rejectedUrl], forward: [] },
+        },
+      ],
+    };
+    const parsed = readPaneTabsSnapshot(JSON.stringify(legacy));
+    expect(parsed.kind).toBe('legacy');
+    if (parsed.kind !== 'legacy') return;
+    expect(parsed.snapshot.tabs[0]).toMatchObject({
+      hash: '#/url/invalid',
+      back: [page, '#/url/invalid'],
+      forward: ['#/url/invalid'],
+      side: { hash: '#/url/invalid', back: [file, '#/url/invalid'] },
+    });
+    expect(parsed.snapshot.closed).toEqual(['#/url/invalid', file]);
+  });
+
   it('recognizes a future schema without interpreting it as legacy state', () => {
     const raw = JSON.stringify({ schemaVersion: 3, tabs: [{ not: 'legacy' }] });
     expect(readPaneTabsSnapshot(raw)).toEqual({ kind: 'future', version: 3 });

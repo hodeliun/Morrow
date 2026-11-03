@@ -445,6 +445,28 @@ export const en = {
     unarchive: 'Unarchive',
     infoHeading: '{words} words · created {time}',
   },
+  fileViewer: {
+    title: 'Image',
+    controls: 'Image controls',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    fit: 'Fit to area',
+    dimensions: '{width} × {height} px',
+    imageStage: 'Image preview for {name}. Use plus and minus to zoom, or zero to fit.',
+    loading: 'Loading image…',
+    missing: 'This image is no longer available or could not be decoded.',
+    noVault: 'Open a vault to view this image.',
+    vaultChanged: 'This image belongs to a different vault. Open it from the current vault.',
+    unavailable: 'The image viewer is unavailable.',
+  },
+  resourceTarget: {
+    urlTitle: 'Web link',
+    invalidUrlTitle: 'Unavailable web link',
+    urlUnavailableTitle: 'Web navigation is unavailable',
+    urlUnavailable: 'This address has not been opened or loaded.',
+    invalidUrl:
+      'This address is invalid or not allowed. Only valid HTTP(S) addresses without credentials, queries, or fragments are accepted.',
+  },
   tabs: {
     secondPage: 'Second page',
     resizeSplit: 'Drag to resize the two sides',

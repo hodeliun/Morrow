@@ -1,5 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
+import { parseResourceTarget, serializeResourceTarget } from './resourceTargets';
 import {
   activeHash,
   routeHashForPane,
@@ -14,6 +15,8 @@ import type { PaneId } from './tabs';
 
 export type Route =
   | { name: 'home' }
+  | { name: 'file'; vaultId: string | null; path: string | null }
+  | { name: 'url'; url: string | null }
   // anchor is a heading or ^block id to scroll to once the page opens
   | { name: 'page'; id: PageId; find: string | null; anchor?: string | null }
   | { name: 'tasks' }
@@ -26,8 +29,59 @@ export type Route =
   | { name: 'review'; deck?: PageId | null }
   | { name: 'search'; query: string };
 
+const VAULT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RESERVED_FILE_SEGMENTS = new Set(['.morrow', '.git']);
+
+function isSafeFileSegment(segment: string): boolean {
+  return Boolean(
+    segment &&
+    segment !== '.' &&
+    segment !== '..' &&
+    !segment.includes('/') &&
+    !segment.includes('\\') &&
+    !segment.includes(':') &&
+    !Array.from(segment).some(
+      (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+    ) &&
+    !RESERVED_FILE_SEGMENTS.has(segment.toLowerCase()) &&
+    !segment.toLowerCase().startsWith('.morrow-tmp-'),
+  );
+}
+
+function invalidFileRoute(): Route {
+  return { name: 'file', vaultId: null, path: null };
+}
+
+function parseFileRoute(rawSegments: string[], query: string): Route {
+  if (query || rawSegments.length < 2 || rawSegments.some((segment) => segment === ''))
+    return invalidFileRoute();
+  const [rawVaultId, ...rawPath] = rawSegments;
+  let vaultId: string;
+  let segments: string[];
+  try {
+    vaultId = decodeURIComponent(rawVaultId!);
+    segments = rawPath.map((segment) => decodeURIComponent(segment));
+  } catch {
+    return invalidFileRoute();
+  }
+  if (!VAULT_ID.test(vaultId) || !segments.every(isSafeFileSegment)) return invalidFileRoute();
+  return { name: 'file', vaultId: vaultId.toLowerCase(), path: segments.join('/') };
+}
+
+function validFilePath(value: string): boolean {
+  return value.split('/').every(isSafeFileSegment);
+}
+
 export function parseRoute(hash: string): Route {
+  const resourceTarget = parseResourceTarget(hash);
+  if (resourceTarget.kind === 'url') return { name: 'url', url: resourceTarget.url };
   const [path = '', query = ''] = hash.replace(/^#/, '').split('?');
+  const routePath = path.replace(/^\/+/, '');
+  const rawParts = routePath.split('/');
+  if (rawParts[0] === 'file') {
+    if (path.length - routePath.length !== 1) return invalidFileRoute();
+    return parseFileRoute(rawParts.slice(1), query);
+  }
   const parts = path.split('/').filter(Boolean);
   if (parts[0] === 'page' && parts[1]) {
     const params = new URLSearchParams(query);
@@ -49,6 +103,15 @@ export function parseRoute(hash: string): Route {
 
 export function routeHash(route: Route): string {
   switch (route.name) {
+    case 'file':
+      return route.vaultId && route.path && VAULT_ID.test(route.vaultId) && validFilePath(route.path)
+        ? `#/file/${encodeURIComponent(route.vaultId.toLowerCase())}/${route.path
+            .split('/')
+            .map(encodeURIComponent)
+            .join('/')}`
+        : '#/file/invalid';
+    case 'url':
+      return serializeResourceTarget({ kind: 'url', url: route.url }) ?? '#/url/invalid';
     case 'page': {
       const params = new URLSearchParams();
       if (route.find) params.set('find', route.find);
