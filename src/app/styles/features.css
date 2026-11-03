@@ -930,6 +930,23 @@ textarea.text-input.small {
   grid-column: -2;
   justify-self: end;
 }
+.db-new-property {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+.db-new-property > .text-input {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+}
+.db-new-property > .property-type-select-shell {
+  min-width: 0;
+}
+.db-new-property > .button {
+  justify-self: end;
+}
 .db-sort-rule {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
 }
@@ -1311,7 +1328,20 @@ textarea.text-input.small {
   margin: 0;
 }
 .db-relation-settings .segmented {
+  display: flex;
+  align-items: stretch;
   width: 100%;
+}
+.db-relation-settings .segmented button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: auto;
+  min-height: 26px;
+  padding: 4px 5px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .db-relation-filters {
   display: flex;
@@ -1615,12 +1645,15 @@ textarea.text-input.small {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
-  margin: 8px 0;
+  margin: 0;
   padding: 8px 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--surface);
   font-size: var(--text-sm);
+}
+.db-fill-preview-popover {
+  width: min(520px, calc(100vw - 16px));
 }
 .db-fill-status,
 .db-fill-error {
@@ -1642,6 +1675,16 @@ textarea.text-input.small {
 .db-fill-hint {
   flex-basis: 100%;
   color: var(--text-muted);
+}
+.db-format-catalog-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.db-format-catalog-note[role='alert'] {
+  color: var(--danger);
 }
 .db-fill-preview-value {
   overflow: hidden;
