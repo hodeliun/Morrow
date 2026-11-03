@@ -138,6 +138,7 @@ export function planInsertRow(
   placement: RowPlacement,
   id: PageId,
   now: number,
+  calculatedResultBackground?: boolean,
 ): Result<RowOperationPlan> {
   const database = validateEditableDatabase(databaseFor(state, databaseId));
   if (!database.ok) return database;
@@ -152,7 +153,17 @@ export function planInsertRow(
   return makePlan(
     state,
     { kind: 'insert', databaseId, rowIds: [id] },
-    [{ type: 'page.create', id, parentId: databaseId, title: '', now, index }],
+    [
+      {
+        type: 'page.create',
+        id,
+        parentId: databaseId,
+        title: '',
+        now,
+        index,
+        ...(calculatedResultBackground !== undefined ? { calculatedResultBackground } : {}),
+      },
+    ],
   );
 }
 
@@ -379,6 +390,9 @@ export function planPasteRows(
       controls: copy.controls,
       properties: values.properties,
       extra: values.extra,
+      ...(copy.calculatedResultBackground !== null
+        ? { calculatedResultBackground: copy.calculatedResultBackground }
+        : {}),
       cover: copy.cover,
       coverPosition: copy.coverPosition,
       doc: duplicate.value.doc,

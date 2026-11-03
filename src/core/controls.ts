@@ -5,16 +5,62 @@ import { isValidDateKey, scalarValueError } from './typedValues';
 import { isEffectivelyTrashed } from './tree';
 import type { WorkspaceState } from './model';
 
-const CONTROL_TYPES = new Set<NamedControlType>(['text', 'number', 'slider', 'select', 'checkbox', 'date', 'relation']);
+const CONTROL_TYPES = new Set<NamedControlType>([
+  'text', 'number', 'slider', 'scale', 'progress', 'select', 'multiSelect', 'checkbox', 'date', 'dateRange', 'relation',
+]);
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const CONTROL_STEP_TOLERANCE = 1e-8;
+
+export type BoundedNumericControlType = Extract<NamedControlType, 'scale' | 'progress'>;
+
+export function defaultBoundedNumericControlFormat(type: BoundedNumericControlType): PropertyFormat {
+  return type === 'scale'
+    ? { min: 1, max: 5, step: 1, scaleIcon: 'star', color: 'blue', showValue: true }
+    : { min: 0, max: 100, step: 1, color: 'blue', showValue: true };
+}
+
+export function boundedNumericControlFormatError(
+  type: BoundedNumericControlType,
+  format: PropertyFormat | undefined,
+): string | null {
+  const { min, max, step } = format ?? {};
+  if (
+    typeof min !== 'number' || !Number.isFinite(min) ||
+    typeof max !== 'number' || !Number.isFinite(max) ||
+    typeof step !== 'number' || !Number.isFinite(step) || step <= 0
+  ) return 'Scale and progress controls need explicit finite minimum, maximum, and positive step values.';
+  if (max <= min) return 'The numeric control maximum must be greater than its minimum.';
+  if (type === 'scale' && (![min, max, step].every(Number.isInteger)))
+    return 'Scale minimum, maximum, and step must be whole numbers.';
+  const stepCount = (max - min) / step;
+  if (!Number.isFinite(stepCount) || Math.abs(stepCount - Math.round(stepCount)) > CONTROL_STEP_TOLERANCE)
+    return 'The numeric control step must divide its configured range.';
+  return null;
+}
+
+export function controlConfigurationError(control: NamedControlDef): string | null {
+  return control.type === 'scale' || control.type === 'progress'
+    ? boundedNumericControlFormatError(control.type, control.format)
+    : null;
+}
 
 export function controlValueError(control: NamedControlDef, value: PropValue): string | null {
+  const configurationError = controlConfigurationError(control);
+  if (configurationError) return configurationError;
   if (value === null) return null;
   switch (control.type) {
-    case 'text':
-      return typeof value === 'string' && value.length <= 20_000 ? null : 'Text controls need text up to 20,000 characters.';
+    case 'text': {
+      if (typeof value !== 'string' || value.length > 20_000) return 'Text controls need text up to 20,000 characters.';
+      if (control.textFormat === 'email') {
+        const prop = { id: control.id, name: control.name, type: 'email', options: [] } as PropDef;
+        return scalarValueError(prop, value);
+      }
+      return null;
+    }
     case 'number':
-    case 'slider': {
+    case 'slider':
+    case 'scale':
+    case 'progress': {
       if (typeof value !== 'number' || !Number.isFinite(value)) return 'Numeric controls need a finite number.';
       const prop = { id: control.id, name: control.name, type: control.type, options: [], format: control.format } as PropDef;
       return scalarValueError(prop, value);
@@ -23,10 +69,19 @@ export function controlValueError(control: NamedControlDef, value: PropValue): s
       return typeof value === 'boolean' ? null : 'Checkbox controls need true, false, or blank.';
     case 'date':
       return typeof value === 'string' && (value === '' || isValidDateKey(value)) ? null : 'Date controls need a real date.';
+    case 'dateRange':
+      if (!Array.isArray(value) || value.length !== 2 || !value.every((item) => typeof item === 'string' && isValidDateKey(item)))
+        return 'Date range controls need exactly two real dates or a blank value.';
+      return value[0]! <= value[1]! ? null : 'Date range controls need an ordered range.';
     case 'select':
       return typeof value === 'string' && control.options.some((option) => option.id === value)
         ? null
         : 'Select controls need one of their configured options.';
+    case 'multiSelect':
+      return Array.isArray(value) && value.length <= 100 && new Set(value).size === value.length &&
+        value.every((id) => control.options.some((option) => option.id === id))
+        ? null
+        : 'Multi-select controls need a unique list of configured options.';
     case 'relation': {
       const multiple = control.relation?.multiple === true;
       const ids = Array.isArray(value) ? value : typeof value === 'string' ? [value] : null;
@@ -44,12 +99,13 @@ export function normalizeNamedControls(raw: unknown): NamedControlDef[] | null {
   const ids = new Set<string>();
   for (const item of raw) {
     if (!isRecord(item)) return null;
-    const allowed = new Set(['id', 'name', 'type', 'value', 'defaultValue', 'options', 'format', 'relation']);
+    const allowed = new Set(['id', 'name', 'type', 'textFormat', 'value', 'defaultValue', 'options', 'format', 'relation']);
     if (Object.keys(item).some((key) => !allowed.has(key))) return null;
     if (!ID_PATTERN.test(String(item.id ?? '')) || ids.has(String(item.id))) return null;
     if (typeof item.name !== 'string' || !item.name.trim() || item.name.trim().length > 100) return null;
     if (!CONTROL_TYPES.has(item.type as NamedControlType)) return null;
     const type = item.type as NamedControlType;
+    if (item.textFormat !== undefined && (type !== 'text' || !['plain', 'email'].includes(item.textFormat as string))) return null;
     const options = normalizeOptions(item.options);
     if (!options) return null;
     const format = normalizeControlFormat(item.format);
@@ -63,6 +119,7 @@ export function normalizeNamedControls(raw: unknown): NamedControlDef[] | null {
       id: String(item.id),
       name: item.name.trim(),
       type,
+      ...(item.textFormat !== undefined ? { textFormat: item.textFormat as 'plain' | 'email' } : {}),
       value,
       defaultValue,
       options,

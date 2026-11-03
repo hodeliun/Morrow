@@ -95,7 +95,15 @@ import { Popover } from '../Popover';
 import { Dialog } from '../primitives';
 import { PageGlyph } from '../Emoji';
 import { PageIcon } from '../Sidebar';
-import { addColumnsFromPages, createRow, setValue, updateDatabase, updateView } from './data';
+import {
+  addColumnsFromPages,
+  createRow,
+  deleteProperty,
+  setValue,
+  titleAliasConflicts,
+  updateDatabase,
+  updateView,
+} from './data';
 import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from './PropertyValue';
 import { cellEditStartKey, cellPickerStartProps } from './cellEditing';
 import { PropertySettings } from './PropertySettings';
@@ -3446,6 +3454,13 @@ function TableView({
 }) {
   const saveView = useViewUpdater(dbId, view.id);
   const state = useWorkspace();
+  const titleColumnLabel = database.titleAlias?.trim() || t('database.name');
+  const titleColumnProp: PropDef = {
+    id: TITLE_PROP,
+    name: titleColumnLabel,
+    type: 'text',
+    options: [],
+  };
   const canEditImmediately = () => editable && (canEditNow?.() ?? true);
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
@@ -4367,6 +4382,7 @@ function TableView({
     focusSection?: 'formula';
   } | null>(null);
   const [columnMenu, setColumnMenu] = useState<{ prop: PropDef; anchor: HTMLElement } | null>(null);
+  const [titleAliasEditor, setTitleAliasEditor] = useState<HTMLElement | null>(null);
   const [adding, setAdding] = useState<HTMLElement | null>(null);
   const [inserting, setInserting] = useState<{
     prop: PropDef;
@@ -4436,8 +4452,10 @@ function TableView({
     saveWidth(propId, Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.ceil(widest + 48))));
   };
   const selectedSort = columnMenu ? view.sorts.find((item) => item.prop === columnMenu.prop.id) : undefined;
+  const isTitleColumnMenu = columnMenu?.prop.id === TITLE_PROP;
   const openColumnMenu = (prop: PropDef, anchor: HTMLElement) => {
     setHeader(null);
+    setTitleAliasEditor(null);
     setInserting(null);
     setColumnMenu({ prop, anchor });
   };
@@ -4893,7 +4911,40 @@ function TableView({
                 className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`}
                 style={frozenStyle(-1)}
               >
-                {t('database.name')}
+                <div className="db-header-row">
+                  {editable ? (
+                    <button
+                      type="button"
+                      className="db-header"
+                      aria-label={t('database.columnMenuAria', { name: titleColumnLabel })}
+                      aria-haspopup="menu"
+                      aria-expanded={columnMenu?.prop.id === TITLE_PROP || titleAliasEditor !== null}
+                      aria-keyshortcuts="Shift+F10 ContextMenu"
+                      title={t('database.columnMenuHint')}
+                      onClick={(event) => {
+                        setColumnMenu(null);
+                        setInserting(null);
+                        setHeader(null);
+                        setTitleAliasEditor(event.currentTarget);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        openColumnMenu(titleColumnProp, event.currentTarget);
+                      }}
+                      onKeyDown={(event) => {
+                        if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+                          event.preventDefault();
+                          openColumnMenu(titleColumnProp, event.currentTarget);
+                        }
+                      }}
+                    >
+                      <span className="db-header-name">{titleColumnLabel}</span>
+                    </button>
+                  ) : (
+                    <span className="db-header-name">{titleColumnLabel}</span>
+                  )}
+                  {!database.displayPropertyId && <DefaultDisplayIndicator />}
+                </div>
                 {resizer(TITLE_PROP)}
               </th>
               {props.map((prop) => {
@@ -4917,6 +4968,7 @@ function TableView({
                         onClick={(event) => {
                           setColumnMenu(null);
                           setInserting(null);
+                          setTitleAliasEditor(null);
                           setHeader({ prop, anchor: event.currentTarget });
                         }}
                         onContextMenu={(event) => {
@@ -4945,6 +4997,7 @@ function TableView({
                         </span>
                         <span className="db-header-name">{prop.name}</span>
                       </button>
+                      {database.displayPropertyId === prop.id && <DefaultDisplayIndicator />}
                       {description && (
                         <span className="db-header-info-wrap">
                           <ColumnDescription description={description} />
@@ -5600,6 +5653,14 @@ function TableView({
             focusSection={header.focusSection}
           />
         )}
+        {titleAliasEditor && (
+          <TitleColumnSettings
+            dbId={dbId}
+            database={database}
+            anchor={titleAliasEditor}
+            onClose={() => setTitleAliasEditor(null)}
+          />
+        )}
         {columnMenu && (
           <Menu
             anchor={columnMenu.anchor}
@@ -5608,18 +5669,26 @@ function TableView({
             entries={[
               { heading: columnMenu.prop.name },
               {
-                label: t('database.editColumn'),
+                label: isTitleColumnMenu ? t('database.renameNameColumn') : t('database.editColumn'),
                 icon: Settings2,
-                onSelect: () => setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
+                onSelect: () =>
+                  isTitleColumnMenu
+                    ? setTitleAliasEditor(columnMenu.anchor)
+                    : setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
               },
               {
                 label: t('database.setDisplayColumn'),
                 icon: Eye,
-                checked: database.displayPropertyId === columnMenu.prop.id,
+                checked: isTitleColumnMenu
+                  ? !database.displayPropertyId
+                  : database.displayPropertyId === columnMenu.prop.id,
                 onSelect: () =>
-                  updateDatabase(dbId, (current) => ({ ...current, displayPropertyId: columnMenu.prop.id })),
+                  updateDatabase(dbId, (current) => ({
+                    ...current,
+                    displayPropertyId: isTitleColumnMenu ? null : columnMenu.prop.id,
+                  })),
               },
-              ...(database.displayPropertyId === columnMenu.prop.id
+              ...(!isTitleColumnMenu && database.displayPropertyId === columnMenu.prop.id
                 ? [
                     {
                       label: t('database.useTitleForDisplay'),
@@ -5629,19 +5698,34 @@ function TableView({
                     },
                   ]
                 : []),
-              {
-                label: t('database.editColumnFormula'),
-                icon: Calculator,
-                disabled: ['button', 'createdTime', 'lastEditedTime', 'image', 'file', 'richCanvas'].includes(
-                  columnMenu.prop.type,
-                ),
-                onSelect: () =>
-                  setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor, focusSection: 'formula' }),
-              },
+              ...(!isTitleColumnMenu
+                ? [
+                    {
+                      label: t('database.editColumnFormula'),
+                      icon: Calculator,
+                      disabled: ['button', 'createdTime', 'lastEditedTime', 'image', 'file', 'richCanvas'].includes(
+                        columnMenu.prop.type,
+                      ),
+                      onSelect: () =>
+                        setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor, focusSection: 'formula' }),
+                    },
+                  ]
+                : []),
               {
                 label: t('database.formatColumnConditionally'),
                 icon: Paintbrush,
                 onSelect: () => onRequestFormat(columnMenu.prop.id),
+              },
+              {
+                label: isTitleColumnMenu
+                  ? t('database.nameColumnCannotDelete')
+                  : t('database.deletePropertyNamed', { name: columnMenu.prop.name }),
+                icon: Trash2,
+                danger: !isTitleColumnMenu,
+                disabled: isTitleColumnMenu,
+                onSelect: () => {
+                  if (!isTitleColumnMenu) deleteProperty(dbId, columnMenu.prop.id);
+                },
               },
               { separator: true },
               {
@@ -5690,18 +5774,22 @@ function TableView({
                 onSelect: () => onRequestFilter(columnMenu.prop.id),
               },
               { separator: true },
-              {
-                label: t('database.insertColumnBefore'),
-                icon: Plus,
-                onSelect: () =>
-                  setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'before' }),
-              },
-              {
-                label: t('database.insertColumnAfter'),
-                icon: Plus,
-                onSelect: () =>
-                  setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
-              },
+              ...(!isTitleColumnMenu
+                ? [
+                    {
+                      label: t('database.insertColumnBefore'),
+                      icon: Plus,
+                      onSelect: () =>
+                        setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'before' }),
+                    },
+                    {
+                      label: t('database.insertColumnAfter'),
+                      icon: Plus,
+                      onSelect: () =>
+                        setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'after' }),
+                    },
+                  ]
+                : []),
               { separator: true },
               {
                 label: t('database.freezeThroughColumn'),
@@ -5737,16 +5825,20 @@ function TableView({
                 onSelect: () => saveView((current) => ({ ...current, rowHeight: height })),
               })),
               { separator: true },
-              {
-                label: t('database.duplicateColumnEmpty'),
-                icon: Copy,
-                onSelect: () => duplicateColumn(columnMenu.prop.id, false),
-              },
-              {
-                label: t('database.duplicateColumnValues'),
-                icon: Copy,
-                onSelect: () => duplicateColumn(columnMenu.prop.id, true),
-              },
+              ...(!isTitleColumnMenu
+                ? [
+                    {
+                      label: t('database.duplicateColumnEmpty'),
+                      icon: Copy,
+                      onSelect: () => duplicateColumn(columnMenu.prop.id, false),
+                    },
+                    {
+                      label: t('database.duplicateColumnValues'),
+                      icon: Copy,
+                      onSelect: () => duplicateColumn(columnMenu.prop.id, true),
+                    },
+                  ]
+                : []),
             ]}
           />
         )}
@@ -6409,5 +6501,92 @@ function GalleryView({ rows, database, view }: { rows: PageMeta[]; database: Dat
     </div>
   ) : (
     <div className="db-gallery">{cards(rows)}</div>
+  );
+}
+
+function DefaultDisplayIndicator() {
+  const label = t('database.defaultDisplayColumn');
+  return (
+    <span className="db-display-indicator" role="img" aria-label={label} title={label}>
+      <Eye size={13} aria-hidden="true" />
+    </span>
+  );
+}
+
+function TitleColumnSettings({
+  dbId,
+  database,
+  anchor,
+  onClose,
+}: {
+  dbId: PageId;
+  database: DatabaseDef;
+  anchor: HTMLElement;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(database.titleAlias ?? '');
+  const [conflict, setConflict] = useState(false);
+  const errorId = useId();
+
+  const save = () => {
+    const alias = draft.trim().replace(/[\r\n\t]+/g, ' ').slice(0, 200);
+    if (!alias) return;
+    if (titleAliasConflicts(database, alias)) {
+      setConflict(true);
+      return;
+    }
+    if (alias === database.titleAlias || updateDatabase(dbId, (current) => ({ ...current, titleAlias: alias })))
+      onClose();
+  };
+
+  const restore = () => {
+    const updated = updateDatabase(dbId, (current) => {
+      const next = { ...current };
+      delete next.titleAlias;
+      return next;
+    });
+    if (updated) onClose();
+  };
+
+  return (
+    <Popover anchor={anchor} onClose={onClose} label={t('database.renameNameColumn')}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+      >
+        <label className="field">
+          <span>{t('database.nameColumnLabel')}</span>
+          <input
+            type="text"
+            className="text-input small"
+            data-autofocus
+            maxLength={200}
+            value={draft}
+            placeholder={t('database.name')}
+            aria-invalid={conflict || undefined}
+            aria-describedby={conflict ? errorId : undefined}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setConflict(false);
+            }}
+          />
+        </label>
+        {conflict && (
+          <div className="field-error" id={errorId} role="alert">
+            {t('database.titleAliasAlreadyUsed')}
+          </div>
+        )}
+        <div className="popover-actions">
+          <button type="submit" className="button small primary" disabled={!draft.trim()}>
+            {t('common.save')}
+          </button>
+          <button type="button" className="button small" disabled={!database.titleAlias} onClick={restore}>
+            {t('database.restoreNameColumn')}
+          </button>
+        </div>
+      </form>
+    </Popover>
   );
 }

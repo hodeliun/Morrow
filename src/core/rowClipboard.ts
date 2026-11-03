@@ -46,6 +46,7 @@ const PAGE_KEYS = new Set([
   'cover',
   'coverPosition',
   'noteStyle',
+  'calculatedResultBackground',
   'encrypted',
 ]);
 
@@ -188,6 +189,12 @@ export function validateRowClipboardPayload(value: unknown): Result<RowClipboard
       return fail('Clipboard data contains an invalid row.');
     if (!hasOnlyKeys(entry.page, [...PAGE_KEYS]))
       return fail('Clipboard data contains unsupported row fields.');
+    if (
+      Object.prototype.hasOwnProperty.call(entry.page, 'calculatedResultBackground') &&
+      entry.page.calculatedResultBackground !== null &&
+      typeof entry.page.calculatedResultBackground !== 'boolean'
+    )
+      return fail('Clipboard data contains an invalid calculated result background setting.');
     if (
       Object.prototype.hasOwnProperty.call(entry.page, 'archivedAt') &&
       entry.page.archivedAt !== null &&

@@ -120,3 +120,40 @@ describe('database format metadata that cannot be normalized', () => {
     }
   });
 });
+
+
+describe('legacy null database display target', () => {
+  it('opens the existing null Name default without writing the original Markdown', async () => {
+    const original = `---\n${stringify({ kind: 'database', database: {
+      displayPropertyId: null,
+      properties: [{ id: 'amount', name: 'Amount', type: 'number', options: [] }],
+      views: [], futureDatabaseFlag: { keep: false },
+    }, futureRoot: 'keep' })}---\nIndependent body.\n`;
+    const read = readPageText(original);
+    expect(read.error).toBeNull();
+    expect(read.database?.displayPropertyId).toBeUndefined();
+    const vault = new MemoryVault({ 'Legacy.md': original });
+    const applied: Parameters<MemoryVault['apply']>[0] = [];
+    const apply = vault.apply.bind(vault);
+    vault.apply = async (ops) => { applied.push(...ops); return apply(ops); };
+    const session = await open(vault);
+    try {
+      const id = pageId(session, 'Legacy');
+      expect(session.unreadable.has(id)).toBe(false);
+      expect(session.getState().pages[id]?.database?.displayPropertyId).toBeUndefined();
+    } finally {
+      await session.close();
+    }
+    expect(vault.text('Legacy.md')).toBe(original);
+    expect(applied.filter((op) => 'path' in op && op.path === 'Legacy.md')).toEqual([]);
+  });
+
+  it('still protects non-null malformed or unresolved display targets', () => {
+    for (const target of ['missing-property', 42, false]) {
+      const text = `---\n${stringify({ kind: 'database', database: {
+        displayPropertyId: target, properties: [], views: [],
+      } })}---\nKeep the body.\n`;
+      expect(readPageText(text).error).toContain('displayPropertyId does not identify a supported property');
+    }
+  });
+});

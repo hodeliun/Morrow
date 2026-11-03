@@ -2,6 +2,24 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — Nome e propriedade de exibição (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- O cabeçalho Nome pode receber outro rótulo sem duplicar os títulos das páginas.
+  Editar uma célula Nome continua renomeando a página com o mesmo ID.
+- O menu permite escolher a propriedade de exibição do banco e voltar a Nome,
+  com indicador acessível. Um override de relação continua distinto desse padrão.
+- A remoção de uma propriedade comum identifica o alvo; a remoção de Nome fica
+  indisponível com explicação, preservando a semântica dos títulos.
+- Esta entrega introduz a fundação do formato persistido 13, com os contratos
+  completos dos campos já definidos e migração 12→13 preservando os registros.
+  Isso não declara entregues as interfaces dos outros tickets.
+
+Detalhes e validação: [T03 — Nome e propriedade de exibição](docs/deliveries/T03-name-display-property.md)
+e [contratos do formato 13](docs/SCHEMA-13.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — painéis de propriedades e seletores (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

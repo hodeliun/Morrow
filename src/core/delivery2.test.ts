@@ -58,6 +58,7 @@ function testState(
       cover: null,
       coverPosition: 50,
       noteStyle: null,
+      calculatedResultBackground: null,
       encrypted: false,
     },
   };
@@ -85,6 +86,7 @@ function testState(
       cover: null,
       coverPosition: 50,
       noteStyle: null,
+      calculatedResultBackground: null,
       encrypted: false,
     };
     pages[data.id] = row;
@@ -753,6 +755,7 @@ describe('Delivery 2: View Presentation, hideTitle, and collapsed (#28, #29)', (
       cover: null,
       coverPosition: 50,
       noteStyle: null,
+      calculatedResultBackground: null,
       encrypted: false,
     };
     const testStateObj: WorkspaceState = { pages: { [dummyPage.id]: dummyPage }, docs: {} };

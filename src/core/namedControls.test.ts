@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { applyCommand } from './commands';
 import type { Command } from './commands';
 import { bindPageFormulaReferences, documentFormulaResult, formatValue, matchesFilter, rowsOf, visibleRows } from './database';
-import { controlValueErrorInState } from './controls';
+import {
+  boundedNumericControlFormatError,
+  controlValueError,
+  controlValueErrorInState,
+  defaultBoundedNumericControlFormat,
+  normalizeNamedControls,
+} from './controls';
 import { emptyWorkspace } from './model';
 import { SCHEMA_VERSION } from './model';
 import type { DocNode, NamedControlDef, PropDef, ViewDef, WorkspaceState } from './model';
@@ -30,6 +36,7 @@ const control = (fields: Partial<NamedControlDef> & Pick<NamedControlDef, 'id' |
   defaultValue: fields.defaultValue ?? null,
   options: fields.options ?? [],
   ...(fields.format ? { format: fields.format } : {}),
+  ...(fields.textFormat ? { textFormat: fields.textFormat } : {}),
   ...(fields.relation ? { relation: fields.relation } : {}),
 });
 
@@ -50,6 +57,275 @@ describe('named controls', () => {
     expect(state.pages.page!.controls.find((item) => item.id === 'zero')).toMatchObject({ name: 'Amount', value: 0, defaultValue: 2 });
     state = run(state, { type: 'page.control.reset', id: 'page', controlId: 'zero', now: 6 });
     expect(state.pages.page!.controls.find((item) => item.id === 'zero')?.value).toBe(2);
+  });
+
+  it('validates bounded scale and progress configuration without clamping typed values', () => {
+    expect(defaultBoundedNumericControlFormat('scale')).toMatchObject({ min: 1, max: 5, step: 1, scaleIcon: 'star', showValue: true });
+    expect(defaultBoundedNumericControlFormat('progress')).toMatchObject({ min: 0, max: 100, step: 1, showValue: true });
+    expect(boundedNumericControlFormatError('scale', { min: 1, max: 5, step: 1 })).toBeNull();
+    expect(boundedNumericControlFormatError('progress', { min: 0, max: 0.3, step: 0.1 })).toBeNull();
+    expect(boundedNumericControlFormatError('scale', { min: 1.5, max: 5, step: 1 })).toContain('whole numbers');
+    expect(boundedNumericControlFormatError('progress', { min: 0, max: 1, step: 0 })).toContain('positive step');
+    expect(boundedNumericControlFormatError('progress', { min: 0, max: 1, step: 0.3 })).toContain('divide');
+    expect(boundedNumericControlFormatError('progress', { min: 2, max: 2, step: 1 })).toContain('greater');
+    expect(boundedNumericControlFormatError('progress', {})).toContain('explicit finite');
+
+    const progress = control({
+      id: 'progress', name: 'Progress', type: 'progress', value: 0.3, defaultValue: 0,
+      format: { min: 0, max: 0.3, step: 0.1 },
+    });
+    expect(controlValueError(progress, 0.3)).toBeNull();
+    expect(controlValueError(progress, 0.31)).toContain('at most');
+    expect(controlValueError(progress, '0.3')).toContain('finite number');
+    expect(controlValueError({ ...progress, format: undefined }, 0.3)).toContain('explicit finite');
+    expect(normalizeNamedControls([{ ...progress, value: 0.3, defaultValue: 0 }])?.[0]).toMatchObject({
+      type: 'progress', value: 0.3, defaultValue: 0,
+    });
+    expect(normalizeNamedControls([{ ...progress, format: { min: 0, max: 1, step: 0.3 } }])).toBeNull();
+
+    const initial = run(emptyWorkspace(), create('page'), {
+      type: 'page.control.configure', id: 'page', now: 2, control: progress,
+    });
+    const incompatible = applyCommand(initial, {
+      type: 'page.control.configure', id: 'page', now: 3,
+      control: { ...progress, format: { min: 0, max: 0.2, step: 0.1 } },
+    });
+    expect(incompatible.ok).toBe(false);
+    expect(initial.pages.page!.controls[0]).toMatchObject({ value: 0.3, defaultValue: 0 });
+  });
+
+  it('preserves zero and blank and passes numeric values unchanged to formulas and filters', () => {
+    const format = { min: 0, max: 1, step: 0.1 };
+    let state = run(
+      emptyWorkspace(),
+      create('items', null, {
+        kind: 'database',
+        database: { properties: [{ id: 'completion', name: 'Completion', type: 'progress', options: [], format }], views: [] },
+      } as Partial<Command>),
+      create('row', 'items', { properties: { completion: 0.3 } } as Partial<Command>),
+      create('summary'),
+      { type: 'page.control.configure', id: 'summary', now: 2,
+        control: control({ id: 'completion-control', name: 'CompletionValue', type: 'progress', value: 0.3, defaultValue: 0, format }) },
+      { type: 'page.control.configure', id: 'summary', now: 2,
+        control: control({ id: 'blank-control', name: 'Blankable', type: 'progress', value: null, defaultValue: null, format }) },
+    );
+    const binding = bindPageFormulaReferences('CompletionValue', 'summary', state, 'items');
+    expect(documentFormulaResult('summary', 'completion-result', 'CompletionValue', binding, state)).toEqual({ value: 0.3, error: null });
+    const rule = {
+      id: 'completion-filter', prop: 'completion', op: 'is' as const, value: null,
+      controlRef: { pageId: 'summary', controlId: 'completion-control' },
+    };
+    expect(matchesFilter(state.pages.row!, rule, state.pages.items!.database!, state)).toBe(true);
+
+    state = run(state,
+      { type: 'page.control.setValue', id: 'summary', controlId: 'completion-control', value: 0, now: 3 },
+      { type: 'page.control.setValue', id: 'summary', controlId: 'blank-control', value: 0, now: 3 },
+    );
+    expect(documentFormulaResult('summary', 'completion-result', 'CompletionValue', binding, state)).toEqual({ value: 0, error: null });
+    expect(matchesFilter(state.pages.row!, rule, state.pages.items!.database!, state)).toBe(false);
+    expect(state.pages.summary!.controls.find((item) => item.id === 'blank-control')?.value).toBe(0);
+
+    state = run(state,
+      { type: 'page.control.setValue', id: 'summary', controlId: 'completion-control', value: null, now: 4 },
+      { type: 'page.control.reset', id: 'summary', controlId: 'completion-control', now: 5 },
+      { type: 'page.control.reset', id: 'summary', controlId: 'blank-control', now: 5 },
+    );
+    expect(state.pages.summary!.controls.find((item) => item.id === 'completion-control')?.value).toBe(0);
+    expect(state.pages.summary!.controls.find((item) => item.id === 'blank-control')?.value).toBeNull();
+    expect(documentFormulaResult('summary', 'completion-result', 'CompletionValue', binding, state)).toEqual({ value: 0, error: null });
+  });
+
+  it('stores unique multi-select option IDs, keeps blank distinct from an empty list, and resets to the configured default', () => {
+    const options = [
+      { id: 'topic-a', name: 'Alpha', color: 'green' as const },
+      { id: 'topic-b', name: 'Beta', color: 'blue' as const },
+    ];
+    const topics = control({
+      id: 'topics', name: 'Topics', type: 'multiSelect', value: ['topic-b', 'topic-a'], defaultValue: ['topic-a'], options,
+    });
+    expect(controlValueError(topics, null)).toBeNull();
+    expect(controlValueError(topics, [])).toBeNull();
+    expect(controlValueError(topics, ['topic-a', 'topic-a'])).toContain('unique list');
+    expect(controlValueError(topics, ['missing'])).toContain('configured options');
+    expect(controlValueError(topics, 'topic-a')).toContain('unique list');
+    expect(normalizeNamedControls([{ ...topics, value: [], defaultValue: null }])?.[0]).toMatchObject({
+      type: 'multiSelect', value: [], defaultValue: null,
+    });
+    expect(normalizeNamedControls([{ ...topics, value: ['topic-a', 'topic-a'] }])).toBeNull();
+
+    let state = run(emptyWorkspace(), create('page'), { type: 'page.control.configure', id: 'page', now: 2, control: topics });
+    const renamed = control({
+      ...topics,
+      options: [{ ...options[0]!, name: 'Alpha renamed' }, options[1]!],
+      value: null,
+    });
+    state = run(state, { type: 'page.control.configure', id: 'page', now: 3, control: renamed });
+    expect(state.pages.page!.controls[0]).toMatchObject({ value: ['topic-b', 'topic-a'], defaultValue: ['topic-a'] });
+    state = run(state, { type: 'page.control.setValue', id: 'page', controlId: 'topics', value: null, now: 4 });
+    expect(state.pages.page!.controls[0]?.value).toBeNull();
+    state = run(state, { type: 'page.control.setValue', id: 'page', controlId: 'topics', value: [], now: 5 });
+    expect(state.pages.page!.controls[0]?.value).toEqual([]);
+    state = run(state, { type: 'page.control.reset', id: 'page', controlId: 'topics', now: 6 });
+    expect(state.pages.page!.controls[0]).toMatchObject({ value: ['topic-a'], defaultValue: ['topic-a'] });
+  });
+
+  it('requires explicit resolution of current and default lists before removing a multi-select option', () => {
+    const options = [
+      { id: 'topic-a', name: 'Alpha', color: 'green' as const },
+      { id: 'topic-b', name: 'Beta', color: 'blue' as const },
+    ];
+    let state = run(emptyWorkspace(), create('page'), {
+      type: 'page.control.configure', id: 'page', now: 2,
+      control: control({ id: 'topics', name: 'Topics', type: 'multiSelect', value: ['topic-a', 'topic-b'], defaultValue: ['topic-a', 'topic-b'], options }),
+    });
+    const withoutBeta = control({
+      id: 'topics', name: 'Topics', type: 'multiSelect', value: null, defaultValue: ['topic-a'],
+      options: [{ ...options[0]!, name: 'Alpha renamed' }],
+    });
+    const rejected = applyCommand(state, { type: 'page.control.configure', id: 'page', now: 3, control: withoutBeta });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.error).toContain('current value is incompatible');
+    expect(state.pages.page!.controls[0]).toMatchObject({
+      value: ['topic-a', 'topic-b'], defaultValue: ['topic-a', 'topic-b'], options,
+    });
+
+    const unresolvedDefault = applyCommand(run(state, {
+      type: 'page.control.setValue', id: 'page', controlId: 'topics', value: ['topic-a'], now: 3,
+    }), {
+      type: 'page.control.configure', id: 'page', now: 3,
+      control: { ...withoutBeta, defaultValue: ['topic-a', 'topic-b'] },
+    });
+    expect(unresolvedDefault.ok).toBe(false);
+    if (!unresolvedDefault.ok) expect(unresolvedDefault.error).toContain('Invalid default value');
+    expect(state.pages.page!.controls[0]).toMatchObject({
+      value: ['topic-a', 'topic-b'], defaultValue: ['topic-a', 'topic-b'], options,
+    });
+
+    state = run(state,
+      { type: 'page.control.setValue', id: 'page', controlId: 'topics', value: ['topic-a'], now: 3 },
+      { type: 'page.control.configure', id: 'page', now: 4, control: withoutBeta },
+    );
+    expect(state.pages.page!.controls[0]).toMatchObject({
+      type: 'multiSelect', options: [{ id: 'topic-a', name: 'Alpha renamed', color: 'green' }],
+      value: ['topic-a'], defaultValue: ['topic-a'],
+    });
+    expect(state.pages.page!.controls[0]?.options.map(({ id, color }) => [id, color])).toEqual([['topic-a', 'green']]);
+  });
+
+  it('keeps single-select option IDs when renaming and rejects removal until the live choice is resolved', () => {
+    const options = [
+      { id: 'choice-a', name: 'Alpha', color: 'green' as const },
+      { id: 'choice-b', name: 'Beta', color: 'blue' as const },
+    ];
+    let state = run(emptyWorkspace(), create('page'), {
+      type: 'page.control.configure', id: 'page', now: 2,
+      control: control({ id: 'choice', name: 'Choice', type: 'select', value: 'choice-a', defaultValue: 'choice-a', options }),
+    });
+    const renamed = control({
+      id: 'choice', name: 'Choice', type: 'select', value: null, defaultValue: 'choice-a',
+      options: [{ ...options[0]!, name: 'Alpha renamed' }, options[1]!],
+    });
+    state = run(state, { type: 'page.control.configure', id: 'page', now: 3, control: renamed });
+    expect(state.pages.page!.controls[0]).toMatchObject({ value: 'choice-a', defaultValue: 'choice-a' });
+
+    const removed = control({
+      id: 'choice', name: 'Choice', type: 'select', value: null, defaultValue: 'choice-b', options: [options[1]!],
+    });
+    const rejected = applyCommand(state, { type: 'page.control.configure', id: 'page', now: 4, control: removed });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.error).toContain('current value is incompatible');
+    state = run(state,
+      { type: 'page.control.setValue', id: 'page', controlId: 'choice', value: null, now: 4 },
+      { type: 'page.control.configure', id: 'page', now: 5, control: removed },
+    );
+    expect(state.pages.page!.controls[0]).toMatchObject({
+      options: [{ id: 'choice-b', name: 'Beta', color: 'blue' }], value: null, defaultValue: 'choice-b',
+    });
+  });
+
+  it('passes multi-select lists to formulas and control filters as typed option IDs', () => {
+    const options = [
+      { id: 'topic-a', name: 'Alpha', color: 'green' as const },
+      { id: 'topic-b', name: 'Beta', color: 'blue' as const },
+    ];
+    let state = run(
+      emptyWorkspace(),
+      create('items', null, {
+        kind: 'database',
+        database: { properties: [{ id: 'topics', name: 'Topics', type: 'multiSelect', options }], views: [] },
+      } as Partial<Command>),
+      create('row', 'items', { properties: { topics: ['topic-a', 'topic-b'] } } as Partial<Command>),
+      create('summary'),
+      { type: 'page.control.configure', id: 'summary', now: 2,
+        control: control({ id: 'topic-set', name: 'TopicSet', type: 'multiSelect', value: ['topic-a', 'topic-b'], defaultValue: [], options }) },
+    );
+    const source = 'Length(TopicSet)';
+    const bindings = bindPageFormulaReferences(source, 'summary', state, 'items');
+    expect(documentFormulaResult('summary', 'topic-count', source, bindings, state)).toEqual({ value: 2, error: null });
+    expect(documentFormulaResult('summary', 'contains-beta', 'Contains(TopicSet, "topic-b")',
+      bindPageFormulaReferences('Contains(TopicSet, "topic-b")', 'summary', state, 'items'), state))
+      .toEqual({ value: true, error: null });
+    const rule = {
+      id: 'topic-filter', prop: 'topics', op: 'is' as const, value: null,
+      controlRef: { pageId: 'summary', controlId: 'topic-set' },
+    };
+    expect(matchesFilter(state.pages.row!, rule, state.pages.items!.database!, state)).toBe(true);
+
+    state = run(state, { type: 'page.control.setValue', id: 'summary', controlId: 'topic-set', value: ['topic-b'], now: 3 });
+    expect(documentFormulaResult('summary', 'topic-count', source, bindings, state)).toEqual({ value: 1, error: null });
+    expect(matchesFilter(state.pages.row!, rule, state.pages.items!.database!, state)).toBe(false);
+    const directTopicBindings = bindPageFormulaReferences('TopicSet', 'summary', state, 'items');
+    state = run(state, { type: 'page.control.setValue', id: 'summary', controlId: 'topic-set', value: [], now: 4 });
+    expect(documentFormulaResult('summary', 'empty-topic-set', 'TopicSet', directTopicBindings, state)).toEqual({ value: [], error: null });
+    state = run(state, { type: 'page.control.setValue', id: 'summary', controlId: 'topic-set', value: null, now: 5 });
+    expect(documentFormulaResult('summary', 'blank-topic-set', 'TopicSet', directTopicBindings, state)).toEqual({ value: null, error: null });
+  });
+
+  it('validates optional email text format while preserving legacy plain-text controls', () => {
+    const legacy = control({ id: 'legacy', name: 'Legacy', type: 'text', value: 'anything', defaultValue: '' });
+    const email = control({ id: 'email', name: 'Email', type: 'text', textFormat: 'email', value: 'person@example.com', defaultValue: '' });
+    expect(controlValueError(legacy, 'not an email')).toBeNull();
+    expect(controlValueError(email, 'not an email')).toContain('valid email address');
+    expect(controlValueError(email, '')).toBeNull();
+    expect(normalizeNamedControls([{ ...legacy, name: 'Email', value: 'person@example.com', textFormat: 'email' }])?.[0]?.textFormat).toBe('email');
+    expect(normalizeNamedControls([{ ...legacy, textFormat: 'invalid' }])).toBeNull();
+    expect(normalizeNamedControls([{ ...email, type: 'number' }])).toBeNull();
+    expect(normalizeNamedControls([{ ...legacy, futureSetting: true }])).toBeNull();
+    expect(normalizeNamedControls([{ id: 'absent', name: 'Absent', type: 'text', defaultValue: '', options: [] }])).toBeNull();
+    const invalidDefault = applyCommand(run(emptyWorkspace(), create('page')), {
+      type: 'page.control.configure', id: 'page', now: 2,
+      control: control({ id: 'email', name: 'Email', type: 'text', textFormat: 'email', value: 'person@example.com', defaultValue: 'not-an-email' }),
+    });
+    expect(invalidDefault.ok).toBe(false);
+    if (!invalidDefault.ok) expect(invalidDefault.error).toContain('Invalid default value');
+  });
+
+  it('rejects incompatible configuration atomically, while explicit clear and reset remain separate', () => {
+    let state = run(
+      emptyWorkspace(),
+      create('page'),
+      { type: 'page.control.configure', id: 'page', now: 2, control: control({ id: 'filter', name: 'Filter', type: 'text', value: 'keep me', defaultValue: 'fallback' }) },
+    );
+    const incompatible = control({ id: 'filter', name: 'Filter', type: 'checkbox', value: null, defaultValue: false });
+    const rejected = applyCommand(state, { type: 'page.control.configure', id: 'page', now: 3, control: incompatible });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.error).toContain('current value is incompatible');
+    expect(state.pages.page!.controls[0]).toMatchObject({ type: 'text', value: 'keep me', defaultValue: 'fallback' });
+    const malformed = applyCommand(state, { type: 'page.control.configure', id: 'page', now: 3, control: null as never });
+    expect(malformed.ok).toBe(false);
+    expect(state.pages.page!.controls[0]).toMatchObject({ type: 'text', value: 'keep me', defaultValue: 'fallback' });
+
+    state = run(
+      state,
+      { type: 'page.control.setValue', id: 'page', controlId: 'filter', value: null, now: 4 },
+      { type: 'page.control.configure', id: 'page', now: 5, control: incompatible },
+    );
+    expect(state.pages.page!.controls[0]).toMatchObject({ type: 'checkbox', value: null, defaultValue: false });
+    const reference = bindPageFormulaReferences('Filter', 'page', state);
+    expect(documentFormulaResult('page', 'current-filter', 'Filter', reference, state)).toEqual({ value: null, error: null });
+    state = run(state, { type: 'page.control.reset', id: 'page', controlId: 'filter', now: 6 });
+    expect(state.pages.page!.controls[0]).toMatchObject({ value: false, defaultValue: false });
+    expect(documentFormulaResult('page', 'current-filter', 'Filter', reference, state)).toEqual({ value: false, error: null });
   });
 
   it('validates relation targets and rows against the selected database', () => {
@@ -310,16 +586,92 @@ describe('named controls', () => {
     expect(normalizePage({ id: 'bad', controls: [{ id: 'bad id' }] })).toBeNull();
   });
 
-  it('writes current and default values to markdown frontmatter and restores them', () => {
-    let state = run(emptyWorkspace(), create('page'));
-    state = run(state, {
-      type: 'page.control.configure', id: 'page', now: 2,
-      control: control({ id: 'check', name: 'Check', type: 'checkbox', value: false, defaultValue: true }),
+  it('keeps unknown fields inside unsupported control metadata byte-for-byte and read only', () => {
+    const raw = [
+      '---',
+      'morrowControls:',
+      '  - id: future',
+      '    name: Future',
+      '    type: text',
+      '    textFormat: future-format',
+      '    value: draft',
+      '    defaultValue: ""',
+      '    options: []',
+      '    futureSetting: { keep: true }',
+      '---',
+      '# untouched',
+      '',
+    ].join('\n');
+    const page = readPageText(raw);
+    expect(page.error).toContain('left read only');
+    expect(page.controls).toEqual([]);
+    expect(renderPageText(page.data, page.source, page.body)).toBe(raw);
+  });
+
+  it('keeps legacy control metadata unchanged when the optional text format is absent', () => {
+    const raw = [
+      '---',
+      'morrowControls:',
+      '  - id: query',
+      '    name: Query',
+      '    type: text',
+      '    value: draft',
+      '    defaultValue: ""',
+      '    options: []',
+      '---',
+      '# Existing page',
+      '',
+    ].join('\n');
+    const page = readPageText(raw);
+    expect(page.error).toBeNull();
+    expect(page.controls[0]?.textFormat).toBeUndefined();
+    expect(renderPageText(page.data, page.source, page.body)).toBe(raw);
+  });
+
+  it('accepts a blank or exactly two real ordered ISO dates for a date-range control', () => {
+    const period = control({
+      id: 'period', name: 'Period', type: 'dateRange',
+      value: ['2024-02-28', '2024-03-01'], defaultValue: null,
     });
-    const page = state.pages.page!;
-    const managed = managedFrontmatter(page, 'page', null, state);
-    expect(managed.has('morrowControls')).toBe(true);
-    const file = renderPageText(Object.fromEntries(managed), null, '');
-    expect(readPageText(file).controls).toEqual(page.controls);
+
+    expect(controlValueError(period, null)).toBeNull();
+    expect(controlValueError(period, ['2024-02-29', '2024-03-01'])).toBeNull();
+    expect(controlValueError(period, [])).toContain('two');
+    expect(controlValueError(period, ['2024-02-29'])).toContain('two');
+    expect(controlValueError(period, ['2024-02-29', '2024-03-01', '2024-03-02'])).toContain('two');
+    expect(controlValueError(period, ['2024-02-30', '2024-03-01'])).toContain('real dates');
+    expect(controlValueError(period, ['2024-03-02', '2024-03-01'])).toContain('ordered');
+    expect(controlValueError(period, '2024-02-29')).toContain('two');
+
+    expect(normalizeNamedControls([period])).toEqual([period]);
+    expect(normalizeNamedControls([{ ...period, value: [] }])).toBeNull();
+    expect(normalizeNamedControls([{ ...period, defaultValue: ['2024-03-02', '2024-03-01'] }])).toBeNull();
+  });
+
+  it('opens a multi-select control beside unknown YAML and Markdown without rewriting the file', () => {
+    const raw = [
+      '---',
+      'futureField: { keep: true }',
+      'morrowControls:',
+      '  - id: topics',
+      '    name: Topics',
+      '    type: multiSelect',
+      '    value: [topic-a]',
+      '    defaultValue: []',
+      '    options:',
+      '      - id: topic-a',
+      '        name: Alpha',
+      '        color: green',
+      '---',
+      '# Keep this Markdown',
+      '',
+    ].join('\n');
+    const page = readPageText(raw);
+    expect(page.error).toBeNull();
+    expect(page.controls[0]).toMatchObject({
+      id: 'topics', type: 'multiSelect', value: ['topic-a'], defaultValue: [],
+      options: [{ id: 'topic-a', name: 'Alpha', color: 'green' }],
+    });
+    expect(renderPageText(page.data, page.source, page.body)).toBe(raw);
   });
 });

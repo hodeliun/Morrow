@@ -43,6 +43,9 @@ import { parseFormula } from './formula';
 import { fail, ok } from './result';
 import type { Result } from './result';
 
+// Up to 200 database properties, the virtual title column, and 200 retained opaque IDs.
+const MAX_VIEW_ORDER_ENTRIES = 401;
+
 export interface RawWorkspace {
   pages: unknown[];
   docs: Record<string, unknown>;
@@ -57,8 +60,15 @@ export interface LoadedWorkspace {
   unreadable: PageId[];
 }
 
-// each entry upgrades data from version n to n + 1
-const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
+type WorkspaceMigration =
+  | ((data: RawWorkspace) => RawWorkspace)
+  | {
+      apply: (data: RawWorkspace) => RawWorkspace;
+      preservesStoredRecords: boolean;
+    };
+
+// each entry upgrades data from version n to n + 1; unannotated steps retain record rewrites
+const MIGRATIONS: Record<number, WorkspaceMigration> = {
   // version 2 added stored files and page history, pages and documents kept their shape
   1: (data) => data,
   // version 3 added tags, database properties and new page kinds, normalizePage fills their defaults
@@ -81,7 +91,19 @@ const MIGRATIONS: Record<number, (data: RawWorkspace) => RawWorkspace> = {
   10: (data) => data,
   // version 12 adds typed conditional text styles while keeping legacy background colors
   11: (data) => data,
+  // version 13 groups optional scope-2 metadata, including the per-note calculated-result background.
+  // Existing records keep their shape; normalizers supply legacy defaults and retain supported additions.
+  12: { apply: (data) => data, preservesStoredRecords: true },
 };
+
+export function migrationRequiresRecordRewrite(version: number): boolean {
+  if (!Number.isInteger(version) || version < 1 || version > SCHEMA_VERSION) return true;
+  for (let stepVersion = version; stepVersion < SCHEMA_VERSION; stepVersion++) {
+    const step = MIGRATIONS[stepVersion];
+    if (!step || typeof step === 'function' || !step.preservesStoredRecords) return true;
+  }
+  return false;
+}
 
 export function migrate(version: number, data: RawWorkspace): Result<RawWorkspace> {
   if (!Number.isInteger(version) || version < 1) return fail('The data has an unknown format version.');
@@ -94,7 +116,7 @@ export function migrate(version: number, data: RawWorkspace): Result<RawWorkspac
   for (let v = version; v < SCHEMA_VERSION; v++) {
     const step = MIGRATIONS[v];
     if (!step) return fail(`No migration from format ${v}.`);
-    current = step(current);
+    current = typeof step === 'function' ? step(current) : step.apply(current);
   }
   return ok(current);
 }
@@ -104,6 +126,12 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 // fills safe defaults for missing optional fields, rejects records without a usable id
 export function normalizePage(raw: unknown): PageMeta | null {
   if (!isRecord(raw) || typeof raw.id !== 'string' || !ID_PATTERN.test(raw.id)) return null;
+  if (
+    raw.calculatedResultBackground !== undefined &&
+    raw.calculatedResultBackground !== null &&
+    typeof raw.calculatedResultBackground !== 'boolean'
+  )
+    return null;
   const extra = normalizeExtra(raw.extra);
   if (!extra) return null;
   const controls = normalizeNamedControls(raw.controls);
@@ -142,6 +170,8 @@ export function normalizePage(raw: unknown): PageMeta | null {
     cover: validCover(raw.cover),
     coverPosition: normalizeCoverPosition(raw.coverPosition),
     noteStyle: normalizeNoteStyle(raw.noteStyle),
+    calculatedResultBackground:
+      typeof raw.calculatedResultBackground === 'boolean' ? raw.calculatedResultBackground : null,
     encrypted: raw.encrypted === true,
   };
 }
@@ -737,7 +767,12 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
       : {}),
     ...(typeof raw.search === 'string' ? { search: raw.search.slice(0, 500) } : {}),
     ...(Array.isArray(raw.order)
-      ? { order: [...new Set(raw.order.filter((id): id is string => propRef(id) !== null))].slice(0, 200) }
+      ? {
+          order: [...new Set(raw.order.filter((id): id is string => propRef(id) !== null))].slice(
+            0,
+            MAX_VIEW_ORDER_ENTRIES,
+          ),
+        }
       : {}),
     ...(Array.isArray(raw.wrap)
       ? { wrap: [...new Set(raw.wrap.filter((id): id is string => propRef(id) !== null))].slice(0, 200) }
@@ -787,6 +822,9 @@ export function normalizeDatabase(raw: unknown): DatabaseDef | null {
   }
   return {
     properties,
+    ...(typeof raw.titleAlias === 'string' && raw.titleAlias.trim()
+      ? { titleAlias: raw.titleAlias.trim().replace(/[\r\n\t]+/g, ' ').slice(0, MAX_NAME_LENGTH) }
+      : {}),
     ...(typeof raw.displayPropertyId === 'string' && properties.some((prop) => prop.id === raw.displayPropertyId)
       ? { displayPropertyId: raw.displayPropertyId }
       : {}),

@@ -272,6 +272,7 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     page.cover = read.cover;
     page.coverPosition = read.coverPosition;
     page.noteStyle = read.noteStyle;
+    page.calculatedResultBackground = read.calculatedResultBackground;
     page.controls = read.controls;
     if (read.kind) page.kind = read.kind;
     page.tags = read.tags;

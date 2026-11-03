@@ -196,7 +196,7 @@
   ],
   "limitations": [
     "Source delivery only; no installer, release or installation verification.",
-    "Name remains fixed in format12; title-column reorder belongs to T13 and is excluded from this synthetic fixture before baseline.",
+    "Name remains fixed in format12; title-column reorder belongs to T04/#55 and is excluded from this synthetic fixture before baseline.",
     "Unknown representable database/workspace/recent fields are preserved; recognized unsupported database mappings fail read-only.",
     "Existing scan-null ambiguity remains: syntactically unreadable registry JSON may be indistinguishable from an absent file at repository ingress. No additional raw read or blanket malformed-JSON protection is claimed.",
     "Selection backing was verified in seven actual selected/scrolled states; no additional fill-preview gesture was exercised in this delivery.",
