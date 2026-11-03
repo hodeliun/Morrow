@@ -13,6 +13,7 @@ describe('named control slash catalog', () => {
       { type: 'controlNumber', aliases: { en: 'numeric', es: 'numérico', pt: 'numérico' } },
       { type: 'controlSlider', aliases: { en: 'range', es: 'deslizador', pt: 'deslizante' } },
       { type: 'controlSelect', aliases: { en: 'dropdown', es: 'lista', pt: 'lista' } },
+      { type: 'controlMultiSelect', aliases: { en: 'multiple choices', es: 'selección múltiple', pt: 'seleção múltipla' } },
       { type: 'controlCheckbox', aliases: { en: 'boolean', es: 'casilla', pt: 'caixa' } },
       { type: 'controlDate', aliases: { en: 'calendar', es: 'calendario', pt: 'calendário' } },
       { type: 'controlRelation', aliases: { en: 'linked row', es: 'fila vinculada', pt: 'linha vinculada' } },

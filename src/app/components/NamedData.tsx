@@ -12,6 +12,7 @@ import { getState, run, runAll, useWorkspace } from '../workspace';
 import { getLocale, t } from '../i18n';
 import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
+import { NamedMultiSelectPicker } from './NamedMultiSelectPicker';
 import {
   cancelNamedControlConfigurationRequest,
   listenForNamedControlConfiguration,
@@ -20,13 +21,15 @@ import type { NamedControlConfigRequest } from '../editor/namedControlRequests';
 import { captureNamedControlEdit, namedControlEditConflict } from '../editor/controlEditGuard';
 import type { NamedControlEditConflict, NamedControlEditSnapshot } from '../editor/controlEditGuard';
 
-const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'select', 'checkbox', 'date', 'relation'];
+const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'select', 'multiSelect', 'checkbox', 'date', 'relation'];
 const OUTPUT_TYPES = ['auto', 'text', 'number', 'currency', 'percent', 'progress', 'date', 'checkbox'] as const;
 type OutputType = (typeof OUTPUT_TYPES)[number];
+const controlTimestamp = (): number => Date.now();
 
 function stop(event: React.MouseEvent | React.KeyboardEvent) {
   event.stopPropagation();
 }
+
 
 function defaultFor(type: NamedControlType, options: NamedControlDef['options'], multiple = false): PropValue {
   switch (type) {
@@ -36,11 +39,11 @@ function defaultFor(type: NamedControlType, options: NamedControlDef['options'],
     case 'checkbox': return false;
     case 'date': return '';
     case 'select': return options[0]?.id ?? null;
+    case 'multiSelect': return [];
     case 'relation': return multiple ? [] : null;
-    // Format13 metadata can be preserved before these creation widgets are exposed.
+    // Keep persisted Format 13 types inert until their editors are introduced.
     case 'scale':
     case 'progress':
-    case 'multiSelect':
     case 'dateRange': return null;
   }
 }
@@ -55,6 +58,7 @@ function parseNumberDraft(value: string): number | null {
 function controlErrorLabel(error: string | null): string | null {
   if (!error) return null;
   if (error.toLowerCase().includes('email')) return t('controls.invalidEmail');
+  if (error.toLowerCase().includes('multi-select')) return t('controls.invalidMultiSelect');
   if (/number|finite|step|at least|at most/i.test(error)) return t('controls.invalidNumber');
   if (error.toLowerCase().includes('text controls')) return t('controls.invalidText');
   return t('controls.invalidDefaultValue');
@@ -64,18 +68,6 @@ function editConflictLabel(conflict: NamedControlEditConflict, name: string): st
   return conflict === 'removed'
     ? t('controls.missingControl', { name })
     : t('controls.configurationChanged');
-}
-
-function optionsFromText(text: string, existing: NamedControlDef['options']): NamedControlDef['options'] {
-  const used = new Set<string>();
-  return text.split('\n').map((name) => name.trim()).filter(Boolean).map((name, index) => {
-    const old = existing.find((option) => option.name.toLocaleLowerCase() === name.toLocaleLowerCase());
-    const samePosition = existing[index];
-    const preserved = old ?? (samePosition && !used.has(samePosition.id) ? samePosition : null);
-    const option = preserved ? { ...preserved, name } : { id: newId(), name, color: 'gray' as const };
-    used.add(option.id);
-    return option;
-  });
 }
 
 function clearValueIntentSignature(current: NamedControlDef, configured: NamedControlDef): string {
@@ -91,6 +83,17 @@ function clearValueIntentSignature(current: NamedControlDef, configured: NamedCo
   ]);
 }
 
+function unavailableOptionResolutionSignature(
+  current: NamedControlDef,
+  configured: NamedControlDef,
+  value: PropValue,
+): string {
+  return JSON.stringify([
+    clearValueIntentSignature(current, configured),
+    value,
+  ]);
+}
+
 export function NamedControlNode(props: NodeViewProps) {
   const state = useWorkspace();
   const { node, updateAttributes, deleteNode, editor } = props;
@@ -101,10 +104,11 @@ export function NamedControlNode(props: NodeViewProps) {
   const control = page?.controls.find((item) => item.id === controlId);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<NamedControlDef | null>(null);
-  const [optionsText, setOptionsText] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [clearCurrentValueFor, setClearCurrentValueFor] = useState<string | null>(null);
+  const [resolveCurrentOptionsFor, setResolveCurrentOptionsFor] = useState<string | null>(null);
+  const [resolveDefaultOptionsFor, setResolveDefaultOptionsFor] = useState<string | null>(null);
   const [creatingFromSlash, setCreatingFromSlash] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<NamedControlEditSnapshot | null>(null);
   const [draftDefaultNumber, setDraftDefaultNumber] = useState<string | null>(null);
@@ -128,29 +132,44 @@ export function NamedControlNode(props: NodeViewProps) {
         return t('controls.invalidText');
       })()
     : null;
-  const draftControl = draft
-    ? { ...draft, options: draft.type === 'select' ? optionsFromText(optionsText, draft.options) : draft.options }
+  const draftControl = draft;
+  const parsedDefaultNumber = draftDefaultNumber === null ? null : parseNumberDraft(draftDefaultNumber);
+  const draftDefaultValue = draftDefaultNumber === null ? draft?.defaultValue : parsedDefaultNumber;
+  const unavailableCurrentIds = control?.type === 'multiSelect' && draftControl?.type === 'multiSelect' && Array.isArray(control.value)
+    ? control.value.filter((id) => !draftControl.options.some((option) => option.id === id))
+    : [];
+  const unavailableDefaultIds = draftControl?.type === 'multiSelect' && Array.isArray(draftDefaultValue)
+    ? draftDefaultValue.filter((id) => !draftControl.options.some((option) => option.id === id))
+    : [];
+  const resolutionSignature = control && draftControl
+    ? unavailableOptionResolutionSignature(control, draftControl, draftDefaultValue ?? null)
     : null;
+  const resolveCurrentOptions = resolutionSignature !== null && resolveCurrentOptionsFor === resolutionSignature;
+  const resolveDefaultOptions = resolutionSignature !== null && resolveDefaultOptionsFor === resolutionSignature;
+  const liveValueForDraft = resolveCurrentOptions && Array.isArray(control?.value) && draftControl
+    ? control.value.filter((id) => draftControl.options.some((option) => option.id === id))
+    : control?.value;
+  const defaultValueForDraft = resolveDefaultOptions && Array.isArray(draftDefaultValue) && draftControl
+    ? draftDefaultValue.filter((id) => draftControl.options.some((option) => option.id === id))
+    : draftDefaultValue;
   const currentDraftError = control && draftControl
-    ? controlValueErrorInState(draftControl, control.value, state)
+    ? controlValueErrorInState(draftControl, liveValueForDraft ?? null, state)
     : null;
   const clearCurrentValueSignature = currentDraftError && control && draftControl
     ? clearValueIntentSignature(control, draftControl)
     : null;
   const clearCurrentValue = clearCurrentValueSignature !== null && clearCurrentValueFor === clearCurrentValueSignature;
-  const parsedDefaultNumber = draftDefaultNumber === null ? null : parseNumberDraft(draftDefaultNumber);
-  const draftDefaultValue = draftDefaultNumber === null ? draft?.defaultValue : parsedDefaultNumber;
   const draftDefaultError = draft && draftControl
     ? draft.type === 'relation' && !draft.relation?.targetDatabaseId
       ? t('controls.chooseTable')
       : draftDefaultNumber !== null && draftDefaultNumber.trim() !== '' && parsedDefaultNumber === null
       ? t('controls.invalidNumber')
-      : controlErrorLabel(controlValueErrorInState(draftControl, draftDefaultValue ?? null, state))
+      : controlErrorLabel(controlValueErrorInState(draftControl, defaultValueForDraft ?? null, state))
     : null;
-  const optionNames = draftControl?.type === 'select'
+  const optionNames = draftControl?.type === 'select' || draftControl?.type === 'multiSelect'
     ? draftControl.options.map((item) => item.name.trim().toLocaleLowerCase())
     : [];
-  const optionError = draftControl?.type === 'select' && (
+  const optionError = (draftControl?.type === 'select' || draftControl?.type === 'multiSelect') && (
     draftControl.options.length > 100 ||
     new Set(optionNames).size !== optionNames.length ||
     draftControl.options.some((item) => item.name.length > 100)
@@ -159,27 +178,29 @@ export function NamedControlNode(props: NodeViewProps) {
   const setValue = (value: PropValue) => {
     if (!editor.isEditable || !page || !control) return;
     commitEditors();
-    run({ type: 'page.control.setValue', id: page.id, controlId: control.id, value, now: Date.now() });
+    run({ type: 'page.control.setValue', id: page.id, controlId: control.id, value, now: controlTimestamp() });
   };
   const resetToDefault = () => {
     if (!editor.isEditable || !page || !control) return;
     commitEditors();
-    run({ type: 'page.control.reset', id: page.id, controlId: control.id, now: Date.now() });
+    run({ type: 'page.control.reset', id: page.id, controlId: control.id, now: controlTimestamp() });
   };
   const clearCurrentValueNow = () => {
     if (!editor.isEditable || !page || !control) return;
     commitEditors();
-    run({ type: 'page.control.setValue', id: page.id, controlId: control.id, value: null, now: Date.now() });
+    run({ type: 'page.control.setValue', id: page.id, controlId: control.id, value: null, now: controlTimestamp() });
   };
   const startEdit = (request?: NamedControlConfigRequest) => {
     if (!editor.isEditable) return;
     setSaveError(null);
     setClearCurrentValueFor(null);
+    setResolveCurrentOptionsFor(null);
+    setResolveDefaultOptionsFor(null);
     setDraftDefaultNumber(null);
     setEditSnapshot(captureNamedControlEdit(pageId, controlId, control));
     if (!control) {
       const type = request?.type ?? 'text';
-      const options = type === 'select'
+      const options = type === 'select' || type === 'multiSelect'
         ? [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]
         : [];
       const relation = type === 'relation'
@@ -197,11 +218,9 @@ export function NamedControlNode(props: NodeViewProps) {
         ...(relation ? { relation } : {}),
       });
       setCreatingFromSlash(request?.createOnSave === true);
-      setOptionsText(options.map((item) => item.name).join('\n'));
     } else {
       setDraft({ ...control, options: control.options.map((item) => ({ ...item })), relation: control.relation ? { ...control.relation } : undefined });
       setCreatingFromSlash(false);
-      setOptionsText(control.options.map((item) => item.name).join('\n'));
     }
     setEditing(true);
   };
@@ -246,17 +265,37 @@ export function NamedControlNode(props: NodeViewProps) {
       window.removeEventListener('resize', place);
       observer?.disconnect();
     };
-  }, [editing, draft, optionsText, saveError]);
+  }, [editing, draft, saveError]);
   const cancelEdit = () => {
     if (creatingFromSlash && !control && editor.isEditable) deleteNode();
     setCreatingFromSlash(false);
     setEditSnapshot(null);
     setClearCurrentValueFor(null);
+    setResolveCurrentOptionsFor(null);
+    setResolveDefaultOptionsFor(null);
     setEditing(false);
   };
   const patchDraft = (change: Partial<NamedControlDef>) => {
     setClearCurrentValueFor(null);
+    setResolveCurrentOptionsFor(null);
+    setResolveDefaultOptionsFor(null);
     setDraft((current) => current ? { ...current, ...change } : current);
+  };
+  const renameOption = (optionId: string, name: string) => {
+    if (!editor.isEditable || !draft) return;
+    patchDraft({ options: draft.options.map((option) => option.id === optionId ? { ...option, name } : option) });
+  };
+  const removeOption = (optionId: string) => {
+    if (!editor.isEditable || !draft) return;
+    patchDraft({ options: draft.options.filter((option) => option.id !== optionId) });
+  };
+  const addOption = () => {
+    if (!editor.isEditable || !draft || draft.options.length >= 100) return;
+    let count = draft.options.length + 1;
+    let name = t('controls.defaultOptionName', { count });
+    while (draft.options.some((option) => option.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase()))
+      name = t('controls.defaultOptionName', { count: ++count });
+    patchDraft({ options: [...draft.options, { id: newId(), name, color: 'gray' }] });
   };
   const save = () => {
     if (!editor.isEditable || !draft) return;
@@ -271,9 +310,9 @@ export function NamedControlNode(props: NodeViewProps) {
         : t('controls.missingControl', { name: String(node.attrs.label ?? controlId) }));
       return;
     }
-    const options = draft.type === 'select' ? optionsFromText(optionsText, draft.options) : draft.options;
+    const options = draft.options;
     const optionNames = options.map((item) => item.name.trim().toLocaleLowerCase());
-    if (draft.type === 'select' && (options.length > 100 || new Set(optionNames).size !== optionNames.length || options.some((item) => item.name.length > 100))) {
+    if ((draft.type === 'select' || draft.type === 'multiSelect') && (options.length > 100 || new Set(optionNames).size !== optionNames.length || options.some((item) => item.name.length > 100))) {
       setSaveError(t('controls.invalidOptions'));
       return;
     }
@@ -285,7 +324,7 @@ export function NamedControlNode(props: NodeViewProps) {
       setSaveError(t('controls.invalidName'));
       return;
     }
-    let defaultValue = draft.defaultValue;
+    let defaultValue = defaultValueForDraft ?? null;
     if ((draft.type === 'number' || draft.type === 'slider') && draftDefaultNumber !== null) {
       if (draftDefaultNumber.trim() === '') defaultValue = null;
       else if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(draftDefaultNumber.trim()) && Number.isFinite(Number(draftDefaultNumber)))
@@ -328,14 +367,26 @@ export function NamedControlNode(props: NodeViewProps) {
       setSaveError(controlErrorLabel(defaultError));
       return;
     }
-    const liveError = currentControl ? controlValueErrorInState(nextDraft, currentControl.value, currentState) : null;
+    const liveUnavailableIds = currentControl?.type === 'multiSelect' && nextDraft.type === 'multiSelect' && Array.isArray(currentControl.value)
+      ? currentControl.value.filter((id) => !options.some((option) => option.id === id))
+      : [];
+    const currentResolution = currentControl && unavailableOptionResolutionSignature(currentControl, nextDraft, draftDefaultValue ?? null);
+    const resolveLiveUnavailable = liveUnavailableIds.length > 0 && currentResolution !== undefined &&
+      resolveCurrentOptionsFor === currentResolution;
+    const valueAfterOptionResolution = resolveLiveUnavailable && Array.isArray(currentControl?.value)
+      ? currentControl.value.filter((id) => options.some((option) => option.id === id))
+      : currentControl?.value;
+    const liveError = currentControl ? controlValueErrorInState(nextDraft, valueAfterOptionResolution ?? null, currentState) : null;
     const canClearCurrentValue = currentControl && clearCurrentValueFor === clearValueIntentSignature(currentControl, nextDraft);
     if (liveError && !canClearCurrentValue) {
       setSaveError(t('controls.currentValueInvalid'));
       return;
     }
-    const now = Date.now();
+    const now = controlTimestamp();
     const commands = [
+      ...(currentControl && liveError === null && resolveLiveUnavailable && Array.isArray(valueAfterOptionResolution)
+        ? [{ type: 'page.control.setValue' as const, id: pageId, controlId, value: valueAfterOptionResolution, now }]
+        : []),
       ...(currentControl && liveError && canClearCurrentValue ? [{ type: 'page.control.setValue' as const, id: pageId, controlId, value: null, now }] : []),
       { type: 'page.control.configure' as const, id: pageId, control: nextDraft, now },
     ];
@@ -358,12 +409,14 @@ export function NamedControlNode(props: NodeViewProps) {
     setCreatingFromSlash(false);
     setEditSnapshot(null);
     setClearCurrentValueFor(null);
+    setResolveCurrentOptionsFor(null);
+    setResolveDefaultOptionsFor(null);
     setDraftDefaultNumber(null);
   };
   const removeDefinition = () => {
     if (!editor.isEditable || !page || !control) return;
     commitEditors();
-    const removed = run({ type: 'page.control.delete', id: page.id, controlId, now: Date.now() });
+    const removed = run({ type: 'page.control.delete', id: page.id, controlId, now: controlTimestamp() });
     if (removed.ok) {
       setEditing(false);
       setEditSnapshot(null);
@@ -389,8 +442,7 @@ export function NamedControlNode(props: NodeViewProps) {
           <label>{t('controls.type')}
             <select disabled={!editor.isEditable} value={draft.type} onChange={(event) => {
               const type = event.target.value as NamedControlType;
-              const options = type === 'select' ? (draft.options.length ? draft.options : [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]) : draft.options;
-              setOptionsText(options.map((item) => item.name).join('\n'));
+      const options = type === 'select' || type === 'multiSelect' ? (draft.options.length ? draft.options : [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]) : draft.options;
               const relation = type === 'relation' ? (draft.relation ?? { targetDatabaseId: null, multiple: false }) : draft.relation;
               const multiple = relation?.multiple ?? false;
               const initial = defaultFor(type, options, multiple);
@@ -412,12 +464,28 @@ export function NamedControlNode(props: NodeViewProps) {
               <option value="email">{t('controls.textFormats.email')}</option>
             </select>
           </label>}
-          {draft.type === 'select' && <label>{t('controls.options')}
-            <textarea disabled={!editor.isEditable} aria-invalid={Boolean(optionError)} rows={3} value={optionsText} onChange={(event) => {
-              setOptionsText(event.target.value);
-              patchDraft({ options: optionsFromText(event.target.value, draft.options) });
-            }} />
-          </label>}
+          {(draft.type === 'select' || draft.type === 'multiSelect') && <div className="named-control-options-editor" role="group" aria-label={t('controls.options')}>
+            <span className="named-data-field-label">{t('controls.options')}</span>
+            {draft.options.map((option, index) => {
+              const duplicate = draft.options.some((other) => other.id !== option.id &&
+                other.name.trim().toLocaleLowerCase() === option.name.trim().toLocaleLowerCase());
+              const name = option.name || t('controls.defaultOptionName', { count: index + 1 });
+              return <div className="named-control-option-row" key={option.id}>
+                <label>{t('controls.optionName', { count: index + 1 })}
+                  <input
+                    disabled={!editor.isEditable}
+                    aria-label={t('controls.optionName', { count: index + 1 })}
+                    aria-invalid={!option.name.trim() || option.name.trim().length > 100 || duplicate}
+                    maxLength={100}
+                    value={option.name}
+                    onChange={(event) => renameOption(option.id, event.target.value)}
+                  />
+                </label>
+                <button type="button" disabled={!editor.isEditable} aria-label={t('controls.removeOption', { name })} onClick={() => removeOption(option.id)}>×</button>
+              </div>;
+            })}
+            <button type="button" disabled={!editor.isEditable || draft.options.length >= 100} onClick={addOption}>{t('controls.addOption')}</button>
+          </div>}
           {draft.type === 'relation' && <>
             <label>{t('controls.targetTable')}
               <select disabled={!editor.isEditable} aria-invalid={!draft.relation?.targetDatabaseId} value={draft.relation?.targetDatabaseId ?? ''} onChange={(event) => patchDraft({ relation: { targetDatabaseId: event.target.value || null, multiple: draft.relation?.multiple ?? false } })}>
@@ -427,7 +495,19 @@ export function NamedControlNode(props: NodeViewProps) {
             </label>
             <label className="named-data-check"><input disabled={!editor.isEditable} type="checkbox" checked={draft.relation?.multiple === true} onChange={(event) => patchDraft({ relation: { targetDatabaseId: draft.relation?.targetDatabaseId ?? null, multiple: event.target.checked } })} />{t('controls.allowMultiple')}</label>
           </>}
-          <label>{t('controls.defaultValue')}
+          {draft.type === 'multiSelect' ? <div className="named-data-default-value">
+            <span className="named-data-field-label">{t('controls.defaultValue')}</span>
+            <NamedMultiSelectPicker
+              label={t('controls.defaultValue')}
+              options={draftControl?.options ?? draft.options}
+              value={draftDefaultValue ?? null}
+              onChange={(value) => patchDraft({ defaultValue: value })}
+              disabled={!editor.isEditable}
+              invalid={Boolean(draftDefaultError)}
+              previousOptions={control?.options}
+              showBlankActions
+            />
+          </div> : <label>{t('controls.defaultValue')}
             {draft.type === 'checkbox' ? <input disabled={!editor.isEditable} aria-invalid={Boolean(draftDefaultError)} type="checkbox" checked={draft.defaultValue === true} onChange={(event) => patchDraft({ defaultValue: event.target.checked })} /> :
               draft.type === 'select' ? <select disabled={!editor.isEditable} aria-invalid={Boolean(draftDefaultError)} value={typeof draft.defaultValue === 'string' ? draft.defaultValue : ''} onChange={(event) => patchDraft({ defaultValue: event.target.value || null })}><option value="">{t('controls.blank')}</option>{draft.options.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select> :
                 draft.type === 'relation' ? <select
@@ -466,18 +546,26 @@ export function NamedControlNode(props: NodeViewProps) {
                       } else patchDraft({ defaultValue: event.target.value });
                     }}
                   />}
-          </label>
+          </label>}
           {(draft.type === 'number' || draft.type === 'slider') && <div className="named-data-format">
             <label>{t('controls.minimum')}<input disabled={!editor.isEditable} type="number" value={draft.format?.min ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, min: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
             <label>{t('controls.maximum')}<input disabled={!editor.isEditable} type="number" value={draft.format?.max ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, max: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
             <label>{t('controls.step')}<input disabled={!editor.isEditable} type="number" min="0.000000001" value={draft.format?.step ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, step: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
           </div>}
-          {currentDraftError && <div className="named-data-diagnostic" role="status">{t('controls.currentValueInvalid')}</div>}
+          {currentDraftError && <div className="named-data-diagnostic" role="status">{unavailableCurrentIds.length > 0 ? t('controls.unavailableSelection') : t('controls.currentValueInvalid')}</div>}
           {currentDraftError && <label className="named-data-check">
             <input disabled={!editor.isEditable} type="checkbox" checked={clearCurrentValue} onChange={(event) => setClearCurrentValueFor(event.target.checked ? clearCurrentValueSignature : null)} />
             {t('controls.clearCurrentValue')}
           </label>}
-          {(draftDefaultError || optionError) && <div className="named-data-diagnostic" role="status">{draftDefaultError ?? optionError}</div>}
+          {unavailableCurrentIds.length > 0 && resolutionSignature && <label className="named-data-check">
+            <input disabled={!editor.isEditable} type="checkbox" checked={resolveCurrentOptions} onChange={(event) => setResolveCurrentOptionsFor(event.target.checked ? resolutionSignature : null)} />
+            {t('controls.removeUnavailableCurrentOptions', { options: unavailableCurrentIds.map((id) => draftControl?.options.find((option) => option.id === id)?.name ?? control?.options.find((option) => option.id === id)?.name ?? t('controls.unavailableOption', { id })).join(', ') })}
+          </label>}
+          {unavailableDefaultIds.length > 0 && resolutionSignature && <label className="named-data-check">
+            <input disabled={!editor.isEditable} type="checkbox" checked={resolveDefaultOptions} onChange={(event) => setResolveDefaultOptionsFor(event.target.checked ? resolutionSignature : null)} />
+            {t('controls.removeUnavailableDefaultOptions', { options: unavailableDefaultIds.map((id) => draftControl?.options.find((option) => option.id === id)?.name ?? control?.options.find((option) => option.id === id)?.name ?? t('controls.unavailableOption', { id })).join(', ') })}
+          </label>}
+          {(draftDefaultError || optionError) && <div className="named-data-diagnostic" role="status">{optionError ?? (unavailableDefaultIds.length > 0 ? t('controls.unavailableSelection') : draftDefaultError)}</div>}
           {saveError && <div className="named-data-diagnostic" role="alert">{saveError}</div>}
           <div className="named-data-actions">
             <button type="button" disabled={!editor.isEditable} onClick={save}>{t('controls.save')}</button>
@@ -522,6 +610,13 @@ export function NamedControlNode(props: NodeViewProps) {
           />}
           {control.type === 'slider' && <input disabled={!editor.isEditable} aria-label={control.name} type="range" value={typeof control.value === 'number' ? control.value : (control.format?.min ?? 0)} min={control.format?.min ?? 0} max={control.format?.max ?? 100} step={control.format?.step ?? 1} onChange={(event) => setValue(Number(event.target.value))} />}
           {control.type === 'select' && <select disabled={!editor.isEditable} aria-label={control.name} value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value || null)}><option value="">{t('controls.blank')}</option>{control.options.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}
+          {control.type === 'multiSelect' && <NamedMultiSelectPicker
+            label={control.name}
+            options={control.options}
+            value={control.value}
+            onChange={setValue}
+            disabled={!editor.isEditable}
+          />}
           {control.type === 'checkbox' && <input disabled={!editor.isEditable} aria-label={control.name} type="checkbox" checked={control.value === true} onChange={(event) => setValue(event.target.checked)} />}
           {control.type === 'date' && <input disabled={!editor.isEditable} aria-label={control.name} type="date" value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value)} />}
           {control.type === 'relation' && control.relation?.multiple && <select disabled={!editor.isEditable} aria-label={control.name} multiple value={Array.isArray(control.value) ? control.value : []} onChange={(event) => setValue(Array.from(event.target.selectedOptions).map((item) => item.value))}>{relatedRows.map((row) => <option key={row.id} value={row.id}>{displayTitle(row)}</option>)}</select>}

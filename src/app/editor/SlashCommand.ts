@@ -87,6 +87,7 @@ function defaultForNamedControl(type: NamedControlType, optionId: string | null)
     case 'slider': return 0;
     case 'checkbox': return false;
     case 'select': return optionId;
+    case 'multiSelect': return [];
     case 'relation': return null;
     default: return null;
   }
@@ -100,7 +101,7 @@ function insertNamedControl(editor: Editor, range: Range, options: SlashOptions,
   if (!page) return;
   const id = newId();
   const name = t('controls.defaultControlName', { count: page.controls.length + 1 });
-  const choices = type === 'select'
+  const choices = type === 'select' || type === 'multiSelect'
     ? [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]
     : [];
   const optionId = choices[0]?.id ?? null;
@@ -140,6 +141,7 @@ const NAMED_CONTROL_SLASH_TYPES: Array<{ id: string; type: NamedControlType }> =
   { id: 'controlNumber', type: 'number' },
   { id: 'controlSlider', type: 'slider' },
   { id: 'controlSelect', type: 'select' },
+  { id: 'controlMultiSelect', type: 'multiSelect' },
   { id: 'controlCheckbox', type: 'checkbox' },
   { id: 'controlDate', type: 'date' },
   { id: 'controlRelation', type: 'relation' },

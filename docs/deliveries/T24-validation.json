@@ -1,0 +1,137 @@
+{
+  "ticket": "T24/#75",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "build": 2,
+    "command": "npm run check",
+    "tests": 1069,
+    "testFiles": 135,
+    "typecheck": "passed",
+    "lint": "passed",
+    "buildStatus": "passed",
+    "sourceFiles": 423,
+    "sourceSha256": "0d05cbd88167b524f9ace37a6cd6dde831b8dd9f8436a1384e82c393dc46d400",
+    "artifacts": 3597,
+    "artifactsSha256": "6aecb2d295995d4f5d6548e623f32785210d03d080094c9ce1cc6ab4c5d1619d",
+    "packagedArtifactsMatched": 3597
+  },
+  "directed": {
+    "files": 3,
+    "tests": 6,
+    "status": "passed",
+    "slashCatalog": "8 types across EN/PT/ES within the existing test"
+  },
+  "runtime": {
+    "main": {
+      "result": "ui-1793732609516",
+      "resultSha256": "d48d3bbe10d5a13d173f09ceb59aa624d1075137e4caae5722714021ba0fbaef",
+      "assertions": {
+        "openDoesNotWriteMarkdownOrUnknownYaml": true,
+        "stableOptionIdsAndTypedLists": {
+          "alphaId": "f2d00d54-e661-4127-8912-418593d4e7fe",
+          "betaId": "0510fbf3-9845-460f-9cd4-18027a286fb0",
+          "renamePreservedAlphaId": true
+        },
+        "emptyAndBlankAreDistinct": true,
+        "searchKeyboardSelectionAndNamedRemovableChips": true,
+        "resetUsesTheSavedDefaultList": true,
+        "removalResolutionAndCancel": {
+          "currentAndDefaultUntouchedUntilSave": true,
+          "cancelPreservedBytesAndMtime": true,
+          "saveRemovedOnlyUnavailableId": true
+        },
+        "registryBackedReadonlyTrashPage": {
+          "samePageIdAndTrashTimestamp": "t24-readonly",
+          "typedCurrentAndDefaultListsPreserved": true,
+          "disabledCheckboxesAndChips": true,
+          "keyboardDoesNotChangeSelection": true,
+          "bytesMtimeAndFullVaultInventoryPreserved": true
+        },
+        "localesThemesAndNarrow": [
+          "en-light",
+          "pt-dark-420",
+          "es-light-420"
+        ]
+      }
+    },
+    "extras": {
+      "result": "ui-1793732643509",
+      "resultSha256": "1566bafba02e6dedc1f4946c970da0539b4de2fb37c574976ebb2a1521736d50",
+      "assertions": {
+        "formulaAndFilterConsumeStableIdList": {
+          "controlId": "t24-topics",
+          "boundIdentifier": "T24Topics",
+          "formula": "Contains(T24Topics, TopicKey)",
+          "initialUnfilteredRows": [
+            "Ada",
+            "Bea"
+          ],
+          "alphaSelectionMatchesTopicKey": "topic-a",
+          "betaSelectionMatchesTopicKey": "topic-b",
+          "propertyIdBinding": "topic-key",
+          "valuesPersistAsIds": true,
+          "valuesRemainArraysAfterReopen": true,
+          "formulaBindingPreserved": true
+        },
+        "openAndReopenDoNotWriteMarkdown": true,
+        "referenceCatalog": [
+          {
+            "value": "",
+            "label": "Choose a reference"
+          },
+          {
+            "value": "t24-topics",
+            "label": "T24Topics"
+          }
+        ]
+      }
+    },
+    "hiddenSyntheticOnly": true,
+    "pageErrors": 0,
+    "sourceAndPackageStableAfter": true,
+    "childExitCodes": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "ownProcessesAfter": 0,
+    "runtimeLeasePresentAfter": false
+  },
+  "screenshots": [
+    {
+      "path": "docs/assets/T24/configuration-pt-dark-420.png",
+      "sha256": "5642f058c31910c63b270e651362b5b33aa161392dc55a0767437c221759b8a8",
+      "caption": "PT dark,420px; stable-ID option name and default selection."
+    },
+    {
+      "path": "docs/assets/T24/readonly-control.png",
+      "sha256": "64cc9a21c40b30fc31eec54e2c7711e37d540d94745d54aaa2eb9351476dca9f",
+      "caption": "Registered synthetic Trash page; selected checkbox and removal chip disabled, Saved."
+    },
+    {
+      "path": "docs/assets/T24/typed-list-filter.png",
+      "sha256": "25698620e4209a06367908624b7a2da337df4d503c3796fff2b352cb3dd5c897",
+      "caption": "Beta ID list selects Bea through Contains(T24Topics,TopicKey)."
+    }
+  ],
+  "negativeHistory": [
+    {
+      "stage": "check01",
+      "status": "failed before tests/build",
+      "cause": "Reviewer removed existing event-clock seam; React hooks purity lint rejected 3 calls. Restored seam from accepted source; no suppressed rules."
+    },
+    {
+      "stage": "pure fixture preflight",
+      "status": "extras rejected before Electron",
+      "cause": "Extras replaced the registry but omitted inherited synthetic Trash note. Explicit original ID/trash entry restored before baseline; strict preflight passed."
+    }
+  ],
+  "limits": [
+    "Readonly uses a genuinely registered synthetic Trash note; this run does not claim an external readonly transition.",
+    "EN light,PT dark420,ES light420 use explicit preferences plus reload; no live locale-change claim.",
+    "No native clipboard,personal profile,vault,visible window,installation or release.",
+    "No format migration or new formula engine; existing format13 typed-list contracts are reused."
+  ]
+}

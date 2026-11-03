@@ -4734,3 +4734,213 @@ td:hover .prop-empty,
   background: var(--hover);
   color: var(--text);
 }
+
+/* Multi-selection control options and typed-list presentation. */
+.named-data-default-value {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.named-data-field-label {
+  color: var(--text);
+}
+
+.named-control-options-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.named-control-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.named-control-option-row label {
+  min-width: 0;
+}
+
+.named-control-option-row button {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.named-control-multi-select {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: min(260px, 72vw);
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+}
+
+.named-data-popover .named-control-multi-select {
+  width: 100%;
+}
+
+.named-control-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.named-control-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 5px 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.named-control-chip > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.named-control-chip.is-unavailable {
+  border-color: var(--danger);
+}
+
+.named-control-chip > button {
+  display: grid;
+  flex: 0 0 18px;
+  place-items: center;
+  width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  line-height: 1;
+}
+
+.named-control-chip > button:hover,
+.named-control-chip > button:focus-visible {
+  background: var(--hover);
+}
+
+.named-control-selection-status,
+.named-control-no-options {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.named-control-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.named-control-empty-actions button {
+  min-height: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.named-control-empty-actions button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--hover);
+}
+
+.named-control-search {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.named-control-multi-select .named-control-search input[type='search'] {
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: var(--text-sm) var(--font-ui);
+}
+
+.named-control-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 132px;
+  min-width: 0;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.named-control-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.named-data-popover .named-control-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.named-control-option:hover,
+.named-control-option:focus-within {
+  background: var(--hover);
+}
+
+.named-control-option input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.named-control-option > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
