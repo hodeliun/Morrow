@@ -1598,6 +1598,7 @@ export const pt: TranslationSchema = {
     rowSelect: 'Selecionar {name}',
     rowSelectAll: 'Selecionar todas as {count} linhas visíveis',
     rowSelectionCount: '{count} selecionadas',
+    rowSelectionMenu: 'Ações para as linhas selecionadas',
     rowClearSelection: 'Limpar seleção',
     rowDrag: 'Arrastar {name} para reordenar',
     rowGrip: 'Selecionar {name}; arrastar para reordenar; Shift+F10 para ações',

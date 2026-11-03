@@ -93,6 +93,7 @@ import { newId } from '../../platform/files';
 import { openPage } from '../../router';
 import { getSession, getState, run, runAll, useWorkspace } from '../../workspace';
 import { Menu } from '../Menu';
+import type { MenuEntry } from '../Menu';
 import { Popover } from '../Popover';
 import { Dialog } from '../primitives';
 import { PageGlyph } from '../Emoji';
@@ -106,6 +107,7 @@ import {
   updateDatabase,
   updateView,
 } from './data';
+import { selectionMatchesVisibleRows, toggleVisibleRowSelection } from './rowSelection';
 import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from './PropertyValue';
 import { cellEditStartKey, cellPickerStartProps } from './cellEditing';
 import { PropertySettings } from './PropertySettings';
@@ -3545,7 +3547,25 @@ function TableView({
   const headerRowSelectorRef = useRef<HTMLInputElement>(null);
   const rowSelectorRefs = useRef<Map<PageId, HTMLInputElement>>(new Map());
   const dragRowIds = useRef<PageId[]>([]);
-  const [rowMenu, setRowMenu] = useState<{ rowId: PageId; anchor: HTMLElement } | null>(null);
+  const [rowMenu, setRowMenu] = useState<
+    | { kind: 'row'; rowId: PageId; anchor: HTMLElement }
+    | { kind: 'selection'; rowIds: PageId[]; anchor: HTMLElement }
+    | null
+  >(null);
+  const rowMenuPage =
+    rowMenu?.kind === 'row'
+      ? (state.pages[rowMenu.rowId] ?? rows.find((row) => row.id === rowMenu.rowId) ?? null)
+      : null;
+  const rowMenuIsValid =
+    rowMenu !== null &&
+    rowMenu.anchor.isConnected &&
+    canEditImmediately() &&
+    (rowMenu.kind === 'row'
+      ? rowMenuPage !== null && visibleRowIdSet.has(rowMenu.rowId)
+      : selectionMatchesVisibleRows(rowMenu.rowIds, selectedVisibleRowIds, visibleRowIdSet));
+  if (rowMenu && !rowMenuIsValid) setRowMenu(null);
+  const activeRowMenu = rowMenuIsValid ? rowMenu : null;
+  const activeRowMenuPage = activeRowMenu?.kind === 'row' ? rowMenuPage : null;
   const [rowMappingDialog, setRowMappingDialog] = useState<RowMappingDialogState | null>(null);
   const [rowTrashConfirmation, setRowTrashConfirmation] = useState<{
     rowIds: PageId[];
@@ -3555,7 +3575,7 @@ function TableView({
 
   const captureRowDialogFocus = () => {
     const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    rowDialogReturnFocusRef.current = rowMenu?.anchor.isConnected ? rowMenu.anchor : active;
+    rowDialogReturnFocusRef.current = activeRowMenu?.anchor.isConnected ? activeRowMenu.anchor : active;
   };
   const restoreRowDialogFocus = () => {
     const target = rowDialogReturnFocusRef.current;
@@ -3603,6 +3623,12 @@ function TableView({
     setSelectedRowIds(update);
   };
 
+  const toggleCheckboxRow = (rowId: PageId, checked: boolean) => {
+    if (!visibleRowIdSet.has(rowId)) return;
+    setSelectedRowIds((current) => toggleVisibleRowSelection(current, rowId, checked, visibleRowIds));
+    setRowSelectionAnchor(rowId);
+  };
+
   const changeRowSelection = (
     rowId: PageId,
     checked: boolean,
@@ -3643,7 +3669,7 @@ function TableView({
     }
     if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
       event.preventDefault();
-      setRowMenu({ rowId, anchor: event.currentTarget });
+      setRowMenu({ kind: 'row', rowId, anchor: event.currentTarget });
       return;
     }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -4617,7 +4643,10 @@ function TableView({
   }, [selectedVisibleRowIds.length, visibleRowIds.length]);
   const rowActionIds = (rowId: PageId) =>
     selectedVisibleRowIds.includes(rowId) ? selectedVisibleRowIds : [rowId];
+  const areCurrentVisibleRows = (rowIds: readonly PageId[]) =>
+    rowIds.length > 0 && rowIds.every((id) => visibleRowIdSet.has(id));
   const applyRowPlan = async (plan: RowOperationPlan, label: string, successMessage: string) => {
+    if (!canEditImmediately()) return false;
     const result = await executeTableAction(getSession(), asTableActionPlan(plan, label), nowTimestamp());
     window.dispatchEvent(new Event('morrow-table-action-changed'));
     if (result.status === 'saved') toast(successMessage);
@@ -4625,6 +4654,7 @@ function TableView({
     return result.status === 'saved';
   };
   const insertRowAt = (rowId: PageId, placement: 'before' | 'after') => {
+    if (!canEditImmediately() || !visibleRowIdSet.has(rowId)) return;
     const planned = planInsertRow(getState(), dbId, rowId, placement, newId(), nowTimestamp());
     if (!planned.ok) {
       toast(planned.error, { tone: 'error' });
@@ -4637,7 +4667,8 @@ function TableView({
     );
   };
   const duplicateRows = (rowIds: PageId[]) => {
-    const planned = planDuplicateRows(state, dbId, rowIds, newId, nowTimestamp(), t('database.copySuffix'));
+    if (!canEditImmediately() || !areCurrentVisibleRows(rowIds)) return;
+    const planned = planDuplicateRows(getState(), dbId, rowIds, newId, nowTimestamp(), t('database.copySuffix'));
     if (!planned.ok) {
       toast(planned.error, { tone: 'error' });
       return;
@@ -4645,13 +4676,19 @@ function TableView({
     void applyRowPlan(planned.value, t('database.rowDuplicate'), t('database.rowCopySuccess'));
   };
   const requestTrashRows = (rowIds: PageId[]) => {
+    if (!canEditImmediately() || !areCurrentVisibleRows(rowIds)) return;
+    const latest = getState();
     captureRowDialogFocus();
     const nested = new Set<PageId>();
-    for (const id of rowIds) for (const page of descendantsOf(state.pages, id)) nested.add(page.id);
+    for (const id of rowIds) for (const page of descendantsOf(latest.pages, id)) nested.add(page.id);
     setRowTrashConfirmation({ rowIds: [...rowIds], nestedCount: nested.size });
   };
   const trashRows = () => {
     if (!rowTrashConfirmation) return;
+    if (!canEditImmediately() || !areCurrentVisibleRows(rowTrashConfirmation.rowIds)) {
+      closeRowTrashConfirmation();
+      return;
+    }
     const planned = planTrashRows(getState(), dbId, rowTrashConfirmation.rowIds, nowTimestamp());
     if (!planned.ok) {
       toast(planned.error, { tone: 'error' });
@@ -4691,6 +4728,7 @@ function TableView({
     preferredDestinationId: PageId,
     afterRowId: PageId | null = null,
   ) => {
+    if (!canEditImmediately() || (mode === 'move' && !areCurrentVisibleRows(rowIds))) return;
     const candidates = rowTargets.filter((page) => mode !== 'move' || page.id !== sourceDatabaseId);
     const destination = candidates.find((page) => page.id === preferredDestinationId) ?? candidates[0];
     if (!destination?.database) {
@@ -4713,6 +4751,7 @@ function TableView({
     });
   };
   const moveRowsToTable = (rowIds: PageId[]) => {
+    if (!canEditImmediately() || !areCurrentVisibleRows(rowIds)) return;
     captureRowDialogFocus();
     const payload = createRowClipboardPayload(getState(), dbId, rowIds);
     if (!payload.ok) {
@@ -4723,9 +4762,11 @@ function TableView({
     openRowMapping('move', payload.value, dbId, rowIds, firstDestination);
   };
   const pasteRowsAfter = async (afterRowId: PageId) => {
+    if (!canEditImmediately() || !visibleRowIdSet.has(afterRowId)) return;
     captureRowDialogFocus();
     try {
       const text = await readClipboardText();
+      if (!canEditImmediately() || !visibleRowIdSet.has(afterRowId)) return;
       const parsed = parseRowClipboardText(text);
       if (!parsed.ok) {
         toast(parsed.error, { tone: 'error' });
@@ -4743,6 +4784,102 @@ function TableView({
       toast(t('database.rowClipboardPasteFailed'), { tone: 'error' });
     }
   };
+  const rowMenuEntries = ((): MenuEntry[] => {
+    if (!activeRowMenu) return [];
+    if (activeRowMenu.kind === 'selection') {
+      const rowIds = activeRowMenu.rowIds;
+      return [
+        { heading: t('database.rowSelectionCount', { count: rowIds.length }) },
+        {
+          label: t('database.rowDuplicate'),
+          icon: Copy,
+          disabled: !editable,
+          onSelect: () => duplicateRows(rowIds),
+        },
+        {
+          label: t('database.rowCopy'),
+          icon: Copy,
+          disabled: !editable,
+          onSelect: () => void copyRows(rowIds),
+        },
+        {
+          label: t('database.rowMoveTo'),
+          icon: ArrowDownUp,
+          disabled: !editable || rowTargets.length < 2,
+          onSelect: () => moveRowsToTable(rowIds),
+        },
+        { separator: true },
+        {
+          label: t('database.rowTrash'),
+          icon: Trash2,
+          danger: true,
+          disabled: !editable,
+          onSelect: () => requestTrashRows(rowIds),
+        },
+        { separator: true },
+        {
+          label: t('database.rowClearSelection'),
+          onSelect: clearRowSelection,
+        },
+      ];
+    }
+
+    const rowId = activeRowMenu.rowId;
+    const rowIds = rowActionIds(rowId);
+    return [
+      { heading: t('database.rowSelectionCount', { count: rowIds.length }) },
+      {
+        label: t('database.rowOpen'),
+        icon: Maximize2,
+        onSelect: () => openPage(rowId),
+      },
+      { separator: true },
+      {
+        label: t('database.rowInsertBefore'),
+        icon: Plus,
+        disabled: !editable,
+        onSelect: () => insertRowAt(rowId, 'before'),
+      },
+      {
+        label: t('database.rowInsertAfter'),
+        icon: Plus,
+        disabled: !editable,
+        onSelect: () => insertRowAt(rowId, 'after'),
+      },
+      {
+        label: t('database.rowDuplicate'),
+        icon: Copy,
+        disabled: !editable,
+        onSelect: () => duplicateRows(rowIds),
+      },
+      {
+        label: t('database.rowCopy'),
+        icon: Copy,
+        disabled: !editable,
+        onSelect: () => void copyRows(rowIds),
+      },
+      {
+        label: t('database.rowPaste'),
+        icon: Plus,
+        disabled: !editable,
+        onSelect: () => void pasteRowsAfter(rowId),
+      },
+      {
+        label: t('database.rowMoveTo'),
+        icon: ArrowDownUp,
+        disabled: !editable || rowTargets.length < 2,
+        onSelect: () => moveRowsToTable(rowIds),
+      },
+      { separator: true },
+      {
+        label: t('database.rowTrash'),
+        icon: Trash2,
+        danger: true,
+        disabled: !editable,
+        onSelect: () => requestTrashRows(rowIds),
+      },
+    ];
+  })();
   const routeKeyboardPaste = async (afterRowId: PageId | null) => {
     captureRowDialogFocus();
     let text: string;
@@ -4809,6 +4946,13 @@ function TableView({
   };
   const submitRowMapping = () => {
     if (!rowMappingDialog) return;
+    if (
+      !canEditImmediately() ||
+      (rowMappingDialog.mode === 'move' && !areCurrentVisibleRows(rowMappingDialog.rowIds))
+    ) {
+      closeRowMappingDialog();
+      return;
+    }
     const latest = getState();
     const destination = latest.pages[rowMappingDialog.destinationDatabaseId];
     if (destination?.kind !== 'database' || !destination.database) {
@@ -4902,51 +5046,25 @@ function TableView({
       aria-label={editable && visibleRowIds.length === 0 ? t('database.rowPasteTarget') : undefined}
       aria-keyshortcuts={editable && visibleRowIds.length === 0 ? 'Control+V Meta+V' : undefined}
     >
-      {(selectedVisibleRowIds.length > 0 || (editable && visibleRowIds.length > 0 && !canReorderRows)) && (
+      {((canEditImmediately() && selectedVisibleRowIds.length > 0) ||
+        (editable && visibleRowIds.length > 0 && !canReorderRows)) && (
         <div className="db-row-operations">
-          {selectedVisibleRowIds.length > 0 && (
+          {canEditImmediately() && selectedVisibleRowIds.length > 0 && (
             <>
               <span className="db-row-selection-count" role="status">
                 {t('database.rowSelectionCount', { count: selectedVisibleRowIds.length })}
               </span>
               <button
                 type="button"
-                className="button small"
-                onClick={() => void copyRows(selectedVisibleRowIds)}
+                className="icon-button tiny db-row-selection-menu-trigger"
+                aria-label={t('database.rowSelectionMenu')}
+                aria-haspopup="menu"
+                aria-expanded={activeRowMenu?.kind === 'selection'}
+                onClick={(event) =>
+                  setRowMenu({ kind: 'selection', rowIds: [...selectedVisibleRowIds], anchor: event.currentTarget })
+                }
               >
-                <Copy size={13} /> {t('database.rowCopy')}
-              </button>
-              <button
-                type="button"
-                className="button small"
-                disabled={rowTargets.length < 2}
-                onClick={() => moveRowsToTable(selectedVisibleRowIds)}
-              >
-                <ArrowDownUp size={13} /> {t('database.rowMoveTo')}
-              </button>
-              <button
-                type="button"
-                className="button small"
-                onClick={() => duplicateRows(selectedVisibleRowIds)}
-              >
-                <Copy size={13} /> {t('database.rowDuplicate')}
-              </button>
-              <button
-                type="button"
-                className="button small danger"
-                onClick={() => requestTrashRows(selectedVisibleRowIds)}
-              >
-                <Trash2 size={13} /> {t('database.rowTrash')}
-              </button>
-              <button
-                type="button"
-                className="button small"
-                onClick={() => {
-                  setSelectedRowIds([]);
-                  setRowSelectionAnchor(null);
-                }}
-              >
-                {t('database.rowClearSelection')}
+                <MoreHorizontal size={15} aria-hidden="true" />
               </button>
             </>
           )}
@@ -5225,11 +5343,7 @@ function TableView({
                           checked={selectedRowIdSet.has(row.id)}
                           aria-label={t('database.rowSelect', { name: displayTitle(row) })}
                           onChange={(event) => {
-                            const native = event.nativeEvent as MouseEvent;
-                            changeRowSelection(row.id, event.currentTarget.checked, {
-                              shift: Boolean(native.shiftKey),
-                              additive: Boolean(native.ctrlKey || native.metaKey),
-                            });
+                            toggleCheckboxRow(row.id, event.currentTarget.checked);
                           }}
                           onKeyDown={(event) => handleRowSelectorKeyDown(event, row.id)}
                         />
@@ -5240,7 +5354,7 @@ function TableView({
                           aria-label={t('database.rowGrip', { name: displayTitle(row) })}
                           aria-pressed={selectedRowIdSet.has(row.id)}
                           aria-haspopup="menu"
-                          aria-expanded={rowMenu?.rowId === row.id}
+                          aria-expanded={activeRowMenu?.kind === 'row' && activeRowMenu.rowId === row.id}
                           aria-keyshortcuts="Enter Space Shift+F10 ContextMenu"
                           title={
                             canReorderRows
@@ -5256,7 +5370,7 @@ function TableView({
                           }}
                           onContextMenu={(event) => {
                             event.preventDefault();
-                            setRowMenu({ rowId: row.id, anchor: event.currentTarget });
+                            setRowMenu({ kind: 'row', rowId: row.id, anchor: event.currentTarget });
                           }}
                           onKeyDown={(event) => handleRowSelectorKeyDown(event, row.id)}
                           onDragStart={(event) => {
@@ -5279,11 +5393,13 @@ function TableView({
                           className="db-row-menu-trigger"
                           aria-label={t('database.rowMenu', { name: displayTitle(row) })}
                           aria-haspopup="menu"
-                          aria-expanded={rowMenu?.rowId === row.id}
-                          onClick={(event) => setRowMenu({ rowId: row.id, anchor: event.currentTarget })}
+                          aria-expanded={activeRowMenu?.kind === 'row' && activeRowMenu.rowId === row.id}
+                          onClick={(event) =>
+                            setRowMenu({ kind: 'row', rowId: row.id, anchor: event.currentTarget })
+                          }
                           onContextMenu={(event) => {
                             event.preventDefault();
-                            setRowMenu({ rowId: row.id, anchor: event.currentTarget });
+                            setRowMenu({ kind: 'row', rowId: row.id, anchor: event.currentTarget });
                           }}
                         >
                           <MoreHorizontal size={15} aria-hidden="true" />
@@ -6040,68 +6156,18 @@ function TableView({
             ]}
           />
         )}
-        {rowMenu && (
+        {activeRowMenu && (
           <Menu
-            anchor={rowMenu.anchor}
-            label={t('database.rowMenu', {
-              name: displayTitle(state.pages[rowMenu.rowId] ?? rows.find((row) => row.id === rowMenu.rowId)!),
-            })}
+            anchor={activeRowMenu.anchor}
+            label={
+              activeRowMenu.kind === 'selection'
+                ? t('database.rowSelectionMenu')
+                : activeRowMenuPage
+                  ? t('database.rowMenu', { name: displayTitle(activeRowMenuPage) })
+                  : ''
+            }
             onClose={() => setRowMenu(null)}
-            entries={[
-              {
-                heading: t('database.rowSelectionCount', { count: rowActionIds(rowMenu.rowId).length }),
-              },
-              {
-                label: t('database.rowOpen'),
-                icon: Maximize2,
-                onSelect: () => openPage(rowMenu.rowId),
-              },
-              { separator: true },
-              {
-                label: t('database.rowInsertBefore'),
-                icon: Plus,
-                disabled: !editable,
-                onSelect: () => insertRowAt(rowMenu.rowId, 'before'),
-              },
-              {
-                label: t('database.rowInsertAfter'),
-                icon: Plus,
-                disabled: !editable,
-                onSelect: () => insertRowAt(rowMenu.rowId, 'after'),
-              },
-              {
-                label: t('database.rowDuplicate'),
-                icon: Copy,
-                disabled: !editable,
-                onSelect: () => duplicateRows(rowActionIds(rowMenu.rowId)),
-              },
-              {
-                label: t('database.rowCopy'),
-                icon: Copy,
-                disabled: !editable,
-                onSelect: () => void copyRows(rowActionIds(rowMenu.rowId)),
-              },
-              {
-                label: t('database.rowPaste'),
-                icon: Plus,
-                disabled: !editable,
-                onSelect: () => void pasteRowsAfter(rowMenu.rowId),
-              },
-              {
-                label: t('database.rowMoveTo'),
-                icon: ArrowDownUp,
-                disabled: !editable || rowTargets.length < 2,
-                onSelect: () => moveRowsToTable(rowActionIds(rowMenu.rowId)),
-              },
-              { separator: true },
-              {
-                label: t('database.rowTrash'),
-                icon: Trash2,
-                danger: true,
-                disabled: !editable,
-                onSelect: () => requestTrashRows(rowActionIds(rowMenu.rowId)),
-              },
-            ]}
+            entries={rowMenuEntries}
           />
         )}
         {rowMappingDialog && mappingDestination?.kind === 'database' && mappingDestination.database && (
@@ -6219,7 +6285,7 @@ function TableView({
               <button
                 type="button"
                 className="button small primary"
-                disabled={rowMappingPreview.some((item) => Boolean(item.error))}
+                disabled={!canEditImmediately() || rowMappingPreview.some((item) => Boolean(item.error))}
                 onClick={submitRowMapping}
               >
                 {t(rowMappingDialog.mode === 'move' ? 'database.rowMoveSubmit' : 'database.rowPasteSubmit')}
@@ -6251,7 +6317,12 @@ function TableView({
               >
                 {t('common.cancel')}
               </button>
-              <button type="button" className="button small danger" onClick={trashRows}>
+              <button
+                type="button"
+                className="button small danger"
+                disabled={!canEditImmediately()}
+                onClick={trashRows}
+              >
                 {t('common.confirm')}
               </button>
             </div>

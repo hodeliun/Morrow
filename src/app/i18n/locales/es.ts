@@ -1600,6 +1600,7 @@ export const es: TranslationSchema = {
     rowSelect: 'Seleccionar {name}',
     rowSelectAll: 'Seleccionar las {count} filas visibles',
     rowSelectionCount: '{count} seleccionadas',
+    rowSelectionMenu: 'Acciones para las filas seleccionadas',
     rowClearSelection: 'Borrar selección',
     rowDrag: 'Arrastrar {name} para reordenar',
     rowGrip: 'Seleccionar {name}; arrastrar para reordenar; Shift+F10 para acciones',

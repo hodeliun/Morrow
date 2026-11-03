@@ -169,6 +169,9 @@ describe('database column descriptions', () => {
     }
     expect(linkedMarkup).toContain('is-linked-view');
     expect(mainMarkup).toContain('class="db-row-drag"');
+    expect(readOnlyMarkup).not.toContain('class="db-row-select"');
+    expect(readOnlyMarkup).not.toContain('class="db-row-drag"');
+    expect(readOnlyMarkup).not.toContain('class="db-row-menu-trigger"');
     expect(mainMarkup).toContain(
       `aria-label="${t('database.rowGrip', { name: 'Synthetic row one' })}"`,
     );

@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — seleção aditiva de linhas (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0 e formato persistido 13.
+
+- Cada checkbox alterna somente sua linha, sem modificadores; seleção geral,
+  teclado e célula ativa mantêm seus comportamentos.
+- Um menu de três pontos concentra as ações em lote. A margem discreta já
+  existente aparece por hover/foco, sem deslocar as colunas.
+- Menus e confirmações revalidam linhas e permissão de edição; bancos somente
+  leitura não oferecem controles mutantes de linha.
+
+Detalhes e validação: [T05 — seleção aditiva e ações de linha](docs/deliveries/T05-additive-row-selection.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — ordem de colunas por visualização (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0 e formato persistido 13; nenhuma sincronização

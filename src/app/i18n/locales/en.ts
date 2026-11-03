@@ -1585,6 +1585,7 @@ export const en = {
     rowSelect: 'Select {name}',
     rowSelectAll: 'Select all {count} visible rows',
     rowSelectionCount: '{count} selected',
+    rowSelectionMenu: 'Actions for selected rows',
     rowClearSelection: 'Clear selection',
     rowDrag: 'Drag {name} to reorder',
     rowGrip: 'Select {name}; drag to reorder; Shift+F10 for actions',

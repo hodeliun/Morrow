@@ -1,0 +1,63 @@
+{
+  "gate": {
+    "lint": "passed",
+    "typecheck": "passed",
+    "packagedArtifactsVerified": 3597,
+    "sourceSha256": "fec47b4e2fbfef8de36680ad448419c8f437f0ffd822119675200e06c6c954ab",
+    "build": "passed",
+    "command": "npm run check",
+    "artifactSha256": "010d1261a6bc00949df0ca054e27812a5e20d23acf666c8e019a999e25b3f63c",
+    "sourceFiles": 396,
+    "testFiles": 120,
+    "testsPassed": 978
+  },
+  "runtime": {
+    "main": "ui-1793720479133",
+    "syntheticOnly": true,
+    "mainResultSha256": "192322f3cb0a1b00cf822e7288399757548ac5345834bc6dcf4e96bb17bb11a6",
+    "visual420FollowupResultSha256": "c90cd395dae80d7fc0678220722aa5d39e0165a3912d8c3ff5d767d2ff4ac974",
+    "hiddenWindows": true,
+    "rowMarginWidth": 68,
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "pageErrors": 0,
+    "scope": [
+      "additive checkboxes with click/Shift/Control and Space",
+      "select-all and active-cell preservation",
+      "hover/focus margin geometry and distinct grips",
+      "compact batch menu",
+      "real two-row Duplicate/Trash and durable reopen",
+      "six locale/theme menu cases",
+      "registered Trash readonly bytes/mtime",
+      "420 sidebar fully out, scrim hidden, real center hit and selection"
+    ],
+    "visual420Followup": "ui-1793720590469",
+    "localeThemeCases": 6,
+    "followupWidth": 420,
+    "matrixWidth": 520,
+    "status": "passed",
+    "platform": "Windows"
+  },
+  "negativeEvidence": {
+    "deadlinesChanged": false,
+    "productChangedForHarness": false,
+    "visual": "Initial 420 screenshot caught closing sidebar over margin; rejected as proof. Bounded same-package420followup verified actual closed geometry and captured replacement",
+    "secondUI": "Readiness required entire checkbox box inside viewport; corrected to physical center and exact receiver with real click, independent geometry assertions retained",
+    "firstUI": "Mobile navigation left sidebar open for already-selected page; public central navigation corrected",
+    "buildRepeatedForHarness": false
+  },
+  "limits": [
+    "OS clipboard not used; Copy menu exposure only",
+    "Synthetic hidden Windows runtime only; CI recorded separately before issue closure",
+    "No release,installer,personal profiles or real records",
+    "Quiet-margin CSS already published; reused and verified here"
+  ],
+  "officialBase": "1.3.0",
+  "issue": "https://github.com/hodeliun/Morrow/issues/56",
+  "validatedBase": "dda416ca7b06501ac7d7d6beaa9694d445c668b3",
+  "ticket": "T05",
+  "persistedFormat": 13
+}
