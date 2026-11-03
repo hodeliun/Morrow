@@ -104,6 +104,25 @@ describe('database column descriptions', () => {
     };
     const configuredMarkup = render(configuredPage);
     const readOnlyMarkup = render(initialPage, undefined, false);
+    const reordered = render(initialPage, {
+      ...view,
+      order: ['score', 'title', 'unlabeled', 'summary'],
+      frozenThrough: 'title',
+      summaries: { score: 'sum' },
+    });
+    const renderedColumnRows = [...reordered.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)]
+      .map((row) => [...row[1]!.matchAll(/data-col-id="([^"]+)"/g)].map((cell) => cell[1]));
+    // Headers expose accessible names; body/New/calculation cells carry stable IDs.
+    const renderedHeaders = [...reordered.matchAll(/class="db-header-name">([^<]+)<\/span>/g)]
+      .map((header) => header[1]);
+    expect(renderedHeaders).toEqual(['Score', 'Preferred name', 'No description', 'Summary']);
+    expect(renderedColumnRows).toEqual([[], ...Array.from({ length: 4 }, () => [
+      'score', 'title', 'unlabeled', 'summary',
+    ])]);
+    expect(reordered.indexOf('class="db-new-row-row"')).toBeLessThan(
+      reordered.indexOf('class="db-footer-summary'),
+    );
+    expect(view.order).not.toEqual(['score', 'title', 'unlabeled', 'summary']);
     expect(mainMarkup).toContain('class="db-header-name">Preferred name</span>');
     expect(mainMarkup).toContain(`aria-label="${t('database.defaultDisplayColumn')}"`);
     expect(readOnlyMarkup).toContain('class="db-header-name">Preferred name</span>');

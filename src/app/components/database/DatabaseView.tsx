@@ -1,4 +1,6 @@
 import {
+  ArrowLeft,
+  ArrowRight,
   ArrowDownUp,
   ArrowDown,
   Link as LinkIcon,
@@ -118,7 +120,12 @@ import { linkedViewReferences } from '../../../core/linkedViews';
 import { namedControlIdentifier } from '../../../core/controls';
 import { childrenOf, descendantsOf } from '../../../core/tree';
 import { ViewChangeContext } from './viewContext';
-import { insertPropertyNear } from './columnActions';
+import {
+  insertPropertyNear,
+  moveColumnInView,
+  movePropertyInViewOrder,
+  orderedColumnIds,
+} from './columnActions';
 import {
   isColumnReadOnly,
   planGridClear,
@@ -2997,13 +3004,11 @@ function Toolbar({
                       className="icon-button tiny"
                       aria-label={t('database.movePropUp', { name: prop.name })}
                       disabled={!editable || index === 0}
-                      onClick={() =>
-                        saveView((current) => {
-                          const ids = orderedProperties(database, current).map((item) => item.id);
-                          [ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
-                          return { ...current, order: ids };
-                        })
-                      }
+                      onClick={() => {
+                        saveView(
+                          (current) => movePropertyInViewOrder(database, current, prop.id, -1) ?? current,
+                        );
+                      }}
                     >
                       <ArrowUp size={12} />
                     </button>
@@ -3012,13 +3017,11 @@ function Toolbar({
                       className="icon-button tiny"
                       aria-label={t('database.movePropDown', { name: prop.name })}
                       disabled={!editable || index === ordered.length - 1}
-                      onClick={() =>
-                        saveView((current) => {
-                          const ids = orderedProperties(database, current).map((item) => item.id);
-                          [ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
-                          return { ...current, order: ids };
-                        })
-                      }
+                      onClick={() => {
+                        saveView(
+                          (current) => movePropertyInViewOrder(database, current, prop.id, 1) ?? current,
+                        );
+                      }}
                     >
                       <ArrowDown size={12} />
                     </button>
@@ -3237,6 +3240,7 @@ function FocusLast() {
 
 const TITLE_WIDTH = 260;
 const COLUMN_WIDTH = 180;
+const COLUMN_DRAG_TYPE = 'application/x-morrow-column-id';
 
 // drag a column's right edge to size it, a double click goes back to the usual width
 function ColumnResizer({
@@ -3464,8 +3468,39 @@ function TableView({
   const canEditImmediately = () => editable && (canEditNow?.() ?? true);
   const tableRef = useRef<HTMLTableElement>(null);
   const [expandedCell, setExpandedCell] = useState<string | null>(null);
-
-  const visibleColIds = useMemo(() => [TITLE_PROP, ...props.map((p) => p.id)], [props]);
+  const tableColumns = useMemo(() => {
+    const properties = new Map(props.map((prop) => [prop.id, prop]));
+    return orderedColumnIds(database, view)
+      .filter((id) => id === TITLE_PROP || properties.has(id))
+      .map((id) => ({ id, prop: properties.get(id) ?? null }));
+  }, [database, props, view]);
+  const visibleColIds = useMemo(() => tableColumns.map((column) => column.id), [tableColumns]);
+  const draggedColumnRef = useRef<string | null>(null);
+  const dropTargetRef = useRef<{ id: string; position: ColumnInsertPosition } | null>(null);
+  const [draggedColumnId, setDraggedColumnId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: ColumnInsertPosition } | null>(null);
+  const setColumnDropTarget = (target: { id: string; position: ColumnInsertPosition } | null) => {
+    dropTargetRef.current = target;
+    setDropTarget(target);
+  };
+  const clearColumnDrag = () => {
+    draggedColumnRef.current = null;
+    setColumnDropTarget(null);
+    setDraggedColumnId(null);
+  };
+  useEffect(() => {
+    const cancelColumnDrag = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !draggedColumnRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      draggedColumnRef.current = null;
+      dropTargetRef.current = null;
+      setDraggedColumnId(null);
+      setDropTarget(null);
+    };
+    window.addEventListener('keydown', cancelColumnDrag, true);
+    return () => window.removeEventListener('keydown', cancelColumnDrag, true);
+  }, []);
   const visibleRowIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const visibleRowIdSet = useMemo(() => new Set(visibleRowIds), [visibleRowIds]);
   const visibleRowKey = visibleRowIds.join('\u0000');
@@ -4298,7 +4333,9 @@ function TableView({
       const prop = cellProp;
       const isTextEditor =
         colId === TITLE_PROP || ['text', 'email', 'url', 'phone'].includes(prop?.type ?? '');
-      const isNumberEditor = ['number', 'currency', 'percent', 'duration', 'progress'].includes(prop?.type ?? '');
+      const isNumberEditor = ['number', 'currency', 'percent', 'duration', 'progress'].includes(
+        prop?.type ?? '',
+      );
       if (isNumberEditor && !/^[0-9.,+-]$/.test(startKey.text)) return;
       event.preventDefault();
       const initialText = startKey.text;
@@ -4322,8 +4359,9 @@ function TableView({
           : prop && ['email', 'url', 'phone'].includes(prop.type)
             ? initialText.trim() || null
             : null;
-      const hasInitialValidation =
-        Boolean(prop && (isNumberEditor || ['email', 'url', 'phone'].includes(prop.type)));
+      const hasInitialValidation = Boolean(
+        prop && (isNumberEditor || ['email', 'url', 'phone'].includes(prop.type)),
+      );
       invalidEditingCellRef.current =
         hasInitialValidation && prop && scalarValueError(prop, initialValidationValue)
           ? `${rowId}:${colId}`
@@ -4416,22 +4454,19 @@ function TableView({
     );
   const total =
     ROW_CONTROLS_WIDTH * (editable ? 1 : 0) +
-    widthOf(TITLE_PROP) +
-    props.reduce((sum, prop) => sum + widthOf(prop.id), 0) +
+    tableColumns.reduce((sum, column) => sum + widthOf(column.id), 0) +
     (editable ? 36 : 0);
-  const frozenIndex = props.findIndex((prop) => prop.id === view.frozenThrough);
+  const frozenIndex = tableColumns.findIndex((column) => column.id === view.frozenThrough);
   const frozenStyle = (index: number): CSSProperties | undefined => {
     if (frozenIndex < 0 || index > frozenIndex) return undefined;
     const left =
       ROW_CONTROLS_WIDTH * (editable ? 1 : 0) +
-      (index < 0
-        ? 0
-        : widthOf(TITLE_PROP) + props.slice(0, index).reduce((sum, prop) => sum + widthOf(prop.id), 0));
+      tableColumns.slice(0, index).reduce((sum, column) => sum + widthOf(column.id), 0);
     return { position: 'sticky', left, zIndex: 2 };
   };
   const fitColumn = (propId: string) => {
     const table = tableRef.current;
-    const index = props.findIndex((prop) => prop.id === propId) + 1 + (editable ? 1 : 0);
+    const index = tableColumns.findIndex((column) => column.id === propId) + 1 + (editable ? 1 : 0);
     if (!table || index < 1) return;
     const probe = document.createElement('span');
     probe.style.position = 'fixed';
@@ -4453,12 +4488,69 @@ function TableView({
   };
   const selectedSort = columnMenu ? view.sorts.find((item) => item.prop === columnMenu.prop.id) : undefined;
   const isTitleColumnMenu = columnMenu?.prop.id === TITLE_PROP;
+  const menuColumnIndex = columnMenu ? visibleColIds.indexOf(columnMenu.prop.id) : -1;
   const openColumnMenu = (prop: PropDef, anchor: HTMLElement) => {
     setHeader(null);
     setTitleAliasEditor(null);
     setInserting(null);
     setColumnMenu({ prop, anchor });
   };
+  const columnName = (columnId: string) =>
+    columnId === TITLE_PROP
+      ? titleColumnLabel
+      : (database.properties.find((prop) => prop.id === columnId)?.name ?? columnId);
+  const beginColumnDrag = (event: React.DragEvent<HTMLButtonElement>, columnId: string) => {
+    draggedColumnRef.current = columnId;
+    setDraggedColumnId(columnId);
+    setColumnDropTarget(null);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(COLUMN_DRAG_TYPE, columnId);
+  };
+  const updateColumnDropTarget = (event: React.DragEvent<HTMLElement>, targetId: string) => {
+    const sourceId = draggedColumnRef.current;
+    if (!sourceId || !event.dataTransfer.types.includes(COLUMN_DRAG_TYPE)) return;
+    if (!sourceId || sourceId === targetId) {
+      setColumnDropTarget(null);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const position = event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after';
+    const current = dropTargetRef.current;
+    if (current?.id === targetId && current.position === position) return;
+    setColumnDropTarget({ id: targetId, position });
+  };
+  const dropColumn = (event: React.DragEvent<HTMLElement>, targetId: string) => {
+    const sourceId = draggedColumnRef.current;
+    if (!sourceId || !event.dataTransfer.types.includes(COLUMN_DRAG_TYPE)) return;
+    const target = dropTargetRef.current;
+    if (!target || target.id !== targetId || sourceId === targetId) return;
+    event.preventDefault();
+    if (!canEditImmediately()) {
+      clearColumnDrag();
+      return;
+    }
+    const next = moveColumnInView(database, view, sourceId, targetId, target.position);
+    if (next) saveView(() => next);
+    clearColumnDrag();
+  };
+  const moveColumnBy = (columnId: string, direction: -1 | 1) => {
+    if (!canEditImmediately()) return;
+    const index = visibleColIds.indexOf(columnId);
+    if (index < 0) return;
+    const targetId = visibleColIds[index + direction];
+    if (!targetId) return;
+    const next = moveColumnInView(database, view, columnId, targetId, direction < 0 ? 'before' : 'after');
+    if (next) saveView(() => next);
+  };
+  const dropAnnouncement =
+    draggedColumnId && dropTarget
+      ? t(dropTarget.position === 'before' ? 'database.columnMoveBefore' : 'database.columnMoveAfter', {
+          name: columnName(draggedColumnId),
+          target: columnName(dropTarget.id),
+        })
+      : '';
   const duplicateColumn = (propId: string, includeValues: boolean) => {
     const plan = planColumnDuplicate(
       state,
@@ -4874,9 +4966,8 @@ function TableView({
         >
           <colgroup>
             {editable && <col style={{ width: ROW_CONTROLS_WIDTH }} />}
-            <col style={{ width: widthOf(TITLE_PROP) }} />
-            {props.map((prop) => (
-              <col key={prop.id} style={{ width: widthOf(prop.id) }} />
+            {tableColumns.map((column) => (
+              <col key={column.id} style={{ width: widthOf(column.id) }} />
             ))}
             {/* the add column takes whatever room is left, so the others keep the width they were given */}
             {editable && <col />}
@@ -4906,57 +4997,130 @@ function TableView({
                   />
                 </th>
               )}
-              <th
-                scope="col"
-                className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}`}
-                style={frozenStyle(-1)}
-              >
-                <div className="db-header-row">
-                  {editable ? (
-                    <button
-                      type="button"
-                      className="db-header"
-                      aria-label={t('database.columnMenuAria', { name: titleColumnLabel })}
-                      aria-haspopup="menu"
-                      aria-expanded={columnMenu?.prop.id === TITLE_PROP || titleAliasEditor !== null}
-                      aria-keyshortcuts="Shift+F10 ContextMenu"
-                      title={t('database.columnMenuHint')}
-                      onClick={(event) => {
-                        setColumnMenu(null);
-                        setInserting(null);
-                        setHeader(null);
-                        setTitleAliasEditor(event.currentTarget);
-                      }}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        openColumnMenu(titleColumnProp, event.currentTarget);
-                      }}
-                      onKeyDown={(event) => {
-                        if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
-                          event.preventDefault();
-                          openColumnMenu(titleColumnProp, event.currentTarget);
-                        }
-                      }}
+              {tableColumns.map((column, columnIndex) => {
+                if (column.id === TITLE_PROP) {
+                  const dropClass =
+                    dropTarget?.id === column.id ? ` db-column-drop-${dropTarget.position}` : '';
+                  return (
+                    <th
+                      key={column.id}
+                      scope="col"
+                      className={`db-col-title${columnIndex <= frozenIndex ? ' db-frozen' : ''}${dropClass}`}
+                      style={frozenStyle(columnIndex)}
+                      onDragOver={editable ? (event) => updateColumnDropTarget(event, column.id) : undefined}
+                      onDrop={editable ? (event) => dropColumn(event, column.id) : undefined}
                     >
-                      <span className="db-header-name">{titleColumnLabel}</span>
-                    </button>
-                  ) : (
-                    <span className="db-header-name">{titleColumnLabel}</span>
-                  )}
-                  {!database.displayPropertyId && <DefaultDisplayIndicator />}
-                </div>
-                {resizer(TITLE_PROP)}
-              </th>
-              {props.map((prop) => {
+                      <div className="db-header-row">
+                        {editable && (
+                          <button
+                            type="button"
+                            className="db-column-move-handle icon-button tiny"
+                            aria-label={t('database.dragColumn', { name: titleColumnLabel })}
+                            aria-haspopup="menu"
+                            aria-expanded={columnMenu?.prop.id === TITLE_PROP}
+                            aria-keyshortcuts="Enter Space"
+                            title={t('database.dragColumn', { name: titleColumnLabel })}
+                            draggable
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                openColumnMenu(titleColumnProp, event.currentTarget);
+                              }
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              openColumnMenu(titleColumnProp, event.currentTarget);
+                            }}
+                            onDragStart={(event) => beginColumnDrag(event, TITLE_PROP)}
+                            onDragEnd={clearColumnDrag}
+                          >
+                            <GripVertical size={13} aria-hidden="true" />
+                          </button>
+                        )}
+                        {editable ? (
+                          <button
+                            type="button"
+                            className="db-header"
+                            aria-label={t('database.columnMenuAria', { name: titleColumnLabel })}
+                            aria-haspopup="menu"
+                            aria-expanded={columnMenu?.prop.id === TITLE_PROP || titleAliasEditor !== null}
+                            aria-keyshortcuts="Shift+F10 ContextMenu"
+                            title={t('database.columnMenuHint')}
+                            onClick={(event) => {
+                              setColumnMenu(null);
+                              setInserting(null);
+                              setHeader(null);
+                              setTitleAliasEditor(event.currentTarget);
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              openColumnMenu(titleColumnProp, event.currentTarget);
+                            }}
+                            onKeyDown={(event) => {
+                              if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+                                event.preventDefault();
+                                openColumnMenu(titleColumnProp, event.currentTarget);
+                              }
+                            }}
+                          >
+                            <span className="db-header-name">{titleColumnLabel}</span>
+                          </button>
+                        ) : (
+                          <span className="db-header-name">{titleColumnLabel}</span>
+                        )}
+                        {!database.displayPropertyId && <DefaultDisplayIndicator />}
+                      </div>
+                      {resizer(TITLE_PROP)}
+                    </th>
+                  );
+                }
+                const prop = column.prop!;
                 const description = prop.description?.trim() ? prop.description : null;
+                const dropClass = dropTarget?.id === prop.id ? ` db-column-drop-${dropTarget.position}` : '';
                 return (
                   <th
                     key={prop.id}
                     scope="col"
-                    className={props.indexOf(prop) <= frozenIndex ? 'db-frozen' : undefined}
-                    style={frozenStyle(props.indexOf(prop))}
+                    className={`${columnIndex <= frozenIndex ? 'db-frozen' : ''}${dropClass}` || undefined}
+                    style={frozenStyle(columnIndex)}
+                    onDragOver={editable ? (event) => updateColumnDropTarget(event, prop.id) : undefined}
+                    onDrop={editable ? (event) => dropColumn(event, prop.id) : undefined}
                   >
                     <div className="db-header-row">
+                      {editable && (
+                        <button
+                          type="button"
+                          className="db-column-move-handle icon-button tiny"
+                          aria-label={t('database.dragColumn', { name: prop.name })}
+                          aria-haspopup="menu"
+                          aria-expanded={columnMenu?.prop.id === prop.id}
+                          aria-keyshortcuts="Enter Space"
+                          title={t('database.dragColumn', { name: prop.name })}
+                          draggable
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              openColumnMenu(prop, event.currentTarget);
+                            }
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            openColumnMenu(prop, event.currentTarget);
+                          }}
+                          onDragStart={(event) => beginColumnDrag(event, prop.id)}
+                          onDragEnd={clearColumnDrag}
+                        >
+                          <GripVertical size={13} aria-hidden="true" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="db-header"
@@ -5026,13 +5190,7 @@ function TableView({
             {rows.map((row) => {
               const rowFormat = resolveConditionalFormatForRow(row, view, database, state);
               const rowStyle = conditionalFormatStyle(rowFormat);
-              const titleFormat = resolveConditionalFormatForCell(
-                row,
-                TITLE_PROP,
-                view,
-                database,
-                state,
-              );
+              const titleFormat = resolveConditionalFormatForCell(row, TITLE_PROP, view, database, state);
               const isTitleActive = activeCell?.rowId === row.id && activeCell?.colId === TITLE_PROP;
               const isTitleSelected =
                 resolvedSelection?.rowIds.includes(row.id) && resolvedSelection?.colIds.includes(TITLE_PROP);
@@ -5133,84 +5291,83 @@ function TableView({
                       </div>
                     </td>
                   )}
-                  <td
-                    ref={(el) => {
-                      if (el) tdRefs.current.set(`${row.id}:${TITLE_PROP}`, el);
-                      else tdRefs.current.delete(`${row.id}:${TITLE_PROP}`);
-                    }}
-                    tabIndex={isTitleActive ? 0 : -1}
-                    data-row-id={row.id}
-                    data-col-id={TITLE_PROP}
-                    data-fill-preview={isTitleFill ? String(titleFillCell?.value ?? '') : undefined}
-                    className={`db-col-title${frozenIndex === -1 ? '' : ' db-frozen'}${isTitleActive ? ' is-grid-active' : ''}${isTitleSelected ? ' is-grid-selected' : ''}${isTitleFill ? ' is-fill-preview' : ''}`}
-                    style={{
-                      ...rowStyle,
-                      ...conditionalFormatStyle(titleFormat),
-                      ...frozenStyle(-1),
-                    }}
-                    onFocus={clearRowSelection}
-                    onKeyDown={(e) => handleCellKeyDown(e, row.id, TITLE_PROP)}
-                    onMouseDown={(e) => handleCellMouseDown(row.id, TITLE_PROP, e)}
-                    onMouseEnter={() => handleCellMouseEnter(row.id, TITLE_PROP)}
-                    onDoubleClick={() => handleCellDoubleClick(row.id, TITLE_PROP)}
-                  >
-                    {titleFillCell ? (
-                      <span className="db-cell-content db-fill-preview-value">
-                        {titleFillCell.value === null || titleFillCell.value === '' ? (
-                          <span className="prop-empty">{t('page.untitled')}</span>
-                        ) : (
-                          String(titleFillCell.value)
-                        )}
-                      </span>
-                    ) : (
-                      <RowTitle
-                        row={row}
-                        editable={editable}
-                        canEditNow={canEditNow}
-                        autoFocus={focusNew === row.id}
-                        gridMode={true}
-                        isEditing={editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP}
-                        initialText={
-                          editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP
-                            ? editingCell.initialText
-                            : undefined
-                        }
-                        onCommitAndMove={(dir) => handleCommitAndMove(row.id, TITLE_PROP, dir)}
-                        onCancelEdit={() => handleCancelEdit(row.id, TITLE_PROP)}
-                        onDoneEdit={handleDoneEdit}
-                        onInvalidDraftChange={(invalid) => {
-                          const cellKey = `${row.id}:${TITLE_PROP}`;
-                          if (invalid) invalidEditingCellRef.current = cellKey;
-                          else if (invalidEditingCellRef.current === cellKey)
-                            invalidEditingCellRef.current = null;
-                        }}
-                      />
-                    )}
-                    {isBottomRightCell(row.id, TITLE_PROP) &&
-                      editable &&
-                      !isColumnReadOnly(TITLE_PROP, database) && (
-                        <div
-                          className="db-fill-handle"
-                          role="button"
-                          aria-label={t('database.fillHandle')}
-                          onMouseDown={(event) => {
-                            event.stopPropagation();
-                            event.preventDefault();
-                            fillDraggingRef.current = true;
-                            setFillDragging(true);
-                            fillSourceRangeRef.current = selectionRange;
+                  {tableColumns.map((column, columnIndex) => {
+                    if (column.id === TITLE_PROP)
+                      return (
+                        <td
+                          key={TITLE_PROP}
+                          ref={(el) => {
+                            if (el) tdRefs.current.set(`${row.id}:${TITLE_PROP}`, el);
+                            else tdRefs.current.delete(`${row.id}:${TITLE_PROP}`);
                           }}
-                        />
-                      )}
-                  </td>
-                  {props.map((prop) => {
-                    const cellFormat = resolveConditionalFormatForCell(
-                      row,
-                      prop.id,
-                      view,
-                      database,
-                      state,
-                    );
+                          tabIndex={isTitleActive ? 0 : -1}
+                          data-row-id={row.id}
+                          data-col-id={TITLE_PROP}
+                          data-fill-preview={isTitleFill ? String(titleFillCell?.value ?? '') : undefined}
+                          className={`db-col-title${columnIndex <= frozenIndex ? ' db-frozen' : ''}${isTitleActive ? ' is-grid-active' : ''}${isTitleSelected ? ' is-grid-selected' : ''}${isTitleFill ? ' is-fill-preview' : ''}`}
+                          style={{
+                            ...rowStyle,
+                            ...conditionalFormatStyle(titleFormat),
+                            ...frozenStyle(columnIndex),
+                          }}
+                          onFocus={clearRowSelection}
+                          onKeyDown={(e) => handleCellKeyDown(e, row.id, TITLE_PROP)}
+                          onMouseDown={(e) => handleCellMouseDown(row.id, TITLE_PROP, e)}
+                          onMouseEnter={() => handleCellMouseEnter(row.id, TITLE_PROP)}
+                          onDoubleClick={() => handleCellDoubleClick(row.id, TITLE_PROP)}
+                        >
+                          {titleFillCell ? (
+                            <span className="db-cell-content db-fill-preview-value">
+                              {titleFillCell.value === null || titleFillCell.value === '' ? (
+                                <span className="prop-empty">{t('page.untitled')}</span>
+                              ) : (
+                                String(titleFillCell.value)
+                              )}
+                            </span>
+                          ) : (
+                            <RowTitle
+                              row={row}
+                              editable={editable}
+                              canEditNow={canEditNow}
+                              autoFocus={focusNew === row.id}
+                              gridMode={true}
+                              isEditing={editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP}
+                              initialText={
+                                editingCell?.rowId === row.id && editingCell?.colId === TITLE_PROP
+                                  ? editingCell.initialText
+                                  : undefined
+                              }
+                              onCommitAndMove={(dir) => handleCommitAndMove(row.id, TITLE_PROP, dir)}
+                              onCancelEdit={() => handleCancelEdit(row.id, TITLE_PROP)}
+                              onDoneEdit={handleDoneEdit}
+                              onInvalidDraftChange={(invalid) => {
+                                const cellKey = `${row.id}:${TITLE_PROP}`;
+                                if (invalid) invalidEditingCellRef.current = cellKey;
+                                else if (invalidEditingCellRef.current === cellKey)
+                                  invalidEditingCellRef.current = null;
+                              }}
+                            />
+                          )}
+                          {isBottomRightCell(row.id, TITLE_PROP) &&
+                            editable &&
+                            !isColumnReadOnly(TITLE_PROP, database) && (
+                              <div
+                                className="db-fill-handle"
+                                role="button"
+                                aria-label={t('database.fillHandle')}
+                                onMouseDown={(event) => {
+                                  event.stopPropagation();
+                                  event.preventDefault();
+                                  fillDraggingRef.current = true;
+                                  setFillDragging(true);
+                                  fillSourceRangeRef.current = selectionRange;
+                                }}
+                              />
+                            )}
+                        </td>
+                      );
+                    const prop = column.prop!;
+                    const cellFormat = resolveConditionalFormatForCell(row, prop.id, view, database, state);
                     const isCellActive = activeCell?.rowId === row.id && activeCell?.colId === prop.id;
                     const isCellSelected =
                       resolvedSelection?.rowIds.includes(row.id) &&
@@ -5231,13 +5388,13 @@ function TableView({
                         data-row-id={row.id}
                         data-col-id={prop.id}
                         data-fill-preview={isCellFill ? String(propFillCell?.value ?? '') : undefined}
-                        className={`${props.indexOf(prop) <= frozenIndex ? 'db-frozen ' : ''}${isCellActive ? 'is-grid-active ' : ''}${isCellSelected ? 'is-grid-selected ' : ''}${isCellFill ? 'is-fill-preview' : ''}`}
+                        className={`${columnIndex <= frozenIndex ? 'db-frozen ' : ''}${isCellActive ? 'is-grid-active ' : ''}${isCellSelected ? 'is-grid-selected ' : ''}${isCellFill ? 'is-fill-preview' : ''}`}
                         style={{
                           ...rowStyle,
                           ...conditionalFormatStyle(cellFormat),
                           textAlign: view.align?.[prop.id] ?? 'left',
                           whiteSpace: view.wrap?.includes(prop.id) ? 'normal' : 'nowrap',
-                          ...frozenStyle(props.indexOf(prop)),
+                          ...frozenStyle(columnIndex),
                         }}
                         onFocus={clearRowSelection}
                         onKeyDown={(e) => handleCellKeyDown(e, row.id, prop.id)}
@@ -5398,27 +5555,29 @@ function TableView({
                   className="db-row-controls db-footer-cell"
                   style={{ position: 'sticky', left: 0, zIndex: 3 }}
                 />
-                <th
-                  scope="row"
-                  data-col-id={TITLE_PROP}
-                  className={'db-col-title db-footer-cell db-new-row-cell' + (frozenIndex === -1 ? '' : ' db-frozen')}
-                  style={frozenStyle(-1)}
-                >
-                  <button
-                    type="button"
-                    className="db-new-row"
-                    onClick={() => {
-                      const id = createRow(dbId);
-                      if (id) setFocusNew(id);
-                    }}
+                {tableColumns.map((column, columnIndex) => column.id === TITLE_PROP ? (
+                  <th
+                    key={TITLE_PROP}
+                    scope="row"
+                    data-col-id={TITLE_PROP}
+                    className={'db-col-title db-footer-cell db-new-row-cell' + (columnIndex <= frozenIndex ? ' db-frozen' : '')}
+                    style={frozenStyle(columnIndex)}
                   >
-                    <Plus size={14} /> {t('database.new')}
-                  </button>
-                </th>
-                {props.map((prop, columnIndex) => (
+                    <button
+                      type="button"
+                      className="db-new-row"
+                      onClick={() => {
+                        const id = createRow(dbId);
+                        if (id) setFocusNew(id);
+                      }}
+                    >
+                      <Plus size={14} /> {t('database.new')}
+                    </button>
+                  </th>
+                ) : (
                   <td
-                    key={prop.id}
-                    data-col-id={prop.id}
+                    key={column.id}
+                    data-col-id={column.id}
                     className={'db-footer-cell' + (columnIndex <= frozenIndex ? ' db-frozen' : '')}
                     style={frozenStyle(columnIndex)}
                   />
@@ -5428,45 +5587,54 @@ function TableView({
             )}
             <tr>
               {editable && <td className="db-row-controls db-footer-cell" />}
-              <th
-                scope="row"
-                data-col-id={TITLE_PROP}
-                className={`db-col-title db-footer-cell${frozenIndex === -1 ? '' : ' db-frozen'}`}
-                style={frozenStyle(-1)}
-              >
-                {view.summaries?.['title'] ? (
-                  <button
-                    type="button"
-                    className="db-footer-summary"
-                    onClick={(event) => setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })}
-                    title={summaryLabel(view.summaries['title'])}
-                  >
-                    {(() => {
-                      const s = summarizeProperty(
-                        rows,
-                        { id: 'title', name: t('database.name'), type: 'text', options: [] },
-                        view.summaries['title'],
-                        database,
-                        state,
-                      );
-                      return s.error ? '!' : s.value === null ? '—' : String(s.value);
-                    })()}
-                  </button>
-                ) : editable ? (
-                  <button
-                    type="button"
-                    className="db-calc-trigger"
-                    aria-label={t('database.calculateSummaryFor', { name: t('database.name') })}
-                    title={t('database.calculateSummaryFor', { name: t('database.name') })}
-                    onClick={(event) => setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })}
-                  >
-                    {t('database.calculate')}
-                  </button>
-                ) : null}
-              </th>
-              {props.map((prop) => {
+              {tableColumns.map((column, columnIndex) => {
+                if (column.id === TITLE_PROP)
+                  return (
+                    <th
+                      key={TITLE_PROP}
+                      scope="row"
+                      data-col-id={TITLE_PROP}
+                      className={`db-col-title db-footer-cell${columnIndex <= frozenIndex ? ' db-frozen' : ''}`}
+                      style={frozenStyle(columnIndex)}
+                    >
+                      {view.summaries?.['title'] ? (
+                        <button
+                          type="button"
+                          className="db-footer-summary"
+                          onClick={(event) =>
+                            setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })
+                          }
+                          title={summaryLabel(view.summaries['title'])}
+                        >
+                          {(() => {
+                            const s = summarizeProperty(
+                              rows,
+                              { id: 'title', name: titleColumnLabel, type: 'text', options: [] },
+                              view.summaries['title'],
+                              database,
+                              state,
+                            );
+                            return s.error ? '!' : s.value === null ? '—' : String(s.value);
+                          })()}
+                        </button>
+                      ) : editable ? (
+                        <button
+                          type="button"
+                          className="db-calc-trigger"
+                          aria-label={t('database.calculateSummaryFor', { name: titleColumnLabel })}
+                          title={t('database.calculateSummaryFor', { name: titleColumnLabel })}
+                          onClick={(event) =>
+                            setSummaryAnchor({ propId: 'title', anchor: event.currentTarget })
+                          }
+                        >
+                          {t('database.calculate')}
+                        </button>
+                      ) : null}
+                    </th>
+                  );
+                const prop = column.prop!;
                 const operation = view.summaries?.[prop.id];
-                const cellIndex = props.indexOf(prop);
+                const cellIndex = columnIndex;
                 return (
                   <td
                     key={prop.id}
@@ -5542,6 +5710,11 @@ function TableView({
             </tr>
           </tfoot>
         </table>
+        {dropAnnouncement && (
+          <span className="visually-hidden" aria-live="polite" role="status">
+            {dropAnnouncement}
+          </span>
+        )}
         {showFillPreview && fillPreview && fillAnchor && (
           <Popover
             anchor={fillAnchor}
@@ -5677,6 +5850,18 @@ function TableView({
                     : setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor }),
               },
               {
+                label: t('database.moveColumnLeft'),
+                icon: ArrowLeft,
+                disabled: !editable || menuColumnIndex <= 0,
+                onSelect: () => moveColumnBy(columnMenu.prop.id, -1),
+              },
+              {
+                label: t('database.moveColumnRight'),
+                icon: ArrowRight,
+                disabled: !editable || menuColumnIndex < 0 || menuColumnIndex >= visibleColIds.length - 1,
+                onSelect: () => moveColumnBy(columnMenu.prop.id, 1),
+              },
+              {
                 label: t('database.setDisplayColumn'),
                 icon: Eye,
                 checked: isTitleColumnMenu
@@ -5703,11 +5888,20 @@ function TableView({
                     {
                       label: t('database.editColumnFormula'),
                       icon: Calculator,
-                      disabled: ['button', 'createdTime', 'lastEditedTime', 'image', 'file', 'richCanvas'].includes(
-                        columnMenu.prop.type,
-                      ),
+                      disabled: [
+                        'button',
+                        'createdTime',
+                        'lastEditedTime',
+                        'image',
+                        'file',
+                        'richCanvas',
+                      ].includes(columnMenu.prop.type),
                       onSelect: () =>
-                        setHeader({ prop: columnMenu.prop, anchor: columnMenu.anchor, focusSection: 'formula' }),
+                        setHeader({
+                          prop: columnMenu.prop,
+                          anchor: columnMenu.anchor,
+                          focusSection: 'formula',
+                        }),
                     },
                   ]
                 : []),
@@ -5780,7 +5974,11 @@ function TableView({
                       label: t('database.insertColumnBefore'),
                       icon: Plus,
                       onSelect: () =>
-                        setInserting({ prop: columnMenu.prop, anchor: columnMenu.anchor, position: 'before' }),
+                        setInserting({
+                          prop: columnMenu.prop,
+                          anchor: columnMenu.anchor,
+                          position: 'before',
+                        }),
                     },
                     {
                       label: t('database.insertColumnAfter'),

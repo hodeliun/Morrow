@@ -2024,6 +2024,11 @@ export const es: TranslationSchema = {
     columnMenuAria: 'Opciones de la columna {name}',
     columnMenuHint:
       'Haz clic para editar. Pulsa Shift+F10 o haz clic derecho para ver las acciones de la columna.',
+    dragColumn: 'Arrastra para reordenar la columna {name}',
+    moveColumnLeft: 'Mover columna a la izquierda',
+    moveColumnRight: 'Mover columna a la derecha',
+    columnMoveBefore: 'Mover {name} antes de {target}',
+    columnMoveAfter: 'Mover {name} después de {target}',
     editColumnSettings: 'Editar tipo, formato, fórmula o descripción',
     filterColumn: 'Filtrar por esta columna',
     insertColumnBefore: 'Insertar columna antes',

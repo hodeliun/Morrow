@@ -12,8 +12,9 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T03 (#54), Nome e propriedade de exibição, incluindo
-os contratos estritos da primeira publicação do formato persistido 13. Cada
+A única entrega ativa é T04 (#55), reordenação de colunas na visualização ativa,
+incluindo a coluna de título. O formato persistido 13 e seus contratos estritos
+já foram publicados no T03. Cada
 entrega inclui seus pré-requisitos de preservação e validação, em um commit
 coerente, sem nova release ou instalação. Os outros tickets permanecem
 preservados até sua vez.
@@ -28,6 +29,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T35 #87 | Áudio e vídeo locais | #96 |
 | T12 #63 | Rodapé compacto das tabelas | #97 |
 | T07 #58 | Painéis e seletores legíveis | #98 |
+| T03 #54 | Nome e propriedade de exibição; fundação do formato 13 | #99 |
 
 Em 28/10/2026 o mantenedor autorizou explicitamente implementar todos os 39
 tickets, incluindo o adendo de arquivos/web/painéis, com GPT 6 Luna max executor

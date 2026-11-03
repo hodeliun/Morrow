@@ -1,0 +1,61 @@
+{
+  "persistedFormat": 13,
+  "gate": {
+    "typecheck": "passed",
+    "testsPassed": 974,
+    "sourceFiles": 394,
+    "command": "npm run check",
+    "build": "passed",
+    "lint": "passed",
+    "testFiles": 119,
+    "packagedArtifactsVerified": 3597,
+    "sourceSha256": "2ee64d7bc64dd6c058be31ba0779b796c0c62e5e72d57a4f1aea519843a2210b",
+    "artifactSha256": "9eee4a1f9c262038733a10d81e5da29c27a3e9a37883d6686edaac4bc295c8aa"
+  },
+  "runtime": {
+    "localeThemeCases": 6,
+    "extrasResultSha256": "51a6e7b8417dbc17c56374e3d9d9e030e4fce532616e845acbdb5fbcd735939a",
+    "syntheticOnly": true,
+    "scope": [
+      "view-local title and common column ordering",
+      "hidden and opaque slots",
+      "frozen and horizontal scroll alignment including New/calculation rows",
+      "single drop and Escape no-write",
+      "keyboard menu and stable grid IDs",
+      "two independent linked views after fresh process",
+      "normal document drag horizontal indicator",
+      "readonly byte and mtime preservation"
+    ],
+    "status": "passed",
+    "mainResultSha256": "6f8f6ca6cfb268ad0161ca5e3fea8577049ee3a99380f2edaeb8defe56a6a5a1",
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "horizontalScroll": 1084,
+    "main": "ui-1793718673520",
+    "platform": "Windows",
+    "viewportWidth": 520,
+    "extras": "ui-1793718720313",
+    "pageErrors": 0,
+    "hiddenWindows": true
+  },
+  "limitations": [
+    "Source delivery,not installer or release",
+    "Windows hidden synthetic runtime only; CI recorded separately before closure",
+    "No personal clipboard,apps,profiles or vaults used"
+  ],
+  "ticket": "T04",
+  "negativeEvidence": {
+    "notProven": "Hypothesis that PM-only selector caused first failure did not occur in successful causal check",
+    "firstUI": "All column assertions passed; normal document drag target off viewport",
+    "causal": "Old target y16.375..50.375 against clipTop90; visible target hit-tested;exactly one native720x2 horizontal indicator;Escape and bytes/mtime unchanged",
+    "directed": "New header assertion used cell IDs; corrected to accessible header labels plus stable IDs for body/New/calculations,3/3 SSR passed",
+    "replay": "Same package/source and unchanged deadlines; complete main passed",
+    "locator": "First causal attempt stopped before drag on ordinary-header locator; corrected to actual header markup"
+  },
+  "issue": "https://github.com/hodeliun/Morrow/issues/55",
+  "validatedBase": "a416cab819538546e6a5fc858692a94df365ad75",
+  "officialBase": "1.3.0"
+}
