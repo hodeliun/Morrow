@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T33",
+  "issue": "https://github.com/hodeliun/Morrow/issues/85",
+  "officialBaseVersion": "1.3.0",
+  "publicBase": "7e5a412d839de3ceff52437a94063900f67cfb7b",
+  "scope": "Read-only existing image file tabs with typed resource targets and legacy compatibility; no database migration or remote browser",
+  "isolatedGate": {
+    "testFiles": 105,
+    "tests": 862,
+    "artifactFiles": 3597,
+    "sourceFiles": 370,
+    "sourceSha256": "381cf6afd2b4ae54cd2753fc38f6ae0b0bcda6e227ac1b887aa6574539f41d19",
+    "lint": "passed",
+    "command": "npm run check",
+    "artifactsSha256": "f085f598ff8bcc85cc8163362cbf8a89984a13ed3c3d365e3b7957130b7e3720",
+    "typecheck": "passed",
+    "sourceUnchanged": true,
+    "status": "passed",
+    "build": "passed"
+  },
+  "packaged": {
+    "artifactsVerified": 3597,
+    "sha256": {
+      "executable": "86aa03dd15375934a8ae8995f4eae51285457d02db162ac59e9b7941656fa083",
+      "appAsar": "016e63c19cc4ebc000e8e2fd27d4f0e97ba0318bb92f118240c6271f2a65dff0",
+      "main": "f99d652e3f88b0df889d7bedb469f38d08d77b6d9996bc7e7d03a6c1ab585431",
+      "trustedMain": "f99d652e3f88b0df889d7bedb469f38d08d77b6d9996bc7e7d03a6c1ab585431"
+    },
+    "allMatch": true,
+    "version": "1.3.0-fork.1.2.0"
+  },
+  "runtime": {
+    "platform": "Windows; isolated hidden Electron application and synthetic vaults",
+    "nativeClipboardUsed": false,
+    "status": "passed",
+    "personalAppsUsed": false,
+    "scenarios": [
+      {
+        "assertionNames": [
+          "legacyPageRoute",
+          "internalHandlersBeforeFirstOpen",
+          "startPagePreferenceForReopen",
+          "settingsDismissal",
+          "postStartupVaultInventory",
+          "legacyPageTabSurvivedFileOpen",
+          "filesUnchangedAfterFirstOpen",
+          "filesUnchangedAfterZoom",
+          "png",
+          "gif",
+          "svg",
+          "visibleSplitImagePanes",
+          "splitPaneAfterTabClose",
+          "independentLeases",
+          "historyReopen",
+          "vaultSwitch",
+          "missingFile",
+          "decodeError",
+          "localeThemeNarrowMatrix",
+          "existingImageAboveUploadLimit",
+          "readOnlyAndNoWrites"
+        ],
+        "rendererErrors": 0,
+        "packagedStableAfter": true,
+        "status": "passed",
+        "genericErrorBoundaries": 0,
+        "report": "ui-1793708798093",
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "rawReportSha256": "357035bb883e70d4c9100bae77dbb0a63706f859ef1d2aaa87bb10b343a7e8f4"
+      },
+      {
+        "assertionNames": [
+          "safeUrlFallback",
+          "urlTabActivation",
+          "emptyPane",
+          "localizedUrlAndEmptyMatrix",
+          "applicationRestore",
+          "sensitiveUrlPersistenceProbe",
+          "invalidTargets",
+          "noHttpRequests",
+          "noScriptExecution",
+          "noAdditionalWindow"
+        ],
+        "rendererErrors": 0,
+        "packagedStableAfter": true,
+        "status": "passed",
+        "genericErrorBoundaries": 0,
+        "report": "ui-1793708848859",
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "rawReportSha256": "f6dec6b01a7738f6f6ef0a4fd8e59774105e4293e6d764fb6e05e1ddd6fd0d45"
+      }
+    ]
+  },
+  "directedRegression": {
+    "greenPassed": 4,
+    "cases": 4,
+    "scope": "Delayed internal-open result, delayed vault identity, stale error feedback, and stable Unicode path opening",
+    "redFailures": 3
+  },
+  "limitations": [
+    "Source delivery only; no installer, release or installation verification.",
+    "SVG loaded as image, not sanitized into a trusted document; extension/MIME allowlist and real-path validation are enforced by main.",
+    "URL targets display unavailable state without browsing or network; T36 owns navigation.",
+    "GIF animation and 101 MiB existing PNG were verified with synthetic samples; no general memory benchmark or all-format support claim.",
+    "The first main UI run failed shutdown timing; retained as failed. Final main and extras requested cooperative app.quit and all four child processes exited0 within unchanged deadline.",
+    "No personal vault, account, OS clipboard or installed app was accessed.",
+    "Synthetic vault chooser selection used an owned-child stub; no native Windows chooser interaction is claimed."
+  ],
+  "demonstrations": [
+    "assets/T33/image-file-tab.png",
+    "assets/T33/narrow-pt-dark.png"
+  ]
+}

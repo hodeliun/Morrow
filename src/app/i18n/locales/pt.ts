@@ -449,6 +449,28 @@ export const pt: TranslationSchema = {
     unarchive: 'Desarquivar',
     infoHeading: '{words} palavras · criada {time}',
   },
+  fileViewer: {
+    title: 'Imagem',
+    controls: 'Controles de imagem',
+    zoomIn: 'Aumentar zoom',
+    zoomOut: 'Diminuir zoom',
+    fit: 'Ajustar à área',
+    dimensions: '{width} × {height} px',
+    imageStage: 'Prévia de {name}. Use mais e menos para ajustar o zoom, ou zero para caber na área.',
+    loading: 'Carregando imagem…',
+    missing: 'Esta imagem não está mais disponível ou não pôde ser decodificada.',
+    noVault: 'Abra um vault para visualizar esta imagem.',
+    vaultChanged: 'Esta imagem pertence a outro vault. Abra-a no vault atual.',
+    unavailable: 'O visualizador de imagens está indisponível.',
+  },
+  resourceTarget: {
+    urlTitle: 'Link da web',
+    invalidUrlTitle: 'Link da web indisponível',
+    urlUnavailableTitle: 'A navegação na web está indisponível',
+    urlUnavailable: 'Este endereço não foi aberto nem carregado.',
+    invalidUrl:
+      'Este endereço é inválido ou não permitido. Aceitamos somente endereços HTTP(S) válidos, sem credenciais, consulta ou fragmento.',
+  },
   tabs: {
     secondPage: 'Segunda página',
     resizeSplit: 'Arraste para redimensionar os dois lados',

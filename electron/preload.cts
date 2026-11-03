@@ -56,6 +56,17 @@ contextBridge.exposeInMainWorld('morrow', {
       ipcRenderer.invoke('file-handlers:open-url', url, options),
     openContainingFolder: (path: string) => ipcRenderer.invoke('file-handlers:open-folder', path),
   },
+  imageViewer: {
+    getVaultId: () => ipcRenderer.invoke('image-viewer:vault-id'),
+    issue: (vaultId: string, relativePath: string) =>
+      ipcRenderer.invoke('image-viewer:issue', vaultId, relativePath),
+    release: (token: string) => ipcRenderer.invoke('image-viewer:release', token),
+    onVaultChanged(listener: () => void) {
+      const handler = () => listener();
+      ipcRenderer.on('image-viewer:vault-changed', handler);
+      return () => ipcRenderer.removeListener('image-viewer:vault-changed', handler);
+    },
+  },
   showDataFolder: () => ipcRenderer.invoke('morrow:show-data-folder'),
   showBackupsFolder: () => ipcRenderer.invoke('morrow:show-backups'),
   writeAutoBackup: (json: string) => ipcRenderer.invoke('morrow:write-backup', json),

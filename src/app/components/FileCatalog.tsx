@@ -3,9 +3,11 @@ import { useMemo, useState } from 'react';
 import { basename, dirname, extension as fileExtension } from '../../core/vault/paths';
 import { filterFileCatalog, nextFileCatalogBatchSize } from '../../core/vault/fileCatalog';
 import type { FileCatalogSnapshot, VaultResource } from '../../core/vault/fileCatalog';
-import { useTranslation } from '../i18n';
+import { t as translate, useTranslation } from '../i18n';
+import { routeHash } from '../router';
+import { openTab } from '../tabs';
 import { desktop } from '../platform/desktop';
-import type { DesktopFileHandlerResult } from '../platform/desktop';
+import type { DesktopFileHandlerLocale, DesktopFileHandlerResult } from '../platform/desktop';
 import { fileHandlerErrorKey } from '../platform/fileHandlerMessages';
 import { useFileCatalogPreferences } from '../platform/fileCatalogPreferences';
 import { getSession, useFileCatalog } from '../workspace';
@@ -56,6 +58,76 @@ function visibleRows(catalog: FileCatalogSnapshot, files: VaultResource[]) {
   return rows;
 }
 
+export async function openCatalogFile(
+  path: string,
+  chooseOnce: boolean,
+  locale: DesktopFileHandlerLocale,
+  setOpenFailure: (failure: { path: string; result: Extract<DesktopFileHandlerResult, { ok: false }> } | null) => void,
+): Promise<void> {
+  const session = getSession();
+  setOpenFailure(null);
+  const fileHandlers = desktop?.fileHandlers;
+  if (!fileHandlers) {
+    setOpenFailure({
+      path,
+      result: {
+        ok: false,
+        code: 'open-failed',
+        message: 'Desktop file opening is unavailable.',
+      },
+    });
+    return;
+  }
+  try {
+    const result = await fileHandlers.openFile(path, chooseOnce ? { chooseOnce: true, locale } : undefined);
+    if (getSession() !== session) return;
+    if (result.ok && result.destination === 'internal') {
+      const viewer = desktop?.imageViewer;
+      if (!viewer) {
+        setOpenFailure({
+          path,
+          result: {
+            ok: false,
+            code: 'internal-viewer-unavailable',
+            message: translate('fileCatalog.internalViewerUnavailable'),
+          },
+        });
+        return;
+      }
+      const identity = await viewer.getVaultId();
+      if (getSession() !== session) return;
+      if (!identity.ok) {
+        setOpenFailure({
+          path,
+          result: {
+            ok: false,
+            code: 'internal-viewer-unavailable',
+            message: translate('fileCatalog.internalViewerUnavailable'),
+          },
+        });
+        return;
+      }
+      const target = routeHash({ name: 'file', vaultId: identity.vaultId, path });
+      if (target === '#/file/invalid') {
+        setOpenFailure({
+          path,
+          result: { ok: false, code: 'invalid-resource', message: translate('fileCatalog.invalidResource') },
+        });
+        return;
+      }
+      openTab(target);
+      setOpenFailure(null);
+    } else if (result.ok) setOpenFailure(null);
+    else if (result.code !== 'cancelled') setOpenFailure({ path, result });
+  } catch {
+    if (getSession() !== session) return;
+    setOpenFailure({
+      path,
+      result: { ok: false, code: 'open-failed', message: 'The file could not be opened.' },
+    });
+  }
+}
+
 export function FileCatalog() {
   const { t, locale } = useTranslation();
   const catalog = useFileCatalog();
@@ -80,31 +152,8 @@ export function FileCatalog() {
     });
   };
 
-  const openFile = async (path: string, chooseOnce = false) => {
-    setOpenFailure(null);
-    const fileHandlers = desktop?.fileHandlers;
-    if (!fileHandlers) {
-      setOpenFailure({
-        path,
-        result: {
-          ok: false,
-          code: 'open-failed',
-          message: 'Desktop file opening is unavailable.',
-        },
-      });
-      return;
-    }
-    try {
-      const result = await fileHandlers.openFile(path, chooseOnce ? { chooseOnce: true, locale } : undefined);
-      if (result.ok) setOpenFailure(null);
-      else if (result.code !== 'cancelled') setOpenFailure({ path, result });
-    } catch {
-      setOpenFailure({
-        path,
-        result: { ok: false, code: 'open-failed', message: 'The file could not be opened.' },
-      });
-    }
-  };
+  const openFile = (path: string, chooseOnce = false) =>
+    openCatalogFile(path, chooseOnce, locale, setOpenFailure);
 
   const openContainingFolder = async () => {
     if (!openFailure || !desktop?.fileHandlers) return;

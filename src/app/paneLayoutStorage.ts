@@ -1,5 +1,6 @@
 import { validatePaneLayout } from './paneLayout';
 import type { LegacySplitState, PaneLayout, PaneNode, PaneTabInstance } from './paneLayout';
+import { canonicalizeResourceTargetHash } from './resourceTargets';
 
 export const TABS_SCHEMA_VERSION = 2;
 export const PANE_LAYOUT_SCHEMA_VERSION = 1;
@@ -25,6 +26,7 @@ export interface LegacyTabsSnapshot extends LegacySplitState {
 export interface CurrentTabsSnapshot {
   readonly layout: PaneLayout<PaneTabInstance<string>>;
   readonly closed: readonly string[];
+  readonly resourceTargetsChanged: boolean;
 }
 
 export type PaneTabsReadResult =
@@ -50,22 +52,44 @@ function readStringArray(value: unknown, limit: number, maxLength: number): read
   return value as string[];
 }
 
+function readTargetArray(
+  value: unknown,
+  limit: number,
+  maxLength: number,
+): { readonly values: readonly string[]; readonly changed: boolean } | null {
+  const raw = readStringArray(value, limit, maxLength);
+  if (!raw) return null;
+  const values = raw.map(canonicalizeResourceTargetHash);
+  return { values, changed: values.some((target, index) => target !== raw[index]) };
+}
+
 function readHistory(
   value: unknown,
   targetKey: 'hash' | 'target',
   allowMissingHistory = false,
-): { readonly target: string; readonly back: readonly string[]; readonly forward: readonly string[] } | null {
+): {
+  readonly target: string;
+  readonly back: readonly string[];
+  readonly forward: readonly string[];
+  readonly resourceTargetsChanged: boolean;
+} | null {
   if (!isRecord(value) || !boundedString(value[targetKey], MAX_PERSISTED_TARGET_LENGTH)) return null;
+  const target = canonicalizeResourceTargetHash(value[targetKey]);
   const back =
     allowMissingHistory && value.back === undefined
-      ? []
-      : readStringArray(value.back, MAX_PERSISTED_HISTORY, MAX_PERSISTED_TARGET_LENGTH);
+      ? { values: [], changed: false }
+      : readTargetArray(value.back, MAX_PERSISTED_HISTORY, MAX_PERSISTED_TARGET_LENGTH);
   const forward =
     allowMissingHistory && value.forward === undefined
-      ? []
-      : readStringArray(value.forward, MAX_PERSISTED_HISTORY, MAX_PERSISTED_TARGET_LENGTH);
+      ? { values: [], changed: false }
+      : readTargetArray(value.forward, MAX_PERSISTED_HISTORY, MAX_PERSISTED_TARGET_LENGTH);
   if (!back || !forward) return null;
-  return { target: value[targetKey], back, forward };
+  return {
+    target,
+    back: back.values,
+    forward: forward.values,
+    resourceTargetsChanged: target !== value[targetKey] || back.changed || forward.changed,
+  };
 }
 
 function readLegacySnapshot(root: UnknownRecord): LegacyTabsSnapshot | null {
@@ -106,11 +130,11 @@ function readLegacySnapshot(root: UnknownRecord): LegacyTabsSnapshot | null {
   if (!pane) return null;
   const closed =
     root.closed === undefined
-      ? []
-      : readStringArray(root.closed, MAX_CLOSED_TABS, MAX_PERSISTED_TARGET_LENGTH);
+      ? { values: [], changed: false }
+      : readTargetArray(root.closed, MAX_CLOSED_TABS, MAX_PERSISTED_TARGET_LENGTH);
   if (!closed) return null;
 
-  return { tabs, active: root.active, pane, closed };
+  return { tabs, active: root.active, pane, closed: closed.values };
 }
 
 interface NodeBudget {
@@ -147,6 +171,7 @@ function readCurrentSnapshot(root: UnknownRecord): CurrentTabsSnapshot | null {
   if (!Array.isArray(root.tabs) || root.tabs.length === 0 || root.tabs.length > MAX_PANE_TAB_INSTANCES)
     return null;
   const tabs: PaneTabInstance<string>[] = [];
+  let resourceTargetsChanged = false;
   for (const item of root.tabs) {
     if (
       !isRecord(item) ||
@@ -156,6 +181,7 @@ function readCurrentSnapshot(root: UnknownRecord): CurrentTabsSnapshot | null {
       return null;
     const history = readHistory(item, 'target');
     if (!history) return null;
+    resourceTargetsChanged ||= history.resourceTargetsChanged;
     if (item.pinned !== undefined && typeof item.pinned !== 'boolean') return null;
     tabs.push({
       id: item.id,
@@ -186,9 +212,13 @@ function readCurrentSnapshot(root: UnknownRecord): CurrentTabsSnapshot | null {
   };
   if (validatePaneLayout(layout).length > 0) return null;
 
-  const closed = readStringArray(root.closed, MAX_CLOSED_TABS, MAX_PERSISTED_TARGET_LENGTH);
+  const closed = readTargetArray(root.closed, MAX_CLOSED_TABS, MAX_PERSISTED_TARGET_LENGTH);
   if (!closed) return null;
-  return { layout, closed };
+  return {
+    layout,
+    closed: closed.values,
+    resourceTargetsChanged: resourceTargetsChanged || closed.changed,
+  };
 }
 
 export function readPaneTabsSnapshot(raw: string | null): PaneTabsReadResult {
@@ -230,8 +260,13 @@ export function writePaneTabsSnapshot(
       root: layout.root,
       focusedPaneId: layout.focusedPaneId,
     },
-    tabs: layout.tabs,
-    closed,
+    tabs: layout.tabs.map((tab) => ({
+      ...tab,
+      target: canonicalizeResourceTargetHash(tab.target),
+      back: tab.back.map(canonicalizeResourceTargetHash),
+      forward: tab.forward.map(canonicalizeResourceTargetHash),
+    })),
+    closed: closed.map(canonicalizeResourceTargetHash),
   });
 }
 
