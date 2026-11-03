@@ -1,0 +1,106 @@
+{
+  "ticket": "T23/#74",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "lint": "passed",
+    "artifacts": 3597,
+    "sourceFiles": 422,
+    "command": "npm run check",
+    "sourceSha256": "ff44076c61ed2dcaa14c1a17923f3212f712fb08fbaa6be8300704d5f3132a12",
+    "buildStatus": "passed",
+    "typecheck": "passed",
+    "tests": 1069,
+    "testFiles": 135,
+    "build": 2,
+    "packagedArtifactsMatched": 3597,
+    "artifactsSha256": "80722368892b7ba675e8e6b04fbf693691c5ba4e004a7d61ea16f6181ef096fd"
+  },
+  "directed": {
+    "legacyOwnerGreenFiles": 3,
+    "legacyOwnerGreenTests": 29,
+    "controlFiles": 5,
+    "legacyOwnerRedCases": 3,
+    "controlTests": 27
+  },
+  "runtime": {
+    "ownProcessesAfter": 0,
+    "pageErrors": 0,
+    "genericBoundaries": 0,
+    "sourceAndPackageStableAfter": true,
+    "extras": {
+      "cancelPreservesBytesAndMtime": true,
+      "externalSyntheticReadonlyTransition": true,
+      "sourceSha256": "ff44076c61ed2dcaa14c1a17923f3212f712fb08fbaa6be8300704d5f3132a12",
+      "configUndoRedoDurable": true,
+      "boundFilterSequence": [
+        7,
+        3,
+        7
+      ],
+      "resultSha256": "6b6139e04b90df8bbd9f9a4dadb2ab066c1afe3dde44d2fc6e736882f936e7ce",
+      "result": "ui-1793730436054",
+      "diagnosticHooks": false,
+      "legacyConfigBeforeProse": true,
+      "build": 2,
+      "status": "passed",
+      "artifactsSha256": "80722368892b7ba675e8e6b04fbf693691c5ba4e004a7d61ea16f6181ef096fd"
+    },
+    "runtimeLeasePresentAfter": false,
+    "narrowRendererWidth": 420,
+    "hiddenSyntheticOnly": true,
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "main": {
+      "result": "ui-1793728890574",
+      "status": "passed",
+      "driverUnchangedSincePass": true,
+      "resultSha256": "33df5f2db19e5fcde3f57031197a9fa0ea66690007e9c132d1218c58fbb6f9fd",
+      "build": 1,
+      "artifactsSha256": "d0df6b79f7e0628f1d2106bcec9e9eae8f592232d4a4671f2d2c2fe21b4e6446",
+      "sourceSha256": "63b5cb899f03b4198eff894d96d50fdccc11923839acab1e91f7d8a5271327f3",
+      "equivalenceToBuild02": {
+        "changedFiles": [
+          "src/app/editor/linkedViewConfigSync.test.ts",
+          "src/app/editor/linkedViewConfigSync.ts",
+          "src/storage/session.ts",
+          "src/storage/viewHistoryCapture.test.ts",
+          "src/storage/viewHistoryCapture.ts",
+          "src/storage/viewHistorySession.test.ts"
+        ],
+        "compared": 422,
+        "unchanged": 416,
+        "review": "Changed branches process only linked-view nodes; none occur in main fixture. Main control/result/slash/locale/CSS/core paths unchanged."
+      }
+    },
+    "appearanceScope": [
+      "EN/light",
+      "PT/dark",
+      "ES/light"
+    ]
+  },
+  "compatibilityFix": {
+    "schemaModelSerializerUnchanged": true,
+    "PageEditorUnchanged": true,
+    "noOpeningWrite": true,
+    "noHostAttrsAddedToStoredDocuments": true,
+    "cause": "Stored Markdown omits ephemeralhost; editor schema supplies owner, old capture required explicit field",
+    "scope": "only missing(undefined) or exact nonempty known host accepted; null/empty/foreign rejected"
+  },
+  "negativeHistory": [
+    "MAIN01 expected unpublished result auto-open; public Configure result action used on replay",
+    "EXTRAS01 and bounded observation02 exposed actual missing ephemeral linked-host guard defect",
+    "Three causal legacy regressions failed before fix;29targetedtests passed after",
+    "EXTRAS02 completed legacy config/Undo/Redo then stopped on exact Filter selector with active1badge; helper now matches optional count strictly",
+    "Package02 proof initially targeted immutable01filename; correct02proof written without rebuilding/overwriting01"
+  ],
+  "limitations": [
+    "Main runtime retains build01attribution; final affected linked runtime is build02",
+    "No native Windows IME or personal clipboard accessed",
+    "No realuser vault/profile, visible window, installer, tag or release",
+    "Synthetic fixtures/rawlogs retained privately"
+  ]
+}

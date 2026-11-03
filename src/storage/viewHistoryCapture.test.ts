@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DatabaseDef, DocNode, PageId, ViewDef } from '../core/model';
 import {
+  linkedViewHostMatches,
   linkedViewConfigSnapshot,
   linkedViewConfigChange,
   primaryViewConfigSnapshot,
@@ -49,6 +50,16 @@ function linkedDoc(viewDef: ViewDef, changes: { text?: string; blockId?: string;
 }
 
 describe('view history capture helpers', () => {
+  it('accepts only a missing or exact linked host when the owner is known', () => {
+    const host = 'host-page' as PageId;
+    expect(linkedViewHostMatches({}, host)).toBe(true);
+    expect(linkedViewHostMatches({ hostPageId: undefined }, host)).toBe(true);
+    expect(linkedViewHostMatches({ hostPageId: host }, host)).toBe(true);
+    for (const attrs of [undefined, null, { hostPageId: null }, { hostPageId: '' }, { hostPageId: 'foreign' }])
+      expect(linkedViewHostMatches(attrs, host)).toBe(false);
+    expect(linkedViewHostMatches({}, '' as PageId)).toBe(false);
+  });
+
   it('uses unambiguous identity keys for database and linked views', () => {
     expect(viewHistoryIdentityKey({ kind: 'database', databaseId: 'a:b' as PageId, viewId: 'c' })).not.toBe(
       viewHistoryIdentityKey({ kind: 'database', databaseId: 'a' as PageId, viewId: 'b:c' }),
@@ -110,6 +121,43 @@ describe('view history capture helpers', () => {
       change!.before,
     );
     expect(linkedViewConfigSnapshot(restored!, 'host-page' as PageId, 'stable-block')).toEqual(change?.before);
+  });
+
+  it('captures legacy linked views with an omitted host without adding the host to stored attrs', () => {
+    const before = linkedDoc(view('linked-view'));
+    const after = linkedDoc(view('linked-view', { name: 'Legacy renamed' }));
+    delete before.content![1]!.attrs!.hostPageId;
+    delete after.content![1]!.attrs!.hostPageId;
+
+    const change = linkedViewConfigChange('host-page' as PageId, 'stable-block', before, after);
+    expect(change?.before.view.name).toBe('Table');
+    expect(change?.after.view.name).toBe('Legacy renamed');
+    expect(linkedViewConfigSnapshot(after, 'host-page' as PageId, 'stable-block')).toEqual(change?.after);
+
+    const restored = replaceLinkedViewConfig(
+      after,
+      'host-page' as PageId,
+      'stable-block',
+      change!.after,
+      change!.before,
+    );
+    expect(restored?.content?.[1]?.attrs?.hostPageId).toBeUndefined();
+    expect(linkedViewConfigSnapshot(restored!, 'host-page' as PageId, 'stable-block')).toEqual(change?.before);
+  });
+
+  it('does not treat null, empty, or foreign linked hosts as a legacy omission', () => {
+    for (const hostPageId of [null, '', 'another-host']) {
+      const before = linkedDoc(view('linked-view'));
+      const after = linkedDoc(view('linked-view', { name: 'Must not capture' }));
+      before.content![1]!.attrs!.hostPageId = hostPageId;
+      after.content![1]!.attrs!.hostPageId = hostPageId;
+      expect(linkedViewConfigSnapshot(after, 'host-page' as PageId, 'stable-block')).toBeNull();
+      expect(linkedViewConfigChange('host-page' as PageId, 'stable-block', before, after)).toBeNull();
+    }
+    const legacy = linkedDoc(view('linked-view'));
+    delete legacy.content![1]!.attrs!.hostPageId;
+    expect(linkedViewConfigSnapshot(legacy, '' as PageId, 'stable-block')).toBeNull();
+    expect(linkedViewConfigChange('' as PageId, 'stable-block', legacy, linkedDoc(view('linked-view', { name: 'Changed' })))).toBeNull();
   });
 
   it('replaces a primary view only when its expected configuration still matches', () => {

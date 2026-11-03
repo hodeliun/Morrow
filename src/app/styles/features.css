@@ -4231,6 +4231,13 @@ td:hover .prop-empty,
   font: inherit;
 }
 
+.named-data-control-line input[aria-invalid='true'],
+.named-control-popover input[aria-invalid='true'],
+.named-control-popover select[aria-invalid='true'],
+.named-control-popover textarea[aria-invalid='true'] {
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
 .named-data-control-line input[type='range'] {
   width: 120px;
   accent-color: var(--accent);
@@ -4287,6 +4294,14 @@ td:hover .prop-empty,
   box-shadow: var(--shadow-popover);
   color: var(--text);
   line-height: 1.4;
+}
+
+.named-control-popover {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: auto;
+  width: min(340px, calc(100vw - 24px));
 }
 
 .named-data-popover label {

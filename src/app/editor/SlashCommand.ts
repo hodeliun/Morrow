@@ -34,8 +34,11 @@ import {
   Calculator,
 } from 'lucide-react';
 import { foldText } from '../../core/search';
+import { isEffectivelyTrashed } from '../../core/tree';
+import type { NamedControlType } from '../../core/model';
 import { t } from '../i18n';
 import type { TranslationKey } from '../i18n';
+import { toast } from '../ui';
 import { newId, pickFiles } from '../platform/files';
 import { editMathNear } from './Extras';
 import { insertFiles } from './Media';
@@ -44,9 +47,11 @@ import { renderSuggestion } from './SuggestionMenu';
 import { listItemAtCursor, turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
 import { getState, run } from '../workspace';
+import { requestNamedControlConfiguration } from './namedControlRequests';
 
 interface BlockItem extends MenuItem {
   keywords: string;
+  controlType?: NamedControlType;
   run: (editor: Editor, range: Range, options: SlashOptions) => void;
 }
 
@@ -73,6 +78,72 @@ const linkChild = (
     ])
     .run();
 };
+
+function defaultForNamedControl(type: NamedControlType, optionId: string | null): string | number | boolean | string[] | null {
+  switch (type) {
+    case 'text':
+    case 'date': return '';
+    case 'number':
+    case 'slider': return 0;
+    case 'checkbox': return false;
+    case 'select': return optionId;
+    case 'relation': return null;
+    default: return null;
+  }
+}
+
+function insertNamedControl(editor: Editor, range: Range, options: SlashOptions, type: NamedControlType): void {
+  if (!editor.isEditable) return;
+  const pageId = options.hostPageId;
+  const state = getState();
+  const page = pageId ? state.pages[pageId] : null;
+  if (!page) return;
+  const id = newId();
+  const name = t('controls.defaultControlName', { count: page.controls.length + 1 });
+  const choices = type === 'select'
+    ? [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]
+    : [];
+  const optionId = choices[0]?.id ?? null;
+  const value = defaultForNamedControl(type, optionId);
+  const databases = type === 'relation'
+    ? Object.values(state.pages).filter((item) => item.kind === 'database' && item.database && !isEffectivelyTrashed(state.pages, item.id))
+    : [];
+  if (type === 'relation' && databases.length === 0) {
+    toast(t('controls.relationNeedsDatabase'), { tone: 'error' });
+    return;
+  }
+  if (type !== 'relation') {
+    const created = run({
+      type: 'page.control.configure',
+      id: page.id,
+      now: Date.now(),
+      control: { id, name, type, value, defaultValue: value, options: choices },
+    });
+    if (!created.ok) return;
+  }
+  const inserted = chain(editor, range).insertContent({ type: 'namedControl', attrs: { controlId: id, pageId, label: name } }).run();
+  if (!inserted) {
+    if (type !== 'relation') run({ type: 'page.control.delete', id: page.id, controlId: id, now: Date.now() });
+    return;
+  }
+  requestNamedControlConfiguration(editor, page.id, id, {
+    type,
+    ...(type === 'relation' ? {
+      createOnSave: true,
+      targetDatabaseId: databases.length === 1 ? databases[0]!.id : null,
+    } : {}),
+  });
+}
+
+const NAMED_CONTROL_SLASH_TYPES: Array<{ id: string; type: NamedControlType }> = [
+  { id: 'controlText', type: 'text' },
+  { id: 'controlNumber', type: 'number' },
+  { id: 'controlSlider', type: 'slider' },
+  { id: 'controlSelect', type: 'select' },
+  { id: 'controlCheckbox', type: 'checkbox' },
+  { id: 'controlDate', type: 'date' },
+  { id: 'controlRelation', type: 'relation' },
+];
 
 const SAMPLE_DIAGRAM = `flowchart LR
   Idea --> Draft --> Review
@@ -346,22 +417,17 @@ export const BLOCK_ITEMS: BlockItem[] = [
     description: 'Insert a page control for filters and calculations',
     icon: SlidersHorizontal,
     keywords: 'control input variable filter year month select checkbox date relation',
-    run: (editor, range, options) => {
-      const pageId = options.hostPageId;
-      const page = pageId ? getState().pages[pageId] : null;
-      if (!page) return;
-      const id = newId();
-      const name = `Control ${page.controls.length + 1}`;
-      const created = run({
-        type: 'page.control.configure',
-        id: page.id,
-        now: Date.now(),
-        control: { id, name, type: 'text', value: '', defaultValue: '', options: [] },
-      });
-      if (!created.ok) return;
-      chain(editor, range).insertContent({ type: 'namedControl', attrs: { controlId: id, pageId, label: name } }).run();
-    },
+    run: (editor, range, options) => insertNamedControl(editor, range, options, 'text'),
   },
+  ...NAMED_CONTROL_SLASH_TYPES.map(({ id, type }) => ({
+    id,
+    title: `${type[0]!.toUpperCase()}${type.slice(1)} control`,
+    description: 'Insert this control and open its settings',
+    icon: SlidersHorizontal,
+    keywords: `${type} control input filter`,
+    controlType: type,
+    run: (editor: Editor, range: Range, options: SlashOptions) => insertNamedControl(editor, range, options, type),
+  })),
   {
     id: 'calculatedResult',
     title: 'Calculated result',
@@ -496,9 +562,9 @@ export const BLOCK_ITEMS: BlockItem[] = [
 
 export function getLocalizedBlocks(): BlockItem[] {
   return BLOCK_ITEMS.map((item) => {
-    const titleKey = `slash.items.${item.id}.title` as TranslationKey;
-    const descKey = `slash.items.${item.id}.description` as TranslationKey;
-    const kwKey = `slash.items.${item.id}.keywords` as TranslationKey;
+    const titleKey = (item.controlType ? `controls.namedTypes.${item.controlType}` : `slash.items.${item.id}.title`) as TranslationKey;
+    const descKey = (item.controlType ? 'controls.slashControlDescription' : `slash.items.${item.id}.description`) as TranslationKey;
+    const kwKey = (item.controlType ? `controls.typeAliases.${item.controlType}` : `slash.items.${item.id}.keywords`) as TranslationKey;
     const title = t(titleKey);
     const description = t(descKey);
     const localizedKw = t(kwKey);
@@ -543,7 +609,7 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
   ['layout', ['columns2', 'columns3', 'table', 'toc'], 'slash.sections.layout'],
   [
     'pagesAndData',
-    ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas', 'namedControl'],
+    ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas', 'namedControl', ...NAMED_CONTROL_SLASH_TYPES.map(({ id }) => id)],
     'slash.sections.pagesAndData',
   ],
   ['mathsAndDiagrams', ['math', 'inlineMath', 'calculatedResult', 'diagram', 'highlight'], 'slash.sections.mathsAndDiagrams'],

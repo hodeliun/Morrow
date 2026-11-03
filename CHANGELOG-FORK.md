@@ -2,6 +2,18 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — catálogo e configuração dos controles existentes (fontes, sem novo download)
+
+- Texto, número, slider, select, checkbox, data e relation têm entradas próprias
+  no catálogo, aliases PT/EN/ES e ações para configurar, resetar e limpar.
+- Valor atual, padrão e formato permanecem separados; drafts inválidos têm
+  diagnóstico, Save/Cancel preservam IDs e o modo somente leitura é respeitado.
+- Resultados e filtros usam a engine existente. Views recém-carregadas voltam
+  a aceitar configuração e histórico sem exigir uma edição prévia de texto.
+
+Detalhes e validação: [T23 — controles existentes](docs/deliveries/T23-existing-controls.md).
+Formato 13 preservado; sem novo tipo de controle, instalador, tag ou release.
+
 ## Verificação histórica — integridade de tabelas em conversões
 
 - Conversão, confirmação de célula, exclusão intencional de contêiner, desfazer

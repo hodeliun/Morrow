@@ -14,11 +14,11 @@ Tornar utilizáveis os sete controles já presentes, com configurações e valor
 
 ## Acceptance criteria
 
-- [ ] Catálogo identifica texto, número, slider, select, checkbox, data e relation; slash aliases PT/EN/ES e menu contextual conduzem às configurações.
-- [ ] Editar valor sem confundir nome, valor padrão e formato; padrão só atua ao criar ou resetar.
-- [ ] Restrições de texto simples/e-mail/número têm mensagens claras e permitem draft temporariamente incompleto.
-- [ ] Configurações permitem salvar/cancelar e mantêm IDs estáveis, acessibilidade e modo somente leitura.
-- [ ] Valores alimentam fórmulas existentes e persistem sem descartar campos desconhecidos; nenhuma engine paralela.
+- [x] Catálogo identifica texto, número, slider, select, checkbox, data e relation; slash aliases PT/EN/ES e menu contextual conduzem às configurações.
+- [x] Editar valor sem confundir nome, valor padrão e formato; padrão só atua ao criar ou resetar.
+- [x] Restrições de texto simples/e-mail/número têm mensagens claras e permitem draft temporariamente incompleto.
+- [x] Configurações permitem salvar/cancelar e mantêm IDs estáveis, acessibilidade e modo somente leitura.
+- [x] Valores alimentam fórmulas existentes e persistem sem descartar campos desconhecidos; nenhuma engine paralela.
 
 ## Blocked by
 
@@ -36,3 +36,5 @@ Respeitar arquitetura, IDs estáveis, engine pura, readonly, compatibilidade Mar
 
 [Spec e decisões](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/SPEC.md) · [Grilling](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/GRILLING.md) · [Aceitação](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/ACCEPTANCE.md)
 <!-- morrow-scope-2-2026-10:T23 -->
+
+Verified delivery: [T23 evidence and limitations](../../deliveries/T23-existing-controls.md). This source delivery preserves format13 and the existing formula engine.
