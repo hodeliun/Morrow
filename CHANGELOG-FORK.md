@@ -2,6 +2,17 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — controle de seleção múltipla (fontes, sem novo download)
+
+- Busca, seleção por teclado e chips removíveis trabalham com IDs de opções.
+- Renomear preserva a seleção; excluir opções exige resolver o valor atual e o
+  padrão explicitamente antes de salvar. Cancel não grava o rascunho.
+- Padrão, reset, branco e lista vazia são distintos. Fórmulas e filtros usam a
+  lista tipada existente, preservada na reabertura e em modo somente leitura.
+
+Detalhes e validação: [T24 — seleção múltipla](docs/deliveries/T24-multiple-selection-control.md).
+Formato 13 preservado; sem instalador, tag ou release.
+
 ## Entrega sequencial — catálogo e configuração dos controles existentes (fontes, sem novo download)
 
 - Texto, número, slider, select, checkbox, data e relation têm entradas próprias
