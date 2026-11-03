@@ -2,10 +2,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewWrapper } from '@tiptap/react';
 import { bindPageFormulaReferences, documentFormulaResult, formatDisplayValue, formulaValueText } from '../../core/database';
-import type { FormulaReferenceBinding, NamedControlDef, NamedControlType, PropDef, PropValue, PropertyFormat } from '../../core/model';
+import type { DateRangeControlValue, FormulaReferenceBinding, NamedControlDef, NamedControlType, PropDef, PropValue, PropertyFormat } from '../../core/model';
 import { COLORS, displayTitle, TEXT_HEX } from '../../core/model';
 import { controlConfigurationError, controlValueError, controlValueErrorInState, defaultBoundedNumericControlFormat, normalizeControlFormat } from '../../core/controls';
-import { scalarValueError } from '../../core/typedValues';
+import { isValidDateKey, scalarValueError } from '../../core/typedValues';
+import { dateRangeForPreset } from '../../core/dateRanges';
+import type { DateRangePreset } from '../../core/dateRanges';
 import { childrenOf, isEffectivelyTrashed } from '../../core/tree';
 import { newId } from '../platform/files';
 import { commitEditors } from '../editor/commits';
@@ -22,8 +24,14 @@ import type { NamedControlConfigRequest } from '../editor/namedControlRequests';
 import { captureNamedControlEdit, namedControlEditConflict } from '../editor/controlEditGuard';
 import type { NamedControlEditConflict, NamedControlEditSnapshot } from '../editor/controlEditGuard';
 import { calculatedResultFormatError } from '../editor/calculatedResultFormat';
+import {
+  dateRangeDraftInput,
+  dateRangeValueSignature,
+  reconcileDateRangeDraft,
+} from './dateRangeDraft';
+import type { DateRangeDraftInput } from './dateRangeDraft';
 
-const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'scale', 'progress', 'select', 'multiSelect', 'checkbox', 'date', 'relation'];
+const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'scale', 'progress', 'select', 'multiSelect', 'checkbox', 'date', 'dateRange', 'relation'];
 const OUTPUT_TYPES = ['auto', 'text', 'number', 'currency', 'percent', 'scale', 'progress', 'date', 'checkbox'] as const;
 type OutputType = (typeof OUTPUT_TYPES)[number];
 const controlTimestamp = (): number => Date.now();
@@ -45,9 +53,82 @@ function defaultFor(type: NamedControlType, options: NamedControlDef['options'],
     case 'select': return options[0]?.id ?? null;
     case 'multiSelect': return [];
     case 'relation': return multiple ? [] : null;
-    // Keep persisted Format 13 date ranges inert until their editor is introduced.
     case 'dateRange': return null;
   }
+}
+
+function DateRangeInputs({
+  identity,
+  label,
+  value,
+  disabled,
+  onChange,
+  onIncompleteChange,
+  showIncompleteMessage = true,
+}: {
+  identity: string;
+  label: string;
+  value: PropValue;
+  disabled: boolean;
+  onChange: (value: DateRangeControlValue) => void;
+  onIncompleteChange?: (incomplete: boolean) => void;
+  showIncompleteMessage?: boolean;
+}) {
+  const valueSignature = dateRangeValueSignature(value);
+  const [dates, setDates] = useState(() => dateRangeDraftInput(value));
+  const previousProps = useRef({ identity, valueSignature });
+  useEffect(() => {
+    const previous = previousProps.current;
+    if (previous.identity === identity && previous.valueSignature === valueSignature) return;
+    previousProps.current = { identity, valueSignature };
+    setDates((current) => reconcileDateRangeDraft(
+      previous.identity,
+      identity,
+      previous.valueSignature,
+      valueSignature,
+      current,
+      value,
+    ));
+    onIncompleteChange?.(false);
+  }, [identity, value, valueSignature, onIncompleteChange]);
+  const complete = dates.start !== '' && dates.end !== '' &&
+    isValidDateKey(dates.start) && isValidDateKey(dates.end) && dates.start <= dates.end;
+  const blank = dates.start === '' && dates.end === '';
+  const incomplete = !complete && !blank;
+  const update = (field: keyof DateRangeDraftInput, date: string) => {
+    const next = { ...dates, [field]: date };
+    const nextBlank = next.start === '' && next.end === '';
+    const nextComplete = next.start !== '' && next.end !== '' &&
+      isValidDateKey(next.start) && isValidDateKey(next.end) && next.start <= next.end;
+    setDates(next);
+    onIncompleteChange?.(!nextBlank && !nextComplete);
+    if (nextBlank) onChange(null);
+    else if (nextComplete) onChange([next.start, next.end]);
+  };
+
+  return <>
+    <div className="named-control-date-range-inputs" role="group" aria-label={label}>
+      <label>{t('controls.startDate')}<input
+        disabled={disabled}
+        type="date"
+        aria-label={t('controls.startDate')}
+        aria-invalid={incomplete}
+        value={dates.start}
+        onChange={(event) => update('start', event.target.value)}
+      /></label>
+      <label>{t('controls.endDate')}<input
+        disabled={disabled}
+        type="date"
+        aria-label={t('controls.endDate')}
+        aria-invalid={incomplete}
+        value={dates.end}
+        onChange={(event) => update('end', event.target.value)}
+      /></label>
+    </div>
+    {showIncompleteMessage && incomplete && <span className="named-control-date-range-error" role="status">
+      {t('controls.incompleteDateRange')}
+    </span>}
+  </>;
 }
 
 function scaleFilledSteps(value: number, min: number, max: number): number {
@@ -71,6 +152,7 @@ function controlErrorLabel(error: string | null): string | null {
   if (!error) return null;
   if (error.toLowerCase().includes('email')) return t('controls.invalidEmail');
   if (error.toLowerCase().includes('multi-select')) return t('controls.invalidMultiSelect');
+  if (error.toLowerCase().includes('date range')) return t('controls.invalidDateRange');
   if (/explicit finite|maximum must be greater|step must divide|minimum, maximum, and step must be whole numbers/i.test(error))
     return t('controls.invalidControlFormat');
   if (/number|finite|step|at least|at most|whole number/i.test(error)) return t('controls.invalidNumber');
@@ -126,6 +208,7 @@ export function NamedControlNode(props: NodeViewProps) {
   const [creatingFromSlash, setCreatingFromSlash] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<NamedControlEditSnapshot | null>(null);
   const [draftDefaultNumber, setDraftDefaultNumber] = useState<string | null>(null);
+  const [draftDefaultDateRangeInvalid, setDraftDefaultDateRangeInvalid] = useState(false);
   const [valueDraft, setValueDraft] = useState<{ controlId: string; value: string; sourceValue: PropValue } | null>(null);
   const controlAnchorRef = useRef<HTMLSpanElement>(null);
   const configPopoverRef = useRef<HTMLSpanElement>(null);
@@ -189,6 +272,8 @@ export function NamedControlNode(props: NodeViewProps) {
       ? t('controls.chooseTable')
       : draftDefaultNumber !== null && draftDefaultNumber.trim() !== '' && parsedDefaultNumber === null
       ? t('controls.invalidNumber')
+      : draft.type === 'dateRange' && draftDefaultDateRangeInvalid
+      ? t('controls.incompleteDateRange')
       : controlErrorLabel(controlValueErrorInState(draftControl, defaultValueForDraft ?? null, state))
     : null;
   const optionNames = draftControl?.type === 'select' || draftControl?.type === 'multiSelect'
@@ -222,6 +307,7 @@ export function NamedControlNode(props: NodeViewProps) {
     setResolveCurrentOptionsFor(null);
     setResolveDefaultOptionsFor(null);
     setDraftDefaultNumber(null);
+    setDraftDefaultDateRangeInvalid(false);
     setEditSnapshot(captureNamedControlEdit(pageId, controlId, control));
     if (!control) {
       const type = request?.type ?? 'text';
@@ -300,6 +386,7 @@ export function NamedControlNode(props: NodeViewProps) {
     setClearCurrentValueFor(null);
     setResolveCurrentOptionsFor(null);
     setResolveDefaultOptionsFor(null);
+    setDraftDefaultDateRangeInvalid(false);
     setEditing(false);
   };
   const patchDraft = (change: Partial<NamedControlDef>) => {
@@ -439,6 +526,7 @@ export function NamedControlNode(props: NodeViewProps) {
     setResolveCurrentOptionsFor(null);
     setResolveDefaultOptionsFor(null);
     setDraftDefaultNumber(null);
+    setDraftDefaultDateRangeInvalid(false);
   };
   const removeDefinition = () => {
     if (!editor.isEditable || !page || !control) return;
@@ -475,6 +563,7 @@ export function NamedControlNode(props: NodeViewProps) {
               const format = type === 'scale' || type === 'progress' ? defaultBoundedNumericControlFormat(type) : draft.format;
               const initial = defaultFor(type, options, multiple, format);
               setDraftDefaultNumber(null);
+              setDraftDefaultDateRangeInvalid(false);
               patchDraft({
                 type,
                 options,
@@ -524,7 +613,18 @@ export function NamedControlNode(props: NodeViewProps) {
             </label>
             <label className="named-data-check"><input disabled={!editor.isEditable} type="checkbox" checked={draft.relation?.multiple === true} onChange={(event) => patchDraft({ relation: { targetDatabaseId: draft.relation?.targetDatabaseId ?? null, multiple: event.target.checked } })} />{t('controls.allowMultiple')}</label>
           </>}
-          {draft.type === 'multiSelect' ? <div className="named-data-default-value">
+          {draft.type === 'dateRange' ? <div className="named-data-default-value">
+            <span className="named-data-field-label">{t('controls.defaultValue')}</span>
+            <DateRangeInputs
+              identity={`${pageId}:${draft.id}`}
+              label={t('controls.defaultValue')}
+              value={draftDefaultValue ?? null}
+              disabled={!editor.isEditable}
+              onChange={(value) => patchDraft({ defaultValue: value })}
+              onIncompleteChange={setDraftDefaultDateRangeInvalid}
+              showIncompleteMessage={false}
+            />
+          </div> : draft.type === 'multiSelect' ? <div className="named-data-default-value">
             <span className="named-data-field-label">{t('controls.defaultValue')}</span>
             <NamedMultiSelectPicker
               label={t('controls.defaultValue')}
@@ -695,6 +795,33 @@ export function NamedControlNode(props: NodeViewProps) {
           />}
           {control.type === 'checkbox' && <input disabled={!editor.isEditable} aria-label={control.name} type="checkbox" checked={control.value === true} onChange={(event) => setValue(event.target.checked)} />}
           {control.type === 'date' && <input disabled={!editor.isEditable} aria-label={control.name} type="date" value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value)} />}
+          {control.type === 'dateRange' && <span className="named-control-date-range">
+            <label className="named-control-date-range-preset">{t('controls.quickPeriod')}<select
+              disabled={!editor.isEditable}
+              aria-label={t('controls.quickPeriod')}
+              defaultValue="custom"
+              onChange={(event) => {
+                const selected = event.currentTarget.value;
+                if (selected === 'custom') return;
+                const range = dateRangeForPreset(selected as DateRangePreset, new Date());
+                if (range) setValue(range);
+                event.currentTarget.value = 'custom';
+              }}
+            >
+              <option value="custom">{t('controls.customDateRange')}</option>
+              <option value="today">{t('controls.dateRangePresets.today')}</option>
+              <option value="lastSevenDays">{t('controls.dateRangePresets.lastSevenDays')}</option>
+              <option value="currentMonth">{t('controls.dateRangePresets.currentMonth')}</option>
+              <option value="nextSevenDays">{t('controls.dateRangePresets.nextSevenDays')}</option>
+            </select></label>
+            <DateRangeInputs
+              identity={`${pageId}:${control.id}`}
+              label={control.name}
+              value={control.value}
+              disabled={!editor.isEditable}
+              onChange={setValue}
+            />
+          </span>}
           {control.type === 'relation' && control.relation?.multiple && <select disabled={!editor.isEditable} aria-label={control.name} multiple value={Array.isArray(control.value) ? control.value : []} onChange={(event) => setValue(Array.from(event.target.selectedOptions).map((item) => item.value))}>{relatedRows.map((row) => <option key={row.id} value={row.id}>{displayTitle(row)}</option>)}</select>}
           {control.type === 'relation' && !control.relation?.multiple && <select disabled={!editor.isEditable} aria-label={control.name} value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value || null)}><option value="">{t('controls.blank')}</option>{relatedRows.map((row) => <option key={row.id} value={row.id}>{displayTitle(row)}</option>)}</select>}
           {editor.isEditable && <button

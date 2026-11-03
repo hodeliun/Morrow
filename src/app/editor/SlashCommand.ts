@@ -88,6 +88,7 @@ function defaultForNamedControl(
   switch (type) {
     case 'text':
     case 'date': return '';
+    case 'dateRange': return null;
     case 'number':
     case 'slider': return 0;
     case 'scale':
@@ -154,6 +155,7 @@ const NAMED_CONTROL_SLASH_TYPES: Array<{ id: string; type: NamedControlType }> =
   { id: 'controlMultiSelect', type: 'multiSelect' },
   { id: 'controlCheckbox', type: 'checkbox' },
   { id: 'controlDate', type: 'date' },
+  { id: 'controlDateRange', type: 'dateRange' },
   { id: 'controlRelation', type: 'relation' },
 ];
 

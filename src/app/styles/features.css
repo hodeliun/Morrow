@@ -5004,3 +5004,54 @@ td:hover .prop-empty,
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
+
+/* Typed date-range control presentation. */
+.named-control-date-range {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.named-control-date-range-preset {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.named-control-date-range-preset select {
+  width: min(180px, 100%);
+  max-width: 100%;
+}
+
+.named-control-date-range-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(128px, 100%), 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.named-control-date-range-inputs label,
+.named-data-popover .named-control-date-range-inputs label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.named-control-date-range-inputs input[type='date'] {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.named-control-date-range-error {
+  color: var(--danger);
+  font-size: 11px;
+}

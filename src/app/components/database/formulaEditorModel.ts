@@ -12,7 +12,7 @@ import { relationConfig } from '../../../core/relations';
 import { isEffectivelyTrashed } from '../../../core/tree';
 
 export const FORMULA_FUNCTIONS =
-  'If, IfError, Switch, WithName, Contains, Unique, List, Sequence, FormulaMap, ForEach, First, IsBlank, ToNumber, ToText, Round, Floor, Mod, Sum, Average, Count, Min, Max, Filter, Empty, Ceil, Abs, Sqrt, Length, Concat, Join, Upper, Lower, Replace, Slice, Today, Now, DateAdd, DateBetween, Year, Month, Day';
+  'If, IfError, Switch, WithName, Contains, Unique, List, Sequence, FormulaMap, ForEach, First, Last, IsBlank, ToNumber, ToText, Round, Floor, Mod, Sum, Average, Count, Min, Max, Filter, Empty, Ceil, Abs, Sqrt, Length, Concat, Join, Upper, Lower, Replace, Slice, Today, Now, DateAdd, DateBetween, Year, Month, Day';
 
 export const FORMULA_EXAMPLES = [
   'thisRow.`Related rows`.Amount',
@@ -228,6 +228,8 @@ function databaseForIdentifier(
     const target = control?.type === 'relation' ? control.relation?.targetDatabaseId : null;
     if (target && state.pages[target]?.database)
       return { databaseId: target, kind: control?.relation?.multiple ? 'rows' : 'row' };
+    if (control?.type === 'multiSelect') return listSource('text');
+    if (control?.type === 'dateRange') return listSource('date');
     return scalarSource();
   }
   if (binding?.kind === 'result' || binding?.kind === 'ambiguous') return scalarSource();
@@ -297,8 +299,10 @@ function formulaSource(
       const method = expression.callee.name.toLocaleLowerCase();
       if (base.databaseId && ['rows', 'table'].includes(base.kind) && method === 'filter')
         return { databaseId: base.databaseId, kind: 'rows' };
-      if (base.databaseId && ['rows', 'list'].includes(base.kind) && method === 'first')
+      if (base.databaseId && ['rows', 'list'].includes(base.kind) && (method === 'first' || method === 'last'))
         return { databaseId: base.databaseId, kind: 'row' };
+      if (base.kind === 'list' && (method === 'first' || method === 'last'))
+        return scalarSource(base.itemType);
       if (base.databaseId && base.kind === 'rows' && method === 'unique')
         return listSource('relation', base.databaseId);
       if (base.kind === 'list' && method === 'unique') return base;
@@ -309,7 +313,7 @@ function formulaSource(
     if (expression.callee.kind === 'identifier' && expression.args[0]) {
       const name = expression.callee.name.toLocaleLowerCase();
       const base = formulaSource(expression.args[0], ownerDatabaseId, state, bindings);
-      if (name === 'first') {
+      if (name === 'first' || name === 'last') {
         if (base.databaseId && ['table', 'rows', 'list'].includes(base.kind))
           return { databaseId: base.databaseId, kind: 'row' };
         return scalarSource(base.itemType);
@@ -372,8 +376,8 @@ function trailingExpressionStart(source: string): number {
   return 0;
 }
 
-const ROW_COLLECTION_METHODS = ['Filter', 'First', 'Unique', 'Count', 'Contains'];
-const VALUE_COLLECTION_METHODS = ['First', 'Unique', 'Count', 'Contains'];
+const ROW_COLLECTION_METHODS = ['Filter', 'First', 'Last', 'Unique', 'Count', 'Contains'];
+const VALUE_COLLECTION_METHODS = ['First', 'Last', 'Unique', 'Count', 'Contains'];
 const NUMERIC_COLLECTION_METHODS = ['Sum', 'Average', 'Min', 'Max'];
 
 const NUMERIC_PROPERTY_TYPES = new Set<PropDef['type']>([

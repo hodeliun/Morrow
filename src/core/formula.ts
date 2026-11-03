@@ -296,6 +296,7 @@ function scalarFunctions(name: string, args: FormulaRuntimeValue[], now: Date): 
     case 'formulamap':
     case 'foreach': return undefined; // evaluated lazily with CurrentValue scope
     case 'first': count(1); return list(arg(0))[0] ?? null;
+    case 'last': count(1); { const values = list(arg(0)); return values[values.length - 1] ?? null; }
     case 'isblank':
     case 'empty': count(1); { const value = arg(0); return value === null || value === '' || (Array.isArray(value) && value.length === 0) || (typeof value === 'object' && value !== null && !Array.isArray(value) && value.formulaKind === 'rows' && value.rows.length === 0); }
     case 'tonumber':

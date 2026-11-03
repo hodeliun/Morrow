@@ -35,7 +35,7 @@ import {
 import { computePosition, flip, offset, shift } from '@floating-ui/dom';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, FocusEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { dateKey } from '../../../core/daily';
 import { parseFormula } from '../../../core/formula';
@@ -120,6 +120,8 @@ import {
   updateView,
 } from './data';
 import { selectionMatchesVisibleRows, toggleVisibleRowSelection } from './rowSelection';
+import { blurGridTarget, focusGridTarget, takeGridFocusOwnership } from './gridFocusOwnership';
+import type { GridFocusOwnership } from './gridFocusOwnership';
 import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from './PropertyValue';
 import { cellEditStartKey, cellPickerStartProps } from './cellEditing';
 import { PropertySettings } from './PropertySettings';
@@ -3774,6 +3776,15 @@ function InsertColumnPopover({
   );
 }
 
+function focusedGridCell(target: EventTarget | null): { cellKey: string; table: HTMLTableElement | null } | null {
+  if (!(target instanceof HTMLTableCellElement) || !target.matches('td[data-row-id][data-col-id]')) return null;
+  const rowId = target.dataset.rowId;
+  const colId = target.dataset.colId;
+  if (rowId === undefined || colId === undefined) return null;
+  return { cellKey: `${rowId}:${colId}`, table: target.closest('table') };
+}
+
+
 function TableView({
   dbId,
   database,
@@ -4061,12 +4072,47 @@ function TableView({
   const prevRowIdsRef = useRef<string[]>(visibleRowIds);
   const prevColIdsRef = useRef<string[]>(visibleColIds);
   const tdRefs = useRef<Map<string, HTMLTableCellElement>>(new Map());
+  const gridFocusOwnershipRef = useRef<GridFocusOwnership>(null);
   const fillCopyButtonRef = useRef<HTMLButtonElement>(null);
   const isSelectingRef = useRef<boolean>(false);
   const fillDraggingRef = useRef<boolean>(false);
   const fillSourceRangeRef = useRef<GridRange | null>(null);
   const hasFillPreview = fillPreview !== null;
   const showFillPreview = hasFillPreview && !fillDragging;
+
+  const captureTableFocus = (event: FocusEvent<HTMLTableElement>) => {
+    const target = focusedGridCell(event.target);
+    const owner = event.currentTarget;
+    gridFocusOwnershipRef.current = target?.table === owner ? focusGridTarget(target.cellKey, owner) : null;
+  };
+  const captureTableBlur = (event: FocusEvent<HTMLTableElement>) => {
+    const source = focusedGridCell(event.target);
+    const related = focusedGridCell(event.relatedTarget);
+    const owner = event.currentTarget;
+    const currentOwnership = gridFocusOwnershipRef.current;
+    const sourceIsDisconnected = event.target instanceof HTMLTableCellElement && !event.target.isConnected;
+    let sourceOwner = source?.table ?? null;
+    if (
+      source &&
+      source.table === null &&
+      sourceIsDisconnected &&
+      currentOwnership?.owner === owner &&
+      currentOwnership.cellKey === source.cellKey
+    ) {
+      sourceOwner = owner;
+    }
+    const sourceCellRemoved = sourceIsDisconnected && sourceOwner === owner;
+    gridFocusOwnershipRef.current = blurGridTarget(gridFocusOwnershipRef.current, {
+      sourceCellKey: source?.cellKey ?? null,
+      sourceOwner,
+      relatedCellKey: related?.cellKey ?? null,
+      relatedOwner: related?.table ?? null,
+      relatedTargetIsBodyOrNull:
+        event.relatedTarget === null || event.relatedTarget === document.body,
+      sourceCellRemoved,
+    });
+  };
+
 
   useEffect(() => {
     if (!hasFillPreview || !focusFillActions) return;
@@ -4141,9 +4187,19 @@ function TableView({
       setSelectionRange({ anchor: focusAfterRevalidation, focus: focusAfterRevalidation });
     }
     if (focusAfterRevalidation) {
-      tdRefs.current
-        .get(`${focusAfterRevalidation.rowId}:${focusAfterRevalidation.colId}`)
-        ?.focus({ preventScroll: true });
+      const focusOwnership = takeGridFocusOwnership(gridFocusOwnershipRef.current);
+      gridFocusOwnershipRef.current = focusOwnership.next;
+      if (focusOwnership.wasOwned) {
+        const cellKey = `${focusAfterRevalidation.rowId}:${focusAfterRevalidation.colId}`;
+        const fallbackCell = tdRefs.current.get(cellKey);
+        fallbackCell?.focus({ preventScroll: true });
+        if (fallbackCell && document.activeElement === fallbackCell) {
+          gridFocusOwnershipRef.current = focusGridTarget(cellKey, tableRef.current);
+        }
+      }
+    } else {
+      const ownedCellKey = gridFocusOwnershipRef.current?.cellKey;
+      if (ownedCellKey && !tdRefs.current.has(ownedCellKey)) gridFocusOwnershipRef.current = null;
     }
     setFillPreview(null);
     setFillAnchor(null);
@@ -5417,6 +5473,8 @@ function TableView({
       <div className="db-table-wrap">
         <table
           ref={tableRef}
+          onFocusCapture={captureTableFocus}
+          onBlurCapture={captureTableBlur}
           tabIndex={-1}
           className={`db-table${editable ? ' is-filled' : ''}`}
           style={{ width: total }}
