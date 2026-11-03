@@ -4,7 +4,14 @@ import { NodeViewWrapper } from '@tiptap/react';
 import { bindPageFormulaReferences, documentFormulaResult, formatDisplayValue, formulaValueText } from '../../core/database';
 import type { DateRangeControlValue, FormulaReferenceBinding, NamedControlDef, NamedControlType, PropDef, PropValue, PropertyFormat } from '../../core/model';
 import { COLORS, displayTitle, TEXT_HEX } from '../../core/model';
-import { controlConfigurationError, controlValueError, controlValueErrorInState, defaultBoundedNumericControlFormat, normalizeControlFormat } from '../../core/controls';
+import {
+  boundedNumericControlFormatError,
+  controlConfigurationError,
+  controlValueError,
+  controlValueErrorInState,
+  defaultBoundedNumericControlFormat,
+  normalizeControlFormat,
+} from '../../core/controls';
 import { isValidDateKey, scalarValueError } from '../../core/typedValues';
 import { dateRangeForPreset } from '../../core/dateRanges';
 import type { DateRangePreset } from '../../core/dateRanges';
@@ -16,6 +23,32 @@ import { getLocale, t } from '../i18n';
 import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
 import { NamedMultiSelectPicker } from './NamedMultiSelectPicker';
+import { documentFormulaContext, FormulaEditor } from './database/FormulaEditor';
+import type { DocumentFormulaFormattedResult, DocumentFormulaReference } from './database/FormulaEditor';
+import { presentFormulaDiagnostic } from './database/formulaEditorModel';
+import type { FormulaRuntimeValue } from '../../core/formula';
+import {
+  captureCalculatedResultEditTarget,
+  closeCalculatedResultConfigurationHistory,
+  createCalculatedResultConfigurationTransaction,
+  isCurrentCalculatedResultEditTarget,
+} from '../editor/calculatedResultSupport';
+import type { CalculatedResultEditTarget } from '../editor/calculatedResultSupport';
+import {
+  calculatedResultFormulaDraftSeed,
+  clearCalculatedResultDraft,
+  readCalculatedResultDraft,
+  writeCalculatedResultDraft,
+} from '../editor/calculatedResultDrafts';
+import type {
+  CalculatedResultConfigurationDraft,
+  CalculatedResultDraftSnapshot,
+} from '../editor/calculatedResultDrafts';
+import {
+  cancelCalculatedResultConfigurationRequest,
+  listenForCalculatedResultConfiguration,
+} from '../editor/calculatedResultRequests';
+import { calculateResultPopoverPlacement } from '../editor/calculatedResultPopover';
 import {
   cancelNamedControlConfigurationRequest,
   listenForNamedControlConfiguration,
@@ -870,9 +903,55 @@ function outputProperty(type: OutputType, format: PropertyFormat): PropDef & { f
   return { id: 'document-result', name: 'Result', type: propType, options: [], format: { ...defaults, ...format } };
 }
 
+export function calculatedResultPresentation(
+  value: FormulaRuntimeValue,
+  outputType: OutputType,
+  format: PropertyFormat,
+  state: ReturnType<typeof getState>,
+): { display: string; diagnostic: string | null; progress: number | null } {
+  if (value === null || value === '' || (Array.isArray(value) && value.length === 0))
+    return { display: '[]', diagnostic: null, progress: null };
+  const property = outputProperty(outputType, format);
+  let display: string | null = null;
+  let diagnostic: string | null = null;
+  if (outputType === 'scale') {
+    const formatError = boundedNumericControlFormatError('scale', property.format);
+    if (formatError) diagnostic = t('controls.invalidControlFormat');
+    else if (typeof value !== 'number') diagnostic = t('controls.expectedNumber');
+    else if (scalarValueError(property, value)) diagnostic = t('controls.resultOutsideRange');
+    else display = formatDisplayValue(property, value, getLocale());
+  } else if (outputType === 'progress') {
+    if (calculatedResultFormatError('progress', property.format)) diagnostic = t('controls.invalidFormat');
+    else if (typeof value !== 'number') diagnostic = t('controls.expectedNumber');
+    else if (scalarValueError(property, value)) diagnostic = t('controls.resultOutsideRange');
+    else display = formatDisplayValue(property, value, getLocale());
+  } else if (outputType === 'currency' || outputType === 'number' || outputType === 'percent') {
+    if (typeof value !== 'number') diagnostic = t('controls.expectedNumber');
+    else display = formatDisplayValue(property, value, getLocale());
+  } else if (outputType === 'checkbox') {
+    if (typeof value !== 'boolean') diagnostic = t('controls.expectedCheckbox');
+    else display = value ? t('controls.checked') : t('controls.unchecked');
+  } else if (outputType === 'date') {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) diagnostic = t('controls.expectedDate');
+    else display = formatDisplayValue(property, value, getLocale());
+  } else {
+    const present = (item: FormulaRuntimeValue): string => {
+      if (Array.isArray(item)) return item.map(present).join(', ');
+      if (typeof item === 'boolean') return formatDisplayValue(property, item, getLocale());
+      return formulaValueText(property, item, state);
+    };
+    display = present(value);
+  }
+  return {
+    display: display === null || display === '' ? '[]' : display,
+    diagnostic,
+    progress: outputType === 'progress' && diagnostic === null && typeof value === 'number' ? value : null,
+  };
+}
+
 export function CalculatedResultNode(props: NodeViewProps) {
   const state = useWorkspace();
-  const { node, updateAttributes, deleteNode, editor } = props;
+  const { node, deleteNode, editor, getPos } = props;
   const extensionPageId = (editor.extensionManager.extensions.find((item) => item.name === 'calculatedResult')?.options as { hostPageId?: string } | undefined)?.hostPageId;
   const pageId = String(node.attrs.pageId || extensionPageId || '');
   const resultId = String(node.attrs.resultId ?? '');
@@ -880,37 +959,40 @@ export function CalculatedResultNode(props: NodeViewProps) {
   const bindings = (Array.isArray(node.attrs.bindings) ? node.attrs.bindings : []) as FormulaReferenceBinding[];
   const outputType = (OUTPUT_TYPES.includes(node.attrs.outputType as OutputType) ? node.attrs.outputType : 'auto') as OutputType;
   const format = (node.attrs.format && typeof node.attrs.format === 'object' ? node.attrs.format : {}) as PropertyFormat;
-  const name = String(node.attrs.name ?? 'Result');
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState({ name, formula, bindings, outputType, format });
+  const name = String(node.attrs.name ?? '');
+  const [activeDraftSession, setActiveDraftSession] = useState(() => readCalculatedResultDraft(editor, pageId, resultId));
+  const [editing, setEditing] = useState(() => activeDraftSession !== null);
+  const [autoFocusFormula, setAutoFocusFormula] = useState(() => activeDraftSession === null);
+  const [draft, setDraft] = useState(() =>
+    activeDraftSession
+      ? { ...activeDraftSession.config, formula: activeDraftSession.formula, bindings: activeDraftSession.bindings }
+      : { name, formula, bindings, outputType, format },
+  );
   const [saveError, setSaveError] = useState<string | null>(null);
-  const result = pageId && resultId && formula
-    ? documentFormulaResult(pageId, resultId, formula, bindings, state)
-    : { value: null, error: formula ? t('controls.pageMissing') : t('controls.formulaRequired') };
-  let display: string | null = null;
-  let diagnostic = result.error;
-  const property = outputProperty(outputType, format);
-  if (!diagnostic) {
-    if (outputType === 'scale' || outputType === 'progress') {
-      const formatError = calculatedResultFormatError(outputType, property.format);
-      if (formatError) diagnostic = outputType === 'scale' ? t('controls.invalidControlFormat') : t('controls.invalidFormat');
-      else if (typeof result.value !== 'number') diagnostic = t('controls.expectedNumber');
-      else if (scalarValueError(property, result.value)) diagnostic = t('controls.resultOutsideRange');
-      else display = formatDisplayValue(property, result.value, getLocale());
-    } else if (outputType === 'currency' || outputType === 'number' || outputType === 'percent') {
-      if (typeof result.value !== 'number') diagnostic = t('controls.expectedNumber');
-      else display = formatDisplayValue(property, result.value, getLocale());
-    } else if (outputType === 'checkbox') {
-      if (typeof result.value !== 'boolean') diagnostic = t('controls.expectedCheckbox');
-      else display = result.value ? t('controls.checked') : t('controls.unchecked');
-    } else if (outputType === 'date') {
-      if (typeof result.value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(result.value)) diagnostic = t('controls.expectedDate');
-      else display = formatDisplayValue(property, result.value, getLocale());
-    } else {
-      display = formulaValueText(property, result.value, state);
-    }
-  }
-  const progress = outputType === 'progress' && typeof result.value === 'number' ? result.value : null;
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const editTargetRef = useRef<CalculatedResultEditTarget | null>(activeDraftSession?.target ?? null);
+  const draftSnapshotRef = useRef<CalculatedResultDraftSnapshot | null>(activeDraftSession);
+  const resultAnchorRef = useRef<HTMLSpanElement>(null);
+  const resultPopoverRef = useRef<HTMLSpanElement>(null);
+  const unconfigured = !formula.trim();
+  const result = unconfigured
+    ? { value: null, error: null }
+    : pageId && resultId
+      ? documentFormulaResult(pageId, resultId, formula, bindings, state)
+      : { value: null, error: t('controls.pageMissing') };
+  const valuePresentation = !unconfigured && !result.error
+    ? calculatedResultPresentation(result.value, outputType, format, state)
+    : { display: '[]', diagnostic: null, progress: null };
+  const diagnostic = result.error ?? valuePresentation.diagnostic;
+  const formulaDiagnostic = result.error
+    ? presentFormulaDiagnostic(result.error, {
+        memberAfterDot: (token) => t('formulaUx.memberAfterDot', { token }),
+        unexpectedToken: (token) => t('formulaUx.unexpectedToken', { token }),
+        invalidSummary: t('formulaUx.invalidSummary'),
+      })
+    : null;
+  const display = valuePresentation.display;
+  const progress = valuePresentation.progress;
   const boundedOutputRange = outputType === 'scale' || outputType === 'progress'
     ? {
         min: format.min ?? (outputType === 'scale' ? 1 : 0),
@@ -919,39 +1001,181 @@ export function CalculatedResultNode(props: NodeViewProps) {
     : null;
   const scale = outputType === 'scale' && !diagnostic && typeof result.value === 'number' ? result.value : null;
   const scaleUsesStars = scale !== null && (format.scaleIcon ?? 'star') === 'star';
-  const hideBoundedValue = !diagnostic && format.showValue === false && scaleUsesStars;
-  const referenceChoices = useMemo(() => {
+  const hideBoundedValue = !unconfigured && !diagnostic && format.showValue === false && scaleUsesStars;
+  const editorDoc = editor.state.doc;
+  const referenceChoices = useMemo<DocumentFormulaReference[]>(() => {
     const page = state.pages[pageId];
-    return [
+    const raw = [
       ...(page?.controls.map((control) => ({ key: `control:${control.id}`, name: control.name, kind: 'control' as const, id: control.id })) ?? []),
-      ...collectResultNodes(editor.state.doc).filter((item) => item.resultId !== resultId).map((item) => ({ key: `result:${item.resultId}`, name: item.name, kind: 'result' as const, id: item.resultId })),
+      ...collectResultNodes(editorDoc).filter((item) => item.resultId !== resultId).map((item) => ({ key: `result:${item.resultId}`, name: item.name, kind: 'result' as const, id: item.resultId })),
     ];
-  }, [editor, pageId, resultId, state]);
-  const referenceChoiceLabel = (item: (typeof referenceChoices)[number]) => {
-    const foldedName = item.name.trim().toLocaleLowerCase();
-    const duplicate = referenceChoices.filter((candidate) => candidate.name.trim().toLocaleLowerCase() === foldedName).length > 1;
-    const label = item.kind === 'control'
-      ? t('controls.referenceControl', { name: item.name })
-      : t('controls.referenceResult', { name: item.name });
-    return duplicate ? `${label} · ${item.id.slice(-6)}` : label;
+    return raw.map((item) => {
+      const displayName = item.name.trim() || t('controls.unnamedResult');
+      const sameNameCount = raw.filter((candidate) =>
+        (candidate.name.trim() || t('controls.unnamedResult')).toLocaleLowerCase() === displayName.toLocaleLowerCase(),
+      ).length;
+      const uniqueName = sameNameCount > 1 || !item.name.trim()
+        ? `${displayName} · ${item.id.slice(-6)}`
+        : displayName;
+      return {
+        ...item,
+        name: displayName,
+        formulaName: uniqueName,
+        label: `${t(item.kind === 'control' ? 'controls.referenceControl' : 'controls.referenceResult', { name: displayName })}${uniqueName === displayName ? '' : ` · ${item.id.slice(-6)}`}`,
+      };
+    });
+  }, [editorDoc, pageId, resultId, state]);
+
+  const persistDraftPatch = (
+    patch: Partial<Pick<CalculatedResultDraftSnapshot, 'config' | 'formula' | 'bindings'>>,
+  ) => {
+    if (!editor.isEditable || editor.isDestroyed) return;
+    const current = draftSnapshotRef.current;
+    if (!current) return;
+    const next = { ...current, ...patch };
+    draftSnapshotRef.current = next;
+    writeCalculatedResultDraft(next);
+  };
+  const updateDraft = (next: typeof draft) => {
+    setDraft(next);
+    const config: CalculatedResultConfigurationDraft = {
+      name: next.name,
+      outputType: next.outputType,
+      format: next.format,
+    };
+    persistDraftPatch({ config });
+  };
+  const clearEditSession = () => {
+    clearCalculatedResultDraft(editor, pageId, resultId);
+    draftSnapshotRef.current = null;
+    editTargetRef.current = null;
+    setActiveDraftSession(null);
   };
 
   const startEdit = () => {
-    if (!editor.isEditable) return;
+    if (!editor.isEditable || editor.isDestroyed) return;
+    if (draftSnapshotRef.current) {
+      setActiveDraftSession(draftSnapshotRef.current);
+      setEditing(true);
+      return;
+    }
+    setMenuAnchor(null);
     setSaveError(null);
-    setDraft({ name, formula, bindings, outputType, format });
+    const target = captureCalculatedResultEditTarget(editor, pageId, resultId, node.attrs);
+    if (!isCurrentCalculatedResultEditTarget(editor, getPos, target)) {
+      editTargetRef.current = null;
+      return;
+    }
+    const initialSession: CalculatedResultDraftSnapshot = {
+      target,
+      config: { name, outputType, format: { ...format } },
+      formula,
+      bindings: bindings.map((binding) => ({ ...binding })),
+    };
+    editTargetRef.current = target;
+    draftSnapshotRef.current = initialSession;
+    writeCalculatedResultDraft(initialSession);
+    setActiveDraftSession(initialSession);
+    setDraft({ ...initialSession.config, formula, bindings: initialSession.bindings });
+    setAutoFocusFormula(true);
     setEditing(true);
   };
-  const save = () => {
-    if (!editor.isEditable) return;
+  const startEditRef = useRef(startEdit);
+  useLayoutEffect(() => {
+    startEditRef.current = startEdit;
+  });
+  useLayoutEffect(() => {
+    const dispose = listenForCalculatedResultConfiguration(editor, pageId, resultId, () => startEditRef.current());
+    return () => {
+      dispose();
+      cancelCalculatedResultConfigurationRequest(editor, pageId, resultId);
+    };
+  }, [editor, pageId, resultId]);
+  useLayoutEffect(() => {
+    if (!editing) return;
+    const place = () => {
+      const anchor = resultAnchorRef.current;
+      const popover = resultPopoverRef.current;
+      if (!anchor || !popover) return;
+      const pane = anchor.closest<HTMLElement>('.pane');
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      const paneRect = pane?.getBoundingClientRect() ?? {
+        left: 0, top: 0, right: viewport.width, bottom: viewport.height,
+      };
+      const anchorRect = anchor.getBoundingClientRect();
+      popover.style.visibility = 'hidden';
+      const initial = calculateResultPopoverPlacement(
+        anchorRect,
+        paneRect,
+        viewport,
+        popover.getBoundingClientRect(),
+      );
+      if (!initial) return;
+      popover.style.width = `${initial.width}px`;
+      popover.style.maxWidth = `${initial.width}px`;
+      popover.style.maxHeight = `${initial.maxHeight}px`;
+      const placement = calculateResultPopoverPlacement(
+        anchorRect,
+        paneRect,
+        viewport,
+        popover.getBoundingClientRect(),
+      );
+      if (!placement) return;
+      popover.style.left = `${placement.left}px`;
+      popover.style.top = `${placement.top}px`;
+      popover.style.visibility = 'visible';
+    };
+    let frame: number | null = null;
+    const schedulePlace = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        place();
+      });
+    };
+    place();
+    window.addEventListener('resize', schedulePlace);
+    window.addEventListener('scroll', schedulePlace, true);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedulePlace);
+    const anchor = resultAnchorRef.current;
+    const popover = resultPopoverRef.current;
+    const pane = anchor?.closest<HTMLElement>('.pane');
+    const paneHost = pane?.parentElement;
+    if (anchor) observer?.observe(anchor);
+    if (popover) observer?.observe(popover);
+    if (pane) observer?.observe(pane);
+    if (paneHost) observer?.observe(paneHost);
+    const mutationObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(schedulePlace);
+    if (pane) mutationObserver?.observe(pane, { attributes: true, attributeFilter: ['class', 'data-size', 'style'] });
+    if (paneHost) mutationObserver?.observe(paneHost, { attributes: true, attributeFilter: ['class', 'style'] });
+    return () => {
+      window.removeEventListener('resize', schedulePlace);
+      window.removeEventListener('scroll', schedulePlace, true);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [editing, draft, saveError]);
+  const save = (source: string, nextBindingsInput: FormulaReferenceBinding[]): boolean => {
+    if (!editor.isEditable || editor.isDestroyed) return false;
     setSaveError(null);
+    const target = editTargetRef.current;
+    if (!target || !isCurrentCalculatedResultEditTarget(editor, getPos, target)) {
+      setSaveError(t('controls.resultChanged'));
+      return false;
+    }
+    commitEditors();
+    if (!isCurrentCalculatedResultEditTarget(editor, getPos, target)) {
+      setSaveError(t('controls.resultChanged'));
+      return false;
+    }
     const currentState = getState();
     const freshBindings = bindPageFormulaReferences(
-      draft.formula,
+      source,
       pageId,
       currentState,
       currentState.pages[pageId]?.parentId,
-      draft.bindings,
+      nextBindingsInput,
     );
     const nextFormat = normalizeControlFormat(outputProperty(draft.outputType, draft.format).format);
     const formatError = nextFormat && (draft.outputType === 'scale' || draft.outputType === 'progress')
@@ -959,61 +1183,128 @@ export function CalculatedResultNode(props: NodeViewProps) {
       : null;
     if (!nextFormat || formatError) {
       setSaveError(t('controls.invalidFormat'));
-      return;
+      return false;
     }
-    const nextDraft = { ...draft, bindings: freshBindings, format: nextFormat };
-    updateAttributes({ ...nextDraft, pageId });
+    const nextDraft = { ...draft, name: draft.name.trim(), formula: source, bindings: freshBindings, format: nextFormat };
+    const position = getPos();
+    const currentNode = typeof position === 'number' ? editor.state.doc.nodeAt(position) : null;
+    if (!currentNode || currentNode.type.name !== 'calculatedResult' || currentNode.attrs.resultId !== resultId) {
+      setSaveError(t('controls.resultChanged'));
+      return false;
+    }
+    editor.view.dispatch(createCalculatedResultConfigurationTransaction(
+      editor.state.tr,
+      position as number,
+      currentNode,
+      { ...nextDraft, pageId },
+    ));
+    editor.view.dispatch(closeCalculatedResultConfigurationHistory(editor.state.tr));
+    clearEditSession();
     setDraft(nextDraft);
     setEditing(false);
+    return true;
   };
-  const insertReference = (key: string) => {
-    const choice = referenceChoices.find((item) => item.key === key);
-    if (!choice) return;
-    const source = `\`${choice.name.replaceAll('\\', '\\\\').replaceAll('`', '\\`')}\``;
-    const start = draft.formula.length + (draft.formula.trim() ? 1 : 0);
-    const nextFormula = `${draft.formula}${draft.formula.trim() ? ' ' : ''}${source}`;
-    const binding: FormulaReferenceBinding = choice.kind === 'control'
-      ? { kind: 'control', pageId, controlId: choice.id, start, end: start + source.length, source }
-      : { kind: 'result', pageId, resultId: choice.id, start, end: start + source.length, source };
-    setDraft({ ...draft, formula: nextFormula, bindings: [...draft.bindings, binding] });
+  const removeResult = () => {
+    const target = editTargetRef.current;
+    if (!editor.isEditable || editor.isDestroyed || !target || !isCurrentCalculatedResultEditTarget(editor, getPos, target)) {
+      setSaveError(t('controls.resultChanged'));
+      return;
+    }
+    commitEditors();
+    if (!isCurrentCalculatedResultEditTarget(editor, getPos, target)) {
+      setSaveError(t('controls.resultChanged'));
+      return;
+    }
+    deleteNode();
+    clearEditSession();
   };
-  const updateFormat = (change: Partial<PropertyFormat>) => setDraft({ ...draft, format: { ...draft.format, ...change } });
+  const updateFormat = (change: Partial<PropertyFormat>) =>
+    updateDraft({ ...draft, format: { ...draft.format, ...change } });
+  const { ownerDatabaseId, database: formulaDatabase } = documentFormulaContext(state, pageId);
+  const editError = saveError;
+  const resultActions: MenuEntry[] = [{ label: t('controls.configureResult'), onSelect: startEdit }];
 
   return (
-    <NodeViewWrapper as="span" className={`named-data-result${diagnostic ? ' has-error' : ''}`} contentEditable={false} onMouseDown={stop} title={diagnostic ?? undefined}>
-      {editing ? <span className="named-data-popover named-data-result-editor" role="group" aria-label={t('controls.configureResult')}>
-        <label>{t('controls.name')}<input value={draft.name} maxLength={100} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
-        <label>{t('controls.formula')}<textarea maxLength={2000} rows={3} value={draft.formula} placeholder={t('controls.formulaPlaceholder')} onChange={(event) => setDraft({ ...draft, formula: event.target.value, bindings: draft.bindings.filter((binding) => event.target.value.slice(binding.start, binding.end) === binding.source) })} /></label>
-        <label>{t('controls.insertReference')}<select defaultValue="" onChange={(event) => { insertReference(event.target.value); event.target.value = ''; }}><option value="">{t('controls.chooseReference')}</option>{referenceChoices.map((item) => <option key={item.key} value={item.key}>{referenceChoiceLabel(item)}</option>)}</select></label>
-        <label>{t('controls.outputType')}<select value={draft.outputType} onChange={(event) => setDraft({ ...draft, outputType: event.target.value as OutputType })}>{OUTPUT_TYPES.map((item) => <option key={item} value={item}>{t(`controls.outputTypes.${item}` as never)}</option>)}</select></label>
+    <NodeViewWrapper
+      ref={resultAnchorRef}
+      as="span"
+      className={`named-data-result${diagnostic ? ' has-error' : ''}${unconfigured ? ' is-unconfigured' : ''}`}
+      contentEditable={false}
+      onMouseDown={stop}
+      onContextMenu={(event: React.MouseEvent<HTMLElement>) => {
+        if (!editor.isEditable) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setMenuAnchor(event.currentTarget);
+      }}
+      title={formulaDiagnostic?.primary ?? diagnostic ?? (unconfigured ? t('controls.resultNotConfigured') : undefined)}
+    >
+      {editing ? <span ref={resultPopoverRef} className="named-data-popover named-data-result-editor" role="group" aria-label={t('controls.configureResult')}>
+        <label>{t('controls.name')}<input disabled={!editor.isEditable} value={draft.name} maxLength={100} onChange={(event) => updateDraft({ ...draft, name: event.target.value })} /></label>
+        <label>{t('controls.outputType')}<select disabled={!editor.isEditable} value={draft.outputType} onChange={(event) => updateDraft({ ...draft, outputType: event.target.value as OutputType })}>{OUTPUT_TYPES.map((item) => <option key={item} value={item}>{t(`controls.outputTypes.${item}` as never)}</option>)}</select></label>
         {(draft.outputType === 'currency' || draft.outputType === 'percent' || draft.outputType === 'number' || draft.outputType === 'scale' || draft.outputType === 'progress') && <div className="named-data-format">
-          {draft.outputType === 'currency' && <label>{t('controls.currency')}<input value={draft.format.currency ?? 'BRL'} maxLength={3} onChange={(event) => updateFormat({ currency: event.target.value.toUpperCase() })} /></label>}
-          <label>{t('controls.locale')}<input value={draft.format.locale ?? 'pt-BR'} onChange={(event) => updateFormat({ locale: event.target.value })} /></label>
-          {draft.outputType !== 'progress' && draft.outputType !== 'scale' && <label>{t('controls.precision')}<input type="number" min="0" max="8" value={draft.format.precision ?? 2} onChange={(event) => updateFormat({ precision: Number(event.target.value) })} /></label>}
-          {draft.outputType === 'progress' && <label>{t('controls.maximum')}<input type="number" min="0.000000001" value={draft.format.max ?? 100} onChange={(event) => updateFormat({ max: Number(event.target.value) })} /></label>}
-          {draft.outputType === 'scale' && <>
-            <label>{t('controls.minimum')}<input type="number" step="1" value={draft.format.min ?? 1} onChange={(event) => updateFormat({ min: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
-            <label>{t('controls.maximum')}<input type="number" step="1" value={draft.format.max ?? 5} onChange={(event) => updateFormat({ max: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
-            <label>{t('controls.step')}<input type="number" min="1" step="1" value={draft.format.step ?? 1} onChange={(event) => updateFormat({ step: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
-            <label>{t('controls.scaleIcon')}
-              <select value={draft.format.scaleIcon ?? 'star'} onChange={(event) => updateFormat({ scaleIcon: event.target.value as NonNullable<PropertyFormat['scaleIcon']> })}>
-                <option value="star">{t('controls.scaleIcons.star')}</option>
-                <option value="number">{t('controls.scaleIcons.number')}</option>
-              </select>
-            </label>
-            <label>{t('controls.color')}
-              <select value={draft.format.color ?? 'blue'} onChange={(event) => updateFormat({ color: event.target.value as NonNullable<PropertyFormat['color']> })}>
-                {COLORS.map((color) => <option key={color} value={color}>{t(`colors.${color}` as never)}</option>)}
-              </select>
-            </label>
-            <label className="named-data-check"><input type="checkbox" checked={draft.format.showValue !== false} onChange={(event) => updateFormat({ showValue: event.target.checked })} />{t('controls.showValue')}</label>
-          </>}
+          {draft.outputType === 'currency' && <label>{t('controls.currency')}<input disabled={!editor.isEditable} value={draft.format.currency ?? 'BRL'} maxLength={3} onChange={(event) => updateDraft({ ...draft, format: { ...draft.format, currency: event.target.value.toUpperCase() } })} /></label>}
+          <label>{t('controls.locale')}<input disabled={!editor.isEditable} value={draft.format.locale ?? 'pt-BR'} onChange={(event) => updateFormat({ locale: event.target.value })} /></label>
+          {draft.outputType !== 'progress' && draft.outputType !== 'scale' && <label>{t('controls.precision')}<input disabled={!editor.isEditable} type="number" min="0" max="8" value={draft.format.precision ?? 2} onChange={(event) => updateFormat({ precision: Number(event.target.value) })} /></label>}
+          {draft.outputType === 'progress' && <label>{t('controls.maximum')}<input disabled={!editor.isEditable} type="number" min="0.000000001" value={draft.format.max ?? 100} onChange={(event) => updateFormat({ max: Number(event.target.value) })} /></label>}
+          {draft.outputType === 'scale' && (() => {
+            const defaults = defaultBoundedNumericControlFormat('scale');
+            return <>
+              <label>{t('controls.minimum')}<input disabled={!editor.isEditable} type="number" step="1" value={draft.format.min ?? defaults.min ?? ''} onChange={(event) => updateFormat({ min: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+              <label>{t('controls.maximum')}<input disabled={!editor.isEditable} type="number" step="1" value={draft.format.max ?? defaults.max ?? ''} onChange={(event) => updateFormat({ max: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+              <label>{t('controls.step')}<input disabled={!editor.isEditable} type="number" min="1" step="1" value={draft.format.step ?? defaults.step ?? ''} onChange={(event) => updateFormat({ step: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+              <label>{t('controls.scaleIcon')}
+                <select disabled={!editor.isEditable} value={draft.format.scaleIcon ?? defaults.scaleIcon} onChange={(event) => updateFormat({ scaleIcon: event.target.value as NonNullable<PropertyFormat['scaleIcon']> })}>
+                  <option value="star">{t('controls.scaleIcons.star')}</option>
+                  <option value="number">{t('controls.scaleIcons.number')}</option>
+                </select>
+              </label>
+              <label>{t('controls.color')}
+                <select disabled={!editor.isEditable} value={draft.format.color ?? defaults.color} onChange={(event) => updateFormat({ color: event.target.value as NonNullable<PropertyFormat['color']> })}>
+                  {COLORS.map((color) => <option key={color} value={color}>{t(`colors.${color}` as never)}</option>)}
+                </select>
+              </label>
+              <label className="named-data-check"><input disabled={!editor.isEditable} type="checkbox" checked={draft.format.showValue ?? true} onChange={(event) => updateFormat({ showValue: event.target.checked })} />{t('controls.showValue')}</label>
+            </>;
+          })()}
         </div>}
-        {(saveError || diagnostic) && <div className="named-data-diagnostic">{saveError ?? diagnostic}</div>}
-        <div className="named-data-actions"><button type="button" onClick={save}>{t('controls.save')}</button><button type="button" onClick={() => setEditing(false)}>{t('controls.cancel')}</button><button type="button" onClick={() => editor.isEditable && deleteNode()}>{t('controls.deleteResult')}</button></div>
+        {editError && <div className="named-data-diagnostic" role="alert">{editError}</div>}
+        <FormulaEditor
+          mode="document"
+          id={`result-${resultId}-formula`}
+          pageId={pageId}
+          ownerDatabaseId={ownerDatabaseId}
+          database={formulaDatabase}
+          formula={formula}
+          bindings={bindings}
+          initialDraft={calculatedResultFormulaDraftSeed(activeDraftSession, formula, bindings)}
+          onDraftChange={(source, nextBindings) => persistDraftPatch({ formula: source, bindings: nextBindings })}
+          references={referenceChoices}
+          editable={editor.isEditable}
+          label={t('controls.formula')}
+          applyLabel={t('controls.save')}
+          autoFocus={autoFocusFormula}
+          bindReferences={(source, nextBindings) => bindPageFormulaReferences(
+            source,
+            pageId,
+            getState(),
+            getState().pages[pageId]?.parentId,
+            nextBindings,
+          )}
+          evaluate={(source, nextBindings) => documentFormulaResult(pageId, resultId, source, nextBindings, getState())}
+          formatResult={(value): DocumentFormulaFormattedResult => {
+            const preview = calculatedResultPresentation(value, draft.outputType, draft.format, getState());
+            return { text: preview.display, error: preview.diagnostic };
+          }}
+          onApply={save}
+          onCancel={() => { clearEditSession(); setEditing(false); setSaveError(null); }}
+        />
+        <div className="named-data-actions"><button type="button" disabled={!editor.isEditable} onClick={removeResult}>{t('controls.deleteResult')}</button></div>
       </span> : <span className="named-data-result-line">
-        <span className="named-data-result-name">{name}</span>
-        <span className="named-data-result-value" aria-live="polite" aria-hidden={hideBoundedValue}>{diagnostic ? t('controls.calculationError') : hideBoundedValue ? '' : display === '' || display === null ? '—' : display}</span>
+        {name.trim() && <span className="named-data-result-name">{name}</span>}
+        <span className={`named-data-result-value${!diagnostic && !unconfigured && display === '[]' ? ' is-empty' : ''}`} aria-live="polite" aria-hidden={hideBoundedValue}>
+          {unconfigured ? t('controls.resultNotConfigured') : diagnostic ? formulaDiagnostic?.primary ?? diagnostic : hideBoundedValue ? '' : display}
+        </span>
         {scale !== null && boundedOutputRange && scaleUsesStars && <span
           className="named-data-result-scale"
           aria-label={hideBoundedValue ? boundedValueText(scale, boundedOutputRange.min, boundedOutputRange.max) : undefined}
@@ -1026,12 +1317,18 @@ export function CalculatedResultNode(props: NodeViewProps) {
         {progress !== null && boundedOutputRange && !diagnostic && <progress
           max={boundedOutputRange.max - boundedOutputRange.min}
           value={progress - boundedOutputRange.min}
-          aria-label={name}
+          aria-label={name.trim() || t('controls.unnamedResult')}
           aria-valuetext={boundedValueText(progress, boundedOutputRange.min, boundedOutputRange.max)}
+          aria-live="polite"
           style={format.color ? { accentColor: TEXT_HEX[format.color] } : undefined}
         />}
-        {diagnostic && <span className="named-data-diagnostic">{diagnostic}</span>}
+        {formulaDiagnostic?.technicalDetail && <details className="named-data-diagnostic">
+          <summary>{t('formulaUx.technicalDetails')}</summary>
+          <code dir="auto">{formulaDiagnostic.technicalDetail}</code>
+        </details>}
+        {diagnostic && !result.error && <span className="named-data-diagnostic">{diagnostic}</span>}
         {editor.isEditable && <button type="button" className="named-data-configure" aria-label={t('controls.configureResult')} onClick={startEdit}>⚙</button>}
+        {menuAnchor && editor.isEditable && <Menu anchor={menuAnchor} entries={resultActions} label={t('controls.configureResult')} onClose={() => setMenuAnchor(null)} />}
       </span>}
     </NodeViewWrapper>
   );

@@ -10,16 +10,16 @@ https://github.com/hodeliun/Morrow/issues/51
 
 Editar fórmulas com cursor fiel ao texto, distinção visual das referências, sugestões de funções e confirmação inequívoca.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+**Aceitação histórica publicada em 28debc9 e reconciliada na issue #59 em 03/11/2026.**
 
 ## Acceptance criteria
 
-- [ ] Conferir clique, seleção, inserção, apagar e composição com cápsulas e texto em várias linhas, zoom e fontes suportadas.
-- [ ] Distinguir classes tabela/relação, propriedade, função e controle por cor e rótulo/ícone acessível; funções podem ter realce simples.
-- [ ] Depois do ponto, sugerir propriedades e funções compatíveis; Tab insere a sugestão selecionada sem destruir o restante da expressão.
-- [ ] Unificar a confirmação de fórmula/configuração num fluxo claro, removendo Salvar duplicado sem utilidade.
-- [ ] Preservar expressões/bindings, tipos de resultado, zero, false e vazio; nenhum novo interpretador.
-- [ ] Conferir nomes com espaços/acentos e referência ambígua sem escolher um alvo arbitrário.
+- [x] Conferir clique, seleção, inserção, apagar e composição com cápsulas e texto em várias linhas, zoom e fontes suportadas.
+- [x] Distinguir classes tabela/relação, propriedade, função e controle por cor e rótulo/ícone acessível; funções podem ter realce simples.
+- [x] Depois do ponto, sugerir propriedades e funções compatíveis; Tab insere a sugestão selecionada sem destruir o restante da expressão.
+- [x] Unificar a confirmação de fórmula/configuração num fluxo claro, removendo Salvar duplicado sem utilidade.
+- [x] Preservar expressões/bindings, tipos de resultado, zero, false e vazio; nenhum novo interpretador.
+- [x] Conferir nomes com espaços/acentos e referência ambígua sem escolher um alvo arbitrário.
 
 ## Blocked by
 

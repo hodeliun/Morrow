@@ -692,6 +692,8 @@ export const pt: TranslationSchema = {
     morrowSync: 'a sincronização do Morrow',
     newerVersion:
       'Esta página tem conteúdo de uma versão mais nova do Morrow ({types}). Ela aparece como texto simples e está protegida contra alterações para que nada se perca.',
+    unsupportedCalculatedResult:
+      'Esta página tem um resultado de fórmula que esta versão não pode editar com segurança. Ele aparece como texto simples e fica protegido contra alterações para que nada se perca.',
     cover: 'Capa',
     coverPreview: 'Prévia da capa',
     chooseCoverPreview: 'Escolha uma capa',
@@ -2234,6 +2236,7 @@ export const pt: TranslationSchema = {
     clearCurrentValue: 'Limpar o valor atual antes de salvar',
     currentValueInvalid: 'O valor atual não corresponde a estas configurações. Limpe-o para salvar esta alteração.',
     configurationChanged: 'Este controle foi alterado em outro lugar. Reabra suas configurações e confira o estado atual antes de salvar.',
+    resultChanged: 'Este resultado foi alterado em outro lugar. Reabra suas configurações e confira o estado atual antes de salvar.',
     invalidDefaultValue: 'O valor padrão não corresponde a este controle.',
     invalidName: 'Digite um nome de controle com 1 a 100 caracteres.',
     invalidEmail: 'Digite um endereço de e-mail válido ou deixe o valor em branco.',
@@ -2310,6 +2313,8 @@ export const pt: TranslationSchema = {
     relationUnavailable: 'Esta relação aponta para um banco de dados ou linha que não está mais disponível.',
     pageMissing: 'A página deste resultado não está disponível.',
     formulaRequired: 'Digite uma fórmula para calcular este resultado.',
+    resultNotConfigured: 'Definir fórmula',
+    unnamedResult: 'Resultado sem nome',
     formula: 'Fórmula',
     formulaPlaceholder: 'Exemplo: Despesas.filter(Ano(CurrentValue.Data) = FiltroAno).Valor.sum()',
     filterFormulaPlaceholder: 'Exemplo: Ano(thisRow.Data) = AnoSelecionado',

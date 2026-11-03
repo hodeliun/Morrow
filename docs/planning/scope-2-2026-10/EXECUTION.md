@@ -12,8 +12,8 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T26 (#77), controle de intervalo de datas e períodos rápidos.
-T25 (#76) foi integrado no PR108 e encerrado após CI Windows/Linux da main.
+A única entrega ativa é T27 (#78), resultados de fórmula integrados ao texto.
+T26 (#77) foi integrado no PR109 e encerrado após CI Windows/Linux da main.
 O pré-requisito histórico T14 (#65) foi reconciliado no PR105, após verificação
 direta de documentos/arquivos e CI Windows/Linux. Não acrescenta uma entrega às 24 retomadas.
 O formato persistido 13 e seus contratos estritos
@@ -41,6 +41,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T23 #74 | Catálogo e configuração dos controles existentes | #106 |
 | T24 #75 | Seleção múltipla com IDs estáveis e lista tipada | #107 |
 | T25 #76 | Escala e progresso com números tipados | #108 |
+| T26 #77 | Intervalo de datas e endpoints tipados | #109 |
 
 A dependência histórica T11 (#62), já entregue na integração pública 1.3,
 teve o encerramento reconciliado com seu relatório original em 03/11/2026.

@@ -4218,6 +4218,69 @@ td:hover .prop-empty,
   font-variant-numeric: tabular-nums;
 }
 
+/* Formula results read as prose; only editable controls keep their compact card treatment. */
+.named-data-result {
+  display: inline;
+  margin: 0;
+  vertical-align: baseline;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+}
+
+.named-data-result .named-data-result-line {
+  display: inline;
+  max-width: none;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.named-data-result .named-data-result-name,
+.named-data-result .named-data-result-value {
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+}
+
+.named-data-result .named-data-result-name {
+  opacity: 0.78;
+}
+
+.named-data-result.is-unconfigured .named-data-result-value,
+.named-data-result .named-data-result-value.is-empty {
+  color: var(--text-muted);
+  font-weight: inherit;
+}
+
+.named-data-result.has-error .named-data-result-value {
+  color: var(--danger);
+}
+
+.named-data-result .named-data-configure {
+  width: 1.1em;
+  height: 1.1em;
+  margin-inline-start: 0.16em;
+  padding: 0;
+  vertical-align: -0.08em;
+  font-size: 0.82em;
+  line-height: 1;
+  opacity: 0.62;
+}
+
+.named-data-result .named-data-configure:hover,
+.named-data-result .named-data-configure:focus-visible {
+  opacity: 1;
+}
+
+.named-data-result .named-data-configure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .named-data-control-line input:not([type='checkbox']):not([type='range']),
 .named-data-control-line select {
   width: 114px;
@@ -4232,9 +4295,9 @@ td:hover .prop-empty,
 }
 
 .named-data-control-line input[aria-invalid='true'],
-.named-control-popover input[aria-invalid='true'],
-.named-control-popover select[aria-invalid='true'],
-.named-control-popover textarea[aria-invalid='true'] {
+.named-data-popover input[aria-invalid='true'],
+.named-data-popover select[aria-invalid='true'],
+.named-data-popover textarea[aria-invalid='true'] {
   box-shadow: inset 0 0 0 1px var(--danger);
 }
 
@@ -4304,6 +4367,38 @@ td:hover .prop-empty,
   width: min(340px, calc(100vw - 24px));
 }
 
+.named-data-result-editor {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: auto;
+  box-sizing: border-box;
+  width: min(560px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+  margin: 0;
+  font: var(--text-sm) var(--font-ui);
+}
+
+.named-data-result-editor .formula-editor {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  gap: 6px;
+}
+
+.named-data-result-editor .formula-source-shell,
+.named-data-result-editor .formula-input,
+.named-data-result-editor .formula-highlight {
+  min-height: 84px;
+}
+
+.named-data-result-editor .formula-assist .text-input {
+  flex: 1 1 84px;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .named-data-popover label {
   display: flex;
   flex-direction: column;
@@ -4314,7 +4409,7 @@ td:hover .prop-empty,
 
 .named-data-popover input:not([type='checkbox']),
 .named-data-popover select,
-.named-data-popover textarea {
+.named-data-popover textarea:not(.formula-input) {
   width: 100%;
   min-height: 30px;
   padding: 5px 7px;
@@ -4325,7 +4420,7 @@ td:hover .prop-empty,
   font: var(--text-sm) var(--font-ui);
 }
 
-.named-data-popover textarea {
+.named-data-popover textarea:not(.formula-input) {
   min-height: 64px;
   resize: vertical;
 }

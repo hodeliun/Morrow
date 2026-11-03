@@ -7,6 +7,7 @@ import { Plugin } from '@tiptap/pm/state';
 import { getState, run } from '../workspace';
 import { newId } from '../platform/files';
 import { CalculatedResultNode, NamedControlNode } from '../components/NamedData';
+import { calculatedResultNodeViewOptions } from './calculatedResultNodeView';
 
 interface NamedDataOptions {
   hostPageId: PageId;
@@ -189,7 +190,7 @@ export const CalculatedResult = Node.create<NamedDataOptions>({
     });
     return {
       resultId: decode('resultId', null),
-      name: decode('name', 'Result'),
+      name: decode('name', ''),
       formula: decode('formula', ''),
       bindings: decode('bindings', []),
       outputType: decode('outputType', 'auto'),
@@ -216,6 +217,6 @@ export const CalculatedResult = Node.create<NamedDataOptions>({
   },
 
   addNodeView() {
-    return ReactNodeViewRenderer(CalculatedResultNode);
+    return ReactNodeViewRenderer(CalculatedResultNode, calculatedResultNodeViewOptions(this.options.hostPageId));
   },
 });

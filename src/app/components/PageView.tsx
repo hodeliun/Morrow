@@ -26,6 +26,7 @@ import { RepeatBar } from './RepeatBar';
 import { findDatabaseOf } from '../../core/database';
 import { basename, conflictOriginal, stripExtension } from '../../core/vault/paths';
 import { PageEditor, pageEditorMatchesDocument } from '../editor/PageEditor';
+import { findUnsupportedCalculatedResultContent, shouldRenderMarkdownSourceEditor } from '../editor/calculatedResultSupport';
 import { SourceEditor } from './SourceEditor';
 import { CoverBanner, CoverPicker } from './Cover';
 import { NoteStylePopover } from './NoteStylePopover';
@@ -88,7 +89,10 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const state = useWorkspace();
   const page = state.pages[id];
   const doc = state.docs[id] ?? EMPTY_DOC;
-  const hasUnknownContent = useMemo(() => findUnknownTypes(doc).length > 0, [doc]);
+  const hasUnknownContent = useMemo(
+    () => findUnknownTypes(doc).length > 0 || findUnsupportedCalculatedResultContent(doc).length > 0,
+    [doc],
+  );
   const activeTabId = usePaneTabId() ?? 'unassigned';
   const pane = usePane();
   const [editing, setEditing] = useState(false);
@@ -705,7 +709,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             <div className="banner is-error" role="alert">
               {t('page.contentUnreadable')}
             </div>
-          ) : ui.sourceMode === id && page.kind === 'page' ? (
+          ) : shouldRenderMarkdownSourceEditor(ui.sourceMode, id, page.kind, hasUnknownContent) ? (
             <>
               <div className="banner source-banner" role="note">
                 <span>{t('page.editingAsMarkdown')}</span>
@@ -837,11 +841,14 @@ function PageBody(props: {
   onReady: (editor: Editor) => void;
 }) {
   const unknown = useMemo(() => findUnknownTypes(props.doc), [props.doc]);
-  if (unknown.length > 0) {
+  const unsupportedResults = useMemo(() => findUnsupportedCalculatedResultContent(props.doc), [props.doc]);
+  if (unknown.length > 0 || unsupportedResults.length > 0) {
     return (
       <>
         <div className="banner" role="note">
-          {t('page.newerVersion', { types: unknown.join(', ') })}
+          {unknown.length > 0
+            ? t('page.newerVersion', { types: unknown.join(', ') })
+            : t('page.unsupportedCalculatedResult')}
         </div>
         <pre className="readonly-text">{docToPlainText(props.doc)}</pre>
       </>

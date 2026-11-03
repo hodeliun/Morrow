@@ -1,8 +1,10 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
-import type { DatabaseDef, FormulaReferenceBinding, PageId, PageMeta, PropDef } from '../../../core/model';
+import type { DatabaseDef, FormulaReferenceBinding, PageId, PageMeta, PropDef, WorkspaceState } from '../../../core/model';
 import { displayTitle, newPageMeta } from '../../../core/model';
 import { bindFormulaReferences, formulaResult, formulaValueText, rowsOf } from '../../../core/database';
+import type { FormulaResult } from '../../../core/database';
+import type { FormulaRuntimeValue } from '../../../core/formula';
 import { isEffectivelyTrashed } from '../../../core/tree';
 import { t } from '../../i18n';
 import { tr } from '../../i18n/rich';
@@ -26,6 +28,39 @@ export interface FormulaDraftState {
   source: string;
   bindings: FormulaReferenceBinding[];
   caret: number;
+}
+
+export interface DocumentFormulaDraft {
+  source: string;
+  bindings: FormulaReferenceBinding[];
+}
+
+export function createInitialFormulaDraftState(
+  formula: string,
+  savedBindings: FormulaReferenceBinding[],
+  initialDraft?: DocumentFormulaDraft,
+): FormulaDraftState {
+  const source = initialDraft?.source ?? formula;
+  const bindings = initialDraft
+    ? adjustFormulaBindings(source, source, initialDraft.bindings)
+        .filter(
+          (binding) =>
+            Number.isInteger(binding.start) &&
+            Number.isInteger(binding.end) &&
+            binding.start >= 0 &&
+            binding.end > binding.start &&
+            binding.end <= source.length &&
+            source.slice(binding.start, binding.end) === binding.source,
+        )
+        .map((binding) => ({ ...binding }))
+    : savedBindings;
+  return {
+    baseFormula: formula,
+    baseBindingsKey: JSON.stringify(savedBindings),
+    source,
+    bindings,
+    caret: source.length,
+  };
 }
 
 export interface FormulaSelectionRange {
@@ -126,35 +161,94 @@ export function updateFormulaDraftCaret(
   return { ...current, caret };
 }
 
-export function FormulaEditor({
-  dbId,
-  prop,
-  database,
-  defaultFormula = false,
-  autoFocus = false,
-}: {
+export interface DocumentFormulaReference {
+  key: string;
+  id: string;
+  name: string;
+  formulaName?: string;
+  label?: string;
+  kind: 'control' | 'result';
+}
+
+export interface DocumentFormulaFormattedResult {
+  text: string;
+  error: string | null;
+}
+
+interface DatabaseFormulaEditorProps {
+  mode?: 'database';
   dbId: PageId;
   prop: PropDef;
   database: DatabaseDef;
   defaultFormula?: boolean;
   autoFocus?: boolean;
-}) {
+}
+
+interface DocumentFormulaEditorProps {
+  mode: 'document';
+  id: string;
+  pageId: PageId;
+  ownerDatabaseId: PageId | null;
+  database: DatabaseDef | null;
+  formula: string;
+  bindings: FormulaReferenceBinding[];
+  initialDraft?: DocumentFormulaDraft;
+  onDraftChange?: (source: string, bindings: FormulaReferenceBinding[]) => void;
+  references: DocumentFormulaReference[];
+  editable: boolean;
+  label: string;
+  applyLabel?: string;
+  bindReferences: (source: string, bindings: FormulaReferenceBinding[]) => FormulaReferenceBinding[];
+  evaluate: (source: string, bindings: FormulaReferenceBinding[]) => FormulaResult;
+  formatResult: (value: FormulaRuntimeValue) => DocumentFormulaFormattedResult;
+  onApply: (source: string, bindings: FormulaReferenceBinding[]) => boolean | void;
+  onCancel: () => void;
+  autoFocus?: boolean;
+}
+
+type FormulaEditorProps = DatabaseFormulaEditorProps | DocumentFormulaEditorProps;
+
+export function documentFormulaContext(state: WorkspaceState, pageId: PageId): {
+  ownerDatabaseId: PageId | null;
+  database: DatabaseDef | null;
+} {
+  const parentId = state.pages[pageId]?.parentId ?? null;
+  const owner = parentId ? state.pages[parentId] : undefined;
+  return owner?.kind === 'database' && owner.database
+    ? { ownerDatabaseId: owner.id, database: owner.database }
+    : { ownerDatabaseId: null, database: null };
+}
+
+export function FormulaEditor(props: FormulaEditorProps) {
+  const documentMode = props.mode === 'document' ? props : null;
+  const databaseMode = props.mode === 'document' ? null : props;
+  const dbId = documentMode ? documentMode.ownerDatabaseId : databaseMode!.dbId;
+  const database = documentMode ? documentMode.database : databaseMode!.database;
+  const prop = databaseMode?.prop;
+  const defaultFormula = databaseMode?.defaultFormula ?? false;
+  const autoFocus = props.autoFocus ?? false;
   const state = useWorkspace();
-  const formula = defaultFormula ? (prop.defaultFormula ?? '') : (prop.formula ?? '');
-  const savedBindings = defaultFormula ? (prop.defaultFormulaBindings ?? []) : (prop.formulaBindings ?? []);
+  const formula = documentMode
+    ? documentMode.formula
+    : defaultFormula
+      ? (prop!.defaultFormula ?? '')
+      : (prop!.formula ?? '');
+  const savedBindings = documentMode
+    ? documentMode.bindings
+    : defaultFormula
+      ? (prop!.defaultFormulaBindings ?? [])
+      : (prop!.formulaBindings ?? []);
   const savedBindingsKey = JSON.stringify(savedBindings);
-  const [draftState, setDraftState] = useState<FormulaDraftState>(() => ({
-    baseFormula: formula,
-    baseBindingsKey: savedBindingsKey,
-    source: formula,
-    bindings: savedBindings,
-    caret: formula.length,
-  }));
-  const staleDraft = draftState.baseFormula !== formula || draftState.baseBindingsKey !== savedBindingsKey;
+  const [draftState, setDraftState] = useState<FormulaDraftState>(() =>
+    createInitialFormulaDraftState(formula, savedBindings, documentMode?.initialDraft),
+  );
+  const staleDraft =
+    !documentMode?.initialDraft &&
+    (draftState.baseFormula !== formula || draftState.baseBindingsKey !== savedBindingsKey);
   const draft = staleDraft ? formula : draftState.source;
   const draftBindings = staleDraft ? savedBindings : draftState.bindings;
   const caret = staleDraft ? formula.length : draftState.caret;
-  const [assistTableId, setAssistTableId] = useState(dbId);
+  const [assistTableId, setAssistTableId] = useState<PageId | null>(dbId);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(0);
   const [focused, setFocused] = useState(false);
@@ -164,7 +258,7 @@ export function FormulaEditor({
   const selectionRangeRef = useRef<FormulaSelectionRange>({ start: formula.length, end: formula.length });
   const selectionChangedSinceKeyUpRef = useRef(false);
   const pendingCaretRef = useRef<number | null>(null);
-  const inputId = `${prop.id}-${defaultFormula ? 'default-formula' : 'formula'}`;
+  const inputId = documentMode ? documentMode.id : `${prop!.id}-${defaultFormula ? 'default-formula' : 'formula'}`;
 
   useLayoutEffect(() => {
     syncFormulaHighlightScrollbarGutter(textareaRef.current, highlightRef.current);
@@ -194,19 +288,30 @@ export function FormulaEditor({
     if (autoFocus) textareaRef.current?.focus();
   }, [autoFocus]);
 
-  const previewBindings = bindFormulaReferences(draft, dbId, state, draftBindings);
-  const liveRows = rowsOf(state, dbId);
+  const previewBindings = documentMode
+    ? documentMode.bindReferences(draft, draftBindings)
+    : bindFormulaReferences(draft, dbId!, state, draftBindings);
+  const liveRows = documentMode ? [] : rowsOf(state, dbId!);
   const hasRows = liveRows.length > 0;
-  const previewRow = liveRows[0] ?? makePreviewRow(dbId, database);
-  const previewState = hasRows ? state : { ...state, pages: { ...state.pages, [previewRow.id]: previewRow } };
-  const preview = draft.trim()
-    ? formulaResult(
-        previewRow,
-        { ...prop, formula: draft, formulaBindings: previewBindings },
-        database,
-        0,
-        previewState,
-      )
+  const previewRow = documentMode || !databaseMode || !dbId
+    ? null
+    : liveRows[0] ?? makePreviewRow(dbId, databaseMode.database);
+  const previewState: WorkspaceState = !previewRow || hasRows
+    ? state
+    : { ...state, pages: { ...state.pages, [previewRow.id]: previewRow } };
+  const preview: FormulaResult | null = !draft.trim()
+    ? null
+    : documentMode
+      ? documentMode.evaluate(draft, previewBindings)
+      : formulaResult(
+          previewRow!,
+          { ...prop!, formula: draft, formulaBindings: previewBindings },
+          databaseMode!.database,
+          0,
+          previewState,
+        );
+  const formattedDocumentPreview = documentMode && preview
+    ? documentMode.formatResult(preview.value)
     : null;
   const formulaDiagnostic = preview?.error
     ? presentFormulaDiagnostic(preview.error, {
@@ -220,17 +325,27 @@ export function FormulaEditor({
       (page) => page.kind === 'database' && page.database && !isEffectivelyTrashed(state.pages, page.id),
     )
     .sort((left, right) => displayTitle(left).localeCompare(displayTitle(right)));
-  const assistTable = state.pages[assistTableId];
-  const assistProperties = assistTable?.database?.properties ?? database.properties;
+  const assistTable = assistTableId ? state.pages[assistTableId] : undefined;
+  const assistProperties = assistTable?.database?.properties ?? database?.properties ?? [];
   const suggestions =
-    focused && suggestionsOpen
-      ? formulaSuggestions(draft, caret, dbId, database, state, previewBindings)
+    focused && suggestionsOpen && (!documentMode || documentMode.editable) && database && dbId
+      ? formulaSuggestions(draft, caret, dbId!, database, state, previewBindings)
       : [];
   const selectedSuggestion = suggestions[activeSuggestion];
   const decorations = formulaDecorations(draft, previewBindings, state);
   const dirty = draft !== formula || JSON.stringify(previewBindings) !== JSON.stringify(savedBindings);
 
-  const setDraftSource = (source: string, nextBindings = draftBindings, nextCaret = source.length) => {
+  const notifyDocumentDraftChange = (source: string, bindings: FormulaReferenceBinding[]) => {
+    if (!documentMode?.editable) return;
+    documentMode.onDraftChange?.(source, bindings.map((binding) => ({ ...binding })));
+  };
+
+  const setDraftSource = (
+    source: string,
+    nextBindings = draftBindings,
+    nextCaret = source.length,
+    notify = true,
+  ) => {
     setDraftState({
       baseFormula: formula,
       baseBindingsKey: savedBindingsKey,
@@ -238,6 +353,7 @@ export function FormulaEditor({
       bindings: nextBindings,
       caret: nextCaret,
     });
+    if (notify) notifyDocumentDraftChange(source, nextBindings);
     setActiveSuggestion(0);
     setApplied(false);
   };
@@ -245,7 +361,10 @@ export function FormulaEditor({
   const insertAtEnd = (
     text: string,
     binding?:
-      { kind: 'database'; databaseId: PageId } | { kind: 'property'; databaseId: PageId; propertyId: string },
+      | { kind: 'database'; databaseId: PageId }
+      | { kind: 'property'; databaseId: PageId; propertyId: string }
+      | { kind: 'control'; pageId: PageId; controlId: string }
+      | { kind: 'result'; pageId: PageId; resultId: string },
     bindingText = text,
     caretOffset = text.length,
   ) => {
@@ -270,26 +389,32 @@ export function FormulaEditor({
   };
 
   const save = () => {
-    const bindings = bindFormulaReferences(draft, dbId, state, draftBindings);
-    const saved =
-      !(draft !== formula || JSON.stringify(bindings) !== JSON.stringify(savedBindings)) ||
-      updateProp(dbId, prop.id, (current) =>
-        defaultFormula
-          ? { ...current, defaultFormula: draft, defaultFormulaBindings: bindings }
-          : { ...current, formula: draft, formulaBindings: bindings },
-      );
-    setDraftSource(draft, bindings, caret);
+    if (documentMode && !documentMode.editable) return;
+    const bindings = documentMode
+      ? documentMode.bindReferences(draft, draftBindings)
+      : bindFormulaReferences(draft, dbId!, state, draftBindings);
+    const saved = documentMode
+      ? documentMode.onApply(draft, bindings) !== false
+      : !(draft !== formula || JSON.stringify(bindings) !== JSON.stringify(savedBindings)) ||
+        updateProp(dbId!, prop!.id, (current) =>
+          defaultFormula
+            ? { ...current, defaultFormula: draft, defaultFormulaBindings: bindings }
+            : { ...current, formula: draft, formulaBindings: bindings },
+        );
+    if (saved) setDraftSource(draft, bindings, caret, false);
     setApplied(saved);
     setSuggestionsOpen(false);
   };
 
   const cancel = () => {
-    setDraftSource(formula, savedBindings, formula.length);
+    setDraftSource(formula, savedBindings, formula.length, false);
     setSuggestionsOpen(false);
     pendingCaretRef.current = null;
+    documentMode?.onCancel();
   };
 
   const onTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (documentMode && !documentMode.editable) return;
     if (event.nativeEvent.isComposing) return;
     if (suggestions.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
@@ -304,9 +429,14 @@ export function FormulaEditor({
       selectSuggestion(suggestionToCommit);
       return;
     }
-    if (event.key === 'Escape' && suggestionsOpen) {
+    if (event.key === 'Escape' && suggestionsOpen && (!documentMode || suggestions.length > 0)) {
       event.preventDefault();
       setSuggestionsOpen(false);
+      return;
+    }
+    if (event.key === 'Escape' && documentMode) {
+      event.preventDefault();
+      cancel();
       return;
     }
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -328,6 +458,7 @@ export function FormulaEditor({
       bindings,
       caret: nextCaret,
     });
+    notifyDocumentDraftChange(source, bindings);
     setApplied(false);
     setSuggestionsOpen(true);
     setActiveSuggestion(0);
@@ -341,10 +472,20 @@ export function FormulaEditor({
   };
 
   const insertFunction = (name: string) => insertAtEnd(`${name}()`, undefined, `${name}()`, name.length + 1);
+  const insertDocumentReference = (key: string) => {
+    if (!documentMode) return;
+    const reference = documentMode.references.find((item) => item.key === key);
+    if (!reference) return;
+    const source = formulaIdentifier(reference.formulaName ?? reference.name);
+    const binding = reference.kind === 'control'
+      ? { kind: 'control' as const, pageId: documentMode.pageId, controlId: reference.id }
+      : { kind: 'result' as const, pageId: documentMode.pageId, resultId: reference.id };
+    insertAtEnd(source, binding, source);
+  };
 
   return (
     <div className="field formula-field formula-editor">
-      <span>{defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title')}</span>
+      <span>{documentMode?.label ?? (defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title'))}</span>
       <div className="formula-source-shell">
         <pre className="formula-highlight" aria-hidden="true" ref={highlightRef}>
           <FormulaSource source={draft} decorations={decorations} />
@@ -356,9 +497,10 @@ export function FormulaEditor({
           data-autofocus={autoFocus ? '' : undefined}
           className="text-input small formula-input"
           spellCheck={false}
+          readOnly={documentMode ? !documentMode.editable : undefined}
           value={draft}
-          placeholder='prop("Price") * prop("Count")'
-          aria-label={defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title')}
+          placeholder={documentMode ? t('controls.formulaPlaceholder') : 'prop("Price") * prop("Count")'}
+          aria-label={documentMode?.label ?? (defaultFormula ? t('database.defaultFormula') : t('slash.items.math.title'))}
           aria-describedby={`${inputId}-legend`}
           aria-autocomplete="list"
           aria-expanded={suggestions.length > 0}
@@ -440,6 +582,33 @@ export function FormulaEditor({
         ))}
       </div>
       <div className="formula-assist" aria-label={t('database.formulaAssist')}>
+        {documentMode && (
+          <>
+            <label className="visually-hidden" htmlFor={`${inputId}-reference`}>
+              {t('controls.insertReference')}
+            </label>
+            <select
+              id={`${inputId}-reference`}
+              className="text-input small"
+              value=""
+              aria-label={t('controls.insertReference')}
+              disabled={!documentMode.editable}
+              onChange={(event) => {
+                if (event.target.value) insertDocumentReference(event.target.value);
+                event.currentTarget.value = '';
+              }}
+            >
+              <option value="">{t('controls.chooseReference')}</option>
+              {documentMode.references.map((reference) => (
+                <option key={reference.key} value={reference.key}>
+                  {reference.label ?? t(reference.kind === 'control' ? 'controls.referenceControl' : 'controls.referenceResult', {
+                    name: reference.name,
+                  })}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <label className="visually-hidden" htmlFor={`${inputId}-function`}>
           {t('database.formulaFunction')}
         </label>
@@ -448,6 +617,7 @@ export function FormulaEditor({
           className="text-input small"
           value=""
           aria-label={t('database.formulaFunction')}
+          disabled={documentMode ? !documentMode.editable : undefined}
           onChange={(event) => {
             if (event.target.value) insertFunction(event.target.value);
           }}
@@ -459,32 +629,37 @@ export function FormulaEditor({
             </option>
           ))}
         </select>
-        <label className="visually-hidden" htmlFor={`${inputId}-field`}>
-          {t('database.formulaField')}
-        </label>
-        <select
-          id={`${inputId}-field`}
-          className="text-input small"
-          value=""
-          aria-label={t('database.formulaField')}
-          onChange={(event) => {
-            const field = database.properties.find((item) => item.id === event.target.value);
-            if (!field) return;
-            const name = formulaIdentifier(field.name);
-            insertAtEnd(
-              `thisRow.${name}`,
-              { kind: 'property', databaseId: dbId, propertyId: field.id },
-              name,
-            );
-          }}
-        >
-          <option value="">{t('database.formulaField')}</option>
-          {database.properties.map((field) => (
-            <option key={field.id} value={field.id}>
-              {choiceLabel(field.name, field.id, database.properties)}
-            </option>
-          ))}
-        </select>
+        {database && dbId && (
+          <>
+            <label className="visually-hidden" htmlFor={`${inputId}-field`}>
+              {t('database.formulaField')}
+            </label>
+            <select
+              id={`${inputId}-field`}
+              className="text-input small"
+              value=""
+              aria-label={t('database.formulaField')}
+              disabled={documentMode ? !documentMode.editable : undefined}
+              onChange={(event) => {
+                const field = database.properties.find((item) => item.id === event.target.value);
+                if (!field) return;
+                const name = formulaIdentifier(field.name);
+                insertAtEnd(
+                  `thisRow.${name}`,
+                  { kind: 'property', databaseId: dbId, propertyId: field.id },
+                  name,
+                );
+              }}
+            >
+              <option value="">{t('database.formulaField')}</option>
+              {database.properties.map((field) => (
+                <option key={field.id} value={field.id}>
+                  {choiceLabel(field.name, field.id, database.properties)}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <label className="visually-hidden" htmlFor={`${inputId}-table`}>
           {t('database.formulaTable')}
         </label>
@@ -493,6 +668,7 @@ export function FormulaEditor({
           className="text-input small"
           value=""
           aria-label={t('database.formulaTable')}
+          disabled={documentMode ? !documentMode.editable : undefined}
           onChange={(event) => {
             const table = tables.find((item) => item.id === event.target.value);
             if (!table) return;
@@ -512,11 +688,12 @@ export function FormulaEditor({
             </option>
           ))}
         </select>
-        {assistTableId !== dbId && (
+        {assistTableId && assistTableId !== dbId && (
           <select
             className="text-input small"
             value=""
             aria-label={t('database.formulaTableField')}
+            disabled={documentMode ? !documentMode.editable : undefined}
             onChange={(event) => {
               const field = assistProperties.find((item) => item.id === event.target.value);
               if (!field) return;
@@ -571,35 +748,42 @@ export function FormulaEditor({
             </details>
           )}
         </div>
+      ) : formattedDocumentPreview?.error ? (
+        <div className="formula-error" role="alert" aria-live="polite">
+          <span className="formula-error-primary">{formattedDocumentPreview.error}</span>
+        </div>
       ) : preview ? (
         <div className="formula-preview" role="status" aria-live="polite">
           <span>
             {tr('database.formulaPreview', {
               value: (
                 <strong>
-                  {formulaValueText(prop, preview.value, previewState) || t('database.emptyValue')}
+                  {documentMode
+                    ? formattedDocumentPreview?.text || t('database.emptyValue')
+                    : formulaValueText(prop!, preview.value, previewState) || t('database.emptyValue')}
                 </strong>
               ),
               type: <span className="formula-preview-type">{formulaTypeLabel(preview.value)}</span>,
             })}
           </span>
-          {!hasRows && <span className="muted small">{t('database.formulaNoRows')}</span>}
+          {formattedDocumentPreview?.error && <span className="formula-error-primary">{formattedDocumentPreview.error}</span>}
+          {!documentMode && !hasRows && <span className="muted small">{t('database.formulaNoRows')}</span>}
         </div>
       ) : null}
       <div className="field-inline formula-actions">
         <button
           type="button"
           className="button small"
-          disabled={!dirty}
+          disabled={documentMode ? !documentMode.editable : !dirty}
           onMouseDown={preserveFormulaEditorFocusOnActionMouseDown}
           onClick={save}
         >
-          {t('formulaUx.apply')}
+          {documentMode?.applyLabel ?? t('formulaUx.apply')}
         </button>
         <button
           type="button"
           className="button small"
-          disabled={!dirty}
+          disabled={documentMode ? false : !dirty}
           onMouseDown={preserveFormulaEditorFocusOnActionMouseDown}
           onClick={cancel}
         >
@@ -611,7 +795,7 @@ export function FormulaEditor({
           </span>
         )}
       </div>
-      <details className="formula-help">
+      {!documentMode && <details className="formula-help">
         <summary>{t('database.howFormulasWork')}</summary>
         <p className="muted small">
           {tr('database.formulaHelp', {
@@ -631,7 +815,7 @@ export function FormulaEditor({
                 type="button"
                 className="link-button"
                 onClick={() => {
-                  const bindings = bindFormulaReferences(example, dbId, state, draftBindings);
+                  const bindings = bindFormulaReferences(example, dbId!, state, draftBindings);
                   setDraftSource(example, bindings, example.length);
                   pendingCaretRef.current = example.length;
                 }}
@@ -641,7 +825,7 @@ export function FormulaEditor({
             </li>
           ))}
         </ul>
-      </details>
+      </details>}
     </div>
   );
 }

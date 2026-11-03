@@ -686,6 +686,8 @@ export const en = {
     morrowSync: 'Morrow sync',
     newerVersion:
       'This page contains content from a newer version of Morrow ({types}). It is shown as plain text and protected from changes so nothing is lost.',
+    unsupportedCalculatedResult:
+      'This page has a formula result this version cannot safely edit. It is shown as plain text and protected from changes so nothing is lost.',
     cover: 'Cover',
     coverPreview: 'Cover preview',
     chooseCoverPreview: 'Choose a cover',
@@ -2213,6 +2215,7 @@ export const en = {
     clearCurrentValue: 'Clear current value before saving',
     currentValueInvalid: 'The current value does not match these settings. Clear it to save this change.',
     configurationChanged: 'This control changed elsewhere. Reopen its settings and review the current configuration before saving.',
+    resultChanged: 'This result changed elsewhere. Reopen its settings and review the current configuration before saving.',
     invalidDefaultValue: 'The default value does not match this control.',
     invalidName: 'Enter a control name with 1 to 100 characters.',
     invalidEmail: 'Enter a valid email address or leave the value blank.',
@@ -2288,6 +2291,8 @@ export const en = {
     relationUnavailable: 'This relation points to a table or row that is no longer available.',
     pageMissing: 'The page for this result is unavailable.',
     formulaRequired: 'Enter a formula to calculate this result.',
+    resultNotConfigured: 'Set a formula',
+    unnamedResult: 'Unnamed result',
     formula: 'Formula',
     formulaPlaceholder: 'Example: Expenses.filter(Year(CurrentValue.Date) = YearFilter).Amount.sum()',
     filterFormulaPlaceholder: 'Example: Year(thisRow.Date) = SelectedYear',
