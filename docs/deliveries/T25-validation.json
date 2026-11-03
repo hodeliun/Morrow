@@ -1,0 +1,101 @@
+{
+  "ticket": "T25/#76",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "build": 2,
+    "command": "npm run check",
+    "tests": 1073,
+    "testFiles": 136,
+    "typecheck": "passed",
+    "lint": "passed",
+    "buildStatus": "passed",
+    "sourceFiles": 425,
+    "sourceSha256": "a1ead01ae58558f38f18ba18152c365bed1e66b2088d3edf67c8b3b243f78ddd",
+    "artifacts": 3597,
+    "artifactsSha256": "06957f718d110d3dc09149ad1504f9b65a57f6ad5fcf50b64c5e5a37bcded15c",
+    "packagedArtifactsMatched": 3597
+  },
+  "directed": {
+    "numericTests": 24,
+    "numericFiles": 2,
+    "slashTests": 1,
+    "slashFiles": 1,
+    "slashCatalog": "10 types across EN/PT/ES within one test"
+  },
+  "runtime": {
+    "result": "ui-1793734138763",
+    "resultSha256": "395d99d6e18d6ef9c2aec99921a89cc1ca5fbd3af44224448aac8b0e77e74a6d",
+    "assertions": {
+      "opensWithoutMarkdownWriteAndKeepsUnknownYaml": true,
+      "scaleHasTypedRangeAccessibleValueAndColor": true,
+      "scaleIconColorAndLegendSettingsPersist": true,
+      "scaleCanBeCreatedThroughExactSlashTitleWithoutReplacingFixtureRating": true,
+      "manualProgressFormulaKeepsFractionAndStableBinding": true,
+      "progressSupportsFractionalStepsLimitsAndZeroVersusBlank": true,
+      "reconfigurationRequiresExplicitDefaultAndCurrentResolution": true,
+      "boundFilterUsesUnchangedNumericValue": [
+        "t25-ada"
+      ],
+      "boundFilterTracksScaleByStableID": [
+        "t25-grace"
+      ],
+      "calculatedScaleIsReadOnlyAndPreservesTheFormulaNumber": true,
+      "calculatedScaleReportsOutOfRangeWithoutClamping": true,
+      "legacyCalculatedProgressKeepsFractionalValueAndMaximumOnlyFormat": true,
+      "ptDarkEsLightAndNarrowSettingsStayAccessible": true,
+      "reopenPreservesTypedControlsFormatsUnknownYamlAndLegacyResultBytes": true,
+      "registryBackedTrashPageIsReadOnlyWithoutMarkdownWrites": true
+    },
+    "hiddenSyntheticOnly": true,
+    "appearances": [
+      "EN light",
+      "PT dark420",
+      "ES light1280"
+    ],
+    "pageErrors": 0,
+    "genericBoundaries": 0,
+    "sourceAndPackageStableAfter": true,
+    "childExitCodes": [
+      0,
+      0
+    ],
+    "ownProcessesAfter": 0,
+    "runtimeLeasePresentAfter": false
+  },
+  "screenshots": [
+    {
+      "path": "docs/assets/T25/configuration-pt-dark-420.png",
+      "sha256": "e91c29eaf3a63880f8c8b801834dcc73f2bd058a97b73c8e1c2b2a5b0501e7cf",
+      "caption": "PT dark420: explicit numeric range,icon,color and accessible value settings."
+    },
+    {
+      "path": "docs/assets/T25/configuration-es-light.png",
+      "sha256": "60cccc281ae918f567d6393aaea581b995f1e573844d4f6525278dc25a42630b",
+      "caption": "ES light1280: translated scale configuration. The background range diagnostic is the intentional calculated-value6 outside1..5 case."
+    },
+    {
+      "path": "docs/assets/T25/readonly-scale.png",
+      "sha256": "7fe8a913334f31c92ed97d38be653c8d1db05cb84a8c25f4da9f1aec9da4bd17",
+      "caption": "Synthetic registered Trash note: disabled scale input,value2,legend1..5 and Saved."
+    }
+  ],
+  "negativeHistory": [
+    {
+      "stage": "check01",
+      "cause": "The outputProperty return interface marked format optional even though the helper always constructs it. Type-only return precision corrected; no runtime default added.",
+      "testsOrBuildReached": false
+    },
+    {
+      "stage": "main02",
+      "result": "ui-1793734028184",
+      "cause": "The reused note-route helper required ProseMirror on a correctly loaded database page. Kind-specific route/title/table readiness restored within the same15s; product assertions and package unchanged."
+    }
+  ],
+  "limits": [
+    "Readonly uses a genuinely registered synthetic Trash note,not a claimed external transition.",
+    "Locale/theme checks use prepared preferences plus reload; no live locale claim.",
+    "Calculated-result editor remains the existing simple editor; no T27 draft/history/popup feature is included.",
+    "No native clipboard,personal app/profile/vault,visible native window,installation or release."
+  ]
+}

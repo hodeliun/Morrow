@@ -34,6 +34,7 @@ import {
   Calculator,
 } from 'lucide-react';
 import { foldText } from '../../core/search';
+import { defaultBoundedNumericControlFormat } from '../../core/controls';
 import { isEffectivelyTrashed } from '../../core/tree';
 import type { NamedControlType } from '../../core/model';
 import { t } from '../i18n';
@@ -79,12 +80,18 @@ const linkChild = (
     .run();
 };
 
-function defaultForNamedControl(type: NamedControlType, optionId: string | null): string | number | boolean | string[] | null {
+function defaultForNamedControl(
+  type: NamedControlType,
+  optionId: string | null,
+  format?: ReturnType<typeof defaultBoundedNumericControlFormat>,
+): string | number | boolean | string[] | null {
   switch (type) {
     case 'text':
     case 'date': return '';
     case 'number':
     case 'slider': return 0;
+    case 'scale':
+    case 'progress': return format?.min ?? null;
     case 'checkbox': return false;
     case 'select': return optionId;
     case 'multiSelect': return [];
@@ -104,8 +111,9 @@ function insertNamedControl(editor: Editor, range: Range, options: SlashOptions,
   const choices = type === 'select' || type === 'multiSelect'
     ? [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]
     : [];
+  const format = type === 'scale' || type === 'progress' ? defaultBoundedNumericControlFormat(type) : undefined;
   const optionId = choices[0]?.id ?? null;
-  const value = defaultForNamedControl(type, optionId);
+  const value = defaultForNamedControl(type, optionId, format);
   const databases = type === 'relation'
     ? Object.values(state.pages).filter((item) => item.kind === 'database' && item.database && !isEffectivelyTrashed(state.pages, item.id))
     : [];
@@ -118,7 +126,7 @@ function insertNamedControl(editor: Editor, range: Range, options: SlashOptions,
       type: 'page.control.configure',
       id: page.id,
       now: Date.now(),
-      control: { id, name, type, value, defaultValue: value, options: choices },
+      control: { id, name, type, value, defaultValue: value, options: choices, ...(format ? { format } : {}) },
     });
     if (!created.ok) return;
   }
@@ -140,6 +148,8 @@ const NAMED_CONTROL_SLASH_TYPES: Array<{ id: string; type: NamedControlType }> =
   { id: 'controlText', type: 'text' },
   { id: 'controlNumber', type: 'number' },
   { id: 'controlSlider', type: 'slider' },
+  { id: 'controlScale', type: 'scale' },
+  { id: 'controlProgress', type: 'progress' },
   { id: 'controlSelect', type: 'select' },
   { id: 'controlMultiSelect', type: 'multiSelect' },
   { id: 'controlCheckbox', type: 'checkbox' },

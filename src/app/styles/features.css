@@ -4944,3 +4944,63 @@ td:hover .prop-empty,
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* Numeric scale and progress control presentation. */
+.named-data-result .named-data-result-scale {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.named-data-result .named-data-result-scale small {
+  color: inherit;
+  font: inherit;
+}
+
+.named-control-bounded {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: min(160px, 42vw);
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.named-control-bounded input[type='range'] {
+  width: 100%;
+  min-width: 0;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.named-control-bounded .named-control-progress-display {
+  width: 100%;
+  height: 8px;
+}
+
+.named-control-scale-display {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  min-height: 1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.named-control-scale-display small {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.named-control-range-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.78em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
