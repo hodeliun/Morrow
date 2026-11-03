@@ -1,0 +1,70 @@
+{
+  "ticket": "T21/#72",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "lint": "passed",
+    "typecheck": "passed",
+    "sourceFiles": 398,
+    "testsPassed": 1000,
+    "testFiles": 121,
+    "packagedArtifactsVerified": 3597,
+    "command": "npm run check",
+    "artifactSha256": "c695f01e0eb20a8d8dd5602c5ca83e63b44e757d61348c48fd6a7edbaf1ec8d8",
+    "build": "passed",
+    "sourceSha256": "504267f91673b34ddc9be4c077696627ae73a579c3b789f3949bdf2fe661259e"
+  },
+  "runtime": {
+    "status": "passed",
+    "allSixCriteriaVerified": true,
+    "extras": "ui-1793723374152",
+    "main": "ui-1793723331581",
+    "platform": "Windows",
+    "scope": [
+      "shared primary/secondary/linked history",
+      "focused two-pane CtrlZ",
+      "draft native undo remains separate",
+      "portal menu focus does not consume database history",
+      "ten session actions",
+      "last action recovery on cooperative reopen",
+      "readonly bytes/mtime",
+      "six locale/theme cases"
+    ],
+    "hiddenWindows": true,
+    "mainResultSha256": "b70c7ecdd69e8b577fc3b38db16e3dd0e09b2b2cede943d50b64e6342a3e03e7",
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "syntheticOnly": true,
+    "extrasResultSha256": "ded18932191761e3ae12a66c58c2b88a6348b49aebcb90436992545582657612",
+    "genericBoundaries": 0,
+    "sixAppearancesWidth": 520,
+    "pageErrors": 0
+  },
+  "core": {
+    "dataHistoryCases": 13,
+    "scope": [
+      "atomic two-database action",
+      "ten completed steps",
+      "global32MiB cap with pending preserved",
+      "conflict and post-I/O permissions",
+      "foreign recovery journal",
+      "recovery after controlled interrupted save"
+    ],
+    "directedTests": 38,
+    "directedFiles": 5
+  },
+  "limits": [
+    "Synthetic hidden Windows only; no personal data or OS clipboard. Copy menu item focused only, not invoked",
+    "Persistent recovery is last action only; ten actions in session",
+    "Conflict/interruption/memorycap are controlled core/storage seams, not actual power failure",
+    "Fixtures retained; no deletion claim"
+  ],
+  "cleanup": {
+    "leaseAbsent": true,
+    "ownProcessesAfter": 0,
+    "liveSourceMismatches": 0
+  }
+}

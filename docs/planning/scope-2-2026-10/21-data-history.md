@@ -10,16 +10,16 @@ https://github.com/hodeliun/Morrow/issues/51
 
 Manter dez ações recentes por banco de origem durante a sessão, compartilhadas entre suas views.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+Seis critérios verificados no pacote isolado T21/01. [Entrega e validação](../../deliveries/T21-data-history.md).
 
 ## Acceptance criteria
 
-- [ ] Dados editados em duas views pertencem ao mesmo histórico do banco; desfazer não cria cópias independentes.
-- [ ] Expor desfazer/refazer acessíveis, indicação do próximo efeito e estado indisponível.
-- [ ] Reutilizar comandos tipados e recuperação existente; inversas validam conflitos antes de escrever.
-- [ ] Nova edição invalida redo do escopo afetado; conflitos externos mostram recuperação sem sobrescrever silenciosamente.
-- [ ] Dez entradas por banco na sessão; teto global inicial de 32 MiB descarta apenas entradas concluídas mais antigas, nunca recuperação pendente.
-- [ ] Preservar recuperação persistida atual; não prometer dez ações persistentes após reiniciar.
+- [x] Dados editados em duas views pertencem ao mesmo histórico do banco; desfazer não cria cópias independentes.
+- [x] Expor desfazer/refazer acessíveis, indicação do próximo efeito e estado indisponível.
+- [x] Reutilizar comandos tipados e recuperação existente; inversas validam conflitos antes de escrever.
+- [x] Nova edição invalida redo do escopo afetado; conflitos externos mostram recuperação sem sobrescrever silenciosamente.
+- [x] Dez entradas por banco na sessão; teto global inicial de 32 MiB descarta apenas entradas concluídas mais antigas, nunca recuperação pendente.
+- [x] Preservar recuperação persistida atual; não prometer dez ações persistentes após reiniciar.
 
 ## Blocked by
 

@@ -15,12 +15,16 @@ import type {
 } from '../core/model';
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
-import { descendantsOf, isDescendantOf } from '../core/tree';
+import { descendantsOf, isDescendantOf, isEffectivelyTrashed } from '../core/tree';
 import type { FileCatalogSnapshot } from '../core/vault/fileCatalog';
 import { openRepository } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository } from './repository';
 import { SaveQueue } from './saveQueue';
 import type { SaveQueueOptions, SaveStatus } from './saveQueue';
+import { SessionDataHistory } from './dataHistory';
+import type { DataHistoryCaptureContext, DataHistorySnapshot, DataHistoryStepResult } from './dataHistory';
+import type { TableActionHistoryEntry } from './tableActions';
+import { restoreTableActionHistory } from './tableActions';
 
 type DatabasePasteDirection = 'undo' | 'redo';
 const EMPTY_FILE_CATALOG: FileCatalogSnapshot = { files: [], folders: [] };
@@ -171,6 +175,7 @@ export class WorkspaceSession {
   private readonly lastKept = new Map<PageId, string>();
   private readonly externalListeners = new Set<(patch: ExternalPatch, accepted: PageId[]) => void>();
   private readonly databasePastes = new Map<PageId, DatabasePasteRecord>();
+  private readonly dataHistory = new SessionDataHistory();
   // runs before edits made elsewhere are applied, the app saves open editors here
   beforeExternal: () => void = () => {};
   readonly queue: SaveQueue;
@@ -341,6 +346,7 @@ export class WorkspaceSession {
       options,
     );
     repo.attachState?.(session.getState);
+    await restoreTableActionHistory(session);
     return ok(session);
   }
 
@@ -371,32 +377,123 @@ export class WorkspaceSession {
     ) {
       return fail('This page could not be read, so it is protected from changes.');
     }
-    const result = applyCommand(this.state, command);
-    if (!result.ok) return result;
-    const { state, changes } = result.value;
-    if (state === this.state) return ok(state);
-    this.state = state;
-    this.queue.enqueue(changes);
-    for (const listener of this.listeners) listener();
-    return ok(state);
+    return this.executeAll([command]);
   }
 
   // runs several commands as one unit, nothing is applied if any of them fails
   executeAll(commands: Command[]): Result<WorkspaceState> {
+    return this.executeCommands(commands, undefined, false).result;
+  }
+
+  // Table actions supply their journal identity so an unfinished save stays protected from eviction.
+  executeAllWithDataHistory(
+    commands: Command[],
+    context: DataHistoryCaptureContext,
+  ): { result: Result<WorkspaceState>; historyEntryId: string | null } {
+    return this.executeCommands(commands, context, false);
+  }
+
+  // Undo, redo, legacy property replay and journal recovery do not become new user actions.
+  // Suppression is limited to this synchronous command batch rather than a flag held across awaits.
+  executeHistoryReplay(commands: Command[]): Result<WorkspaceState> {
+    return this.executeCommands(commands, undefined, true).result;
+  }
+
+  executeDataHistoryReplay(commands: Command[]): Result<WorkspaceState> {
+    return this.executeCommands(commands, undefined, true, true).result;
+  }
+
+  private executeCommands(
+    commands: Command[],
+    historyContext: DataHistoryCaptureContext | undefined,
+    replay: boolean,
+    dataHistoryReplay = false,
+  ): { result: Result<WorkspaceState>; historyEntryId: string | null } {
+    const before = this.state;
     let draft = this.state;
     const all = { pages: new Set<PageId>(), docs: new Set<PageId>(), removed: new Set<PageId>() };
     for (const command of commands) {
       const result = applyCommand(draft, command);
-      if (!result.ok) return result;
+      if (!result.ok) return { result, historyEntryId: null };
       draft = result.value.state;
       for (const id of result.value.changes.pages) all.pages.add(id);
       for (const id of result.value.changes.docs) all.docs.add(id);
       for (const id of result.value.changes.removed) all.removed.add(id);
     }
+    const busyDatabaseIds = dataHistoryReplay
+      ? []
+      : this.dataHistory.busyDatabasesForChanges(
+          before,
+          draft,
+          commands,
+          all,
+          historyContext?.databaseId ? [historyContext.databaseId] : [],
+        );
+    if (busyDatabaseIds.length > 0)
+      return {
+        result: fail<WorkspaceState>('A row data history change is still in progress.', {
+          kind: 'dataHistoryBusy',
+          databaseIds: busyDatabaseIds,
+        }),
+        historyEntryId: null,
+      };
     this.state = draft;
     this.queue.enqueue(all);
+    const historyEntryId = replay
+      ? null
+      : this.dataHistory.record(before, draft, commands, all, historyContext);
     for (const listener of this.listeners) listener();
-    return ok(draft);
+    return { result: ok(draft), historyEntryId };
+  }
+
+  getDataHistory = (databaseId: PageId): DataHistorySnapshot => this.dataHistory.getSnapshot(databaseId);
+
+  subscribeDataHistory = (databaseId: PageId, listener: () => void): (() => void) =>
+    this.dataHistory.subscribe(databaseId, listener);
+
+  stepDataHistory(
+    databaseId: PageId,
+    direction: 'undo' | 'redo',
+    canEditNow?: () => boolean,
+    expectedEntryId?: string,
+  ): Promise<DataHistoryStepResult> {
+    return this.dataHistory.step(this, databaseId, direction, canEditNow, expectedEntryId);
+  }
+
+  canEditDataHistoryNow(databaseIds: readonly PageId[], recordIds: readonly PageId[] = []): boolean {
+    for (const databaseId of databaseIds) {
+      const databasePage = this.state.pages[databaseId];
+      if (
+        !databasePage ||
+        databasePage.kind !== 'database' ||
+        !databasePage.database ||
+        databasePage.database.unsupportedProperties?.length ||
+        this.unreadable.has(databaseId) ||
+        isEffectivelyTrashed(this.state.pages, databaseId)
+      )
+        return false;
+    }
+    for (const recordId of recordIds) {
+      if (this.unreadable.has(recordId)) return false;
+      const record = this.state.pages[recordId];
+      const parent = record?.parentId ? this.state.pages[record.parentId] : undefined;
+      if (
+        parent?.kind === 'database' &&
+        (parent.database?.unsupportedProperties?.length ||
+          this.unreadable.has(parent.id) ||
+          isEffectivelyTrashed(this.state.pages, parent.id))
+      )
+        return false;
+    }
+    return true;
+  }
+
+  finishDataHistoryEntry(id: string, status: 'ready' | 'pending'): void {
+    this.dataHistory.finishEntry(id, status);
+  }
+
+  restoreDataHistoryEntry(entry: TableActionHistoryEntry, direction: 'undo' | 'redo' = 'undo'): void {
+    this.dataHistory.restore(entry, this.state, direction);
   }
 
   // database paste creates ordinary pages, while its visible link lives in an editor history event

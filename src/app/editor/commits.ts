@@ -5,12 +5,28 @@ import type { DocNode, PageId } from '../../core/model';
 import { t } from '../i18n';
 import { isMac } from '../platform/desktop';
 import { toast } from '../ui';
-import { getSession, stepProperties } from '../workspace';
+import { dataHistoryEditGuard, getSession, stepProperties } from '../workspace';
 
 // open editors register here so exports and shutdown can save the latest keystrokes first
 const pending = new Set<() => void>();
 let focused: Editor | null = null;
 let focusedPageId: PageId | null = null;
+
+function usesNativeInputUndo(active: Element | null): boolean {
+  if (!active) return false;
+  if (
+    (typeof HTMLTextAreaElement !== 'undefined' && active instanceof HTMLTextAreaElement) ||
+    active.tagName === 'TEXTAREA'
+  )
+    return true;
+  if (
+    !(typeof HTMLInputElement !== 'undefined' && active instanceof HTMLInputElement) &&
+    active.tagName !== 'INPUT'
+  )
+    return false;
+  const input = active as HTMLInputElement;
+  return !['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file'].includes(input.type);
+}
 
 export function registerCommit(commit: () => void): () => void {
   pending.add(commit);
@@ -26,16 +42,40 @@ export function setFocusedEditor(editor: Editor | null, pageId: PageId | null = 
   focusedPageId = pageId;
 }
 
+function routeDataHistoryUndo(active: Element | null, direction: 'undo' | 'redo'): boolean {
+  const root = active?.closest<HTMLElement>('[data-data-history-database]') ?? null;
+  if (!root) return false;
+  const databaseId = root.dataset.dataHistoryDatabase;
+  const canEditNow = dataHistoryEditGuard(root);
+  if (root.dataset.dataHistoryEditable === 'true' && databaseId && canEditNow)
+    void getSession()
+      .stepDataHistory(databaseId, direction, canEditNow)
+      .then((result) => {
+        if (result.status === 'applied' || result.status === 'empty') return;
+        const message =
+          result.status === 'blocked'
+            ? result.reason === 'related'
+              ? t('database.historyBlocked')
+              : t('database.historyPermissionChanged')
+            : result.status === 'conflict'
+              ? t('database.actionRecoveryConflict')
+              : result.status === 'unavailable'
+                ? t('database.dataHistoryUnavailable')
+                : t('database.actionRecoveryPending');
+        toast(message, {
+          tone: result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info',
+        });
+      });
+  return true;
+}
+
 export function undoRedoEditor(editor: Editor, pageId: PageId, direction: 'undo' | 'redo'): boolean {
   const active = typeof document === 'undefined' ? null : document.activeElement;
-  if (
-    active !== null &&
-    ((typeof HTMLInputElement !== 'undefined' && active instanceof HTMLInputElement) ||
-      (typeof HTMLTextAreaElement !== 'undefined' && active instanceof HTMLTextAreaElement))
-  ) {
+  if (usesNativeInputUndo(active)) {
     document.execCommand(direction);
     return true;
   }
+  if (routeDataHistoryUndo(active, direction)) return true;
   commitEditors();
   const previous = editor.state.doc.toJSON() as DocNode;
   const transaction: { value: Transaction | null } = { value: null };
@@ -81,12 +121,15 @@ export function undoRedoEditor(editor: Editor, pageId: PageId, direction: 'undo'
 // routes native menu undo and redo to the editor, or to a plain text field
 export function undoRedo(direction: 'undo' | 'redo'): void {
   const active = document.activeElement;
-  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+  if (usesNativeInputUndo(active)) {
     document.execCommand(direction);
     return;
   }
+  if (routeDataHistoryUndo(active, direction)) return;
   // a canvas shown inside a page keeps its own history, the menu sends it the same keys
-  const canvas = active instanceof HTMLElement ? active.closest('.canvas-view') : null;
+  const canvas = typeof HTMLElement !== 'undefined' && active instanceof HTMLElement
+    ? active.closest('.canvas-view')
+    : null;
   if (canvas) {
     canvas.dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -110,9 +153,30 @@ export function undoRedo(direction: 'undo' | 'redo'): void {
 
 // true when ctrl+z belongs to whatever has focus, text being typed, the page editor or a canvas
 export function ownsUndo(target: EventTarget | null): boolean {
-  if (target instanceof HTMLInputElement) return !['checkbox', 'radio', 'button'].includes(target.type);
-  if (target instanceof HTMLTextAreaElement) return true;
-  return (
-    target instanceof HTMLElement && (target.isContentEditable || target.closest('.canvas-view') !== null)
+  if (!target || typeof target !== 'object') return false;
+  const tagName = 'tagName' in target ? (target as { tagName?: unknown }).tagName : undefined;
+  if (
+    (typeof HTMLInputElement !== 'undefined' && target instanceof HTMLInputElement) ||
+    tagName === 'INPUT'
+  ) {
+    const input = target as HTMLInputElement;
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file'].includes(
+      input.type,
+    );
+  }
+  if (
+    (typeof HTMLTextAreaElement !== 'undefined' && target instanceof HTMLTextAreaElement) ||
+    tagName === 'TEXTAREA'
+  )
+    return true;
+  if (typeof HTMLElement !== 'undefined' && target instanceof HTMLElement)
+    return target.isContentEditable || target.closest('.canvas-view') !== null;
+  const element = target as EventTarget & {
+    isContentEditable?: boolean;
+    closest?: (selector: string) => Element | null;
+  };
+  return Boolean(
+    element.isContentEditable ||
+      (typeof element.closest === 'function' && element.closest('.canvas-view') !== null),
   );
 }

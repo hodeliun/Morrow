@@ -361,6 +361,12 @@ export function trashPage(id: PageId): void {
   const state = getState();
   const page = state.pages[id];
   if (!page) return;
+  const parent = page.parentId ? state.pages[page.parentId] : undefined;
+  const rowDatabaseId = parent?.kind === 'database' && parent.database ? parent.id : null;
+  if (rowDatabaseId && !getSession().canEditDataHistoryNow([rowDatabaseId], [id])) {
+    toast(t('database.unsupportedSchema'), { tone: 'error' });
+    return;
+  }
   const affected = panesShowing(
     (route) =>
       route.name === 'page' &&
@@ -372,6 +378,52 @@ export function trashPage(id: PageId): void {
     if (page.parentId && !isEffectivelyTrashed(result.value.pages, page.parentId))
       navigate({ name: 'page', id: page.parentId, find: null }, { pane });
     else navigate({ name: 'home' }, { pane });
+  }
+  if (rowDatabaseId) {
+    const entry = getSession().getDataHistory(rowDatabaseId).undo;
+    if (!entry?.enabled) {
+      toast(t('toasts.movedToTrash', { title: displayTitle(page) }));
+      toast(
+        entry?.status === 'blocked'
+          ? t('database.historyBlocked')
+          : t('database.dataHistoryUnavailable'),
+        { tone: 'info' },
+      );
+      return;
+    }
+    toast(t('toasts.movedToTrash', { title: displayTitle(page) }), {
+      action: {
+        label: t('toasts.undo'),
+        run: () => {
+          const currentSession = getSession();
+          void currentSession
+            .stepDataHistory(
+              rowDatabaseId,
+              'undo',
+              () => currentSession.canEditDataHistoryNow([rowDatabaseId], [id]),
+              entry.id,
+            )
+            .then((result) => {
+              if (result.status === 'applied') {
+                for (const pane of affected) navigate({ name: 'page', id, find: null }, { pane });
+                return;
+              }
+              const message =
+                result.status === 'blocked'
+                  ? result.reason === 'related'
+                    ? t('database.historyBlocked')
+                    : t('database.historyPermissionChanged')
+                  : result.status === 'conflict'
+                    ? t('database.actionRecoveryConflict')
+                    : result.status === 'pending' || result.status === 'failed'
+                      ? t('database.actionRecoveryPending')
+                      : t('database.dataHistoryUnavailable');
+              toast(message, { tone: result.status === 'conflict' ? 'error' : 'info' });
+            });
+        },
+      },
+    });
+    return;
   }
   toast(t('toasts.movedToTrash', { title: displayTitle(page) }), {
     action: {
