@@ -241,11 +241,31 @@ export interface DesktopImageViewerApi {
   onVaultChanged(listener: () => void): () => void;
 }
 
+export type DesktopMediaViewerIssueResult =
+  | { ok: true; token: string; kind: 'audio' | 'video'; mimeType: string; size: number }
+  | {
+      ok: false;
+      code: 'not-allowed' | 'no-vault' | 'vault-changed' | 'unsupported-type' | 'invalid-resource' | 'file-unavailable';
+    };
+
+export interface DesktopMediaAvailabilityNotice {
+  token: string;
+  code: 'file-unavailable';
+}
+
+export interface DesktopMediaViewerApi {
+  issue(vaultId: string, relativePath: string): Promise<DesktopMediaViewerIssueResult>;
+  release(token: string): Promise<boolean>;
+  onVaultChanged(listener: () => void): () => void;
+  onAvailability(listener: (notice: DesktopMediaAvailabilityNotice) => void): () => void;
+}
+
 export interface DesktopBridge {
   assistant?: DesktopAssistantApi;
   clipboard?: DesktopClipboardApi;
   fileHandlers?: DesktopFileHandlersApi;
   imageViewer?: DesktopImageViewerApi;
+  mediaViewer?: DesktopMediaViewerApi;
   mcp?: DesktopMcpApi;
   vault?: DesktopVaultApi;
   sync?: DesktopSyncApi;

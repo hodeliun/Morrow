@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { dispatchExternalOpenError } from './externalOpenErrors.js';
+import { parseMediaResourceAvailability } from './mediaAvailability.js';
 
 type Listener = (id: string) => void | Promise<void>;
 
@@ -65,6 +66,25 @@ contextBridge.exposeInMainWorld('morrow', {
       const handler = () => listener();
       ipcRenderer.on('image-viewer:vault-changed', handler);
       return () => ipcRenderer.removeListener('image-viewer:vault-changed', handler);
+    },
+  },
+  mediaViewer: {
+    issue: (vaultId: string, relativePath: string) =>
+      ipcRenderer.invoke('media-viewer:issue', vaultId, relativePath),
+    release: (token: string) => ipcRenderer.invoke('media-viewer:release', token),
+    onVaultChanged(listener: () => void) {
+      const handler = () => listener();
+      ipcRenderer.on('media-viewer:vault-changed', handler);
+      return () => ipcRenderer.removeListener('media-viewer:vault-changed', handler);
+    },
+    onAvailability(listener: (notice: { token: string; code: 'file-unavailable' }) => void) {
+      if (typeof listener !== 'function') return () => undefined;
+      const handler = (_event: unknown, value: unknown) => {
+        const notice = parseMediaResourceAvailability(value);
+        if (notice) listener(notice);
+      };
+      ipcRenderer.on('media-viewer:availability', handler);
+      return () => ipcRenderer.removeListener('media-viewer:availability', handler);
     },
   },
   showDataFolder: () => ipcRenderer.invoke('morrow:show-data-folder'),

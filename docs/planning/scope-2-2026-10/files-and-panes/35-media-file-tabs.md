@@ -12,16 +12,16 @@ Continuação de https://github.com/hodeliun/Morrow/issues/51 (sem substituir os
 
 Usar player básico para mídia existente em pasta comum do vault.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+**Implementado e verificado no recorte isolado T35; publicação sequencial autorizada por Carlos.**
 
 ## Acceptance criteria
 
-- [ ] Player tem play/pausa, posição/duração, seek, volume e velocidade; vídeo tem tela cheia e alternativa por teclado.
-- [ ] Servir bytes sob demanda com Range/206/416, MIME, HEAD e cancelamento corretos; arquivo grande não é lido inteiro para começar; não copiar/transcodificar.
-- [ ] Testar reprodução e seek de WAV/PCM e WebM/VP8+Opus no pacote; registrar resultado de MP4/H.264/AAC e demais amostras sem inferir suporte da extensão.
-- [ ] Formato/codec inválido mostra diagnóstico e opção externa; mover/remover arquivo trata erro sem perda de documento.
-- [ ] Ocultar/fechar aba ou trocar vault pausa mídia e libera recursos; restaurar aba/layout não inicia autoplay nem mantém áudio invisível.
-- [ ] Originais não recebem escrita; placeholders mostram disponibilidade real; nada de baixar codecs ou iniciar rede automaticamente.
+- [x] Player tem play/pausa, posição/duração, seek, volume e velocidade; vídeo tem tela cheia e alternativa por teclado.
+- [x] Servir bytes sob demanda com Range/206/416, MIME, HEAD e cancelamento corretos; arquivo grande não é lido inteiro para começar; não copiar/transcodificar.
+- [x] Testar reprodução e seek de WAV/PCM e WebM/VP8+Opus no pacote; registrar resultado de MP4/H.264/AAC e demais amostras sem inferir suporte da extensão.
+- [x] Formato/codec inválido mostra diagnóstico e opção externa; mover/remover arquivo trata erro sem perda de documento.
+- [x] Ocultar/fechar aba ou trocar vault pausa mídia e libera recursos; restaurar aba/layout não inicia autoplay nem mantém áudio invisível.
+- [x] Originais não recebem escrita; placeholders mostram disponibilidade real; nada de baixar codecs ou iniciar rede automaticamente.
 
 ## Blocked by
 
@@ -40,3 +40,7 @@ Preservar arquitetura, comandos/sessão, YAML/Markdown e binários; abrir não g
 [Spec](https://github.com/hodeliun/Morrow/blob/3961657c3d4a27ce3697b7b1c3d0b513202f94bc/docs/planning/scope-2-2026-10/files-and-panes/SPEC.md) · [Grilling](https://github.com/hodeliun/Morrow/blob/3961657c3d4a27ce3697b7b1c3d0b513202f94bc/docs/planning/scope-2-2026-10/files-and-panes/GRILLING.md) · [Aceitação](https://github.com/hodeliun/Morrow/blob/3961657c3d4a27ce3697b7b1c3d0b513202f94bc/docs/planning/scope-2-2026-10/files-and-panes/ACCEPTANCE.md) · [Handoff](https://github.com/hodeliun/Morrow/blob/3961657c3d4a27ce3697b7b1c3d0b513202f94bc/docs/planning/scope-2-2026-10/files-and-panes/HANDOFF.md)
 
 <!-- morrow-scope-2-files-and-panes:T35 -->
+
+## Evidência da entrega isolada
+
+910 testes em 112 arquivos, tipos, lint e compilação aprovados; pacote 3597/3597. UI principal e disponibilidade aprovadas com dados sintéticos, incluindo WAV/PCM, WebM/VP8+Opus e resultado positivo observado da amostra MP4/H.264/AAC. [Comportamento e limites](../../../deliveries/T35-media-file-tabs.md) e [registro verificável](../../../deliveries/T35-validation.json). Sem garantia universal de codecs, teste nativo de fullscreen do Windows ou provedor real de nuvem.

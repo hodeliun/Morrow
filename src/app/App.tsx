@@ -8,7 +8,7 @@ import { ReviewView } from './components/ReviewView';
 import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
-import { ImageFileView } from './components/ImageFileView';
+import { MediaFileView } from './components/MediaFileView';
 import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
@@ -234,7 +234,7 @@ function viewFor(route: Route) {
       return <PageView key={route.id} id={route.id} find={route.find} anchor={route.anchor ?? null} />;
     case 'file':
       return (
-        <ImageFileView
+        <MediaFileView
           key={`${route.vaultId ?? 'invalid'}:${route.path ?? 'invalid'}`}
           vaultId={route.vaultId}
           path={route.path}

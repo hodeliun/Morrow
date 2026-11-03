@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — áudio e vídeo locais (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- Arquivos de áudio e vídeo existentes no vault podem abrir em abas com controles
+  de reprodução, posição, duração, volume e velocidade, sem cópia ou conversão.
+- A mídia usa leitura por intervalos e recursos validados pelo processo principal.
+  Ocultar ou fechar a aba, ou trocar de cofre, pausa e libera a reprodução.
+- Arquivo indisponível e falha de decodificação recebem orientações distintas;
+  o aplicativo não baixa codecs nem obtém arquivos remotos automaticamente.
+
+Detalhes e validação: [T35 — áudio e vídeo locais](docs/deliveries/T35-media-file-tabs.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — imagens em abas próprias (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

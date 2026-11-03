@@ -33,6 +33,12 @@ import { sendExternalOpenError } from './externalOpenErrors.js';
 import { readBoundedImage } from './imageFetch.js';
 import { createImageResourceRegistry, IMAGE_RESOURCE_MIME_TYPES } from './imageResources.js';
 import type { ImageResourceRegistry } from './imageResources.js';
+import { createMediaResourceRegistry } from './mediaResources.js';
+import type { MediaResourceRegistry } from './mediaResources.js';
+import { notifyMediaResourceUnavailable } from './mediaAvailability.js';
+import { MEDIA_FILE_TYPES } from './mediaFileTypes.js';
+import { createMediaProtocolHandler } from './mediaProtocol.js';
+import { allowsAppFullscreenRequest } from './appFullscreenPermission.js';
 import type { ImageResourceOwner } from './imageViewerSecurity.js';
 import {
   createImageResourceOwnerStore,
@@ -94,6 +100,7 @@ const SCHEME = 'morrow';
 // images and files inside the open vault load through this scheme, nothing outside the vault is served
 const FILE_SCHEME = 'morrow-file';
 const IMAGE_SCHEME = 'morrow-image';
+const MEDIA_SCHEME = 'morrow-media';
 const APP_ORIGIN = `${SCHEME}://app`;
 const TRUSTED_MAIN_PROCESS = Symbol('trusted-main-process');
 let activeFileHandlers: FileHandlerModule | null = null;
@@ -140,6 +147,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
   { scheme: FILE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
   { scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true, stream: true } },
+  { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } },
 ]);
 
 let mainWindow: BrowserWindow | null = null;
@@ -147,6 +155,9 @@ let readyToClose = false;
 let activeImageResources: ImageResourceRegistry | null = null;
 let imageResourceEpoch = 0;
 const imageResourceOwners = createImageResourceOwnerStore();
+let activeMediaResources: MediaResourceRegistry | null = null;
+let mediaResourceEpoch = 0;
+const mediaResourceOwners = createImageResourceOwnerStore();
 
 const backupsDir = () => path.join(app.getPath('userData'), 'Backups');
 const windowStateFile = () => path.join(app.getPath('userData'), 'window-state.json');
@@ -189,7 +200,9 @@ if (!app.requestSingleInstanceLock()) {
     protocol.handle(SCHEME, serveApp);
     protocol.handle(FILE_SCHEME, serveVaultFile);
     protocol.handle(IMAGE_SCHEME, serveImageResource);
-    session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    protocol.handle(MEDIA_SCHEME, serveMediaResource);
+    session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) =>
+      callback(allowsAppFullscreenRequest({ webContents: contents, permission, details }, mainWindow, APP_ORIGIN, DEV_URL)));
     session.defaultSession.on('will-download', (_event, item) => {
       item.setSaveDialogOptions({ defaultPath: path.join(app.getPath('documents'), item.getFilename()) });
     });
@@ -377,6 +390,7 @@ async function createWindow(): Promise<void> {
       webSecurity: true,
       spellcheck: true,
       backgroundThrottling: !HIDDEN,
+      ...(HIDDEN ? { disableHtmlFullscreenWindowResize: true } : {}),
       // hidden test windows still paint, so they can be screenshotted
       offscreen: HIDDEN,
       // the built in pdf viewer, for pdfs attached to pages
@@ -386,10 +400,15 @@ async function createWindow(): Promise<void> {
   mainWindow = window;
   readyToClose = false;
   window.webContents.on('did-start-navigation', (details) => {
-    if (shouldClearImageResourcesForNavigation(details.isMainFrame, details.isSameDocument))
+    if (shouldClearImageResourcesForNavigation(details.isMainFrame, details.isSameDocument)) {
       clearImageResources(false);
+      clearMediaResources(false);
+    }
   });
-  window.webContents.on('render-process-gone', () => clearImageResources(false));
+  window.webContents.on('render-process-gone', () => {
+    clearImageResources(false);
+    clearMediaResources(false);
+  });
   if (state.maximized) window.maximize();
   // the window shows at once in the colour of the app rather than after the page's first paint, so opening
   // morrow never looks like nothing happened
@@ -466,6 +485,7 @@ async function createWindow(): Promise<void> {
     if (mainWindow === window) mainWindow = null;
     clearImageResources(false);
     closeVault();
+    clearMediaResources(false);
   });
 
   await window.loadURL(DEV_URL ?? `${APP_ORIGIN}/index.html`);
@@ -552,6 +572,33 @@ function clearImageResources(notify = true): void {
   if (notify) toWindow('image-viewer:vault-changed', null);
 }
 
+function clearMediaResources(notify = true): void {
+  mediaResourceEpoch += 1;
+  activeMediaResources?.clear();
+  mediaResourceOwners.clear();
+  if (notify) toWindow('media-viewer:vault-changed', null);
+}
+
+const handleMediaProtocol = createMediaProtocolHandler({
+  getRegistry: () => activeMediaResources,
+  authorize(request, vaultId, token) {
+    if (
+      !isTrustedImageResourceInitiator(
+        (request as Request & { initiatorOrigin?: string }).initiatorOrigin,
+        APP_ORIGIN,
+        DEV_URL,
+      )
+    )
+      return false;
+    const owner = mediaResourceOwners.get(token);
+    return Boolean(owner && owner.vaultId === vaultId && isLiveCurrentImageOwner(owner));
+  },
+});
+
+function serveMediaResource(request: Request): Promise<Response> {
+  return handleMediaProtocol(request);
+}
+
 function createFileHandlerAdapter() {
   const userDataPath = app.getPath('userData');
   return createFileHandlerModule({
@@ -564,7 +611,10 @@ function createFileHandlerAdapter() {
     native: {
       getCurrentVaultContext: currentVaultContext,
       isTrustedSender: (sender) => sender === TRUSTED_MAIN_PROCESS || fromApp(sender as IpcMainInvokeEvent),
-      getInternalExtensions: () => Object.keys(IMAGE_RESOURCE_MIME_TYPES).map((extension) => `.${extension}`),
+      getInternalExtensions: () => [
+        ...Object.keys(IMAGE_RESOURCE_MIME_TYPES),
+        ...Object.keys(MEDIA_FILE_TYPES),
+      ].map((extension) => `.${extension}`),
       async chooseApplication(kind, _extension, locale) {
         const properties: Array<'openFile' | 'treatPackageAsDirectory'> = ['openFile'];
         if (process.platform === 'darwin') properties.push('treatPackageAsDirectory');
@@ -634,6 +684,13 @@ function registerIpc(): void {
   activeImageResources = createImageResourceRegistry({
     getContext: currentVaultContext,
     userDataPath: app.getPath('userData'),
+  });
+  activeMediaResources = createMediaResourceRegistry({
+    getContext: currentVaultContext,
+    onUnavailable: (token) =>
+      notifyMediaResourceUnavailable(token, mediaResourceOwners, isLiveCurrentImageOwner, (message) =>
+        toWindow('media-viewer:availability', message),
+      ),
   });
   const fileHandlers = createFileHandlerAdapter();
   activeFileHandlers = fileHandlers;
@@ -750,6 +807,60 @@ function registerIpc(): void {
     activeImageResources?.release(token);
     return true;
   });
+  ipcMain.handle('media-viewer:issue', async (event, vaultId: unknown, relativePath: unknown) => {
+    if (!fromImageViewerMainFrame(event)) return { ok: false, code: 'not-allowed' };
+    if (typeof vaultId !== 'string' || !activeImageResources || !activeMediaResources)
+      return { ok: false, code: 'no-vault' };
+
+    const sender = event.sender;
+    const senderFrame = event.senderFrame;
+    const webContentsId = sender.id;
+    const requestEpoch = mediaResourceEpoch;
+    if (!senderFrame) return { ok: false, code: 'not-allowed' };
+
+    const canonicalVaultId = await activeImageResources.getVaultId();
+    if (requestEpoch !== mediaResourceEpoch) return { ok: false, code: 'vault-changed' };
+    if (!canonicalVaultId) return { ok: false, code: 'no-vault' };
+    if (canonicalVaultId !== vaultId) return { ok: false, code: 'vault-changed' };
+    if (!fromImageViewerMainFrame(event)) return { ok: false, code: 'not-allowed' };
+
+    const result = await activeMediaResources.issue(relativePath);
+    if (!result.ok) {
+      if (requestEpoch !== mediaResourceEpoch) return { ok: false, code: 'vault-changed' };
+      return fromImageViewerMainFrame(event) ? result : { ok: false, code: 'not-allowed' };
+    }
+    if (requestEpoch !== mediaResourceEpoch) {
+      activeMediaResources.release(result.token);
+      return { ok: false, code: 'vault-changed' };
+    }
+    if (
+      !fromImageViewerMainFrame(event) ||
+      event.sender !== sender ||
+      event.senderFrame !== senderFrame ||
+      sender.id !== webContentsId
+    ) {
+      activeMediaResources.release(result.token);
+      return { ok: false, code: 'not-allowed' };
+    }
+
+    const claimed = mediaResourceOwners.claim(result.token, {
+      webContentsId,
+      frame: senderFrame,
+      vaultId,
+    });
+    if (!claimed) {
+      activeMediaResources.release(result.token);
+      return { ok: false, code: 'invalid-resource' };
+    }
+    return result;
+  });
+  ipcMain.handle('media-viewer:release', (event, token: unknown) => {
+    const frame = event.senderFrame;
+    if (!fromImageViewerMainFrame(event) || typeof token !== 'string' || !frame) return false;
+    if (!mediaResourceOwners.release(token, event.sender.id, frame)) return false;
+    activeMediaResources?.release(token);
+    return true;
+  });
   registerClipboardHandlers(
     ipcMain as unknown as ClipboardIpcMainLike,
     clipboard as unknown as SystemClipboard,
@@ -855,14 +966,18 @@ function registerVaultIpc(): void {
     const state = await vaultState();
     if (!state.current) return { ok: false, root: null };
     clearImageResources(false);
+    clearMediaResources(false);
     await openVault(state.current, (changes) => toWindow('vault:changes', changes));
+    clearMediaResources();
     clearImageResources();
     return { ok: true, root: state.current };
   });
   handle('vault:close', () => {
+    clearMediaResources(false);
     clearImageResources(false);
     closeVault();
     clearImageResources();
+    clearMediaResources();
   });
   handle('vault:scan', () => scanVault());
   handle('vault:apply', (ops) => applyOps(ops));
