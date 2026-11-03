@@ -3,6 +3,7 @@ import {
   TEXT_HEX,
   formatColumnWidths,
   formatImageCrop,
+  formatImageWidth,
   validBlockBackground,
   validColor,
   validImageAlign,
@@ -12,6 +13,7 @@ import type {
   ConditionalFormatRule,
   DocMark,
   DocNode,
+  ImageAlign,
   ImageCrop,
   PageId,
   UnsupportedConditionalFormat,
@@ -43,25 +45,32 @@ function updateImageMarkerAttribute(raw: string, name: string, value: string | n
   return `${before} ${name}="${safeValue}"${trailing}-->`;
 }
 
-function imageMarkerFromMetadata(value: unknown, attrs: Record<string, unknown>): string | null | undefined {
+function imageMarkerFromMetadata(
+  value: unknown,
+  attrs: Record<string, unknown>,
+): string | null | undefined {
   if (!isRecord(value) || typeof value.raw !== 'string' || !isRecord(value.baseline)) return undefined;
   let raw = value.raw;
   if (!/^<!--\s*morrow:image\b[\s\S]*-->$/i.test(raw)) return undefined;
+
   const current = {
-    align: validImageAlign(attrs.align) ?? 'center',
+    align: (validImageAlign(attrs.align) ?? 'center') as ImageAlign,
     caption: typeof attrs.caption === 'string' ? attrs.caption : '',
     crop: formatImageCrop(attrs.crop as ImageCrop | null),
+    width: formatImageWidth(attrs.width),
   };
   const baseline = value.baseline;
   const previous = {
     align: validImageAlign(baseline.align) ?? 'center',
     caption: typeof baseline.caption === 'string' ? baseline.caption : '',
     crop: formatImageCrop(baseline.crop as ImageCrop | null),
+    width: formatImageWidth(baseline.width),
   };
   const fields: Array<{ name: string; previous: string | null; current: string | null }> = [
     { name: 'align', previous: previous.align, current: current.align },
     { name: 'caption', previous: previous.caption, current: current.caption },
     { name: 'crop', previous: previous.crop, current: current.crop },
+    { name: 'width', previous: previous.width, current: current.width },
   ];
   for (const field of fields) {
     if (field.previous !== field.current) {
@@ -339,14 +348,16 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
           ? node.attrs.caption.trim()
           : null;
       const crop = formatImageCrop(node.attrs?.crop as ImageCrop | null);
+      const width = formatImageWidth(node.attrs?.width);
       const preservedMarker = imageMarkerFromMetadata(node.attrs?.markerMetadata, node.attrs ?? {});
       if (preservedMarker !== undefined)
         return preservedMarker === null ? markdown : `${preservedMarker}\n${markdown}`;
-      if (align || caption || crop) {
+      if (align || caption || crop || width) {
         const parts = ['morrow:image'];
         if (align) parts.push(`align="${align}"`);
         if (caption) parts.push(`caption="${imageCaptionForMarker(caption)}"`);
         if (crop) parts.push(`crop="${crop}"`);
+        if (width) parts.push(`width="${width}"`);
         return `<!-- ${parts.join(' ')} -->\n${markdown}`;
       }
       return markdown;

@@ -2,6 +2,21 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — tamanho individual de imagens (fontes, sem novo download)
+
+Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.
+
+- Cada imagem pode usar uma largura de 1% a 100% do contêiner, inclusive em colunas,
+  sem alterar o arquivo de imagem. Recorte, legenda e alinhamento são preservados.
+- A alça oferece prévia contínua; o painel de largura fornece alternativa por
+  teclado. Cancelar restaura a apresentação anterior, e confirmar o arraste grava
+  uma única edição. Desfazer e reabrir mantêm o tamanho escolhido.
+- Os controles se posicionam dentro da região visível e se ajustam a imagens
+  pequenas, tipografia ampliada e mudanças para somente leitura.
+
+Detalhes e validação: [T18 — tamanho individual de imagens](docs/deliveries/T18-image-sizing.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — composição em colunas (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0; nenhuma sincronização upstream nesta entrega.

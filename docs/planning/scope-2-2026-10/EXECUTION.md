@@ -8,6 +8,10 @@ as issues dessa entrega antes de iniciar a seguinte. Os grupos históricos abaix
 não autorizam frentes simultâneas. Preservar o restante do WIP em pausa e reutilizar
 evidências válidas; aceite local não equivale a entrega publicada.
 
+O mantenedor autorizou continuidade automática entre essas entregas: não aguardar
+nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
+dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
+
 A primeira entrega isolada é T20 (#71): ações de colunas, inserção entre blocos e
 um único indicador de drop. Pré-requisitos estritos de preservação de conteúdo
 integram essa mesma entrega; a interface de resize do T18 e demais funcionalidades

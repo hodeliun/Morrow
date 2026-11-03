@@ -710,6 +710,7 @@ export const pt: TranslationSchema = {
     imageCaption: 'Legenda',
     editCaption: 'Editar legenda',
     cropImage: 'Recortar imagem',
+    imageResize: 'Redimensionar imagem',
     resetCrop: 'Redefinir recorte',
     applyCrop: 'Aplicar recorte',
     cancelCrop: 'Cancelar recorte',

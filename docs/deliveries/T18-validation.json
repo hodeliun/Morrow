@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T18",
+  "issue": "https://github.com/hodeliun/Morrow/issues/69",
+  "officialBaseVersion": "1.3.0",
+  "publicBase": "3f560ff2e13a9202a7d7a8787d5457a47fc3fa3b",
+  "scope": "Individual image display width and accessible resize controls; no database schema migration",
+  "isolatedGate": {
+    "command": "npm run check",
+    "snapshot": "T18-isolated-02",
+    "status": "passed",
+    "tests": 823,
+    "testFiles": 99,
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "sourceUnchanged": true,
+    "sourceFiles": 358,
+    "artifactFiles": 3597,
+    "sourceSha256": "073d24f501b69a30af887c3700e7a7962f9ea460a59a89a375c714ea344753d2",
+    "artifactsSha256": "4e95cea3e58dd13cbb1401124d05bb704ad2ddc853eec9c8bce714e40a72effd"
+  },
+  "runtime": {
+    "status": "passed",
+    "allSixCriteriaVerified": true,
+    "scenarios": [
+      {
+        "report": "ui-1793706985790",
+        "rawReportSha256": "6bd7b6c023f0ac439c1593972dd2d43ee56480fd7bfba2fd2574512670e2f77f",
+        "status": "passed",
+        "sourceSha256": "073d24f501b69a30af887c3700e7a7962f9ea460a59a89a375c714ea344753d2",
+        "artifactsSha256": "4e95cea3e58dd13cbb1401124d05bb704ad2ddc853eec9c8bce714e40a72effd",
+        "assertionNames": [
+          "pointerResize",
+          "cancel",
+          "independentImages",
+          "alignmentAndPreservedAttrs",
+          "reopen",
+          "syntheticImagesUnchanged"
+        ],
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "packagedStableAfter": true,
+        "rendererErrors": 0,
+        "genericErrorBoundaries": 0
+      },
+      {
+        "report": "ui-1793707013524",
+        "rawReportSha256": "a41a1cff71b5b1880aa4b5d23bf99622f53688e63762499df552dffc0d387ad8",
+        "status": "passed",
+        "sourceSha256": "073d24f501b69a30af887c3700e7a7962f9ea460a59a89a375c714ea344753d2",
+        "artifactsSha256": "4e95cea3e58dd13cbb1401124d05bb704ad2ddc853eec9c8bce714e40a72effd",
+        "assertionNames": [
+          "openNoWrite",
+          "narrowGeometry",
+          "localizedThemeGeometryMatrix",
+          "tinyImagePointerReach",
+          "tinyImageTopViewportPointerReach",
+          "hitTargetAction",
+          "keyboardResizeAndUndo",
+          "captionMarkerRoundtrip",
+          "localReplacement",
+          "reopen",
+          "readonlyMidDrag"
+        ],
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "packagedStableAfter": true,
+        "rendererErrors": 0,
+        "genericErrorBoundaries": 0
+      },
+      {
+        "report": "ui-1793707056508",
+        "rawReportSha256": "be977be0b71b97efb8c8c061e3a58775102e08191c26b090f6db9c5731e04e9c",
+        "status": "passed",
+        "sourceSha256": "073d24f501b69a30af887c3700e7a7962f9ea460a59a89a375c714ea344753d2",
+        "artifactsSha256": "4e95cea3e58dd13cbb1401124d05bb704ad2ddc853eec9c8bce714e40a72effd",
+        "assertionNames": [
+          "openNoWrite",
+          "narrowGeometry",
+          "localizedThemeGeometryMatrix",
+          "tinyImagePointerReach",
+          "tinyImageTopViewportPointerReach",
+          "hitTargetAction",
+          "keyboardResizeAndUndo",
+          "captionMarkerRoundtrip",
+          "localReplacement",
+          "reopen",
+          "readonlyMidDrag"
+        ],
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "packagedStableAfter": true,
+        "rendererErrors": 0,
+        "genericErrorBoundaries": 0
+      }
+    ],
+    "maxTypography": {
+      "fontSizePx": 32,
+      "lineHeight": 2.4
+    },
+    "viewportWidthCssPx": 520,
+    "languages": [
+      "en",
+      "pt",
+      "es"
+    ],
+    "themes": [
+      "light",
+      "dark"
+    ],
+    "readonlyMidDrag": "Preview cancelled and controls hidden with no document write",
+    "localReplacement": "Real import with synthetic picker input; originals outside vault unchanged",
+    "processesAfter": 0,
+    "leaseEnded": true,
+    "limits": [
+      "Hidden isolated Electron profiles and synthetic vaults; no personal apps or OS clipboard",
+      "Public native wheel navigation cancels pending reading-position restoration before geometry checks",
+      "Initial cooperative-close timeout and layout-readiness negatives retained privately; accepted runs all exited0",
+      "No installer or release is published by this source delivery"
+    ]
+  },
+  "publication": {
+    "downloadableRelease": false,
+    "installed": false,
+    "otherTicketsIncluded": false
+  },
+  "initialGate": {
+    "command": "npm run check",
+    "status": "passed",
+    "tests": 822,
+    "testFiles": 99,
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "sourceUnchanged": true,
+    "sourceFiles": 358,
+    "artifactFiles": 3597,
+    "sourceSha256": "f06c131f12317b2e2fcc9e1819b344f59c4f0437d911eb2a2c5fdb0f7060c094",
+    "artifactsSha256": "05eb7c0ea98dc50b83f39d1fb88d9aaff8a5259327b319d5015e6eda099a24be"
+  },
+  "correctedBeforePublication": "Closed image toolbars must remain reachable from the visible painted image even when repositioned due to handle/sibling collisions; direct overlap/touch is valid connectivity",
+  "packagedArtifact": {
+    "status": "passed",
+    "artifactsVerified": 3597,
+    "allMatch": true,
+    "executableSha256": "e2db4a8593198fb55df0e02b9392f91bfe24a83de2f2746b2194227857d461d2",
+    "asarSha256": "75452bd7e2131dac459adbcadbbfb044e64aa7c541d4db0e162977ecc863e16c",
+    "dependencyReader": "Pinned ASAR reader3.4.1 from physical existing dependency root"
+  }
+}

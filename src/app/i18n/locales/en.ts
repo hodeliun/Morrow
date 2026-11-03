@@ -703,6 +703,7 @@ export const en = {
     imageCaption: 'Caption',
     editCaption: 'Edit caption',
     cropImage: 'Crop image',
+    imageResize: 'Resize image',
     resetCrop: 'Reset crop',
     applyCrop: 'Apply crop',
     cancelCrop: 'Cancel crop',
