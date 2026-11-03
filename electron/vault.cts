@@ -204,7 +204,7 @@ export async function openVault(dir: string, onChanges: (changes: VaultChange[])
   if (generation !== vaultGeneration) return;
   root = nextRoot;
   realRoot = nextRealRoot;
-  startWatching(onChanges);
+  await startWatching(onChanges);
 }
 
 export function closeVault(): void {
@@ -669,7 +669,7 @@ export function vaultFilePath(relative: string): string | null {
 }
 
 // changes are gathered for a moment, then each path is looked at once
-function startWatching(onChanges: (changes: VaultChange[]) => void): void {
+async function startWatching(onChanges: (changes: VaultChange[]) => void): Promise<void> {
   if (!root || !realRoot) return;
   const watchRoot = root;
   const watchRealRoot = realRoot;
@@ -741,7 +741,7 @@ function startWatching(onChanges: (changes: VaultChange[]) => void): void {
   // watching each folder sees every name that changes inside it, however the file was written
   const perFolder = process.platform === 'linux';
   if (perFolder) {
-    void watchTree(watchRoot, queue, 0, watchRoot, watchRealRoot, watchGeneration);
+    await watchTree(watchRoot, queue, 0, watchRoot, watchRealRoot, watchGeneration);
     return;
   }
   try {

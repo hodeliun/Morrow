@@ -25,7 +25,7 @@ const untrustedSender = { kind: 'remote-renderer' };
 const temporaryRoots: string[] = [];
 
 async function makeHarness(internalExtensions: string[] = []) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'morrow-file-handler-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'morrow-file-handler-')));
   temporaryRoots.push(root);
   const vaultRoot = path.join(root, 'vault');
   const userDataPath = path.join(root, 'profile');
