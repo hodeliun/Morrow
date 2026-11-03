@@ -1,4 +1,4 @@
-import { Check, Play, Plus, RefreshCw, Undo2, X } from 'lucide-react';
+import { Check, Play, Plus, RefreshCw, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatDisplayValue } from '../../../core/database';
@@ -6,7 +6,7 @@ import { BACKGROUND_HEX, displayTitle, TEXT_HEX } from '../../../core/model';
 import type { PageId, PageMeta, PropDef, TableActionIcon } from '../../../core/model';
 import { planTableAction, tableActionAvailability } from '../../../core/tableActions';
 import type { TableActionPlan } from '../../../core/tableActions';
-import { readTableActionJournal, recoverTableAction, undoTableAction } from '../../../storage/tableActions';
+import { readTableActionJournal, recoverTableAction } from '../../../storage/tableActions';
 import type { TableActionJournal } from '../../../storage/tableActions';
 import { newId } from '../../platform/files';
 import { getLocale, t } from '../../i18n';
@@ -231,10 +231,23 @@ function ActionRowChanges({ row, plan }: { row: PageMeta; plan: TableActionPlan 
   );
 }
 
-export function TableActionRecoveryNotice({ dbId }: { dbId: PageId }) {
+export function TableActionRecoveryNotice({
+  dbId,
+  editable = true,
+  canEditNow,
+}: {
+  dbId: PageId;
+  editable?: boolean;
+  canEditNow?: () => boolean;
+}) {
   const [journal, setJournal] = useState<TableActionJournal | null>(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const canRecoverNow = useCallback(
+    () =>
+      editable && (canEditNow?.() ?? true) && getSession().canEditDataHistoryNow([dbId]),
+    [canEditNow, dbId, editable],
+  );
 
   const refresh = useCallback(async () => {
     const current = await readTableActionJournal(getSession());
@@ -244,13 +257,17 @@ export function TableActionRecoveryNotice({ dbId }: { dbId: PageId }) {
     }
     setJournal(current);
     if (current.status === 'prepared' || current.status === 'undoing') {
+      if (!canRecoverNow()) {
+        setMessage(t('database.historyPermissionChanged'));
+        return;
+      }
       setBusy(true);
-      const recovered = await recoverTableAction(getSession());
+      const recovered = await recoverTableAction(getSession(), canRecoverNow);
       setJournal('journal' in recovered ? recovered.journal : current);
       setMessage(recoveryMessage(recovered.status));
       setBusy(false);
     }
-  }, [dbId]);
+  }, [canRecoverNow, dbId]);
 
   useEffect(() => {
     const initialRefresh = window.setTimeout(() => void refresh(), 0);
@@ -264,24 +281,11 @@ export function TableActionRecoveryNotice({ dbId }: { dbId: PageId }) {
 
   if (!journal || journal.databaseId !== dbId || journal.status === 'aborted') return null;
   const recover = async () => {
+    if (!canRecoverNow()) return;
     setBusy(true);
-    const result = await recoverTableAction(getSession());
+    const result = await recoverTableAction(getSession(), canRecoverNow);
     if ('journal' in result) setJournal(result.journal);
     setMessage(recoveryMessage(result.status));
-    setBusy(false);
-  };
-  const undo = async () => {
-    setBusy(true);
-    const result = await undoTableAction(getSession());
-    if ('journal' in result) setJournal(result.journal);
-    setMessage(
-      result.status === 'undone'
-        ? t('database.actionRecoveryUndone')
-        : result.status === 'none'
-          ? t('database.actionRecoveryPending')
-          : result.message,
-    );
-    window.dispatchEvent(new Event('morrow-table-action-changed'));
     setBusy(false);
   };
   const needsRecovery =
@@ -299,13 +303,13 @@ export function TableActionRecoveryNotice({ dbId }: { dbId: PageId }) {
     <aside className="table-action-recovery" role="status" aria-live="polite">
       <span>{message || notice}</span>
       {needsRecovery && (
-        <button type="button" className="button small" disabled={busy} onClick={() => void recover()}>
+        <button
+          type="button"
+          className="button small"
+          disabled={busy || !canRecoverNow()}
+          onClick={() => void recover()}
+        >
           {t('database.actionRecover')}
-        </button>
-      )}
-      {journal.status === 'complete' && (
-        <button type="button" className="button small" disabled={busy} onClick={() => void undo()}>
-          <Undo2 size={13} /> {t('database.actionUndo')}
         </button>
       )}
     </aside>
@@ -317,6 +321,7 @@ function planSignature(plan: TableActionPlan): string {
 }
 
 function recoveryMessage(status: string): string {
+  if (status === 'blocked') return t('database.historyPermissionChanged');
   if (status === 'complete') return t('database.actionRecoveryComplete');
   if (status === 'undone') return t('database.actionRecoveryUndone');
   if (status === 'conflict') return t('database.actionRecoveryConflict');

@@ -1658,6 +1658,7 @@ export const en = {
     linkedViewSourceValidationIncomplete:
       'Some future schema, view-marker, or format data is opaque and could not be checked for compatibility.',
     linkedViewDescription: 'Show an existing database here with its own filters and layout',
+    linkedViewUpdateConflict: 'This linked view changed before the edit could be saved. No change was applied.',
     chooseSource: 'Choose source database',
     openSourceDatabase: 'Open source database',
     chooseSourceHint: 'Choose an existing database to show its shared rows here.',
@@ -1885,6 +1886,9 @@ export const en = {
     actionUndo: 'Undo action',
     dataHistory: 'Data history',
     historyDataChange: 'Edit row data',
+    contextualHistory: 'View and data history',
+    historyViewChange: 'Change view “{view}”',
+    propertyHistoryConflict: 'This schema history conflicts with newer view settings. The change was not applied.',
     dataHistoryBusy: 'Finish the current undo or redo before editing this table.',
     historyBlocked: 'Undo the newer change in the related table first.',
     historyPermissionChanged: 'Editing is no longer allowed. No history change was applied.',

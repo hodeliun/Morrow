@@ -93,15 +93,17 @@ import {
 } from '../../platform/clipboard';
 import { newId } from '../../platform/files';
 import { openPage } from '../../router';
+import { stepLinkedViewContextualHistory } from '../../editor/commits';
 import {
   getSession,
   getState,
   registerDataHistoryEditGuard,
   run,
   runAll,
-  useDataHistory,
+  useContextualHistory,
   useWorkspace,
 } from '../../workspace';
+import type { ViewHistoryIdentity } from '../../../storage/viewHistoryCapture';
 import { Menu } from '../Menu';
 import type { MenuEntry } from '../Menu';
 import { Popover } from '../Popover';
@@ -125,7 +127,7 @@ import { PropertyGlyph, PropertyTypeSelect } from './PropertyTypeSelect';
 import { presentFormulaDiagnostic } from './formulaEditorModel';
 import type { FormulaDiagnosticPresentation } from './formulaEditorModel';
 import { TableActionRecoveryNotice } from './TableActionCell';
-import { dateLocale, getLocale, t, tp } from '../../i18n';
+import { dateLocale, getLocale, t, tp, useTranslation } from '../../i18n';
 import { colorLabel, filterLabel, propLabel, viewLabel, viewName } from '../../i18n/labels';
 import { durationUnitFactor, isNumericPropertyType, scalarValueError } from '../../../core/typedValues';
 import { linkedViewReferences } from '../../../core/linkedViews';
@@ -139,6 +141,8 @@ import {
   movePropertyInViewOrder,
   orderedColumnIds,
 } from './columnActions';
+import { commitColumnDrop, createColumnResizeGesture } from './viewGestures';
+import { transitionViewSearchDraft } from './viewDrafts';
 import {
   isColumnReadOnly,
   planGridClear,
@@ -471,23 +475,32 @@ function useViewUpdater(dbId: PageId, viewId: string) {
 
 function DatabaseHistoryControls({
   dbId,
+  identity,
   editable,
   canEditNow,
 }: {
   dbId: PageId;
+  identity: ViewHistoryIdentity;
   editable: boolean;
   canEditNow?: () => boolean;
 }) {
-  const history = useDataHistory(dbId);
+  const history = useContextualHistory(dbId, identity);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const canRun = () => editable && (canEditNow?.() ?? true);
   const actionLabel = (item: NonNullable<typeof history.undo>) =>
-    item.label === 'database.historyDataChange' ? t('database.historyDataChange') : item.label;
+    item.owner.kind === 'data'
+      ? t('database.historyDataChange')
+      : t('database.historyViewChange', { view: item.owner.name });
   const step = async (direction: 'undo' | 'redo') => {
     if (busy || !canRun()) return;
+    const item = history[direction];
+    if (!item) return;
     setBusy(true);
-    const result = await getSession().stepDataHistory(dbId, direction, canRun);
+    const result =
+      identity.kind === 'linked'
+        ? await stepLinkedViewContextualHistory(dbId, identity, direction, canRun)
+        : await getSession().stepContextualHistory(dbId, identity, direction, canRun, item.id);
     const nextNotice =
       result.status === 'applied' || result.status === 'empty'
         ? null
@@ -518,7 +531,7 @@ function DatabaseHistoryControls({
     return null;
   };
   return (
-    <div className="db-data-history-controls" role="group" aria-label={t('database.dataHistory')}>
+    <div className="db-data-history-controls" role="group" aria-label={t('database.contextualHistory')}>
       <button
         type="button"
         className="icon-button small"
@@ -548,6 +561,31 @@ function DatabaseHistoryControls({
   );
 }
 
+function stepFocusedViewHistory(
+  dbId: PageId,
+  identity: ViewHistoryIdentity,
+  direction: 'undo' | 'redo',
+  canEditNow?: () => boolean,
+): void {
+  const step = identity.kind === 'linked'
+    ? stepLinkedViewContextualHistory(dbId, identity, direction, canEditNow)
+    : getSession().stepContextualHistory(dbId, identity, direction, canEditNow);
+  void step.then((result) => {
+    if (result.status === 'applied' || result.status === 'empty') return;
+    const message =
+      result.status === 'blocked'
+        ? result.reason === 'related'
+          ? t('database.historyBlocked')
+          : t('database.historyPermissionChanged')
+        : result.status === 'conflict'
+          ? t('database.actionRecoveryConflict')
+          : result.status === 'unavailable'
+            ? t('database.dataHistoryUnavailable')
+            : t('database.actionRecoveryPending');
+    toast(message, { tone: result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info' });
+  });
+}
+
 type QuickFilterDraft = { rule: FilterRule; enabled: boolean };
 const EMPTY_QUICK_FILTERS: QuickFilterDraft[] = [];
 
@@ -556,6 +594,7 @@ export function DatabaseView({
   editable,
   canEditNow,
   hostPageId,
+  linkedBlockId,
   embeddedView,
   linkedSourceOptions,
   onEmbeddedViewChange,
@@ -564,13 +603,25 @@ export function DatabaseView({
   editable: boolean;
   canEditNow?: () => boolean;
   hostPageId?: PageId;
+  linkedBlockId?: string;
   embeddedView?: ViewDef;
   linkedSourceOptions?: LinkedViewSourceOptions;
   onEmbeddedViewChange?: (change: (view: ViewDef) => ViewDef) => void;
 }) {
+  useTranslation();
   const state = useWorkspace();
   const database = useMemo(() => page.database ?? { properties: [], views: [] }, [page.database]);
   const canEdit = editable && !database.unsupportedProperties?.length;
+  const contextHistoryRootRef = useRef<HTMLElement>(null);
+  const canEditContextHistory = useCallback(
+    () => canEdit && (canEditNow?.() ?? true),
+    [canEdit, canEditNow],
+  );
+  useEffect(() => {
+    const root = contextHistoryRootRef.current;
+    if (!root) return;
+    return registerDataHistoryEditGuard(root, canEditContextHistory);
+  }, [canEditContextHistory]);
   const [viewId, setViewId] = useState<string | null>(() => readViewChoice(page.id));
   const tabsViewportRef = useRef<HTMLDivElement>(null);
   const [tabScrollHints, setTabScrollHints] = useState({ left: false, right: false });
@@ -589,21 +640,56 @@ export function DatabaseView({
   const [linkedViewsExpanded, setLinkedViewsExpanded] = useState(false);
   const view =
     embeddedView ?? database.views.find((candidate) => candidate.id === viewId) ?? database.views[0] ?? null;
+  const [searchDraftByView, setSearchDraftByView] = useState<
+    Record<string, { baseView: ViewDef; draft: string }>
+  >({});
+  const savedSearch = view?.search ?? '';
+  const storedSearchDraft = view ? searchDraftByView[view.id] : undefined;
+  const searchDraft =
+    view && storedSearchDraft?.baseView === view ? storedSearchDraft.draft : savedSearch;
+  const searchView = useMemo(
+    () => (view && view.search !== searchDraft ? { ...view, search: searchDraft } : view),
+    [searchDraft, view],
+  );
+  const saveSelectedView = useViewUpdater(page.id, view?.id ?? '');
+  const commitSearchDraft = (draftOverride?: string) => {
+    if (!view || !canEdit) return;
+    const draft = storedSearchDraft?.baseView === view ? storedSearchDraft.draft : savedSearch;
+    const resolution = transitionViewSearchDraft(view.search, draft, {
+      type: 'commit',
+      ...(draftOverride !== undefined ? { value: draftOverride } : {}),
+    });
+    if (resolution.commit !== null) {
+      saveSelectedView((current) => ({ ...current, search: resolution.commit! }));
+      setSearchDraftByView((current) => {
+        const next = { ...current };
+        delete next[view.id];
+        return next;
+      });
+    }
+  };
+  const viewHistoryIdentity: ViewHistoryIdentity | null = embeddedView
+    ? hostPageId && linkedBlockId
+      ? { kind: 'linked', hostPageId, blockId: linkedBlockId }
+      : null
+    : view
+      ? { kind: 'database', databaseId: page.id, viewId: view.id }
+      : null;
   const [quickFiltersByView, setQuickFiltersByView] = useState<Record<string, QuickFilterDraft[]>>({});
   const quickFilters = view ? (quickFiltersByView[view.id] ?? EMPTY_QUICK_FILTERS) : EMPTY_QUICK_FILTERS;
   const allRows = useMemo(() => rowsOf(state, page.id), [state, page.id]);
   const rows = useMemo(
     () =>
-      view
+      searchView
         ? visibleRows(
             allRows,
-            view,
+            searchView,
             database,
             state,
             quickFilters.filter((draft) => draft.enabled).map((draft) => draft.rule),
           )
         : allRows,
-    [allRows, view, database, state, quickFilters],
+    [allRows, searchView, database, state, quickFilters],
   );
   const [tabMenu, setTabMenu] = useState<{ view: ViewDef; anchor: HTMLElement } | null>(null);
   const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
@@ -659,15 +745,21 @@ export function DatabaseView({
   return (
     <ViewChangeContext.Provider value={embeddedView && onEmbeddedViewChange ? onEmbeddedViewChange : null}>
       <section
+        ref={contextHistoryRootRef}
         className={`database${embeddedView ? ' is-linked-view' : ''}`}
         aria-label={t('sidebar.database')}
+        data-context-history-database={page.id}
+        data-context-history-kind={embeddedView ? 'linked' : 'database'}
+        data-context-history-view={embeddedView ? undefined : view?.id}
+        data-context-history-host-page={embeddedView ? hostPageId : undefined}
+        data-context-history-block={embeddedView ? linkedBlockId : undefined}
       >
         {database.unsupportedProperties?.length ? (
           <p className="db-readonly-note" role="status">
             {t('database.unsupportedSchema')}
           </p>
         ) : null}
-        <TableActionRecoveryNotice dbId={page.id} />
+        <TableActionRecoveryNotice dbId={page.id} editable={canEdit} canEditNow={canEditNow} />
         <div className="db-bar">
           {!embeddedView && (
             <div className="db-view-controls">
@@ -719,15 +811,50 @@ export function DatabaseView({
           <Toolbar
             dbId={page.id}
             scopePageId={hostPageId ?? page.id}
+            historyIdentity={viewHistoryIdentity}
+            canEditNow={canEditNow}
+            searchDraft={searchDraft}
+            onSearchDraftChange={(value) => {
+              if (view)
+                setSearchDraftByView((current) => {
+                  const stored = current[view.id];
+                  const resolution = transitionViewSearchDraft(
+                    view.search,
+                    stored?.baseView === view ? stored.draft : view.search ?? '',
+                    { type: 'input', value },
+                  );
+                  return { ...current, [view.id]: { baseView: view, draft: resolution.draft } };
+                });
+            }}
+            onSearchCommit={commitSearchDraft}
+            onSearchCancel={() => {
+              if (view)
+                setSearchDraftByView((current) => {
+                  const stored = current[view.id];
+                  const resolution = transitionViewSearchDraft(
+                    view.search,
+                    stored?.baseView === view ? stored.draft : view.search ?? '',
+                    { type: 'cancel' },
+                  );
+                  return { ...current, [view.id]: { baseView: view, draft: resolution.draft } };
+                });
+            }}
             database={database}
-            view={view}
+            view={searchView ?? view}
             rows={allRows}
             editable={canEdit}
             linkedSourceOptions={linkedSourceOptions}
             requestedFilter={filterRequest}
             requestedFormat={formatRequest}
           />
-          <DatabaseHistoryControls dbId={page.id} editable={canEdit} canEditNow={canEditNow} />
+          {viewHistoryIdentity && (
+            <DatabaseHistoryControls
+              dbId={page.id}
+              identity={viewHistoryIdentity}
+              editable={canEdit}
+              canEditNow={canEditNow}
+            />
+          )}
         </div>
         <QuickFilterBar
           database={database}
@@ -832,6 +959,14 @@ export function DatabaseView({
             view={tabMenu.view}
             anchor={tabMenu.anchor}
             onClose={() => setTabMenu(null)}
+            historyStep={(direction) =>
+              stepFocusedViewHistory(
+                page.id,
+                { kind: 'database', databaseId: page.id, viewId: tabMenu.view.id },
+                direction,
+                canEditNow,
+              )
+            }
           />
         )}
       </section>
@@ -850,12 +985,14 @@ function ViewSettings({
   view,
   anchor,
   onClose,
+  historyStep,
 }: {
   dbId: PageId;
   database: DatabaseDef;
   view: ViewDef;
   anchor: HTMLElement;
   onClose: () => void;
+  historyStep?: (direction: 'undo' | 'redo') => void;
 }) {
   const saveView = useViewUpdater(dbId, view.id);
   return (
@@ -868,6 +1005,7 @@ function ViewSettings({
           className="text-input small"
           value={view.name}
           editable
+          historyStep={historyStep}
           onCommit={(name) =>
             saveView((current) => ({
               ...current,
@@ -1248,6 +1386,12 @@ function ColumnSuggestion({
 function Toolbar({
   dbId,
   scopePageId,
+  historyIdentity,
+  canEditNow,
+  searchDraft,
+  onSearchDraftChange,
+  onSearchCommit,
+  onSearchCancel,
   database,
   view,
   rows,
@@ -1258,6 +1402,12 @@ function Toolbar({
 }: {
   dbId: PageId;
   scopePageId: PageId;
+  historyIdentity: ViewHistoryIdentity | null;
+  canEditNow?: () => boolean;
+  searchDraft: string;
+  onSearchDraftChange: (value: string) => void;
+  onSearchCommit: (value: string) => void;
+  onSearchCancel: () => void;
   database: DatabaseDef;
   view: ViewDef;
   rows: PageMeta[];
@@ -1491,11 +1641,20 @@ function Toolbar({
           className="text-input small"
           aria-label={t('database.searchRows')}
           placeholder={t('database.searchRows')}
-          value={view.search ?? ''}
+          value={searchDraft}
           disabled={!editable}
-          onChange={(event) =>
-            saveView((current) => ({ ...current, search: event.target.value.slice(0, 500) }))
-          }
+          onChange={(event) => onSearchDraftChange(event.target.value.slice(0, 500))}
+          onBlur={(event) => onSearchCommit(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              event.currentTarget.blur();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              onSearchCancel();
+            }
+          }}
         />
       </label>
       {activeCount > 0 && (
@@ -1638,6 +1797,12 @@ function Toolbar({
                       className="text-input small"
                       value={view.name}
                       editable={linkedSourceOptions.editable}
+                      historyStep={
+                        historyIdentity
+                          ? (direction) =>
+                              stepFocusedViewHistory(dbId, historyIdentity, direction, canEditNow)
+                          : undefined
+                      }
                       onCommit={(name) =>
                         saveView((current) => ({
                           ...current,
@@ -3434,17 +3599,15 @@ function ColumnResizer({
         event.preventDefault();
         const handle = event.currentTarget;
         handle.setPointerCapture(event.pointerId);
-        const start = event.clientX;
-        let next = width;
+        const gesture = createColumnResizeGesture(width, event.clientX, onResize, onDone);
         const move = (moved: PointerEvent) => {
-          next = Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, width + moved.clientX - start));
-          onResize(next);
+          gesture.move(moved.clientX);
         };
         const up = () => {
           handle.removeEventListener('pointermove', move);
           handle.removeEventListener('pointerup', up);
           handle.removeEventListener('pointercancel', up);
-          onDone(next);
+          gesture.finish();
         };
         handle.addEventListener('pointermove', move);
         handle.addEventListener('pointerup', up);
@@ -4731,8 +4894,7 @@ function TableView({
       clearColumnDrag();
       return;
     }
-    const next = moveColumnInView(database, view, sourceId, targetId, target.position);
-    if (next) saveView(() => next);
+    commitColumnDrop(database, view, sourceId, targetId, target.position, (next) => saveView(() => next));
     clearColumnDrag();
   };
   const moveColumnBy = (columnId: string, direction: -1 | 1) => {

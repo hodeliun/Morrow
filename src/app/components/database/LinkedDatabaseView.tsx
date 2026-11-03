@@ -1,18 +1,25 @@
 import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import type { Editor } from '@tiptap/core';
+import type { JSONContent } from '@tiptap/core';
 import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/react';
+import { Fragment } from '@tiptap/pm/model';
+import type { Node as ProseNode } from '@tiptap/pm/model';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CREATED_PROP, newView, TITLE_PROP, UPDATED_PROP } from '../../../core/database';
 import { linkedViewSourceError, wouldCreateLinkedViewCycle } from '../../../core/linkedViews';
-import type { DatabaseDef, PageId, ViewDef } from '../../../core/model';
+import type { DatabaseDef, DocNode, PageId, ViewDef } from '../../../core/model';
 import { isEffectivelyTrashed } from '../../../core/tree';
+import { sameTableActionValue } from '../../../storage/tableActions';
+import { linkedViewConfigSnapshot, replaceLinkedViewConfig } from '../../../storage/viewHistoryCapture';
 import { newId } from '../../platform/files';
 import { openPage } from '../../router';
-import { getState, useWorkspace } from '../../workspace';
+import { getSession, getState, useWorkspace } from '../../workspace';
+import { commitEditors, stepLinkedViewContextualHistory } from '../../editor/commits';
+import { pageEditorsMatchDocuments } from '../../editor/pageEditorRegistry';
 import { DatabaseView } from './DatabaseView';
 import { DraftInput } from './PropertyValue';
-import { t } from '../../i18n';
+import { t, useTranslation } from '../../i18n';
 import { displayTitle } from '../../../core/model';
 import { confirmAction, toast } from '../../ui';
 
@@ -75,6 +82,29 @@ const LINKED_VIEW_CONFIG_FIELDS = new Set([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function withoutTrailingEmpty(doc: ProseNode): ProseNode {
+  let count = doc.childCount;
+  while (
+    count > 0 &&
+    doc.child(count - 1).type.name === 'paragraph' &&
+    doc.child(count - 1).content.size === 0
+  )
+    count--;
+  if (count === doc.childCount) return doc;
+  const children: ProseNode[] = [];
+  for (let index = 0; index < count; index++) children.push(doc.child(index));
+  return doc.copy(Fragment.from(children));
+}
+
+function editorMatchesDocument(editor: Editor, expected: DocNode): boolean {
+  try {
+    const expectedNode = editor.schema.nodeFromJSON(expected as JSONContent);
+    return withoutTrailingEmpty(editor.state.doc).eq(withoutTrailingEmpty(expectedNode));
+  } catch {
+    return false;
+  }
 }
 
 function linkedViewRawStateIsOpaque(view: ViewDef | null, rawState: unknown): boolean {
@@ -247,6 +277,7 @@ export function LinkedDatabaseViewNode({
   updateAttributes,
   deleteNode,
 }: NodeViewProps) {
+  useTranslation();
   const state = useWorkspace();
   const extensionHost = (extension.options as { hostPageId?: unknown }).hostPageId;
   const hostPageId =
@@ -290,6 +321,115 @@ export function LinkedDatabaseViewNode({
       return liveNode;
     } catch {
       return null;
+    }
+  };
+  const updateLinkedView = (change: (current: ViewDef) => ViewDef) => {
+    if (!blockId || !canEditNow()) return;
+    commitEditors();
+    if (!mounted.current || !canEditNow() || editor.isDestroyed) return;
+
+    const expectedDoc = getSession().getState().docs[hostPageId];
+    if (!expectedDoc || typeof getPos !== 'function') return;
+    if (!editorMatchesDocument(editor, expectedDoc)) return;
+    if (!pageEditorsMatchDocuments([{ pageId: hostPageId, doc: expectedDoc }])) {
+      toast(t('database.linkedViewUpdateConflict'), { tone: 'error' });
+      return;
+    }
+
+    const liveNode = currentLinkedNode();
+    if (!liveNode) return;
+    const currentSnapshot = linkedViewConfigSnapshot(expectedDoc, hostPageId, blockId);
+    const currentView =
+      isRecord(liveNode.attrs.view) && typeof liveNode.attrs.view.id === 'string'
+        ? (liveNode.attrs.view as unknown as ViewDef)
+        : null;
+    if (
+      !currentSnapshot ||
+      !currentView ||
+      !sameTableActionValue(currentSnapshot.view, currentView) ||
+      !sameTableActionValue(currentSnapshot.viewRawState, liveNode.attrs.viewRawState)
+    )
+      return;
+
+    const nextView = change(currentSnapshot.view);
+    if (sameTableActionValue(currentSnapshot.view, nextView)) return;
+    const nextSnapshot = {
+      ...currentSnapshot,
+      view: nextView,
+    };
+    const nextDoc = replaceLinkedViewConfig(
+      expectedDoc,
+      hostPageId,
+      blockId,
+      currentSnapshot,
+      nextSnapshot,
+    );
+    if (!nextDoc) return;
+
+    const result = getSession().executeLinkedViewConfigChange(
+      { kind: 'linked', hostPageId, blockId },
+      expectedDoc,
+      nextDoc,
+      canEditNow,
+      (receipt) => {
+        if (
+          !receipt.id ||
+          (receipt.status !== 'ready' && receipt.status !== 'unavailable') ||
+          receipt.identity.hostPageId !== hostPageId ||
+          receipt.identity.blockId !== blockId ||
+          receipt.change.identity.kind !== 'linked' ||
+          receipt.change.identity.hostPageId !== hostPageId ||
+          receipt.change.identity.blockId !== blockId ||
+          !mounted.current ||
+          !canEditNow() ||
+          editor.isDestroyed
+        )
+          return false;
+        let position: number;
+        try {
+          const currentPosition = getPos();
+          if (typeof currentPosition !== 'number') return false;
+          position = currentPosition;
+        } catch {
+          return false;
+        }
+        if (!editorMatchesDocument(editor, expectedDoc)) return false;
+        const targetNode = editor.view.state.doc.nodeAt(position);
+        if (
+          !targetNode ||
+          !linkedViewNodeIdentityMatches(targetNode.type.name, targetNode.attrs, {
+            typeName: node.type.name,
+            hostPageId,
+            blockId,
+            sourceDatabaseId: sourceId,
+            viewId: receipt.change.before.view.id,
+          }) ||
+          !sameTableActionValue(targetNode.attrs.view, receipt.change.before.view)
+        )
+          return false;
+
+        const attrs: Record<string, unknown> = { ...targetNode.attrs, view: receipt.change.after.view };
+        if (Object.hasOwn(receipt.change.after, 'viewRawState'))
+          attrs.viewRawState = receipt.change.after.viewRawState;
+        else delete attrs.viewRawState;
+        const transaction = editor.view.state.tr.setNodeMarkup(position, undefined, attrs);
+        transaction.setMeta('addToHistory', false);
+        transaction.setMeta('preventUpdate', true);
+        try {
+          editor.view.dispatch(transaction);
+        } catch {
+          return false;
+        }
+        return editorMatchesDocument(editor, nextDoc);
+      },
+    );
+    if (!result.ok) {
+      toast(
+        result.reason?.kind === 'dataHistoryBusy'
+          ? t('database.dataHistoryBusy')
+          : t('database.linkedViewUpdateConflict'),
+        { tone: 'error' },
+      );
     }
   };
   const source = sourceId ? state.pages[sourceId] : undefined;
@@ -446,7 +586,7 @@ export function LinkedDatabaseViewNode({
     const nextCollapsed = !collapsed;
     runLinkedViewLayoutAction(
       editor,
-      () => updateAttributes({ view: { ...view, collapsed: nextCollapsed } }),
+      () => updateLinkedView((current) => ({ ...current, collapsed: nextCollapsed })),
       () => updateLocalLayout({ collapsed: nextCollapsed }),
       canEditNow,
     );
@@ -485,10 +625,34 @@ export function LinkedDatabaseViewNode({
               className="text-input small linked-database-name"
               value={view.name}
               editable={editableState.editable}
+              historyStep={(direction) => {
+                if (!sourceId || !blockId) return;
+                void stepLinkedViewContextualHistory(
+                  sourceId,
+                  { kind: 'linked', hostPageId, blockId },
+                  direction,
+                  canEditNow,
+                ).then((result) => {
+                  if (result.status === 'applied' || result.status === 'empty') return;
+                  const message =
+                    result.status === 'blocked'
+                      ? result.reason === 'related'
+                        ? t('database.historyBlocked')
+                        : t('database.historyPermissionChanged')
+                      : result.status === 'conflict'
+                        ? t('database.actionRecoveryConflict')
+                        : result.status === 'unavailable'
+                          ? t('database.dataHistoryUnavailable')
+                          : t('database.actionRecoveryPending');
+                  toast(message, {
+                    tone: result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info',
+                  });
+                });
+              }}
               onCommit={(name) =>
                 runIfEditorEditable(
                   editor,
-                  () => updateAttributes({ view: { ...view, name: name.trim() || t('database.linkedView') } }),
+                  () => updateLinkedView((current) => ({ ...current, name: name.trim() || t('database.linkedView') })),
                   canEditNow,
                 )
               }
@@ -540,13 +704,14 @@ export function LinkedDatabaseViewNode({
             editable={editableState.editable}
             canEditNow={canEditNow}
             hostPageId={hostPageId}
+            linkedBlockId={blockId ?? undefined}
             embeddedView={displayView}
             linkedSourceOptions={linkedSourceOptions}
             onEmbeddedViewChange={(change) =>
               runIfEditorEditable(
                 editor,
                 () => {
-                  if (view) updateAttributes({ view: change(view) });
+                  if (view) updateLinkedView(change);
                 },
                 canEditNow,
               )

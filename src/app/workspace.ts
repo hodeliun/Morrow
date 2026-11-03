@@ -6,9 +6,13 @@ import type { Result } from '../core/result';
 import type { FileCatalogSnapshot } from '../core/vault/fileCatalog';
 import type { SaveStatus } from '../storage/saveQueue';
 import type { WorkspaceSession } from '../storage/session';
+import type { ContextualHistorySnapshot } from '../storage/session';
 import type { DataHistorySnapshot } from '../storage/dataHistory';
+import { primaryViewConfigChanges } from '../storage/viewHistoryCapture';
+import type { ViewHistoryIdentity } from '../storage/viewHistoryCapture';
+import { rebaseDatabaseHistory } from './propertyHistoryReplay';
 import { commandErrorMessage } from './commandMessages';
-import { getLocale } from './i18n';
+import { getLocale, t } from './i18n';
 import { toast } from './ui';
 import { getPreferences, legacyNoteStyle } from './platform/preferences';
 import { setReadingVaultScope } from './readingPlace';
@@ -52,12 +56,30 @@ export function run(command: Command): Result<WorkspaceState> {
 
 export function runAll(commands: Command[]): Result<WorkspaceState> {
   const prepared = commands.map(withNoteDefaults);
+  const beforeState = session?.getState();
   const before = propertySnapshots(prepared);
   const result =
     prepared.length === 1 ? getSession().execute(prepared[0]!) : getSession().executeAll(prepared);
   if (!result.ok) toast(commandErrorMessage(result, pageTitle, getLocale()), { tone: 'error' });
-  else if (before) recordProperties(before);
+  else if (before && (!beforeState || !onlyPrimaryViewConfigChanged(prepared, beforeState, getState())))
+    recordProperties(before);
   return result;
+}
+
+function onlyPrimaryViewConfigChanged(
+  commands: Command[],
+  before: WorkspaceState,
+  after: WorkspaceState,
+): boolean {
+  if (commands.length !== 1 || commands[0]?.type !== 'database.set') return false;
+  const databaseId = commands[0].id;
+  const beforeDatabase = before.pages[databaseId]?.database;
+  const afterDatabase = after.pages[databaseId]?.database;
+  return Boolean(
+    beforeDatabase &&
+      afterDatabase &&
+      primaryViewConfigChanges(databaseId, beforeDatabase, afterDatabase).length > 0,
+  );
 }
 
 // property values and types live outside a page's text, so the editor's undo never sees them. ctrl+z away
@@ -123,22 +145,46 @@ export function stepProperties(direction: 'undo' | 'redo'): boolean {
   const [from, to] = direction === 'undo' ? [undoStack, redoStack] : [redoStack, undoStack];
   const step = from.pop();
   if (!step) return false;
+  const expected = direction === 'undo' ? step.after : step.before;
   const target = direction === 'undo' ? step.before : step.after;
   const pages = getState().pages;
+  let replayConflict = false;
   const commands: Command[] = target.flatMap(({ id, database, properties, extra }): Command[] => {
     const page = pages[id];
     if (!page) return [];
     const now = Date.now();
+    let replayDatabase = database;
+    if (page.kind === 'database' && database) {
+      const expectedDatabase = expected.find((snapshot) => snapshot.id === id)?.database;
+      const rebased = page.database && expectedDatabase
+        ? rebaseDatabaseHistory(page.database, expectedDatabase, database)
+        : null;
+      if (!rebased) {
+        replayConflict = true;
+        return [];
+      }
+      replayDatabase = rebased;
+    }
     return [
-      ...(page.kind === 'database' && database ? [{ type: 'database.set' as const, id, database, now }] : []),
+      ...(page.kind === 'database' && replayDatabase
+        ? [{ type: 'database.set' as const, id, database: replayDatabase, now }]
+        : []),
       { type: 'page.setFields' as const, id, properties, extra, now },
     ];
   });
+  if (replayConflict) {
+    from.push(step);
+    toast(t('database.propertyHistoryConflict'), { tone: 'error' });
+    return true;
+  }
   replaying = true;
   try {
     const result = getSession().executeHistoryReplay(commands);
     if (!result.ok) {
-      toast(commandErrorMessage(result, pageTitle, getLocale()), { tone: 'error' });
+      const message = result.error.includes(' is still used by ') && result.error.includes('view configuration')
+        ? t('database.propertyHistoryConflict')
+        : commandErrorMessage(result, pageTitle, getLocale());
+      toast(message, { tone: 'error' });
       from.push(step);
       return true;
     }
@@ -190,5 +236,17 @@ export function useDataHistory(databaseId: PageId): DataHistorySnapshot {
     (listener) => current.subscribeDataHistory(databaseId, listener),
     () => current.getDataHistory(databaseId),
     () => current.getDataHistory(databaseId),
+  );
+}
+
+export function useContextualHistory(
+  databaseId: PageId,
+  identity: ViewHistoryIdentity,
+): ContextualHistorySnapshot {
+  const current = getSession();
+  return useSyncExternalStore(
+    (listener) => current.subscribeContextualHistory(databaseId, identity, listener),
+    () => current.getContextualHistory(databaseId, identity),
+    () => current.getContextualHistory(databaseId, identity),
   );
 }

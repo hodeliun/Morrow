@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — histórico contextual das views (fontes, sem novo download)
+
+Base oficial Morrow 1.3.0 e formato persistido 13 mantidos.
+
+- Cada view mantém dez configurações recentes, separadas dos dados; desfazer
+  escolhe o evento aplicável mais recente e identifica seu proprietário.
+- Dados e views compartilham o teto global de 32 MiB das entradas concluídas,
+  protegendo recuperação pendente e respeitando o escopo de refazer.
+- Busca, arraste e resize confirmam uma ação lógica; texto em edição conserva
+  seu desfazer nativo. Conflitos são revalidados antes da aplicação.
+
+Detalhes e validação: [T22 — histórico contextual](docs/deliveries/T22-view-history.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — histórico de dados por banco (fontes, sem novo download)
 
 Base oficial Morrow 1.3.0 e formato persistido 13 mantidos.

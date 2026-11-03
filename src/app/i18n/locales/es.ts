@@ -1673,6 +1673,7 @@ export const es: TranslationSchema = {
     linkedViewSourceValidationIncomplete:
       'Algunos datos futuros de esquema, del marcador de vista o de formato son opacos y no se pudieron comprobar.',
     linkedViewDescription: 'Muestra aquí una base existente con filtros y diseño propios',
+    linkedViewUpdateConflict: 'Esta vista vinculada cambió antes de guardar el cambio. No se aplicó ninguna modificación.',
     chooseSource: 'Elegir base de datos de origen',
     openSourceDatabase: 'Abrir base de datos de origen',
     chooseSourceHint: 'Elige una base existente para mostrar aquí las mismas filas.',
@@ -1902,6 +1903,9 @@ export const es: TranslationSchema = {
     actionUndo: 'Deshacer acción',
     dataHistory: 'Historial de datos',
     historyDataChange: 'Editar datos de la fila',
+    contextualHistory: 'Historial de vista y datos',
+    historyViewChange: 'Cambiar vista “{view}”',
+    propertyHistoryConflict: 'Este historial de esquema entra en conflicto con ajustes de vista más recientes. No se aplicó el cambio.',
     dataHistoryBusy: 'Termina el deshacer o rehacer actual antes de editar esta tabla.',
     historyBlocked: 'Deshaz primero el cambio más reciente en la tabla relacionada.',
     historyPermissionChanged: 'Ya no se permite editar. No se aplicó ningún cambio del historial.',

@@ -2,10 +2,14 @@ import type { Editor } from '@tiptap/core';
 import { redo, undo } from '@tiptap/pm/history';
 import type { Transaction } from '@tiptap/pm/state';
 import type { DocNode, PageId } from '../../core/model';
+import type { DataHistoryStepResult } from '../../storage/dataHistory';
+import type { ViewHistoryIdentity } from '../../storage/viewHistoryCapture';
+import type { ViewHistoryStepResult } from '../../storage/viewHistory';
 import { t } from '../i18n';
 import { isMac } from '../platform/desktop';
 import { toast } from '../ui';
 import { dataHistoryEditGuard, getSession, stepProperties } from '../workspace';
+import { pageEditorsMatchDocuments } from './pageEditorRegistry';
 
 // open editors register here so exports and shutdown can save the latest keystrokes first
 const pending = new Set<() => void>();
@@ -35,6 +39,49 @@ export function registerCommit(commit: () => void): () => void {
 
 export function commitEditors(): void {
   for (const commit of pending) commit();
+}
+
+export function stepLinkedViewContextualHistory(
+  databaseId: PageId,
+  identity: Extract<ViewHistoryIdentity, { kind: 'linked' }>,
+  direction: 'undo' | 'redo',
+  canEditNow?: () => boolean,
+): Promise<DataHistoryStepResult | ViewHistoryStepResult> {
+  commitEditors();
+  const session = getSession();
+  const candidate = session.getContextualHistory(databaseId, identity)[direction];
+  if (!candidate) return Promise.resolve({ status: 'empty' });
+
+  // Data actions and disabled view entries keep the existing Session result and barriers.
+  if (candidate.owner.kind === 'data' || candidate.status !== 'ready' || !candidate.enabled)
+    return session.stepContextualHistory(databaseId, identity, direction, canEditNow, candidate.id);
+
+  // Preserve Session's permission result instead of turning a readonly/busy editor into a
+  // preflight conflict. The Session rechecks this guard synchronously when it applies the entry.
+  if (canEditNow) {
+    try {
+      if (!canEditNow())
+        return session.stepContextualHistory(databaseId, identity, direction, canEditNow, candidate.id);
+    } catch {
+      return session.stepContextualHistory(databaseId, identity, direction, canEditNow, candidate.id);
+    }
+  }
+
+  const targets = session.linkedViewHistoryReplayTargets(identity, direction, candidate.id);
+  if (targets.status === 'candidate-changed')
+    return session.stepContextualHistory(databaseId, identity, direction, canEditNow, candidate.id);
+  if (targets.status !== 'ready') return Promise.resolve({ status: 'conflict' });
+  if (targets.entryId !== candidate.id) return Promise.resolve({ status: 'conflict' });
+
+  if (
+    !pageEditorsMatchDocuments(
+      targets.hosts.map(({ hostPageId, doc }) => ({ pageId: hostPageId, doc })),
+    )
+  )
+    return Promise.resolve({ status: 'conflict' });
+
+  // No await between validating all affected pane editors and Session's expected-entry check.
+  return session.stepContextualHistory(databaseId, identity, direction, canEditNow, candidate.id);
 }
 
 export function setFocusedEditor(editor: Editor | null, pageId: PageId | null = null): void {
@@ -69,14 +116,55 @@ function routeDataHistoryUndo(active: Element | null, direction: 'undo' | 'redo'
   return true;
 }
 
+function routeContextualHistoryUndo(active: Element | null, direction: 'undo' | 'redo'): boolean {
+  const root = active?.closest<HTMLElement>('[data-context-history-database]') ?? null;
+  if (!root) return false;
+  const databaseId = root.dataset.contextHistoryDatabase;
+  const canEditNow = dataHistoryEditGuard(root);
+  let identity: ViewHistoryIdentity | null = null;
+  if (root.dataset.contextHistoryKind === 'linked') {
+    const hostPageId = root.dataset.contextHistoryHostPage;
+    const blockId = root.dataset.contextHistoryBlock;
+    if (hostPageId && blockId) identity = { kind: 'linked', hostPageId, blockId };
+  } else {
+    const viewId = root.dataset.contextHistoryView;
+    if (databaseId && viewId) identity = { kind: 'database', databaseId, viewId };
+  }
+  if (!databaseId || !identity) return false;
+  const candidate = getSession().getContextualHistory(databaseId, identity)[direction];
+  if (!candidate) return false;
+  const step = identity.kind === 'linked'
+    ? stepLinkedViewContextualHistory(databaseId, identity, direction, canEditNow ?? undefined)
+    : getSession().stepContextualHistory(databaseId, identity, direction, canEditNow ?? undefined, candidate.id);
+  void step
+    .then((result) => {
+      if (result.status === 'applied' || result.status === 'empty') return;
+      const message =
+        result.status === 'blocked'
+          ? result.reason === 'related'
+            ? t('database.historyBlocked')
+            : t('database.historyPermissionChanged')
+          : result.status === 'conflict'
+            ? t('database.actionRecoveryConflict')
+            : result.status === 'unavailable'
+              ? t('database.dataHistoryUnavailable')
+              : t('database.actionRecoveryPending');
+      toast(message, {
+        tone: result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info',
+      });
+    });
+  return true;
+}
+
 export function undoRedoEditor(editor: Editor, pageId: PageId, direction: 'undo' | 'redo'): boolean {
   const active = typeof document === 'undefined' ? null : document.activeElement;
   if (usesNativeInputUndo(active)) {
     document.execCommand(direction);
     return true;
   }
-  if (routeDataHistoryUndo(active, direction)) return true;
   commitEditors();
+  if (routeContextualHistoryUndo(active, direction)) return true;
+  if (routeDataHistoryUndo(active, direction)) return true;
   const previous = editor.state.doc.toJSON() as DocNode;
   const transaction: { value: Transaction | null } = { value: null };
   const handled = (direction === 'undo' ? undo : redo)(editor.state, (next) => (transaction.value = next));
@@ -125,6 +213,8 @@ export function undoRedo(direction: 'undo' | 'redo'): void {
     document.execCommand(direction);
     return;
   }
+  commitEditors();
+  if (routeContextualHistoryUndo(active, direction)) return;
   if (routeDataHistoryUndo(active, direction)) return;
   // a canvas shown inside a page keeps its own history, the menu sends it the same keys
   const canvas = typeof HTMLElement !== 'undefined' && active instanceof HTMLElement
