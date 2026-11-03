@@ -1229,6 +1229,9 @@ textarea.text-input.small {
 }
 .linked-database-view .database {
   margin-top: 0;
+  color: var(--text);
+  font-size: var(--text-md);
+  line-height: normal;
 }
 .linked-database-head {
   display: flex;
@@ -1274,6 +1277,20 @@ textarea.text-input.small {
 .linked-database-head > .icon-button {
   flex: none;
   margin-left: auto;
+}
+.linked-database-view .linked-database-name {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.db-linked-view-field-hint {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.db-panel > .db-linked-view-field-hint {
+  margin: 4px 10px 8px;
 }
 .linked-database-collapse {
   opacity: 0;

@@ -1659,6 +1659,19 @@ export const es: TranslationSchema = {
     pasteView: 'Vista de la original',
     pasteViewHint: 'Mostrar las mismas filas aquí con filtros y diseño independientes.',
     linkedView: 'Vista de base de datos vinculada',
+    linkedViewSource: 'Base de datos de origen',
+    linkedViewNameHint: 'Este nombre identifica el bloque de vista vinculada; el diseño determina cómo se muestran las filas.',
+    linkedViewLayoutHint: 'El diseño determina cómo se muestran las filas. El nombre de la vista sigue siendo el título de este bloque.',
+    linkedViewSourceChangeTitle: '¿Cambiar el origen de la vista vinculada?',
+    linkedViewSourceChangeWarning:
+      'Al cambiar a «{source}», puede que algunos ajustes dejen de aplicarse y que los filtros no devuelvan filas. Se conservarán los ajustes y los datos opacos del marcador; no se reasignará ni borrará nada por nombre.',
+    linkedViewSourceMissingIds: 'Estos ID de propiedad no existen en el origen seleccionado: {ids}.',
+    linkedViewSourceUnverifiedIds:
+      'El destino contiene entradas de esquema futuras, por lo que no se pudieron verificar estos ID de propiedad: {ids}.',
+    linkedViewSourceBoundIds:
+      'Las reglas de fórmula siguen vinculadas al origen anterior para estos ID de propiedad: {ids}.',
+    linkedViewSourceValidationIncomplete:
+      'Algunos datos futuros de esquema, del marcador de vista o de formato son opacos y no se pudieron comprobar.',
     linkedViewDescription: 'Muestra aquí una base existente con filtros y diseño propios',
     chooseSource: 'Elegir base de datos de origen',
     openSourceDatabase: 'Abrir base de datos de origen',

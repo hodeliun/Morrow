@@ -1658,6 +1658,19 @@ export const pt: TranslationSchema = {
     pasteView: 'Visualização do original',
     pasteViewHint: 'Mostrar os mesmos registros aqui, com filtros e layout independentes.',
     linkedView: 'Visualização de banco vinculada',
+    linkedViewSource: 'Banco de dados de origem',
+    linkedViewNameHint: 'Este nome identifica o bloco da visualização vinculada; o layout define como os registros aparecem.',
+    linkedViewLayoutHint: 'O layout define como os registros aparecem. O nome da visualização continua sendo o título deste bloco.',
+    linkedViewSourceChangeTitle: 'Alterar a origem da visualização vinculada?',
+    linkedViewSourceChangeWarning:
+      'Ao trocar para “{source}”, algumas configurações podem deixar de se aplicar e filtros podem não retornar registros. As configurações e os dados opacos do marcador serão preservados; nada será remapeado pelo nome nem apagado.',
+    linkedViewSourceMissingIds: 'Estes IDs de propriedades não existem no banco selecionado: {ids}.',
+    linkedViewSourceUnverifiedIds:
+      'O destino contém entradas de esquema futuras, então estes IDs de propriedades não puderam ser verificados: {ids}.',
+    linkedViewSourceBoundIds:
+      'Regras de fórmula continuam vinculadas à origem anterior para estes IDs de propriedades: {ids}.',
+    linkedViewSourceValidationIncomplete:
+      'Alguns dados futuros de esquema, do marcador de visualização ou de formato são opacos e não puderam ser verificados.',
     linkedViewDescription: 'Mostra um banco existente aqui, com filtros e layout próprios',
     chooseSource: 'Escolher banco de origem',
     openSourceDatabase: 'Abrir banco de origem',

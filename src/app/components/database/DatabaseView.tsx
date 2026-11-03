@@ -122,6 +122,7 @@ import { linkedViewReferences } from '../../../core/linkedViews';
 import { namedControlIdentifier } from '../../../core/controls';
 import { childrenOf, descendantsOf } from '../../../core/tree';
 import { ViewChangeContext } from './viewContext';
+import type { LinkedViewSourceOptions } from './viewContext';
 import {
   insertPropertyNear,
   moveColumnInView,
@@ -467,6 +468,7 @@ export function DatabaseView({
   canEditNow,
   hostPageId,
   embeddedView,
+  linkedSourceOptions,
   onEmbeddedViewChange,
 }: {
   page: PageMeta;
@@ -474,6 +476,7 @@ export function DatabaseView({
   canEditNow?: () => boolean;
   hostPageId?: PageId;
   embeddedView?: ViewDef;
+  linkedSourceOptions?: LinkedViewSourceOptions;
   onEmbeddedViewChange?: (change: (view: ViewDef) => ViewDef) => void;
 }) {
   const state = useWorkspace();
@@ -631,6 +634,7 @@ export function DatabaseView({
             view={view}
             rows={allRows}
             editable={canEdit}
+            linkedSourceOptions={linkedSourceOptions}
             requestedFilter={filterRequest}
             requestedFormat={formatRequest}
           />
@@ -1158,6 +1162,7 @@ function Toolbar({
   view,
   rows,
   editable,
+  linkedSourceOptions,
   requestedFilter,
   requestedFormat,
 }: {
@@ -1167,11 +1172,13 @@ function Toolbar({
   view: ViewDef;
   rows: PageMeta[];
   editable: boolean;
+  linkedSourceOptions?: LinkedViewSourceOptions;
   requestedFilter: { propId: string; token: string } | null;
   requestedFormat: { propId: string; token: string } | null;
 }) {
   const state = useWorkspace();
   const saveView = useViewUpdater(dbId, view.id);
+  const viewPresentationEditable = linkedSourceOptions?.editable ?? editable;
   const unclaimed = useMemo(() => unclaimedKeys(database, rows), [database, rows]);
   const [panel, setPanel] = useState<{ kind: ToolPanel; anchor: HTMLElement } | null>(null);
   const [createdPropertySettings, setCreatedPropertySettings] = useState<{
@@ -1450,7 +1457,7 @@ function Toolbar({
             <button
               type="button"
               className="db-options-item"
-              disabled={!editable}
+              disabled={!viewPresentationEditable}
               onClick={() => setPanel({ kind: 'layout', anchor: panel.anchor })}
             >
               <Settings2 size={14} />
@@ -1491,12 +1498,77 @@ function Toolbar({
 
             <div className="db-options-separator" />
 
+            {linkedSourceOptions && (
+              <>
+                <label className="field">
+                  <span>{t('database.linkedViewSource')}</span>
+                  <select
+                    className="text-input small"
+                    value={linkedSourceOptions.sourceId ?? ''}
+                    disabled={!linkedSourceOptions.editable}
+                    onChange={(event) => {
+                      const selected = event.currentTarget.value;
+                      linkedSourceOptions.onSelectSource(selected);
+                      if (selected !== (linkedSourceOptions.sourceId ?? ''))
+                        event.currentTarget.value = linkedSourceOptions.sourceId ?? '';
+                    }}
+                  >
+                    {linkedSourceOptions.sourceId &&
+                      linkedSourceOptions.source &&
+                      !linkedSourceOptions.candidates.some(
+                        (candidate) => candidate.id === linkedSourceOptions.sourceId,
+                      ) && (
+                        <option value={linkedSourceOptions.sourceId}>
+                          {displayTitle(linkedSourceOptions.source)}
+                        </option>
+                      )}
+                    {linkedSourceOptions.candidates.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {displayTitle(candidate)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {linkedSourceOptions.source && (
+                  <button
+                    type="button"
+                    className="db-options-item"
+                    onClick={linkedSourceOptions.onOpenSource}
+                  >
+                    <LinkIcon size={14} />
+                    <span>{t('database.openSourceDatabase')}</span>
+                  </button>
+                )}
+                {view.hideTitle && (
+                  <label className="field">
+                    <span>{t('database.viewName')}</span>
+                    <DraftInput
+                      type="text"
+                      label={t('database.viewName')}
+                      className="text-input small"
+                      value={view.name}
+                      editable={linkedSourceOptions.editable}
+                      onCommit={(name) =>
+                        saveView((current) => ({
+                          ...current,
+                          name: name.trim() || t('database.linkedView'),
+                        }))
+                      }
+                    />
+                    <small className="db-linked-view-field-hint">
+                      {t('database.linkedViewNameHint')}
+                    </small>
+                  </label>
+                )}
+              </>
+            )}
+
             <label className="db-options-toggle">
               <span>{t('database.hideTitle')}</span>
               <input
                 type="checkbox"
                 checked={view.hideTitle === true}
-                disabled={!editable}
+                disabled={!viewPresentationEditable}
                 onChange={(event) => saveView((current) => ({ ...current, hideTitle: event.target.checked }))}
               />
             </label>
@@ -1505,7 +1577,7 @@ function Toolbar({
               <input
                 type="checkbox"
                 checked={view.collapsed === true}
-                disabled={!editable}
+                disabled={!viewPresentationEditable}
                 onChange={(event) => saveView((current) => ({ ...current, collapsed: event.target.checked }))}
               />
             </label>
@@ -2018,6 +2090,9 @@ function Toolbar({
               ))}
             </select>
           </label>
+          {linkedSourceOptions && (
+            <p className="db-linked-view-field-hint">{t('database.linkedViewLayoutHint')}</p>
+          )}
           {view.type === 'gallery' && (
             <label className="field">
               <span>{t('database.groupCardsBy')}</span>
