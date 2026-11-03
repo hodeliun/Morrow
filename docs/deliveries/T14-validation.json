@@ -1,0 +1,53 @@
+{
+  "ticket": "T14/#65",
+  "classification": "historical prerequisite verification, no product change",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "productMain": "3e1b57ca984e2a3bdc0d4bd62c7f2be23b50fe2c",
+  "gate": {
+    "reused": true,
+    "sourceSha256": "8f0c416cbe0334a103da535b667f967645cdbb876ae429b74422fa46ded1c66c",
+    "lint": "passed",
+    "typecheck": "passed",
+    "sourceFiles": 417,
+    "testFiles": 132,
+    "artifactsSha256": "48cc834a3c587898eea5d4b335d7aa7603aae50a93d9fa9ed9eab34009e86f3c",
+    "artifactsVerified": 3597,
+    "tests": 1058,
+    "build": "passed"
+  },
+  "runtime": {
+    "ownProcessesAfter": 0,
+    "result": "ui-1793727069694",
+    "genericBoundaries": [],
+    "processRestartVerified": true,
+    "resultSha256": "9bb617c9dcb29298fb3859f19c77143180117fcbb6a135879eccac01e5575681",
+    "syntheticOnly": true,
+    "errors": [],
+    "leasePresentAfter": false,
+    "assertions": 28,
+    "packagedStableAfter": true,
+    "childExitCodes": [
+      0,
+      0
+    ],
+    "snapshotStableAfter": true,
+    "hidden": true,
+    "pageErrors": []
+  },
+  "historicalStorageProof": {
+    "rawReportSha256": "88c8d26bf1eddf2e7d3e309f00e78ce3b06bc3457d623e5911fcc0152c97cf85",
+    "build": "scope-2-build-20"
+  },
+  "negativeHistory": [
+    "build04 contradictory deletion boolean, preserved as failed/inconclusive",
+    "preflight01 fallback syntax corrected before baseline",
+    "UI01 and bounded observation02 rejected only trailing empty support paragraph; final same-package comparison uses existing editor equivalence"
+  ],
+  "limitations": [
+    "No newly corrected product cause or original-loss reproduction claimed",
+    "No personal vault, clipboard, cloud provider or native visible window exercised",
+    "Retained synthetic fixtures; no fixture deletion claimed",
+    "Historical prerequisite, not an additional resumed feature delivery"
+  ]
+}

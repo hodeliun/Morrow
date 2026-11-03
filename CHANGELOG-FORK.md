@@ -2,6 +2,16 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Verificação histórica — integridade de tabelas em conversões
+
+- Conversão, confirmação de célula, exclusão intencional de contêiner, desfazer
+  e reabertura foram conferidos na interface oculta com dados sintéticos.
+- Documentos, identidades, campos desconhecidos e arquivos de origem foram
+  medidos separadamente da aparência visual. Nenhuma nova correção de produto,
+  mudança de formato, compilação ou release é atribuída a esta verificação.
+
+Detalhes: [T14 — integridade do documento](docs/deliveries/T14-document-integrity.md).
+
 ## Entrega sequencial — histórico contextual das views (fontes, sem novo download)
 
 Base oficial Morrow 1.3.0 e formato persistido 13 mantidos.

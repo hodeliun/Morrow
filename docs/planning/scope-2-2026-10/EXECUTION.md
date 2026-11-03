@@ -12,7 +12,9 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T22 (#73), histórico contextual das configurações de cada visualização.
+A única entrega ativa é a reconciliação histórica T14 (#65), pré-requisito de T23.
+T23 permanece sem implementação até seu encerramento. A verificação T14 reutiliza
+o produto imutável T22; não acrescenta outra funcionalidade às 24 retomadas.
 O formato persistido 13 e seus contratos estritos
 já foram publicados no T03. Cada
 entrega inclui seus pré-requisitos de preservação e validação, em um commit
@@ -34,6 +36,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T05 #56 | Seleção aditiva e menu compacto de ações de linha | #101 |
 | T13 #64 | Títulos próprios e origem nas opções das visualizações | #102 |
 | T21 #72 | Histórico limitado de dados compartilhado pelas views | #103 |
+| T22 #73 | Histórico contextual das configurações de visualização | #104 |
 
 A dependência histórica T11 (#62), já entregue na integração pública 1.3,
 teve o encerramento reconciliado com seu relatório original em 03/11/2026.
