@@ -1644,6 +1644,19 @@ export const en = {
     pasteView: 'View of the original',
     pasteViewHint: 'Show the same rows here with independent filters and layout.',
     linkedView: 'Linked database view',
+    linkedViewSource: 'Source database',
+    linkedViewNameHint: 'This name identifies the linked view block; Layout controls how its rows appear.',
+    linkedViewLayoutHint: 'Layout controls how rows are displayed. The view name remains this block’s title.',
+    linkedViewSourceChangeTitle: 'Change linked view source?',
+    linkedViewSourceChangeWarning:
+      'Changing to “{source}” may make some settings stop applying, and filters can return no rows. Settings and opaque marker data will be preserved; nothing will be remapped by name or cleared.',
+    linkedViewSourceMissingIds: 'These property IDs are absent from the selected source: {ids}.',
+    linkedViewSourceUnverifiedIds:
+      'The target has future schema entries, so these property IDs could not be verified: {ids}.',
+    linkedViewSourceBoundIds:
+      'Formula rules remain bound to the previous source for these property IDs: {ids}.',
+    linkedViewSourceValidationIncomplete:
+      'Some future schema, view-marker, or format data is opaque and could not be checked for compatibility.',
     linkedViewDescription: 'Show an existing database here with its own filters and layout',
     chooseSource: 'Choose source database',
     openSourceDatabase: 'Open source database',

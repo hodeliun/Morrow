@@ -2,6 +2,20 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — títulos próprios de visualizações (fontes, sem novo download)
+
+Base oficial Morrow 1.3.0 e formato persistido 13 mantidos.
+
+- Renomear ou ocultar o título da visualização não altera a origem ou outras views;
+  restauração pelo teclado e escolha da origem ficam nas Opções.
+- Títulos, filtros e layouts independentes compartilham os mesmos registros, com
+  tipografia interna isolada e formatação condicional preservada.
+- Trocar a origem avisa sobre IDs incompatíveis, vínculos anteriores e dados opacos;
+  não remapeia por nomes nem descarta configurações silenciosamente.
+
+Detalhes e validação: [T13 — títulos de visualizações](docs/deliveries/T13-view-titles.md).
+Esta entrada não representa instalador, tag ou release publicada.
+
 ## Entrega sequencial — seleção aditiva de linhas (fontes, sem novo download)
 
 Base oficial mantida em Morrow 1.3.0 e formato persistido 13.

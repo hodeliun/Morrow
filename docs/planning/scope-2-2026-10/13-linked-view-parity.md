@@ -10,17 +10,17 @@ https://github.com/hodeliun/Morrow/issues/51
 
 Renomear a view pelo título visível, ocultá-lo de verdade e consultar a fonte só nas opções, preservando compartilhamento dos dados.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+Implementação e sete critérios verificados no pacote isolado T13/02. Registro: [entrega e validação](../../deliveries/T13-view-titles.md).
 
 ## Acceptance criteria
 
-- [ ] Reutilizar apresentação/layouts existentes da tabela; não implementar outro banco nem copiar registros para uma view.
-- [ ] O título visível identifica a view, alterável sem renomear fonte/outras views; rótulo da fonte fica em Opções.
-- [ ] Remover seletores técnicos permanentes e Mostrar título residual; restaurar pelo painel acessível por teclado.
-- [ ] Distinguir nome da view/bloco e nome da aba de layout; explicar os campos sem criar dois títulos concorrentes.
-- [ ] Tipografia interna da tabela não herda acidentalmente o tamanho/cor de um título externo do canvas.
-- [ ] Trocar fonte exige validar os IDs das propriedades e avisar sobre configurações incompatíveis, sem remapear silenciosamente por nomes.
-- [ ] Salvar/reabrir duas views com títulos/filtros/layouts diferentes e conferir edição de dados sincronizada com a fonte.
+- [x] Reutilizar apresentação/layouts existentes da tabela; não implementar outro banco nem copiar registros para uma view.
+- [x] O título visível identifica a view, alterável sem renomear fonte/outras views; rótulo da fonte fica em Opções.
+- [x] Remover seletores técnicos permanentes e Mostrar título residual; restaurar pelo painel acessível por teclado.
+- [x] Distinguir nome da view/bloco e nome da aba de layout; explicar os campos sem criar dois títulos concorrentes.
+- [x] Tipografia interna da tabela não herda acidentalmente o tamanho/cor de um título externo do canvas.
+- [x] Trocar fonte exige validar os IDs das propriedades e avisar sobre configurações incompatíveis, sem remapear silenciosamente por nomes.
+- [x] Salvar/reabrir duas views com títulos/filtros/layouts diferentes e conferir edição de dados sincronizada com a fonte.
 
 ## Blocked by
 

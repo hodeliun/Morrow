@@ -12,8 +12,9 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T05 (#56), seleção aditiva por checkbox, controles
-discretos na margem e menu compacto de ações em lote. O formato persistido 13 e seus contratos estritos
+A única entrega ativa é T13 (#64), títulos próprios das visualizações e fonte
+nas opções, começando pela conferência da dependência histórica T11 (#62).
+O formato persistido 13 e seus contratos estritos
 já foram publicados no T03. Cada
 entrega inclui seus pré-requisitos de preservação e validação, em um commit
 coerente, sem nova release ou instalação. Os outros tickets permanecem
@@ -31,6 +32,11 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T07 #58 | Painéis e seletores legíveis | #98 |
 | T03 #54 | Nome e propriedade de exibição; fundação do formato 13 | #99 |
 | T04 #55 | Ordem de colunas por visualização, incluindo Nome | #100 |
+| T05 #56 | Seleção aditiva e menu compacto de ações de linha | #101 |
+
+A dependência histórica T11 (#62), já entregue na integração pública 1.3,
+teve o encerramento reconciliado com seu relatório original em 03/11/2026.
+Ela não acrescenta uma entrega à contagem das 24 retomadas.
 
 Em 28/10/2026 o mantenedor autorizou explicitamente implementar todos os 39
 tickets, incluindo o adendo de arquivos/web/painéis, com GPT 6 Luna max executor

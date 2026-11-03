@@ -1,0 +1,88 @@
+{
+  "ticket": "T13/#64",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "sourceSha256": "71c21014169ebe5754caca11cd2bc047978cf7638bf0a15e24817033013e6934",
+    "sourceFiles": 396,
+    "artifactSha256": "5a572ab1e60b82416564d74352d22bb220461bf5f2a46ffd96ebd42d79488808",
+    "testFiles": 120,
+    "packagedArtifactsVerified": 3597,
+    "command": "npm run check",
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "testsPassed": 987
+  },
+  "runtime": {
+    "packageStable": true,
+    "syntheticOnly": true,
+    "assertions": {
+      "primarySavedBeforeReopen": true,
+      "openWithoutWrites": true,
+      "sharedTableWithIndependentFilteredLayouts": true,
+      "linkedTypographyIsIsolatedFromHostStyle": {
+        "externalNoteSize": "30px",
+        "innerDatabaseSize": "14.5px",
+        "innerTableSize": "14.5px",
+        "innerColor": "rgb(29, 29, 31)",
+        "bodyColor": "rgb(29, 29, 31)"
+      },
+      "renameIsLocalToLinkedView": true,
+      "hideAndKeyboardRestore": true,
+      "layoutAndBlockTitleHaveSeparateExplanations": true,
+      "conditionalCellStylesSurviveLinkedTypography": {
+        "background": "rgb(255, 240, 179)",
+        "color": "rgb(62, 49, 93)",
+        "fontWeight": "700"
+      },
+      "sourceDataSynchronizesAcrossIndependentViews": {
+        "sourceRowId": "t13-row-one",
+        "rowSha256Before": "4202d23297284ccba1e6435ab4978141763d8a43e35abd41d918ef46ec5895d4",
+        "rowSha256After": "e585966ecd4541ced3b6c206f4811b4940b5b06b03ce7464d5ef13c9beb965c8",
+        "mtimeAfterEdit": 1793721894974.777
+      },
+      "distinctViewTitlesFiltersLayoutsAndSharedRowsSurviveReopen": true,
+      "sourceChangeCancelPreservesBytesAndMtime": true,
+      "futureSchemaReferencesAreUnverified": true,
+      "confirmedSourceSwitchPreservesIdentityOpaqueStateAndBindings": true,
+      "syntheticOnly": true
+    },
+    "main": "ui-1793721890347",
+    "allSevenCriteriaVerified": true,
+    "extrasResultSha256": "e8adf7d8a69635d19a0e737a384fe40fcb41f9a376a8000405a970fa745b6ef1",
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "width": 520,
+    "extras": "ui-1793721993274",
+    "localeThemeCases": 6,
+    "snapshotStable": true,
+    "mainResultSha256": "925cbae63e94fe690ac03abbb14905a910c7707acbd93fa8add31c8e73afaaba",
+    "platform": "Windows",
+    "status": "passed",
+    "genericBoundaries": 0,
+    "hiddenWindows": true,
+    "pageErrors": 0
+  },
+  "negativeEvidence": {
+    "deadlinesChanged": false,
+    "directedRed": "Three native property binding cases failed before one collection-filter correction;22 directed tests passed afterward",
+    "extrasInitial": "Private tree visibility precondition rejected legitimate hidden mobile sidebar; readiness corrected to attached tree then public navigation and actual physical hit/geometry; only extras replayed",
+    "productChangedForHarness": false,
+    "preCorrectionGate01": "984 tests passed; source review then found incomplete native-property binding warning"
+  },
+  "limits": [
+    "Source ID changes as requested; block/view IDs and original bindings/opaque state preserved",
+    "No schema change, second database engine or silent name remapping",
+    "Historical T11 dependency proof reused; no new T11 runtime",
+    "No release, installation, personal data or clipboard use"
+  ],
+  "cleanup": {
+    "leaseAbsent": true,
+    "liveSourceMismatches": 0,
+    "ownProcessesAfter": 0
+  }
+}
