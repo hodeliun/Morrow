@@ -23,6 +23,15 @@ export function viewHistoryIdentityKey(identity: ViewHistoryIdentity): string {
     : JSON.stringify(['linked', identity.hostPageId, identity.blockId]);
 }
 
+/** A legacy marker may omit its owner; accept only omission or the exact known host. */
+export function linkedViewHostMatches(
+  attrs: Record<string, unknown> | null | undefined,
+  hostPageId: PageId,
+): attrs is Record<string, unknown> {
+  return attrs !== null && attrs !== undefined && hostPageId.length > 0 &&
+    (attrs.hostPageId === undefined || attrs.hostPageId === hostPageId);
+}
+
 /**
  * Captures only changes to existing views when the rest of the database definition is stable.
  * Schema, view creation/deletion, and ambiguous duplicate IDs stay outside view history.
@@ -94,8 +103,8 @@ export function linkedViewConfigChange(
 }
 
 export function linkedViewConfigChanges(hostPageId: PageId, before: DocNode, after: DocNode): ViewConfigChange[] {
-  const beforeIdentities = linkedViewIdentities(before);
-  const afterKeys = new Set(linkedViewIdentities(after).map(viewHistoryIdentityKey));
+  const beforeIdentities = linkedViewIdentities(before, hostPageId);
+  const afterKeys = new Set(linkedViewIdentities(after, hostPageId).map(viewHistoryIdentityKey));
   const changes: ViewConfigChange[] = [];
   for (const identity of beforeIdentities) {
     if (!afterKeys.has(viewHistoryIdentityKey(identity))) continue;
@@ -179,7 +188,11 @@ interface LinkedViewMatch {
 function findLinkedViews(doc: DocNode, identity: Extract<ViewHistoryIdentity, { kind: 'linked' }>): LinkedViewMatch[] {
   const matches: LinkedViewMatch[] = [];
   const visit = (node: DocNode, path: number[]) => {
-    if (node.type === 'linkedDatabaseView' && node.attrs?.hostPageId === identity.hostPageId && node.attrs.blockId === identity.blockId) {
+    if (
+      node.type === 'linkedDatabaseView' &&
+      linkedViewHostMatches(node.attrs, identity.hostPageId) &&
+      node.attrs?.blockId === identity.blockId
+    ) {
       const view = node.attrs.view;
       if (isViewDef(view)) {
         matches.push({
@@ -197,18 +210,21 @@ function findLinkedViews(doc: DocNode, identity: Extract<ViewHistoryIdentity, { 
   return matches;
 }
 
-function linkedViewIdentities(doc: DocNode): Array<Extract<ViewHistoryIdentity, { kind: 'linked' }>> {
+function linkedViewIdentities(
+  doc: DocNode,
+  hostPageId: PageId,
+): Array<Extract<ViewHistoryIdentity, { kind: 'linked' }>> {
   const identities: Array<Extract<ViewHistoryIdentity, { kind: 'linked' }>> = [];
   const visit = (node: DocNode) => {
     if (
       node.type === 'linkedDatabaseView' &&
-      typeof node.attrs?.hostPageId === 'string' &&
+      linkedViewHostMatches(node.attrs, hostPageId) &&
       typeof node.attrs.blockId === 'string' &&
       isViewDef(node.attrs.view)
     )
       identities.push({
         kind: 'linked',
-        hostPageId: node.attrs.hostPageId,
+        hostPageId,
         blockId: node.attrs.blockId,
       });
     node.content?.forEach(visit);

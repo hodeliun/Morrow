@@ -3,6 +3,7 @@ import { Fragment } from '@tiptap/pm/model';
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import type { DocNode, PageId } from '../../core/model';
 import type { ViewDef } from '../../core/model';
+import { linkedViewHostMatches } from '../../storage/viewHistoryCapture';
 import type { ViewConfigChange, ViewConfigSnapshot } from '../../storage/viewHistoryCapture';
 import { pageEditorsMatchDocuments } from './pageEditorRegistry';
 
@@ -210,7 +211,7 @@ function collectLinkedViews(doc: DocNode, hostPageId: PageId): LinkedViewEntry[]
     if (node.type === 'linkedDatabaseView') {
       const attrs = node.attrs;
       if (
-        attrs?.hostPageId !== hostPageId ||
+        !linkedViewHostMatches(attrs, hostPageId) ||
         typeof attrs.blockId !== 'string' ||
         !attrs.blockId
       ) {

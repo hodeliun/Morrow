@@ -12,9 +12,9 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é a reconciliação histórica T14 (#65), pré-requisito de T23.
-T23 permanece sem implementação até seu encerramento. A verificação T14 reutiliza
-o produto imutável T22; não acrescenta outra funcionalidade às 24 retomadas.
+A única entrega ativa é T23 (#74), catálogo e configuração dos sete controles existentes.
+O pré-requisito histórico T14 (#65) foi reconciliado no PR105, após verificação
+direta de documentos/arquivos e CI Windows/Linux. Não acrescenta uma entrega às 24 retomadas.
 O formato persistido 13 e seus contratos estritos
 já foram publicados no T03. Cada
 entrega inclui seus pré-requisitos de preservação e validação, em um commit

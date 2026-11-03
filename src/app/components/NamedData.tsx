@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewWrapper } from '@tiptap/react';
 import { bindPageFormulaReferences, documentFormulaResult, formatDisplayValue, formulaValueText } from '../../core/database';
@@ -8,8 +8,17 @@ import { controlValueError, controlValueErrorInState, normalizeControlFormat } f
 import { childrenOf, isEffectivelyTrashed } from '../../core/tree';
 import { newId } from '../platform/files';
 import { commitEditors } from '../editor/commits';
-import { getState, run, useWorkspace } from '../workspace';
+import { getState, run, runAll, useWorkspace } from '../workspace';
 import { getLocale, t } from '../i18n';
+import { Menu } from './Menu';
+import type { MenuEntry } from './Menu';
+import {
+  cancelNamedControlConfigurationRequest,
+  listenForNamedControlConfiguration,
+} from '../editor/namedControlRequests';
+import type { NamedControlConfigRequest } from '../editor/namedControlRequests';
+import { captureNamedControlEdit, namedControlEditConflict } from '../editor/controlEditGuard';
+import type { NamedControlEditConflict, NamedControlEditSnapshot } from '../editor/controlEditGuard';
 
 const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'select', 'checkbox', 'date', 'relation'];
 const OUTPUT_TYPES = ['auto', 'text', 'number', 'currency', 'percent', 'progress', 'date', 'checkbox'] as const;
@@ -36,9 +45,30 @@ function defaultFor(type: NamedControlType, options: NamedControlDef['options'],
   }
 }
 
+function parseNumberDraft(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed || !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function controlErrorLabel(error: string | null): string | null {
+  if (!error) return null;
+  if (error.toLowerCase().includes('email')) return t('controls.invalidEmail');
+  if (/number|finite|step|at least|at most/i.test(error)) return t('controls.invalidNumber');
+  if (error.toLowerCase().includes('text controls')) return t('controls.invalidText');
+  return t('controls.invalidDefaultValue');
+}
+
+function editConflictLabel(conflict: NamedControlEditConflict, name: string): string {
+  return conflict === 'removed'
+    ? t('controls.missingControl', { name })
+    : t('controls.configurationChanged');
+}
+
 function optionsFromText(text: string, existing: NamedControlDef['options']): NamedControlDef['options'] {
   const used = new Set<string>();
-  return text.split('\n').map((name) => name.trim()).filter(Boolean).slice(0, 100).map((name, index) => {
+  return text.split('\n').map((name) => name.trim()).filter(Boolean).map((name, index) => {
     const old = existing.find((option) => option.name.toLocaleLowerCase() === name.toLocaleLowerCase());
     const samePosition = existing[index];
     const preserved = old ?? (samePosition && !used.has(samePosition.id) ? samePosition : null);
@@ -48,9 +78,22 @@ function optionsFromText(text: string, existing: NamedControlDef['options']): Na
   });
 }
 
+function clearValueIntentSignature(current: NamedControlDef, configured: NamedControlDef): string {
+  const format = Object.entries(configured.format ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify([
+    current.id,
+    current.value,
+    configured.type,
+    configured.textFormat ?? null,
+    configured.options.map(({ id, name, color }) => [id, name, color]),
+    format,
+    configured.relation ? [configured.relation.targetDatabaseId, configured.relation.multiple] : null,
+  ]);
+}
+
 export function NamedControlNode(props: NodeViewProps) {
   const state = useWorkspace();
-  const { node, updateAttributes, editor } = props;
+  const { node, updateAttributes, deleteNode, editor } = props;
   const extensionPageId = (editor.extensionManager.extensions.find((item) => item.name === 'namedControl')?.options as { hostPageId?: string } | undefined)?.hostPageId;
   const pageId = String(node.attrs.pageId || extensionPageId || '');
   const controlId = String(node.attrs.controlId ?? '');
@@ -60,126 +103,446 @@ export function NamedControlNode(props: NodeViewProps) {
   const [draft, setDraft] = useState<NamedControlDef | null>(null);
   const [optionsText, setOptionsText] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
+  const [clearCurrentValueFor, setClearCurrentValueFor] = useState<string | null>(null);
+  const [creatingFromSlash, setCreatingFromSlash] = useState(false);
+  const [editSnapshot, setEditSnapshot] = useState<NamedControlEditSnapshot | null>(null);
+  const [draftDefaultNumber, setDraftDefaultNumber] = useState<string | null>(null);
+  const [valueDraft, setValueDraft] = useState<{ controlId: string; value: string; sourceValue: PropValue } | null>(null);
+  const controlAnchorRef = useRef<HTMLSpanElement>(null);
+  const configPopoverRef = useRef<HTMLSpanElement>(null);
   const target = control?.relation?.targetDatabaseId ? state.pages[control.relation.targetDatabaseId] : null;
   const relatedRows = target?.kind === 'database' && target.database && !isEffectivelyTrashed(state.pages, target.id)
     ? childrenOf(state.pages, target.id)
     : [];
   const valueError = control ? controlValueError(control, control.value) : null;
   const relationStateError = control && !valueError && controlValueErrorInState(control, control.value, state);
+  const activeValueDraft = valueDraft && control && control.id === valueDraft.controlId &&
+    JSON.stringify(control.value) === JSON.stringify(valueDraft.sourceValue) ? valueDraft : null;
+  const valueDraftError = activeValueDraft && control
+    ? (() => {
+        const error = controlValueError(control, activeValueDraft.value);
+        if (!error) return null;
+        if (error.includes('email')) return t('controls.invalidEmail');
+        if (error.includes('number') || error.includes('step') || error.includes('at least') || error.includes('at most')) return t('controls.invalidNumber');
+        return t('controls.invalidText');
+      })()
+    : null;
+  const draftControl = draft
+    ? { ...draft, options: draft.type === 'select' ? optionsFromText(optionsText, draft.options) : draft.options }
+    : null;
+  const currentDraftError = control && draftControl
+    ? controlValueErrorInState(draftControl, control.value, state)
+    : null;
+  const clearCurrentValueSignature = currentDraftError && control && draftControl
+    ? clearValueIntentSignature(control, draftControl)
+    : null;
+  const clearCurrentValue = clearCurrentValueSignature !== null && clearCurrentValueFor === clearCurrentValueSignature;
+  const parsedDefaultNumber = draftDefaultNumber === null ? null : parseNumberDraft(draftDefaultNumber);
+  const draftDefaultValue = draftDefaultNumber === null ? draft?.defaultValue : parsedDefaultNumber;
+  const draftDefaultError = draft && draftControl
+    ? draft.type === 'relation' && !draft.relation?.targetDatabaseId
+      ? t('controls.chooseTable')
+      : draftDefaultNumber !== null && draftDefaultNumber.trim() !== '' && parsedDefaultNumber === null
+      ? t('controls.invalidNumber')
+      : controlErrorLabel(controlValueErrorInState(draftControl, draftDefaultValue ?? null, state))
+    : null;
+  const optionNames = draftControl?.type === 'select'
+    ? draftControl.options.map((item) => item.name.trim().toLocaleLowerCase())
+    : [];
+  const optionError = draftControl?.type === 'select' && (
+    draftControl.options.length > 100 ||
+    new Set(optionNames).size !== optionNames.length ||
+    draftControl.options.some((item) => item.name.length > 100)
+  ) ? t('controls.invalidOptions') : null;
 
   const setValue = (value: PropValue) => {
     if (!editor.isEditable || !page || !control) return;
     commitEditors();
     run({ type: 'page.control.setValue', id: page.id, controlId: control.id, value, now: Date.now() });
   };
-  const startEdit = () => {
+  const resetToDefault = () => {
+    if (!editor.isEditable || !page || !control) return;
+    commitEditors();
+    run({ type: 'page.control.reset', id: page.id, controlId: control.id, now: Date.now() });
+  };
+  const clearCurrentValueNow = () => {
+    if (!editor.isEditable || !page || !control) return;
+    commitEditors();
+    run({ type: 'page.control.setValue', id: page.id, controlId: control.id, value: null, now: Date.now() });
+  };
+  const startEdit = (request?: NamedControlConfigRequest) => {
     if (!editor.isEditable) return;
     setSaveError(null);
+    setClearCurrentValueFor(null);
+    setDraftDefaultNumber(null);
+    setEditSnapshot(captureNamedControlEdit(pageId, controlId, control));
     if (!control) {
+      const type = request?.type ?? 'text';
+      const options = type === 'select'
+        ? [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]
+        : [];
+      const relation = type === 'relation'
+        ? { targetDatabaseId: request?.targetDatabaseId ?? null, multiple: false }
+        : undefined;
+      const initial = defaultFor(type, options, relation?.multiple ?? false);
       setDraft({
         id: controlId,
         name: String(node.attrs.label ?? 'Control'),
-        type: 'text',
-        value: '',
-        defaultValue: '',
-        options: [],
+        type,
+        ...(type === 'text' ? { textFormat: 'plain' as const } : {}),
+        value: initial,
+        defaultValue: initial,
+        options,
+        ...(relation ? { relation } : {}),
       });
-    } else setDraft({ ...control, options: control.options.map((item) => ({ ...item })), relation: control.relation ? { ...control.relation } : undefined });
-    setOptionsText(control?.options.map((item) => item.name).join('\n') ?? '');
+      setCreatingFromSlash(request?.createOnSave === true);
+      setOptionsText(options.map((item) => item.name).join('\n'));
+    } else {
+      setDraft({ ...control, options: control.options.map((item) => ({ ...item })), relation: control.relation ? { ...control.relation } : undefined });
+      setCreatingFromSlash(false);
+      setOptionsText(control.options.map((item) => item.name).join('\n'));
+    }
     setEditing(true);
   };
-  const patchDraft = (change: Partial<NamedControlDef>) => setDraft((current) => current ? { ...current, ...change } : current);
+  const startEditRef = useRef(startEdit);
+  useLayoutEffect(() => {
+    startEditRef.current = startEdit;
+  });
+  useEffect(
+    () => {
+      const dispose = listenForNamedControlConfiguration(editor, pageId, controlId, (request) => startEditRef.current(request));
+      return () => {
+        dispose();
+        cancelNamedControlConfigurationRequest(editor, pageId, controlId);
+      };
+    },
+    [editor, pageId, controlId],
+  );
+  useLayoutEffect(() => {
+    if (!editing) return;
+    const place = () => {
+      const anchor = controlAnchorRef.current?.getBoundingClientRect();
+      const popover = configPopoverRef.current;
+      if (!anchor || !popover) return;
+      const margin = 12;
+      const width = Math.min(popover.offsetWidth, Math.max(180, window.innerWidth - margin * 2));
+      const height = Math.min(popover.offsetHeight, Math.max(120, window.innerHeight - margin * 2));
+      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+      const left = Math.min(Math.max(anchor.left, margin), maxLeft);
+      const below = anchor.bottom + 6;
+      const above = anchor.top - height - 6;
+      const top = below + height <= window.innerHeight - margin
+        ? below
+        : Math.max(margin, above);
+      popover.style.left = `${left}px`;
+      popover.style.top = `${Math.min(top, Math.max(margin, window.innerHeight - height - margin))}px`;
+    };
+    place();
+    window.addEventListener('resize', place);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
+    if (configPopoverRef.current) observer?.observe(configPopoverRef.current);
+    return () => {
+      window.removeEventListener('resize', place);
+      observer?.disconnect();
+    };
+  }, [editing, draft, optionsText, saveError]);
+  const cancelEdit = () => {
+    if (creatingFromSlash && !control && editor.isEditable) deleteNode();
+    setCreatingFromSlash(false);
+    setEditSnapshot(null);
+    setClearCurrentValueFor(null);
+    setEditing(false);
+  };
+  const patchDraft = (change: Partial<NamedControlDef>) => {
+    setClearCurrentValueFor(null);
+    setDraft((current) => current ? { ...current, ...change } : current);
+  };
   const save = () => {
-    if (!editor.isEditable || !page || !draft) return;
+    if (!editor.isEditable || !draft) return;
     setSaveError(null);
-    commitEditors();
+    const initialState = getState();
+    const initialPage = initialState.pages[pageId];
+    const initialControl = initialPage?.controls.find((item) => item.id === controlId);
+    const initialConflict = namedControlEditConflict(editSnapshot, pageId, controlId, initialControl);
+    if (!initialPage || initialConflict) {
+      setSaveError(initialConflict
+        ? editConflictLabel(initialConflict, String(node.attrs.label ?? controlId))
+        : t('controls.missingControl', { name: String(node.attrs.label ?? controlId) }));
+      return;
+    }
     const options = draft.type === 'select' ? optionsFromText(optionsText, draft.options) : draft.options;
-    const currentValue = options.some((item) => item.id === draft.value) ? draft.value : (options[0]?.id ?? null);
-    const defaultValue = options.some((item) => item.id === draft.defaultValue) ? draft.defaultValue : (options[0]?.id ?? null);
-    const nextDraft = { ...draft, options, ...(draft.type === 'select' ? { value: currentValue, defaultValue } : {}) };
-    const saved = run({ type: 'page.control.configure', id: page.id, control: nextDraft, now: Date.now() });
+    const optionNames = options.map((item) => item.name.trim().toLocaleLowerCase());
+    if (draft.type === 'select' && (options.length > 100 || new Set(optionNames).size !== optionNames.length || options.some((item) => item.name.length > 100))) {
+      setSaveError(t('controls.invalidOptions'));
+      return;
+    }
+    if (draftDefaultError || optionError) {
+      setSaveError(draftDefaultError ?? optionError);
+      return;
+    }
+    if (!draft.name.trim() || draft.name.trim().length > 100) {
+      setSaveError(t('controls.invalidName'));
+      return;
+    }
+    let defaultValue = draft.defaultValue;
+    if ((draft.type === 'number' || draft.type === 'slider') && draftDefaultNumber !== null) {
+      if (draftDefaultNumber.trim() === '') defaultValue = null;
+      else if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(draftDefaultNumber.trim()) && Number.isFinite(Number(draftDefaultNumber)))
+        defaultValue = Number(draftDefaultNumber);
+      else {
+        setSaveError(t('controls.invalidNumber'));
+        return;
+      }
+    }
+    const normalizedFormat = draft.format === undefined ? undefined : normalizeControlFormat(draft.format);
+    if (draft.format !== undefined && !normalizedFormat) {
+      setSaveError(t('controls.invalidControlFormat'));
+      return;
+    }
+    const nextDraft: NamedControlDef = {
+      ...draft,
+      value: editSnapshot?.mode === 'existing' ? null : defaultValue,
+      defaultValue,
+      options,
+      ...(normalizedFormat ? { format: normalizedFormat } : {}),
+      ...(draft.type === 'text' ? {} : { textFormat: undefined }),
+    };
+    commitEditors();
+    const currentState = getState();
+    const currentPage = currentState.pages[pageId];
+    const currentControl = currentPage?.controls.find((item) => item.id === controlId);
+    const conflict = namedControlEditConflict(editSnapshot, pageId, controlId, currentControl);
+    if (!currentPage || conflict) {
+      setSaveError(conflict
+        ? editConflictLabel(conflict, String(node.attrs.label ?? controlId))
+        : t('controls.missingControl', { name: String(node.attrs.label ?? controlId) }));
+      return;
+    }
+    if (draft.type === 'relation' && !nextDraft.relation?.targetDatabaseId) {
+      setSaveError(t('controls.chooseTable'));
+      return;
+    }
+    const defaultError = controlValueErrorInState(nextDraft, defaultValue, currentState);
+    if (defaultError) {
+      setSaveError(controlErrorLabel(defaultError));
+      return;
+    }
+    const liveError = currentControl ? controlValueErrorInState(nextDraft, currentControl.value, currentState) : null;
+    const canClearCurrentValue = currentControl && clearCurrentValueFor === clearValueIntentSignature(currentControl, nextDraft);
+    if (liveError && !canClearCurrentValue) {
+      setSaveError(t('controls.currentValueInvalid'));
+      return;
+    }
+    const now = Date.now();
+    const commands = [
+      ...(currentControl && liveError && canClearCurrentValue ? [{ type: 'page.control.setValue' as const, id: pageId, controlId, value: null, now }] : []),
+      { type: 'page.control.configure' as const, id: pageId, control: nextDraft, now },
+    ];
+    const saved = runAll(commands);
     if (!saved.ok) {
-      setSaveError(saved.error);
+      const error = saved.error.toLowerCase();
+      setSaveError(error.includes('current value is incompatible')
+        ? t('controls.currentValueInvalid')
+        : error.includes('invalid default value')
+          ? t('controls.invalidDefaultValue')
+          : error.includes('email')
+            ? t('controls.invalidEmail')
+            : error.includes('numeric') || error.includes('number')
+              ? t('controls.invalidNumber')
+              : saved.error);
       return;
     }
     updateAttributes({ pageId, controlId, label: nextDraft.name });
     setEditing(false);
+    setCreatingFromSlash(false);
+    setEditSnapshot(null);
+    setClearCurrentValueFor(null);
+    setDraftDefaultNumber(null);
   };
   const removeDefinition = () => {
     if (!editor.isEditable || !page || !control) return;
     commitEditors();
     const removed = run({ type: 'page.control.delete', id: page.id, controlId, now: Date.now() });
-    if (removed.ok) setEditing(false);
+    if (removed.ok) {
+      setEditing(false);
+      setEditSnapshot(null);
+    }
   };
+  const controlMenuEntries: MenuEntry[] = [
+    { label: t('controls.configureControl'), disabled: !editor.isEditable, onSelect: startEdit },
+    { label: t('controls.clearValue'), disabled: !editor.isEditable, onSelect: clearCurrentValueNow },
+    { label: t('controls.resetValue'), disabled: !editor.isEditable, onSelect: resetToDefault },
+  ];
 
   return (
-    <NodeViewWrapper as="span" className="named-data-control" contentEditable={false} onMouseDown={stop}>
+    <NodeViewWrapper ref={controlAnchorRef} as="span" className="named-data-control" contentEditable={false} onMouseDown={stop}>
       {editing && draft ? (
-        <span className="named-data-popover" role="group" aria-label={t('controls.configureControl')}>
-          <label>{t('controls.name')}<input value={draft.name} maxLength={100} onChange={(event) => patchDraft({ name: event.target.value })} /></label>
+        <span ref={configPopoverRef} className="named-data-popover named-control-popover" role="group" aria-label={t('controls.configureControl')} onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelEdit();
+          }
+        }}>
+          <label>{t('controls.name')}<input autoFocus disabled={!editor.isEditable} aria-invalid={!draft.name.trim() || draft.name.trim().length > 100} value={draft.name} maxLength={100} onChange={(event) => patchDraft({ name: event.target.value })} /></label>
           <label>{t('controls.type')}
-            <select value={draft.type} onChange={(event) => {
+            <select disabled={!editor.isEditable} value={draft.type} onChange={(event) => {
               const type = event.target.value as NamedControlType;
-              const options = type === 'select' ? (draft.options.length ? draft.options : [{ id: newId(), name: 'Option 1', color: 'gray' as const }]) : draft.options;
+              const options = type === 'select' ? (draft.options.length ? draft.options : [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]) : draft.options;
               setOptionsText(options.map((item) => item.name).join('\n'));
               const relation = type === 'relation' ? (draft.relation ?? { targetDatabaseId: null, multiple: false }) : draft.relation;
               const multiple = relation?.multiple ?? false;
-              const value = defaultFor(type, options, multiple);
-              patchDraft({ type, options, relation, value, defaultValue: value });
+              const initial = defaultFor(type, options, multiple);
+              setDraftDefaultNumber(null);
+              patchDraft({
+                type,
+                options,
+                relation,
+                textFormat: type === 'text' ? draft.textFormat ?? 'plain' : undefined,
+                ...(!control ? { value: initial, defaultValue: initial } : {}),
+              });
             }}>
               {CONTROL_TYPES.map((type) => <option value={type} key={type}>{t(`controls.types.${type}` as never)}</option>)}
             </select>
           </label>
+          {draft.type === 'text' && <label>{t('controls.textFormat')}
+            <select disabled={!editor.isEditable} value={draft.textFormat ?? 'plain'} onChange={(event) => patchDraft({ textFormat: event.target.value as 'plain' | 'email' })}>
+              <option value="plain">{t('controls.textFormats.plain')}</option>
+              <option value="email">{t('controls.textFormats.email')}</option>
+            </select>
+          </label>}
           {draft.type === 'select' && <label>{t('controls.options')}
-            <textarea rows={3} value={optionsText} onChange={(event) => setOptionsText(event.target.value)} />
+            <textarea disabled={!editor.isEditable} aria-invalid={Boolean(optionError)} rows={3} value={optionsText} onChange={(event) => {
+              setOptionsText(event.target.value);
+              patchDraft({ options: optionsFromText(event.target.value, draft.options) });
+            }} />
           </label>}
           {draft.type === 'relation' && <>
             <label>{t('controls.targetTable')}
-              <select value={draft.relation?.targetDatabaseId ?? ''} onChange={(event) => patchDraft({ relation: { targetDatabaseId: event.target.value || null, multiple: draft.relation?.multiple ?? false } })}>
+              <select disabled={!editor.isEditable} aria-invalid={!draft.relation?.targetDatabaseId} value={draft.relation?.targetDatabaseId ?? ''} onChange={(event) => patchDraft({ relation: { targetDatabaseId: event.target.value || null, multiple: draft.relation?.multiple ?? false } })}>
                 <option value="">{t('controls.chooseTable')}</option>
                 {Object.values(state.pages).filter((item) => item.kind === 'database' && item.database && !isEffectivelyTrashed(state.pages, item.id)).map((item) => <option key={item.id} value={item.id}>{displayTitle(item)}</option>)}
               </select>
             </label>
-            <label className="named-data-check"><input type="checkbox" checked={draft.relation?.multiple === true} onChange={(event) => patchDraft({ relation: { targetDatabaseId: draft.relation?.targetDatabaseId ?? null, multiple: event.target.checked } })} />{t('controls.allowMultiple')}</label>
+            <label className="named-data-check"><input disabled={!editor.isEditable} type="checkbox" checked={draft.relation?.multiple === true} onChange={(event) => patchDraft({ relation: { targetDatabaseId: draft.relation?.targetDatabaseId ?? null, multiple: event.target.checked } })} />{t('controls.allowMultiple')}</label>
           </>}
           <label>{t('controls.defaultValue')}
-            {draft.type === 'checkbox' ? <input type="checkbox" checked={draft.defaultValue === true} onChange={(event) => patchDraft({ defaultValue: event.target.checked, value: draft.value })} /> :
-              draft.type === 'select' ? <select value={typeof draft.defaultValue === 'string' ? draft.defaultValue : ''} onChange={(event) => patchDraft({ defaultValue: event.target.value || null })}><option value="">{t('controls.blank')}</option>{draft.options.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select> :
-                draft.type === 'relation' ? <span className="named-data-muted">{t('controls.setDefaultInValue')}</span> :
-                  <input type={draft.type === 'date' ? 'date' : draft.type === 'number' || draft.type === 'slider' ? 'number' : 'text'} value={draft.defaultValue === null ? '' : String(draft.defaultValue)} onChange={(event) => {
-                    const value = draft.type === 'number' || draft.type === 'slider' ? (event.target.value === '' ? null : Number(event.target.value)) : event.target.value;
+            {draft.type === 'checkbox' ? <input disabled={!editor.isEditable} aria-invalid={Boolean(draftDefaultError)} type="checkbox" checked={draft.defaultValue === true} onChange={(event) => patchDraft({ defaultValue: event.target.checked })} /> :
+              draft.type === 'select' ? <select disabled={!editor.isEditable} aria-invalid={Boolean(draftDefaultError)} value={typeof draft.defaultValue === 'string' ? draft.defaultValue : ''} onChange={(event) => patchDraft({ defaultValue: event.target.value || null })}><option value="">{t('controls.blank')}</option>{draft.options.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select> :
+                draft.type === 'relation' ? <select
+                  disabled={!editor.isEditable}
+                  aria-invalid={Boolean(draftDefaultError)}
+                  multiple={draft.relation?.multiple === true}
+                  value={Array.isArray(draft.defaultValue) ? draft.defaultValue : typeof draft.defaultValue === 'string' ? [draft.defaultValue] : []}
+                  onChange={(event) => {
+                    const value = draft.relation?.multiple
+                      ? Array.from(event.target.selectedOptions).map((item) => item.value)
+                      : event.target.value || null;
                     patchDraft({ defaultValue: value });
-                  }} />}
+                  }}
+                >
+                  {!draft.relation?.multiple && <option value="">{t('controls.blank')}</option>}
+                  {Object.values(state.pages).filter((item) => item.id === draft.relation?.targetDatabaseId && item.kind === 'database' && item.database && !isEffectivelyTrashed(state.pages, item.id)).flatMap((item) => childrenOf(state.pages, item.id)).map((row) => <option key={row.id} value={row.id}>{displayTitle(row)}</option>)}
+                </select> :
+                  <input
+                    disabled={!editor.isEditable}
+                    type={draft.type === 'date' ? 'date' : draft.type === 'text' && draft.textFormat === 'email' ? 'email' : 'text'}
+                    inputMode={draft.type === 'number' || draft.type === 'slider' ? 'decimal' : undefined}
+                    aria-label={draft.type === 'text' && draft.textFormat === 'email' ? t('controls.textFormats.email') : undefined}
+                    aria-invalid={Boolean(draftDefaultError)}
+                    value={draft.type === 'number' || draft.type === 'slider'
+                      ? draftDefaultNumber ?? (draft.defaultValue === null ? '' : String(draft.defaultValue))
+                      : draft.defaultValue === null ? '' : String(draft.defaultValue)}
+                    onChange={(event) => {
+                      if (draft.type === 'number' || draft.type === 'slider') {
+                        const raw = event.target.value;
+                        setDraftDefaultNumber(raw);
+                        if (raw.trim() === '') patchDraft({ defaultValue: null });
+                        else {
+                          const parsed = parseNumberDraft(raw);
+                          if (parsed !== null) patchDraft({ defaultValue: parsed });
+                        }
+                      } else patchDraft({ defaultValue: event.target.value });
+                    }}
+                  />}
           </label>
           {(draft.type === 'number' || draft.type === 'slider') && <div className="named-data-format">
-            <label>{t('controls.minimum')}<input type="number" value={draft.format?.min ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, min: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
-            <label>{t('controls.maximum')}<input type="number" value={draft.format?.max ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, max: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
-            <label>{t('controls.step')}<input type="number" min="0.000000001" value={draft.format?.step ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, step: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+            <label>{t('controls.minimum')}<input disabled={!editor.isEditable} type="number" value={draft.format?.min ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, min: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+            <label>{t('controls.maximum')}<input disabled={!editor.isEditable} type="number" value={draft.format?.max ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, max: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+            <label>{t('controls.step')}<input disabled={!editor.isEditable} type="number" min="0.000000001" value={draft.format?.step ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, step: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
           </div>}
-          {saveError && <div className="named-data-diagnostic">{saveError}</div>}
+          {currentDraftError && <div className="named-data-diagnostic" role="status">{t('controls.currentValueInvalid')}</div>}
+          {currentDraftError && <label className="named-data-check">
+            <input disabled={!editor.isEditable} type="checkbox" checked={clearCurrentValue} onChange={(event) => setClearCurrentValueFor(event.target.checked ? clearCurrentValueSignature : null)} />
+            {t('controls.clearCurrentValue')}
+          </label>}
+          {(draftDefaultError || optionError) && <div className="named-data-diagnostic" role="status">{draftDefaultError ?? optionError}</div>}
+          {saveError && <div className="named-data-diagnostic" role="alert">{saveError}</div>}
           <div className="named-data-actions">
-            <button type="button" onClick={save}>{t('controls.save')}</button>
-            {control && <button type="button" onClick={removeDefinition}>{t('controls.deleteControl')}</button>}
-            <button type="button" onClick={() => setEditing(false)}>{t('controls.cancel')}</button>
+            <button type="button" disabled={!editor.isEditable} onClick={save}>{t('controls.save')}</button>
+            {control && <button type="button" disabled={!editor.isEditable} onClick={removeDefinition}>{t('controls.deleteControl')}</button>}
+            <button type="button" onClick={cancelEdit}>{t('controls.cancel')}</button>
           </div>
         </span>
       ) : !control ? (
         <span className="named-data-missing" title={t('controls.deletedDiagnostic')}>{t('controls.missingControl', { name: String(node.attrs.label ?? controlId) })}
-          <button type="button" onClick={startEdit}>{t('controls.recreate')}</button>
+          {editor.isEditable && <button type="button" onClick={() => startEdit()}>{t('controls.recreate')}</button>}
         </span>
       ) : (
         <span className="named-data-control-line">
           <span className="named-data-label">{control.name}</span>
-          {control.type === 'text' && <input disabled={!editor.isEditable} aria-label={control.name} type="text" value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value)} />}
-          {control.type === 'number' && <input disabled={!editor.isEditable} aria-label={control.name} type="number" value={typeof control.value === 'number' ? control.value : ''} min={control.format?.min} max={control.format?.max} step={control.format?.step ?? 'any'} onChange={(event) => setValue(event.target.value === '' ? null : Number(event.target.value))} />}
+          {control.type === 'text' && <input
+            disabled={!editor.isEditable}
+            aria-label={control.name}
+            aria-invalid={Boolean(valueDraftError || valueError)}
+            type={control.textFormat === 'email' ? 'email' : 'text'}
+            value={activeValueDraft?.controlId === control.id ? activeValueDraft.value : typeof control.value === 'string' ? control.value : ''}
+            onChange={(event) => {
+              const value = event.target.value;
+              const error = controlValueError(control, value);
+              if (error) setValueDraft({ controlId: control.id, value, sourceValue: control.value });
+              else { setValueDraft(null); setValue(value); }
+            }}
+          />}
+          {control.type === 'number' && <input
+            disabled={!editor.isEditable}
+            aria-label={control.name}
+            aria-invalid={Boolean(valueDraftError || valueError)}
+            type="text"
+            inputMode="decimal"
+            value={activeValueDraft?.controlId === control.id ? activeValueDraft.value : typeof control.value === 'number' ? String(control.value) : ''}
+            onChange={(event) => {
+              const raw = event.target.value;
+              if (raw === '') { setValueDraft(null); setValue(null); return; }
+              const value = parseNumberDraft(raw);
+              if (value === null || controlValueError(control, value)) setValueDraft({ controlId: control.id, value: raw, sourceValue: control.value });
+              else { setValueDraft(null); setValue(value); }
+            }}
+          />}
           {control.type === 'slider' && <input disabled={!editor.isEditable} aria-label={control.name} type="range" value={typeof control.value === 'number' ? control.value : (control.format?.min ?? 0)} min={control.format?.min ?? 0} max={control.format?.max ?? 100} step={control.format?.step ?? 1} onChange={(event) => setValue(Number(event.target.value))} />}
           {control.type === 'select' && <select disabled={!editor.isEditable} aria-label={control.name} value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value || null)}><option value="">{t('controls.blank')}</option>{control.options.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}
           {control.type === 'checkbox' && <input disabled={!editor.isEditable} aria-label={control.name} type="checkbox" checked={control.value === true} onChange={(event) => setValue(event.target.checked)} />}
           {control.type === 'date' && <input disabled={!editor.isEditable} aria-label={control.name} type="date" value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value)} />}
           {control.type === 'relation' && control.relation?.multiple && <select disabled={!editor.isEditable} aria-label={control.name} multiple value={Array.isArray(control.value) ? control.value : []} onChange={(event) => setValue(Array.from(event.target.selectedOptions).map((item) => item.value))}>{relatedRows.map((row) => <option key={row.id} value={row.id}>{displayTitle(row)}</option>)}</select>}
           {control.type === 'relation' && !control.relation?.multiple && <select disabled={!editor.isEditable} aria-label={control.name} value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value || null)}><option value="">{t('controls.blank')}</option>{relatedRows.map((row) => <option key={row.id} value={row.id}>{displayTitle(row)}</option>)}</select>}
-          {editor.isEditable && <button type="button" className="named-data-configure" aria-label={t('controls.configureControl')} onClick={startEdit}>⚙</button>}
-          {(valueError || relationStateError) && <span className="named-data-diagnostic">{valueError ?? t('controls.relationUnavailable')}</span>}
+          {editor.isEditable && <button
+            type="button"
+            className="named-data-configure"
+            aria-label={t('controls.controlActions')}
+            aria-haspopup="menu"
+            aria-expanded={menuAnchor !== null}
+            onClick={(event) => {
+              if (editor.isEditable) setMenuAnchor(event.currentTarget);
+            }}
+          >⚙</button>}
+          {menuAnchor && control && editor.isEditable && <Menu
+            anchor={menuAnchor}
+            entries={controlMenuEntries}
+            label={t('controls.controlActions')}
+            onClose={() => setMenuAnchor(null)}
+          />}
+          {(valueDraftError || valueError || relationStateError) && <span className="named-data-diagnostic" role="status">{valueDraftError ?? (valueError ? t('controls.invalidDefaultValue') : t('controls.relationUnavailable'))}</span>}
         </span>
       )}
     </NodeViewWrapper>

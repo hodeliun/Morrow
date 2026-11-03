@@ -18,7 +18,7 @@ const schema = new Schema({
       group: 'block',
       atom: true,
       attrs: {
-        hostPageId: { default: null },
+        hostPageId: { default: 't22-note' },
         sourceDatabaseId: { default: null },
         blockId: { default: null },
         view: { default: null },
@@ -193,6 +193,23 @@ describe('linked view configuration synchronization', () => {
     expect(linkedA.viewRawState.raw.futureLinkedFlag).toEqual({ keep: 'marker-t22-linked-a' });
     expect(linkedB.viewRawState.raw.view.futureRawFlag).toEqual({ keep: 't22-view-b' });
     expect(activeAfterTextUndo.doc.child(0).firstChild!.marks.map((mark) => mark.type.name)).toEqual(['strong']);
+  });
+
+  it('syncs a legacy linked view whose stored attrs omit hostPageId', () => {
+    const before = fixtureDoc();
+    for (const node of before.content ?? []) {
+      if (node.type === 'linkedDatabaseView') delete node.attrs!.hostPageId;
+    }
+    const after = renamed(before, 't22-linked-a', 'Legacy renamed');
+
+    const result = prepareLinkedViewConfigSync(editorState(before), 't22-note', before, after);
+
+    expect(result.status).toBe('transaction');
+    if (result.status !== 'transaction') throw new Error('Expected a transaction for an omitted legacy host.');
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]?.identity).toEqual({ kind: 'linked', hostPageId: 't22-note', blockId: 't22-linked-a' });
+    expect(before.content?.[1]?.attrs?.hostPageId).toBeUndefined();
+    expect(after.content?.[1]?.attrs?.hostPageId).toBeUndefined();
   });
 
   it('allows distinct linked block identities to share a cloned view ID', () => {

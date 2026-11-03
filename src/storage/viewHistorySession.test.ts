@@ -330,6 +330,34 @@ describe('workspace contextual view history', () => {
     expect(session.getContextualHistory('database', identity).undo?.id).toBe(firstEntry?.id);
   });
 
+  it('captures and replays a legacy linked config without persisting a hostPageId', async () => {
+    const session = await openWorkspace();
+    const identity = { kind: 'linked', hostPageId: 'host-page', blockId: 'linked-block' } as const;
+    const before = structuredClone(session.getState().docs['host-page']!);
+    const linked = before.content!.find((node) => node.type === 'linkedDatabaseView')!;
+    delete linked.attrs!.hostPageId;
+    const seeded = session.executeHistoryReplay([{ type: 'page.setDoc', id: 'host-page', doc: before, now: 2 }]);
+    expect(seeded.ok).toBe(true);
+
+    const after = structuredClone(before);
+    const afterLinked = after.content!.find((node) => node.type === 'linkedDatabaseView')!;
+    (afterLinked.attrs!.view as ViewDef).name = 'Legacy linked renamed';
+    const execute = (session as unknown as { executeLinkedViewConfigChange: LinkedViewCommit })
+      .executeLinkedViewConfigChange.bind(session);
+    const result = execute(identity, before, after, () => true, () => true);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.status).toBe('ready');
+    expect(session.getState().docs['host-page']?.content?.[1]?.attrs?.hostPageId).toBeUndefined();
+    expect((await session.stepContextualHistory('database', identity, 'undo')).status).toBe('applied');
+    expect((session.getState().docs['host-page']?.content?.[1]?.attrs?.view as ViewDef).name).toBe('Linked');
+    expect(session.getState().docs['host-page']?.content?.[1]?.attrs?.hostPageId).toBeUndefined();
+    expect((await session.stepContextualHistory('database', identity, 'redo')).status).toBe('applied');
+    expect((session.getState().docs['host-page']?.content?.[1]?.attrs?.view as ViewDef).name).toBe('Legacy linked renamed');
+    expect(session.getState().docs['host-page']?.content?.[1]?.attrs?.hostPageId).toBeUndefined();
+  });
+
   it('mirrors an accepted linked change before history and session listeners publish', async () => {
     const session = await openWorkspace();
     await session.flush();

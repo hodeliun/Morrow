@@ -42,6 +42,7 @@ import type {
   ViewHistoryStepResult,
 } from './viewHistory';
 import {
+  linkedViewHostMatches,
   linkedViewConfigChanges,
   linkedViewConfigSnapshot,
   primaryViewConfigChanges,
@@ -147,7 +148,7 @@ function linkedSourceDatabaseId(state: WorkspaceState, hostPageId: PageId, block
   const visit = (node: DocNode) => {
     if (
       node.type === 'linkedDatabaseView' &&
-      node.attrs?.hostPageId === hostPageId &&
+      linkedViewHostMatches(node.attrs, hostPageId) &&
       node.attrs.blockId === blockId &&
       typeof node.attrs.sourceDatabaseId === 'string'
     )
