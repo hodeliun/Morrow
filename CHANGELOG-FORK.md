@@ -2,6 +2,18 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — intervalo de datas (fontes, sem novo download)
+
+- O controle guarda vazio ou dois limites ISO ordenados, com edição personalizada,
+  hoje, últimos sete dias, mês atual e próximos sete dias por calendário local.
+- First/Last e seus métodos retornam os endpoints tipados para fórmulas e filtros
+  inclusivos. Abrir ou reabrir não recalcula os limites materializados.
+- Teclado, padrão/reset, readonly e data simples permanecem compatíveis; mudanças
+  de filtro preservam o foco do input e o fallback da grade quando ela possuía foco.
+
+Detalhes e validação: [T26 — intervalo de datas](docs/deliveries/T26-date-range-controls.md).
+Formato 13 preservado; sem instalador, tag ou release.
+
 ## Entrega sequencial — escala e progresso numéricos (fontes, sem novo download)
 
 - Controles manuais têm mínimo, máximo e passo explícitos, teclado, legenda e

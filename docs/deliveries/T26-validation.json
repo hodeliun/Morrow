@@ -1,0 +1,176 @@
+{
+  "ticket": "T26/#77",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "build": 1,
+    "command": "npm run check",
+    "tests": 1095,
+    "testFiles": 140,
+    "typecheck": "passed",
+    "lint": "passed",
+    "buildStatus": "passed",
+    "sourceFiles": 432,
+    "sourceSha256": "06b0bf2eb254daa27ec541b47b5e11f70dd1bd8c0eb76b30af61d3ee5c3f8b5c",
+    "artifacts": 3597,
+    "artifactsSha256": "3e8bba3c746c3714f35465e5eb0ea4e97d55fa4d09f78726e245dc24665b8edb",
+    "packagedArtifactsMatched": 3597
+  },
+  "directed": {
+    "reviewerTests": 29,
+    "reviewerFiles": 4,
+    "executorTests": 5,
+    "executorFiles": 2,
+    "expectedRedLastCases": 4,
+    "lint": "passed"
+  },
+  "runtime": {
+    "main": {
+      "result": "ui-1793735503444",
+      "resultSha256": "a48ddfeb82128d193c0da66f9a932c6e8981746296531cdc3232c5ed0c5548de",
+      "assertions": {
+        "opensWithoutMarkdownWrites": true,
+        "inclusiveFilterShowsStartAndEndBoundaryRows": true,
+        "filterUsesNamedDateRangeControlBinding": true,
+        "slashCreatesExactDateRangeWithDefaultAndStableId": true,
+        "blankValueAndResetRoundTripThroughThePublicControlMenu": true,
+        "invertedAndPartialCustomEditsDoNotWrite": true,
+        "defaultConfigurationRejectsInvalidPairsAndResetAppliesValidPair": true,
+        "firstAndLastGlobalAndMethodFormulasConsumeOrderedDateBounds": true,
+        "twoConsecutiveArrowKeysKeepTheSameDateInputFocused": true,
+        "localPresetsMaterializeTwoBoundsFromObservedRendererClock": true,
+        "formulasAndInclusiveFilterUpdateAfterEachPreset": true,
+        "otherPaneRangeUpdateSynchronizesWithoutRemountingTheFirstPane": true,
+        "reopenPreservesMaterializedBoundsFormulaResultsAndMarkdownBytes": true,
+        "localeThemeNarrowMatrix": [
+          {
+            "locale": "en",
+            "theme": "light",
+            "width": 520,
+            "bounds": {
+              "x": 94.640625,
+              "y": 262.859375,
+              "width": 186,
+              "height": 141
+            }
+          },
+          {
+            "locale": "en",
+            "theme": "dark",
+            "width": 520,
+            "bounds": {
+              "x": 94.640625,
+              "y": 262.859375,
+              "width": 186,
+              "height": 141
+            }
+          },
+          {
+            "locale": "pt",
+            "theme": "light",
+            "width": 520,
+            "bounds": {
+              "x": 94.640625,
+              "y": 262.859375,
+              "width": 200,
+              "height": 141
+            }
+          },
+          {
+            "locale": "pt",
+            "theme": "dark",
+            "width": 520,
+            "bounds": {
+              "x": 94.640625,
+              "y": 262.859375,
+              "width": 200,
+              "height": 141
+            }
+          },
+          {
+            "locale": "es",
+            "theme": "light",
+            "width": 520,
+            "bounds": {
+              "x": 94.640625,
+              "y": 262.859375,
+              "width": 190,
+              "height": 141
+            }
+          },
+          {
+            "locale": "es",
+            "theme": "dark",
+            "width": 520,
+            "bounds": {
+              "x": 94.640625,
+              "y": 262.859375,
+              "width": 190,
+              "height": 141
+            }
+          }
+        ],
+        "readOnlyDateRangeAndSingleDateControlsDoNotWrite": true
+      }
+    },
+    "focusFallback": {
+      "result": "ui-1793735556782",
+      "resultSha256": "255db25b17c64f127652f79e4e13f99c7e030cd27735ea159e30a39664d96f3a",
+      "targetColumn": "t26-due",
+      "oldCellDisconnected": true,
+      "sameTableAndPane": true,
+      "visibleFallback": true,
+      "sourceBytesAndMtimeRestored": true,
+      "unexpectedMarkdownChanges": [],
+      "auxiliaryRecentMetadataChanged": true
+    },
+    "hiddenSyntheticOnly": true,
+    "pageErrors": 0,
+    "genericBoundaries": 0,
+    "sourceAndPackageStableAfter": true,
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "ownProcessesAfter": 0,
+    "runtimeLeasePresentAfter": false
+  },
+  "screenshots": [
+    {
+      "path": "docs/assets/T26/range-pt-dark-520.png",
+      "sha256": "3e4396b14224d2103f4d3d18c6d0167092e59b44405345c764b88aefab02f30c",
+      "caption": "PT dark at 520px: custom range and single-date control; the table continues below the frame."
+    },
+    {
+      "path": "docs/assets/T26/range-es-light-520.png",
+      "sha256": "441b3b02d743caf4bcdd6d9118f015343a0515fd6b32a3538404db2c8c5b81ad",
+      "caption": "ES light at 520px: translated labels and accessible range inputs."
+    },
+    {
+      "path": "docs/assets/T26/readonly-range.png",
+      "sha256": "562ea638756fb5029415dd13408a06b7c47bb8f61571d5fbb1090c1861d662e3",
+      "caption": "Registered synthetic Trash note, both range inputs/preset and single date disabled, Saved."
+    }
+  ],
+  "negativeHistory": [
+    {
+      "stage": "directed Last before implementation",
+      "expectedRedCases": 4,
+      "cause": "The required Last function/method was absent. Minimal existing-engine extension made the same cases green."
+    },
+    {
+      "stage": "directed Slash aliases",
+      "reportedBy": "executor",
+      "cause": "Missing date-range search aliases detected before gate; EN/PT/ES catalog fields completed, directed test green."
+    }
+  ],
+  "limits": [
+    "Presets include today and total seven inclusive calendar dates; this is an implementation decision.",
+    "UI samples the real renderer clock; deterministic injected clocks,leap year,DST and month/year edges are unit coverage.",
+    "Locale/theme matrix uses preferences plus reload,not live-language-change proof.",
+    "Fallback uses one reversible synthetic filesystem rename,not a user Trash gesture; other Markdown remained unchanged. The report also observed a recent.json metadata change and does not claim zero auxiliary JSON writes.",
+    "Readonly uses a genuinely registered synthetic Trash note; no claim of an external readonly transition.",
+    "No personal app/profile/vault,native clipboard,visible native window,installation or release."
+  ]
+}

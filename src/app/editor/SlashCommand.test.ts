@@ -18,6 +18,7 @@ describe('named control slash catalog', () => {
       { type: 'controlMultiSelect', aliases: { en: 'multiple choices', es: 'selección múltiple', pt: 'seleção múltipla' } },
       { type: 'controlCheckbox', aliases: { en: 'boolean', es: 'casilla', pt: 'caixa' } },
       { type: 'controlDate', aliases: { en: 'calendar', es: 'calendario', pt: 'calendário' } },
+      { type: 'controlDateRange', aliases: { en: 'date range', es: 'intervalo de fechas', pt: 'intervalo de datas' } },
       { type: 'controlRelation', aliases: { en: 'linked row', es: 'fila vinculada', pt: 'linha vinculada' } },
     ] as const;
 

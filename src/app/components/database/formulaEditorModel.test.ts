@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindFormulaReferences, formulaResult } from '../../../core/database';
+import { bindFormulaReferences, bindPageFormulaReferences, formulaResult } from '../../../core/database';
 import { newPageMeta } from '../../../core/model';
 import type { DatabaseDef, PageMeta, PropDef, WorkspaceState } from '../../../core/model';
 import {
@@ -42,6 +42,18 @@ describe('formula editor suggestions and highlighting', () => {
     property('amount', 'Amount', 'number'),
   ]);
   const state = workspace(target, owner);
+
+  it('offers Last globally and on a typed date-range list without relation inference', () => {
+    expect(formulaSuggestions('Las', 3, owner.id, owner.database!, state, []).map(item => item.label)).toContain('Last()');
+    expect(formulaSuggestions('[1, 2].La', 9, owner.id, owner.database!, state, []).map(item => item.label)).toContain('Last()');
+    const rangeOwner = { ...owner, controls: [{ id: 'period', name: 'Period', type: 'dateRange' as const,
+      value: ['2024-02-29', '2024-03-01'], defaultValue: null, options: [] }] };
+    const rangeState = workspace(target, rangeOwner);
+    const source = 'Period.La';
+    const suggestions = formulaSuggestions(source, source.length, owner.id, owner.database!, rangeState,
+      bindPageFormulaReferences(source, owner.id, rangeState));
+    expect(suggestions.map(item => item.label)).toContain('Last()');
+  });
 
   it('completes relation target fields after a dot, including a quoted partial name', () => {
     const source = 'thisRow.Assignee.`Full N';

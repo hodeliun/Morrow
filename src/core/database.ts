@@ -565,6 +565,10 @@ function evaluateFormulaForRow(
         if (arguments_.length !== 0) throw new Error('First() takes no arguments');
         return values[0] ?? null;
       }
+      if (method === 'last') {
+        if (arguments_.length !== 0) throw new Error('Last() takes no arguments');
+        return values[values.length - 1] ?? null;
+      }
       if (method === 'unique') {
         if (arguments_.length !== 0) throw new Error('Unique() takes no arguments');
         return values.filter(

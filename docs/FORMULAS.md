@@ -15,6 +15,13 @@ The formula editor offers function, field, and table selectors plus name suggest
 
 ## Functions
 
+A date-range control stores blank or two ordered date-only ISO strings. For a
+control named `Window`, `First(Window)` and `Window.First()` return its start;
+`Last(Window)` and `Window.Last()` return its end. The value is a pair of bounds,
+not a list of all days or relation IDs. Presets materialize local calendar dates
+when selected and are not recalculated by opening the note. An inclusive filter
+can use `thisRow.Due >= First(Window) and thisRow.Due <= Last(Window)`.
+
 `If(test, yes, no)` evaluates only the selected branch. `IfError(expression, fallback)` evaluates the fallback only when evaluating the first expression raises an error, for example `IfError(thisRow.Amount / thisRow.Count, 0)`. Blank, `false` and `0` are returned unchanged, and an error in the fallback remains visible. `Switch(value, case1, result1, case2, result2, default)` compares in order; the final argument is an optional default. `WithName(value, name, expression)` binds `name` for the expression; the name can be an identifier (`WithName(5, amount, amount * 2)`) or quoted text. Nested scopes can refer to outer names.
 
 | Function | Meaning |
@@ -26,6 +33,7 @@ The formula editor offers function, field, and table selectors plus name suggest
 | `Sequence(count)` | Creates integers from 1 through count. `Sequence(start, end, step)` uses an inclusive end; step defaults to 1. |
 | `FormulaMap(list, expression)` / `ForEach(list, expression)` | Returns one expression result per item, with `CurrentValue` set for each evaluation. These functions do not perform actions or writes. |
 | `First(list)` | Returns the first item, or blank for an empty list. |
+| `Last(list)` | Returns the last item, preserving zero, false and empty text; blank for an empty list. |
 | `IsBlank(value)` | True for blank, empty text, or an empty list. `Empty` is a legacy alias. |
 | `ToNumber(value)` / `ToText(value)` | Converts a finite numeric string to a number, or a scalar to text. Invalid numeric input is an error. |
 | `Round(value, places)` | Rounds decimal places (0 by default, capped at 10) using decimal half-away-from-zero rounding. |
