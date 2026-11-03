@@ -12,6 +12,8 @@ describe('named control slash catalog', () => {
       { type: 'controlText', aliases: { en: 'plain text', es: 'texto simple', pt: 'texto simples' } },
       { type: 'controlNumber', aliases: { en: 'numeric', es: 'numérico', pt: 'numérico' } },
       { type: 'controlSlider', aliases: { en: 'range', es: 'deslizador', pt: 'deslizante' } },
+      { type: 'controlScale', aliases: { en: 'rating', es: 'valoración', pt: 'avaliação' } },
+      { type: 'controlProgress', aliases: { en: 'completion', es: 'finalización', pt: 'conclusão' } },
       { type: 'controlSelect', aliases: { en: 'dropdown', es: 'lista', pt: 'lista' } },
       { type: 'controlMultiSelect', aliases: { en: 'multiple choices', es: 'selección múltiple', pt: 'seleção múltipla' } },
       { type: 'controlCheckbox', aliases: { en: 'boolean', es: 'casilla', pt: 'caixa' } },

@@ -2,6 +2,18 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — escala e progresso numéricos (fontes, sem novo download)
+
+- Controles manuais têm mínimo, máximo e passo explícitos, teclado, legenda e
+  valor acessível, com ícone/cor e valor numérico separados da apresentação.
+- Padrão, reset, zero e vazio permanecem distintos. Configuração inválida exige
+  correção ou resolução explícita, sem mudar o valor vivo por aproximação.
+- Saídas calculadas são readonly e usam a engine existente. O progresso legado
+  com apenas máximo mantém sua precisão, sem receber a grade da entrada manual.
+
+Detalhes e validação: [T25 — escala e progresso](docs/deliveries/T25-scale-progress-controls.md).
+Formato 13 preservado; sem instalador, tag ou release.
+
 ## Entrega sequencial — controle de seleção múltipla (fontes, sem novo download)
 
 - Busca, seleção por teclado e chips removíveis trabalham com IDs de opções.

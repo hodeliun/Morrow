@@ -3,8 +3,9 @@ import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewWrapper } from '@tiptap/react';
 import { bindPageFormulaReferences, documentFormulaResult, formatDisplayValue, formulaValueText } from '../../core/database';
 import type { FormulaReferenceBinding, NamedControlDef, NamedControlType, PropDef, PropValue, PropertyFormat } from '../../core/model';
-import { displayTitle } from '../../core/model';
-import { controlValueError, controlValueErrorInState, normalizeControlFormat } from '../../core/controls';
+import { COLORS, displayTitle, TEXT_HEX } from '../../core/model';
+import { controlConfigurationError, controlValueError, controlValueErrorInState, defaultBoundedNumericControlFormat, normalizeControlFormat } from '../../core/controls';
+import { scalarValueError } from '../../core/typedValues';
 import { childrenOf, isEffectivelyTrashed } from '../../core/tree';
 import { newId } from '../platform/files';
 import { commitEditors } from '../editor/commits';
@@ -20,9 +21,10 @@ import {
 import type { NamedControlConfigRequest } from '../editor/namedControlRequests';
 import { captureNamedControlEdit, namedControlEditConflict } from '../editor/controlEditGuard';
 import type { NamedControlEditConflict, NamedControlEditSnapshot } from '../editor/controlEditGuard';
+import { calculatedResultFormatError } from '../editor/calculatedResultFormat';
 
-const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'select', 'multiSelect', 'checkbox', 'date', 'relation'];
-const OUTPUT_TYPES = ['auto', 'text', 'number', 'currency', 'percent', 'progress', 'date', 'checkbox'] as const;
+const CONTROL_TYPES: NamedControlType[] = ['text', 'number', 'slider', 'scale', 'progress', 'select', 'multiSelect', 'checkbox', 'date', 'relation'];
+const OUTPUT_TYPES = ['auto', 'text', 'number', 'currency', 'percent', 'scale', 'progress', 'date', 'checkbox'] as const;
 type OutputType = (typeof OUTPUT_TYPES)[number];
 const controlTimestamp = (): number => Date.now();
 
@@ -31,21 +33,31 @@ function stop(event: React.MouseEvent | React.KeyboardEvent) {
 }
 
 
-function defaultFor(type: NamedControlType, options: NamedControlDef['options'], multiple = false): PropValue {
+function defaultFor(type: NamedControlType, options: NamedControlDef['options'], multiple = false, format?: PropertyFormat): PropValue {
   switch (type) {
     case 'text': return '';
     case 'number':
     case 'slider': return 0;
+    case 'scale':
+    case 'progress': return format?.min ?? null;
     case 'checkbox': return false;
     case 'date': return '';
     case 'select': return options[0]?.id ?? null;
     case 'multiSelect': return [];
     case 'relation': return multiple ? [] : null;
-    // Keep persisted Format 13 types inert until their editors are introduced.
-    case 'scale':
-    case 'progress':
+    // Keep persisted Format 13 date ranges inert until their editor is introduced.
     case 'dateRange': return null;
   }
+}
+
+function scaleFilledSteps(value: number, min: number, max: number): number {
+  return Math.max(0, Math.min(5, Math.round(((value - min) / (max - min)) * 5)));
+}
+
+function boundedValueText(value: number | null, min: number, max: number): string {
+  return value === null
+    ? t('controls.blank')
+    : t('controls.valueOfRange', { value: String(value), min: String(min), max: String(max) });
 }
 
 function parseNumberDraft(value: string): number | null {
@@ -59,7 +71,9 @@ function controlErrorLabel(error: string | null): string | null {
   if (!error) return null;
   if (error.toLowerCase().includes('email')) return t('controls.invalidEmail');
   if (error.toLowerCase().includes('multi-select')) return t('controls.invalidMultiSelect');
-  if (/number|finite|step|at least|at most/i.test(error)) return t('controls.invalidNumber');
+  if (/explicit finite|maximum must be greater|step must divide|minimum, maximum, and step must be whole numbers/i.test(error))
+    return t('controls.invalidControlFormat');
+  if (/number|finite|step|at least|at most|whole number/i.test(error)) return t('controls.invalidNumber');
   if (error.toLowerCase().includes('text controls')) return t('controls.invalidText');
   return t('controls.invalidDefaultValue');
 }
@@ -116,6 +130,13 @@ export function NamedControlNode(props: NodeViewProps) {
   const controlAnchorRef = useRef<HTMLSpanElement>(null);
   const configPopoverRef = useRef<HTMLSpanElement>(null);
   const target = control?.relation?.targetDatabaseId ? state.pages[control.relation.targetDatabaseId] : null;
+  const boundedRange = control && (control.type === 'scale' || control.type === 'progress')
+    ? {
+        min: control.format?.min ?? (control.type === 'scale' ? 1 : 0),
+        max: control.format?.max ?? (control.type === 'scale' ? 5 : 100),
+        step: control.format?.step ?? 1,
+      }
+    : null;
   const relatedRows = target?.kind === 'database' && target.database && !isEffectivelyTrashed(state.pages, target.id)
     ? childrenOf(state.pages, target.id)
     : [];
@@ -128,7 +149,8 @@ export function NamedControlNode(props: NodeViewProps) {
         const error = controlValueError(control, activeValueDraft.value);
         if (!error) return null;
         if (error.includes('email')) return t('controls.invalidEmail');
-        if (error.includes('number') || error.includes('step') || error.includes('at least') || error.includes('at most')) return t('controls.invalidNumber');
+        if (/explicit finite|maximum must be greater|step must divide|minimum, maximum, and step must be whole numbers/i.test(error)) return t('controls.invalidControlFormat');
+        if (error.includes('number') || error.includes('step') || error.includes('at least') || error.includes('at most') || error.includes('whole number')) return t('controls.invalidNumber');
         return t('controls.invalidText');
       })()
     : null;
@@ -152,7 +174,8 @@ export function NamedControlNode(props: NodeViewProps) {
   const defaultValueForDraft = resolveDefaultOptions && Array.isArray(draftDefaultValue) && draftControl
     ? draftDefaultValue.filter((id) => draftControl.options.some((option) => option.id === id))
     : draftDefaultValue;
-  const currentDraftError = control && draftControl
+  const draftFormatError = draftControl ? controlConfigurationError(draftControl) : null;
+  const currentDraftError = control && draftControl && !draftFormatError
     ? controlValueErrorInState(draftControl, liveValueForDraft ?? null, state)
     : null;
   const clearCurrentValueSignature = currentDraftError && control && draftControl
@@ -160,7 +183,9 @@ export function NamedControlNode(props: NodeViewProps) {
     : null;
   const clearCurrentValue = clearCurrentValueSignature !== null && clearCurrentValueFor === clearCurrentValueSignature;
   const draftDefaultError = draft && draftControl
-    ? draft.type === 'relation' && !draft.relation?.targetDatabaseId
+    ? draftFormatError
+      ? t('controls.invalidControlFormat')
+      : draft.type === 'relation' && !draft.relation?.targetDatabaseId
       ? t('controls.chooseTable')
       : draftDefaultNumber !== null && draftDefaultNumber.trim() !== '' && parsedDefaultNumber === null
       ? t('controls.invalidNumber')
@@ -206,7 +231,8 @@ export function NamedControlNode(props: NodeViewProps) {
       const relation = type === 'relation'
         ? { targetDatabaseId: request?.targetDatabaseId ?? null, multiple: false }
         : undefined;
-      const initial = defaultFor(type, options, relation?.multiple ?? false);
+      const format = type === 'scale' || type === 'progress' ? defaultBoundedNumericControlFormat(type) : undefined;
+      const initial = defaultFor(type, options, relation?.multiple ?? false, format);
       setDraft({
         id: controlId,
         name: String(node.attrs.label ?? 'Control'),
@@ -215,6 +241,7 @@ export function NamedControlNode(props: NodeViewProps) {
         value: initial,
         defaultValue: initial,
         options,
+        ...(format ? { format } : {}),
         ...(relation ? { relation } : {}),
       });
       setCreatingFromSlash(request?.createOnSave === true);
@@ -325,7 +352,7 @@ export function NamedControlNode(props: NodeViewProps) {
       return;
     }
     let defaultValue = defaultValueForDraft ?? null;
-    if ((draft.type === 'number' || draft.type === 'slider') && draftDefaultNumber !== null) {
+    if ((draft.type === 'number' || draft.type === 'slider' || draft.type === 'scale' || draft.type === 'progress') && draftDefaultNumber !== null) {
       if (draftDefaultNumber.trim() === '') defaultValue = null;
       else if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(draftDefaultNumber.trim()) && Number.isFinite(Number(draftDefaultNumber)))
         defaultValue = Number(draftDefaultNumber);
@@ -445,12 +472,14 @@ export function NamedControlNode(props: NodeViewProps) {
       const options = type === 'select' || type === 'multiSelect' ? (draft.options.length ? draft.options : [{ id: newId(), name: t('controls.defaultOptionName', { count: 1 }), color: 'gray' as const }]) : draft.options;
               const relation = type === 'relation' ? (draft.relation ?? { targetDatabaseId: null, multiple: false }) : draft.relation;
               const multiple = relation?.multiple ?? false;
-              const initial = defaultFor(type, options, multiple);
+              const format = type === 'scale' || type === 'progress' ? defaultBoundedNumericControlFormat(type) : draft.format;
+              const initial = defaultFor(type, options, multiple, format);
               setDraftDefaultNumber(null);
               patchDraft({
                 type,
                 options,
                 relation,
+                format,
                 textFormat: type === 'text' ? draft.textFormat ?? 'plain' : undefined,
                 ...(!control ? { value: initial, defaultValue: initial } : {}),
               });
@@ -528,14 +557,14 @@ export function NamedControlNode(props: NodeViewProps) {
                   <input
                     disabled={!editor.isEditable}
                     type={draft.type === 'date' ? 'date' : draft.type === 'text' && draft.textFormat === 'email' ? 'email' : 'text'}
-                    inputMode={draft.type === 'number' || draft.type === 'slider' ? 'decimal' : undefined}
+                    inputMode={draft.type === 'number' || draft.type === 'slider' || draft.type === 'scale' || draft.type === 'progress' ? 'decimal' : undefined}
                     aria-label={draft.type === 'text' && draft.textFormat === 'email' ? t('controls.textFormats.email') : undefined}
                     aria-invalid={Boolean(draftDefaultError)}
-                    value={draft.type === 'number' || draft.type === 'slider'
+                    value={draft.type === 'number' || draft.type === 'slider' || draft.type === 'scale' || draft.type === 'progress'
                       ? draftDefaultNumber ?? (draft.defaultValue === null ? '' : String(draft.defaultValue))
                       : draft.defaultValue === null ? '' : String(draft.defaultValue)}
                     onChange={(event) => {
-                      if (draft.type === 'number' || draft.type === 'slider') {
+                      if (draft.type === 'number' || draft.type === 'slider' || draft.type === 'scale' || draft.type === 'progress') {
                         const raw = event.target.value;
                         setDraftDefaultNumber(raw);
                         if (raw.trim() === '') patchDraft({ defaultValue: null });
@@ -547,10 +576,24 @@ export function NamedControlNode(props: NodeViewProps) {
                     }}
                   />}
           </label>}
-          {(draft.type === 'number' || draft.type === 'slider') && <div className="named-data-format">
-            <label>{t('controls.minimum')}<input disabled={!editor.isEditable} type="number" value={draft.format?.min ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, min: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
-            <label>{t('controls.maximum')}<input disabled={!editor.isEditable} type="number" value={draft.format?.max ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, max: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
-            <label>{t('controls.step')}<input disabled={!editor.isEditable} type="number" min="0.000000001" value={draft.format?.step ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, step: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+          {(draft.type === 'number' || draft.type === 'slider' || draft.type === 'scale' || draft.type === 'progress') && <div className="named-data-format">
+            <label>{t('controls.minimum')}<input disabled={!editor.isEditable} type="number" step={draft.type === 'scale' ? 1 : 'any'} value={draft.format?.min ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, min: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+            <label>{t('controls.maximum')}<input disabled={!editor.isEditable} type="number" step={draft.type === 'scale' ? 1 : 'any'} value={draft.format?.max ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, max: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+            <label>{t('controls.step')}<input disabled={!editor.isEditable} type="number" min="0.000000001" step={draft.type === 'scale' ? 1 : 'any'} value={draft.format?.step ?? ''} onChange={(event) => patchDraft({ format: { ...draft.format, step: event.target.value === '' ? undefined : Number(event.target.value) } })} /></label>
+            {(draft.type === 'scale' || draft.type === 'progress') && <>
+              {draft.type === 'scale' && <label>{t('controls.scaleIcon')}
+                <select disabled={!editor.isEditable} value={draft.format?.scaleIcon ?? 'star'} onChange={(event) => patchDraft({ format: { ...draft.format, scaleIcon: event.target.value as NonNullable<PropertyFormat['scaleIcon']> } })}>
+                  <option value="star">{t('controls.scaleIcons.star')}</option>
+                  <option value="number">{t('controls.scaleIcons.number')}</option>
+                </select>
+              </label>}
+              <label>{t('controls.color')}
+                <select disabled={!editor.isEditable} value={draft.format?.color ?? 'blue'} onChange={(event) => patchDraft({ format: { ...draft.format, color: event.target.value as NonNullable<PropertyFormat['color']> } })}>
+                  {COLORS.map((color) => <option key={color} value={color}>{t(`colors.${color}` as never)}</option>)}
+                </select>
+              </label>
+              <label className="named-data-check"><input disabled={!editor.isEditable} type="checkbox" checked={draft.format?.showValue !== false} onChange={(event) => patchDraft({ format: { ...draft.format, showValue: event.target.checked } })} />{t('controls.showValue')}</label>
+            </>}
           </div>}
           {currentDraftError && <div className="named-data-diagnostic" role="status">{unavailableCurrentIds.length > 0 ? t('controls.unavailableSelection') : t('controls.currentValueInvalid')}</div>}
           {currentDraftError && <label className="named-data-check">
@@ -609,6 +652,39 @@ export function NamedControlNode(props: NodeViewProps) {
             }}
           />}
           {control.type === 'slider' && <input disabled={!editor.isEditable} aria-label={control.name} type="range" value={typeof control.value === 'number' ? control.value : (control.format?.min ?? 0)} min={control.format?.min ?? 0} max={control.format?.max ?? 100} step={control.format?.step ?? 1} onChange={(event) => setValue(Number(event.target.value))} />}
+          {boundedRange && (control.type === 'scale' || control.type === 'progress') && <span className={`named-control-bounded named-control-${control.type}`}>
+            {control.type === 'progress' && <progress
+              className="named-control-progress-display"
+              max={boundedRange.max - boundedRange.min}
+              value={typeof control.value === 'number' ? control.value - boundedRange.min : undefined}
+              aria-hidden="true"
+              style={{ accentColor: TEXT_HEX[control.format?.color ?? 'blue'] }}
+            />}
+            {control.type === 'scale' && <span
+              className={`named-control-scale-display icon-${control.format?.scaleIcon ?? 'star'}`}
+              aria-label={boundedValueText(typeof control.value === 'number' ? control.value : null, boundedRange.min, boundedRange.max)}
+              title={boundedValueText(typeof control.value === 'number' ? control.value : null, boundedRange.min, boundedRange.max)}
+              style={{ color: TEXT_HEX[control.format?.color ?? 'blue'] }}
+            >
+              {control.format?.scaleIcon === 'number'
+                ? <span aria-hidden="true">{typeof control.value === 'number' ? String(control.value) : '—'}</span>
+                : <span aria-hidden="true">{'★'.repeat(typeof control.value === 'number' ? scaleFilledSteps(control.value, boundedRange.min, boundedRange.max) : 0)}{'☆'.repeat(typeof control.value === 'number' ? 5 - scaleFilledSteps(control.value, boundedRange.min, boundedRange.max) : 5)}</span>}
+              {control.format?.showValue !== false && <small aria-hidden="true">{typeof control.value === 'number' ? String(control.value) : t('controls.blank')}</small>}
+            </span>}
+            <input
+              disabled={!editor.isEditable}
+              aria-label={control.name}
+              aria-valuetext={boundedValueText(typeof control.value === 'number' ? control.value : null, boundedRange.min, boundedRange.max)}
+              type="range"
+              min={boundedRange.min}
+              max={boundedRange.max}
+              step={boundedRange.step}
+              value={typeof control.value === 'number' ? control.value : boundedRange.min}
+              style={{ accentColor: TEXT_HEX[control.format?.color ?? 'blue'] }}
+              onChange={(event) => setValue(Number(event.target.value))}
+            />
+            <span className="named-control-range-legend" aria-hidden="true"><small>{boundedRange.min}</small><small>{boundedRange.max}</small></span>
+          </span>}
           {control.type === 'select' && <select disabled={!editor.isEditable} aria-label={control.name} value={typeof control.value === 'string' ? control.value : ''} onChange={(event) => setValue(event.target.value || null)}><option value="">{t('controls.blank')}</option>{control.options.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}
           {control.type === 'multiSelect' && <NamedMultiSelectPicker
             label={control.name}
@@ -653,15 +729,17 @@ function collectResultNodes(document: { descendants?: (visitor: (node: { type: {
   return results;
 }
 
-function outputProperty(type: OutputType, format: PropertyFormat): PropDef {
+function outputProperty(type: OutputType, format: PropertyFormat): PropDef & { format: PropertyFormat } {
   const propType = type === 'auto' || type === 'text' ? 'formula' : type;
   const defaults: PropertyFormat = type === 'currency'
     ? { locale: 'pt-BR', currency: 'BRL', precision: 2 }
-    : type === 'progress'
-      ? { max: 100 }
-      : ['number', 'percent'].includes(type)
-        ? { locale: 'pt-BR', precision: 2 }
-        : {};
+    : type === 'scale'
+      ? defaultBoundedNumericControlFormat(type)
+      : type === 'progress'
+        ? { max: 100 }
+        : ['number', 'percent'].includes(type)
+          ? { locale: 'pt-BR', precision: 2 }
+          : {};
   return { id: 'document-result', name: 'Result', type: propType, options: [], format: { ...defaults, ...format } };
 }
 
@@ -686,7 +764,13 @@ export function CalculatedResultNode(props: NodeViewProps) {
   let diagnostic = result.error;
   const property = outputProperty(outputType, format);
   if (!diagnostic) {
-    if (outputType === 'currency' || outputType === 'number' || outputType === 'percent' || outputType === 'progress') {
+    if (outputType === 'scale' || outputType === 'progress') {
+      const formatError = calculatedResultFormatError(outputType, property.format);
+      if (formatError) diagnostic = outputType === 'scale' ? t('controls.invalidControlFormat') : t('controls.invalidFormat');
+      else if (typeof result.value !== 'number') diagnostic = t('controls.expectedNumber');
+      else if (scalarValueError(property, result.value)) diagnostic = t('controls.resultOutsideRange');
+      else display = formatDisplayValue(property, result.value, getLocale());
+    } else if (outputType === 'currency' || outputType === 'number' || outputType === 'percent') {
       if (typeof result.value !== 'number') diagnostic = t('controls.expectedNumber');
       else display = formatDisplayValue(property, result.value, getLocale());
     } else if (outputType === 'checkbox') {
@@ -700,6 +784,15 @@ export function CalculatedResultNode(props: NodeViewProps) {
     }
   }
   const progress = outputType === 'progress' && typeof result.value === 'number' ? result.value : null;
+  const boundedOutputRange = outputType === 'scale' || outputType === 'progress'
+    ? {
+        min: format.min ?? (outputType === 'scale' ? 1 : 0),
+        max: format.max ?? (outputType === 'scale' ? 5 : 100),
+      }
+    : null;
+  const scale = outputType === 'scale' && !diagnostic && typeof result.value === 'number' ? result.value : null;
+  const scaleUsesStars = scale !== null && (format.scaleIcon ?? 'star') === 'star';
+  const hideBoundedValue = !diagnostic && format.showValue === false && scaleUsesStars;
   const referenceChoices = useMemo(() => {
     const page = state.pages[pageId];
     return [
@@ -734,7 +827,10 @@ export function CalculatedResultNode(props: NodeViewProps) {
       draft.bindings,
     );
     const nextFormat = normalizeControlFormat(outputProperty(draft.outputType, draft.format).format);
-    if (!nextFormat) {
+    const formatError = nextFormat && (draft.outputType === 'scale' || draft.outputType === 'progress')
+      ? calculatedResultFormatError(draft.outputType, nextFormat)
+      : null;
+    if (!nextFormat || formatError) {
       setSaveError(t('controls.invalidFormat'));
       return;
     }
@@ -763,18 +859,50 @@ export function CalculatedResultNode(props: NodeViewProps) {
         <label>{t('controls.formula')}<textarea maxLength={2000} rows={3} value={draft.formula} placeholder={t('controls.formulaPlaceholder')} onChange={(event) => setDraft({ ...draft, formula: event.target.value, bindings: draft.bindings.filter((binding) => event.target.value.slice(binding.start, binding.end) === binding.source) })} /></label>
         <label>{t('controls.insertReference')}<select defaultValue="" onChange={(event) => { insertReference(event.target.value); event.target.value = ''; }}><option value="">{t('controls.chooseReference')}</option>{referenceChoices.map((item) => <option key={item.key} value={item.key}>{referenceChoiceLabel(item)}</option>)}</select></label>
         <label>{t('controls.outputType')}<select value={draft.outputType} onChange={(event) => setDraft({ ...draft, outputType: event.target.value as OutputType })}>{OUTPUT_TYPES.map((item) => <option key={item} value={item}>{t(`controls.outputTypes.${item}` as never)}</option>)}</select></label>
-        {(draft.outputType === 'currency' || draft.outputType === 'percent' || draft.outputType === 'number' || draft.outputType === 'progress') && <div className="named-data-format">
+        {(draft.outputType === 'currency' || draft.outputType === 'percent' || draft.outputType === 'number' || draft.outputType === 'scale' || draft.outputType === 'progress') && <div className="named-data-format">
           {draft.outputType === 'currency' && <label>{t('controls.currency')}<input value={draft.format.currency ?? 'BRL'} maxLength={3} onChange={(event) => updateFormat({ currency: event.target.value.toUpperCase() })} /></label>}
           <label>{t('controls.locale')}<input value={draft.format.locale ?? 'pt-BR'} onChange={(event) => updateFormat({ locale: event.target.value })} /></label>
-          {draft.outputType !== 'progress' && <label>{t('controls.precision')}<input type="number" min="0" max="8" value={draft.format.precision ?? 2} onChange={(event) => updateFormat({ precision: Number(event.target.value) })} /></label>}
+          {draft.outputType !== 'progress' && draft.outputType !== 'scale' && <label>{t('controls.precision')}<input type="number" min="0" max="8" value={draft.format.precision ?? 2} onChange={(event) => updateFormat({ precision: Number(event.target.value) })} /></label>}
           {draft.outputType === 'progress' && <label>{t('controls.maximum')}<input type="number" min="0.000000001" value={draft.format.max ?? 100} onChange={(event) => updateFormat({ max: Number(event.target.value) })} /></label>}
+          {draft.outputType === 'scale' && <>
+            <label>{t('controls.minimum')}<input type="number" step="1" value={draft.format.min ?? 1} onChange={(event) => updateFormat({ min: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+            <label>{t('controls.maximum')}<input type="number" step="1" value={draft.format.max ?? 5} onChange={(event) => updateFormat({ max: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+            <label>{t('controls.step')}<input type="number" min="1" step="1" value={draft.format.step ?? 1} onChange={(event) => updateFormat({ step: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
+            <label>{t('controls.scaleIcon')}
+              <select value={draft.format.scaleIcon ?? 'star'} onChange={(event) => updateFormat({ scaleIcon: event.target.value as NonNullable<PropertyFormat['scaleIcon']> })}>
+                <option value="star">{t('controls.scaleIcons.star')}</option>
+                <option value="number">{t('controls.scaleIcons.number')}</option>
+              </select>
+            </label>
+            <label>{t('controls.color')}
+              <select value={draft.format.color ?? 'blue'} onChange={(event) => updateFormat({ color: event.target.value as NonNullable<PropertyFormat['color']> })}>
+                {COLORS.map((color) => <option key={color} value={color}>{t(`colors.${color}` as never)}</option>)}
+              </select>
+            </label>
+            <label className="named-data-check"><input type="checkbox" checked={draft.format.showValue !== false} onChange={(event) => updateFormat({ showValue: event.target.checked })} />{t('controls.showValue')}</label>
+          </>}
         </div>}
         {(saveError || diagnostic) && <div className="named-data-diagnostic">{saveError ?? diagnostic}</div>}
         <div className="named-data-actions"><button type="button" onClick={save}>{t('controls.save')}</button><button type="button" onClick={() => setEditing(false)}>{t('controls.cancel')}</button><button type="button" onClick={() => editor.isEditable && deleteNode()}>{t('controls.deleteResult')}</button></div>
       </span> : <span className="named-data-result-line">
         <span className="named-data-result-name">{name}</span>
-        <span className="named-data-result-value" aria-live="polite">{diagnostic ? t('controls.calculationError') : display === '' || display === null ? '—' : display}</span>
-        {progress !== null && !diagnostic && <progress max={typeof format.max === 'number' && format.max > 0 ? format.max : 100} value={progress} aria-label={name} />}
+        <span className="named-data-result-value" aria-live="polite" aria-hidden={hideBoundedValue}>{diagnostic ? t('controls.calculationError') : hideBoundedValue ? '' : display === '' || display === null ? '—' : display}</span>
+        {scale !== null && boundedOutputRange && scaleUsesStars && <span
+          className="named-data-result-scale"
+          aria-label={hideBoundedValue ? boundedValueText(scale, boundedOutputRange.min, boundedOutputRange.max) : undefined}
+          aria-hidden={!hideBoundedValue}
+          style={{ color: TEXT_HEX[format.color ?? 'blue'] }}
+        >
+          <span aria-hidden="true">{'★'.repeat(scaleFilledSteps(scale, boundedOutputRange.min, boundedOutputRange.max))}{'☆'.repeat(5 - scaleFilledSteps(scale, boundedOutputRange.min, boundedOutputRange.max))}</span>
+          {format.showValue !== false && <small aria-hidden="true">{` ${display}`}</small>}
+        </span>}
+        {progress !== null && boundedOutputRange && !diagnostic && <progress
+          max={boundedOutputRange.max - boundedOutputRange.min}
+          value={progress - boundedOutputRange.min}
+          aria-label={name}
+          aria-valuetext={boundedValueText(progress, boundedOutputRange.min, boundedOutputRange.max)}
+          style={format.color ? { accentColor: TEXT_HEX[format.color] } : undefined}
+        />}
         {diagnostic && <span className="named-data-diagnostic">{diagnostic}</span>}
         {editor.isEditable && <button type="button" className="named-data-configure" aria-label={t('controls.configureResult')} onClick={startEdit}>⚙</button>}
       </span>}
