@@ -7,6 +7,7 @@ import {
   nearestColor,
   parseColumnWidths,
   parseImageCrop,
+  parseImageWidth,
   TEXT_HEX,
   validBlockBackground,
   validHexColor,
@@ -54,9 +55,10 @@ interface ParsedImageAttrs {
   align?: ImageAlign;
   caption?: string;
   crop?: ImageCrop;
+  width?: number;
   markerMetadata?: {
     raw: string;
-    baseline: { align: ImageAlign; caption: string; crop: ImageCrop | null };
+    baseline: { align: ImageAlign; caption: string; crop: ImageCrop | null; width: number | null };
   };
 }
 
@@ -68,17 +70,28 @@ function parseImageMarker(content: string): ParsedImageAttrs | null {
   const alignMatch = /\balign\s*=\s*["'](left|center|right)["']/i.exec(body);
   const captionMatch = /\bcaption\s*=\s*(["'])([\s\S]*?)\1/i.exec(body);
   const cropMatch = /\bcrop\s*=\s*["']([^"']+)["']/i.exec(body);
+  const widthMatch = /\bwidth\s*=\s*["']([^"']+)["']/i.exec(body);
   const align = validImageAlign(alignMatch?.[1]);
   const caption = captionMatch?.[2]
     ? captionMatch[2].replace(/&quot;/g, '"').replace(/--&gt;/g, '-->').replace(/&amp;/g, '&')
     : undefined;
   const crop = parseImageCrop(cropMatch?.[1]);
+  const width = parseImageWidth(widthMatch?.[1]);
   const result: ParsedImageAttrs = {
-    markerMetadata: { raw, baseline: { align: align ?? 'center', caption: caption ?? '', crop } },
+    markerMetadata: {
+      raw,
+      baseline: {
+        align: align ?? 'center',
+        caption: caption ?? '',
+        crop,
+        width,
+      },
+    },
   };
   if (align) result.align = align;
   if (caption) result.caption = caption;
   if (crop) result.crop = crop;
+  if (width !== null) result.width = width;
   return result;
 }
 

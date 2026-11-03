@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { anchorSlice } from '../anchors';
-import { resizeColumnWidths } from '../model';
+import { parseImageWidth, resizeColumnWidths, validImageWidth } from '../model';
 import type { DocNode } from '../model';
 import { markdownToDoc, markdownToPage } from './parse';
 import { docToMarkdown } from './serialize';
@@ -800,12 +800,13 @@ describe('things that used to change on a reload', () => {
             align: 'center',
             caption: 'A scenic vista',
             crop: { x: 0.1, y: 0.2, width: 0.6, height: 0.7 },
+            width: 38.5,
           },
         },
       ],
     };
     const markdown = docToMarkdown(doc);
-    expect(markdown).toContain('<!-- morrow:image align="center" caption="A scenic vista" crop="0.1,0.2,0.6,0.7" -->');
+    expect(markdown).toContain('<!-- morrow:image align="center" caption="A scenic vista" crop="0.1,0.2,0.6,0.7" width="38.5%" -->');
     expect(markdown).toContain('![Landscape](https://example.com/photo.jpg)');
     const reopened = markdownToDoc(markdown);
     const img = reopened.content?.[0];
@@ -813,6 +814,98 @@ describe('things that used to change on a reload', () => {
     expect(img?.attrs?.align).toBe('center');
     expect(img?.attrs?.caption).toBe('A scenic vista');
     expect(img?.attrs?.crop).toEqual({ x: 0.1, y: 0.2, width: 0.6, height: 0.7 });
+    expect(img?.attrs?.width).toBe(38.5);
+  });
+
+  it('keeps independently sized images in separate columns', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          content: [
+            {
+              type: 'column',
+              content: [{ type: 'image', attrs: { src: 'https://example.org/left.png', width: 32 } }],
+            },
+            {
+              type: 'column',
+              content: [{ type: 'image', attrs: { src: 'https://example.org/right.png', width: 68 } }],
+            },
+          ],
+        },
+      ],
+    };
+    const reopened = markdownToDoc(docToMarkdown(doc));
+    const columns = reopened.content?.[0]?.content ?? [];
+    const widths = columns.map((column) => column.content?.find((child) => child.type === 'image')?.attrs?.width);
+    expect(widths).toEqual([32, 68]);
+  });
+
+  it('preserves invalid and unknown image marker metadata until that field is changed', () => {
+    const marker = `<!-- morrow:image align='tilted' width="150%" custom = 'opaque value' -->`;
+    const parsed = markdownToDoc(`${marker}\n![Synthetic](https://example.org/synthetic.png)\n\nOriginal paragraph`);
+    expect(parsed.content?.[0]?.attrs?.width).toBeUndefined();
+    expect(parsed.content?.[0]?.attrs?.align).toBeUndefined();
+    expect(parsed.content?.[0]?.attrs?.markerMetadata).toEqual(
+      expect.objectContaining({ raw: marker }),
+    );
+    expect(docToMarkdown(parsed)).toContain(marker);
+
+    const editedElsewhere = structuredClone(parsed);
+    const paragraph = editedElsewhere.content?.find((node) => node.type === 'paragraph');
+    if (paragraph?.content?.[0]?.type === 'text') paragraph.content[0].text = 'Edited paragraph';
+    expect(docToMarkdown(editedElsewhere)).toContain(marker);
+
+    const resized = structuredClone(parsed);
+    const image = resized.content?.find((node) => node.type === 'image');
+    if (image) image.attrs = { ...image.attrs, width: 64 };
+    expect(docToMarkdown(resized)).toContain(
+      `<!-- morrow:image align='tilted' width="64%" custom = 'opaque value' -->`,
+    );
+
+    const captionSource =
+      `<!-- morrow:image caption='Old caption' custom="keep" width="150%" -->\n` +
+      '![Synthetic](https://example.org/synthetic.png)';
+    const captionDoc = markdownToDoc(captionSource);
+    const captionImage = captionDoc.content?.find((node) => node.type === 'image');
+    expect(captionImage?.attrs?.caption).toBe('Old caption');
+    if (captionImage) captionImage.attrs = { ...captionImage.attrs, caption: `Bob "Hero" and 'Ace' -->` };
+    const captionMarkdown = docToMarkdown(captionDoc);
+    expect(captionMarkdown).toContain(
+      `<!-- morrow:image caption="Bob &quot;Hero&quot; and 'Ace' --&gt;" custom="keep" width="150%" -->`,
+    );
+    const captionReopened = markdownToDoc(captionMarkdown);
+    expect(captionReopened.content?.[0]?.attrs?.caption).toBe(`Bob "Hero" and 'Ace' -->`);
+    expect(docToMarkdown(captionReopened)).toBe(captionMarkdown);
+
+    const freshCaptionDoc: DocNode = {
+      type: 'doc',
+      content: [{ type: 'image', attrs: { src: 'https://example.org/fresh.png', caption: 'Literal --> close' } }],
+    };
+    const freshCaptionMarkdown = docToMarkdown(freshCaptionDoc);
+    expect(freshCaptionMarkdown).toContain('caption="Literal --&gt; close"');
+    expect(markdownToDoc(freshCaptionMarkdown).content?.[0]?.attrs?.caption).toBe('Literal --> close');
+  });
+
+  it('accepts only finite image widths inside the container bounds', () => {
+    expect(validImageWidth(38.56)).toBe(38.6);
+    expect(validImageWidth(1)).toBe(1);
+    expect(validImageWidth(100)).toBe(100);
+    expect(validImageWidth(0)).toBeNull();
+    expect(validImageWidth(101)).toBeNull();
+    expect(validImageWidth(Number.NaN)).toBeNull();
+    expect(parseImageWidth('42.5%')).toBe(42.5);
+    expect(parseImageWidth('42.5')).toBe(42.5);
+    expect(parseImageWidth('101%')).toBeNull();
+    expect(parseImageWidth('not-a-width')).toBeNull();
+  });
+
+  it('ignores invalid image width metadata without losing other image attributes', () => {
+    const doc = markdownToDoc('<!-- morrow:image align="right" width="150%" -->\n![Small](https://example.org/small.png)');
+    expect(doc.content?.[0]?.type).toBe('image');
+    expect(doc.content?.[0]?.attrs?.align).toBe('right');
+    expect(doc.content?.[0]?.attrs?.width).toBeUndefined();
   });
 
   it('round trips collapsible and collapsed heading states', () => {

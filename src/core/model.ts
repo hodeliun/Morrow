@@ -454,6 +454,22 @@ export interface ImageCrop {
 
 export type ImageAlign = 'left' | 'center' | 'right';
 
+export function validImageWidth(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 1 || value > 100) return null;
+  return Math.round(value * 10) / 10;
+}
+
+export function parseImageWidth(value: string | null | undefined): number | null {
+  if (typeof value !== 'string') return null;
+  const match = /^\s*(\d+(?:\.\d+)?)\s*%?\s*$/.exec(value);
+  return match ? validImageWidth(Number(match[1])) : null;
+}
+
+export function formatImageWidth(value: unknown): string | null {
+  const width = validImageWidth(value);
+  return width === null ? null : String(Number.isInteger(width) ? width : width.toFixed(1)) + '%';
+}
+
 export function validImageAlign(value: unknown): ImageAlign | null {
   return value === 'left' || value === 'center' || value === 'right' ? value : null;
 }

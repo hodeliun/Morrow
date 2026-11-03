@@ -711,6 +711,7 @@ export const es: TranslationSchema = {
     imageCaption: 'Pie de foto',
     editCaption: 'Editar pie de foto',
     cropImage: 'Recortar imagen',
+    imageResize: 'Cambiar tamaño de imagen',
     resetCrop: 'Restablecer recorte',
     applyCrop: 'Aplicar recorte',
     cancelCrop: 'Cancelar recorte',
