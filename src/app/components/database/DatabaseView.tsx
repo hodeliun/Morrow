@@ -362,6 +362,7 @@ function conditionalColorStyle(color: ColorValue): CSSProperties {
   const bg = validHexColor(color) ? color : (BACKGROUND_HEX[color as ColorName] ?? color);
   return {
     backgroundColor: bg,
+    '--db-cell-bg': bg,
     color: foreground,
     '--text': foreground,
     '--text-muted': foreground,
@@ -5290,6 +5291,40 @@ function TableView({
             })}
           </tbody>
           <tfoot>
+            {editable && (
+              <tr className="db-new-row-row">
+                <td
+                  className="db-row-controls db-footer-cell"
+                  style={{ position: 'sticky', left: 0, zIndex: 3 }}
+                />
+                <th
+                  scope="row"
+                  data-col-id={TITLE_PROP}
+                  className={'db-col-title db-footer-cell db-new-row-cell' + (frozenIndex === -1 ? '' : ' db-frozen')}
+                  style={frozenStyle(-1)}
+                >
+                  <button
+                    type="button"
+                    className="db-new-row"
+                    onClick={() => {
+                      const id = createRow(dbId);
+                      if (id) setFocusNew(id);
+                    }}
+                  >
+                    <Plus size={14} /> {t('database.new')}
+                  </button>
+                </th>
+                {props.map((prop, columnIndex) => (
+                  <td
+                    key={prop.id}
+                    data-col-id={prop.id}
+                    className={'db-footer-cell' + (columnIndex <= frozenIndex ? ' db-frozen' : '')}
+                    style={frozenStyle(columnIndex)}
+                  />
+                ))}
+                <td className="db-footer-cell" />
+              </tr>
+            )}
             <tr>
               {editable && <td className="db-row-controls db-footer-cell" />}
               <th
@@ -5497,18 +5532,7 @@ function TableView({
             </div>
           </Popover>
         )}
-        {editable && (
-          <button
-            type="button"
-            className="db-new-row"
-            onClick={() => {
-              const id = createRow(dbId);
-              if (id) setFocusNew(id);
-            }}
-          >
-            <Plus size={14} /> {t('database.new')}
-          </button>
-        )}
+
         {header && (
           <PropertySettings
             dbId={dbId}

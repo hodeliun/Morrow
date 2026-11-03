@@ -8,7 +8,7 @@ import type { ParseOptions } from '../markdown/parse';
 import { displayTitle, MAX_ICON_LENGTH, newPageMeta } from '../model';
 import type { DocNode, PageId, PageMeta, WorkspaceState } from '../model';
 import { foldText } from '../search';
-import { compareSiblings } from '../tree';
+import { compareSiblings, isEffectivelyTrashed } from '../tree';
 import type { Layout, Placement } from './layout';
 import type { VaultResource } from './fileCatalog';
 import { readPageText, takeProperties } from './pageFile';
@@ -320,12 +320,16 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
   }
 
   // siblings keep the order the registry remembers, the rest follow by name, newest first in the journal
-  const byParent = new Map<PageId | null, PageMeta[]>();
+  // Trash entries may remember a live parent, but their order must not renumber the live sibling set.
+  const statePages = Object.fromEntries(pages);
+  const byParentAndTrashDomain = new Map<string, PageMeta[]>();
   for (const page of pages.values()) {
-    const key = page.parentId && pages.has(page.parentId) ? page.parentId : null;
-    byParent.set(key, [...(byParent.get(key) ?? []), page]);
+    const parentId = page.parentId && pages.has(page.parentId) ? page.parentId : null;
+    const key = `${parentId ?? ''}\0${isEffectivelyTrashed(statePages, page.id) ? 'trash' : 'live'}`;
+    byParentAndTrashDomain.set(key, [...(byParentAndTrashDomain.get(key) ?? []), page]);
   }
-  for (const [parentId, siblings] of byParent) {
+  for (const siblings of byParentAndTrashDomain.values()) {
+    const parentId = siblings[0]?.parentId ?? null;
     const journal = parentId !== null && pages.get(parentId)?.kind === 'journal';
     siblings.sort(
       (a, b) =>

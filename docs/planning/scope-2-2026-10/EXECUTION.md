@@ -15,7 +15,8 @@ dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 As primeiras entregas isoladas foram T20 (#71, PR #93) e T18 (#69, PR #94),
 integradas na main e encerradas após CI no Windows e Linux. T33 (#85, PR #95), imagens
 existentes em abas próprias, também foi integrada e validada. T35 (#87), áudio e
-vídeo locais em abas, é a próxima entrega ativa. Cada entrega inclui seus
+vídeo locais em abas, foi integrada pelo PR #96 e validada na main. T12 (#63),
+rodapé compacto das tabelas, é a próxima entrega ativa. Cada entrega inclui seus
 pré-requisitos estritos de preservação e validação, em um commit coerente, sem
 nova release ou instalação. Os outros tickets permanecem preservados até sua vez.
 

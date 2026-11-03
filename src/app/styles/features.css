@@ -1591,6 +1591,14 @@ textarea.text-input.small {
   background-color: var(--accent-soft, rgba(37, 99, 235, 0.22)) !important;
   outline: 1px dashed var(--accent, #2563eb) !important;
 }
+.db-table td.db-frozen.is-grid-selected {
+  background: linear-gradient(var(--accent-soft, rgba(37, 99, 235, 0.12)), var(--accent-soft, rgba(37, 99, 235, 0.12))),
+    var(--db-cell-bg, var(--bg)) !important;
+}
+.db-table td.db-frozen.is-fill-preview {
+  background: linear-gradient(var(--accent-soft, rgba(37, 99, 235, 0.22)), var(--accent-soft, rgba(37, 99, 235, 0.22))),
+    var(--db-cell-bg, var(--bg)) !important;
+}
 .db-fill-handle {
   position: absolute;
   right: 1px;
@@ -4440,9 +4448,32 @@ td:hover .prop-empty,
   padding: 4px 8px;
   border-top: 2px solid var(--border);
   border-bottom: 0;
-  background: var(--surface);
+  background: var(--bg);
   color: var(--text);
   font-size: 12px;
+}
+.db-table tfoot tr + tr > th,
+.db-table tfoot tr + tr > td,
+.prose .database .db-table tfoot tr + tr > th,
+.prose .database .db-table tfoot tr + tr > td {
+  border-top-width: 1px;
+}
+.db-table tfoot .db-row-controls {
+  background: var(--bg);
+}
+.db-table .db-new-row-cell {
+  text-align: left;
+}
+.db-table .db-new-row {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.db-table .db-new-row:hover,
+.db-table .db-new-row:focus-visible {
+  background: var(--hover);
+  color: var(--text);
 }
 .db-calc-trigger {
   display: inline-flex;
@@ -4455,7 +4486,7 @@ td:hover .prop-empty,
   color: var(--text-muted);
   font-size: 11px;
   cursor: pointer;
-  opacity: 0.6;
+  opacity: 0;
   transition:
     opacity 0.15s,
     background 0.15s,
@@ -4463,10 +4494,16 @@ td:hover .prop-empty,
 }
 .db-footer-cell:hover .db-calc-trigger,
 .db-calc-trigger:focus,
+.db-calc-trigger:focus-visible,
 .db-calc-trigger:hover {
   opacity: 1;
   background: var(--hover);
   color: var(--text);
+}
+@media (hover: none) {
+  .db-calc-trigger {
+    opacity: 1;
+  }
 }
 .db-calc-trigger:focus-visible {
   outline: 2px solid var(--accent, #2563eb);

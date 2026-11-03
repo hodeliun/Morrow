@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T12",
+  "issue": "https://github.com/hodeliun/Morrow/issues/63",
+  "officialBaseVersion": "1.3.0",
+  "publicBase": "99cdda62720843dc57753cc9dd3db2694825ede1",
+  "scope": "Compact table footer with New before calculations, required metadata preservation and opaque selected frozen cells; database format12 unchanged",
+  "isolatedGate": {
+    "snapshot": "T12-isolated-03",
+    "sourceUnchanged": true,
+    "sourceSha256": "fe20a7485f9a44d28dbea943b628d5d99c584b005362cabe135f044f3b48dd70",
+    "typecheck": "passed",
+    "tests": 925,
+    "build": "passed",
+    "artifactFiles": 3597,
+    "testFiles": 113,
+    "command": "npm run check",
+    "lint": "passed",
+    "status": "passed",
+    "artifactsSha256": "bb3687a80bba07215864ab8feb77c5b5c32eecb7eb623150016477d124b2c3c5",
+    "sourceFiles": 387
+  },
+  "packaged": {
+    "version": "1.3.0-fork.1.2.0",
+    "sha256": {
+      "executable": "aacdefaebbda7f3f08ab16f012fdfef046ece283da42d259579945d87f30220e",
+      "appAsar": "96f786ad8a59139eeaa7d61fc1c4b43191da4d335c9a2db08193c05fda74aba4",
+      "main": "e1cd2c31081235c7e8a7e5079efa5b9384d69d59ca2d561db9b705ee61d7daa7",
+      "trustedMain": "e1cd2c31081235c7e8a7e5079efa5b9384d69d59ca2d561db9b705ee61d7daa7"
+    },
+    "artifactsVerified": 3597,
+    "allMatch": true
+  },
+  "runtime": {
+    "rendererErrors": 0,
+    "assertionNames": [
+      "startupDeltaAndOpenPreserveMarkdownWorkspaceAndUnknownValues",
+      "rowsNewSummaryOrderAndHiddenColumn",
+      "summaryTriggerHoverFocusAndPaintedHit",
+      "perPropertyPerViewSummary",
+      "resizeScrollFrozenAlignment",
+      "newCreatesRealDataRowAndSummaryUsesOnlyRecords",
+      "footerPresentAndAlignedWithNoResults",
+      "localeThemeNarrowMatrix",
+      "publicTodayPreparationBeforeClose",
+      "reopenOperationalBaselineAndDailyNormalization",
+      "newRowSummaryUnknownValuesAndReopenPreserved",
+      "readonlyTrashFixtureBytesMtimeUnknownsAndControls"
+    ],
+    "status": "passed",
+    "frozenSelectionPaint": [
+      {
+        "phase": "resized-and-scrolled",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(30, 136, 216, 0.11), rgba(30, 136, 216, 0.11)), none"
+      },
+      {
+        "phase": "en/light",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(30, 136, 216, 0.11), rgba(30, 136, 216, 0.11)), none"
+      },
+      {
+        "phase": "en/dark",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          25,
+          25,
+          25,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(74, 168, 240, 0.15), rgba(74, 168, 240, 0.15)), none"
+      },
+      {
+        "phase": "pt/light",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(30, 136, 216, 0.11), rgba(30, 136, 216, 0.11)), none"
+      },
+      {
+        "phase": "pt/dark",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          25,
+          25,
+          25,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(74, 168, 240, 0.15), rgba(74, 168, 240, 0.15)), none"
+      },
+      {
+        "phase": "es/light",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(30, 136, 216, 0.11), rgba(30, 136, 216, 0.11)), none"
+      },
+      {
+        "phase": "es/dark",
+        "classes": [
+          "db-col-title",
+          "db-frozen",
+          "is-grid-active",
+          "is-grid-selected"
+        ],
+        "backingRgba": [
+          25,
+          25,
+          25,
+          255
+        ],
+        "backgroundImage": "linear-gradient(rgba(74, 168, 240, 0.15), rgba(74, 168, 240, 0.15)), none"
+      }
+    ],
+    "snapshotStableAfter": true,
+    "genericErrorBoundaries": 0,
+    "report": "ui-1793712894590",
+    "rawReportSha256": "a916044b1cd95b48f0beb09afb8560efc29210c9ccd41571a575ff0c1cf3e36a",
+    "allFiveCriteriaVerified": true,
+    "childrenExitCodes": [
+      0,
+      0
+    ],
+    "packagedStableAfter": true
+  },
+  "directedRegression": {
+    "rendererTestsPassed": 3,
+    "rendererContract": "Two data cells and the summary retain all three alignment checks; only the New action row is excluded",
+    "preservationTestsFailedBeforeFix": 14,
+    "preservationTestsPassed": 51
+  },
+  "preservedNegatives": [
+    {
+      "failed": 1,
+      "passed": 924,
+      "gate": "01",
+      "reason": "Existing renderer assertion counted New action cell as data"
+    },
+    {
+      "runtime": "ui-1793712249542",
+      "visualAcceptance": "rejected",
+      "harnessAssertions": "passed",
+      "snapshot": "02",
+      "reason": "Underlying scrollable text visible through translucent selected frozen cell; corrected before publication"
+    }
+  ],
+  "limitations": [
+    "Source delivery only; no installer, release or installation verification.",
+    "Name remains fixed in format12; title-column reorder belongs to T13 and is excluded from this synthetic fixture before baseline.",
+    "Unknown representable database/workspace/recent fields are preserved; recognized unsupported database mappings fail read-only.",
+    "Existing scan-null ambiguity remains: syntactically unreadable registry JSON may be indistinguishable from an absent file at repository ingress. No additional raw read or blanket malformed-JSON protection is claimed.",
+    "Selection backing was verified in seven actual selected/scrolled states; no additional fill-preview gesture was exercised in this delivery.",
+    "No personal vault, OS clipboard, installed app or visible personal window was used."
+  ],
+  "demonstrations": [
+    "assets/T12/compact-footer-pt-dark.png",
+    "assets/T12/readonly-footer.png"
+  ]
+}
