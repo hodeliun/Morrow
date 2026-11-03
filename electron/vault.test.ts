@@ -247,10 +247,11 @@ describe('vault file catalog scanner', () => {
     writeFileSync(path.join(first, 'Folder', 'Old.pdf'), 'old');
     await openVault(first, () => undefined);
     const pending = scanVault();
+    const rejectedScan = expect(pending).rejects.toThrow('The vault changed during the scan.');
     closeVault();
     await openVault(second, () => undefined);
 
-    await expect(pending).rejects.toThrow('The vault changed during the scan.');
+    await rejectedScan;
   });
 
   it('reports empty folders and file create, rename and removal while ignoring stale vault events and junctions', async () => {
