@@ -146,6 +146,28 @@ describe('saved filter persistence', () => {
     expect(loaded.database?.views[1]?.rowHeight).toBe(34);
     expect(loaded.database?.views[1]?.frozenThrough).toBeUndefined();
   });
+
+  it('round-trips a title column alias independently from the display property', () => {
+    const database = normalizeDatabase({
+      properties: [{ id: 'handle', name: 'Handle', type: 'text' }],
+      views: [],
+      titleAlias: '  Preferred\nName\t ',
+      displayPropertyId: 'handle',
+    })!;
+    expect(database.titleAlias).toBe('Preferred Name');
+
+    const page = newPageMeta({ id: 'db', parentId: null, title: 'People', kind: 'database', database });
+    const yaml = stringify(composeFrontmatter(managedFrontmatter(page, 'People', null), {}, null));
+    const raw = parse(yaml) as { database: { titleAlias: string; displayPropertyId: string } };
+    expect(raw.database.titleAlias).toBe('Preferred Name');
+    expect(raw.database.displayPropertyId).toBe('handle');
+
+    const loaded = readPageText(`---\n${yaml}${yaml.endsWith('\n') ? '' : '\n'}---\n`);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.titleAlias).toBe('Preferred Name');
+    expect(loaded.database?.displayPropertyId).toBe('handle');
+    expect(normalizeDatabase({ properties: [], views: [], titleAlias: ' \t\n ' })?.titleAlias).toBeUndefined();
+  });
 });
 
 describe('conditional formatting persistence', () => {

@@ -972,6 +972,20 @@ function normalizeActionCommand(
     )
       return null;
     if (command.noteStyle !== undefined && !validNoteStyle(command.noteStyle)) return null;
+    const hasCalculatedResultBackground = Object.hasOwn(command, 'calculatedResultBackground');
+    const calculatedResultBackground =
+      typeof command.calculatedResultBackground === 'boolean'
+        ? command.calculatedResultBackground
+        : undefined;
+    if (hasCalculatedResultBackground) {
+      if (
+        calculatedResultBackground === undefined ||
+        record.after.calculatedResultBackground !== calculatedResultBackground
+      )
+        return null;
+    } else if (record.after.calculatedResultBackground !== null) {
+      return null;
+    }
     const cover = command.cover;
     if (cover !== undefined && cover !== null && (typeof cover !== 'string' || validCover(cover) === null))
       return null;
@@ -997,6 +1011,7 @@ function normalizeActionCommand(
       ...(command.noteStyle !== undefined
         ? { noteStyle: command.noteStyle as NonNullable<PageMeta['noteStyle']> }
         : {}),
+      ...(calculatedResultBackground !== undefined ? { calculatedResultBackground } : {}),
       ...(controls ? { controls } : {}),
       ...(properties ? { properties } : {}),
       ...(extra ? { extra } : {}),

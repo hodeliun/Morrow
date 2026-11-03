@@ -65,6 +65,7 @@ export type Command =
       kind?: PageKind;
       dailyDate?: string | null;
       noteStyle?: NoteStyle;
+      calculatedResultBackground?: boolean;
       doc?: DocNode;
       index?: number;
       tags?: string[];
@@ -92,6 +93,7 @@ export type Command =
   | { type: 'page.setTags'; id: PageId; tags: string[]; now: number }
   | { type: 'page.setCover'; id: PageId; cover: string | null; coverPosition?: number; now: number }
   | { type: 'page.setNoteStyle'; id: PageId; style: NoteStyle | null; now: number }
+  | { type: 'page.setCalculatedResultBackground'; id: PageId; enabled: boolean; now: number }
   | { type: 'page.setEncrypted'; id: PageId; encrypted: boolean; now: number }
   | { type: 'page.setKind'; id: PageId; kind: PageKind; now: number }
   // merges values into a database row, null clears a value
@@ -288,6 +290,17 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       const style = command.style === null ? null : normalizeNoteStyle(command.style);
       if (JSON.stringify(style) === JSON.stringify(page.value.noteStyle)) return unchanged(state);
       return updatePage(state, { ...page.value, noteStyle: style, updatedAt: command.now });
+    }
+    case 'page.setCalculatedResultBackground': {
+      const page = requirePage(state, command.id);
+      if (!page.ok) return page;
+      if (typeof command.enabled !== 'boolean') return fail('Invalid calculated result background setting.');
+      if (page.value.calculatedResultBackground === command.enabled) return unchanged(state);
+      return updatePage(state, {
+        ...page.value,
+        calculatedResultBackground: command.enabled,
+        updatedAt: command.now,
+      });
     }
     case 'page.setEncrypted': {
       const page = requirePage(state, command.id);
@@ -1097,22 +1110,31 @@ function configurePageControl(
   const page = requirePage(state, id);
   if (!page.ok) return page;
   if (page.value.kind === 'canvas') return fail('Canvas pages cannot contain named controls.');
-  const nextControl = normalizeNamedControls([control])?.[0];
-  if (!nextControl) return fail('Invalid named control.');
+  if (!isRecord(control)) return fail('Invalid named control settings.');
   const controls = [...page.value.controls];
-  const index = controls.findIndex((item) => item.id === nextControl.id);
+  const index = controls.findIndex((item) => item.id === String(control.id ?? ''));
   const previous = index < 0 ? null : controls[index]!;
+  const shape = normalizeNamedControls([{ ...control, value: null, defaultValue: null }])?.[0];
+  if (!shape) return fail('Invalid named control settings.');
+  const withDefault = normalizeNamedControls([{ ...control, value: null }])?.[0];
+  if (!withDefault) return fail('Invalid default value.');
+  const defaultError = controlValueErrorInState(withDefault, withDefault.defaultValue, state);
+  if (defaultError) return fail(`Invalid default value: ${defaultError}`);
+  const withValue = previous ? null : normalizeNamedControls([{ ...control, defaultValue: withDefault.defaultValue }])?.[0];
+  if (!previous && !withValue) return fail('Invalid current value.');
+  // During edits, the stored live value is authoritative. Validate the new
+  // settings against it instead of silently substituting the default.
+  const nextControl: NamedControlDef = { ...withDefault, value: null };
   if (previous) {
-    // Editing a name or default must not replace a live value. When its type or choices change,
-    // keep the value only if it remains valid; otherwise adopt the new default.
-    nextControl.value = controlValueErrorInState(nextControl, previous.value, state)
-      ? nextControl.defaultValue
-      : previous.value;
+    const previousValueError = controlValueErrorInState(nextControl, previous.value, state);
+    if (previousValueError)
+      return fail(`The current value is incompatible with these settings: ${previousValueError}`);
+    nextControl.value = previous.value;
+  } else if (withValue) {
+    nextControl.value = withValue.value;
   }
   const valueError = controlValueErrorInState(nextControl, nextControl.value, state);
-  const defaultError = controlValueErrorInState(nextControl, nextControl.defaultValue, state);
   if (valueError) return fail(valueError);
-  if (defaultError) return fail(`Invalid default value: ${defaultError}`);
   if (index < 0) controls.push(nextControl);
   else controls[index] = nextControl;
   const updated = updatePage(state, { ...page.value, controls, updatedAt: now });
@@ -1233,6 +1255,8 @@ function createPage(
   if (command.dailyDate != null && !DATE_PATTERN.test(command.dailyDate)) return fail('Invalid daily date.');
   if (command.noteStyle !== undefined && !validNoteStyle(command.noteStyle))
     return fail('Invalid note style.');
+  if (command.calculatedResultBackground !== undefined && typeof command.calculatedResultBackground !== 'boolean')
+    return fail('Invalid calculated result background setting.');
   const noteStyle = command.noteStyle === undefined ? null : normalizeNoteStyle(command.noteStyle);
   const doc = validateDoc(command.doc ?? emptyDoc());
   if (!doc.ok) return doc;
@@ -1280,6 +1304,7 @@ function createPage(
     createdAt: command.now,
     dailyDate: command.dailyDate ?? null,
     noteStyle,
+    calculatedResultBackground: command.calculatedResultBackground ?? null,
     tags: normalizeTags(command.tags ?? []),
     controls,
     properties,

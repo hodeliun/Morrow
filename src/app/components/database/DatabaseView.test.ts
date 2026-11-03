@@ -37,6 +37,8 @@ describe('database column descriptions', () => {
         { id: 'unlabeled', name: 'No description', type: 'text', options: [] },
         { id: 'score', name: 'Score', type: 'number', options: [] },
       ],
+      titleAlias: 'Preferred name',
+      displayPropertyId: 'score',
       views: [],
     };
     const view = newView('table', database, () => 'synthetic-table');
@@ -102,6 +104,12 @@ describe('database column descriptions', () => {
     };
     const configuredMarkup = render(configuredPage);
     const readOnlyMarkup = render(initialPage, undefined, false);
+    expect(mainMarkup).toContain('class="db-header-name">Preferred name</span>');
+    expect(mainMarkup).toContain(`aria-label="${t('database.defaultDisplayColumn')}"`);
+    expect(readOnlyMarkup).toContain('class="db-header-name">Preferred name</span>');
+    expect(readOnlyMarkup).toContain(`aria-label="${t('database.defaultDisplayColumn')}"`);
+    expect(session.getState().pages['synthetic-row-one']?.title).toBe('Synthetic row one');
+    expect(session.getState().pages['synthetic-row-one']?.properties).not.toHaveProperty('title');
 
     const originalLocale = getPreferences().locale;
     try {
@@ -114,6 +122,9 @@ describe('database column descriptions', () => {
         );
         expect(localizedMainMarkup).toContain(
           `aria-label="${t('database.rowSelect', { name: 'Synthetic row one' }, locale)}"`,
+        );
+        expect(localizedMainMarkup).toContain(
+          `aria-label="${t('database.defaultDisplayColumn', undefined, locale)}"`,
         );
         expect(localizedMainMarkup).toContain(
           `aria-label="${t('database.rowMenu', { name: 'Synthetic row one' }, locale)}"`,

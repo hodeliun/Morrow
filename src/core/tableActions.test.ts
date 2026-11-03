@@ -165,6 +165,57 @@ describe('table actions', () => {
     }
   });
 
+  it('captures the optional new-row background in addRows commands, previews, and recovery records', () => {
+    const state = createFinanceState('2026-12-31');
+    for (const enabled of [false, true]) {
+      let nextId = 0;
+      const planned = planTableAction(
+        state,
+        'finance',
+        'purchase',
+        'generate',
+        () => `background-installment-${++nextId}`,
+        101,
+        enabled,
+      );
+      expect(planned.ok).toBe(true);
+      if (!planned.ok) continue;
+
+      expect(
+        planned.value.commands
+          .filter((command) => command.type === 'page.create')
+          .map((command) => command.calculatedResultBackground),
+      ).toEqual([enabled, enabled, enabled]);
+      expect(planned.value.steps[0]?.rows.map((row) => row.calculatedResultBackground)).toEqual([
+        enabled,
+        enabled,
+        enabled,
+      ]);
+      expect(planned.value.records.map(({ after }) => after?.calculatedResultBackground)).toEqual([
+        enabled,
+        enabled,
+        enabled,
+      ]);
+    }
+
+    let nextId = 0;
+    const legacyPlan = planTableAction(
+      state,
+      'finance',
+      'purchase',
+      'generate',
+      () => `legacy-installment-${++nextId}`,
+      102,
+    );
+    expect(legacyPlan.ok).toBe(true);
+    if (!legacyPlan.ok) return;
+    expect(legacyPlan.value.steps[0]?.rows.map((row) => row.calculatedResultBackground)).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
   it('stores currency action results at their configured precision', () => {
     const state = createFinanceState('2026-12-31');
     const button = state.pages.finance?.database?.properties.find((prop) => prop.id === 'generate');

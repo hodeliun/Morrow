@@ -49,7 +49,7 @@ import {
 
 export { MANAGED_KEYS };
 const FILE_KINDS = new Set<PageKind>(['journal', 'templates', 'database']);
-const DATABASE_FIELDS = new Set(['properties', 'views']);
+const DATABASE_FIELDS = new Set(['titleAlias', 'displayPropertyId', 'properties', 'views']);
 const PROPERTY_FIELDS = new Set([
   'id', 'name', 'type', 'options', 'description', 'icon', 'formulaResultType', 'format', 'fillMode',
   'defaultValue', 'defaultFormula', 'defaultSequence', 'sequenceNext', 'defaultFormulaBindings',
@@ -98,6 +98,7 @@ export interface ReadPage {
   cover: string | null;
   coverPosition: number;
   noteStyle: NoteStyle | null;
+  calculatedResultBackground: boolean | null;
   controls: NamedControlDef[];
   kind: PageKind | null;
   tags: string[];
@@ -127,9 +128,14 @@ export function readPageText(text: string): ReadPage {
   const normalizedExtra = normalizeExtra(rawExtra);
   const extra = normalizedExtra ?? {};
   const controls = normalizeNamedControls(data.morrowControls);
+  const hasCalculatedResultBackground = Object.hasOwn(data, 'morrowCalculatedResultBackground');
+  const calculatedResultBackground = data.morrowCalculatedResultBackground;
+  const calculatedResultBackgroundProblem = hasCalculatedResultBackground && typeof calculatedResultBackground !== 'boolean'
+    ? 'Calculated result background metadata is invalid. The file was left read only.'
+    : null;
   const database = kind === 'database' ? normalizeDatabase(data.database) : null;
-  const databaseProblem = kind === 'database' && data.database !== undefined
-    ? databaseSourceProblem(data.database, database) : null;
+  const databaseProblem =
+    kind === 'database' && data.database !== undefined ? databaseSourceProblem(data.database, database) : null;
   const aliases = (
     Array.isArray(data.aliases) ? data.aliases : typeof data.aliases === 'string' ? [data.aliases] : []
   )
@@ -144,6 +150,8 @@ export function readPageText(text: string): ReadPage {
         ? DEFAULT_COVER_POSITION
         : normalizeCoverPosition(data.morrowCoverPosition),
     noteStyle: normalizeNoteStyle(data.morrowNoteStyle),
+    calculatedResultBackground:
+      typeof calculatedResultBackground === 'boolean' ? calculatedResultBackground : null,
     controls: controls ?? [],
     kind,
     tags: readTags(data.tags ?? data.tag),
@@ -162,7 +170,10 @@ export function readPageText(text: string): ReadPage {
     error:
       split.error ??
       (controls === null ? 'Named control metadata could not be read. The file was left read only.' : null) ??
-      (databaseProblem ? `Database metadata could not be preserved because ${databaseProblem}. The file was left read only.` : null) ??
+      calculatedResultBackgroundProblem ??
+      (databaseProblem
+        ? `Database metadata could not be preserved because ${databaseProblem}. The file was left read only.`
+        : null) ??
       (normalizedExtra === null
         ? 'Some frontmatter values exceed safe editing limits. The file was left read only.'
         : null),
@@ -176,6 +187,14 @@ function databaseSourceProblem(raw: unknown, database: DatabaseDef | null): stri
   if (raw.properties !== undefined && !Array.isArray(raw.properties)) return 'properties is not a list';
   if (raw.views !== undefined && !Array.isArray(raw.views)) return 'views is not a list';
   if (Array.isArray(raw.properties) && raw.properties.length > 200) return 'properties exceeds the supported limit';
+  if (raw.titleAlias !== undefined && typeof raw.titleAlias !== 'string') return 'titleAlias is not text';
+  if (
+    raw.displayPropertyId !== undefined &&
+    raw.displayPropertyId !== null &&
+    (!validId(raw.displayPropertyId) || !database.properties.some((prop) => prop.id === raw.displayPropertyId))
+  )
+    return 'displayPropertyId does not identify a supported property';
+
   const propertyIds = new Set<string>();
   for (const entry of Array.isArray(raw.properties) ? raw.properties : []) {
     if (!isRecord(entry) || !validId(entry.id)) continue;
@@ -316,6 +335,8 @@ export function managedFrontmatter(
   if (page.cover && page.kind !== 'canvas' && page.coverPosition !== DEFAULT_COVER_POSITION)
     out.set('morrowCoverPosition', page.coverPosition);
   if (page.noteStyle && page.kind !== 'canvas') out.set('morrowNoteStyle', page.noteStyle);
+  if (page.calculatedResultBackground !== null && page.kind !== 'canvas')
+    out.set('morrowCalculatedResultBackground', page.calculatedResultBackground);
   if (page.controls.length > 0 && page.kind !== 'canvas') out.set('morrowControls', page.controls);
   if (FILE_KINDS.has(page.kind)) out.set('kind', page.kind);
   if (page.tags.length > 0) out.set('tags', [...page.tags]);
@@ -592,6 +613,7 @@ function localizedNumber(prop: PropDef, raw: string): number | null {
 
 function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
   return {
+    ...(database.titleAlias?.trim() ? { titleAlias: database.titleAlias.trim() } : {}),
     ...(database.displayPropertyId ? { displayPropertyId: database.displayPropertyId } : {}),
     properties: [
       ...database.properties.map((prop) => ({

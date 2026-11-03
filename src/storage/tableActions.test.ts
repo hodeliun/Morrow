@@ -212,6 +212,89 @@ describe('table action persistence', () => {
     await reopened.session.close();
   });
 
+  it('recovers addRows with the captured false result-background default', async () => {
+    const vault = new FailingWriteVault();
+    const first = await open(vault);
+    await seed(first.session);
+    let nextId = 0;
+    const planned = planTableAction(
+      first.session.getState(),
+      'table',
+      'row-one',
+      'add-rows',
+      () => `background-action-${++nextId}`,
+      100,
+      false,
+    );
+    if (!planned.ok) throw new Error(planned.error);
+    const addedIds = planned.value.steps.flatMap((step) => step.rows.map((row) => row.id));
+    expect(addedIds).toHaveLength(2);
+    expect(planned.value.records.map(({ after }) => after?.calculatedResultBackground)).toEqual([false, false]);
+
+    vault.inspectActionWrites = true;
+    vault.failOnPageWrite = 2;
+    const pending = await executeTableAction(first.session, planned.value, 100);
+    expect(pending.status).toBe('pending');
+    expect(vault.journalAtFirstPageWrite).not.toBeNull();
+    expect(JSON.parse(vault.journalAtFirstPageWrite!).status).toBe('prepared');
+    crash(first.session, first.repository);
+
+    vault.inspectActionWrites = false;
+    const reopened = await open(vault);
+    const validJournalText = await reopened.session.readMeta(TABLE_ACTION_JOURNAL_META);
+    if (!validJournalText) throw new Error('Missing prepared table-action journal.');
+    const invalidJournal = JSON.parse(validJournalText) as {
+      commands: Array<Record<string, unknown>>;
+    };
+    const pendingCreate = invalidJournal.commands.find(
+      (command) => command.type === 'page.create' && command.id === addedIds[1],
+    );
+    expect(pendingCreate).toBeDefined();
+    if (!pendingCreate) return;
+    pendingCreate.calculatedResultBackground = 'enabled';
+    const invalidJournalText = JSON.stringify(invalidJournal);
+    await reopened.session.writeMeta(TABLE_ACTION_JOURNAL_META, invalidJournalText);
+    const beforeRejectedRecovery = structuredClone(reopened.session.getState());
+    const rejectedRecovery = await recoverTableAction(reopened.session);
+    expect(rejectedRecovery.status).toBe('none');
+    expect(await readTableActionJournal(reopened.session)).toBeNull();
+    expect(reopened.session.getState()).toEqual(beforeRejectedRecovery);
+    expect(await reopened.session.readMeta(TABLE_ACTION_JOURNAL_META)).toBe(invalidJournalText);
+
+    const omittedFieldJournal = JSON.parse(validJournalText) as {
+      commands: Array<Record<string, unknown>>;
+    };
+    const omittedFieldCreate = omittedFieldJournal.commands.find(
+      (command) => command.type === 'page.create' && command.id === addedIds[1],
+    );
+    expect(omittedFieldCreate).toBeDefined();
+    if (!omittedFieldCreate) return;
+    delete omittedFieldCreate.calculatedResultBackground;
+    const omittedFieldJournalText = JSON.stringify(omittedFieldJournal);
+    await reopened.session.writeMeta(TABLE_ACTION_JOURNAL_META, omittedFieldJournalText);
+    const beforeOmittedFieldRecovery = structuredClone(reopened.session.getState());
+    const rejectedOmittedFieldRecovery = await recoverTableAction(reopened.session);
+    expect(rejectedOmittedFieldRecovery.status).toBe('none');
+    expect(await readTableActionJournal(reopened.session)).toBeNull();
+    expect(reopened.session.getState()).toEqual(beforeOmittedFieldRecovery);
+    expect(await reopened.session.readMeta(TABLE_ACTION_JOURNAL_META)).toBe(omittedFieldJournalText);
+
+    await reopened.session.writeMeta(TABLE_ACTION_JOURNAL_META, validJournalText);
+    const recovered = await recoverTableAction(reopened.session);
+    expect(recovered.status).toBe('complete');
+    expect(addedIds.map((id) => reopened.session.getState().pages[id]?.calculatedResultBackground)).toEqual([
+      false,
+      false,
+    ]);
+    const journal = await readTableActionJournal(reopened.session);
+    expect(journal?.records.filter(({ id }) => addedIds.includes(id)).map(({ after }) => after?.calculatedResultBackground)).toEqual([
+      false,
+      false,
+    ]);
+
+    await reopened.session.close();
+  });
+
   it('does not replace an unresolved journal when a different button is run', async () => {
     const vault = new FailingWriteVault();
     const first = await open(vault);

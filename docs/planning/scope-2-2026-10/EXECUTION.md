@@ -12,14 +12,22 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-As primeiras entregas isoladas foram T20 (#71, PR #93) e T18 (#69, PR #94),
-integradas na main e encerradas após CI no Windows e Linux. T33 (#85, PR #95), imagens
-existentes em abas próprias, também foi integrada e validada. T35 (#87), áudio e
-vídeo locais em abas, foi integrada pelo PR #96 e validada na main. T12 (#63),
-rodapé compacto das tabelas, foi integrado pelo PR #97 e validado na main.
-T07 (#58), painéis de propriedades e seletores legíveis, é a próxima entrega ativa. Cada entrega inclui seus
-pré-requisitos estritos de preservação e validação, em um commit coerente, sem
-nova release ou instalação. Os outros tickets permanecem preservados até sua vez.
+A única entrega ativa é T03 (#54), Nome e propriedade de exibição, incluindo
+os contratos estritos da primeira publicação do formato persistido 13. Cada
+entrega inclui seus pré-requisitos de preservação e validação, em um commit
+coerente, sem nova release ou instalação. Os outros tickets permanecem
+preservados até sua vez.
+
+Entregas integradas na main, com CI Windows/Linux e issues encerradas:
+
+| Ticket | Capacidade | PR |
+| --- | --- | --- |
+| T20 #71 | Composição em colunas | #93 |
+| T18 #69 | Tamanho individual de imagens | #94 |
+| T33 #85 | Imagens existentes em abas próprias | #95 |
+| T35 #87 | Áudio e vídeo locais | #96 |
+| T12 #63 | Rodapé compacto das tabelas | #97 |
+| T07 #58 | Painéis e seletores legíveis | #98 |
 
 Em 28/10/2026 o mantenedor autorizou explicitamente implementar todos os 39
 tickets, incluindo o adendo de arquivos/web/painéis, com GPT 6 Luna max executor

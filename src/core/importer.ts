@@ -148,6 +148,8 @@ export function readImportedFile(text: string, fallbackTitle: string, options: P
   );
   if (read.error) return { title, doc, fields: {} };
   const fields: Partial<PageMeta> = { tags: read.tags, extra: read.extra };
+  if (read.calculatedResultBackground !== null)
+    fields.calculatedResultBackground = read.calculatedResultBackground;
   if (read.icon) fields.icon = read.icon;
   if (read.kind === 'database' && read.database)
     Object.assign(fields, { kind: 'database', database: read.database });

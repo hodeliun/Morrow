@@ -28,6 +28,11 @@ function defaultFor(type: NamedControlType, options: NamedControlDef['options'],
     case 'date': return '';
     case 'select': return options[0]?.id ?? null;
     case 'relation': return multiple ? [] : null;
+    // Format13 metadata can be preserved before these creation widgets are exposed.
+    case 'scale':
+    case 'progress':
+    case 'multiSelect':
+    case 'dateRange': return null;
   }
 }
 

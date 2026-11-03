@@ -196,6 +196,95 @@ describe('row clipboard and row operation plans', () => {
     if (validatedLegacy.ok) expect(validatedLegacy.value.rows[0]?.page.archivedAt).toBeNull();
   });
 
+  it('copies calculated-result background choices through clipboard, paste plans, and recovery records', () => {
+    const base = makeState();
+    const state: WorkspaceState = {
+      pages: {
+        ...base.pages,
+        'row-one': { ...base.pages['row-one']!, calculatedResultBackground: false },
+        'row-two': { ...base.pages['row-two']!, calculatedResultBackground: true },
+        'row-three': row('row-three', 'source-db', 'Gamma', 2),
+      },
+      docs: { ...base.docs, 'row-three': emptyDoc() },
+    };
+
+    const copied = createRowClipboardPayload(state, 'source-db', ['row-one', 'row-two', 'row-three']);
+    expect(copied.ok).toBe(true);
+    if (!copied.ok) return;
+    const serialized = serializeRowClipboard(copied.value);
+    expect(serialized.ok).toBe(true);
+    if (!serialized.ok) return;
+    const parsed = parseRowClipboardText(serialized.value);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.rows.map(({ page }) => page.calculatedResultBackground)).toEqual([false, true, null]);
+
+    const mappings = suggestRowPropertyMappings(
+      parsed.value.sourceProperties,
+      state.pages['source-db']!.database!,
+      parsed.value.rows,
+      true,
+    );
+    const plan = planPasteRows(
+      state,
+      'source-db',
+      parsed.value,
+      mappings,
+      (() => {
+        let next = 0;
+        return () => `background-copy-${++next}`;
+      })(),
+      70,
+      '(copy)',
+    );
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(
+      plan.value.commands
+        .filter((command) => command.type === 'page.create')
+        .map((command) => command.calculatedResultBackground),
+    ).toEqual([false, true, undefined]);
+    expect(plan.value.records.map(({ after }) => after?.calculatedResultBackground)).toEqual([false, true, null]);
+
+    const recovered = applyPlan(state, plan.value.commands);
+    expect(recovered.pages['background-copy-1']?.calculatedResultBackground).toBe(false);
+    expect(recovered.pages['background-copy-2']?.calculatedResultBackground).toBe(true);
+    expect(recovered.pages['background-copy-3']?.calculatedResultBackground).toBeNull();
+
+    const legacy = structuredClone(parsed.value);
+    delete (legacy.rows[0]!.page as Partial<PageMeta>).calculatedResultBackground;
+    const validatedLegacy = validateRowClipboardPayload(legacy);
+    expect(validatedLegacy.ok).toBe(true);
+    if (!validatedLegacy.ok) return;
+    expect(validatedLegacy.value.rows[0]?.page.calculatedResultBackground).toBeNull();
+    const legacyPlan = planPasteRows(
+      state,
+      'source-db',
+      legacy,
+      mappings,
+      (() => {
+        let next = 0;
+        return () => `legacy-background-copy-${++next}`;
+      })(),
+      71,
+      '(copy)',
+    );
+    expect(legacyPlan.ok, legacyPlan.ok ? '' : legacyPlan.error).toBe(true);
+    if (legacyPlan.ok) {
+      const legacyRecovered = applyPlan(state, legacyPlan.value.commands);
+      expect(legacyRecovered.pages['legacy-background-copy-1']?.calculatedResultBackground).toBeNull();
+    }
+
+    const malformed = structuredClone(parsed.value);
+    malformed.rows[0]!.page.calculatedResultBackground = 'enabled' as never;
+    const rejectedBackground = validateRowClipboardPayload(malformed);
+    expect(rejectedBackground.ok).toBe(false);
+    if (!rejectedBackground.ok) expect(rejectedBackground.error).toContain('calculated result background');
+    expect(
+      planPasteRows(state, 'source-db', malformed, mappings, () => 'invalid-background-copy', 72, '(copy)').ok,
+    ).toBe(false);
+  });
+
   it('rejects malformed archive timestamps, unknown row fields and future clipboard versions atomically', () => {
     const state = makeState();
     const payload = createRowClipboardPayload(state, 'source-db', ['row-one']);
@@ -475,6 +564,31 @@ describe('row clipboard and row operation plans', () => {
       expect(trash.value.commands).toHaveLength(2);
       expect(trash.value.records).toHaveLength(2);
     }
+  });
+
+  it('captures an explicit result-background default when inserting a new row', () => {
+    const state = makeState();
+    const unspecified = planInsertRow(state, 'source-db', 'row-one', 'before', 'legacy-new-row', 120);
+    expect(unspecified.ok).toBe(true);
+    if (!unspecified.ok) return;
+    expect(unspecified.value.commands[0]).not.toHaveProperty('calculatedResultBackground');
+    expect(unspecified.value.records.find(({ id }) => id === 'legacy-new-row')?.after?.calculatedResultBackground).toBe(
+      null,
+    );
+
+    const explicitOff = planInsertRow(state, 'source-db', 'row-one', 'before', 'new-row-off', 121, false);
+    expect(explicitOff.ok).toBe(true);
+    if (!explicitOff.ok) return;
+    expect(explicitOff.value.commands[0]).toMatchObject({
+      type: 'page.create',
+      calculatedResultBackground: false,
+    });
+    expect(explicitOff.value.records.find(({ id }) => id === 'new-row-off')?.after?.calculatedResultBackground).toBe(
+      false,
+    );
+    expect(applyPlan(state, explicitOff.value.commands).pages['new-row-off']?.calculatedResultBackground).toBe(
+      false,
+    );
   });
 });
 

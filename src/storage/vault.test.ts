@@ -314,9 +314,9 @@ describe('opening a folder of markdown files', () => {
       };
     };
     expect(raw.database.futureDatabaseFlag).toEqual({ nested: ['keep', 'exact'] });
-    // These fields are opaque in format 12; this delivery does not introduce the later title/display features.
-    expect(raw.database.titleAlias).toBe('  ');
-    expect(raw.database.displayPropertyId).toBe('obsolete');
+    // Format13 owns these fields: blank caption and removed display target must not resurrect from raw data.
+    expect(raw.database.titleAlias).toBeUndefined();
+    expect(raw.database.displayPropertyId).toBeUndefined();
     expect(raw.database.properties.map((property) => property.id)).toEqual(['status', 'run']);
     expect(raw.database.properties[0]?.futurePropertyFlag).toEqual({ nested: 'keep-property' });
     expect((raw.database.properties[0]?.format as { futureFormatFlag?: string } | undefined)?.futureFormatFlag)

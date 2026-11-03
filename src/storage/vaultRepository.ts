@@ -1346,6 +1346,7 @@ export class VaultRepository implements WorkspaceRepository {
       cover: read.cover,
       coverPosition: read.coverPosition,
       noteStyle: read.noteStyle,
+      calculatedResultBackground: read.calculatedResultBackground,
       controls: read.controls,
       kind: read.kind ?? 'page',
       tags: read.tags,

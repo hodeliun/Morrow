@@ -61,7 +61,7 @@ pessoal.
 
 ## Limites
 
-A coluna Nome permanece fixa nesta entrega; reordená-la pertence ao T13. Campos
+A coluna Nome permanece fixa nesta entrega; reordená-la pertence ao T04 (#55), conforme seu critério de título e propriedades comuns. Campos
 futuros preserváveis continuam opacos, sem ativar suas funcionalidades. Um
 mapeamento de banco reconhecido que não pode ser preservado fica somente leitura.
 

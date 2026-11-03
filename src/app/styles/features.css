@@ -1805,6 +1805,12 @@ textarea.text-input.small {
   gap: 4px;
   min-width: 0;
 }
+.db-display-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-faint);
+}
 .db-header-name {
   min-width: 0;
   overflow: hidden;

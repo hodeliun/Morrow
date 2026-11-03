@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import type { Command } from '../core/commands';
-import { planArchiveImport } from '../core/importer';
+import { planArchiveImport, readImportedFile } from '../core/importer';
 import { emptyWorkspace } from '../core/model';
 import type { DatabaseDef, PageId } from '../core/model';
+import { markdownToDoc } from '../core/markdown/parse';
 import { planMarkdownImport } from '../core/portability';
 import { databaseFromSubpages, fieldsForMove, releaseRow } from '../core/properties';
 import { defaultDatabase, valueOf } from '../core/database';
@@ -578,5 +579,66 @@ describe('importing notes with frontmatter', () => {
     const plan = planArchiveImport(emptyWorkspace(), [{ path: 'Folder/Short.md', data }], null, newId, 0);
     const page = plan.pages.find((candidate) => candidate.title === 'Short')!;
     expect(plan.docs[page.id]!.content![0]).toMatchObject({ type: 'heading', attrs: { level: 1 } });
+  });
+
+  it('keeps explicit calculated-result backgrounds through archive insertion and vault round-trip', async () => {
+    const entries = [
+      {
+        path: 'Imported Off.md',
+        data: new TextEncoder().encode(
+          '---\nmorrowCalculatedResultBackground: false\narchiveNote:\n  enabled: false\n---\nOff body\n',
+        ),
+      },
+      {
+        path: 'Imported On.md',
+        data: new TextEncoder().encode(
+          '---\nmorrowCalculatedResultBackground: true\narchiveNote: on\n---\nOn body\n',
+        ),
+      },
+      {
+        path: 'Imported Legacy.md',
+        data: new TextEncoder().encode('---\narchiveNote: legacy\n---\nLegacy body\n'),
+      },
+    ];
+    const plan = planArchiveImport(emptyWorkspace(), entries, null, newId, 10);
+    const imported = (title: string) => plan.pages.find((page) => page.title === title)!;
+
+    expect(imported('Imported Off').calculatedResultBackground).toBe(false);
+    expect(imported('Imported On').calculatedResultBackground).toBe(true);
+    expect(imported('Imported Legacy').calculatedResultBackground).toBeNull();
+
+    const vault = new MemoryVault();
+    const session = await open(vault);
+    await runAll(session, [{ type: 'pages.insert', pages: plan.pages, docs: plan.docs }]);
+    await session.close();
+
+    const offText = vault.text('Imported Off.md')!;
+    const onText = vault.text('Imported On.md')!;
+    const legacyText = vault.text('Imported Legacy.md')!;
+    expect(readPageText(offText).calculatedResultBackground).toBe(false);
+    expect(readPageText(offText).extra.archiveNote).toEqual({ enabled: false });
+    expect(readPageText(onText).calculatedResultBackground).toBe(true);
+    expect(readPageText(onText).extra.archiveNote).toBe('on');
+    expect(readPageText(legacyText).calculatedResultBackground).toBeNull();
+    expect(readPageText(legacyText).extra.archiveNote).toBe('legacy');
+    expect(legacyText).not.toContain('morrowCalculatedResultBackground');
+
+    const reopened = await open(vault);
+    expect(reopened.getState().pages[imported('Imported Off').id]?.calculatedResultBackground).toBe(false);
+    expect(reopened.getState().pages[imported('Imported On').id]?.calculatedResultBackground).toBe(true);
+    expect(reopened.getState().pages[imported('Imported Legacy').id]?.calculatedResultBackground).toBeNull();
+    expect(reopened.getState().pages[imported('Imported Off').id]?.extra.archiveNote).toEqual({ enabled: false });
+    expect(reopened.getState().pages[imported('Imported On').id]?.extra.archiveNote).toBe('on');
+    expect(reopened.getState().pages[imported('Imported Legacy').id]?.extra.archiveNote).toBe('legacy');
+    await reopened.close();
+  });
+
+  it('keeps the original malformed frontmatter in the imported document without treating it as managed metadata', () => {
+    const text = '---\nmorrowCalculatedResultBackground: enabled\narchiveNote: keep me\n---\nOriginal body\n';
+    const imported = readImportedFile(text, 'Malformed', {});
+
+    expect(readPageText(text).error).toMatch(/Calculated result background metadata is invalid.*left read only/);
+    expect(imported.fields).toEqual({});
+    expect(imported.doc).toEqual(markdownToDoc(text, {}));
   });
 });

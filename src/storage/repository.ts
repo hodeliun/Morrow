@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 import type { DBSchema, IDBPDatabase } from 'idb';
 import { snapshotsToPrune } from '../core/history';
-import { readWorkspace } from '../core/migrations';
+import { migrationRequiresRecordRewrite, readWorkspace } from '../core/migrations';
 import type { LoadedWorkspace } from '../core/migrations';
 import { SCHEMA_VERSION } from '../core/model';
 import type { FileCatalogSnapshot } from '../core/vault/fileCatalog';
@@ -125,7 +125,10 @@ class IndexedDbRepository implements WorkspaceRepository {
       const storedVersion = typeof version === 'number' ? version : 1;
       const loaded = readWorkspace(storedVersion, { pages, docs });
       if (!loaded.ok) return loaded;
-      if (storedVersion < SCHEMA_VERSION) await this.rewrite(loaded.value);
+      if (storedVersion < SCHEMA_VERSION) {
+        if (migrationRequiresRecordRewrite(storedVersion)) await this.rewrite(loaded.value);
+        else await this.db.put('meta', SCHEMA_VERSION, 'schemaVersion');
+      }
       return ok({ ...loaded.value, firstRun: initialized !== true && pages.length === 0 });
     } catch (error) {
       return fail(`Could not open your workspace: ${errorMessage(error)}`);

@@ -94,6 +94,7 @@ export function planTableAction(
   propId: string,
   newId: () => PageId,
   now: number,
+  calculatedResultBackground?: boolean,
 ): Result<TableActionPlan> {
   const databasePage = state.pages[databaseId];
   const clickedRow = state.pages[rowId];
@@ -201,6 +202,7 @@ export function planTableAction(
           parentId: databaseId,
           now,
           title: title === null ? '' : String(title),
+          ...(calculatedResultBackground !== undefined ? { calculatedResultBackground } : {}),
           properties: values,
         });
         if (!result.ok) return result;

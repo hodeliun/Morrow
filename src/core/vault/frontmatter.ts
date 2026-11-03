@@ -12,6 +12,7 @@ export const MANAGED_KEYS = new Set([
   'cover',
   'morrowCoverPosition',
   'morrowNoteStyle',
+  'morrowCalculatedResultBackground',
   'morrowControls',
 ]);
 const MAX_KEY_LENGTH = 200;

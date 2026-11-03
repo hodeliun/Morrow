@@ -1,7 +1,7 @@
 // workspace data model, plain json shared by storage, search, export and the editor
 
 // bump when the persisted shape changes and add a migration in migrations.ts
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const MAX_TITLE_LENGTH = 500;
 // includes compact Lucide names and local attachment references; plain emoji remain much shorter
@@ -189,12 +189,24 @@ export type FormulaReferenceBinding =
   | (FormulaBindingSpan & { kind: 'result'; pageId: PageId; resultId: string })
   | (FormulaBindingSpan & { kind: 'ambiguous'; pageId: PageId });
 
-export type NamedControlType = 'text' | 'number' | 'slider' | 'select' | 'checkbox' | 'date' | 'relation';
+export type NamedControlType =
+  | 'text'
+  | 'number'
+  | 'slider'
+  | 'scale'
+  | 'progress'
+  | 'select'
+  | 'multiSelect'
+  | 'checkbox'
+  | 'date'
+  | 'dateRange'
+  | 'relation';
 
 export interface NamedControlDef {
   id: string;
   name: string;
   type: NamedControlType;
+  textFormat?: 'plain' | 'email';
   value: PropValue;
   defaultValue: PropValue;
   options: SelectOption[];
@@ -314,7 +326,7 @@ export interface ViewDef {
   filterGroupLogic?: 'and' | 'or';
   // visible text search is scoped to this view and applies before sorting and layout rendering
   search?: string;
-  // view-local property order; missing properties follow the database schema order
+  // view-local table-column order; includes the virtual `title` column and preserves unknown IDs
   order?: string[];
   wrap?: string[];
   align?: Record<string, 'left' | 'center' | 'right'>;
@@ -329,14 +341,19 @@ export interface ViewDef {
 export interface DatabaseDef {
   properties: PropDef[];
   views: ViewDef[];
+  // an optional label for the virtual title column; row titles remain on their pages
+  titleAlias?: string;
   // default row label used by references and relation pickers; an individual relation may override it
   displayPropertyId?: string | null;
   // opaque future schema entries are kept intact and make the database read-only in this version
   unsupportedProperties?: unknown[];
 }
 
-// option ids for selects, yyyy mm dd for dates
+// Select values use option IDs; multi-select values use a list of IDs. Date values use YYYY-MM-DD.
 export type PropValue = string | number | boolean | string[] | null;
+
+// A named date-range control stores a blank or an ordered pair of inclusive date-only bounds.
+export type DateRangeControlValue = [start: string, end: string] | null;
 
 export interface PageMeta {
   id: PageId;
@@ -368,6 +385,8 @@ export interface PageMeta {
   coverPosition: number;
   // a saved override; null keeps the appearance this page had before per-note styles
   noteStyle: NoteStyle | null;
+  // null means the legacy result appearance, which keeps the subtle background enabled
+  calculatedResultBackground: boolean | null;
   // the page file is encrypted with a password, its content is only in memory while it is unlocked
   encrypted: boolean;
 }
@@ -783,6 +802,7 @@ export function newPageMeta(fields: Pick<PageMeta, 'id' | 'parentId'> & Partial<
     cover: null,
     coverPosition: DEFAULT_COVER_POSITION,
     noteStyle: null,
+    calculatedResultBackground: null,
     encrypted: false,
     ...fields,
   };

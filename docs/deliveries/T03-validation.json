@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T03",
+  "issue": "https://github.com/hodeliun/Morrow/issues/54",
+  "officialBaseVersion": "1.3.0",
+  "publicBase": "3d2ce66b4f51b785eae4ae7660d87de5e5162845",
+  "persistedFormatBefore": 12,
+  "persistedFormatAfter": 13,
+  "scope": "Name caption and database display property interface with complete first-format13 persistence contracts; unrelated interfaces not claimed",
+  "isolatedGate": {
+    "testFiles": 119,
+    "sourceUnchanged": true,
+    "artifactFiles": 3597,
+    "artifactsSha256": "2fe0681207036d1a9571cab59d3ae019c1811672b29a5ba6006d6f41c7f5ca1b",
+    "tests": 965,
+    "snapshot": "T03-isolated-04",
+    "command": "npm run check",
+    "typecheck": "passed",
+    "status": "passed",
+    "sourceFiles": 394,
+    "sourceSha256": "97509416c1588b969e782600c827ba29b407c5d340b078b237a2d4082b9c73ce",
+    "lint": "passed",
+    "build": "passed"
+  },
+  "packaged": {
+    "allMatch": true,
+    "artifactsVerified": 3597,
+    "sha256": {
+      "executable": "e69238443209ffc434b8cedfcb4dedbc19a71e67d1be09d6781f82b4936036a9",
+      "appAsar": "fba8b55cc823be8d4e12a48bd2a64bbe49176af3ea7dc0f9b348e14e307d6828",
+      "main": "e1cd2c31081235c7e8a7e5079efa5b9384d69d59ca2d561db9b705ee61d7daa7",
+      "trustedMain": "e1cd2c31081235c7e8a7e5079efa5b9384d69d59ca2d561db9b705ee61d7daa7"
+    },
+    "version": "1.3.0-fork.1.2.0"
+  },
+  "runtime": {
+    "platform": "Windows; isolated hidden Electron and synthetic vault",
+    "scenarios": [
+      {
+        "scenario": "main",
+        "rendererErrors": 0,
+        "status": "passed",
+        "report": "ui-1793716219306",
+        "packagedStableAfter": true,
+        "genericErrorBoundaries": 0,
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "assertionNames": [
+          "openDidNotWrite",
+          "aliasCollisionAndMetadata",
+          "rowTitleEditKeepsId",
+          "displayChangedAndEyeAccessible",
+          "titleDeleteDisabledAndDefaultRestored",
+          "deleteMenuNamesTarget",
+          "primaryQueueSavedBeforeReopen",
+          "deletePreservesValuesViewsUnknownsAndIds"
+        ],
+        "rawReportSha256": "e4847e1fdf0c208f9fb4e777bd57243c9320a872ec6f0a775b5ea9fd56472312"
+      },
+      {
+        "scenario": "extras",
+        "rendererErrors": 0,
+        "status": "passed",
+        "report": "ui-1793716253623",
+        "packagedStableAfter": true,
+        "genericErrorBoundaries": 0,
+        "childrenExitCodes": [
+          0,
+          0
+        ],
+        "snapshotStableAfter": true,
+        "assertionNames": [
+          "relationDefaultAndExplicitIndependent",
+          "appearances",
+          "primaryQueueSavedBeforeReopen",
+          "relationReopen"
+        ],
+        "rawReportSha256": "b99d9221eedde129c67c4271fbc6460965cb7fa5dd1ab702e1892e22d1e420bd"
+      }
+    ],
+    "allSixCriteriaVerified": true,
+    "personalAppsUsed": false,
+    "status": "passed",
+    "nativeClipboardUsed": false,
+    "playwrightVersion": "1.62.1"
+  },
+  "format13Contracts": {
+    "indexedDb12to13": "Metadata-only version update; original raw page/document records preserved, including unknown fields",
+    "future14": "Rejected without destructive downgrade",
+    "supportedMetadata": [
+      "titleAlias and database display default",
+      "view-local title token with opaque IDs retained",
+      "textFormat email/plain, multiSelect, scale/progress and ordered dateRange persistence",
+      "calculatedResultBackground boolean/null/absence"
+    ],
+    "legacyNullDisplay": "Valid raw displayPropertyId:null remains editable; raw bytes and zero target operations on open/close verified; invalid string/number/boolean stay protected",
+    "inherited": "Published T18 image-width compatibility and T12 unknown-field/removal/no-op safety preserved",
+    "olderMigrations": "Previous conservative record-rewrite policy retained if an older/unannotated step requires it",
+    "backgroundFalsePaths": [
+      "normalization",
+      "Markdown",
+      "backup",
+      "import metadata",
+      "typed row clipboard",
+      "duplicate/paste",
+      "row-creation plans",
+      "partial-save recovery"
+    ]
+  },
+  "preservedNegatives": [
+    {
+      "reason": "Local default helper exhaustive union and three literal legacy PageMeta fixtures needed compatibility updates",
+      "gate": "01",
+      "status": "typecheck failed"
+    },
+    {
+      "reason": "One version12 assertion updated13; three untouched I/O tests timed out; focused45/45 and full03/04 later passed with unchanged deadlines/workers/config; exact cause not proved",
+      "gate": "02",
+      "passed": 959,
+      "failed": 4
+    },
+    {
+      "compatibilityAcceptance": "rejected before UI",
+      "gate": "03",
+      "passed": 963,
+      "reason": "Legacy null database display default incorrectly readonly; minimal guard fixed with RED1/4 then GREEN4/4, including exact raw-file/no-write evidence",
+      "testFiles": 119
+    }
+  ],
+  "limitations": [
+    "Source delivery only; no installer, release or installation verification.",
+    "First13 includes persistence/normalization/validation contracts for future control types and background setting; their creation widgets, appearance controls and Last formula function are not delivered by T03.",
+    "Stored-format migration uses repository tests; runtime UI verifies legacy Markdown no-open-write and T03 behavior without a personal profile migration.",
+    "Name-column reordering belongs to T04/#55, not the T13 view-title ticket; a previous T12 documentation cross-reference is corrected in this delivery.",
+    "Relation screenshot showing Saving was not used as durability proof; durability is established by Saved wait and fresh-process reopen assertions.",
+    "No personal vault/profile, OS clipboard, installed app, remote service or visible personal window was used."
+  ],
+  "demonstrations": [
+    "assets/T03/alias-collision-pt-dark.png",
+    "assets/T03/readonly-es-light.png",
+    "assets/T03/display-property-eye.png"
+  ]
+}

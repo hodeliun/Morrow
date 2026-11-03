@@ -41,14 +41,13 @@ import { previewRelationPairUnion } from '../../../core/relations';
 import { run, runAll, useWorkspace } from '../../workspace';
 import { Popover } from '../Popover';
 import { Select } from '../Select';
-import { updateDatabase, updateProp, updateView } from './data';
+import { deleteProperty, updateProp, updateView } from './data';
 import { DraftInput, RelationPicker } from './PropertyValue';
 import { getLocale, t } from '../../i18n';
 import { colorLabel, filterLabel } from '../../i18n/labels';
 import { durationUnitFactor, isNumericPropertyType } from '../../../core/typedValues';
 import { MediaPropertyDefault, MediaPropertyOptions } from './MediaProperty';
 import { ViewChangeContext } from './viewContext';
-import { linkedViewReferences, viewUsesProperty } from '../../../core/linkedViews';
 import { ButtonActionSettings } from './ButtonActionSettings';
 import { FormulaEditor } from './FormulaEditor';
 import {
@@ -86,38 +85,7 @@ export function PropertySettings({
   const saveView = (change: (current: ViewDef) => ViewDef) =>
     linkedUpdate ? linkedUpdate(change) : view && updateView(dbId, view.id, change);
   const removeProperty = () => {
-    const linkedUse = linkedViewReferences(state, dbId).find(
-      (reference) => reference.view && viewUsesProperty(reference.view, prop.id),
-    );
-    if (linkedUse) {
-      toast(
-        t('database.columnUsedByLinkedView', { name: linkedUse.view?.name || t('database.linkedView') }),
-        { tone: 'error' },
-      );
-      return;
-    }
-    const dependentFormula = Object.values(state.pages)
-      .flatMap(
-        (owner) => owner.database?.properties.map((candidate) => ({ ownerId: owner.id, candidate })) ?? [],
-      )
-      .find(
-        ({ ownerId, candidate }) =>
-          (ownerId !== dbId || candidate.id !== prop.id) &&
-          [...(candidate.formulaBindings ?? []), ...(candidate.defaultFormulaBindings ?? [])].some(
-            (binding) =>
-              binding.kind === 'property' && binding.databaseId === dbId && binding.propertyId === prop.id,
-          ),
-      )?.candidate;
-    if (dependentFormula) {
-      toast(t('database.columnUsedByFormula', { name: dependentFormula.name }), { tone: 'error' });
-      return;
-    }
-    const removed = updateDatabase(dbId, (current) => ({
-      ...current,
-      properties: current.properties.filter((item) => item.id !== prop.id),
-      views: current.views.map((item) => removePropertyFromView(item, prop.id)),
-    }));
-    if (removed) onClose();
+    if (deleteProperty(dbId, prop.id)) onClose();
   };
   // the panel stays open while the property changes, so it reads the latest version of it
   const prop = database.properties.find((item) => item.id === opened.id) ?? opened;
@@ -591,38 +559,6 @@ export function PropertySettings({
       </div>
     </Popover>
   );
-}
-
-function removePropertyFromView(view: ViewDef, propertyId: string): ViewDef {
-  const widths = { ...view.widths };
-  const align = { ...view.align };
-  const summaries = { ...view.summaries };
-  delete widths[propertyId];
-  delete align[propertyId];
-  delete summaries[propertyId];
-  return {
-    ...view,
-    filters: view.filters.filter((rule) => rule.prop !== propertyId),
-    filterGroups: view.filterGroups
-      ?.map((group) => ({
-        ...group,
-        filters: group.filters.filter((rule) => rule.prop !== propertyId),
-      }))
-      .filter((group) => group.filters.length > 0),
-    sorts: view.sorts.filter((sort) => sort.prop !== propertyId),
-    hidden: view.hidden.filter((id) => id !== propertyId),
-    groupBy: view.groupBy === propertyId ? null : view.groupBy,
-    dateProp: view.dateProp === propertyId ? null : view.dateProp,
-    widths,
-    frozenThrough: view.frozenThrough === propertyId ? undefined : view.frozenThrough,
-    order: view.order?.filter((id) => id !== propertyId),
-    wrap: view.wrap?.filter((id) => id !== propertyId),
-    align,
-    summaries,
-    conditionalFormats: view.conditionalFormats?.filter((rule) => rule.prop !== propertyId),
-    cardProperties: view.cardProperties?.filter((id) => id !== propertyId),
-    cardImageProp: view.cardImageProp === propertyId ? null : view.cardImageProp,
-  };
 }
 
 function setFillMode(dbId: PageId, prop: PropDef, mode: 'manual' | 'default' | 'calculated') {
@@ -1518,12 +1454,12 @@ function RelationSettings({ dbId, prop }: { dbId: PageId; prop: PropDef }) {
             <Select<string>
               label={t('database.relationDisplay')}
               value={relation.displayPropertyId}
-              placeholder={t('database.relationUseTitle')}
+              placeholder={t('database.relationUseDatabaseDefault')}
               options={displayOptions}
               footer={
                 relation.displayPropertyId
                   ? {
-                      label: t('database.relationUseTitle'),
+                      label: t('database.relationUseDatabaseDefault'),
                       onSelect: () => save({ displayPropertyId: null }),
                     }
                   : undefined
