@@ -54,20 +54,28 @@ interface ParsedImageAttrs {
   align?: ImageAlign;
   caption?: string;
   crop?: ImageCrop;
+  markerMetadata?: {
+    raw: string;
+    baseline: { align: ImageAlign; caption: string; crop: ImageCrop | null };
+  };
 }
 
 function parseImageMarker(content: string): ParsedImageAttrs | null {
-  const match = /^<!--\s*morrow:image\b([^>]*)-->$/i.exec(content.trim());
+  const raw = content.trim();
+  const match = /^<!--\s*morrow:image\b([\s\S]*?)-->$/i.exec(raw);
   if (!match) return null;
   const body = match[1] ?? '';
   const alignMatch = /\balign\s*=\s*["'](left|center|right)["']/i.exec(body);
-  const captionMatch = /\bcaption\s*=\s*["']([^"']*)["']/i.exec(body);
+  const captionMatch = /\bcaption\s*=\s*(["'])([\s\S]*?)\1/i.exec(body);
   const cropMatch = /\bcrop\s*=\s*["']([^"']+)["']/i.exec(body);
   const align = validImageAlign(alignMatch?.[1]);
-  const caption = captionMatch?.[1] ? captionMatch[1].replace(/&quot;/g, '"') : undefined;
+  const caption = captionMatch?.[2]
+    ? captionMatch[2].replace(/&quot;/g, '"').replace(/--&gt;/g, '-->').replace(/&amp;/g, '&')
+    : undefined;
   const crop = parseImageCrop(cropMatch?.[1]);
-  if (!align && !caption && !crop) return null;
-  const result: ParsedImageAttrs = {};
+  const result: ParsedImageAttrs = {
+    markerMetadata: { raw, baseline: { align: align ?? 'center', caption: caption ?? '', crop } },
+  };
   if (align) result.align = align;
   if (caption) result.caption = caption;
   if (crop) result.crop = crop;
@@ -498,6 +506,9 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
           b.stack.push(node);
         } else if (b.top().type === 'column' || b.top().type === 'columns') {
           const closing = b.top();
+          if (closing.type === 'column' && !(closing.content ?? []).length) {
+            closing.content = [{ type: 'paragraph', content: [] }];
+          }
           const widths = closing.type === 'columns' ? closing.attrs?.widths : null;
           if (Array.isArray(widths) && widths.length !== closing.content?.length) {
             if (closing.attrs) {

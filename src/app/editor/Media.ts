@@ -73,6 +73,7 @@ export const Image = Node.create({
           return formatted ? { 'data-crop': formatted } : {};
         },
       },
+      markerMetadata: { default: null, rendered: false },
     };
   },
 

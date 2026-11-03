@@ -21,6 +21,57 @@ import { isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
 import { serializeConditionalFormats } from '../conditionalFormats';
 
+function imageCaptionForMarker(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/-->/g, '--&gt;');
+}
+
+function updateImageMarkerAttribute(raw: string, name: string, value: string | null): string {
+  const pattern = new RegExp(`(^|\\s)(${name}\\s*=\\s*)(["'])([\\s\\S]*?)\\3`, 'gi');
+  let found = false;
+  const updated = raw.replace(pattern, (_match, leading: string, prefix: string) => {
+    found = true;
+    if (value === null) return leading;
+    const safeValue = name === 'caption' ? imageCaptionForMarker(value) : value;
+    return `${leading}${prefix}"${safeValue}"`;
+  });
+  if (found || value === null) return updated;
+  const close = raw.lastIndexOf('-->');
+  if (close < 0) return raw;
+  const before = raw.slice(0, close).replace(/\s+$/, '');
+  const trailing = raw.slice(before.length, close);
+  const safeValue = name === 'caption' ? imageCaptionForMarker(value) : value;
+  return `${before} ${name}="${safeValue}"${trailing}-->`;
+}
+
+function imageMarkerFromMetadata(value: unknown, attrs: Record<string, unknown>): string | null | undefined {
+  if (!isRecord(value) || typeof value.raw !== 'string' || !isRecord(value.baseline)) return undefined;
+  let raw = value.raw;
+  if (!/^<!--\s*morrow:image\b[\s\S]*-->$/i.test(raw)) return undefined;
+  const current = {
+    align: validImageAlign(attrs.align) ?? 'center',
+    caption: typeof attrs.caption === 'string' ? attrs.caption : '',
+    crop: formatImageCrop(attrs.crop as ImageCrop | null),
+  };
+  const baseline = value.baseline;
+  const previous = {
+    align: validImageAlign(baseline.align) ?? 'center',
+    caption: typeof baseline.caption === 'string' ? baseline.caption : '',
+    crop: formatImageCrop(baseline.crop as ImageCrop | null),
+  };
+  const fields: Array<{ name: string; previous: string | null; current: string | null }> = [
+    { name: 'align', previous: previous.align, current: current.align },
+    { name: 'caption', previous: previous.caption, current: current.caption },
+    { name: 'crop', previous: previous.crop, current: current.crop },
+  ];
+  for (const field of fields) {
+    if (field.previous !== field.current) {
+      const next = field.name === 'caption' ? field.current?.trim() || null : field.current;
+      raw = updateImageMarkerAttribute(raw, field.name, next);
+    }
+  }
+  return /^<!--\s*morrow:image\s*-->$/i.test(raw) ? null : raw;
+}
+
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
   titleOf?: (id: PageId) => string | null;
@@ -288,10 +339,13 @@ function blockContent(node: DocNode, options: SerializeOptions): string | null {
           ? node.attrs.caption.trim()
           : null;
       const crop = formatImageCrop(node.attrs?.crop as ImageCrop | null);
+      const preservedMarker = imageMarkerFromMetadata(node.attrs?.markerMetadata, node.attrs ?? {});
+      if (preservedMarker !== undefined)
+        return preservedMarker === null ? markdown : `${preservedMarker}\n${markdown}`;
       if (align || caption || crop) {
         const parts = ['morrow:image'];
         if (align) parts.push(`align="${align}"`);
-        if (caption) parts.push(`caption="${caption.replace(/"/g, '&quot;')}"`);
+        if (caption) parts.push(`caption="${imageCaptionForMarker(caption)}"`);
         if (crop) parts.push(`crop="${crop}"`);
         return `<!-- ${parts.join(' ')} -->\n${markdown}`;
       }

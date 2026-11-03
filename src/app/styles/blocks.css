@@ -1061,6 +1061,10 @@ html.is-printing body {
   box-shadow: 0 0 8px var(--accent);
 }
 
+.columns-block-drop-active .prosemirror-dropcursor-block,
+.columns-block-drop-active .prosemirror-dropcursor-inline {
+  display: none !important;
+}
 /* image block enhancements */
 .image-block {
   position: relative;

@@ -517,6 +517,96 @@ describe('colours', () => {
 });
 
 describe('layout blocks', () => {
+  it('preserves opaque image markers when moving image nodes between columns and page flow', () => {
+    const marker = `<!-- morrow:image align='tilted' width="150%" custom = 'opaque value' -->`;
+    const parsed = markdownToDoc(`${marker}\n![Synthetic](https://example.org/synthetic.png)`);
+    const image = parsed.content?.[0];
+    expect(image?.attrs?.markerMetadata).toEqual(expect.objectContaining({ raw: marker }));
+    const columns: DocNode = {
+      type: 'doc',
+      content: [{ type: 'columns', content: [
+        { type: 'column', content: [image!] },
+        { type: 'column', content: [{ type: 'paragraph', content: [] }] },
+      ] }],
+    };
+    expect(docToMarkdown(columns)).toContain(marker);
+    const moved: DocNode = {
+      type: 'doc',
+      content: [image!, { type: 'paragraph', content: [{ type: 'text', text: 'Edited elsewhere' }] }],
+    };
+    expect(docToMarkdown(moved)).toContain(marker);
+    expect(image?.attrs?.width).toBeUndefined();
+  });
+
+  it('preserves opaque marker fields when an existing image caption changes', () => {
+    const source = `<!-- morrow:image caption='Old caption' custom="keep" width="150%" -->\n` +
+      '![Synthetic](https://example.org/synthetic.png)';
+    const parsed = markdownToDoc(source);
+    const image = parsed.content?.[0];
+    expect(image?.attrs?.caption).toBe('Old caption');
+    if (image) image.attrs = { ...image.attrs, caption: `Bob "Hero" and 'Ace' -->` };
+    const markdown = docToMarkdown(parsed);
+    expect(markdown).toContain(
+      `<!-- morrow:image caption="Bob &quot;Hero&quot; and 'Ace' --&gt;" custom="keep" width="150%" -->`,
+    );
+    const reopened = markdownToDoc(markdown);
+    expect(reopened.content?.[0]?.attrs?.caption).toBe(`Bob "Hero" and 'Ace' -->`);
+    expect(docToMarkdown(reopened)).toBe(markdown);
+  });
+
+  it('keeps an intentional empty column as a canonical paragraph through Markdown round trips', () => {
+    const source = `<div data-columns data-widths="15,10,30,45">
+<div data-column>
+
+First **column** child. ^t20-first-child
+
+</div>
+<div data-column>
+
+
+
+</div>
+<div data-column>
+
+Second column retained. ^t20-second-child
+
+</div>
+<div data-column>
+
+<!-- morrow:image align="left" caption="Keep caption" crop="0.1,0.1,0.8,0.8" width="35%" legacy='keep' -->
+![Carry image](https://example.org/carry.svg)
+
+Tail **column** child. ^t20-tail-child
+
+</div>
+</div>
+`;
+    const doc = markdownToDoc(source);
+    const group = doc.content?.find((node) => node.type === 'columns');
+    const columns = group?.content ?? [];
+
+    expect(columns).toHaveLength(4);
+    expect(columns[1]?.content).toEqual([{ type: 'paragraph', content: [] }]);
+    expect(group?.attrs?.widths).toEqual([15, 10, 30, 45]);
+    expect(columns[0]?.content?.[0]?.attrs?.blockId).toBe('t20-first-child');
+    expect(columns[0]?.content?.[0]?.content?.map((node) => node.marks?.[0]?.type)).toContain('bold');
+    expect(columns[2]?.content?.[0]?.attrs?.blockId).toBe('t20-second-child');
+    expect(columns[3]?.content?.[0]?.attrs?.markerMetadata).toEqual(
+      expect.objectContaining({ raw: expect.stringContaining("legacy='keep'") }),
+    );
+    expect(columns[3]?.content?.[1]?.attrs?.blockId).toBe('t20-tail-child');
+    expect(columns[3]?.content?.[1]?.content?.map((node) => node.marks?.[0]?.type)).toContain('bold');
+    expect(docToMarkdown(doc)).toBe(source);
+
+    const compactLegacySource = source.replace('<div data-column>\n\n\n\n</div>', '<div data-column>\n\n</div>');
+    const compactLegacyDoc = markdownToDoc(compactLegacySource);
+    const compactLegacyColumns = compactLegacyDoc.content?.find((node) => node.type === 'columns')?.content ?? [];
+    expect(compactLegacyColumns).toHaveLength(4);
+    expect(compactLegacyColumns[1]?.content).toEqual([{ type: 'paragraph', content: [] }]);
+    expect(docToMarkdown(compactLegacyDoc)).toBe(source);
+  });
+
+
   it('keeps columns, a table of contents and dates through a save and load', () => {
     const doc = {
       type: 'doc',
