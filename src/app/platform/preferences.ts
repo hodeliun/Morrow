@@ -200,7 +200,8 @@ export function usePreferences(): Preferences {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    () => current,
+    getPreferences,
+    getPreferences,
   );
 }
 

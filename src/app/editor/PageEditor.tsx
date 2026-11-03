@@ -20,6 +20,8 @@ import { targetPane, usePane } from '../tabs';
 import { getSession, getState, run } from '../workspace';
 import type { BlockMenuRequest } from './BlockHandle';
 import { registerCommit, setFocusedEditor, undoRedoEditor } from './commits';
+import { prepareLinkedViewConfigSync } from './linkedViewConfigSync';
+import { registerPageEditor } from './pageEditorRegistry';
 import { BlockMenu, FormattingMenu, LinkMenu, openHref, TableMenu } from './EditorMenus';
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
@@ -346,12 +348,16 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
 
     instance.on('focus', () => setFocusedEditor(instance, pageId));
     const unregister = registerCommit(commit);
+    const unregisterPageEditor = registerPageEditor(pageId, instance, (expected) =>
+      pageEditorMatchesDocument(instance, expected),
+    );
     setEditor(instance);
     callbacks.current.onReady?.(instance);
 
     return () => {
       commit();
       unregister();
+      unregisterPageEditor();
       setFocusedEditor(null);
       setEditor(null);
       setBlockMenu(null);
@@ -365,10 +371,15 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   // content changed outside this editor, for example a task ticked in the tasks view
   useEffect(() => {
     if (!editor || editor.isDestroyed || doc === committed.current) return;
+    const previousDoc = committed.current;
+    const linkedSync = prepareLinkedViewConfigSync(editor.state, pageId, previousDoc, doc);
+    if (linkedSync.status === 'conflict') return;
+    if (linkedSync.status === 'transaction') editor.view.dispatch(linkedSync.transaction);
     committed.current = doc;
     documentTracker.current.syncFromSource(doc);
-    editor.commands.setContent(doc as JSONContent, { emitUpdate: false });
-  }, [doc, editor]);
+    if (linkedSync.status === 'not-linked-only')
+      editor.commands.setContent(doc as JSONContent, { emitUpdate: false });
+  }, [doc, editor, pageId]);
 
   useEffect(() => {
     if (editor && !editor.isDestroyed) {

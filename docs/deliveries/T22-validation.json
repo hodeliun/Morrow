@@ -1,0 +1,202 @@
+{
+  "ticket": "T22/#73",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "build": "passed",
+    "typecheck": "passed",
+    "testsPassed": 1058,
+    "command": "npm run check",
+    "sourceFiles": 417,
+    "sourceSha256": "8f0c416cbe0334a103da535b667f967645cdbb876ae429b74422fa46ded1c66c",
+    "packagedArtifactsVerified": 3597,
+    "lint": "passed",
+    "testFiles": 132,
+    "artifactSha256": "48cc834a3c587898eea5d4b335d7aa7603aae50a93d9fa9ed9eab34009e86f3c"
+  },
+  "directed": {
+    "tests": 99,
+    "files": 16
+  },
+  "runtime": {
+    "hiddenWindows": true,
+    "extrasResultSha256": "26bb5653d3c41730fad9d4bdfa1690c3a842bf3c087771e4b552b51e69e76bb0",
+    "allFiveCriteriaVerified": true,
+    "liveLocaleWithoutReload": true,
+    "syntheticOnly": true,
+    "extras": "ui-1793725090671",
+    "nativeAndRendererWidth": 520,
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "platform": "Windows",
+    "pageErrors": 0,
+    "extrasAssertions": {
+      "pendingTextImmediatelyBeforeConfigAction": true,
+      "configActionCommitsPendingText": true,
+      "contextualConfigUndoPreservesText": true,
+      "nativeTextUndoAfterConfigReplayPreservesConfigHistory": true,
+      "linkedConfigIsolatedFromSourceDatabaseAndRows": true,
+      "linkedViewUnknownMarkerAndViewFieldsPreserved": true,
+      "exactNoteBytesRestoredAfterBothUndos": true,
+      "localeThemeAndNarrowViewportMatrix": [
+        "en-light-520",
+        "en-dark-520",
+        "pt-light-520",
+        "pt-dark-520",
+        "es-light-520",
+        "es-dark-520"
+      ],
+      "nativeAndRenderer520ByCase": [
+        {
+          "locale": "en",
+          "theme": "light",
+          "native": {
+            "x": 320,
+            "y": 106,
+            "width": 520,
+            "height": 900
+          },
+          "renderer": {
+            "width": 520,
+            "height": 900
+          }
+        },
+        {
+          "locale": "en",
+          "theme": "dark",
+          "native": {
+            "x": 320,
+            "y": 106,
+            "width": 520,
+            "height": 900
+          },
+          "renderer": {
+            "width": 520,
+            "height": 900
+          }
+        },
+        {
+          "locale": "pt",
+          "theme": "light",
+          "native": {
+            "x": 320,
+            "y": 106,
+            "width": 520,
+            "height": 900
+          },
+          "renderer": {
+            "width": 520,
+            "height": 900
+          }
+        },
+        {
+          "locale": "pt",
+          "theme": "dark",
+          "native": {
+            "x": 320,
+            "y": 106,
+            "width": 520,
+            "height": 900
+          },
+          "renderer": {
+            "width": 520,
+            "height": 900
+          }
+        },
+        {
+          "locale": "es",
+          "theme": "light",
+          "native": {
+            "x": 320,
+            "y": 106,
+            "width": 520,
+            "height": 900
+          },
+          "renderer": {
+            "width": 520,
+            "height": 900
+          }
+        },
+        {
+          "locale": "es",
+          "theme": "dark",
+          "native": {
+            "x": 320,
+            "y": 106,
+            "width": 520,
+            "height": 900
+          },
+          "renderer": {
+            "width": 520,
+            "height": 900
+          }
+        }
+      ],
+      "statusEvidence": "The driver checks the one global save-status label in the real primary pane and corroborates it with bytes and Markdown state.",
+      "limitations": [
+        "Locale and theme are selected through Settings for each live scenario; the driver does not claim persistence across reopen because the runner resets them to EN/light.",
+        "Read-only mode is not applicable to this scenario: proving an unsaved text edit and a linked-view config action requires an editable synthetic note.",
+        "Save state is read from the single global save status in the primary pane, then corroborated with the synthetic Markdown bytes and marker."
+      ]
+    },
+    "genericBoundaries": 0,
+    "main": "ui-1793724902503",
+    "mainAssertions": {
+      "openingDatabaseDidNotWriteMarkdown": true,
+      "primaryAndSecondaryViewsRemainIndependent": true,
+      "titleFilterSortOrderAndHiddenColumnChangesAreUndoable": true,
+      "contextualUndoPicksLatestApplicableDataOrViewOwner": true,
+      "redoTransferOrderAcrossDataAndViewHistory": true,
+      "redoInvalidationIsScopedToTheEditedView": true,
+      "searchDraftFiltersImmediatelyAndEscapeWritesNothing": true,
+      "searchEnterCommitsOneViewAction": true,
+      "tenViewActionsAreRetainedPerViewForTheSession": true,
+      "nativePageTextUndoDoesNotConsumeViewHistory": true,
+      "viewHistoryIsNotPersistedAcrossReopen": true,
+      "unknownDatabaseAndRowMetadataPreserved": true,
+      "caveats": "This driver does not claim a deterministic external file conflict UI, a permission change during replay, or locale/theme persistence across reopen. The runner resets locale to EN/light on launch. Source-level tests cover conflict guards and session-only history; UI conflict can be added only with a controlled watcher patch seam.",
+      "evidence": {
+        "initialMarkdownSha256": {
+          "T22 History.md": "2f0f5c3cbb34216fc8c3c0791d8e1875c64cb744d54a0aa3529fccba11d89941",
+          "Alpha.md": "2513116d40dbd0f27d44893a440c77761c5e4039cd6cab2c06f593ba63703303",
+          "Bravo.md": "df38190ed1070a4b6884b79e873e9d074737b40e48c2be43d1a68d06c7782065",
+          "Charlie.md": "54fe0c9d2c4b433f2b77ea602a4dc38aef63b8cc443ae91565ba1e14eb720b8c",
+          "T22 Notes.md": "189097cf92c2a6bfc47d810220283510bd7295c76ecd5a975716257725afb88d"
+        },
+        "databaseFinalSha256": "8c32fe264faefb6d94cd646d7fa477c850fea85707d5edde43ec04efa1d3f180",
+        "rowsFinalSha256": [
+          "e2acb25609505ac9661893176e5576371d3a149bfc3284ba831661c85324697f",
+          "df38190ed1070a4b6884b79e873e9d074737b40e48c2be43d1a68d06c7782065",
+          "54fe0c9d2c4b433f2b77ea602a4dc38aef63b8cc443ae91565ba1e14eb720b8c"
+        ],
+        "databaseFutureMetadata": {
+          "keep": "t22-opaque-database-metadata"
+        }
+      }
+    },
+    "mainResultSha256": "e65d86a58b2c777916e99e56c73efd1ddbb34625712e3ced527f92ac44b2473a",
+    "status": "passed",
+    "localeThemeCases": 6
+  },
+  "negativeEvidence": {
+    "deadlinesChanged": false,
+    "oldFailureExactCauseProven": false,
+    "extras": "ui-1793724990048 readiness failure; natural current-center actionability succeeded in2attempts/73ms on same package",
+    "mainRerun": false,
+    "productChanged": false
+  },
+  "limits": [
+    "External file conflicts/permission change during replay are controlled unit/integration seams, not deterministic UI watcher or actual power cut tests",
+    "No general setContent/undo policy change: exact linked-only1+delta sync; non-linked text/structure retains prior route",
+    "Live Settings locale/theme matrix without reload; no locale persistence across runner reopen claim",
+    "Synthetic hidden Windows only, no personal data/clipboard/install/release; fixtures retained"
+  ],
+  "cleanup": {
+    "leaseAbsent": true,
+    "ownProcessesAfter": 0,
+    "sourceMismatches": 0
+  }
+}

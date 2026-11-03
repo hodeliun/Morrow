@@ -28,6 +28,7 @@ import type {
   SelectOption,
 } from '../../../core/model';
 import { openExternal } from '../../platform/desktop';
+import { commitEditors } from '../../editor/commits';
 import { Popover } from '../Popover';
 import { ensureOption, setValue, updateDatabase } from './data';
 import { durationUnitFactor } from '../../../core/typedValues';
@@ -1033,6 +1034,7 @@ export function DraftInput({
   validateDraft,
   validateInAllModes,
   onInvalidDraftChange,
+  historyStep,
   dataHistoryManaged,
   historyDatabaseId,
 }: {
@@ -1058,6 +1060,7 @@ export function DraftInput({
   validateDraft?: (text: string) => string | null;
   validateInAllModes?: boolean;
   onInvalidDraftChange?: (invalid: boolean) => void;
+  historyStep?: (direction: 'undo' | 'redo') => void;
   dataHistoryManaged?: boolean;
   historyDatabaseId?: PageId;
 }) {
@@ -1124,7 +1127,7 @@ export function DraftInput({
         return false;
       }
       // Property edits use the shared workspace history; keep local steps for fields outside it.
-      if (!dataHistoryManaged && propertyChangeCount() === propertyChanges) {
+      if (!dataHistoryManaged && !historyStep && propertyChangeCount() === propertyChanges) {
         undone.current.push({ before: value, after: attempt.draft });
         redone.current = [];
       }
@@ -1184,7 +1187,10 @@ export function DraftInput({
               tone: result.status === 'conflict' || result.status === 'unavailable' ? 'error' : 'info',
             });
           });
-      else if (!dataHistoryManaged) stepProperties(direction);
+      else if (historyStep) {
+        commitEditors();
+        historyStep(direction);
+      } else if (!dataHistoryManaged) stepProperties(direction);
       return;
     }
     to.current.push(change);

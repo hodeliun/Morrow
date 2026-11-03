@@ -10,15 +10,15 @@ https://github.com/hodeliun/Morrow/issues/51
 
 Desfazer mudanças locais de apresentação sem alterar as outras visualizações.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+Cinco critérios verificados no pacote isolado T22/01. [Entrega e validação](../../deliveries/T22-view-history.md).
 
 ## Acceptance criteria
 
-- [ ] Manter dez ações de configuração por view durante a sessão, distintas das ações de dados do banco.
-- [ ] Cobrir filtros, ordenação, título, ordem e ocultação de colunas; outra view permanece intacta.
-- [ ] Desfazer contextual escolhe o evento aplicável mais recente e indica seu proprietário.
-- [ ] Texto em edição usa seu desfazer nativo; não sequestrar atalhos de drafts.
-- [ ] Conflitos e invalidação de redo seguem o escopo correto; abrir página não grava histórico nem modifica arquivos.
+- [x] Manter dez ações de configuração por view durante a sessão, distintas das ações de dados do banco.
+- [x] Cobrir filtros, ordenação, título, ordem e ocultação de colunas; outra view permanece intacta.
+- [x] Desfazer contextual escolhe o evento aplicável mais recente e indica seu proprietário.
+- [x] Texto em edição usa seu desfazer nativo; não sequestrar atalhos de drafts.
+- [x] Conflitos e invalidação de redo seguem o escopo correto; abrir página não grava histórico nem modifica arquivos.
 
 ## Blocked by
 

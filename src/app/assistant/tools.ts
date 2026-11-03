@@ -14,6 +14,8 @@ import type { AssistantToolSpec } from '../platform/desktop';
 import { newId } from '../platform/files';
 import { activeRoute, openPage } from '../router';
 import { getSession, getState, run } from '../workspace';
+import { commitEditors } from '../editor/commits';
+import { runLinkedViewConfigWrite } from '../editor/linkedViewConfigSync';
 
 export interface ToolCall {
   id: string;
@@ -429,13 +431,59 @@ function proposeChange(state: WorkspaceState, tool: string, input: Record<string
       if (getState().docs[found.id] !== original)
         throw new Error('The page changed in the meantime. Read it again before changing it.');
       await getSession().keepVersion(found.id);
-      const result = run({ type: 'page.setDoc', id: found.id, doc, now: Date.now() });
+      const guarded = runLinkedViewConfigWrite({
+        hostPageId: found.id,
+        expectedDoc: original ?? emptyDoc(),
+        proposedDoc: doc,
+        commitPending: commitEditors,
+        currentDoc: () => getState().docs[found.id],
+        reparse: (currentDoc) => {
+          const currentState = getState();
+          if (currentState.docs[found.id] !== currentDoc) return null;
+          try {
+            return markdownDoc(currentState, after, tool === 'replace_page' ? {} : null);
+          } catch {
+            return null;
+          }
+        },
+        write: (nextDoc) => run({ type: 'page.setDoc', id: found.id, doc: nextDoc, now: Date.now() }),
+      });
+      if (guarded.status === 'conflict' || guarded.status === 'invalid')
+        throw new Error('The page changed in the meantime. Read it again before changing it.');
+      const nextDoc = guarded.status === 'written' ? guarded.doc : doc;
+      const result = guarded.status === 'written'
+        ? guarded.result
+        : run({ type: 'page.setDoc', id: found.id, doc: nextDoc, now: Date.now() });
       if (!result.ok) throw new Error(result.error);
       return {
         pageId: found.id,
         message: `Changed "${displayTitle(found)}". The earlier version is kept in its page history.`,
         undo: () => {
-          if (original) run({ type: 'page.setDoc', id: found.id, doc: original, now: Date.now() });
+          if (!original) return;
+          const guardedUndo = runLinkedViewConfigWrite({
+            hostPageId: found.id,
+            expectedDoc: nextDoc,
+            proposedDoc: original,
+            commitPending: commitEditors,
+            currentDoc: () => getState().docs[found.id],
+            reparse: (currentDoc) => {
+              const currentState = getState();
+              if (currentState.docs[found.id] !== currentDoc) return null;
+              try {
+                return markdownDoc(currentState, before, tool === 'replace_page' ? {} : null);
+              } catch {
+                return null;
+              }
+            },
+            write: (undoDoc) => run({ type: 'page.setDoc', id: found.id, doc: undoDoc, now: Date.now() }),
+          });
+          if (guardedUndo.status === 'conflict' || guardedUndo.status === 'invalid')
+            throw new Error('The page changed in the meantime. Read it again before changing it.');
+          const undoDoc = guardedUndo.status === 'written' ? guardedUndo.doc : original;
+          const result = guardedUndo.status === 'written'
+            ? guardedUndo.result
+            : run({ type: 'page.setDoc', id: found.id, doc: undoDoc, now: Date.now() });
+          if (!result.ok) throw new Error(result.error);
         },
       };
     },

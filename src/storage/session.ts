@@ -4,6 +4,7 @@ import { isDocEmpty } from '../core/doc';
 import { snapshotDue } from '../core/history';
 import { emptyWorkspace } from '../core/model';
 import type {
+  DatabaseDef,
   DocNode,
   FileId,
   FileMeta,
@@ -22,9 +23,89 @@ import type { ExternalPatch, StoredFile, WorkspaceRepository } from './repositor
 import { SaveQueue } from './saveQueue';
 import type { SaveQueueOptions, SaveStatus } from './saveQueue';
 import { SessionDataHistory } from './dataHistory';
-import type { DataHistoryCaptureContext, DataHistorySnapshot, DataHistoryStepResult } from './dataHistory';
+import type {
+  DataHistoryCaptureContext,
+  DataHistoryEntryStatus,
+  DataHistorySnapshot,
+  DataHistoryStepResult,
+  OrderedDataHistoryItem,
+} from './dataHistory';
 import type { TableActionHistoryEntry } from './tableActions';
 import { restoreTableActionHistory } from './tableActions';
+import { SessionHistoryBudget } from './historyBudget';
+import { SessionViewHistory } from './viewHistory';
+import type {
+  OrderedViewHistoryItem,
+  ViewHistoryEntry,
+  ViewHistoryEntryStatus,
+  ViewHistorySnapshot,
+  ViewHistoryStepResult,
+} from './viewHistory';
+import {
+  linkedViewConfigChanges,
+  linkedViewConfigSnapshot,
+  primaryViewConfigChanges,
+  replaceLinkedViewConfig,
+  replacePrimaryViewConfig,
+  viewConfigMatches,
+  viewHistoryIdentityKey,
+} from './viewHistoryCapture';
+import type { ViewConfigChange, ViewHistoryIdentity } from './viewHistoryCapture';
+
+export interface ContextualHistoryItem {
+  id: string;
+  label: string;
+  owner: { kind: 'data' } | { kind: 'view'; name: string };
+  status: DataHistoryEntryStatus | ViewHistoryEntryStatus | 'blocked';
+  enabled: boolean;
+  sequence: number;
+}
+
+export interface ContextualHistorySnapshot {
+  undo: ContextualHistoryItem | null;
+  redo: ContextualHistoryItem | null;
+}
+
+export type LinkedViewHistoryReplayTargets =
+  | { status: 'candidate-changed' | 'conflict' }
+  | {
+      status: 'ready';
+      entryId: string;
+      hosts: readonly { hostPageId: PageId; doc: DocNode }[];
+    };
+
+const EMPTY_CONTEXTUAL_HISTORY: ContextualHistorySnapshot = { undo: null, redo: null };
+
+function sameContextualHistoryItem(
+  left: ContextualHistoryItem | null,
+  right: ContextualHistoryItem | null,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const sameOwner = left.owner.kind === right.owner.kind &&
+    (left.owner.kind === 'data' || (right.owner.kind === 'view' && left.owner.name === right.owner.name));
+  return left.id === right.id &&
+    left.label === right.label &&
+    sameOwner &&
+    left.status === right.status &&
+    left.enabled === right.enabled &&
+    left.sequence === right.sequence;
+}
+
+export interface LinkedViewConfigCommitReceipt {
+  id: string;
+  identity: Extract<ViewHistoryIdentity, { kind: 'linked' }>;
+  change: ViewConfigChange;
+  status: ViewHistoryEntryStatus;
+  mirrored: boolean;
+}
+
+interface LinkedViewConfigCommitHook {
+  identity: Extract<ViewHistoryIdentity, { kind: 'linked' }>;
+  expectedDoc: DocNode;
+  canEditNow: () => boolean;
+  mirror: (receipt: LinkedViewConfigCommitReceipt) => boolean;
+}
 
 type DatabasePasteDirection = 'undo' | 'redo';
 const EMPTY_FILE_CATALOG: FileCatalogSnapshot = { files: [], folders: [] };
@@ -35,6 +116,46 @@ interface DatabasePasteRecord {
   pages: PageMeta[];
   docs: Record<PageId, DocNode>;
   active: boolean;
+}
+
+function captureViewConfigChanges(
+  before: WorkspaceState,
+  after: WorkspaceState,
+  commands: Command[],
+): ViewConfigChange[] {
+  if (commands.length !== 1) return [];
+  const command = commands[0]!;
+  if (command.type === 'database.set') {
+    const beforeDatabase = before.pages[command.id]?.database;
+    const afterDatabase = after.pages[command.id]?.database;
+    return beforeDatabase && afterDatabase
+      ? primaryViewConfigChanges(command.id, beforeDatabase, afterDatabase)
+      : [];
+  }
+  if (command.type === 'page.setDoc') {
+    const beforeDoc = before.docs[command.id];
+    const afterDoc = after.docs[command.id];
+    return beforeDoc && afterDoc ? linkedViewConfigChanges(command.id, beforeDoc, afterDoc) : [];
+  }
+  return [];
+}
+
+function linkedSourceDatabaseId(state: WorkspaceState, hostPageId: PageId, blockId: string): PageId | null {
+  const doc = state.docs[hostPageId];
+  if (!doc) return null;
+  const ids = new Set<PageId>();
+  const visit = (node: DocNode) => {
+    if (
+      node.type === 'linkedDatabaseView' &&
+      node.attrs?.hostPageId === hostPageId &&
+      node.attrs.blockId === blockId &&
+      typeof node.attrs.sourceDatabaseId === 'string'
+    )
+      ids.add(node.attrs.sourceDatabaseId);
+    node.content?.forEach(visit);
+  };
+  visit(doc);
+  return ids.size === 1 ? [...ids][0]! : null;
 }
 
 function countPageLinks(doc: DocNode, id: PageId): number {
@@ -175,7 +296,10 @@ export class WorkspaceSession {
   private readonly lastKept = new Map<PageId, string>();
   private readonly externalListeners = new Set<(patch: ExternalPatch, accepted: PageId[]) => void>();
   private readonly databasePastes = new Map<PageId, DatabasePasteRecord>();
-  private readonly dataHistory = new SessionDataHistory();
+  private readonly historyBudget = new SessionHistoryBudget();
+  private readonly dataHistory = new SessionDataHistory(this.historyBudget);
+  private readonly viewHistory = new SessionViewHistory(this.historyBudget);
+  private readonly contextualHistorySnapshots = new Map<string, ContextualHistorySnapshot>();
   // runs before edits made elsewhere are applied, the app saves open editors here
   beforeExternal: () => void = () => {};
   readonly queue: SaveQueue;
@@ -385,6 +509,30 @@ export class WorkspaceSession {
     return this.executeCommands(commands, undefined, false).result;
   }
 
+  /**
+   * Applies and captures one linked-view-only document update before synchronously mirroring it
+   * into ProseMirror. Session and history listeners are published only after that mirror callback.
+   */
+  executeLinkedViewConfigChange(
+    identity: Extract<ViewHistoryIdentity, { kind: 'linked' }>,
+    expectedDoc: DocNode,
+    nextDoc: DocNode,
+    canEditNow: () => boolean,
+    mirror: (receipt: LinkedViewConfigCommitReceipt) => boolean,
+  ): Result<LinkedViewConfigCommitReceipt> {
+    const execution = this.executeCommands(
+      [{ type: 'page.setDoc', id: identity.hostPageId, doc: nextDoc, now: Date.now() }],
+      undefined,
+      false,
+      false,
+      { identity, expectedDoc, canEditNow, mirror },
+    );
+    if (!execution.result.ok) return execution.result;
+    return execution.viewCommitReceipt
+      ? ok(execution.viewCommitReceipt)
+      : fail('The linked view change was not captured.');
+  }
+
   // Table actions supply their journal identity so an unfinished save stays protected from eviction.
   executeAllWithDataHistory(
     commands: Command[],
@@ -408,7 +556,12 @@ export class WorkspaceSession {
     historyContext: DataHistoryCaptureContext | undefined,
     replay: boolean,
     dataHistoryReplay = false,
-  ): { result: Result<WorkspaceState>; historyEntryId: string | null } {
+    linkedViewCommit?: LinkedViewConfigCommitHook,
+  ): {
+    result: Result<WorkspaceState>;
+    historyEntryId: string | null;
+    viewCommitReceipt?: LinkedViewConfigCommitReceipt;
+  } {
     const before = this.state;
     let draft = this.state;
     const all = { pages: new Set<PageId>(), docs: new Set<PageId>(), removed: new Set<PageId>() };
@@ -420,6 +573,46 @@ export class WorkspaceSession {
       for (const id of result.value.changes.docs) all.docs.add(id);
       for (const id of result.value.changes.removed) all.removed.add(id);
     }
+    const viewChanges = replay ? [] : captureViewConfigChanges(before, draft, commands);
+    let viewCommitReceipt: LinkedViewConfigCommitReceipt | undefined;
+    let linkedViewChange: ViewConfigChange | undefined;
+    if (linkedViewCommit) {
+      const command = commands.length === 1 ? commands[0] : undefined;
+      const host = before.pages[linkedViewCommit.identity.hostPageId];
+      const currentDoc = before.docs[linkedViewCommit.identity.hostPageId];
+      const change = viewChanges.length === 1 ? viewChanges[0] : undefined;
+      const canEdit = (() => {
+        try {
+          return linkedViewCommit.canEditNow();
+        } catch {
+          return false;
+        }
+      })();
+      if (
+        command?.type !== 'page.setDoc' ||
+        command.id !== linkedViewCommit.identity.hostPageId ||
+        !currentDoc ||
+        !sameJson(currentDoc, linkedViewCommit.expectedDoc) ||
+        !host ||
+        this.unreadable.has(host.id) ||
+        isEffectivelyTrashed(before.pages, host.id) ||
+        !canEdit ||
+        !change ||
+        change.identity.kind !== 'linked' ||
+        change.identity.hostPageId !== linkedViewCommit.identity.hostPageId ||
+        change.identity.blockId !== linkedViewCommit.identity.blockId
+      )
+        return { result: fail('The linked view change could not be captured safely.'), historyEntryId: null };
+      linkedViewChange = change;
+    }
+    const viewHistoryDatabaseIds = new Set<PageId>();
+    for (const change of viewChanges) {
+      if (change.identity.kind === 'database') viewHistoryDatabaseIds.add(change.identity.databaseId);
+      else {
+        const databaseId = linkedSourceDatabaseId(before, change.identity.hostPageId, change.identity.blockId);
+        if (databaseId) viewHistoryDatabaseIds.add(databaseId);
+      }
+    }
     const busyDatabaseIds = dataHistoryReplay
       ? []
       : this.dataHistory.busyDatabasesForChanges(
@@ -427,7 +620,7 @@ export class WorkspaceSession {
           draft,
           commands,
           all,
-          historyContext?.databaseId ? [historyContext.databaseId] : [],
+          [...new Set([...(historyContext?.databaseId ? [historyContext.databaseId] : []), ...viewHistoryDatabaseIds])],
         );
     if (busyDatabaseIds.length > 0)
       return {
@@ -442,8 +635,44 @@ export class WorkspaceSession {
     const historyEntryId = replay
       ? null
       : this.dataHistory.record(before, draft, commands, all, historyContext);
+    if (!replay && viewChanges.length > 0) {
+      this.viewHistory.record(
+        viewChanges,
+        linkedViewCommit && linkedViewChange
+          ? (entry, changes) => {
+              const change = changes.length === 1 ? changes[0] : undefined;
+              if (!change || change.identity.kind !== 'linked') return;
+              const receipt: LinkedViewConfigCommitReceipt = {
+                id: entry.id,
+                identity: linkedViewCommit.identity,
+                change,
+                status: entry.status,
+                mirrored: false,
+              };
+              const candidate = this.viewHistory.getCandidate(linkedViewCommit.identity, 'undo');
+              if (candidate?.id !== entry.id || candidate.status !== entry.status) {
+                // Keep the accepted entry and let later source synchronization repair the editor.
+                viewCommitReceipt = receipt;
+                return;
+              }
+              let mirrored = false;
+              try {
+                mirrored = linkedViewCommit.mirror(receipt);
+              } catch {
+                // The source state is already committed. Publish the real entry so the editor can
+                // resynchronize without losing the accepted history action.
+              }
+              viewCommitReceipt = { ...receipt, mirrored };
+            }
+          : undefined,
+      );
+    }
     for (const listener of this.listeners) listener();
-    return { result: ok(draft), historyEntryId };
+    return {
+      result: ok(draft),
+      historyEntryId,
+      ...(viewCommitReceipt ? { viewCommitReceipt } : {}),
+    };
   }
 
   getDataHistory = (databaseId: PageId): DataHistorySnapshot => this.dataHistory.getSnapshot(databaseId);
@@ -458,6 +687,191 @@ export class WorkspaceSession {
     expectedEntryId?: string,
   ): Promise<DataHistoryStepResult> {
     return this.dataHistory.step(this, databaseId, direction, canEditNow, expectedEntryId);
+  }
+
+  getViewHistory(identity: ViewHistoryIdentity): ViewHistorySnapshot {
+    return this.viewHistory.getSnapshot(identity);
+  }
+
+  linkedViewHistoryReplayTargets(
+    identity: Extract<ViewHistoryIdentity, { kind: 'linked' }>,
+    direction: 'undo' | 'redo',
+    expectedEntryId: string,
+  ): LinkedViewHistoryReplayTargets {
+    const candidate = this.viewHistory.getCandidate(identity, direction);
+    if (!candidate || candidate.id !== expectedEntryId) return { status: 'candidate-changed' };
+    const changes = this.viewHistory.getCandidateLinkedChanges(identity, direction, expectedEntryId);
+    if (!changes || changes.length === 0) return { status: 'conflict' };
+
+    const hosts = new Map<PageId, DocNode>();
+    const identities = new Set<string>();
+    for (const change of changes) {
+      if (change.identity.kind !== 'linked') return { status: 'conflict' };
+      const { hostPageId, blockId } = change.identity;
+      const identityKey = viewHistoryIdentityKey(change.identity);
+      const currentDoc = this.state.docs[hostPageId];
+      const expected = direction === 'undo' ? change.after : change.before;
+      const current = currentDoc ? linkedViewConfigSnapshot(currentDoc, hostPageId, blockId) : null;
+      const sourceDatabaseId = currentDoc ? linkedSourceDatabaseId(this.state, hostPageId, blockId) : null;
+      const sourcePage = sourceDatabaseId ? this.state.pages[sourceDatabaseId] : undefined;
+      if (
+        identities.has(identityKey) ||
+        !currentDoc ||
+        !current ||
+        !viewConfigMatches(current, expected) ||
+        !sourceDatabaseId ||
+        sourcePage?.kind !== 'database' ||
+        !sourcePage.database
+      )
+        return { status: 'conflict' };
+      identities.add(identityKey);
+      hosts.set(hostPageId, currentDoc);
+    }
+
+    if (hosts.size === 0) return { status: 'conflict' };
+    return {
+      status: 'ready',
+      entryId: expectedEntryId,
+      hosts: [...hosts].map(([hostPageId, doc]) => ({ hostPageId, doc })),
+    };
+  }
+
+  subscribeViewHistory(identity: ViewHistoryIdentity, listener: () => void): () => void {
+    return this.viewHistory.subscribe(identity, listener);
+  }
+
+  getContextualHistory(databaseId: PageId, identity: ViewHistoryIdentity): ContextualHistorySnapshot {
+    const key = JSON.stringify([databaseId, viewHistoryIdentityKey(identity)]);
+    const undo = this.contextualItem(
+      this.dataHistory.getCandidate(databaseId, 'undo'),
+      this.viewHistory.getCandidate(identity, 'undo'),
+    );
+    const redo = this.contextualItem(
+      this.dataHistory.getCandidate(databaseId, 'redo'),
+      this.viewHistory.getCandidate(identity, 'redo'),
+    );
+    const previous = this.contextualHistorySnapshots.get(key);
+    if (previous && sameContextualHistoryItem(previous.undo, undo) && sameContextualHistoryItem(previous.redo, redo))
+      return previous;
+    const next = !undo && !redo ? EMPTY_CONTEXTUAL_HISTORY : { undo, redo };
+    this.contextualHistorySnapshots.set(key, next);
+    return next;
+  }
+
+  subscribeContextualHistory(
+    databaseId: PageId,
+    identity: ViewHistoryIdentity,
+    listener: () => void,
+  ): () => void {
+    const stopData = this.dataHistory.subscribe(databaseId, listener);
+    const stopView = this.viewHistory.subscribe(identity, listener);
+    return () => {
+      stopData();
+      stopView();
+    };
+  }
+
+  stepContextualHistory(
+    databaseId: PageId,
+    identity: ViewHistoryIdentity,
+    direction: 'undo' | 'redo',
+    canEditNow?: () => boolean,
+    expectedEntryId?: string,
+  ): Promise<DataHistoryStepResult | ViewHistoryStepResult> {
+    const candidate = this.getContextualHistory(databaseId, identity)[direction];
+    if (!candidate) return Promise.resolve({ status: 'empty' });
+    if (expectedEntryId && candidate.id !== expectedEntryId)
+      return Promise.resolve({ status: 'blocked', reason: 'related' });
+    if (candidate.owner.kind === 'data')
+      return this.dataHistory.step(this, databaseId, direction, canEditNow, candidate.id);
+    return Promise.resolve(
+      this.viewHistory.step(
+        identity,
+        direction,
+        (entry, stepDirection) => this.applyViewHistoryEntry(entry, stepDirection),
+        canEditNow,
+        candidate.id,
+      ),
+    );
+  }
+
+  private contextualItem(
+    data: OrderedDataHistoryItem | null,
+    view: OrderedViewHistoryItem | null,
+  ): ContextualHistoryItem | null {
+    if (!data && !view) return null;
+    if (!view || (data && data.sequence > view.sequence))
+      return {
+        id: data!.id,
+        label: data!.label,
+        owner: { kind: 'data' },
+        status: data!.status,
+        enabled: data!.enabled,
+        sequence: data!.sequence,
+      };
+    return {
+      id: view.id,
+      label: view.label,
+      owner: { kind: 'view', name: view.ownerName },
+      status: view.status,
+      enabled: view.enabled,
+      sequence: view.sequence,
+    };
+  }
+
+  private applyViewHistoryEntry(
+    entry: ViewHistoryEntry,
+    direction: 'undo' | 'redo',
+  ): ViewHistoryStepResult {
+    if (entry.changes.length === 0) return { status: 'unavailable' };
+    const databaseDefs = new Map<PageId, DatabaseDef>();
+    const hostDocs = new Map<PageId, DocNode>();
+    const databaseIds = new Set<PageId>();
+    const hostPageIds = new Set<PageId>();
+    for (const change of entry.changes) {
+      const expected = direction === 'undo' ? change.after : change.before;
+      const replacement = direction === 'undo' ? change.before : change.after;
+      if (change.identity.kind === 'database') {
+        const databaseId = change.identity.databaseId;
+        const current = databaseDefs.get(databaseId) ?? this.state.pages[databaseId]?.database;
+        if (!current) return { status: 'conflict' };
+        const next = replacePrimaryViewConfig(current, change.identity.viewId, expected, replacement);
+        if (!next) return { status: 'conflict' };
+        databaseDefs.set(databaseId, next);
+        databaseIds.add(databaseId);
+      } else {
+        const hostPageId = change.identity.hostPageId;
+        const current = hostDocs.get(hostPageId) ?? this.state.docs[hostPageId];
+        if (!current) return { status: 'conflict' };
+        const next = replaceLinkedViewConfig(
+          current,
+          hostPageId,
+          change.identity.blockId,
+          expected,
+          replacement,
+        );
+        if (!next) return { status: 'conflict' };
+        hostDocs.set(hostPageId, next);
+        hostPageIds.add(hostPageId);
+        const sourceDatabaseId = linkedSourceDatabaseId(this.state, hostPageId, change.identity.blockId);
+        if (!sourceDatabaseId) return { status: 'conflict' };
+        databaseIds.add(sourceDatabaseId);
+      }
+    }
+
+    const now = Date.now();
+    const commands: Command[] = [
+      ...[...databaseDefs].map(([id, database]) => ({ type: 'database.set' as const, id, database, now })),
+      ...[...hostDocs].map(([id, doc]) => ({ type: 'page.setDoc' as const, id, doc, now })),
+    ];
+    if (
+      !this.canEditDataHistoryNow([...databaseIds], [...hostPageIds]) ||
+      [...databaseIds].some((id) => this.dataHistory.isBusy(id)) ||
+      [...hostPageIds].some((id) => isEffectivelyTrashed(this.state.pages, id))
+    )
+      return { status: 'blocked', reason: 'permission' };
+    const result = this.executeHistoryReplay(commands);
+    return result.ok ? { status: 'applied' } : { status: 'failed' };
   }
 
   canEditDataHistoryNow(databaseIds: readonly PageId[], recordIds: readonly PageId[] = []): boolean {
@@ -760,6 +1174,7 @@ export class WorkspaceSession {
   async close(): Promise<void> {
     await this.queue.flush();
     this.queue.dispose();
+    this.contextualHistorySnapshots.clear();
     this.stopRepositoryFileCatalog?.();
     this.stopRepositoryFileCatalog = null;
     this.fileCatalogListeners.clear();

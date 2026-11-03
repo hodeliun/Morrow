@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DatabaseDef, DocNode, ViewDef } from '../../core/model';
+import { markdownToDoc } from '../../core/markdown/parse';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
+import { registerCommit } from '../editor/commits';
 import { getState, setSession } from '../workspace';
-import { runTool } from './tools';
+import { pageMarkdown, runTool } from './tools';
 import type { Proposal } from './tools';
 
 // navigation is not part of these tests
@@ -32,6 +35,55 @@ const proposal = (outcome: ReturnType<typeof runTool>): Proposal => {
   if (outcome.kind !== 'proposal') throw new Error(`expected a proposal, got ${JSON.stringify(outcome)}`);
   return outcome.proposal;
 };
+
+function view(id: string, name: string): ViewDef {
+  return {
+    id,
+    name,
+    type: 'table',
+    filters: [],
+    sorts: [],
+    groupBy: null,
+    dateProp: null,
+    hidden: [],
+  };
+}
+
+function seedLinkedView(): { pageId: string; original: DocNode; markdown: string } {
+  const database: DatabaseDef = { properties: [], views: [view('source-view', 'Source')] };
+  const created = session.execute({
+    type: 'page.create',
+    id: 'source-db',
+    parentId: null,
+    title: 'Source database',
+    kind: 'database',
+    database,
+    now: 1,
+  });
+  if (!created.ok) throw new Error(created.error);
+  const pageId = idOf('Garden');
+  const initial = session.getState().docs[pageId]!;
+  const doc: DocNode = {
+    ...initial,
+    content: [
+      ...(initial.content ?? []),
+      {
+        type: 'linkedDatabaseView',
+        attrs: {
+          hostPageId: pageId,
+          sourceDatabaseId: 'source-db',
+          blockId: 'linked-block',
+          view: view('linked-view', 'Primary'),
+          viewRawState: null,
+        },
+      },
+    ],
+  };
+  const updated = session.execute({ type: 'page.setDoc', id: pageId, doc, now: 2 });
+  if (!updated.ok) throw new Error(updated.error);
+  const original = session.getState().docs[pageId]!;
+  return { pageId, original, markdown: pageMarkdown(session.getState(), original) };
+}
 
 describe('assistant tools', () => {
   it('search and read pages as morrow markdown', () => {
@@ -69,6 +121,61 @@ describe('assistant tools', () => {
     applied.undo();
     await session.flush();
     expect(vault.text('Garden.md')).not.toContain('Set traps');
+  });
+
+  it('blocks a linked-marker proposal when another pane commits during keepVersion', async () => {
+    const { pageId, original } = seedLinkedView();
+    const edit = proposal(call('edit_page', { page: 'Garden', find: 'Primary', replace: 'Renamed' }));
+    const rawParsed = markdownToDoc(edit.after);
+    expect(rawParsed.content!.find((node) => node.type === 'linkedDatabaseView')!.attrs?.hostPageId).toBeUndefined();
+    const changedDuringAwait = structuredClone(original);
+    changedDuringAwait.content![0]!.content![0]!.text = 'Committed from another pane';
+    const keepVersion = session.keepVersion.bind(session);
+    vi.spyOn(session, 'keepVersion').mockImplementation(async (id) => {
+      await keepVersion(id);
+      const changed = session.execute({
+        type: 'page.setDoc',
+        id: pageId,
+        doc: changedDuringAwait,
+        now: 3,
+      });
+      if (!changed.ok) throw new Error(changed.error);
+    });
+
+    await expect(edit.apply()).rejects.toThrow('The page changed in the meantime. Read it again before changing it.');
+    const current = session.getState().docs[pageId]!;
+    expect(current.content![0]!.content![0]!.text).toBe('Committed from another pane');
+    expect((current.content!.find((node) => node.type === 'linkedDatabaseView')!.attrs?.view as ViewDef).name).toBe(
+      'Primary',
+    );
+    expect(edit.after).toContain('Renamed');
+  });
+
+  it('guards the returned undo closure when another pane has a pending linked-host edit', async () => {
+    const { pageId } = seedLinkedView();
+    const edit = proposal(call('edit_page', { page: 'Garden', find: 'Primary', replace: 'Renamed' }));
+    const applied = await edit.apply();
+    const appliedLink = session.getState().docs[pageId]!.content!.find((node) => node.type === 'linkedDatabaseView')!;
+    expect(appliedLink.attrs?.hostPageId).toBe(pageId);
+    expect((appliedLink.attrs?.view as ViewDef).name).toBe('Renamed');
+
+    const pendingPaneDoc = structuredClone(session.getState().docs[pageId]!);
+    pendingPaneDoc.content![0]!.content![0]!.text = 'Pending text from another pane';
+    const unregister = registerCommit(() => {
+      const committed = session.execute({ type: 'page.setDoc', id: pageId, doc: pendingPaneDoc, now: 4 });
+      if (!committed.ok) throw new Error(committed.error);
+    });
+    try {
+      expect(() => applied.undo()).toThrow('The page changed in the meantime. Read it again before changing it.');
+    } finally {
+      unregister();
+    }
+
+    const current = session.getState().docs[pageId]!;
+    expect(current.content![0]!.content![0]!.text).toBe('Pending text from another pane');
+    expect((current.content!.find((node) => node.type === 'linkedDatabaseView')!.attrs?.view as ViewDef).name).toBe(
+      'Renamed',
+    );
   });
 
   it('keeps each version before every change, without copies of the same one', async () => {

@@ -9,9 +9,10 @@ import {
 } from './tableActions';
 import type { TableActionHistoryEntry } from './tableActions';
 import type { WorkspaceSession } from './session';
+import { MAX_SESSION_HISTORY_BYTES, SessionHistoryBudget } from './historyBudget';
 
 export const MAX_DATA_HISTORY_STEPS_PER_DATABASE = 10;
-export const MAX_DATA_HISTORY_BYTES = 32 * 1024 * 1024;
+export const MAX_DATA_HISTORY_BYTES = MAX_SESSION_HISTORY_BYTES;
 
 const ROW_OPERATION_PROPERTY_ID = '__row_operations__';
 const GENERIC_HISTORY_PROPERTY_ID = '__session_data_history__';
@@ -33,6 +34,9 @@ export interface SessionDataHistoryEntry extends TableActionHistoryEntry {
   bytes: number;
   status: DataHistoryEntryStatus;
   direction: 'undo' | 'redo';
+  createdSequence: number;
+  appliedSequence: number;
+  undoneSequence?: number;
   message?: string;
 }
 
@@ -47,6 +51,10 @@ export interface DataHistoryItem {
 export interface DataHistorySnapshot {
   undo: DataHistoryItem | null;
   redo: DataHistoryItem | null;
+}
+
+export interface OrderedDataHistoryItem extends DataHistoryItem {
+  sequence: number;
 }
 
 export type DataHistoryStepResult =
@@ -66,7 +74,8 @@ export class SessionDataHistory {
   private readonly listeners = new Map<PageId, Set<() => void>>();
   private readonly snapshots = new Map<PageId, DataHistorySnapshot>();
   private readonly busyDatabaseIds = new Set<PageId>();
-  private completedBytes = 0;
+
+  constructor(private readonly budget = new SessionHistoryBudget()) {}
 
   subscribe(databaseId: PageId, listener: () => void): () => void {
     const listeners = this.listeners.get(databaseId) ?? new Set<() => void>();
@@ -80,6 +89,20 @@ export class SessionDataHistory {
 
   getSnapshot(databaseId: PageId): DataHistorySnapshot {
     return this.snapshots.get(databaseId) ?? EMPTY_HISTORY;
+  }
+
+  getCandidate(databaseId: PageId, direction: 'undo' | 'redo'): OrderedDataHistoryItem | null {
+    const stack = (direction === 'undo' ? this.undoByDatabase : this.redoByDatabase).get(databaseId) ?? [];
+    const id = stack.at(-1);
+    if (!id) return null;
+    const entry = this.entries.get(id);
+    const item = this.itemFor(id, direction);
+    if (!entry || !item) return null;
+    return { ...item, sequence: direction === 'undo' ? entry.appliedSequence : (entry.undoneSequence ?? entry.createdSequence) };
+  }
+
+  isBusy(databaseId: PageId): boolean {
+    return this.busyDatabaseIds.has(databaseId);
   }
 
   busyDatabasesForChanges(
@@ -211,6 +234,7 @@ export class SessionDataHistory {
       commands: structuredClone(commands),
     };
     const bytes = encodedSize({ ...entry, databaseIds: scopes });
+    const createdSequence = this.budget.nextSequence();
     let status: DataHistoryEntryStatus = context?.pendingRecovery ? 'pending' : 'ready';
     let message: string | undefined;
     if (!isTableActionHistoryEntryJournalable(entry)) {
@@ -227,6 +251,8 @@ export class SessionDataHistory {
       bytes,
       status,
       direction: 'undo',
+      createdSequence,
+      appliedSequence: createdSequence,
       ...(message ? { message } : {}),
     };
     if (status === 'unavailable') {
@@ -253,6 +279,17 @@ export class SessionDataHistory {
     }
     const entryWithScopes = { ...entry, databaseIds: [...scopes] };
     const bytes = encodedSize({ ...entry, databaseIds: [...scopes] });
+    const createdSequence = existing?.createdSequence ?? this.budget.nextSequence();
+    const directionChanged = existing !== undefined && existing.direction !== direction;
+    const transferSequence = directionChanged ? this.budget.nextSequence() : undefined;
+    const appliedSequence =
+      direction === 'undo'
+        ? transferSequence ?? existing?.appliedSequence ?? createdSequence
+        : existing?.appliedSequence ?? createdSequence;
+    const undoneSequence =
+      direction === 'redo'
+        ? transferSequence ?? existing?.undoneSequence ?? this.budget.nextSequence()
+        : existing?.undoneSequence;
     const journalable = isTableActionHistoryEntryJournalable(entry);
     const withinMemoryLimit = bytes <= MAX_DATA_HISTORY_BYTES;
     const matches = tableActionHistoryStateMatches(state, entry, direction);
@@ -261,6 +298,9 @@ export class SessionDataHistory {
       bytes,
       status: !journalable || !withinMemoryLimit ? 'unavailable' : matches ? 'ready' : 'conflict',
       direction,
+      createdSequence,
+      appliedSequence,
+      ...(undoneSequence !== undefined ? { undoneSequence } : {}),
       ...(!journalable || !withinMemoryLimit
         ? { message: 'unavailable', records: [], commands: [], bytes: 0 }
         : !matches
@@ -276,36 +316,29 @@ export class SessionDataHistory {
       return;
     }
 
-    const previousCounted = !isProtected(existing.status);
-    if (previousCounted) this.completedBytes -= existing.bytes;
-    const directionChanged = existing.direction !== direction;
-    const cannotMoveAcrossNewerActions = directionChanged && !this.isTopAcrossScopes(existing, existing.direction);
+    const restoreDirectionChanged = existing.direction !== direction;
+    const cannotMoveAcrossNewerActions = restoreDirectionChanged && !this.isTopAcrossScopes(existing, existing.direction);
     const nextDirection = cannotMoveAcrossNewerActions ? existing.direction : direction;
     existing.databaseIds = [...scopes];
-    if (directionChanged && !cannotMoveAcrossNewerActions) this.moveEntry(existing, direction, false);
+    if (restoreDirectionChanged && !cannotMoveAcrossNewerActions) this.moveEntry(existing, direction, false);
     Object.assign(existing, stored, { direction: nextDirection });
     if (cannotMoveAcrossNewerActions && stored.status !== 'unavailable') {
       existing.status = 'conflict';
       existing.message = 'conflict';
     }
-    if (!isProtected(existing.status)) this.completedBytes += existing.bytes;
+    this.updateBudget(existing);
     this.trimDatabaseDepth();
-    this.evictToMemoryLimit();
     this.publish(existing.databaseIds);
   }
 
   finishEntry(id: string, status: 'ready' | 'pending'): void {
     const entry = this.entries.get(id);
     if (!entry || entry.status === 'unavailable') return;
-    const countedBefore = !isProtected(entry.status);
     entry.status = status;
-    const countedAfter = !isProtected(entry.status);
-    if (countedBefore && !countedAfter) this.completedBytes -= entry.bytes;
-    else if (!countedBefore && countedAfter) this.completedBytes += entry.bytes;
+    this.updateBudget(entry);
     if (status === 'ready') delete entry.message;
     else entry.message = 'pending';
     this.publish(entry.databaseIds);
-    this.evictToMemoryLimit();
   }
 
   async step(
@@ -338,8 +371,8 @@ export class SessionDataHistory {
       })();
     if (!replayAllowed()) return { status: 'blocked', reason: 'permission' };
 
-    if (!isProtected(entry.status)) this.completedBytes -= entry.bytes;
     entry.status = 'busy';
+    this.updateBudget(entry);
     for (const scope of entry.databaseIds) this.busyDatabaseIds.add(scope);
     this.publish(entry.databaseIds);
     try {
@@ -347,8 +380,11 @@ export class SessionDataHistory {
       if (result.status === 'applied') {
         this.moveEntry(entry, direction);
         entry.status = 'ready';
-        this.completedBytes += entry.bytes;
         entry.direction = direction === 'undo' ? 'redo' : 'undo';
+        const transferSequence = this.budget.nextSequence();
+        if (direction === 'undo') entry.undoneSequence = transferSequence;
+        else entry.appliedSequence = transferSequence;
+        this.updateBudget(entry);
         delete entry.message;
         return this.publishAndResult(entry, { status: 'applied' });
       }
@@ -360,13 +396,10 @@ export class SessionDataHistory {
         entry.records = [];
         entry.commands = [];
         entry.bytes = unavailableEntryBytes(entry);
-        this.completedBytes += entry.bytes;
-        this.evictToMemoryLimit();
       } else {
         entry.status = 'ready';
-        this.completedBytes += entry.bytes;
-        this.evictToMemoryLimit();
       }
+      this.updateBudget(entry);
       entry.message = result.status;
       this.publish(entry.databaseIds);
       if (result.status === 'blocked') return { status: 'blocked', reason: 'permission' };
@@ -379,6 +412,16 @@ export class SessionDataHistory {
 
   private push(entry: SessionDataHistoryEntry): void {
     if (this.entries.has(entry.id)) return;
+    const affected = new Set<PageId>(entry.databaseIds);
+    for (const databaseId of entry.databaseIds) {
+      for (const relatedId of [
+        ...(this.undoByDatabase.get(databaseId) ?? []),
+        ...(this.redoByDatabase.get(databaseId) ?? []),
+      ]) {
+        const related = this.entries.get(relatedId);
+        if (related) related.databaseIds.forEach((scope) => affected.add(scope));
+      }
+    }
     if (entry.direction === 'undo') {
       for (const databaseId of entry.databaseIds) {
         const redo = this.redoByDatabase.get(databaseId) ?? [];
@@ -387,21 +430,32 @@ export class SessionDataHistory {
           if (candidate && isProtected(candidate.status)) {
             candidate.status = 'conflict';
             candidate.message = 'conflict';
+            this.updateBudget(candidate);
             this.publish(candidate.databaseIds);
           } else this.truncateHistoryThrough(redoId);
         }
       }
     }
+    if (!this.registerBudgetEntry(entry)) {
+      entry.status = 'unavailable';
+      entry.message = 'unavailable';
+      entry.records = [];
+      entry.commands = [];
+      entry.label = entry.label.slice(0, 100);
+      entry.bytes = unavailableEntryBytes(entry);
+      if (!this.budget.register(this.budgetRecord(entry, entry.bytes))) {
+        entry.bytes = 0;
+        this.budget.register(this.budgetRecord(entry, 0));
+      }
+    }
     this.entries.set(entry.id, entry);
     this.order.push(entry.id);
-    if (!isProtected(entry.status)) this.completedBytes += entry.bytes;
     const target = entry.direction === 'undo' ? this.undoByDatabase : this.redoByDatabase;
     for (const databaseId of entry.databaseIds) {
       target.set(databaseId, [...(target.get(databaseId) ?? []), entry.id]);
     }
     this.trimDatabaseDepth();
-    this.evictToMemoryLimit();
-    this.publish(entry.databaseIds);
+    this.publish([...affected]);
   }
 
   private moveEntry(entry: SessionDataHistoryEntry, direction: 'undo' | 'redo', notify = true): void {
@@ -445,29 +499,6 @@ export class SessionDataHistory {
         if (!boundary) break;
         this.truncateHistoryThrough(boundary);
       }
-    }
-  }
-
-  private evictToMemoryLimit(): void {
-    while (this.completedBytes > MAX_DATA_HISTORY_BYTES) {
-      const oldestUndo = this.order.find((id) => {
-        const entry = this.entries.get(id);
-        return entry?.direction === 'undo' && !isProtected(entry.status);
-      });
-      const newestRedo = [...this.order].reverse().find((id) => {
-        const entry = this.entries.get(id);
-        return entry?.direction === 'redo' && !isProtected(entry.status);
-      });
-      const undoEntry = oldestUndo ? this.entries.get(oldestUndo) : undefined;
-      const redoEntry = newestRedo ? this.entries.get(newestRedo) : undefined;
-      const boundary =
-        undoEntry && redoEntry
-          ? undoEntry.bytes >= redoEntry.bytes
-            ? oldestUndo
-            : newestRedo
-          : oldestUndo ?? newestRedo;
-      if (!boundary) break;
-      this.truncateHistoryThrough(boundary);
     }
   }
 
@@ -535,7 +566,7 @@ export class SessionDataHistory {
     const entry = this.entries.get(id);
     if (!entry || isProtected(entry.status)) return;
     this.entries.delete(id);
-    if (!isProtected(entry.status)) this.completedBytes -= entry.bytes;
+    this.budget.remove(this.budgetId(id));
     const affected = entry.databaseIds;
     for (const databaseId of affected) {
       this.undoByDatabase.set(databaseId, (this.undoByDatabase.get(databaseId) ?? []).filter((item) => item !== id));
@@ -549,8 +580,32 @@ export class SessionDataHistory {
   private publishAndResult(entry: SessionDataHistoryEntry, result: DataHistoryStepResult): DataHistoryStepResult {
     this.publish(entry.databaseIds);
     this.trimDatabaseDepth();
-    this.evictToMemoryLimit();
     return result;
+  }
+
+  private budgetId(id: string): string {
+    return `data:${id}`;
+  }
+
+  private budgetRecord(entry: SessionDataHistoryEntry, bytes = entry.bytes) {
+    return {
+      id: this.budgetId(entry.id),
+      bytes,
+      sequence: entry.createdSequence,
+      protected: isProtected(entry.status),
+      evict: () => this.truncateHistoryThrough(entry.id),
+    };
+  }
+
+  private registerBudgetEntry(entry: SessionDataHistoryEntry): boolean {
+    return this.budget.register(this.budgetRecord(entry));
+  }
+
+  private updateBudget(entry: SessionDataHistoryEntry): void {
+    this.budget.update(this.budgetId(entry.id), {
+      bytes: entry.bytes,
+      protected: isProtected(entry.status),
+    });
   }
 
   private publish(databaseIds: readonly PageId[]): void {

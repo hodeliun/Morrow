@@ -1672,6 +1672,7 @@ export const pt: TranslationSchema = {
     linkedViewSourceValidationIncomplete:
       'Alguns dados futuros de esquema, do marcador de visualização ou de formato são opacos e não puderam ser verificados.',
     linkedViewDescription: 'Mostra um banco existente aqui, com filtros e layout próprios',
+    linkedViewUpdateConflict: 'Esta visualização vinculada mudou antes de a alteração ser salva. Nenhuma alteração foi aplicada.',
     chooseSource: 'Escolher banco de origem',
     openSourceDatabase: 'Abrir banco de origem',
     chooseSourceHint: 'Escolha um banco existente para mostrar as mesmas linhas aqui.',
@@ -1902,6 +1903,9 @@ export const pt: TranslationSchema = {
     actionUndo: 'Desfazer ação',
     dataHistory: 'Histórico de dados',
     historyDataChange: 'Editar dados da linha',
+    contextualHistory: 'Histórico da visualização e dos dados',
+    historyViewChange: 'Alterar visualização “{view}”',
+    propertyHistoryConflict: 'Este histórico de esquema conflita com configurações de visualização mais recentes. A alteração não foi aplicada.',
     dataHistoryBusy: 'Conclua o desfazer ou refazer atual antes de editar esta tabela.',
     historyBlocked: 'Desfaça primeiro a alteração mais recente na tabela relacionada.',
     historyPermissionChanged: 'A edição não é mais permitida. Nenhuma alteração do histórico foi aplicada.',
