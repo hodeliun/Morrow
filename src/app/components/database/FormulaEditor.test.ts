@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyFormulaSuggestion,
+  createInitialFormulaDraftState,
+  documentFormulaContext,
   formulaSelectionChanged,
   formulaSuggestionForCommitKey,
   moveFormulaSuggestionIndex,
@@ -11,7 +13,7 @@ import {
 import type { FormulaDraftState } from './FormulaEditor';
 import { bindFormulaReferences } from '../../../core/database';
 import { emptyDoc, newPageMeta } from '../../../core/model';
-import type { DatabaseDef, PageMeta, PropDef, WorkspaceState } from '../../../core/model';
+import type { DatabaseDef, PropDef, WorkspaceState } from '../../../core/model';
 import { formulaSuggestions } from './formulaEditorModel';
 import type { FormulaSuggestion } from './formulaEditorModel';
 
@@ -59,7 +61,7 @@ function relationSuggestions(source = 'Autor.', caret = source.length): FormulaS
     updatedAt: 1,
   });
   const state: WorkspaceState = {
-    pages: { authors: authorPage, books: booksPage } as Record<string, PageMeta>,
+    pages: { authors: authorPage, books: booksPage },
     docs: { authors: emptyDoc(), books: emptyDoc() },
   };
   return formulaSuggestions(
@@ -73,6 +75,87 @@ function relationSuggestions(source = 'Autor.', caret = source.length): FormulaS
 }
 
 const suggestions = relationSuggestions();
+
+describe('document FormulaEditor database context', () => {
+  it('uses no database for a root note instead of inventing a page id as a database id', () => {
+    const rootPage = newPageMeta({ id: 'root', parentId: null, title: 'Root', createdAt: 1, updatedAt: 1 });
+    const state: WorkspaceState = { pages: { root: rootPage }, docs: { root: emptyDoc() } };
+
+    expect(documentFormulaContext(state, 'root')).toEqual({ ownerDatabaseId: null, database: null });
+  });
+
+  it('uses the actual parent database for a database row document', () => {
+    const database: DatabaseDef = { properties: [], views: [] };
+    const databasePage = newPageMeta({
+      id: 'database',
+      parentId: null,
+      title: 'Synthetic database',
+      kind: 'database',
+      database,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const rowPage = newPageMeta({
+      id: 'row',
+      parentId: 'database',
+      title: 'Synthetic row',
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const state: WorkspaceState = {
+      pages: { database: databasePage, row: rowPage },
+      docs: { database: emptyDoc(), row: emptyDoc() },
+    };
+
+    expect(documentFormulaContext(state, 'row')).toEqual({ ownerDatabaseId: 'database', database });
+  });
+});
+
+describe('document FormulaEditor draft restoration', () => {
+  it('restores source and matching bindings together with a safe end caret', () => {
+    const valid = {
+      kind: 'control' as const,
+      pageId: 'page-1',
+      controlId: 'control-1',
+      start: 0,
+      end: 3,
+      source: 'abc',
+    };
+    const staleOffset = { ...valid, start: 0, end: 99 };
+    const staleToken = { ...valid, start: 0, end: 3, source: 'xyz' };
+    const state = createInitialFormulaDraftState('1 + 1', [], {
+      source: 'abc',
+      bindings: [valid, staleOffset, staleToken],
+    });
+
+    expect(state).toEqual({
+      baseFormula: '1 + 1',
+      baseBindingsKey: '[]',
+      source: 'abc',
+      bindings: [valid],
+      caret: 3,
+    });
+  });
+
+  it('keeps the persisted formula and bindings when no ephemeral draft is supplied', () => {
+    const persisted = {
+      kind: 'result' as const,
+      pageId: 'page-1',
+      resultId: 'result-2',
+      start: 0,
+      end: 3,
+      source: 'abc',
+    };
+
+    expect(createInitialFormulaDraftState('abc', [persisted])).toEqual({
+      baseFormula: 'abc',
+      baseBindingsKey: JSON.stringify([persisted]),
+      source: 'abc',
+      bindings: [persisted],
+      caret: 3,
+    });
+  });
+});
 
 describe('FormulaEditor Apply and Cancel pointer behavior', () => {
   it('prevents mouse-down focus transfer so both native actions remain under the pointer', () => {

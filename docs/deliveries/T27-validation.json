@@ -1,0 +1,148 @@
+{
+  "ticket": "T27/#78",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "command": "npm run check",
+    "build": 1,
+    "tests": 1135,
+    "testFiles": 146,
+    "typecheck": "passed",
+    "lint": "passed",
+    "buildStatus": "passed",
+    "sourceFiles": 443,
+    "sourceSha256": "8bed5eba5d9e457068b70936200212e0e7266632a844044e853036b86c5a821d",
+    "artifacts": 3597,
+    "artifactsSha256": "1e848d6babe67078139cf89c67b3801ea01ff785b12622c0cd23b47fc576a3f1",
+    "packagedArtifactsMatched": 3597
+  },
+  "directed": {
+    "initialTests": 48,
+    "initialFiles": 7,
+    "presentationRegression": {
+      "expectedRed": 1,
+      "greenTests": 9,
+      "greenFiles": 2
+    },
+    "lint": "passed"
+  },
+  "runtime": {
+    "main": {
+      "result": "ui-1793737246967",
+      "status": "passed",
+      "resultSha256": "3a9a4d7d915fd36c57d4b16bf4c943897650d34724aafe5664d69efee80a9558",
+      "coverage": [
+        "inline states/optional name/marks",
+        "slash and contextual shared editor",
+        "Save/Cancel and separate Undo/Redo",
+        "two real panes",
+        "EN/PT/ES light/dark520 no-write matrix",
+        "multiline125% overlay",
+        "stable IDs/unknowns/Markdown reopen"
+      ]
+    },
+    "extras": {
+      "prefix": {
+        "result": "ui-1793737364402",
+        "status": "failed-harness-at-unsupported-navigation",
+        "resultSha256": "63729c287510b779f9788355eae93c538fe384af76f2ff8fd2d7a927503ef114",
+        "verifiedBeforeFailure": [
+          "draft undo without persistence",
+          "Chromium composition",
+          "two owner draft42/restoration/SaveA",
+          "stale Save/Delete rejected",
+          "real deletion no resurrection",
+          "real handler in-memory copy/paste with fresh ID",
+          "current readonly DOM full predicate and Cancel bytes/mtime"
+        ]
+      },
+      "continuation": {
+        "result": "ui-1793737561301",
+        "status": "passed",
+        "resultSha256": "37d8e61861a6c90844b7db327d1bae80bf77071ecd9bdb80ca9ed7d6bd958db3",
+        "scope": "Exact original extras02 synthetic profile/vault: affected unsupported content/reopen tail and deleted ID remains absent"
+      },
+      "freshUnsupported": {
+        "result": "ui-1793737464721",
+        "status": "passed",
+        "scope": "Independent affected tail on a fresh fixture; does not substitute original deletion/reopen check"
+      }
+    },
+    "composition": "Chromium CDP renderer only",
+    "clipboard": "Real handler ClipboardEvent/DataTransfer in memory; zero system clipboard calls",
+    "hiddenSyntheticOnly": true,
+    "pageErrors": 0,
+    "genericBoundaries": 0,
+    "sourceAndPackageStableAfter": true,
+    "localeMatrix": [
+      "en/light",
+      "en/dark",
+      "pt/light",
+      "pt/dark",
+      "es/light",
+      "es/dark"
+    ],
+    "childExitCodes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "cleanup": "Exact PID absence and global lease checked separately before publication"
+  },
+  "screenshots": [
+    {
+      "path": "docs/assets/T27/inline-results-520.png",
+      "sha256": "7f52cb1ea1f6e9c5b9830ca60bf5eca3fb563f3f0bdbdde036a44e1ed80b6bd2",
+      "caption": "EN light520: inline states and original marks in two real panes."
+    },
+    {
+      "path": "docs/assets/T27/formula-pt-dark-125.png",
+      "sha256": "8388ced4cf3770e42ade41daa1284498be88593cad029b140bf3bef108885895",
+      "caption": "PT dark: editable multiline source and synchronized overlay at renderer125% environment zoom."
+    },
+    {
+      "path": "docs/assets/T27/formula-es-light-125.png",
+      "sha256": "75e8b215e786d4e6c963c9ecce4481845fb07b27bdea2b13a10645220fb1dd34",
+      "caption": "ES light: the shared editor, Save/Cancel and preview inside the owner pane at renderer125%."
+    }
+  ],
+  "negativeHistory": [
+    {
+      "stage": "reviewer directed",
+      "cause": "Snapshot extraction removed the T25 progress-format diagnostic. Degenerate domain test failed, one-line helper use restored it; same test green."
+    },
+    {
+      "stage": "private command invocation",
+      "cause": "-Number01 typo rejected before check began; corrected to -Number 01, one real integrated gate."
+    },
+    {
+      "stage": "pure fixture preflight01",
+      "cause": "Attempted app-helper SSR import had no @tiptap/pm alias in the private snapshot. Core parser/load preflight02 verified fixtures without changing product."
+    },
+    {
+      "stage": "main01",
+      "cause": "English Saved observer compared against Spanish Guardado; exact locale-aware Saved/Salvo/Guardado observer corrected, same deadline/package."
+    },
+    {
+      "stage": "extras01",
+      "cause": "Public Control+End moved DOM caret while immediate PM state still had prior offset. Same-deadline real PM caret readiness added, no selection API; extras02 observed ready in16ms."
+    },
+    {
+      "stage": "extras02",
+      "cause": "Readiness passed result ID t27-unsupported where route requires page ID t27-unsupported-page. Both callsites corrected; only affected tail repeated, including exact original profile continuation. Failed raw report remains failed."
+    }
+  ],
+  "limits": [
+    "Composing and copy/paste are renderer checks, not Windows IME/clipboard.",
+    "Locale/theme uses prepared preference plus reload; no live-language-switch claim.",
+    "Renderer125% is environment setup, not a product zoom command.",
+    "ES settings520 capture had a transient sidebar/peek obstruction and was rejected for publication; only legible inspected captures selected.",
+    "No PageEditor/sync/general history change, engine/schema bump, personal app/profile/vault, visible native window, installation or release."
+  ]
+}

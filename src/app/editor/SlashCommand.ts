@@ -49,6 +49,7 @@ import { listItemAtCursor, turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
 import { getState, run } from '../workspace';
 import { requestNamedControlConfiguration } from './namedControlRequests';
+import { requestCalculatedResultConfigurationForInsertedNode } from './calculatedResultRequests';
 
 interface BlockItem extends MenuItem {
   keywords: string;
@@ -452,10 +453,11 @@ export const BLOCK_ITEMS: BlockItem[] = [
       const page = options.hostPageId ? getState().pages[options.hostPageId] : null;
       if (!page) return;
       const id = newId();
-      chain(editor, range).insertContent({
+      const inserted = chain(editor, range).insertContent({
         type: 'calculatedResult',
-        attrs: { resultId: id, name: 'Result', formula: '', bindings: [], outputType: 'auto', format: {}, pageId: page.id },
+        attrs: { resultId: id, name: '', formula: '', bindings: [], outputType: 'auto', format: {}, pageId: page.id },
       }).run();
+      requestCalculatedResultConfigurationForInsertedNode(inserted, editor, page.id, id);
     },
   },
   {

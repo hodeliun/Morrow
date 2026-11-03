@@ -692,6 +692,8 @@ export const es: TranslationSchema = {
     morrowSync: 'la sincronización de Morrow',
     newerVersion:
       'Esta página tiene contenido de una versión más reciente de Morrow ({types}). Se muestra como texto sin formato y está protegida contra cambios para que no se pierda nada.',
+    unsupportedCalculatedResult:
+      'Esta página tiene un resultado de fórmula que esta versión no puede editar de forma segura. Se muestra como texto sin formato y está protegido contra cambios para que no se pierda nada.',
     cover: 'Portada',
     coverPreview: 'Vista previa de portada',
     chooseCoverPreview: 'Elige una portada',
@@ -2236,6 +2238,7 @@ export const es: TranslationSchema = {
     clearCurrentValue: 'Borrar el valor actual antes de guardar',
     currentValueInvalid: 'El valor actual no coincide con esta configuración. Bórralo para guardar el cambio.',
     configurationChanged: 'Este control cambió en otro lugar. Vuelve a abrir su configuración y revísala antes de guardar.',
+    resultChanged: 'Este resultado cambió en otro lugar. Vuelve a abrir su configuración y revísala antes de guardar.',
     invalidDefaultValue: 'El valor predeterminado no coincide con este control.',
     invalidName: 'Escribe un nombre de control de 1 a 100 caracteres.',
     invalidEmail: 'Escribe una dirección de correo válida o deja el valor en blanco.',
@@ -2312,6 +2315,8 @@ export const es: TranslationSchema = {
     relationUnavailable: 'Esta relación apunta a una base de datos o fila que ya no está disponible.',
     pageMissing: 'La página de este resultado no está disponible.',
     formulaRequired: 'Escribe una fórmula para calcular este resultado.',
+    resultNotConfigured: 'Configurar fórmula',
+    unnamedResult: 'Resultado sin nombre',
     formula: 'Fórmula',
     formulaPlaceholder: 'Ejemplo: Gastos.filter(Año(CurrentValue.Fecha) = FiltroAño).Importe.sum()',
     filterFormulaPlaceholder: 'Ejemplo: Año(thisRow.Fecha) = AñoSeleccionado',

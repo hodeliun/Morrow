@@ -2,6 +2,17 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — resultados de fórmula no texto (fontes, sem novo download)
+
+- Nome opcional e resultado acompanham o parágrafo, distinguindo fórmula não
+  configurada, vazio [], zero, falso e erro com diagnóstico.
+- /formula e menu contextual usam o FormulaEditor compartilhado; Save/Cancel,
+  marcas, IDs e Undo/Redo de configuração e texto vizinho são preservados.
+- Rascunhos ficam isolados por instância/página/resultado e sobrevivem ao remount,
+  com guards de alterações concorrentes e readonly, sem modificar o sync geral.
+
+Detalhes e validação: [T27 — resultados inline](docs/deliveries/T27-inline-formula-results.md).
+Formato13 preservado; sem instalador, tag ou release.
 ## Entrega sequencial — intervalo de datas (fontes, sem novo download)
 
 - O controle guarda vazio ou dois limites ISO ordenados, com edição personalizada,
