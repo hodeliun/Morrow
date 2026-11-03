@@ -73,6 +73,7 @@ export const RECENT_PATH = `${MORROW_DIR}/recent.json`;
 const HISTORY_DIR = `${MORROW_DIR}/history`;
 const MAX_RECENT = 300;
 const MAX_ACTIVITY_DAYS = 400;
+const EXTERNAL_CHANGE_RETRY_ERROR = 'A vault change could not be reconciled. Retry to check it again.';
 const PAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const WORKSPACE_REGISTRY_FIELDS = new Set(['version', 'pages']);
 const REGISTRY_ENTRY_FIELDS = new Set([
@@ -226,6 +227,14 @@ export class VaultRepository implements WorkspaceRepository {
   // after, and the file watcher can catch it in between, still holding the text from before the move. such
   // a file is older than morrow's write, so it is not taken for an edit made elsewhere
   private readonly wroteAt = new Map<string, number>();
+  // Paths removed by a confirmed page operation may still have an older non-null watcher event in flight.
+  private readonly removedPagePaths = new Map<string, number>();
+  private nextRemovalToken = 0;
+  private changeLifecycle = 0;
+  private closed = false;
+  private checkingRemovalEchoes = false;
+  // An existence check that failed is retained until the explicit retry seam is connected.
+  private failedChangeBatches: VaultChange[][] = [];
   // changes the watcher reports while a save is still writing files wait for it to finish. until then the
   // files written so far are not known as morrow's own, and would come back in as new pages
   private saving = 0;
@@ -238,10 +247,12 @@ export class VaultRepository implements WorkspaceRepository {
   private registryDirty = false;
   private readonly history = new Map<PageId, Snapshot[]>();
   private readonly listeners = new Set<(patch: ExternalPatch) => PageId[]>();
+  private readonly externalChangeErrorListeners = new Set<(error: string | null) => void>();
   private readonly fileCatalogListeners = new Set<() => void>();
   private resources = new Map<string, VaultResource>();
   private fileCatalog: FileCatalogSnapshot = createFileCatalog([]);
   private stopWatching: (() => void) | null = null;
+  private externalChangeError: string | null = null;
   private currentState: () => WorkspaceState | null = () => null;
   private lastState: WorkspaceState | null = null;
 
@@ -612,11 +623,7 @@ export class VaultRepository implements WorkspaceRepository {
       onCommitted();
     } finally {
       this.saving--;
-      if (this.saving === 0 && this.held.length > 0) {
-        const held = this.held;
-        this.held = [];
-        this.onChanges(held);
-      }
+      if (this.saving === 0) void this.drainHeldChanges();
     }
   }
 
@@ -660,6 +667,7 @@ export class VaultRepository implements WorkspaceRepository {
   private applied(op: VaultOp, layout: Map<PageId, Placement>, next: Map<PageId, Placement>): void {
     switch (op.op) {
       case 'write':
+        if (isPageFile(op.path)) this.removedPagePaths.delete(op.path.toLowerCase());
         if (op.id) {
           this.texts.set(op.id, op.text);
           const plain = this.pendingPlain.get(op.id);
@@ -675,6 +683,14 @@ export class VaultRepository implements WorkspaceRepository {
         replayRename(layout, op.from, op.to);
         break;
       case 'remove':
+        if (
+          isPageFile(op.path) &&
+          [...layout.values()].some((placement) => placement.file?.toLowerCase() === op.path.toLowerCase())
+        ) {
+          const pathKey = op.path.toLowerCase();
+          this.removedPagePaths.set(pathKey, ++this.nextRemovalToken);
+          this.wroteAt.delete(pathKey);
+        }
         for (const [id, placement] of layout) {
           if (placement.file !== op.path) continue;
           layout.delete(id);
@@ -985,6 +1001,13 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   close(): void {
+    this.closed = true;
+    this.changeLifecycle++;
+    this.removedPagePaths.clear();
+    this.held = [];
+    this.failedChangeBatches = [];
+    this.externalChangeError = null;
+    this.externalChangeErrorListeners.clear();
     this.stopWatching?.();
     this.stopWatching = null;
     this.fileCatalogListeners.clear();
@@ -993,6 +1016,39 @@ export class VaultRepository implements WorkspaceRepository {
   onExternalChange(listener: (patch: ExternalPatch) => PageId[]): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  onExternalChangeError(listener: (error: string | null) => void): () => void {
+    this.externalChangeErrorListeners.add(listener);
+    if (this.externalChangeError !== null) listener(this.externalChangeError);
+    return () => this.externalChangeErrorListeners.delete(listener);
+  }
+
+  async retryExternalChanges(): Promise<boolean> {
+    if (this.closed) return false;
+    // A normal save should retain SaveQueue's existing in-flight/flush behavior when there is
+    // no failed watcher reconciliation to retry.
+    if (this.failedChangeBatches.length === 0 && this.externalChangeError === null) return true;
+    if (this.saving > 0 || this.checkingRemovalEchoes) return false;
+    const pending = [...this.failedChangeBatches.flat(), ...this.held];
+    this.failedChangeBatches = [];
+    this.held = [];
+    if (pending.length > 0) await this.onChanges(pending);
+    if (this.closed) return false;
+    const recovered =
+      this.saving === 0 &&
+      !this.checkingRemovalEchoes &&
+      this.failedChangeBatches.length === 0 &&
+      this.held.length === 0;
+    if (recovered) this.setExternalChangeError(null);
+    else this.setExternalChangeError(EXTERNAL_CHANGE_RETRY_ERROR);
+    return recovered;
+  }
+
+  private setExternalChangeError(error: string | null): void {
+    if (this.externalChangeError === error) return;
+    this.externalChangeError = error;
+    for (const listener of this.externalChangeErrorListeners) listener(error);
   }
 
   private replaceFileCatalogResources(resources: readonly VaultResource[], notify = true): void {
@@ -1077,7 +1133,106 @@ export class VaultRepository implements WorkspaceRepository {
 
   // ---- edits made by other apps, sync tools or git
 
-  private onChanges(changes: VaultChange[]): void {
+  private onChanges(changes: VaultChange[]): void | Promise<void> {
+    if (this.closed || changes.length === 0) return;
+    if (this.saving > 0 || this.checkingRemovalEchoes || this.failedChangeBatches.length > 0) {
+      this.advanceRemovalTokens(changes);
+      this.held.push(...changes);
+      return;
+    }
+    const candidates = this.removalEchoCandidates(changes);
+    if (candidates.length > 0) return this.checkRemovalEchoes(changes, candidates);
+    this.applyChanges(changes);
+  }
+
+  private advanceRemovalTokens(changes: readonly VaultChange[]): void {
+    for (const change of changes) {
+      if (change.text === null || change.dir || change.other || !isPageFile(change.path)) continue;
+      const pathKey = change.path.toLowerCase();
+      if (this.removedPagePaths.has(pathKey)) this.removedPagePaths.set(pathKey, ++this.nextRemovalToken);
+    }
+  }
+
+  private removalEchoCandidates(
+    changes: readonly VaultChange[],
+  ): Array<{ pathKey: string; change: VaultChange; token: number }> {
+    const latest = new Map<string, VaultChange>();
+    for (const change of changes) latest.set(change.path.toLowerCase(), change);
+    const candidates: Array<{ pathKey: string; change: VaultChange; token: number }> = [];
+    for (const [pathKey, change] of latest) {
+      if (change.text === null || change.dir || change.other || !isPageFile(change.path)) continue;
+      const token = this.removedPagePaths.get(pathKey);
+      if (token !== undefined) candidates.push({ pathKey, change, token });
+    }
+    return candidates;
+  }
+
+  private async checkRemovalEchoes(
+    changes: VaultChange[],
+    candidates: Array<{ pathKey: string; change: VaultChange; token: number }>,
+  ): Promise<void> {
+    this.checkingRemovalEchoes = true;
+    const lifecycle = this.changeLifecycle;
+    const decisions: Array<{ pathKey: string; token: number; exists: boolean }> = [];
+    try {
+      for (const candidate of candidates) {
+        if (this.closed || lifecycle !== this.changeLifecycle) return;
+        if (this.removedPagePaths.get(candidate.pathKey) !== candidate.token) {
+          decisions.push({ pathKey: candidate.pathKey, token: candidate.token, exists: false });
+          continue;
+        }
+        let exists: boolean;
+        try {
+          exists = await this.bridge.exists(candidate.change.path);
+        } catch {
+          // Do not interpret an I/O failure as absence or apply a possibly stale watcher payload.
+          if (this.closed || lifecycle !== this.changeLifecycle) return;
+          this.failedChangeBatches.unshift(changes);
+          this.setExternalChangeError(EXTERNAL_CHANGE_RETRY_ERROR);
+          return;
+        }
+        if (this.closed || lifecycle !== this.changeLifecycle) return;
+        decisions.push({ pathKey: candidate.pathKey, token: candidate.token, exists });
+      }
+
+      if (this.closed || lifecycle !== this.changeLifecycle) return;
+      const discarded = new Set<string>();
+      for (const decision of decisions) {
+        if (this.removedPagePaths.get(decision.pathKey) !== decision.token) {
+          // A newer event or a successful Morrow write superseded this check while it awaited the bridge.
+          discarded.add(decision.pathKey);
+        } else if (!decision.exists) {
+          discarded.add(decision.pathKey);
+        } else {
+          // The path exists, so this is a real recreation. Consume the tombstone before publishing it.
+          this.removedPagePaths.delete(decision.pathKey);
+        }
+      }
+      if (this.closed || lifecycle !== this.changeLifecycle) return;
+      const accepted = changes.filter((change) => !discarded.has(change.path.toLowerCase()));
+      if (this.saving > 0) this.held.unshift(...accepted);
+      else this.applyChanges(accepted);
+    } finally {
+      this.checkingRemovalEchoes = false;
+      await this.drainHeldChanges();
+    }
+  }
+
+  private async drainHeldChanges(): Promise<void> {
+    if (
+      this.closed ||
+      this.saving > 0 ||
+      this.checkingRemovalEchoes ||
+      this.failedChangeBatches.length > 0 ||
+      this.held.length === 0
+    )
+      return;
+    const held = this.held;
+    this.held = [];
+    await this.onChanges(held);
+  }
+
+  private applyChanges(changes: VaultChange[]): void {
     if (this.saving > 0) {
       this.held.push(...changes);
       return;

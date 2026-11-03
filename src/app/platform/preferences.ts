@@ -28,6 +28,7 @@ export interface Preferences {
   width: PageWidth;
   // captured by notes created after this default is chosen
   defaultNoteStyle: NoteStyle;
+  defaultCalculatedResultBackground: boolean;
   sidebarOpen: boolean;
   // a hidden sidebar slides in while the pointer is at the window's left edge
   sidebarPeek: boolean;
@@ -76,6 +77,7 @@ const defaults: Preferences = {
   font: 'sans',
   width: 'comfortable',
   defaultNoteStyle: DEFAULT_NOTE_STYLE,
+  defaultCalculatedResultBackground: true,
   sidebarOpen: true,
   sidebarPeek: false,
   sidebarWidth: 264,
@@ -133,6 +135,7 @@ function read(): Preferences {
       font,
       width,
       defaultNoteStyle: normalizeNoteStyle(parsed.defaultNoteStyle, legacyStyle) ?? legacyStyle,
+      defaultCalculatedResultBackground: parsed.defaultCalculatedResultBackground !== false,
       sidebarOpen: parsed.sidebarOpen !== false,
       sidebarPeek: parsed.sidebarPeek === true,
       accent: ACCENTS.includes(parsed.accent as Accent) ? parsed.accent! : defaults.accent,

@@ -43,6 +43,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T25 #76 | Escala e progresso com números tipados | #108 |
 | T26 #77 | Intervalo de datas e endpoints tipados | #109 |
 | T27 #78 | Resultados de fórmula inline e editor compartilhado | #110 |
+| T28 #79 | Referências nomeadas entre páginas | #111 |
 
 A dependência histórica T11 (#62), já entregue na integração pública 1.3,
 teve o encerramento reconciliado com seu relatório original em 03/11/2026.

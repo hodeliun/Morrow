@@ -215,7 +215,7 @@ describe('assistant tools', () => {
     });
   });
 
-  it('makes new pages without repeating the title or keeping frontmatter', async () => {
+  it('makes new pages with the captured note default without repeating the title or keeping input frontmatter', async () => {
     const create = proposal(
       call('create_page', {
         title: 'Soup',
@@ -224,7 +224,20 @@ describe('assistant tools', () => {
     );
     await create.apply();
     await session.flush();
-    expect(vault.text('Soup.md')).toBe('Tomato soup with [[Garden]] tomatoes.\n');
+    const expected = '---\nmorrowCalculatedResultBackground: true\n---\nTomato soup with [[Garden]] tomatoes.\n';
+    expect(vault.text('Soup.md')).toBe(expected);
+    const id = idOf('Soup');
+    expect(session.getState().pages[id]?.calculatedResultBackground).toBe(true);
+    const doc = session.getState().docs[id];
+    await session.close();
+    const reopened = await WorkspaceSession.open(new VaultRepository(vault, () => `id${++counter}`), {
+      delayMs: 0,
+    });
+    if (!reopened.ok) throw new Error(reopened.error);
+    expect(reopened.value.getState().pages[id]?.calculatedResultBackground).toBe(true);
+    expect(reopened.value.getState().docs[id]).toEqual(doc);
+    expect(vault.text('Soup.md')).toBe(expected);
+    await reopened.value.close();
   });
 
   it('keeps locked pages out of reach', async () => {

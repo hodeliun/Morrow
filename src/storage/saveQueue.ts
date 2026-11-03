@@ -30,6 +30,8 @@ export class SaveQueue {
   private inFlight: Promise<void> | null = null;
   private listeners = new Set<() => void>();
   private current: SaveStatus = { state: 'saved', lastSavedAt: null, error: null, failures: 0 };
+  private externalError: string | null = null;
+  private statusSnapshot: SaveStatus = { ...this.current };
   private readonly delayMs: number;
   private readonly maxRetryMs: number;
   private readonly now: () => number;
@@ -48,7 +50,28 @@ export class SaveQueue {
   }
 
   get status(): SaveStatus {
-    return this.current;
+    const state: SaveState = this.externalError === null ? this.current.state : 'error';
+    const error = this.externalError ?? this.current.error;
+    if (
+      this.statusSnapshot.state === state &&
+      this.statusSnapshot.lastSavedAt === this.current.lastSavedAt &&
+      this.statusSnapshot.error === error &&
+      this.statusSnapshot.failures === this.current.failures
+    )
+      return this.statusSnapshot;
+    this.statusSnapshot = {
+      state,
+      lastSavedAt: this.current.lastSavedAt,
+      error,
+      failures: this.current.failures,
+    };
+    return this.statusSnapshot;
+  }
+
+  setExternalError(error: string | null): void {
+    if (this.externalError === error) return;
+    this.externalError = error;
+    this.notify();
   }
 
   subscribe(listener: () => void): () => void {
@@ -169,6 +192,11 @@ export class SaveQueue {
 
   private setStatus(status: SaveStatus): void {
     this.current = status;
+    this.notify();
+  }
+
+  private notify(): void {
+    void this.status;
     for (const listener of this.listeners) listener();
   }
 }

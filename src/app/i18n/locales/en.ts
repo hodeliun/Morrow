@@ -250,6 +250,8 @@ export const en = {
       colourfulPages: 'Colourful pages',
       colourfulPagesHelp: 'Coloured headings, lists, icons and tags.',
       writingTitle: 'Writing',
+      resultBackgroundForNewNotes: 'Background behind formula results in new notes',
+      resultBackgroundForNewNotesHelp: 'New notes capture this choice. Changing it never alters existing notes.',
       font: 'Font',
       fonts: {
         serif: 'Serif',
@@ -703,6 +705,8 @@ export const en = {
       pixels: '{value} px',
       previewHeading: 'Preview heading',
       previewBody: 'This is a preview of your text.',
+      resultBackground: 'Show a subtle background behind formula results',
+      resultBackgroundHelp: 'This choice is saved with this note and does not follow later global changes.',
       reset: 'Reset to defaults',
       defaultsHelp: 'These settings are saved for new notes. Existing notes keep their current appearance.',
       applyExistingTitle: 'Apply to existing notes',

@@ -9,6 +9,7 @@ import type { TableActionPlan } from '../../../core/tableActions';
 import { readTableActionJournal, recoverTableAction } from '../../../storage/tableActions';
 import type { TableActionJournal } from '../../../storage/tableActions';
 import { newId } from '../../platform/files';
+import { getPreferences } from '../../platform/preferences';
 import { getLocale, t } from '../../i18n';
 import { getSession, getState, useWorkspace } from '../../workspace';
 import { executeTableAction } from '../../../storage/tableActions';
@@ -35,15 +36,18 @@ export function ButtonActionCell({
   const action = prop.action;
   const Icon = ACTION_ICONS[action?.icon ?? 'play'];
   const availability = tableActionAvailability(state, dbId, row.id, prop);
-  const [preview, setPreview] = useState<{ plan: TableActionPlan; signature: string; now: number } | null>(
-    null,
-  );
+  const [preview, setPreview] = useState<{
+    plan: TableActionPlan;
+    signature: string;
+    now: number;
+    defaultCalculatedResultBackground: boolean;
+  } | null>(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const ids = useRef<PageId[]>([]);
 
   const makePlan = useCallback(
-    (now: number) => {
+    (now: number, defaultCalculatedResultBackground: boolean) => {
       let cursor = 0;
       const result = planTableAction(
         getState(),
@@ -57,6 +61,7 @@ export function ButtonActionCell({
           return id;
         },
         now,
+        defaultCalculatedResultBackground,
       );
       ids.current.length = cursor;
       return result;
@@ -69,12 +74,18 @@ export function ButtonActionCell({
     if (busy || !editable || availability.disabled) return;
     setMessage('');
     const now = Date.now();
-    const result = makePlan(now);
+    const defaultCalculatedResultBackground = getPreferences().defaultCalculatedResultBackground;
+    const result = makePlan(now, defaultCalculatedResultBackground);
     if (!result.ok) {
       setMessage(result.error);
       return;
     }
-    setPreview({ plan: result.value, signature: planSignature(result.value), now });
+    setPreview({
+      plan: result.value,
+      signature: planSignature(result.value),
+      now,
+      defaultCalculatedResultBackground,
+    });
   };
 
   const confirm = async () => {
@@ -82,7 +93,7 @@ export function ButtonActionCell({
     setBusy(true);
     setMessage(t('database.actionSaving'));
     try {
-      const latest = makePlan(preview.now);
+      const latest = makePlan(preview.now, preview.defaultCalculatedResultBackground);
       if (!latest.ok) {
         setMessage(latest.error);
         return;
@@ -103,7 +114,7 @@ export function ButtonActionCell({
         setMessage(t('database.actionSavePending'));
         window.dispatchEvent(new Event('morrow-table-action-changed'));
       } else if (result.status === 'stale') {
-        const updated = makePlan(preview.now);
+        const updated = makePlan(preview.now, preview.defaultCalculatedResultBackground);
         if (updated.ok)
           setPreview({ ...preview, plan: updated.value, signature: planSignature(updated.value) });
         setMessage(t('database.actionPreviewStale'));
@@ -244,8 +255,7 @@ export function TableActionRecoveryNotice({
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const canRecoverNow = useCallback(
-    () =>
-      editable && (canEditNow?.() ?? true) && getSession().canEditDataHistoryNow([dbId]),
+    () => editable && (canEditNow?.() ?? true) && getSession().canEditDataHistoryNow([dbId]),
     [canEditNow, dbId, editable],
   );
 

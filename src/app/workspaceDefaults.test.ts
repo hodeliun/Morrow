@@ -17,6 +17,7 @@ describe('page creation note defaults', () => {
     setSession(session);
 
     const originalStyle = getPreferences().defaultNoteStyle;
+    const originalResultBackground = getPreferences().defaultCalculatedResultBackground;
     const defaultStyle = {
       font: 'serif' as const,
       fontSize: 19,
@@ -25,6 +26,7 @@ describe('page creation note defaults', () => {
       width: 'wide' as const,
     };
     setPreferences({ defaultNoteStyle: defaultStyle });
+    expect(originalResultBackground).toBe(true);
 
     try {
       const database = runWorkspace({
@@ -65,8 +67,67 @@ describe('page creation note defaults', () => {
       });
       expect(note.ok).toBe(true);
       expect(session.getState().pages['new-note']?.noteStyle).toEqual(defaultStyle);
+      expect(session.getState().pages['new-note']?.calculatedResultBackground).toBe(true);
+
+      setPreferences({ defaultCalculatedResultBackground: false });
+      const backgroundOff = runWorkspace({
+        type: 'page.create',
+        id: 'background-off',
+        parentId: null,
+        now: 4,
+        title: 'Background off',
+      });
+      expect(backgroundOff.ok).toBe(true);
+      expect(session.getState().pages['background-off']?.calculatedResultBackground).toBe(false);
+      expect(session.getState().pages['new-note']?.calculatedResultBackground).toBe(true);
+
+      const styledBackgroundOff = runWorkspace({
+        type: 'page.create',
+        id: 'styled-background-off',
+        parentId: null,
+        now: 40,
+        title: 'Explicit style with current background default',
+        noteStyle: explicitStyle,
+      });
+      expect(styledBackgroundOff.ok).toBe(true);
+      expect(session.getState().pages['styled-background-off']?.noteStyle).toEqual(explicitStyle);
+      expect(session.getState().pages['styled-background-off']?.calculatedResultBackground).toBe(false);
+
+      const explicitOn = runWorkspace({
+        type: 'page.create',
+        id: 'explicit-background-on',
+        parentId: null,
+        now: 41,
+        title: 'Explicit background on',
+        calculatedResultBackground: true,
+      });
+      expect(explicitOn.ok).toBe(true);
+      expect(session.getState().pages['explicit-background-on']?.calculatedResultBackground).toBe(true);
+
+      setPreferences({ defaultCalculatedResultBackground: true });
+      const backgroundOn = runWorkspace({
+        type: 'page.create',
+        id: 'background-on',
+        parentId: null,
+        now: 5,
+        title: 'Background on',
+      });
+      expect(backgroundOn.ok).toBe(true);
+      expect(session.getState().pages['background-on']?.calculatedResultBackground).toBe(true);
+      expect(session.getState().pages['background-off']?.calculatedResultBackground).toBe(false);
+      expect(session.getState().pages['new-note']?.calculatedResultBackground).toBe(true);
+
+      const duplicate = runWorkspace({
+        type: 'page.duplicate',
+        id: 'background-off',
+        newId: 'background-copy',
+        now: 6,
+      });
+      expect(duplicate.ok).toBe(true);
+      expect(session.getState().pages['background-copy']?.calculatedResultBackground).toBe(false);
     } finally {
       setPreferences({ defaultNoteStyle: originalStyle });
+      setPreferences({ defaultCalculatedResultBackground: originalResultBackground });
       await session.close();
     }
   });

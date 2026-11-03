@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T29",
+  "issue": 80,
+  "accepted": true,
+  "reviewedAt": "2026-11-03T21:39:26.377Z",
+  "base": "53c1a481169503445e46fdda3bf910679fa5a804",
+  "gate": {
+    "build": "scope-2-build-03",
+    "tests": {
+      "passed": 1167,
+      "files": 148
+    },
+    "sourceFiles": 445,
+    "sourceSha256": "652b8cd02cf1504a3a8d8dc6da0fbf16a3d705656af3fb225343fb6b078bad87",
+    "artifactFiles": 3597,
+    "artifactsSha256": "e5a0df5581ac87fd957add7f6eede89bfc042238276de23e977ef74dbe1b2cce"
+  },
+  "package": {
+    "artifactsMatched": 3597,
+    "sha256": {
+      "executable": "206781dc5a43ab515f1e3660cc0aabf9c16ce9f7a73f5b9978cfad27fe51676f",
+      "appAsar": "f317e6ff916a2dbb47b6c10b3848f55a6523cd9ff4bfaf5cd95dd3cb6d2a7bda",
+      "main": "fc8c727f3e41330ddbf7df509f51fc8affe7caf645225c957c0d9ac90065461c",
+      "trustedMain": "fc8c727f3e41330ddbf7df509f51fc8affe7caf645225c957c0d9ac90065461c"
+    }
+  },
+  "coverage": [
+    "AC1: default starts enabled; UI creation before/after profile toggle persists explicit true/false. Direct row insertion and button addRows capture once before command/record/journal generation.",
+    "AC2: local override, Save/Cancel and later global changes preserve existing note bytes and independent choices.",
+    "AC3: legacy missing metadata means enabled independent of current default; opening/cancelling preserves exact bytes and mtime.",
+    "AC4: off keeps readable42, hover/configure and keyboard focus; readonly and invalid known metadata remain readable without configuration/writes; all six EN/PT/ES light/dark520 states and visible local captions.",
+    "AC5: global profile and local overrides survive reopen; duplicate/import preserve explicitfalse, legacy absence and unknown YAML; row IDs/order/background and registry/journal stay coherent through Undo/Redo/reopen."
+  ],
+  "evidence": {
+    "main": {
+      "report": "ui-1793741861183",
+      "build": "scope-2-build-03",
+      "status": "passed",
+      "driverSha256": "d2d9578f925d0d483037e6eb655307946b761727a03f076f99baca17228febe7",
+      "assertions": {
+        "legacyBackgroundIsIndependentOfGlobalDefaultAndCancelDoesNotWrite": true,
+        "globalDefaultCapturesEachNewNoteWithoutRewritingEarlierNotes": true,
+        "backgroundOffKeepsReadableValueHoverKeyboardFocusAndCancelableDraft": true,
+        "localOverridePersistsIndependentOfLaterGlobalChanges": true,
+        "duplicatePreservesOverrideAndUnknownFrontmatter": true,
+        "importPreservesExplicitFalseLegacyAbsenceAndUnknownYaml": true,
+        "readonlyPageRemainsReadableWithoutConfigurationOrWrites": true,
+        "invalidKnownMetadataRemainsReadOnlyAndBytePreserved": true,
+        "profileAndPerNoteChoicesSurviveReopenWithoutLegacyOrReadonlyWrites": true,
+        "sixLocaleThemeNarrowStatesRetainAccessAndDoNotWrite": true
+      }
+    },
+    "extras": {
+      "report": "ui-1793741448195",
+      "build": "scope-2-build-02",
+      "status": "passed",
+      "driverSha256": "becf3f4f003dd0d0ebacd90e2c19c43fe903aa198cd330f2b688f18cb6cbb752",
+      "reusedAgainstFinalSource": true,
+      "unchangedSourceFiles": 444,
+      "excludedChangedComponent": "NoteStylePopover visible caption only; not visited by row/action extras",
+      "assertions": {
+        "directInsertBeforeAndAfterCaptureBothDefaults": true,
+        "buttonAddRowsPreviewConfirmCapturesBothDefaults": true,
+        "everyCreatedIDCommandAndRecordCarriesMatchingExplicitBoolean": true,
+        "undoRedoAndReopenPreserveCreatedIDsOrderAndBackground": true,
+        "initialDatabaseAndRowFixtureParsedFromImmutableSnapshot": true
+      },
+      "operations": [
+        {
+          "enabled": false,
+          "kind": "insert",
+          "placement": "before",
+          "createdCount": 1,
+          "undoRedo": true
+        },
+        {
+          "enabled": false,
+          "kind": "insert",
+          "placement": "after",
+          "createdCount": 1,
+          "undoRedo": true
+        },
+        {
+          "enabled": false,
+          "kind": "button-addRows",
+          "placement": null,
+          "createdCount": 2,
+          "undoRedo": true
+        },
+        {
+          "enabled": true,
+          "kind": "insert",
+          "placement": "before",
+          "createdCount": 1,
+          "undoRedo": true
+        },
+        {
+          "enabled": true,
+          "kind": "insert",
+          "placement": "after",
+          "createdCount": 1,
+          "undoRedo": true
+        },
+        {
+          "enabled": true,
+          "kind": "button-addRows",
+          "placement": null,
+          "createdCount": 2,
+          "undoRedo": true
+        }
+      ]
+    }
+  },
+  "directed": {
+    "storageNative": {
+      "tests": 80,
+      "files": 4
+    },
+    "defaultsPlannersRecovery": {
+      "tests": 36,
+      "files": 4
+    },
+    "assistantContract": {
+      "tests": 8,
+      "files": 1
+    },
+    "focusedLint": "passed; native CTS content linted with existing TS parser"
+  },
+  "screenshots": [
+    {
+      "path": "docs/assets/T29/profile-background-default.png",
+      "sha256": "f3c036291de763ecc14392e074b19c0bd2c829b28e63b8d94411631b619d4cac",
+      "caption": "Profile default enabled; real Settings, EN light",
+      "scenario": "ui-1793741861183",
+      "build": "scope-2-build-03"
+    },
+    {
+      "path": "docs/assets/T29/legacy-background-and-override.png",
+      "sha256": "af3da410821f00aea138be33572e181c57c90bee69af4c00a7f140b03e867e66",
+      "caption": "Legacy absence retains background; visible per-note label and Cancel, EN light",
+      "scenario": "ui-1793741861183",
+      "build": "scope-2-build-03"
+    },
+    {
+      "path": "docs/assets/T29/per-note-background-off-pt-dark-520.png",
+      "sha256": "69c6b2f7925bcd417ee181884f3073eac9a60eb6bbdda2951a6231e10453b568",
+      "caption": "Per-note disabled background; translated visible caption, PT dark520",
+      "scenario": "ui-1793741861183",
+      "build": "scope-2-build-03"
+    }
+  ],
+  "cleanup": {
+    "trackedProcesses": 21,
+    "exactPidAbsence": true,
+    "leaseAbsent": true,
+    "fixtureDirectories": "preserved privately for evidence"
+  },
+  "negativeHistory": [
+    {
+      "stage": "storage/native regression",
+      "result": "4 expected red /3 pass",
+      "cause": "Old delayed own-write could recreate undone row; nativeexists treated access errors as absence. Narrow path/token reconciliation and explicit recoverable error now covered by80tests."
+    },
+    {
+      "stage": "check01",
+      "result": "1166pass/1failed",
+      "cause": "Old assistant creation exact-byte expectation excluded all metadata. Test updated to require capturedtrue plus complete body and reopen durability; product unchanged for that failure."
+    },
+    {
+      "stage": "private fixture wrapper",
+      "cause": "Clone needed argv binding and current return-field labels; real snapshot parse/load passed before any Electron launch; negatives retained."
+    },
+    {
+      "stage": "boundedvisual02",
+      "cause": "Real visible caption missing beside aria-labelled local switch. One translated span added; check03 and final main04 validate it."
+    },
+    {
+      "stage": "main03 capture hook",
+      "report": "ui-1793741800061",
+      "cause": "Capture hook tried to dismiss expected invalid-fixture toast behind active modal. Backdrop correctly intercepted pointer. Public dismissal moved before every modal; no force/deadline/product change. Final main04 passed."
+    }
+  ],
+  "limits": [
+    "Locale/theme matrix prepares only the synthetic profile and reloads; no live-language-switch claim.",
+    "Readonly uses synthetic Trash and invalid known metadata; no OS ACL/provider claim.",
+    "Import selects a synthetic file through Playwright input; no native Windows chooser claim.",
+    "Own-removal echo state is ephemeral path+token, no persisted body/mtime cache; native EIO/EACCES/EPERM are controlled tests, not personal-drive operations.",
+    "Core/MCP without app profile retains legacy default; copy/import preserve origin. Format13 unchanged.",
+    "No OS clipboard/IME, personal app/profile/vault, visible native window, installation or release."
+  ]
+}

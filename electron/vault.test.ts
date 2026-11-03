@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -45,6 +46,7 @@ const CommonJsModule = Module as unknown as CommonJsModuleLoader;
 
 interface VaultModule {
   closeVault(): void;
+  pathExists(relative: unknown): Promise<boolean>;
   openVault(
     dir: string,
     onChanges: (
@@ -61,7 +63,7 @@ interface VaultModule {
 }
 
 function makeRoot(prefix: string): string {
-  const root = mkdtempSync(path.join(os.tmpdir(), prefix));
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), prefix)));
   temporaryRoots.push(root);
   return root;
 }
@@ -118,7 +120,7 @@ function loadVaultModule(): VaultModule {
   return compiled.exports as VaultModule;
 }
 
-const { closeVault, openVault, scanVault } = loadVaultModule();
+const { closeVault, openVault, pathExists, scanVault } = loadVaultModule();
 
 function digest(file: string): string {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
@@ -136,6 +138,38 @@ afterEach(() => {
   closeVault();
   vi.restoreAllMocks();
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('vault path existence checks', () => {
+  it('distinguishes a present file from an absent path and preserves path guards', async () => {
+    const root = makeRoot('morrow-path-exists-');
+    writeFileSync(path.join(root, 'Present.md'), 'Synthetic existence probe.');
+    await openVault(root, () => undefined);
+    expect(await pathExists('Present.md')).toBe(true);
+    expect(await pathExists('Missing.md')).toBe(false);
+    await expect(pathExists('../outside.md')).rejects.toThrow('outside the vault');
+  });
+
+  it.each(['ENOENT', 'ENOTDIR'])('reports absence for %s', async (code) => {
+    const root = makeRoot('morrow-path-absent-');
+    await openVault(root, () => undefined);
+    const failure = Object.assign(new Error('Synthetic missing path'), { code });
+    const stat = vi.spyOn(mutableFsPromises, 'lstat').mockRejectedValueOnce(failure);
+    expect(await pathExists('Probe.md')).toBe(false);
+    expect(stat).toHaveBeenCalledWith(path.join(root, 'Probe.md'));
+  });
+
+  it.each(['EIO', 'EACCES', 'EPERM'])('rejects %s without reporting a private path as absent', async (code) => {
+    const root = makeRoot('morrow-path-io-error-');
+    await openVault(root, () => undefined);
+    const privatePath = path.join(root, 'Private synthetic note.md');
+    const failure = Object.assign(new Error(`${code}: synthetic failure at ${privatePath}`), { code });
+    const stat = vi.spyOn(mutableFsPromises, 'lstat').mockRejectedValueOnce(failure);
+    await expect(pathExists('Private synthetic note.md')).rejects.toMatchObject({
+      message: 'The vault file could not be checked. Retry to check it again.',
+    });
+    expect(stat).toHaveBeenCalledWith(privatePath);
+  });
 });
 
 describe('vault file catalog scanner', () => {

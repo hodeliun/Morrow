@@ -483,7 +483,16 @@ export async function createFile(relative: unknown, data: unknown): Promise<void
 }
 
 export async function pathExists(relative: unknown): Promise<boolean> {
-  return exists(resolveInVault(relative));
+  const absolute = resolveInVault(relative);
+  try {
+    await lstat(absolute);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+  }
+  // This public IPC boundary must not expose filesystem paths or raw OS error details.
+  throw new Error('The vault file could not be checked. Retry to check it again.');
 }
 
 export async function listDir(

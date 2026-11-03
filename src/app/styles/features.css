@@ -4228,6 +4228,25 @@ td:hover .prop-empty,
   line-height: inherit;
 }
 
+.named-data-result.has-background {
+  padding: 0.04em 0.16em;
+  border-radius: 0.24em;
+  background: var(--hover);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.note-style-result-background {
+  display: grid;
+  gap: 4px;
+  margin-block: 10px;
+}
+
+.note-style-result-background small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
 .named-data-result .named-data-result-line {
   display: inline;
   max-width: none;
