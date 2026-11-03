@@ -14,7 +14,13 @@ import type { FormulaDraftState } from './FormulaEditor';
 import { bindFormulaReferences } from '../../../core/database';
 import { emptyDoc, newPageMeta } from '../../../core/model';
 import type { DatabaseDef, PropDef, WorkspaceState } from '../../../core/model';
-import { formulaSuggestions } from './formulaEditorModel';
+import { t } from '../../i18n';
+import {
+  formulaBindingForNamedReference,
+  formulaSuggestions,
+  insertNamedFormulaReference,
+  namedFormulaReferenceChoices,
+} from './formulaEditorModel';
 import type { FormulaSuggestion } from './formulaEditorModel';
 
 function relationSuggestions(source = 'Autor.', caret = source.length): FormulaSuggestion[] {
@@ -153,6 +159,103 @@ describe('document FormulaEditor draft restoration', () => {
       source: 'abc',
       bindings: [persisted],
       caret: 3,
+    });
+  });
+});
+
+describe('named formula reference insertion', () => {
+  it('labels same-name choices with type, page origin, and object identity when needed', () => {
+    const choices = namedFormulaReferenceChoices(
+      [
+        { pageId: 'page-AAAAAA', kind: 'control', id: 'control-111111', name: 'Shared' },
+        { pageId: 'page-AAAAAA', kind: 'control', id: 'control-222222', name: 'Shared' },
+        { pageId: 'page-AAAAAA', kind: 'result', id: 'result-333333', name: 'Shared' },
+        { pageId: 'page-BBBBBB', kind: 'control', id: 'control-444444', name: 'Shared' },
+      ],
+      { 'page-AAAAAA': 'Journal', 'page-BBBBBB': 'Journal' },
+      {
+        control: (name) => `Control: ${name}`,
+        result: (name) => `Result: ${name}`,
+        unnamed: 'Unnamed result',
+      },
+    );
+
+    expect(choices.map(({ label }) => label)).toEqual([
+      'Control: Shared — Journal · AAAAAA · 111111',
+      'Control: Shared — Journal · AAAAAA · 222222',
+      'Result: Shared — Journal · AAAAAA',
+      'Control: Shared — Journal · BBBBBB',
+    ]);
+    expect(new Set(choices.map(({ key }) => key)).size).toBe(choices.length);
+  });
+
+  it.each(['en', 'pt', 'es'] as const)('localizes reference type labels in %s', (locale) => {
+    const choices = namedFormulaReferenceChoices(
+      [{ pageId: 'source-page', kind: 'result', id: 'forecast-id', name: 'Forecast' }],
+      { 'source-page': 'Inputs' },
+      {
+        control: (name) => t('controls.referenceControl', { name }, locale),
+        result: (name) => t('controls.referenceResult', { name }, locale),
+        unnamed: t('controls.unnamedResult', undefined, locale),
+      },
+    );
+
+    expect(choices[0]?.label).toBe(`${t('controls.referenceResult', { name: 'Forecast' }, locale)} — Inputs`);
+  });
+
+  it('inserts the chosen reference at the current selection and returns the caret after it', () => {
+    const reference = {
+      pageId: 'inputs-page',
+      kind: 'control' as const,
+      id: 'shared-name-control',
+      name: 'Shared name',
+      key: 'control:inputs-page:shared-name-control',
+      formulaName: 'Shared name',
+      label: 'Control: Shared name — Inputs',
+    };
+
+    expect(insertNamedFormulaReference('1 + 2 * 3', [], reference, { start: 4, end: 5 })).toEqual({
+      source: '1 + `Shared name` * 3',
+      bindings: [
+        {
+          kind: 'control',
+          pageId: 'inputs-page',
+          controlId: 'shared-name-control',
+          start: 4,
+          end: 17,
+          source: '`Shared name`',
+        },
+      ],
+      caret: 17,
+    });
+  });
+
+  it('persists a selected external control or result with its originating page ID', () => {
+    expect(
+      formulaBindingForNamedReference(
+        { kind: 'control', pageId: 'inputs-page', id: 'control-7' },
+        { start: 4, source: '`Shared name`' },
+      ),
+    ).toEqual({
+      kind: 'control',
+      pageId: 'inputs-page',
+      controlId: 'control-7',
+      start: 4,
+      end: 17,
+      source: '`Shared name`',
+    });
+    expect(
+      formulaBindingForNamedReference(
+        { kind: 'result', pageId: 'totals-page', id: 'result-8' },
+        { start: 0, source: 'Forecast' },
+      ),
+    ).toEqual({
+      kind: 'result',
+      pageId: 'totals-page',
+      resultId: 'result-8',
+      start: 0,
+      end: 8,
+      source: 'Forecast',
     });
   });
 });

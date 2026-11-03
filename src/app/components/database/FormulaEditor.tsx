@@ -1,12 +1,12 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
 import type { DatabaseDef, FormulaReferenceBinding, PageId, PageMeta, PropDef, WorkspaceState } from '../../../core/model';
 import { displayTitle, newPageMeta } from '../../../core/model';
-import { bindFormulaReferences, formulaResult, formulaValueText, rowsOf } from '../../../core/database';
+import { bindFormulaReferences, formulaResult, formulaValueText, namedFormulaReferences, rowsOf } from '../../../core/database';
 import type { FormulaResult } from '../../../core/database';
 import type { FormulaRuntimeValue } from '../../../core/formula';
 import { isEffectivelyTrashed } from '../../../core/tree';
-import { t } from '../../i18n';
+import { t, useTranslation } from '../../i18n';
 import { tr } from '../../i18n/rich';
 import './FormulaEditor.css';
 import { updateProp } from './data';
@@ -15,8 +15,10 @@ import {
   adjustFormulaBindings,
   FORMULA_EXAMPLES,
   FORMULA_FUNCTIONS,
+  formulaBindingForNamedReference,
   formulaDecorations,
   formulaIdentifier,
+  namedFormulaReferenceChoices,
   presentFormulaDiagnostic,
   formulaSuggestions,
 } from './formulaEditorModel';
@@ -163,6 +165,7 @@ export function updateFormulaDraftCaret(
 
 export interface DocumentFormulaReference {
   key: string;
+  pageId: PageId;
   id: string;
   name: string;
   formulaName?: string;
@@ -220,6 +223,7 @@ export function documentFormulaContext(state: WorkspaceState, pageId: PageId): {
 }
 
 export function FormulaEditor(props: FormulaEditorProps) {
+  const { locale } = useTranslation();
   const documentMode = props.mode === 'document' ? props : null;
   const databaseMode = props.mode === 'document' ? null : props;
   const dbId = documentMode ? documentMode.ownerDatabaseId : databaseMode!.dbId;
@@ -228,6 +232,21 @@ export function FormulaEditor(props: FormulaEditorProps) {
   const defaultFormula = databaseMode?.defaultFormula ?? false;
   const autoFocus = props.autoFocus ?? false;
   const state = useWorkspace();
+  const referenceChoices = useMemo<DocumentFormulaReference[]>(() => {
+    const references = documentMode?.references ?? namedFormulaReferences(state).map((reference) => ({
+      ...reference,
+      key: `${reference.kind}:${reference.pageId}:${reference.id}`,
+    }));
+    const pageTitles = Object.fromEntries(references.map((reference) => {
+      const page = state.pages[reference.pageId];
+      return [reference.pageId, page ? displayTitle(page) : reference.pageId];
+    }));
+    return namedFormulaReferenceChoices(references, pageTitles, {
+      control: (name) => t('controls.referenceControl', { name }, locale),
+      result: (name) => t('controls.referenceResult', { name }, locale),
+      unnamed: t('controls.unnamedResult', undefined, locale),
+    });
+  }, [documentMode?.references, locale, state]);
   const formula = documentMode
     ? documentMode.formula
     : defaultFormula
@@ -364,7 +383,8 @@ export function FormulaEditor(props: FormulaEditorProps) {
       | { kind: 'database'; databaseId: PageId }
       | { kind: 'property'; databaseId: PageId; propertyId: string }
       | { kind: 'control'; pageId: PageId; controlId: string }
-      | { kind: 'result'; pageId: PageId; resultId: string },
+      | { kind: 'result'; pageId: PageId; resultId: string }
+      | { kind: 'namedReference'; reference: DocumentFormulaReference },
     bindingText = text,
     caretOffset = text.length,
   ) => {
@@ -372,7 +392,12 @@ export function FormulaEditor(props: FormulaEditorProps) {
     const start = draft.length + separator.length + text.indexOf(bindingText);
     const next = `${draft}${separator}${text}`;
     let nextBindings = adjustFormulaBindings(draft, next, draftBindings);
-    if (binding)
+    if (binding?.kind === 'namedReference')
+      nextBindings = [
+        ...nextBindings,
+        formulaBindingForNamedReference(binding.reference, { start, source: bindingText }),
+      ];
+    else if (binding)
       nextBindings = [
         ...nextBindings,
         { ...binding, start, end: start + bindingText.length, source: bindingText },
@@ -473,14 +498,10 @@ export function FormulaEditor(props: FormulaEditorProps) {
 
   const insertFunction = (name: string) => insertAtEnd(`${name}()`, undefined, `${name}()`, name.length + 1);
   const insertDocumentReference = (key: string) => {
-    if (!documentMode) return;
-    const reference = documentMode.references.find((item) => item.key === key);
+    const reference = referenceChoices.find((item) => item.key === key);
     if (!reference) return;
     const source = formulaIdentifier(reference.formulaName ?? reference.name);
-    const binding = reference.kind === 'control'
-      ? { kind: 'control' as const, pageId: documentMode.pageId, controlId: reference.id }
-      : { kind: 'result' as const, pageId: documentMode.pageId, resultId: reference.id };
-    insertAtEnd(source, binding, source);
+    insertAtEnd(source, { kind: 'namedReference', reference }, source);
   };
 
   return (
@@ -582,7 +603,7 @@ export function FormulaEditor(props: FormulaEditorProps) {
         ))}
       </div>
       <div className="formula-assist" aria-label={t('database.formulaAssist')}>
-        {documentMode && (
+        {referenceChoices.length > 0 && (
           <>
             <label className="visually-hidden" htmlFor={`${inputId}-reference`}>
               {t('controls.insertReference')}
@@ -592,18 +613,16 @@ export function FormulaEditor(props: FormulaEditorProps) {
               className="text-input small"
               value=""
               aria-label={t('controls.insertReference')}
-              disabled={!documentMode.editable}
+              disabled={documentMode ? !documentMode.editable : undefined}
               onChange={(event) => {
                 if (event.target.value) insertDocumentReference(event.target.value);
                 event.currentTarget.value = '';
               }}
             >
               <option value="">{t('controls.chooseReference')}</option>
-              {documentMode.references.map((reference) => (
+              {referenceChoices.map((reference) => (
                 <option key={reference.key} value={reference.key}>
-                  {reference.label ?? t(reference.kind === 'control' ? 'controls.referenceControl' : 'controls.referenceResult', {
-                    name: reference.name,
-                  })}
+                  {reference.label}
                 </option>
               ))}
             </select>

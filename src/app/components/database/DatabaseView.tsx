@@ -53,6 +53,7 @@ import {
   resolveConditionalFormatForRow,
   formatDisplayValue,
   groupRows,
+  namedFormulaReferences,
   propType,
   rowsOf,
   TITLE_PROP,
@@ -82,6 +83,7 @@ import type {
   PropValue,
   ViewDef,
   ViewType,
+  FormulaReferenceBinding,
   SummaryOperation,
 } from '../../../core/model';
 import { fileUrl } from '../../platform/attachments';
@@ -126,14 +128,13 @@ import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from '.
 import { cellEditStartKey, cellPickerStartProps } from './cellEditing';
 import { PropertySettings } from './PropertySettings';
 import { PropertyGlyph, PropertyTypeSelect } from './PropertyTypeSelect';
-import { presentFormulaDiagnostic } from './formulaEditorModel';
+import { insertNamedFormulaReference, namedFormulaReferenceChoices, presentFormulaDiagnostic } from './formulaEditorModel';
 import type { FormulaDiagnosticPresentation } from './formulaEditorModel';
 import { TableActionRecoveryNotice } from './TableActionCell';
 import { dateLocale, getLocale, t, tp, useTranslation } from '../../i18n';
 import { colorLabel, filterLabel, propLabel, viewLabel, viewName } from '../../i18n/labels';
 import { durationUnitFactor, isNumericPropertyType, scalarValueError } from '../../../core/typedValues';
 import { linkedViewReferences } from '../../../core/linkedViews';
-import { namedControlIdentifier } from '../../../core/controls';
 import { childrenOf, descendantsOf } from '../../../core/tree';
 import { ViewChangeContext } from './viewContext';
 import type { LinkedViewSourceOptions } from './viewContext';
@@ -1431,6 +1432,17 @@ function Toolbar({
     setPanel({ kind, anchor: event.currentTarget });
   const names = [{ id: TITLE_PROP, name: t('database.name'), type: 'text' as const }, ...database.properties];
   const controls = state.pages[scopePageId]?.controls ?? [];
+  const formulaReferences = namedFormulaReferenceChoices(
+    namedFormulaReferences(state),
+    Object.fromEntries(
+      Object.keys(state.pages).map((pageId) => [pageId, displayTitle(state.pages[pageId]!)]),
+    ),
+    {
+      control: (name) => t('controls.referenceControl', { name }),
+      result: (name) => t('controls.referenceResult', { name }),
+      unnamed: t('controls.unnamedResult'),
+    },
+  );
   const controlChoiceLabel = (control: (typeof controls)[number]) => {
     const foldedName = control.name.trim().toLocaleLowerCase();
     const duplicate =
@@ -1448,7 +1460,11 @@ function Toolbar({
   const formatEscapeCloseHandledRef = useRef(false);
   const [formatDefaultProp, setFormatDefaultProp] = useState(TITLE_PROP);
   const [formulaDrafts, setFormulaDrafts] = useState<Record<string, string>>({});
-  const [formulaDraftErrors, setFormulaDraftErrors] = useState<Record<string, FormulaDiagnosticPresentation>>({});
+  const formulaInputRefs = useRef(new Map<string, HTMLInputElement | HTMLTextAreaElement>());
+  const pendingFormulaSelection = useRef<{ field: string; caret: number } | null>(null);
+  const [formulaDraftErrors, setFormulaDraftErrors] = useState<Record<string, FormulaDiagnosticPresentation>>(
+    {},
+  );
   const [simpleValueDrafts, setSimpleValueDrafts] = useState<Record<string, string>>({});
   const [ruleDraftErrors, setRuleDraftErrors] = useState<Record<string, string>>({});
   const [conditionalColorDrafts, setConditionalColorDrafts] = useState<Record<string, string>>({});
@@ -1457,6 +1473,39 @@ function Toolbar({
   const conditionalRuleContentPrefix = useId();
   const handledFilterRequest = useRef<string | null>(null);
   const updateGroupsRef = useRef(updateGroups);
+  useLayoutEffect(() => {
+    const pending = pendingFormulaSelection.current;
+    if (!pending) return;
+    const input = formulaInputRefs.current.get(pending.field);
+    if (input) {
+      input.focus();
+      input.setSelectionRange(pending.caret, pending.caret);
+    }
+    pendingFormulaSelection.current = null;
+  });
+  const insertReferenceAtSelection = (
+    field: string,
+    selectedKey: string,
+    fallbackFormula: string,
+    bindings: FormulaReferenceBinding[] | undefined,
+  ) => {
+    const reference = formulaReferences.find((item) => item.key === selectedKey);
+    if (!reference) return null;
+    const input = formulaInputRefs.current.get(field);
+    const source = input?.value ?? fallbackFormula;
+    const start = input?.selectionStart ?? source.length;
+    const end = input?.selectionEnd ?? start;
+    const inserted = insertNamedFormulaReference(source, bindings ?? [], reference, { start, end });
+    const nextBindings = bindPageFormulaReferences(
+      inserted.source,
+      scopePageId,
+      state,
+      dbId,
+      inserted.bindings,
+    );
+    if (input) pendingFormulaSelection.current = { field, caret: inserted.caret };
+    return { ...inserted, bindings: nextBindings };
+  };
   useEffect(() => {
     updateGroupsRef.current = updateGroups;
   });
@@ -1965,6 +2014,10 @@ function Toolbar({
                         <label className="field">
                           <span>{t('controls.formula')}</span>
                           <textarea
+                            ref={(element) => {
+                              if (element) formulaInputRefs.current.set(`filter:${rule.id}`, element);
+                              else formulaInputRefs.current.delete(`filter:${rule.id}`);
+                            }}
                             className="text-input small"
                             rows={3}
                             value={rule.formula ?? ''}
@@ -1988,34 +2041,21 @@ function Toolbar({
                             className="text-input small"
                             defaultValue=""
                             onChange={(event) => {
-                              const control = controls.find((item) => item.id === event.target.value);
-                              if (!control) return;
-                              const source = namedControlIdentifier(control.name);
-                              const formula = rule.formula ?? '';
-                              const start = formula.length + (formula.trim() ? 1 : 0);
-                              const nextFormula = `${formula}${formula.trim() ? ' ' : ''}${source}`;
-                              const formulaBindings = [
-                                ...(rule.formulaBindings ?? []).filter(
-                                  (binding) =>
-                                    nextFormula.slice(binding.start, binding.end) === binding.source,
-                                ),
-                                {
-                                  kind: 'control' as const,
-                                  pageId: scopePageId,
-                                  controlId: control.id,
-                                  start,
-                                  end: start + source.length,
-                                  source,
-                                },
-                              ];
-                              change({ formula: nextFormula, formulaBindings });
+                              const inserted = insertReferenceAtSelection(
+                                `filter:${rule.id}`,
+                                event.target.value,
+                                rule.formula ?? '',
+                                rule.formulaBindings,
+                              );
                               event.target.value = '';
+                              if (!inserted) return;
+                              change({ formula: inserted.source, formulaBindings: inserted.bindings });
                             }}
                           >
                             <option value="">{t('controls.chooseReference')}</option>
-                            {controls.map((control) => (
-                              <option key={control.id} value={control.id}>
-                                {controlChoiceLabel(control)}
+                            {formulaReferences.map((reference) => (
+                              <option key={reference.key} value={reference.key}>
+                                {reference.label}
                               </option>
                             ))}
                           </select>
@@ -2856,54 +2896,103 @@ function Toolbar({
                   </div>
 
                   {rule.mode === 'formula' ? (
-                    <label className="db-conditional-field db-conditional-field-full">
-                      <span>{t('database.ruleFormula')}</span>
-                      <input
-                        type="text"
-                        className="text-input small"
-                        placeholder="e.g. Score >= 50 and Status = 'Done'"
-                        aria-label={t('database.ruleFormula')}
-                        value={formulaDrafts[rule.id] ?? rule.formula ?? ''}
-                        onChange={(event) => {
-                          const formula = event.target.value;
-                          setFormulaDrafts((current) => ({ ...current, [rule.id]: formula }));
-                          if (!formula.trim()) {
-                            setFormulaDraftErrors((current) => ({
-                              ...current,
-                              [rule.id]: {
-                                primary: t('database.conditionalRuleFormulaRequired'),
-                                technicalDetail: null,
-                              },
-                            }));
-                            return;
-                          }
-                          try {
-                            parseFormula(formula);
-                          } catch (error) {
-                            setFormulaDraftErrors((current) => ({
-                              ...current,
-                              [rule.id]: localizedFormulaDiagnostic(
-                                error instanceof Error ? error.message : String(error),
-                              ),
-                            }));
-                            return;
-                          }
-                          setFormulaDraftErrors((current) => {
-                            const next = { ...current };
-                            delete next[rule.id];
-                            return next;
-                          });
-                          const formulaBindings = bindPageFormulaReferences(
-                            formula,
-                            scopePageId,
-                            state,
-                            dbId,
-                            rule.formulaBindings ?? [],
-                          );
-                          editRule({ formula, formulaBindings });
-                        }}
-                      />
-                    </label>
+                    <>
+                      <label className="db-conditional-field db-conditional-field-full">
+                        <span>{t('database.ruleFormula')}</span>
+                        <input
+                          ref={(element) => {
+                            if (element) formulaInputRefs.current.set(`conditional:${rule.id}`, element);
+                            else formulaInputRefs.current.delete(`conditional:${rule.id}`);
+                          }}
+                          type="text"
+                          className="text-input small"
+                          placeholder="e.g. Score >= 50 and Status = 'Done'"
+                          aria-label={t('database.ruleFormula')}
+                          value={formulaDrafts[rule.id] ?? rule.formula ?? ''}
+                          onChange={(event) => {
+                            const formula = event.target.value;
+                            setFormulaDrafts((current) => ({ ...current, [rule.id]: formula }));
+                            if (!formula.trim()) {
+                              setFormulaDraftErrors((current) => ({
+                                ...current,
+                                [rule.id]: {
+                                  primary: t('database.conditionalRuleFormulaRequired'),
+                                  technicalDetail: null,
+                                },
+                              }));
+                              return;
+                            }
+                            try {
+                              parseFormula(formula);
+                            } catch (error) {
+                              setFormulaDraftErrors((current) => ({
+                                ...current,
+                                [rule.id]: localizedFormulaDiagnostic(
+                                  error instanceof Error ? error.message : String(error),
+                                ),
+                              }));
+                              return;
+                            }
+                            setFormulaDraftErrors((current) => {
+                              const next = { ...current };
+                              delete next[rule.id];
+                              return next;
+                            });
+                            const formulaBindings = bindPageFormulaReferences(
+                              formula,
+                              scopePageId,
+                              state,
+                              dbId,
+                              rule.formulaBindings ?? [],
+                            );
+                            editRule({ formula, formulaBindings });
+                          }}
+                        />
+                      </label>
+                      <label className="db-conditional-field db-conditional-field-full">
+                        <span>{t('controls.insertReference')}</span>
+                        <select
+                          className="text-input small"
+                          defaultValue=""
+                          onChange={(event) => {
+                            const inserted = insertReferenceAtSelection(
+                              `conditional:${rule.id}`,
+                              event.target.value,
+                              formulaDrafts[rule.id] ?? rule.formula ?? '',
+                              rule.formulaBindings,
+                            );
+                            event.target.value = '';
+                            if (!inserted) return;
+                            const formula = inserted.source;
+                            setFormulaDrafts((current) => ({ ...current, [rule.id]: formula }));
+                            try {
+                              parseFormula(formula);
+                            } catch (error) {
+                              setFormulaDraftErrors((current) => ({
+                                ...current,
+                                [rule.id]: localizedFormulaDiagnostic(
+                                  error instanceof Error ? error.message : String(error),
+                                ),
+                              }));
+                              return;
+                            }
+                            setFormulaDraftErrors((current) => {
+                              const next = { ...current };
+                              delete next[rule.id];
+                              return next;
+                            });
+                            editRule({ formula, formulaBindings: inserted.bindings });
+                          }}
+                        >
+                          <option value="">{t('controls.chooseReference')}</option>
+                          {formulaReferences.map((reference) => (
+                            <option key={reference.key} value={reference.key}>
+                              {reference.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </>
                   ) : (
                     <div className="db-conditional-rule-conditions">
                       <label className="db-conditional-field">

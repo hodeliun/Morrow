@@ -105,6 +105,87 @@ export function adjustFormulaBindings(
     .filter((binding) => next.slice(binding.start, binding.end) === binding.source);
 }
 
+export function formulaBindingForNamedReference(
+  reference: { pageId: PageId; kind: 'control' | 'result'; id: string },
+  span: { start: number; source: string },
+): FormulaReferenceBinding {
+  const common = { start: span.start, end: span.start + span.source.length, source: span.source, pageId: reference.pageId };
+  return reference.kind === 'control'
+    ? { ...common, kind: 'control', controlId: reference.id }
+    : { ...common, kind: 'result', resultId: reference.id };
+}
+
+export interface NamedFormulaReferenceChoiceInput {
+  pageId: PageId;
+  kind: 'control' | 'result';
+  id: string;
+  name: string;
+}
+
+export interface NamedFormulaReferenceChoice extends NamedFormulaReferenceChoiceInput {
+  key: string;
+  formulaName: string;
+  label: string;
+}
+
+export function insertNamedFormulaReference(
+  source: string,
+  bindings: FormulaReferenceBinding[],
+  reference: NamedFormulaReferenceChoice,
+  selection: { start: number; end: number },
+): { source: string; bindings: FormulaReferenceBinding[]; caret: number } {
+  const start = Math.max(0, Math.min(source.length, selection.start));
+  const end = Math.max(start, Math.min(source.length, selection.end));
+  const identifier = formulaIdentifier(reference.formulaName);
+  const before = source.slice(0, start);
+  const after = source.slice(end);
+  const wordCharacter = /[\p{L}\p{N}_`]/u;
+  const prefixSpace = before && !/\s$/u.test(before) && wordCharacter.test(before.at(-1)!) ? ' ' : '';
+  const suffixSpace = after && !/^\s/u.test(after) && wordCharacter.test(after[0]!) ? ' ' : '';
+  const insertedStart = before.length + prefixSpace.length;
+  const nextSource = `${before}${prefixSpace}${identifier}${suffixSpace}${after}`;
+  const nextBindings = adjustFormulaBindings(source, nextSource, bindings).filter(
+    (binding) => !(binding.start === insertedStart && binding.end === insertedStart + identifier.length),
+  );
+  nextBindings.push(formulaBindingForNamedReference(reference, { start: insertedStart, source: identifier }));
+  return { source: nextSource, bindings: nextBindings, caret: insertedStart + identifier.length };
+}
+
+export function namedFormulaReferenceChoices(
+  references: NamedFormulaReferenceChoiceInput[],
+  pageTitles: Readonly<Record<string, string>>,
+  labels: { control: (name: string) => string; result: (name: string) => string; unnamed: string },
+): NamedFormulaReferenceChoice[] {
+  const titlePages = new Map<string, Set<PageId>>();
+  for (const reference of references) {
+    const title = pageTitles[reference.pageId] ?? reference.pageId;
+    const pages = titlePages.get(title) ?? new Set<PageId>();
+    pages.add(reference.pageId);
+    titlePages.set(title, pages);
+  }
+  const named = references.map((reference) => ({
+    reference,
+    name: reference.name.trim() || labels.unnamed,
+  }));
+  return named.map(({ reference, name }) => {
+    const title = pageTitles[reference.pageId] ?? reference.pageId;
+    const origin = (titlePages.get(title)?.size ?? 0) > 1 ? `${title} · ${reference.pageId.slice(-6)}` : title;
+    const samePageNameCount = named.filter((candidate) =>
+      candidate.reference.pageId === reference.pageId &&
+      candidate.reference.kind === reference.kind &&
+      candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+    ).length;
+    const itemSuffix = samePageNameCount > 1 ? ` · ${reference.id.slice(-6)}` : '';
+    return {
+      ...reference,
+      name,
+      key: `${reference.kind}:${reference.pageId}:${reference.id}`,
+      formulaName: reference.name.trim() || `${name} ${reference.id.slice(-6)}`,
+      label: `${reference.kind === 'control' ? labels.control(name) : labels.result(name)} — ${origin}${itemSuffix}`,
+    };
+  });
+}
+
 function choiceLabel(name: string, id: string, names: Array<{ name: string }>): string {
   return names.filter((item) => item.name.toLocaleLowerCase() === name.toLocaleLowerCase()).length > 1
     ? `${name} · ${id}`

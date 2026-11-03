@@ -248,6 +248,45 @@ interface FormulaEvaluationState {
 
 const formulaCache = new WeakMap<WorkspaceState, Map<string, { result: FormulaResult; cachedAt: number }>>();
 
+export interface NamedFormulaReference {
+  pageId: PageId;
+  kind: 'control' | 'result';
+  id: string;
+  name: string;
+}
+
+/** Enumerate named formula targets across active pages for explicit reference pickers. */
+export function namedFormulaReferences(
+  state: WorkspaceState,
+  documentOverrides: Partial<Record<PageId, DocNode>> = {},
+): NamedFormulaReference[] {
+  const references: NamedFormulaReference[] = [];
+  for (const page of Object.values(state.pages)) {
+    if (isEffectivelyTrashed(state.pages, page.id)) continue;
+    for (const control of page.controls) {
+      if (control.id) references.push({ pageId: page.id, kind: 'control', id: control.id, name: control.name });
+    }
+    const document = documentOverrides[page.id] ?? state.docs[page.id];
+    for (const node of documentResults(document)) {
+      const resultId = node.attrs?.resultId;
+      if (typeof resultId === 'string' && resultId)
+        references.push({
+          pageId: page.id,
+          kind: 'result',
+          id: resultId,
+          name: String(node.attrs?.name ?? ''),
+        });
+    }
+  }
+  return references.sort((left, right) =>
+    displayTitle(state.pages[left.pageId]).localeCompare(displayTitle(state.pages[right.pageId])) ||
+    left.pageId.localeCompare(right.pageId) ||
+    left.kind.localeCompare(right.kind) ||
+    left.name.localeCompare(right.name) ||
+    left.id.localeCompare(right.id),
+  );
+}
+
 // A formula is evaluated against typed values and stable row/property IDs. Formula errors are
 // returned to the caller so the cell can display them instead of turning them into blank/zero.
 export function formulaResult(
@@ -349,7 +388,8 @@ function evaluateFormulaForRow(
         if (!state) throw new Error(`Bound control “${binding.source}” is unavailable.`);
         const owner = state.pages[binding.pageId];
         const control = owner?.controls.find((item) => item.id === binding.controlId);
-        if (!control) throw new Error(`Bound control “${binding.source}” is unavailable.`);
+        if (!control || isEffectivelyTrashed(state.pages, binding.pageId))
+          throw new Error(`Bound control “${binding.source}” is unavailable.`);
         if (control.type !== 'relation') return control.value;
         const targetId = control.relation?.targetDatabaseId;
         const target = targetId ? state.pages[targetId] : undefined;
@@ -375,11 +415,12 @@ function evaluateFormulaForRow(
       }
       if (binding?.kind === 'result') {
         if (!state) throw new Error(`Bound calculated result “${binding.source}” is unavailable.`);
+        const resultPage = state.pages[binding.pageId];
+        if (!resultPage || isEffectivelyTrashed(state.pages, binding.pageId))
+          throw new Error(`Bound calculated result “${binding.source}” is unavailable.`);
         const resultNode = findDocumentResult(state, binding.pageId, binding.resultId);
         if (!resultNode || typeof resultNode.attrs?.formula !== 'string')
           throw new Error(`Bound calculated result “${binding.source}” is unavailable.`);
-        const resultPage = state.pages[binding.pageId];
-        if (!resultPage) throw new Error(`Bound calculated result “${binding.source}” is unavailable.`);
         const nested: PropDef = {
           id: `document-result:${binding.pageId}:${binding.resultId}`,
           name: String(resultNode.attrs.name ?? binding.source),

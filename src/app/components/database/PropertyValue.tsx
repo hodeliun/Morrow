@@ -348,7 +348,7 @@ export function PropertyInput({
 
   if (prop.type === 'createdTime' || prop.type === 'lastEditedTime')
     return <span className="prop-text">{formatValue(prop, value)}</span>;
-  if (prop.fillMode === 'calculated' && prop.type !== 'formula')
+  if (prop.type === 'formula' || prop.fillMode === 'calculated')
     return <FormulaCell dbId={dbId} prop={prop} row={row} />;
 
   if (gridMode && !effectiveEditing) {
@@ -405,8 +405,6 @@ export function PropertyInput({
   const cellEditable = editable && (!scalarInput || effectiveEditing);
 
   switch (prop.type) {
-    case 'formula':
-      return <FormulaCell dbId={dbId} prop={prop} row={row} />;
     case 'relation': {
       const targets = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
       return (

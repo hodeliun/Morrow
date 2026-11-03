@@ -1,0 +1,135 @@
+{
+  "ticket": "T28/#79",
+  "officialBase": "1.3.0",
+  "format": 13,
+  "gate": {
+    "command": "npm run check",
+    "build": 2,
+    "tests": 1152,
+    "testFiles": 147,
+    "typecheck": "passed",
+    "lint": "passed",
+    "buildStatus": "passed",
+    "sourceFiles": 444,
+    "sourceSha256": "e254ca570b81f8a53d43116af899b59d421f50e5527ec197e5d70ee0179b3c82",
+    "artifacts": 3597,
+    "artifactsSha256": "6818c5bec6610110ab1be4e8376fc15c9bce1183236b380a9975931aadb6b354",
+    "packagedArtifactsMatched": 3597
+  },
+  "directed": {
+    "reviewerCore": {
+      "tests": 10,
+      "files": 1,
+      "lint": "passed",
+      "rawLogSaved": true
+    },
+    "executorUI": {
+      "tests": 40,
+      "files": 4,
+      "lint": "passed",
+      "scope": "Reported executor run; final global gate validates the same source, no fabricated separate raw log"
+    }
+  },
+  "fixturePreflight": {
+    "frozenSource": true,
+    "parsedFiles": 7,
+    "stableIDs": true,
+    "values": {
+      "local": 3,
+      "remote": 14,
+      "crossPage": 17,
+      "tableProjection": 14
+    },
+    "cycles": true,
+    "readonly": true,
+    "unknownsAndBytesMtime": true
+  },
+  "runtime": {
+    "prefix": {
+      "result": "ui-1793739278871",
+      "status": "failed-harness-at-final-daily-preparation",
+      "resultSha256": "2eff6d2e0c65ee8bd2ee2e1ba7c8ac72c9139050e0edb8721d29005506813664",
+      "reviewedCoverageBeforeFailure": [
+        "explicit page/cross-page control/result pickers,type/origin labels,ID bindings",
+        "duplicate-name disambiguation and unqualified external name not inferred",
+        "rename/delete retain IDs and missing-target diagnostic without retarget",
+        "control→result→result/table/filter/conditional updates",
+        "local,cross-page and painted table cycles,existing bounded engine",
+        "public page Duplicate remaps internal IDs and preserves external IDs",
+        "two real panes and registered Trash readonly",
+        "EN/PT/ES light/dark520 no-write picker matrix"
+      ],
+      "evidence": "Sequential original assertions completed before the recorded parsePage daily-note exception; report remains failed, not relabeled PASS"
+    },
+    "continuation": {
+      "result": "ui-1793739462661",
+      "status": "passed",
+      "resultSha256": "27ed38ce072f70ee32843cb023a78a825066d0dca939a08e70bf1240cc64dcc2",
+      "exactOriginalProfileAndVault": true,
+      "reopenIDsAndMissingTargetDiagnostics": true,
+      "zeroMarkdownDeltaAfterDurableBaseline": true
+    },
+    "dailyPreparation": {
+      "gesture": "public Today + Saved before close",
+      "dateKey": "2026-11-03",
+      "beforeBytes": 0,
+      "afterBytes": 41,
+      "beforeSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "afterSha256": "79485229deda76427c6567f5303df8c5fa4fe8004a0f50a92eda9a1cef8c5843",
+      "onlyChange": "Add current English title; preserve empty body and all other Markdown bytes/mtime"
+    },
+    "paintedCycle": {
+      "row": "t28-row-alpha",
+      "property": "t28-table-cycle-a",
+      "realWheel": true,
+      "paintVisible": true,
+      "hitOwnsTarget": true,
+      "oneErrorDiagnostic": true
+    },
+    "hiddenSyntheticOnly": true,
+    "pageErrors": 0,
+    "genericBoundaries": 0,
+    "sourceAndPackageStableAfter": true,
+    "childExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "cleanup": "Exact tracked PIDs and global lease verified separately before publication"
+  },
+  "screenshots": [
+    {
+      "path": "docs/assets/T28/network-pt-dark-520.png",
+      "sha256": "74846548c85e23a08770e7f4c46c888dd789dd651d58bf065f857cf7be802ac7",
+      "caption": "PT dark520 after Cancel: named results, controls and intentional cycle diagnostics. Picker choice labels and bounds are DOM proof, not shown open in this frame."
+    },
+    {
+      "path": "docs/assets/T28/explicit-filter.png",
+      "sha256": "691927a5380a65cb0d3556c9b1e4fcdae610278874c83fc883535ddce09c7d26",
+      "caption": "Two real panes: copied network and explicit RemoteForecast > thisRow.Amount filter; actual row IDs and stable bindings are asserted in the driver."
+    },
+    {
+      "path": "docs/assets/T28/conditional-picker.png",
+      "sha256": "f1b3e725dc3f6fc5999f6302a05007f3d6feeef67d5e96b42b7ee87997a45bc1",
+      "caption": "Conditional formula reference picker and row-format configuration, bounded inside the viewport."
+    }
+  ],
+  "negativeHistory": [
+    {
+      "stage": "check01",
+      "cause": "Missing useMemo React import in extraction; typecheck stopped before lint/tests/build. One import corrected, final check02 passed."
+    },
+    {
+      "stage": "main02 final daily preparation",
+      "cause": "Accepted old harness required YAML frontmatter on the startup daily note. Current published pre-T29 UI creates valid empty Markdown; parser now accepts empty only for this exact known Journal daily. All seven seeded-fixture parsers remain strict. Only affected original-profile Today/reopen tail repeated."
+    }
+  ],
+  "limits": [
+    "No green-prefix replay or extra diagnostic matrix; acceptance combines preserved failed-prefix evidence and exact original-profile tail.",
+    "Locale/theme uses prepared preferences plus reload, not live Settings workflow.",
+    "PT dark520 capture is after Cancel; labels/options/geometry are live DOM assertions, not shown as an open picker screenshot.",
+    "Page duplication verifies objects in the copied page, not a native clipboard workflow.",
+    "Daily0→41 bytes is observed preparation for this dated synthetic run, not a fixed future assumption or a post-reopen whitelist.",
+    "No OS clipboard/IME, personal app/profile/vault, visible native window, engine/schema bump, installation or release."
+  ]
+}
