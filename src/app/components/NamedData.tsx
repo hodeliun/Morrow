@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { NodeViewProps } from '@tiptap/react';
 import { NodeViewWrapper } from '@tiptap/react';
-import { bindPageFormulaReferences, documentFormulaResult, formatDisplayValue, formulaValueText } from '../../core/database';
-import type { DateRangeControlValue, FormulaReferenceBinding, NamedControlDef, NamedControlType, PropDef, PropValue, PropertyFormat } from '../../core/model';
+import { bindPageFormulaReferences, documentFormulaResult, formatDisplayValue, formulaValueText, namedFormulaReferences } from '../../core/database';
+import type { DateRangeControlValue, DocNode, FormulaReferenceBinding, NamedControlDef, NamedControlType, PropDef, PropValue, PropertyFormat } from '../../core/model';
 import { COLORS, displayTitle, TEXT_HEX } from '../../core/model';
 import {
   boundedNumericControlFormatError,
@@ -880,15 +880,6 @@ export function NamedControlNode(props: NodeViewProps) {
   );
 }
 
-function collectResultNodes(document: { descendants?: (visitor: (node: { type: { name: string }; attrs: Record<string, unknown> }) => void) => void }) {
-  const results: Array<{ resultId: string; name: string }> = [];
-  document.descendants?.((node) => {
-    if (node.type.name === 'calculatedResult' && typeof node.attrs.resultId === 'string')
-      results.push({ resultId: node.attrs.resultId, name: String(node.attrs.name ?? 'Result') });
-  });
-  return results;
-}
-
 function outputProperty(type: OutputType, format: PropertyFormat): PropDef & { format: PropertyFormat } {
   const propType = type === 'auto' || type === 'text' ? 'formula' : type;
   const defaults: PropertyFormat = type === 'currency'
@@ -1004,26 +995,12 @@ export function CalculatedResultNode(props: NodeViewProps) {
   const hideBoundedValue = !unconfigured && !diagnostic && format.showValue === false && scaleUsesStars;
   const editorDoc = editor.state.doc;
   const referenceChoices = useMemo<DocumentFormulaReference[]>(() => {
-    const page = state.pages[pageId];
-    const raw = [
-      ...(page?.controls.map((control) => ({ key: `control:${control.id}`, name: control.name, kind: 'control' as const, id: control.id })) ?? []),
-      ...collectResultNodes(editorDoc).filter((item) => item.resultId !== resultId).map((item) => ({ key: `result:${item.resultId}`, name: item.name, kind: 'result' as const, id: item.resultId })),
-    ];
-    return raw.map((item) => {
-      const displayName = item.name.trim() || t('controls.unnamedResult');
-      const sameNameCount = raw.filter((candidate) =>
-        (candidate.name.trim() || t('controls.unnamedResult')).toLocaleLowerCase() === displayName.toLocaleLowerCase(),
-      ).length;
-      const uniqueName = sameNameCount > 1 || !item.name.trim()
-        ? `${displayName} · ${item.id.slice(-6)}`
-        : displayName;
-      return {
-        ...item,
-        name: displayName,
-        formulaName: uniqueName,
-        label: `${t(item.kind === 'control' ? 'controls.referenceControl' : 'controls.referenceResult', { name: displayName })}${uniqueName === displayName ? '' : ` · ${item.id.slice(-6)}`}`,
-      };
-    });
+    const references = namedFormulaReferences(state, { [pageId]: editorDoc.toJSON() as DocNode })
+      .filter((reference) => !(reference.kind === 'result' && reference.pageId === pageId && reference.id === resultId));
+    return references.map((reference) => ({
+      ...reference,
+      key: `${reference.kind}:${reference.pageId}:${reference.id}`,
+    }));
   }, [editorDoc, pageId, resultId, state]);
 
   const persistDraftPatch = (

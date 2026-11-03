@@ -13,6 +13,21 @@ Formula columns and formula defaults use the same bounded expression language. F
 
 The formula editor offers function, field, and table selectors plus name suggestions. It previews the first row when one exists and shows parse, reference, cycle, and type errors in the editor and calculated cell. A table or column selector stores a source-span binding to stable IDs. Renaming keeps the binding; deleting a referenced object leaves a visible missing-reference error. Duplicate names are reported as ambiguous unless the editor selected the intended ID. Binding works from the schema, including when a table has no rows.
 
+## Named controls and results across pages
+
+The explicit reference picker lists controls and calculated results with their
+type and page origin. For example, a local `Shared` control on `Summary` can hold
+7 while `Shared` on `Inputs` holds 11; selecting `Inputs / Shared` binds that exact
+page/control ID. A remote result such as `Inputs / Forecast` can feed another
+result, a table formula, a formula filter or a conditional rule. Typing an
+unqualified name does not search other pages and silently choose one.
+
+Duplicate names remain distinguishable by page and object identity. Renaming
+preserves an existing ID binding. Deleting or trashing its target reports an
+unavailable reference instead of choosing a surviving same-name object. Page
+duplication remaps internal controls/results and preserves external targets.
+Local and cross-page cycles use the same bounded evaluator diagnostics.
+
 ## Functions
 
 A date-range control stores blank or two ordered date-only ISO strings. For a
@@ -50,4 +65,4 @@ Calculated typed fields validate their output against the field type. Multi-sele
 
 Creation defaults apply literal values first and resolve formula defaults by dependency, regardless of column order. Explicit values supplied during creation take precedence. A formula default is evaluated once and materialized as the row's initial value; later edits do not keep it synchronized. Cyclic defaults stop row creation with an error.
 
-The parser accepts at most 2,000 source characters and 64 nested expression levels. Evaluation stops after 10,000 expression steps. `Sequence`, `FormulaMap`, and `ForEach` each return at most 2,000 items. Table filters inspect live rows only. Persisted formula results are cached against an immutable workspace snapshot for up to one second; unsaved rows and editor previews bypass the result cache. The evaluator context has a resolver seam for future named controls, but control binding and mutations belong to the controls/action feature.
+The parser accepts at most 2,000 source characters and 64 nested expression levels. Evaluation stops after 10,000 expression steps. `Sequence`, `FormulaMap`, and `ForEach` each return at most 2,000 items. Table filters inspect live rows only. Persisted formula results are cached against an immutable workspace snapshot for up to one second; unsaved rows and editor previews bypass the result cache. Named controls and calculated results resolve through page/object ID bindings in the same pure context; control mutations remain explicit app commands.

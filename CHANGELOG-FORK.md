@@ -2,6 +2,17 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — referências nomeadas entre páginas (fontes, sem novo download)
+
+- Pickers identificam controles e resultados por nome, tipo e página de origem;
+  referências persistem IDs, sem busca global implícita por nome.
+- Renomear mantém vínculos, excluir produz diagnóstico e duplicar remapeia apenas
+  objetos internos da cópia. Resultados alimentam tabelas, filtros e formatação.
+- Ciclos locais e entre páginas/tabelas usam a engine e os limites existentes;
+  a grade mostra o diagnóstico em vez de esconder o erro como vazio.
+
+Detalhes e validação: [T28 — referências nomeadas](docs/deliveries/T28-named-reference-network.md).
+Formato13 preservado; sem instalador, tag ou release.
 ## Entrega sequencial — resultados de fórmula no texto (fontes, sem novo download)
 
 - Nome opcional e resultado acompanham o parágrafo, distinguindo fórmula não

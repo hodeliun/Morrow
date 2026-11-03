@@ -10,6 +10,43 @@ import { setSession } from '../../workspace';
 import { PropertyDisplay, PropertyInput } from './PropertyValue';
 
 describe('database property cell rendering', () => {
+  it('renders formula diagnostics and formatted values in an idle grid, including readonly cells', async () => {
+    let nextId = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(new MemoryVault(), () => `gridFormula${++nextId}`), { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    setSession(session);
+    const properties: PropDef[] = [
+      { id: 'cycle', name: 'Cycle', type: 'formula', options: [], formula: 'Cycle + 1',
+        formulaBindings: [{ start: 0, end: 5, source: 'Cycle', kind: 'property', databaseId: 'formula-grid', propertyId: 'cycle' }] },
+      { id: 'zero', name: 'Zero', type: 'formula', options: [], formula: '0' },
+      { id: 'percent', name: 'Percent', type: 'formula', options: [], formula: '0.25',
+        formulaResultType: 'percent', format: { locale: 'en-US', precision: 0 } },
+    ];
+    const created = session.executeAll([
+      { type: 'page.create', id: 'formula-grid', parentId: null, title: 'Grid', kind: 'database', database: { properties, views: [] }, now: 1 },
+      { type: 'page.create', id: 'formula-grid-row', parentId: 'formula-grid', title: 'Row', now: 2 },
+    ]);
+    if (!created.ok) throw new Error(created.error);
+    try {
+      const row = session.getState().pages['formula-grid-row']!;
+      for (const editable of [true, false]) {
+        const html = properties.map((prop) => renderToStaticMarkup(createElement(PropertyInput, {
+          dbId: 'formula-grid', prop, row, editable, gridMode: true, isEditing: false,
+        })));
+        expect(html[0]).toContain('class="formula-error"');
+        expect(html[0]).toMatch(/title="[^"]*cycle/i);
+        expect(html[0]).not.toContain('prop-empty');
+        expect(html[1]).toContain('>0</span>');
+        expect(html[2]).toContain('25%');
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
   it('renders a false checkbox formula result distinctly from an empty result', () => {
     const prop: PropDef = {
       id: 'is-published',
