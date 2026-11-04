@@ -1,0 +1,101 @@
+{
+  "ticket": "T36",
+  "issue": 88,
+  "validation": "accepted locally; PR/main CI pending",
+  "baseline": "f61bb094051c8d718cbfa0dd1fd5360f54b35c22",
+  "sourceSha256": "2377f40c2901bfd23cb86fe47c4f8f932c4eda622f38ead80f23e9bcbdf88579",
+  "artifactsSha256": "8f7fdbaa489dc1907b6f9d2ae71c64404d4c296d6e3d04ae81cd29c079ef286d",
+  "tests": {
+    "files": 156,
+    "passed": 1222
+  },
+  "sourceFiles": 464,
+  "artifactFiles": 3593,
+  "packagedAllMatch": true,
+  "criteria": [
+    {
+      "status": "verified",
+      "evidence": "MAIN04 completed prefix: navigation/link defaults, internal/external overrides and single stub dispatch; final toolbar06 geometry",
+      "ac": 1
+    },
+    {
+      "status": "verified",
+      "evidence": "MAIN04 isolation/protocol/popup/permissions assertions; final directed full gate; native lifecycle05",
+      "ac": 2
+    },
+    {
+      "status": "verified",
+      "evidence": "Shared URL policy tests + MAIN04 forbidden/HTTP/ephemeral storage prefix",
+      "ac": 3
+    },
+    {
+      "status": "verified",
+      "evidence": "MAIN04 intercepted inputfile selection/cancel and download cancellation; tail06 session persistence and public clear; lifecycle05 original",
+      "ac": 4
+    },
+    {
+      "status": "verified within dated limitations",
+      "evidence": "FINAL01 each requested host observed own start/end; YouTube app-error, Drive public redirect, Sheets login-wall",
+      "ac": 5
+    },
+    {
+      "status": "verified",
+      "evidence": "Descriptor unit tests and MAIN04 bounded real descriptors/catalog XLSX prefix",
+      "ac": 6
+    },
+    {
+      "status": "verified",
+      "evidence": "Tail06 process-reopen parked0network + synthetic cookie/storage retention; lifecycle05 close/reload; FINAL01 vaultswitch0views",
+      "ac": 7
+    },
+    {
+      "status": "verified with explicit native gesture/DPI limits",
+      "evidence": "MAIN04 overlay/mediaiframe; tail06 bounds+PT/ES520; FINAL01 bytes/mtime+exit0. Native focus via owned WC event seam, not OS pointer; scale1 recorded, no Windows DPI transition",
+      "ac": 8
+    }
+  ],
+  "evidenceComposition": {
+    "sourceDelta05to06": "SOURCE05-TO06-DELTA.json",
+    "sourceDelta04to05": "SOURCE04-TO05-DELTA.json",
+    "lifecycle05": "t36/ui-1793756925492/RESULT.json",
+    "final06": "t36/ui-1793757470416/RESULT.json",
+    "prefixOnlyCompletedAssertionsReused": true,
+    "tailCompletedGeometryAppearancesPersistenceClearReused": true,
+    "prefix04": "t36/ui-1793754111273/RESULT.json",
+    "finalStatus": "passed",
+    "tail06": "t36/ui-1793757290905/RESULT.json",
+    "prefixRawStatus": "failed",
+    "lifecycleStatus": "passed",
+    "tailRawStatus": "failed final menu role selector"
+  },
+  "cleanup": {
+    "finalChildren": [
+      63072
+    ],
+    "fixtureDeletedClaimed": false,
+    "exitCode": 0,
+    "leaseAbsent": true,
+    "tailChildren": [
+      64576,
+      45976
+    ],
+    "lifecycleChild": 68980,
+    "ownExactExecutableProcesses": 0
+  },
+  "limitations": [
+    "No personal profiles/vaults/apps/clipboard; hidden synthetic package only",
+    "CDP file selection/cancel is not Windows chooser verification",
+    "Owned WC focus event is integration proof, not Windows native pointer",
+    "No system DPI transition claim",
+    "Service login/DRM availability not promised",
+    "Historical forced cleanup of exact owned nonresponsive runs retained as failures"
+  ],
+  "datedSites": {
+    "drive": "public workspace.google.com redirect",
+    "noLoginOrExternalLaunch": true,
+    "date": "2026-11-04T01:57Z",
+    "sheets": "accounts.google.com login wall",
+    "youtube": "app-error fallback",
+    "eachNavigationStartObserved": true
+  }
+}

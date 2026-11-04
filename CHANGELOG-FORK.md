@@ -2,6 +2,18 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — sites em abas isoladas (fontes, sem novo download)
+
+- Links e descritores gdoc/gsheet podem abrir no navegador interno, com endereço,
+  navegação e escolha externa que respeita o navegador configurado.
+- Conteúdo remoto sem bridge ou Node usa sessão própria, permissões negadas e
+  limpeza explícita; restauração não carrega o site antes da ativação.
+- URLs não restauráveis recebem aviso, overlays ocultam a view nativa e fechar
+  ou trocar vault libera os recursos, preservando os arquivos originais.
+
+Detalhes e limites: [T36 — navegação web](docs/deliveries/T36-isolated-web-tabs.md).
+Formato13 preservado; sem instalador, tag ou release.
+
 ## Entrega sequencial — PDFs em abas internas (fontes, sem novo download)
 
 - Opção Interno para `.pdf` usa o leitor do Electron com páginas, zoom, rolagem

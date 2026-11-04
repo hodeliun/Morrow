@@ -23,7 +23,15 @@ import {
   persistPaneTabsSnapshot,
   readPaneTabsSnapshot,
 } from './paneLayoutStorage';
-import { canonicalizeResourceTargetHash } from './resourceTargets';
+import {
+  canonicalizeResourceTargetHash,
+  classifyBrowserAddress,
+  parseResourceTarget,
+  serializeResourceTarget,
+  URL_UNAVAILABLE_HASH,
+} from './resourceTargets';
+import { desktop } from './platform/desktop';
+
 import { getPreferences, setPreferences } from './platform/preferences';
 
 export type PaneId = string;
@@ -536,6 +544,10 @@ export function canGo(
 function step(pane: PaneId, direction: 'back' | 'forward'): void {
   const now = current();
   const tab = getTabForPane(pane, now);
+  if (tab && parseResourceTarget(tab.target).kind === 'url') {
+    void desktop?.browserTabs?.command(tab.id, direction);
+    return;
+  }
   if (!tab || tab[direction].length === 0) return;
   const list = [...tab[direction]];
   const target = list.pop()!;
@@ -571,6 +583,34 @@ export function openTab(hash = EMPTY_HASH): void {
   const next = makeStateWithLayout(now, layout, now.closed, tab.id);
   writeState(next);
   go(hash);
+}
+
+export function openBrowserUrl(value: string): string | null {
+  const decision = classifyBrowserAddress(value);
+  const safeTarget =
+    decision.ok && decision.restorable
+      ? (serializeResourceTarget({ kind: 'url', url: decision.url }) ?? URL_UNAVAILABLE_HASH)
+      : URL_UNAVAILABLE_HASH;
+  openTab(safeTarget);
+  const tab = getTabForPane(current().pane);
+  if (!tab) return null;
+  void desktop?.browserTabs?.navigate(tab.id, value);
+  return tab.id;
+}
+
+export function replaceBrowserTabTarget(tabId: string, value: string | null): void {
+  const now = current();
+  const tab = now.layout.tabs.find((item) => item.id === tabId);
+  if (!tab) return;
+  const decision = value === null ? null : classifyBrowserAddress(value);
+  const target =
+    decision?.ok && decision.restorable
+      ? (serializeResourceTarget({ kind: 'url', url: decision.url }) ?? URL_UNAVAILABLE_HASH)
+      : URL_UNAVAILABLE_HASH;
+  if (tab.target === target) return;
+  const next = makeStateWithLayout(now, replaceTab(now.layout, tabId, { ...tab, target }));
+  writeState(next);
+  if (getTabForPane(next.pane, next)?.id === tabId) replaceBrowserHash(target);
 }
 
 export function activateTab(id: string): void {

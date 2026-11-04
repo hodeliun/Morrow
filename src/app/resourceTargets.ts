@@ -1,5 +1,10 @@
+import {
+  classifyBrowserUrl,
+  MAX_BROWSER_TARGET_LENGTH,
+} from '../../electron/browserUrlPolicy';
+
 const URL_TARGET_PREFIX = '#/url/';
-const MAX_SERIALIZED_TARGET_LENGTH = 8192;
+const MAX_SERIALIZED_TARGET_LENGTH = MAX_BROWSER_TARGET_LENGTH;
 export const URL_UNAVAILABLE_HASH = '#/url/invalid';
 
 export type ResourceTarget =
@@ -9,68 +14,39 @@ export type ResourceTarget =
   | { readonly kind: 'url'; readonly url: string | null }
   | { readonly kind: 'empty' };
 
+export type BrowserAddressDecision =
+  | {
+      readonly ok: true;
+      readonly url: string;
+      readonly restorable: boolean;
+      readonly warnings: readonly ('http' | 'ephemeral')[];
+    }
+  | { readonly ok: false; readonly code: 'invalid-url' | 'url-too-long' };
+
 function invalidUrlTarget(): ResourceTarget {
   return { kind: 'url', url: null };
 }
 
-function containsControlCharacter(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0)!;
-    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
-  });
+export function normalizeSafeHttpUrl(value: unknown): string | null {
+  const decision = classifyBrowserUrl(value);
+  return decision.ok && decision.canRestore ? decision.url : null;
 }
 
-export function normalizeSafeHttpUrl(value: unknown): string | null {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.trim() !== value ||
-    containsControlCharacter(value) ||
-    /%(?![\da-f]{2})/iu.test(value) ||
-    /%(?:0[\da-f]|1[\da-f]|7f|3f|23)/iu.test(value) ||
-    value.includes('\\') ||
-    value.includes('?') ||
-    value.includes('#') ||
-    !/^https?:\/\//iu.test(value)
-  )
-    return null;
-
-  let decodedValue: string;
-  try {
-    decodedValue = decodeURIComponent(value);
-  } catch {
-    return null;
-  }
-  if (containsControlCharacter(decodedValue)) return null;
-
-  const authorityStart = value.indexOf('://') + 3;
-  const remainder = value.slice(authorityStart);
-  const delimiter = remainder.search(/[/?#]/u);
-  const authority = delimiter < 0 ? remainder : remainder.slice(0, delimiter);
-  if (!authority || authority.includes('@')) return null;
-
-  try {
-    const url = new URL(value);
-    if (
-      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-      !url.hostname ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash
-    )
-      return null;
-    const normalized = url.href;
-    return URL_TARGET_PREFIX.length + encodeURIComponent(normalized).length <= MAX_SERIALIZED_TARGET_LENGTH
-      ? normalized
-      : null;
-  } catch {
-    return null;
-  }
+export function classifyBrowserAddress(value: unknown): BrowserAddressDecision {
+  const decision = classifyBrowserUrl(value);
+  return decision.ok
+    ? {
+        ok: true,
+        url: decision.url,
+        restorable: decision.canRestore,
+        warnings: decision.warnings,
+      }
+    : decision;
 }
 
 export function parseResourceTarget(serialized: string | null): ResourceTarget {
   if (serialized === null || serialized === '') return { kind: 'empty' };
+  if (serialized === URL_UNAVAILABLE_HASH) return invalidUrlTarget();
 
   if (
     serialized === '#/url' ||

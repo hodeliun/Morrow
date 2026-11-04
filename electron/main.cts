@@ -37,6 +37,9 @@ import { createImageResourceRegistry, IMAGE_RESOURCE_MIME_TYPES } from './imageR
 import type { ImageResourceRegistry } from './imageResources.js';
 import { createMediaResourceRegistry } from './mediaResources.js';
 import type { MediaResourceRegistry } from './mediaResources.js';
+import { createBrowserResourceManager, isValidBrowserTabId, scaleBrowserPaneBounds } from './browserResources.js';
+import type { BrowserPaneBounds, BrowserResourceManager } from './browserResources.js';
+import { readBoundedBrowserDescriptor } from './browserDescriptorReader.js';
 import { createPdfViewerManager } from './pdfViewer.js';
 import type { PdfViewerManager, PdfViewerOwner, PdfViewerRuntime } from './pdfViewer.js';
 import type { PdfVaultContext } from './pdfResources.js';
@@ -166,6 +169,7 @@ let activeMediaResources: MediaResourceRegistry | null = null;
 let mediaResourceEpoch = 0;
 const mediaResourceOwners = createImageResourceOwnerStore();
 let activePdfViewers: PdfViewerManager | null = null;
+let activeBrowserTabs: BrowserResourceManager | null = null;
 let pdfVaultIdentity: { vaultId: string; generation: string | number } | null = null;
 
 function currentPdfContext(): PdfVaultContext | null {
@@ -265,6 +269,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     if (STARTUP.mode !== 'packaged-smoke') globalShortcut.unregisterAll();
     closeSync();
+    void activeBrowserTabs?.destroy();
   });
 
   app.on('window-all-closed', () => {
@@ -586,6 +591,20 @@ function fromApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   return isAppUrl(url);
 }
 
+function fromMainApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+  const window = mainWindow;
+  const frame = event.senderFrame;
+  return Boolean(
+    window &&
+      !window.isDestroyed() &&
+      !window.webContents.isDestroyed() &&
+      event.sender === window.webContents &&
+      frame === window.webContents.mainFrame &&
+      frame &&
+      isTrustedImageViewerAppUrl(frame.url, APP_ORIGIN, DEV_URL),
+  );
+}
+
 function fromImageViewerMainFrame(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   const window = mainWindow;
   if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false;
@@ -602,6 +621,7 @@ function fromImageViewerMainFrame(event: IpcMainEvent | IpcMainInvokeEvent): boo
 
 function clearImageResources(notify = true): void {
   imageResourceEpoch += 1;
+  activeBrowserTabs?.releaseAll();
   activePdfViewers?.clear();
   pdfVaultIdentity = null;
   activeImageResources?.clear();
@@ -718,7 +738,141 @@ function createFileHandlerAdapter() {
   });
 }
 
+function browserPaneBounds(value: unknown): BrowserPaneBounds | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const bounds = value as Record<string, unknown>;
+  if (
+    typeof bounds.x !== 'number' ||
+    typeof bounds.y !== 'number' ||
+    typeof bounds.width !== 'number' ||
+    typeof bounds.height !== 'number' ||
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.y) ||
+    !Number.isFinite(bounds.width) ||
+    !Number.isFinite(bounds.height) ||
+    bounds.width < 0 ||
+    bounds.height < 0
+  )
+    return null;
+  return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+}
+
+async function readBrowserDescriptor(
+  relative: unknown,
+  expectedContext: ReturnType<typeof currentVaultContext>,
+): Promise<string | null> {
+  if (
+    typeof relative !== 'string' ||
+    relative.length === 0 ||
+    relative.length > 4096 ||
+    (path.extname(relative).toLowerCase() !== '.gdoc' && path.extname(relative).toLowerCase() !== '.gsheet')
+  )
+    return null;
+  const context = currentVaultContext();
+  const vaultPath = vaultFilePath(relative);
+  if (
+    !context ||
+    !expectedContext ||
+    context.generation !== expectedContext.generation ||
+    path.resolve(context.realRoot) !== path.resolve(expectedContext.realRoot) ||
+    !vaultPath
+  )
+    return null;
+  const relativePath = path.relative(context.root, vaultPath);
+  if (
+    !relativePath ||
+    path.isAbsolute(relativePath) ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${path.sep}`)
+  )
+    return null;
+  const segments = relativePath.split(path.sep);
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return null;
+
+  const candidate = path.resolve(context.realRoot, ...segments);
+  return readBoundedBrowserDescriptor({ candidate, context, getCurrentContext: currentVaultContext });
+}
+
+function registerBrowserTabsIpc(): void {
+  ipcMain.handle('browser-tabs:get-state', (event, tabId: unknown) => {
+    if (!fromMainApp(event) || !isValidBrowserTabId(tabId)) return null;
+    return activeBrowserTabs?.getState(tabId) ?? null;
+  });
+  ipcMain.handle('browser-tabs:navigate', async (event, tabId: unknown, url: unknown) => {
+    if (!fromMainApp(event) || !isValidBrowserTabId(tabId) || typeof url !== 'string') return null;
+    return activeBrowserTabs?.navigate(tabId, url) ?? null;
+  });
+  ipcMain.handle('browser-tabs:command', (event, tabId: unknown, command: unknown) => {
+    if (
+      !fromMainApp(event) ||
+      !isValidBrowserTabId(tabId) ||
+      (command !== 'back' && command !== 'forward' && command !== 'reload' && command !== 'stop')
+    )
+      return null;
+    return activeBrowserTabs?.command(tabId, command) ?? null;
+  });
+  ipcMain.handle('browser-tabs:present', (event, tabId: unknown, bounds: unknown, visible: unknown) => {
+    if (!fromMainApp(event) || !isValidBrowserTabId(tabId) || typeof visible !== 'boolean') return false;
+    const validBounds = browserPaneBounds(bounds);
+    if (!validBounds) {
+      activeBrowserTabs?.present(tabId, { x: 0, y: 0, width: 0, height: 0 }, false);
+      return false;
+    }
+    const window = mainWindow;
+    if (!window || window.isDestroyed()) return false;
+    activeBrowserTabs?.present(tabId, scaleBrowserPaneBounds(validBounds, window.webContents.getZoomFactor()), visible);
+    return true;
+  });
+  ipcMain.handle('browser-tabs:release', (event, tabId: unknown) => {
+    if (!fromMainApp(event) || !isValidBrowserTabId(tabId)) return false;
+    activeBrowserTabs?.release(tabId);
+    return true;
+  });
+  ipcMain.handle('browser-tabs:open-external', (event, tabId: unknown) => {
+    if (!fromMainApp(event) || !isValidBrowserTabId(tabId) || !mainWindow) return null;
+    return activeBrowserTabs?.openExternal(tabId) ?? null;
+  });
+  ipcMain.handle('browser-tabs:clear-site-data', async (event) => {
+    if (!fromMainApp(event)) return false;
+    await activeBrowserTabs?.clearSiteData();
+    return true;
+  });
+  ipcMain.handle('browser-tabs:read-descriptor', async (event, relative: unknown) => {
+    if (!fromMainApp(event)) return null;
+    const sender = event.sender;
+    const frame = event.senderFrame;
+    const expectedContext = currentVaultContext();
+    const contents = await readBrowserDescriptor(relative, expectedContext);
+    const current = currentVaultContext();
+    if (
+      event.sender !== sender ||
+      event.senderFrame !== frame ||
+      !fromMainApp(event) ||
+      !expectedContext ||
+      !current ||
+      current.generation !== expectedContext.generation ||
+      path.resolve(current.realRoot) !== path.resolve(expectedContext.realRoot)
+    )
+      return null;
+    return contents;
+  });
+  ipcMain.on('browser-tabs:overlay-blocked', (event, blocked: unknown) => {
+    if (!fromMainApp(event) || typeof blocked !== 'boolean') {
+      event.returnValue = false;
+      return;
+    }
+    activeBrowserTabs?.setOverlaysBlocked(blocked);
+    event.returnValue = true;
+  });
+}
+
 function registerIpc(): void {
+  activeBrowserTabs = createBrowserResourceManager({
+    getWindow: () => mainWindow,
+    onState: (state) => toWindow("browser-tabs:state", state),
+    onFocus: (tabId) => toWindow("browser-tabs:focus", tabId),
+  });
+  registerBrowserTabsIpc();
   activeImageResources = createImageResourceRegistry({
     getContext: currentVaultContext,
     userDataPath: app.getPath('userData'),
