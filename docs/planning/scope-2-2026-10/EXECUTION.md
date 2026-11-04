@@ -12,8 +12,10 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T28 (#79), referências nomeadas entre páginas.
-T27 (#78) foi integrado no PR110 e encerrado após CI Windows/Linux da main.
+A única entrega ativa é T34 (#86), PDFs locais em abas internas.
+T29 (#80) foi integrado no PR112 e encerrado após CI Windows/Linux da main.
+T34 tem aceite local combinado e aguarda publicação e CI; os demais tickets
+permanecem preservados até sua vez.
 O pré-requisito histórico T14 (#65) foi reconciliado no PR105, após verificação
 direta de documentos/arquivos e CI Windows/Linux. Não acrescenta uma entrega às 24 retomadas.
 O formato persistido 13 e seus contratos estritos
@@ -44,6 +46,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T26 #77 | Intervalo de datas e endpoints tipados | #109 |
 | T27 #78 | Resultados de fórmula inline e editor compartilhado | #110 |
 | T28 #79 | Referências nomeadas entre páginas | #111 |
+| T29 #80 | Fundo de resultados por nota e preservação de remoções | #112 |
 
 A dependência histórica T11 (#62), já entregue na integração pública 1.3,
 teve o encerramento reconciliado com seu relatório original em 03/11/2026.

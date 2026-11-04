@@ -245,7 +245,13 @@ export type DesktopMediaViewerIssueResult =
   | { ok: true; token: string; kind: 'audio' | 'video'; mimeType: string; size: number }
   | {
       ok: false;
-      code: 'not-allowed' | 'no-vault' | 'vault-changed' | 'unsupported-type' | 'invalid-resource' | 'file-unavailable';
+      code:
+        | 'not-allowed'
+        | 'no-vault'
+        | 'vault-changed'
+        | 'unsupported-type'
+        | 'invalid-resource'
+        | 'file-unavailable';
     };
 
 export interface DesktopMediaAvailabilityNotice {
@@ -260,12 +266,47 @@ export interface DesktopMediaViewerApi {
   onAvailability(listener: (notice: DesktopMediaAvailabilityNotice) => void): () => void;
 }
 
+export interface DesktopPdfViewerState {
+  viewerId: string;
+  sequence: number;
+  status: 'loading' | 'ready' | 'invalid' | 'password-required' | 'unavailable' | 'failed';
+  name?: string;
+  size?: number;
+  pageCount?: number;
+  matches?: number;
+  activeMatchOrdinal?: number;
+}
+
+export interface DesktopPdfViewerApi {
+  open(
+    vaultId: string,
+    relativePath: string,
+  ): Promise<{ ok: true; viewerId: string; state: DesktopPdfViewerState } | { ok: false; code: string }>;
+  present(
+    viewerId: string,
+    bounds: { x: number; y: number; width: number; height: number } | null,
+    visible: boolean,
+  ): boolean;
+  find(viewerId: string, query: string, forward?: boolean): Promise<boolean>;
+  getState(viewerId: string): Promise<DesktopPdfViewerState | null>;
+  close(viewerId: string): Promise<boolean>;
+  openExternal(
+    vaultId: string,
+    relativePath: string,
+    locale?: DesktopFileHandlerLocale,
+  ): Promise<DesktopFileHandlerResult>;
+  onState(listener: (state: DesktopPdfViewerState) => void): () => void;
+  onFocus(listener: (viewerId: string) => void): () => void;
+  onExternalLink(listener: (event: { viewerId: string; url: string }) => void): () => void;
+}
+
 export interface DesktopBridge {
   assistant?: DesktopAssistantApi;
   clipboard?: DesktopClipboardApi;
   fileHandlers?: DesktopFileHandlersApi;
   imageViewer?: DesktopImageViewerApi;
   mediaViewer?: DesktopMediaViewerApi;
+  pdfViewer?: DesktopPdfViewerApi;
   mcp?: DesktopMcpApi;
   vault?: DesktopVaultApi;
   sync?: DesktopSyncApi;

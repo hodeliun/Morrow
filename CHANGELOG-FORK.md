@@ -2,6 +2,18 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Entrega sequencial — PDFs em abas internas (fontes, sem novo download)
+
+- Opção Interno para `.pdf` usa o leitor do Electron com páginas, zoom, rolagem
+  e busca, preservando o método de abertura configurável.
+- Sessões isoladas em memória leem uma capacidade do arquivo selecionado;
+  caminhos reais, permissões, rede e downloads têm guards próprios.
+- PDFs inválidos, protegidos e indisponíveis recebem diagnóstico. Senhas não
+  são lidas pelo aplicativo e o fallback externo permanece explícito.
+
+Detalhes e validação: [T34 — PDFs locais](docs/deliveries/T34-pdf-file-tabs.md).
+Formato13 preservado; sem instalador, tag ou release.
+
 ## Entrega sequencial — fundo de resultados por nota (fontes, sem novo download)
 
 - Preferência do perfil começa ativada e é capturada em novas notas, inclusive

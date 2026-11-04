@@ -24,6 +24,7 @@ interface LayerRef {
 }
 
 const activeLayers: DismissableLayer[] = [];
+const overlayObservers = new Set<(blocked: boolean) => void>();
 const portalRootId = 'morrow-overlay-root';
 let listenersAttached = false;
 
@@ -31,6 +32,14 @@ function updateLayerOrder() {
   activeLayers.forEach((layer, index) => {
     layer.element.style.setProperty('--layer-order', String(index + 1));
   });
+  for (const observer of overlayObservers) observer(activeLayers.length > 0);
+}
+
+// Native resource views must acknowledge occlusion before the overlay is painted.
+export function observeOverlayLayers(observer: (blocked: boolean) => void): () => void {
+  overlayObservers.add(observer);
+  observer(activeLayers.length > 0);
+  return () => overlayObservers.delete(observer);
 }
 
 function onDocumentPointerDown(event: PointerEvent) {
@@ -99,7 +108,8 @@ export function registerDismissableLayer(options: RegisterDismissableLayerOption
     if (layer.previousOrder) layer.element.style.setProperty('--layer-order', layer.previousOrder);
     else layer.element.style.removeProperty('--layer-order');
     if (activeLayers.length === 0) detachDocumentListeners();
-    if (layer.restoreFocusOnUnmount && layer.trigger?.isConnected) layer.trigger.focus({ preventScroll: true });
+    if (layer.restoreFocusOnUnmount && layer.trigger?.isConnected)
+      layer.trigger.focus({ preventScroll: true });
   };
 }
 

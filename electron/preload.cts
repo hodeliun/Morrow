@@ -87,6 +87,40 @@ contextBridge.exposeInMainWorld('morrow', {
       return () => ipcRenderer.removeListener('media-viewer:availability', handler);
     },
   },
+  pdfViewer: {
+    open: (vaultId: string, relativePath: string) =>
+      ipcRenderer.invoke('pdf-viewer:open', vaultId, relativePath),
+    present: (viewerId: string, bounds: unknown, visible: boolean) =>
+      ipcRenderer.sendSync('pdf-viewer:present', viewerId, bounds, visible) === true,
+    find: (viewerId: string, query: string, forward = true) =>
+      ipcRenderer.invoke('pdf-viewer:find', viewerId, query, forward),
+    getState: (viewerId: string) => ipcRenderer.invoke('pdf-viewer:state', viewerId),
+    close: (viewerId: string) => ipcRenderer.invoke('pdf-viewer:close', viewerId),
+    openExternal: (vaultId: string, relativePath: string, locale?: string) =>
+      ipcRenderer.invoke('pdf-viewer:open-external', vaultId, relativePath, locale),
+    onState(listener: (state: unknown) => void) {
+      const handler = (_event: unknown, state: unknown) => listener(state);
+      ipcRenderer.on('pdf-viewer:state', handler);
+      return () => ipcRenderer.removeListener('pdf-viewer:state', handler);
+    },
+    onFocus(listener: (viewerId: string) => void) {
+      const handler = (_event: unknown, viewerId: unknown) => {
+        if (typeof viewerId === 'string') listener(viewerId);
+      };
+      ipcRenderer.on('pdf-viewer:focus', handler);
+      return () => ipcRenderer.removeListener('pdf-viewer:focus', handler);
+    },
+    onExternalLink(listener: (event: { viewerId: string; url: string }) => void) {
+      const handler = (_event: unknown, value: unknown) => {
+        if (!value || typeof value !== 'object') return;
+        const event = value as { viewerId?: unknown; url?: unknown };
+        if (typeof event.viewerId === 'string' && typeof event.url === 'string')
+          listener({ viewerId: event.viewerId, url: event.url });
+      };
+      ipcRenderer.on('pdf-viewer:external-link', handler);
+      return () => ipcRenderer.removeListener('pdf-viewer:external-link', handler);
+    },
+  },
   showDataFolder: () => ipcRenderer.invoke('morrow:show-data-folder'),
   showBackupsFolder: () => ipcRenderer.invoke('morrow:show-backups'),
   writeAutoBackup: (json: string) => ipcRenderer.invoke('morrow:write-backup', json),

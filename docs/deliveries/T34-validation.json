@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T34",
+  "issue": 86,
+  "accepted": true,
+  "scope": "Local criterion acceptance; publication and both-OS CI are tracked by the pull request and issue",
+  "reviewedAt": "2026-11-03T23:59:50.862Z",
+  "base": "c2c697e51581cc36b98e30c34c6a7e3aa76dde6c",
+  "gate": {
+    "build": "scope-2-build-03",
+    "tests": {
+      "passed": 1183,
+      "files": 150
+    },
+    "sourceFiles": 451,
+    "sourceSha256": "bbd6ab1208d86f87d3bc4cc86aa782528465c210089da4f8f2c0417c61ee526b",
+    "artifactFiles": 3597,
+    "artifactsSha256": "a157cd90760fc8c6aa1b60fc0a66b0d156b7b6af1d4b097c5e4e4c6576f17d2f",
+    "sourceStable": true
+  },
+  "package": {
+    "artifactsMatched": 3597,
+    "sha256": {
+      "executable": "a1ee08733b950c538375080259d81387cafc18b4a49a126d411c5d3c36ababfd",
+      "appAsar": "9e2995f2057ad4b05d7e495f8f3059bb2dcc486ff416fc4fc820eaee068243eb",
+      "main": "253f453f24017d7bcdd57454bf0169855b686a21e56262bf50fd550d42818dd8"
+    }
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "verified": true,
+      "evidence": "Internal handler selected through Settings; public Files route; two pages, zoom1->1.1, renderer wheel0->500, page2 keyboard input, public search2 matches; existing Electron engine"
+    },
+    {
+      "id": "AC2",
+      "verified": true,
+      "evidence": "Separate memory session, sandbox/contextIsolation, no preload/Node/app bridge; three local-picker APIs undefined in live frames; permission/download guards and validated external-link routing tested"
+    },
+    {
+      "id": "AC3",
+      "verified": true,
+      "evidence": "One selected-file capability; realpath/open-handle identity/range/HEAD/stale/revoke tests; nine PDFs exact bytes/hash/mtime and full inventories of two synthetic vaults unchanged"
+    },
+    {
+      "id": "AC4",
+      "verified": true,
+      "evidence": "Invalid and empty/unavailable states verified in build02; protected native open dialog classified in build03 without password entry/read/persistence; explicit fallback shown, not invoked"
+    },
+    {
+      "id": "AC5",
+      "verified": true,
+      "evidence": "Actual Windows package with hidden window; native renderer controls, bounds and six EN/PT/ES light/dark520px cases; genuine separate native/application captures"
+    }
+  ],
+  "runtimeEvidence": [
+    {
+      "run": "ui-1793749302911",
+      "build": "02",
+      "rawStatus": "failed",
+      "successfulPrefix": [
+        "native pages/zoom/wheel/page-number input/search",
+        "live isolation",
+        "six presentation cases",
+        "invalid PDF",
+        "empty/unavailable PDF"
+      ],
+      "failure": "Password classifier incorrectly required positive height on a zero-height custom host",
+      "notRelabeled": true
+    },
+    {
+      "run": "ui-1793749963302",
+      "build": "03",
+      "rawStatus": "passed",
+      "coverage": "Focused protected/copy/integrity tail with valid-file/isolation positive control, in a fresh synthetic profile",
+      "passwordRead": false,
+      "passwordEntered": false,
+      "independentViewerId": true,
+      "pdfFilesUnchanged": 9,
+      "completeVaultInventoriesUnchanged": 2,
+      "errors": 0,
+      "pageErrors": 0,
+      "visibleErrorBoundaries": 0,
+      "externalDispatchTrapCalls": 0,
+      "sourceAndPackageStable": true,
+      "children": [
+        {
+          "pid": 58848,
+          "exitCode": 0
+        }
+      ],
+      "mainQuitObserved": true
+    }
+  ],
+  "sourceEquivalence": {
+    "fromBuild": "02",
+    "toBuild": "03",
+    "unchangedFiles": 448,
+    "changedFiles": [
+      "electron/pdfViewer.ts",
+      "electron/pdfViewer.test.ts",
+      "src/app/components/PdfFileView.tsx"
+    ],
+    "review": "Only read-only native password-dialog inspection/test and search maxLength1000->512; valid-file/closed-dialog controls passed; previous short search remains within both limits. CSS/locales/protocol/main/preload and existing native control behavior unchanged."
+  },
+  "visualEvidence": [
+    {
+      "file": "../assets/T34/native-two-page-pdf.png",
+      "build": "02",
+      "surface": "Owned native PDF WebContents.capturePage",
+      "sha256": "21a2e23df575116c65f5b4f56a26e95f052ace968f4f01a8a1ac3e21eae2b8e2"
+    },
+    {
+      "file": "../assets/T34/pdf-controls-pt-dark-520.png",
+      "build": "02",
+      "surface": "Application renderer only; excludes native surface; no composite",
+      "sha256": "214afa7af1168161b386508ccd161a1c96a23c055f65904588560cd9ea91b978"
+    },
+    {
+      "file": "../assets/T34/password-required.png",
+      "build": "03",
+      "surface": "Application password-required status; no password value",
+      "sha256": "181245a45139e78c80de28724c974fb56610e89f35870dccb5f337c04832478f"
+    }
+  ],
+  "limits": [
+    "Hidden Windows package and renderer CDP input do not claim a native Windows pointer/chooser/print test",
+    "Native PDF controls use Electron runtime language; application labels verified EN/PT/ES",
+    "Native original-Save cancellation was a separate feasibility result, not reclassified as product acceptance",
+    "No RAM benchmark, provider/cloud-placeholder claim, password-decryption UI claim, external-app launch claim, release or installation"
+  ],
+  "cleanup": {
+    "originalOwnedIdentitiesAbsent": true,
+    "ownedPackageProcesses": 0,
+    "leaseAbsent": true,
+    "syntheticFixturesRetainedPrivately": true
+  },
+  "preserved": {
+    "schemaVersion": 13,
+    "originals": true,
+    "newRuntimeDependencies": 0,
+    "previousDeliveries": true
+  }
+}

@@ -1,4 +1,22 @@
 export const en = {
+  pdfViewer: {
+    loading: 'Loading PDF…',
+    pages: 'Pages: {count}',
+    passwordRequired: 'Enter the password in the PDF viewer. Morrow does not save it.',
+    invalid: 'This file is not a valid or supported PDF.',
+    unavailable:
+      'This PDF has no readable data on this device. If it is online-only, obtain it through the system and reopen it.',
+    failed: 'The PDF viewer is unavailable. You can choose another application.',
+    search: 'Search in this PDF',
+    previous: 'Previous match',
+    next: 'Next match',
+    matches: '{current} / {count}',
+    openExternally: 'Choose another application…',
+    externalFailed: 'The file could not be opened in another application.',
+    externalLink: 'Open this link outside Morrow?',
+    openLink: 'Open link',
+    document: 'PDF document',
+  },
   common: {
     showMore: 'Show {count} more',
     expand: 'Expand',

@@ -9,6 +9,7 @@ import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
 import { MediaFileView } from './components/MediaFileView';
+import { PdfFileView } from './components/PdfFileView';
 import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
@@ -228,11 +229,13 @@ function useLifecycle() {
   }, []);
 }
 
-function viewFor(route: Route) {
+function viewFor(route: Route, visible = true) {
   switch (route.name) {
     case 'page':
       return <PageView key={route.id} id={route.id} find={route.find} anchor={route.anchor ?? null} />;
     case 'file':
+      if (route.path && /\.pdf$/i.test(route.path))
+        return <PdfFileView key={`${route.vaultId}:${route.path}`} vaultId={route.vaultId} path={route.path} visible={visible} />;
       return (
         <MediaFileView
           key={`${route.vaultId ?? 'invalid'}:${route.path ?? 'invalid'}`}
@@ -389,7 +392,7 @@ function Pane({
         >
           {route ? (
             <ErrorBoundary resetKey={`${tabId}:${routeHash(route)}`}>
-              <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
+              <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route, !hidden)}</Suspense>
             </ErrorBoundary>
           ) : (
             <div className="pane-empty">{t('paneLayout.empty')}</div>

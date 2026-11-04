@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  WebContentsView,
   ClipboardItem,
   clipboard,
   dialog,
@@ -14,6 +15,7 @@ import {
   screen,
   session,
   shell,
+  webContents,
 } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions, WebContents } from 'electron';
 import { constants, existsSync } from 'node:fs';
@@ -35,6 +37,9 @@ import { createImageResourceRegistry, IMAGE_RESOURCE_MIME_TYPES } from './imageR
 import type { ImageResourceRegistry } from './imageResources.js';
 import { createMediaResourceRegistry } from './mediaResources.js';
 import type { MediaResourceRegistry } from './mediaResources.js';
+import { createPdfViewerManager } from './pdfViewer.js';
+import type { PdfViewerManager, PdfViewerOwner, PdfViewerRuntime } from './pdfViewer.js';
+import type { PdfVaultContext } from './pdfResources.js';
 import { notifyMediaResourceUnavailable } from './mediaAvailability.js';
 import { MEDIA_FILE_TYPES } from './mediaFileTypes.js';
 import { createMediaProtocolHandler } from './mediaProtocol.js';
@@ -101,6 +106,7 @@ const SCHEME = 'morrow';
 const FILE_SCHEME = 'morrow-file';
 const IMAGE_SCHEME = 'morrow-image';
 const MEDIA_SCHEME = 'morrow-media';
+const PDF_SCHEME = 'morrow-pdf';
 const APP_ORIGIN = `${SCHEME}://app`;
 const TRUSTED_MAIN_PROCESS = Symbol('trusted-main-process');
 let activeFileHandlers: FileHandlerModule | null = null;
@@ -148,6 +154,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: FILE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
   { scheme: IMAGE_SCHEME, privileges: { standard: true, secure: true, stream: true } },
   { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } },
+  { scheme: PDF_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
 let mainWindow: BrowserWindow | null = null;
@@ -158,6 +165,34 @@ const imageResourceOwners = createImageResourceOwnerStore();
 let activeMediaResources: MediaResourceRegistry | null = null;
 let mediaResourceEpoch = 0;
 const mediaResourceOwners = createImageResourceOwnerStore();
+let activePdfViewers: PdfViewerManager | null = null;
+let pdfVaultIdentity: { vaultId: string; generation: string | number } | null = null;
+
+function currentPdfContext(): PdfVaultContext | null {
+  const context = currentVaultContext();
+  return context && pdfVaultIdentity && context.generation === pdfVaultIdentity.generation
+    ? { ...context, vaultId: pdfVaultIdentity.vaultId }
+    : null;
+}
+
+async function authorizePdfVault(event: IpcMainInvokeEvent, vaultId: unknown) {
+  if (!fromImageViewerMainFrame(event)) return { ok: false as const, code: 'not-allowed' };
+  const context = currentVaultContext();
+  const resources = activeImageResources;
+  const epoch = imageResourceEpoch;
+  if (!context || !resources || typeof vaultId !== 'string')
+    return { ok: false as const, code: 'no-vault' };
+  let canonical: string | null;
+  try { canonical = await resources.getVaultId(); }
+  catch { return { ok: false as const, code: 'file-unavailable' }; }
+  const current = currentVaultContext();
+  if (epoch !== imageResourceEpoch || !current || current.generation !== context.generation ||
+    current.root !== context.root || current.realRoot !== context.realRoot || canonical !== vaultId)
+    return { ok: false as const, code: 'vault-changed' };
+  if (!fromImageViewerMainFrame(event)) return { ok: false as const, code: 'not-allowed' };
+  pdfVaultIdentity = { vaultId, generation: current.generation };
+  return { ok: true as const, epoch };
+}
 
 const backupsDir = () => path.join(app.getPath('userData'), 'Backups');
 const windowStateFile = () => path.join(app.getPath('userData'), 'window-state.json');
@@ -551,7 +586,7 @@ function fromApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   return isAppUrl(url);
 }
 
-function fromImageViewerMainFrame(event: IpcMainInvokeEvent): boolean {
+function fromImageViewerMainFrame(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   const window = mainWindow;
   if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return false;
   const frame = event.senderFrame;
@@ -567,6 +602,8 @@ function fromImageViewerMainFrame(event: IpcMainInvokeEvent): boolean {
 
 function clearImageResources(notify = true): void {
   imageResourceEpoch += 1;
+  activePdfViewers?.clear();
+  pdfVaultIdentity = null;
   activeImageResources?.clear();
   imageResourceOwners.clear();
   if (notify) toWindow('image-viewer:vault-changed', null);
@@ -614,6 +651,7 @@ function createFileHandlerAdapter() {
       getInternalExtensions: () => [
         ...Object.keys(IMAGE_RESOURCE_MIME_TYPES),
         ...Object.keys(MEDIA_FILE_TYPES),
+        'pdf',
       ].map((extension) => `.${extension}`),
       async chooseApplication(kind, _extension, locale) {
         const properties: Array<'openFile' | 'treatPackageAsDirectory'> = ['openFile'];
@@ -694,6 +732,65 @@ function registerIpc(): void {
   });
   const fileHandlers = createFileHandlerAdapter();
   activeFileHandlers = fileHandlers;
+  activePdfViewers = createPdfViewerManager({
+    runtime: {
+      createSession: (partition, options) => session.fromPartition(partition, options),
+      createView: (options) => new WebContentsView(options as Electron.WebContentsViewConstructorOptions),
+      getAllWebContents: () => webContents.getAllWebContents(),
+    } as PdfViewerRuntime,
+    getContext: currentPdfContext,
+    getOwner: () => {
+      const context = currentPdfContext();
+      return mainWindow && !mainWindow.isDestroyed() && context
+        ? { window: mainWindow, webContents: mainWindow.webContents, vaultId: context.vaultId } as unknown as PdfViewerOwner
+        : null;
+    },
+    onState: (state) => toWindow('pdf-viewer:state', state),
+    onFocus: (viewerId) => toWindow('pdf-viewer:focus', viewerId),
+    onExternalLink: (viewerId, url) => toWindow('pdf-viewer:external-link', { viewerId, url }),
+  });
+  ipcMain.handle('pdf-viewer:open', async (event, vaultId: unknown, relativePath: unknown) => {
+    if (typeof relativePath !== 'string' || relativePath.length > 4096 || !/\.pdf$/i.test(relativePath))
+      return { ok: false, code: 'invalid-resource' };
+    const allowed = await authorizePdfVault(event, vaultId);
+    if (!allowed.ok) return allowed;
+    const manager = activePdfViewers;
+    if (!manager) return { ok: false, code: 'unavailable' };
+    const result = await manager.open(vaultId as string, relativePath);
+    if (allowed.epoch !== imageResourceEpoch || !fromImageViewerMainFrame(event)) {
+      if (result.ok) manager.close(result.viewerId);
+      return { ok: false, code: 'vault-changed' };
+    }
+    return result;
+  });
+  ipcMain.on('pdf-viewer:present', (event, id: unknown, bounds: unknown, visible: unknown) => {
+    event.returnValue = false;
+    if (!fromImageViewerMainFrame(event) || typeof id !== 'string' || typeof visible !== 'boolean') return;
+    if (bounds !== null && (!bounds || typeof bounds !== 'object' ||
+      !['x', 'y', 'width', 'height'].every((key) =>
+        typeof (bounds as Record<string, unknown>)[key] === 'number' &&
+        Number.isFinite((bounds as Record<string, unknown>)[key])))) return;
+    event.returnValue = activePdfViewers?.present(id, bounds as { x: number; y: number; width: number; height: number } | null, visible) ?? false;
+  });
+  ipcMain.handle('pdf-viewer:find', (event, id: unknown, query: unknown, forward: unknown) =>
+    fromImageViewerMainFrame(event) && typeof id === 'string' && typeof query === 'string' &&
+    query.length <= 1000 && typeof forward === 'boolean'
+      ? activePdfViewers?.find(id, query, forward) ?? false : false);
+  ipcMain.handle('pdf-viewer:state', (event, id: unknown) =>
+    fromImageViewerMainFrame(event) && typeof id === 'string' ? activePdfViewers?.getState(id) ?? null : null);
+  ipcMain.handle('pdf-viewer:close', (event, id: unknown) => {
+    if (!fromImageViewerMainFrame(event) || typeof id !== 'string' || !activePdfViewers?.getState(id)) return false;
+    activePdfViewers.close(id);
+    return true;
+  });
+  ipcMain.handle('pdf-viewer:open-external', async (event, vaultId: unknown, relativePath: unknown, locale: unknown) => {
+    if (typeof relativePath !== 'string' || relativePath.length > 4096 || !/\.pdf$/i.test(relativePath))
+      return { ok: false, code: 'invalid-resource', message: '' };
+    const allowed = await authorizePdfVault(event, vaultId);
+    if (!allowed.ok) return { ...allowed, message: '' };
+    // No await between the expected-vault guard and the existing adapter capturing its context.
+    return fileHandlers.openFile(event, relativePath, { chooseOnce: true, locale });
+  });
   ipcMain.on('morrow:info', (event) => {
     event.returnValue = fromApp(event)
       ? { version: app.getVersion(), dataPath: app.getPath('userData'), platform: process.platform }

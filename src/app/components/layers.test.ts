@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handleLayerEscape, handleLayerPointerDown, registerDismissableLayer } from './layers';
+import {
+  handleLayerEscape,
+  handleLayerPointerDown,
+  observeOverlayLayers,
+  registerDismissableLayer,
+} from './layers';
 
 function fakeElement(inside: readonly string[] = []) {
   const values = new Map<string, string>();
@@ -16,6 +21,37 @@ function fakeElement(inside: readonly string[] = []) {
 }
 
 describe('dismissable overlay layers', () => {
+  it('acknowledges native-view occlusion synchronously and only unblocks after the final layer', () => {
+    const observed: boolean[] = [];
+    const stop = observeOverlayLayers((blocked) => observed.push(blocked));
+    const first = fakeElement();
+    const second = fakeElement();
+    const closeFirst = registerDismissableLayer({
+      surface: first,
+      element: first,
+      onDismiss: () => undefined,
+    });
+    const closeSecond = registerDismissableLayer({
+      surface: second,
+      element: second,
+      onDismiss: () => undefined,
+    });
+    expect(observed).toEqual([false, true, true]);
+    closeFirst();
+    expect(observed.at(-1)).toBe(true);
+    closeSecond();
+    expect(observed.at(-1)).toBe(false);
+    stop();
+    const count = observed.length;
+    const closeAgain = registerDismissableLayer({
+      surface: first,
+      element: first,
+      onDismiss: () => undefined,
+    });
+    closeAgain();
+    expect(observed).toHaveLength(count);
+  });
+
   it('keeps PropertySettings open and restores RichCanvas focus when Escape closes the top layer', () => {
     const parentElement = fakeElement();
     const parentTrigger = fakeElement();
