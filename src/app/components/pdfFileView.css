@@ -1,0 +1,71 @@
+.pdf-file-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+}
+.pdf-file-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.pdf-file-header strong {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-file-metadata {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.pdf-find {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.pdf-find label {
+  display: flex;
+  flex: 1 1 160px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.pdf-find input {
+  flex: 1;
+  min-width: 0;
+}
+.pdf-find > span {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.pdf-file-status {
+  margin: 4px 12px 8px;
+  color: var(--text-muted);
+}
+.pdf-native-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 80px;
+  overflow: hidden;
+}
+.pdf-external-link {
+  padding: 10px 12px;
+  border-block: 1px solid var(--border);
+  background: var(--surface);
+}
+.pdf-external-link p {
+  margin: 0 0 6px;
+}
+.pdf-link-address {
+  overflow-wrap: anywhere;
+}

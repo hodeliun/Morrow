@@ -1,6 +1,24 @@
 import type { TranslationSchema } from '../types';
 
 export const es: TranslationSchema = {
+  pdfViewer: {
+    loading: 'Cargando PDF…',
+    pages: 'Páginas: {count}',
+    passwordRequired: 'Introduce la contraseña en el visor de PDF. Morrow no la guarda.',
+    invalid: 'Este archivo no es un PDF válido o compatible.',
+    unavailable:
+      'Este PDF no tiene datos legibles en este dispositivo. Si solo está en línea, obténlo mediante el sistema y vuelve a abrirlo.',
+    failed: 'El visor de PDF no está disponible. Puedes elegir otra aplicación.',
+    search: 'Buscar en este PDF',
+    previous: 'Coincidencia anterior',
+    next: 'Siguiente coincidencia',
+    matches: '{current} / {count}',
+    openExternally: 'Elegir otra aplicación…',
+    externalFailed: 'No se pudo abrir el archivo en otra aplicación.',
+    externalLink: '¿Abrir este enlace fuera de Morrow?',
+    openLink: 'Abrir enlace',
+    document: 'Documento PDF',
+  },
   common: {
     showMore: 'Mostrar {count} más',
     expand: 'Expandir',

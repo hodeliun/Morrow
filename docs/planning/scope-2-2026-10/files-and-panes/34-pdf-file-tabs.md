@@ -12,15 +12,17 @@ Continuação de https://github.com/hodeliun/Morrow/issues/51 (sem substituir os
 
 Ler PDF de qualquer pasta comum do vault sem sair do app.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+**Execução autorizada e aceite local verificado. Publicação, CI da main e encerramento da issue seguem o fluxo sequencial.**
 
 ## Acceptance criteria
 
-- [ ] Abrir PDF existente com controle de páginas, zoom, busca e rolagem na aba; usar infraestrutura do Electron antes de adicionar dependência.
-- [ ] PDF isolado do preload/bridge do aplicativo, sem navegar para caminho arbitrário; links externos passam pelo roteamento validado.
-- [ ] Arquivo preservado e sem importação; servidor/recurso local valida MIME, path real e acesso somente ao arquivo selecionado.
-- [ ] PDF inválido, protegido por senha ou indisponível informa condição apropriada; não armazenar senha nem sobrescrever arquivo; fallback externo explícito.
-- [ ] Comprovar viewer no Windows empacotado, incluindo resize, tema e painel estreito; não aceitar só hyperlink para navegador externo como implementação.
+- [x] Abrir PDF existente com controle de páginas, zoom, busca e rolagem na aba; usar infraestrutura do Electron antes de adicionar dependência.
+- [x] PDF isolado do preload/bridge do aplicativo, sem navegar para caminho arbitrário; links externos passam pelo roteamento validado.
+- [x] Arquivo preservado e sem importação; servidor/recurso local valida MIME, path real e acesso somente ao arquivo selecionado.
+- [x] PDF inválido, protegido por senha ou indisponível informa condição apropriada; não armazenar senha nem sobrescrever arquivo; fallback externo explícito.
+- [x] Comprovar viewer no Windows empacotado, incluindo resize, tema e painel estreito; não aceitar só hyperlink para navegador externo como implementação.
+
+Aceite e limites: [entrega T34](../../../deliveries/T34-pdf-file-tabs.md).
 
 ## Blocked by
 
