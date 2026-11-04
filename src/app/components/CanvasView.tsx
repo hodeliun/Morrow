@@ -22,7 +22,7 @@ import type { DocNode, PageId } from '../../core/model';
 import { findPagesByTitle } from '../../core/search';
 import { isImagePath } from '../../core/vault/paths';
 import { fileUrl } from '../platform/attachments';
-import { openExternal } from '../platform/desktop';
+import { openHref } from '../editor/EditorMenus';
 import { newId } from '../platform/files';
 import { openPage } from '../router';
 import { openDialog } from '../ui';
@@ -738,7 +738,7 @@ export function CanvasView({
       const node = data.nodes.find((item) => item.id === nodeElement.dataset.node);
       if (node?.type === 'text') setEditing(node.id);
       else if (node?.type === 'page') openPage(node.pageId);
-      else if (node?.type === 'link') openExternal(node.url);
+      else if (node?.type === 'link') openHref(node.url);
       else if (node?.type === 'group')
         openDialog({
           kind: 'source',

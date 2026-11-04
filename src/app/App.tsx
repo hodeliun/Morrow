@@ -10,6 +10,8 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
 import { MediaFileView } from './components/MediaFileView';
 import { PdfFileView } from './components/PdfFileView';
+import { BrowserTabView } from './components/BrowserTabView';
+import { observeOverlayLayers } from './components/layers';
 import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
@@ -244,18 +246,7 @@ function viewFor(route: Route, visible = true) {
         />
       );
     case 'url':
-      return (
-        <section className="view resource-target-view" role="status" aria-live="polite">
-          <h2>
-            {route.url
-              ? t('resourceTarget.urlUnavailableTitle')
-              : t('resourceTarget.invalidUrlTitle')}
-          </h2>
-          <p>
-            {route.url ? t('resourceTarget.urlUnavailable') : t('resourceTarget.invalidUrl')}
-          </p>
-        </section>
-      );
+      return <BrowserTabView url={route.url} visible={visible} />;
     case 'tasks':
       return <TasksView />;
     case 'trash':
@@ -582,6 +573,48 @@ export function App() {
     const liveIds = new Set(registeredTabIds);
     for (const id of mountCache.mountedTabIds) if (!liveIds.has(id)) mountCache.mountedTabIds.delete(id);
   }, [mountCache, registeredTabIds, visibleAssignments]);
+
+  const refreshBrowserObstruction = useRef<() => void>(() => undefined);
+  useLayoutEffect(() => {
+    const browser = desktop?.browserTabs;
+    if (!browser) return;
+    let overlay = false;
+    const refresh = () => {
+      const currentUi = getUi();
+      const preferences = getPreferences();
+      const sidebarOpening = !currentUi.focusMode && (window.matchMedia('(max-width: 800px)').matches
+        ? currentUi.mobileSidebar
+        : !preferences.sidebarOpen && preferences.sidebarPeek && currentUi.sidebarPeek);
+      const sidebar = document.querySelector<HTMLElement>('.sidebar');
+      const rect = sidebar?.getBoundingClientRect();
+      const intersects = Boolean(sidebar && rect && rect.width > 0 && rect.height > 0 &&
+        getComputedStyle(sidebar).visibility !== 'hidden' &&
+        [...document.querySelectorAll<HTMLElement>('.pane:not([aria-hidden="true"]) .browser-tab-content')].some((host) => {
+          const bounds = host.getBoundingClientRect();
+          return bounds.width > 0 && bounds.height > 0 && rect.right > bounds.left && rect.left < bounds.right &&
+            rect.bottom > bounds.top && rect.top < bounds.bottom;
+        }));
+      browser.setOverlayBlocked(overlay || sidebarOpening || intersects);
+    };
+    refreshBrowserObstruction.current = refresh;
+    const stop = observeOverlayLayers((blocked) => { overlay = blocked; refresh(); });
+    const app = document.querySelector('.app');
+    const observer = new MutationObserver(refresh);
+    if (app) observer.observe(app, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('resize', refresh);
+    document.addEventListener('transitionend', refresh, true);
+    refresh();
+    return () => {
+      refreshBrowserObstruction.current = () => undefined;
+      stop();
+      observer.disconnect();
+      window.removeEventListener('resize', refresh);
+      document.removeEventListener('transitionend', refresh, true);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    refreshBrowserObstruction.current();
+  }, [prefs.sidebarOpen, prefs.sidebarPeek, ui.mobileSidebar, ui.sidebarPeek, ui.focusMode, tabs.layout]);
 
   useTheme(prefs.theme);
   useEffect(() => {

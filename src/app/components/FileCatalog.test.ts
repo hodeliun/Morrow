@@ -5,12 +5,14 @@ const mocks = vi.hoisted(() => ({
   openFile: vi.fn(),
   getVaultId: vi.fn(),
   openTab: vi.fn(),
+  openBrowserUrl: vi.fn(),
+  readDescriptor: vi.fn(),
 }));
 vi.mock('../workspace', () => ({ getSession: () => mocks.session, useFileCatalog: vi.fn() }));
 vi.mock('../platform/desktop', () => ({
-  desktop: { fileHandlers: { openFile: mocks.openFile }, imageViewer: { getVaultId: mocks.getVaultId } },
+  desktop: { fileHandlers: { openFile: mocks.openFile }, imageViewer: { getVaultId: mocks.getVaultId }, browserTabs: { readDescriptor: mocks.readDescriptor } },
 }));
-vi.mock('../tabs', () => ({ openTab: mocks.openTab }));
+vi.mock('../tabs', () => ({ openTab: mocks.openTab, openBrowserUrl: mocks.openBrowserUrl }));
 vi.mock('../i18n', () => ({ t: (key: string) => key, useTranslation: vi.fn() }));
 
 import { openCatalogFile } from './FileCatalog';
@@ -27,6 +29,29 @@ beforeEach(() => {
   mocks.openFile.mockReset().mockResolvedValue({ ok: true, destination: 'internal' });
   mocks.getVaultId.mockReset().mockResolvedValue({ ok: true, vaultId: '11111111-1111-4111-8111-111111111111' });
   mocks.openTab.mockReset();
+  mocks.openBrowserUrl.mockReset();
+  mocks.readDescriptor.mockReset();
+});
+
+it('opens a validated Google descriptor internally without dispatching its file to an external application', async () => {
+  mocks.readDescriptor.mockResolvedValue(JSON.stringify({ url: 'https://docs.google.com/document/d/synthetic/edit' }));
+  await openCatalogFile('Documents/synthetic.gdoc', false, 'en', vi.fn());
+  expect(mocks.readDescriptor).toHaveBeenCalledExactlyOnceWith('Documents/synthetic.gdoc');
+  expect(mocks.openBrowserUrl).toHaveBeenCalledExactlyOnceWith('https://docs.google.com/document/d/synthetic/edit');
+  expect(mocks.openFile).not.toHaveBeenCalled();
+});
+
+it('does not open a completed descriptor from a previous vault session', async () => {
+  const pending = deferred<string>();
+  mocks.readDescriptor.mockReturnValue(pending.promise);
+  const failure = vi.fn();
+  const opening = openCatalogFile('Documents/same.gsheet', false, 'en', failure);
+  mocks.session = { name: 'second' };
+  pending.resolve(JSON.stringify({ url: 'https://docs.google.com/spreadsheets/d/synthetic/edit' }));
+  await opening;
+  expect(mocks.openBrowserUrl).not.toHaveBeenCalled();
+  expect(mocks.openFile).not.toHaveBeenCalled();
+  expect(failure.mock.calls).toEqual([[null]]);
 });
 
 it('opens the selected image once while its session remains current', async () => {

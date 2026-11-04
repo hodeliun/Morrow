@@ -300,6 +300,41 @@ export interface DesktopPdfViewerApi {
   onExternalLink(listener: (event: { viewerId: string; url: string }) => void): () => void;
 }
 
+export interface BrowserPaneBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserTabState {
+  tabId: string;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  url: string | null;
+  title: string | null;
+  target: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  warnings: Array<'http' | 'ephemeral'>;
+  error: 'invalid-url' | 'url-too-long' | 'navigation-blocked' | 'load-failed' | null;
+  muted: boolean;
+  mediaPauseFailed: boolean;
+}
+
+export interface DesktopBrowserTabsApi {
+  getState(tabId: string): Promise<BrowserTabState>;
+  navigate(tabId: string, url: string): Promise<BrowserTabState>;
+  command(tabId: string, command: 'back' | 'forward' | 'reload' | 'stop'): Promise<BrowserTabState>;
+  present(tabId: string, bounds: BrowserPaneBounds, visible: boolean): Promise<boolean>;
+  release(tabId: string): Promise<void>;
+  openExternal(tabId: string): Promise<string | null>;
+  clearSiteData(): Promise<void>;
+  readDescriptor(path: string): Promise<string | null>;
+  setOverlayBlocked(blocked: boolean): boolean;
+  onState(listener: (state: BrowserTabState) => void): () => void;
+  onFocus(listener: (tabId: string) => void): () => void;
+}
+
 export interface DesktopBridge {
   assistant?: DesktopAssistantApi;
   clipboard?: DesktopClipboardApi;
@@ -307,6 +342,7 @@ export interface DesktopBridge {
   imageViewer?: DesktopImageViewerApi;
   mediaViewer?: DesktopMediaViewerApi;
   pdfViewer?: DesktopPdfViewerApi;
+  browserTabs?: DesktopBrowserTabsApi;
   mcp?: DesktopMcpApi;
   vault?: DesktopVaultApi;
   sync?: DesktopSyncApi;

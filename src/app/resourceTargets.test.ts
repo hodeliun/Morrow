@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canonicalizeResourceTargetHash,
+  classifyBrowserAddress,
   normalizeSafeHttpUrl,
   parseResourceTarget,
   serializeResourceTarget,
@@ -101,6 +102,94 @@ describe('resource target adapter', () => {
     expect(parseResourceTarget('#/url/https%3A%2F%2Fexample.com%2Fpath?token=synthetic')).toEqual({
       kind: 'url',
       url: null,
+    });
+  });
+  it('persists clean URLs and the exact YouTube watch query while keeping all other queries ephemeral', () => {
+    const youtube = 'https://www.youtube.com/watch?v=abcdefghijk';
+    expect(classifyBrowserAddress('example.com')).toEqual({
+      ok: true,
+      url: 'https://example.com/',
+      restorable: true,
+      warnings: [],
+    });
+    expect(classifyBrowserAddress(youtube)).toEqual({
+      ok: true,
+      url: youtube,
+      restorable: true,
+      warnings: [],
+    });
+    expect(normalizeSafeHttpUrl(youtube)).toBe(youtube);
+    expect(serializeResourceTarget({ kind: 'url', url: youtube })).toBe(
+      `#/url/${encodeURIComponent(youtube)}`,
+    );
+
+    for (const value of [
+      'https://example.com/search?q=synthetic',
+      'https://example.com/path#section',
+      'https://youtube.com/watch?v=abcdefghijk&list=synthetic',
+      'https://youtube.com/watch?list=synthetic&v=abcdefghijk',
+      'https://youtube.com/watch?v=short',
+    ]) {
+      const decision = classifyBrowserAddress(value);
+      expect(decision).toMatchObject({ ok: true, restorable: false, warnings: ['ephemeral'] });
+      expect(normalizeSafeHttpUrl(value)).toBeNull();
+      expect(serializeResourceTarget({ kind: 'url', url: value })).toBeNull();
+      expect(canonicalizeResourceTargetHash(`#/url/${encodeURIComponent(value)}`)).toBe(URL_UNAVAILABLE_HASH);
+    }
+  });
+
+  it('flags explicit HTTP and rejects non-web schemes, userinfo, controls, and oversized addresses', () => {
+    expect(classifyBrowserAddress('http://example.com/path')).toMatchObject({
+      ok: true,
+      restorable: true,
+      warnings: ['http'],
+    });
+    for (const value of [
+      'javascript:alert(1)',
+      'file:///C:/private.txt',
+      'https://user@example.com/',
+      'https://@example.com/',
+      'https://example.com/%C2%85',
+    ])
+      expect(classifyBrowserAddress(value)).toMatchObject({ ok: false, code: 'invalid-url' });
+    expect(classifyBrowserAddress(`https://example.com/${'a'.repeat(8192)}`)).toMatchObject({
+      ok: false,
+      code: 'url-too-long',
+    });
+  });
+
+  it('shares host-port, port allowlist, and 8192-character hash compatibility rules', () => {
+    expect(classifyBrowserAddress('example.com:443')).toEqual({
+      ok: true,
+      url: 'https://example.com/',
+      restorable: true,
+      warnings: [],
+    });
+    expect(classifyBrowserAddress('javascript:alert(1)')).toMatchObject({ ok: false, code: 'invalid-url' });
+    expect(classifyBrowserAddress('https://youtube.com:8443/watch?v=abcdefghijk')).toMatchObject({
+      ok: true,
+      restorable: false,
+      warnings: ['ephemeral'],
+    });
+
+    const longUrl = `https://example.com/${'a'.repeat(5000)}`;
+    const longHash = serializeResourceTarget({ kind: 'url', url: longUrl });
+    expect(classifyBrowserAddress(longUrl)).toMatchObject({ ok: true, restorable: true, warnings: [] });
+    expect(longHash).not.toBeNull();
+    expect(longHash!.length).toBeLessThanOrEqual(8192);
+    expect(canonicalizeResourceTargetHash(longHash!)).toBe(longHash);
+    expect(parseResourceTarget(longHash!)).toEqual({ kind: 'url', url: longUrl });
+    expect(classifyBrowserAddress(`https://example.com/${'a'.repeat(8200)}`)).toMatchObject({
+      ok: false,
+      code: 'url-too-long',
+    });
+  });
+
+  it('shows both transport and non-restoration warnings for HTTP addresses with a query', () => {
+    expect(classifyBrowserAddress('http://example.com/?token=synthetic')).toMatchObject({
+      ok: true,
+      restorable: false,
+      warnings: ['http', 'ephemeral'],
     });
   });
 });

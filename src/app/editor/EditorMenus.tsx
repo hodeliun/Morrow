@@ -28,6 +28,8 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
+  Globe,
+  MoreHorizontal,
   Heading1,
   Heading2,
   Heading3,
@@ -66,6 +68,9 @@ import type { MenuEntry } from '../components/Menu';
 import { copyImageFile, downloadFile } from '../platform/attachments';
 import { copyText, desktop, openExternal } from '../platform/desktop';
 import { openPage } from '../router';
+import { getPreferences } from '../platform/preferences';
+import { classifyBrowserAddress } from '../resourceTargets';
+import { openBrowserUrl } from '../tabs';
 import { moveBlock } from './BlockHandle';
 import type { BlockMenuRequest } from './BlockHandle';
 import {
@@ -125,10 +130,19 @@ export function normalizeHref(raw: string): string | null {
   return `https://${value}`;
 }
 
-export function openHref(href: string): void {
+export function openHref(href: string, linkOpening?: 'internal' | 'external'): void {
   const pageId = pageIdFromHref(href);
-  if (pageId) openPage(pageId);
-  else openExternal(href);
+  if (pageId) {
+    openPage(pageId);
+    return;
+  }
+  if (/^https?:/i.test(href)) {
+    if ((linkOpening ?? getPreferences().webLinkOpening) === 'internal' && classifyBrowserAddress(href).ok) {
+      openBrowserUrl(href);
+      return;
+    }
+  }
+  openExternal(href);
 }
 
 function LinkInput({ editor, onDone }: { editor: Editor; onDone: () => void }) {
@@ -538,10 +552,35 @@ export function FormattingMenu({ editor }: { editor: Editor }) {
 
 export function LinkMenu({ editor }: { editor: Editor }) {
   const [editing, setEditing] = useState(false);
+  const [openChoiceAnchor, setOpenChoiceAnchor] = useState<HTMLElement | null>(null);
   const { href } = useMarks(editor);
   const [options] = useState(
-    () => ({ placement: 'bottom-start', offset: 6, flip: true, onHide: () => setEditing(false) }) as const,
+    () => ({
+      placement: 'bottom-start',
+      offset: 6,
+      flip: true,
+      onHide: () => {
+        setEditing(false);
+        setOpenChoiceAnchor(null);
+      },
+    }) as const,
   );
+  const isHttpLink = /^https?:/i.test(href);
+  const canOpenInternally = isHttpLink && classifyBrowserAddress(href).ok;
+  const openChoiceEntries: MenuEntry[] = [
+    {
+      label: t('browserTabs.openLinkInternally'),
+      icon: Globe,
+      disabled: !canOpenInternally,
+      onSelect: () => openHref(href, 'internal'),
+    },
+    {
+      label: t('browserTabs.openLinkExternally'),
+      icon: ExternalLink,
+      disabled: !isHttpLink,
+      onSelect: () => openHref(href, 'external'),
+    },
+  ];
   return (
     <BubbleMenu editor={editor} pluginKey="linkMenu" options={options} shouldShow={showLink}>
       <div className="toolbar popover link-popover">
@@ -559,6 +598,18 @@ export function LinkMenu({ editor }: { editor: Editor }) {
               {href.replace(/^https?:\/\//, '').replace(/^#\/page\/.*/, t('editor.morrowPage'))}
             </button>
             <ToolButton label={t('editor.openLink')} icon={ExternalLink} onClick={() => openHref(href)} />
+            {isHttpLink && (
+              <button
+                type="button"
+                className="tool-button"
+                aria-label={t('browserTabs.openLinkOptions')}
+                title={t('browserTabs.openLinkOptions')}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={(event) => setOpenChoiceAnchor(event.currentTarget)}
+              >
+                <MoreHorizontal size={16} strokeWidth={2} />
+              </button>
+            )}
             <ToolButton
               label={t('editor.copyLink')}
               icon={Copy}
@@ -579,6 +630,14 @@ export function LinkMenu({ editor }: { editor: Editor }) {
           </>
         )}
       </div>
+      {openChoiceAnchor && isHttpLink && (
+        <Menu
+          anchor={openChoiceAnchor}
+          entries={openChoiceEntries}
+          label={t('browserTabs.openLinkOptions')}
+          onClose={() => setOpenChoiceAnchor(null)}
+        />
+      )}
     </BubbleMenu>
   );
 }

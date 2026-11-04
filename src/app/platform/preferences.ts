@@ -9,6 +9,7 @@ export type WritingFont = 'serif' | 'sans' | 'mono';
 export type PageWidth = 'comfortable' | 'wide';
 // what morrow shows when it opens: today's note, the home page, or where you left off
 export type StartPage = 'today' | 'home' | 'last';
+export type WebLinkOpening = 'internal' | 'external';
 // the views the sidebar lists, each one can be left out, daily notes turn off everywhere with theirs
 export const SIDEBAR_MODULES = ['daily', 'tasks', 'tags', 'review', 'graph'] as const;
 export type SidebarModule = (typeof SIDEBAR_MODULES)[number];
@@ -44,6 +45,7 @@ export interface Preferences {
   // how much of a split tab the first side takes
   splitShare: number;
   startPage: StartPage;
+  webLinkOpening: WebLinkOpening;
   // the optional assistant, off until turned on in settings
   assistant: boolean;
   assistantOpen: boolean;
@@ -88,6 +90,7 @@ const defaults: Preferences = {
   canvasSizes: {},
   splitShare: 0.5,
   startPage: 'today',
+  webLinkOpening: 'external',
   assistant: false,
   assistantOpen: false,
   assistantAsk: true,
@@ -154,6 +157,7 @@ function read(): Preferences {
       startPage: ['today', 'home', 'last'].includes(parsed.startPage as string)
         ? parsed.startPage!
         : defaults.startPage,
+      webLinkOpening: parsed.webLinkOpening === 'internal' ? 'internal' : 'external',
       assistant: parsed.assistant === true,
       assistantOpen: parsed.assistantOpen === true,
       assistantAsk: parsed.assistantAsk !== false,

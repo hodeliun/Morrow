@@ -5,7 +5,8 @@ import { filterFileCatalog, nextFileCatalogBatchSize } from '../../core/vault/fi
 import type { FileCatalogSnapshot, VaultResource } from '../../core/vault/fileCatalog';
 import { t as translate, useTranslation } from '../i18n';
 import { routeHash } from '../router';
-import { openTab } from '../tabs';
+import { openTab, openBrowserUrl } from '../tabs';
+import { parseBrowserDescriptor } from '../browserDescriptors';
 import { desktop } from '../platform/desktop';
 import type { DesktopFileHandlerLocale, DesktopFileHandlerResult } from '../platform/desktop';
 import { fileHandlerErrorKey } from '../platform/fileHandlerMessages';
@@ -79,6 +80,18 @@ export async function openCatalogFile(
     return;
   }
   try {
+    const extension = fileExtension(path).toLowerCase();
+    if (!chooseOnce && (extension === 'gdoc' || extension === 'gsheet')) {
+      const content = await desktop?.browserTabs?.readDescriptor(path);
+      if (getSession() !== session) return;
+      const descriptor = parseBrowserDescriptor(extension, content ?? null);
+      if (!descriptor.ok) {
+        setOpenFailure({ path, result: { ok: false, code: descriptor.code, message: translate('fileCatalog.invalidResource') } });
+        return;
+      }
+      openBrowserUrl(descriptor.url);
+      return;
+    }
     const result = await fileHandlers.openFile(path, chooseOnce ? { chooseOnce: true, locale } : undefined);
     if (getSession() !== session) return;
     if (result.ok && result.destination === 'internal') {

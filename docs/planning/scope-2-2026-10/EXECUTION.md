@@ -12,10 +12,10 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T34 (#86), PDFs locais em abas internas.
-T29 (#80) foi integrado no PR112 e encerrado após CI Windows/Linux da main.
-T34 tem aceite local combinado e aguarda publicação e CI; os demais tickets
-permanecem preservados até sua vez.
+A única entrega ativa é T36 (#88), navegação web isolada em abas internas.
+T34 (#86) foi integrado no PR113 e encerrado após CI Windows/Linux da main.
+São 20 das 24 entregas retomadas publicadas e encerradas. T30 permanece diferido;
+T38 e T39 permanecem preservados até sua vez.
 O pré-requisito histórico T14 (#65) foi reconciliado no PR105, após verificação
 direta de documentos/arquivos e CI Windows/Linux. Não acrescenta uma entrega às 24 retomadas.
 O formato persistido 13 e seus contratos estritos

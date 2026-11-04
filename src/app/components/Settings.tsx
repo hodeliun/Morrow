@@ -32,7 +32,7 @@ import {
   setPreferences,
   usePreferences,
 } from "../platform/preferences";
-import type { StartPage, ThemePreference } from "../platform/preferences";
+import type { StartPage, ThemePreference, WebLinkOpening } from "../platform/preferences";
 import { closeDialog, openDialog, toast } from "../ui";
 import type { SettingsSection } from "../ui";
 import { chooseVaultFolder } from "../vaults";
@@ -171,6 +171,20 @@ function GeneralSettings() {
             label: locale.label,
           }))}
           onChange={(locale) => setPreferences({ locale })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("browserTabs.linkOpening")}
+        help={t("browserTabs.linkOpeningHelp")}
+      >
+        <Segmented<WebLinkOpening>
+          label={t("browserTabs.linkOpening")}
+          value={prefs.webLinkOpening}
+          options={[
+            ["external", t("browserTabs.openLinksExternally")],
+            ["internal", t("browserTabs.openLinksInternally")],
+          ]}
+          onChange={(webLinkOpening) => setPreferences({ webLinkOpening })}
         />
       </SettingRow>
       <SettingRow

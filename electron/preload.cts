@@ -87,6 +87,34 @@ contextBridge.exposeInMainWorld('morrow', {
       return () => ipcRenderer.removeListener('media-viewer:availability', handler);
     },
   },
+  browserTabs: {
+    getState: (tabId: string) => ipcRenderer.invoke('browser-tabs:get-state', tabId),
+    navigate: (tabId: string, url: string) => ipcRenderer.invoke('browser-tabs:navigate', tabId, url),
+    command: (tabId: string, command: 'back' | 'forward' | 'reload' | 'stop') =>
+      ipcRenderer.invoke('browser-tabs:command', tabId, command),
+    present: (tabId: string, bounds: unknown, visible: boolean) =>
+      ipcRenderer.invoke('browser-tabs:present', tabId, bounds, visible),
+    release: (tabId: string) => ipcRenderer.invoke('browser-tabs:release', tabId),
+    openExternal: (tabId: string) => ipcRenderer.invoke('browser-tabs:open-external', tabId),
+    clearSiteData: () => ipcRenderer.invoke('browser-tabs:clear-site-data'),
+    readDescriptor: (path: string) => ipcRenderer.invoke('browser-tabs:read-descriptor', path),
+    setOverlayBlocked: (blocked: boolean) =>
+      ipcRenderer.sendSync('browser-tabs:overlay-blocked', blocked) === true,
+    onState(listener: (state: unknown) => void) {
+      if (typeof listener !== 'function') return () => undefined;
+      const handler = (_event: unknown, state: unknown) => listener(state);
+      ipcRenderer.on('browser-tabs:state', handler);
+      return () => ipcRenderer.removeListener('browser-tabs:state', handler);
+    },
+    onFocus(listener: (tabId: string) => void) {
+      if (typeof listener !== 'function') return () => undefined;
+      const handler = (_event: unknown, tabId: unknown) => {
+        if (typeof tabId === 'string') listener(tabId);
+      };
+      ipcRenderer.on('browser-tabs:focus', handler);
+      return () => ipcRenderer.removeListener('browser-tabs:focus', handler);
+    },
+  },
   pdfViewer: {
     open: (vaultId: string, relativePath: string) =>
       ipcRenderer.invoke('pdf-viewer:open', vaultId, relativePath),
