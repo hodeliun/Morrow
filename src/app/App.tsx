@@ -34,7 +34,11 @@ import {
   cancelPaneResizeSession,
   claimNavigation,
   commitPaneResizeSession,
+  getVisiblePanes,
   initialLaunchHash,
+  moveTabToPaneWithSplit,
+  notifyPaneLimitReached,
+  openRouteInPane,
   paneIdForTabId,
   PaneContext,
   PaneTabContext,
@@ -42,10 +46,19 @@ import {
   resetPaneSplitRatio,
   setActivePane,
   startTabs,
+  usePaneAnnouncement,
   useTabs,
 } from './tabs';
 import type { PaneId } from './tabs';
-import type { PaneNode, PaneSplit } from './paneLayout';
+import {
+  FILE_DRAG_TYPE,
+  PAGE_DRAG_TYPES,
+  TAB_DRAG_TYPE,
+  detectPaneDropZone,
+} from './paneLayout';
+import type { PaneDropZone, PaneEdge, PaneNode, PaneSplit } from './paneLayout';
+import { openCatalogFileInPane } from './components/FileCatalog';
+import { PaneEmptyChooser } from './components/PaneEmptyChooser';
 import { flushPlaces } from './readingPlace';
 import { clearPropertyHistory, getSession } from './workspace';
 import { startupDestination } from './startupNavigation';
@@ -358,6 +371,81 @@ function Pane({
 }) {
   const ref = useRef<HTMLElement>(null);
   const size = usePaneSize(ref);
+  const [dragOverZone, setDragOverZone] = useState<PaneDropZone | null>(null);
+  const visiblePanes = getVisiblePanes();
+  const isMaxPanes = visiblePanes.length >= 4;
+
+  const onDragOver = (event: React.DragEvent<HTMLElement>) => {
+    const types = event.dataTransfer.types;
+    const isMorrowDrag =
+      types.includes(TAB_DRAG_TYPE) ||
+      PAGE_DRAG_TYPES.some((t) => types.includes(t)) ||
+      types.includes(FILE_DRAG_TYPE);
+    if (!isMorrowDrag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const zone = detectPaneDropZone(bounds, { x: event.clientX, y: event.clientY });
+    setDragOverZone(zone);
+  };
+
+  const onDragLeave = (event: React.DragEvent<HTMLElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+    setDragOverZone(null);
+  };
+
+  const onDrop = (event: React.DragEvent<HTMLElement>) => {
+    const types = event.dataTransfer.types;
+    const isMorrowDrag =
+      types.includes(TAB_DRAG_TYPE) ||
+      PAGE_DRAG_TYPES.some((t) => types.includes(t)) ||
+      types.includes(FILE_DRAG_TYPE);
+    if (!isMorrowDrag) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const zone = detectPaneDropZone(bounds, { x: event.clientX, y: event.clientY });
+    setDragOverZone(null);
+
+    const isSplit = zone !== 'center';
+    if (isSplit && isMaxPanes) {
+      notifyPaneLimitReached();
+      return;
+    }
+
+    const splitEdge: PaneEdge | undefined = isSplit ? zone : undefined;
+
+    const draggedTabId = event.dataTransfer.getData(TAB_DRAG_TYPE);
+    if (draggedTabId) {
+      moveTabToPaneWithSplit(draggedTabId, pane, splitEdge);
+      return;
+    }
+
+    const draggedPageId =
+      event.dataTransfer.getData(PAGE_DRAG_TYPES[0]) ||
+      event.dataTransfer.getData(PAGE_DRAG_TYPES[1]);
+    if (draggedPageId) {
+      const pageRoute = `#/page/${encodeURIComponent(draggedPageId)}`;
+      openRouteInPane(pageRoute, pane, { splitEdge });
+      return;
+    }
+
+    const draggedFileRaw = event.dataTransfer.getData(FILE_DRAG_TYPE);
+    if (draggedFileRaw) {
+      try {
+        const parsed = JSON.parse(draggedFileRaw);
+        if (parsed.path) {
+          void openCatalogFileInPane(parsed.path, pane, splitEdge);
+        }
+      } catch {
+        // invalid JSON
+      }
+      return;
+    }
+  };
+
   return (
     <PaneContext.Provider value={pane}>
       <PaneTabContext.Provider value={tabId}>
@@ -380,13 +468,22 @@ function Pane({
           }}
           onPointerDownCapture={() => setActivePane(pane)}
           onFocusCapture={() => setActivePane(pane)}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
         >
+          {dragOverZone && (
+            <div
+              className={`pane-drop-preview is-${dragOverZone}${dragOverZone !== 'center' && isMaxPanes ? ' is-rejected' : ''}`}
+              aria-hidden="true"
+            />
+          )}
           {route ? (
             <ErrorBoundary resetKey={`${tabId}:${routeHash(route)}`}>
               <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route, !hidden)}</Suspense>
             </ErrorBoundary>
           ) : (
-            <div className="pane-empty">{t('paneLayout.empty')}</div>
+            <PaneEmptyChooser paneId={pane} paneNumber={paneNumber} />
           )}
         </section>
       </PaneTabContext.Provider>
@@ -546,6 +643,7 @@ export function App() {
   const ui = useUi();
   const prefs = usePreferences();
   const tabs = useTabs();
+  const announcement = usePaneAnnouncement();
   const geometry = useMemo(() => collectPaneGeometry(tabs.layout.root), [tabs.layout.root]);
   const visibleAssignments = useMemo(
     () =>
@@ -706,6 +804,11 @@ export function App() {
       )}
       {ui.palette && <CommandPalette />}
       <Dialogs />
+      {announcement && (
+        <div className="sr-only" role="status" aria-live="polite">
+          {announcement}
+        </div>
+      )}
       <Toasts />
     </div>
   );

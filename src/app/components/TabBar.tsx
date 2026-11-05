@@ -31,18 +31,26 @@ import {
   closeTab,
   closeTabsToRight,
   closeSide,
+  getVisiblePanes,
   moveTab,
+  moveTabToPane,
+  moveTabToPaneWithSplit,
+  notifyPaneLimitReached,
   openSide,
   openTab,
   reopenClosedTab,
   setPanePreset,
-  getVisiblePanes,
   setTabPinned,
+  targetPane,
   useTabs,
 } from '../tabs';
 import type { Tab } from '../tabs';
 import type { PanePreset } from '../paneLayout';
-import { panePresetOf } from '../paneLayout';
+import {
+  TAB_DRAG_TYPE,
+  panePresetOf,
+  shouldIgnorePaneContentDragStart,
+} from '../paneLayout';
 import { setUi } from '../ui';
 import { useWorkspace } from '../workspace';
 import { Menu } from './Menu';
@@ -179,6 +187,18 @@ export function TabBar() {
 
   const entries = (tab: Tab): MenuEntry[] => {
     const index = tabs.findIndex((item) => item.id === tab.id);
+    const visiblePanes = getVisiblePanes();
+    const currentPaneLeaf = visiblePanes.find((p) => p.tabId === tab.id);
+    const otherPanes = visiblePanes.filter((p) => p.id !== currentPaneLeaf?.id);
+    const moveEntries: MenuEntry[] = otherPanes.map((p) => ({
+      label: t('paneLayout.moveToNamedPane', {
+        name: t('paneLayout.paneNumber', { number: visiblePanes.indexOf(p) + 1 }),
+      }),
+      onSelect: () => moveTabToPane(tab.id, p.id),
+    }));
+
+    const separator: MenuEntry = { separator: true };
+
     return [
       { label: t('tabs.newTab'), icon: Plus, shortcut: formatShortcut('Mod+T'), onSelect: () => openTab() },
       tab.pinned
@@ -193,7 +213,19 @@ export function TabBar() {
           openSide(tab.target);
         },
       },
-      { separator: true },
+      ...(moveEntries.length > 0 ? [separator, ...moveEntries] : []),
+      {
+        label: t('paneLayout.splitNewPane'),
+        icon: Columns2,
+        onSelect: () => {
+          if (visiblePanes.length >= 4) {
+            notifyPaneLimitReached();
+          } else {
+            moveTabToPaneWithSplit(tab.id, currentPaneLeaf?.id ?? targetPane(), 'right');
+          }
+        },
+      },
+      separator,
       {
         label: t('tabs.closeTab'),
         icon: X,
@@ -234,7 +266,14 @@ export function TabBar() {
               className={`tab${tab.id === active ? ' is-active' : ''}${tab.pinned ? ' is-pinned' : ''}`}
               title={title}
               draggable
-              onDragStart={(event) => event.dataTransfer.setData('text/x-morrow-tab', tab.id)}
+              onDragStart={(event) => {
+                if (shouldIgnorePaneContentDragStart(event.target)) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.setData(TAB_DRAG_TYPE, tab.id);
+                event.dataTransfer.effectAllowed = 'move';
+              }}
               onDragOver={(event) =>
                 event.dataTransfer.types.includes('text/x-morrow-tab') && event.preventDefault()
               }
@@ -248,7 +287,15 @@ export function TabBar() {
                 event.preventDefault();
                 setMenu({ tab, at: new DOMRect(event.clientX, event.clientY, 0, 0) });
               }}
-              onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && activateTab(tab.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  activateTab(tab.id);
+                } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+                  event.preventDefault();
+                  setMenu({ tab, at: event.currentTarget.getBoundingClientRect() });
+                }
+              }}
             >
               <span className="tab-icon">{main.icon}</span>
               {!tab.pinned && <span className="tab-title">{main.title}</span>}

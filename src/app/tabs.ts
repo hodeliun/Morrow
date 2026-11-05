@@ -1,21 +1,33 @@
 import { createContext, useContext, useSyncExternalStore } from 'react';
 import {
+  MAX_VISIBLE_PANES,
   applyPanePreset,
   availablePaneTabs,
   beginPaneResize as beginPaneResizeModel,
   cancelPaneResize as cancelPaneResizeModel,
   closePane,
   createPaneLayout,
+  duplicatePaneTab,
   focusPane,
   migrateLegacySplit,
   movePaneTab,
+  placeRouteInPane,
   previewPaneResize as previewPaneResizeModel,
   removePaneTabs,
   resetPaneSplit,
+  splitPane,
   swapPaneTabs,
   visiblePaneLeaves,
 } from './paneLayout';
-import type { PaneLayout, PanePreset, PaneResizeSession, PaneTabInstance } from './paneLayout';
+import type {
+  PaneEdge,
+  PaneLayout,
+  PanePreset,
+  PaneResizeSession,
+  PaneTabInstance,
+} from './paneLayout';
+import { t } from './i18n';
+import { toast } from './ui';
 import { forgetTabScrollPositions } from './tabScroll';
 import {
   MAX_PANE_TAB_INSTANCES,
@@ -457,6 +469,120 @@ export function setActivePane(pane: PaneId): void {
   mirrorFocusedTarget(next, true);
 }
 
+const announcementListeners = new Set<(message: string) => void>();
+let latestAnnouncement: string | null = null;
+
+export function announcePaneStatus(message: string): void {
+  latestAnnouncement = message;
+  for (const listener of announcementListeners) listener(message);
+}
+
+export function notifyPaneLimitReached(): void {
+  const msg = t('paneLayout.maxPanesReached');
+  toast(msg, { tone: 'error' });
+  announcePaneStatus(msg);
+}
+
+export function subscribePaneAnnouncements(listener: (message: string) => void): () => void {
+  announcementListeners.add(listener);
+  return () => announcementListeners.delete(listener);
+}
+
+export function usePaneAnnouncement(): string | null {
+  return useSyncExternalStore(
+    subscribePaneAnnouncements,
+    () => latestAnnouncement,
+    () => null,
+  );
+}
+
+export function moveTabToPane(tabId: string, paneId: PaneId): void {
+  const now = current();
+  const tab = now.layout.tabs.find((item) => item.id === tabId);
+  if (!tab || !paneLeaf(now.layout, paneId)) return;
+  const layout = movePaneTab(now.layout, tabId, paneId);
+  if (layout === now.layout) return;
+  const next = makeStateWithLayout(now, layout, now.closed, tabId);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
+}
+
+export function duplicateTabToPane(tabId: string, targetPaneId: PaneId): void {
+  const now = current();
+  const source = now.layout.tabs.find((item) => item.id === tabId);
+  if (!source || !paneLeaf(now.layout, targetPaneId)) return;
+  const layout = duplicatePaneTab(now.layout, tabId, targetPaneId, {
+    newTabId: () => newTabId(tabIdSet(now.layout)),
+    createTab: (id, target) => emptyTab(id, target, id),
+  });
+  if (layout === now.layout) return;
+  const assigned = getTabForPane(targetPaneId, { ...now, layout });
+  const next = makeStateWithLayout(now, layout, now.closed, assigned?.id ?? now.active);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
+}
+
+export function openRouteInPane(
+  route: string,
+  targetPaneId: PaneId,
+  options?: { splitEdge?: PaneEdge },
+): { success: boolean; reason?: string } {
+  route = canonicalizeResourceTargetHash(route);
+  let now = current();
+  let pane = targetPaneId;
+  let layout = now.layout;
+
+  if (options?.splitEdge) {
+    if (visiblePaneLeaves(layout).length >= MAX_VISIBLE_PANES) {
+      notifyPaneLimitReached();
+      return { success: false, reason: 'too-many-panes' };
+    }
+    const splitResult = splitPane(layout, targetPaneId, options.splitEdge);
+    if (!splitResult.success || !splitResult.newPaneId) {
+      return { success: false, reason: splitResult.reason };
+    }
+    layout = splitResult.layout;
+    pane = splitResult.newPaneId;
+    now = makeStateWithLayout(now, layout);
+    writeState(now);
+  }
+
+  layout = placeRouteInPane(layout, pane, route, {
+    newTabId: () => newTabId(tabIdSet(layout)),
+    createTab: (id, target) => emptyTab(id, target, id),
+  });
+
+  const assigned = getTabForPane(pane, { ...now, layout });
+  const next = makeStateWithLayout(now, layout, now.closed, assigned?.id ?? now.active);
+  writeState(next);
+  mirrorFocusedTarget(next, true);
+  return { success: true };
+}
+
+export function moveTabToPaneWithSplit(
+  tabId: string,
+  targetPaneId: PaneId,
+  splitEdge?: PaneEdge,
+): { success: boolean; reason?: string } {
+  const now = current();
+  if (splitEdge) {
+    if (visiblePaneLeaves(now.layout).length >= MAX_VISIBLE_PANES) {
+      notifyPaneLimitReached();
+      return { success: false, reason: 'too-many-panes' };
+    }
+    const splitResult = splitPane(now.layout, targetPaneId, splitEdge, tabId);
+    if (!splitResult.success) {
+      return { success: false, reason: splitResult.reason };
+    }
+    const next = makeStateWithLayout(now, splitResult.layout, now.closed, tabId);
+    writeState(next);
+    mirrorFocusedTarget(next, true);
+    return { success: true };
+  }
+  moveTabToPane(tabId, targetPaneId);
+  return { success: true };
+}
+
 export function showInPane(hash: string, pane = targetPane(), replace = false): void {
   hash = canonicalizeResourceTargetHash(hash);
   const now = current();
@@ -465,16 +591,27 @@ export function showInPane(hash: string, pane = targetPane(), replace = false): 
   let layout = now.layout;
   let tab = getTabForPane(pane, now);
   if (!tab) {
-    tab = makeAvailableTab(layout, hash);
-    if (tab) {
-      layout = { ...layout, tabs: insertAfterActive(layout.tabs, now.active, tab) };
+    const assignedIds = new Set(
+      visiblePaneLeaves(layout)
+        .map((l) => l.tabId)
+        .filter((id): id is string => id !== null),
+    );
+    const unassigned = layout.tabs.find((t) => t.target === hash && !assignedIds.has(t.id));
+    if (unassigned) {
+      tab = unassigned;
+      layout = movePaneTab(layout, tab.id, pane);
     } else {
-      tab = availablePaneTabs(layout)[0] ?? null;
-      if (!tab) return;
-      layout = replaceTab(layout, tab.id, visit(tab, hash, replace));
+      tab = makeAvailableTab(layout, hash);
+      if (tab) {
+        layout = { ...layout, tabs: insertAfterActive(layout.tabs, now.active, tab) };
+      } else {
+        tab = availablePaneTabs(layout)[0] ?? null;
+        if (!tab) return;
+        layout = replaceTab(layout, tab.id, visit(tab, hash, replace));
+      }
+      if (!layout.tabs.some((item) => item.id === tab!.id)) layout = { ...layout, tabs: [...layout.tabs, tab] };
+      layout = movePaneTab(layout, tab.id, pane);
     }
-    if (!layout.tabs.some((item) => item.id === tab!.id)) layout = { ...layout, tabs: [...layout.tabs, tab] };
-    layout = movePaneTab(layout, tab.id, pane);
   } else {
     layout = replaceTab(layout, tab.id, visit(tab, hash, replace));
   }
@@ -499,8 +636,26 @@ export function setPanePreset(preset: PanePreset): void {
 export function openSide(hash?: string): void {
   let now = current();
   let layout = now.layout;
-  if (visiblePaneLeaves(layout).length === 1) layout = applyPanePreset(layout, 'two-columns');
-  const target = visiblePaneLeaves(layout).find((leaf) => leaf.id !== now.pane && leaf.tabId === null);
+  if (visiblePaneLeaves(layout).length === 1) {
+    layout = applyPanePreset(layout, 'two-columns');
+    now = makeStateWithLayout(now, layout);
+    writeState(now);
+  }
+  let target = visiblePaneLeaves(layout).find((leaf) => leaf.id !== now.pane && leaf.tabId === null);
+  if (!target) {
+    if (visiblePaneLeaves(layout).length < MAX_VISIBLE_PANES) {
+      const splitResult = splitPane(layout, now.pane, 'right');
+      if (splitResult.success && splitResult.newPaneId) {
+        layout = splitResult.layout;
+        target = paneLeaf(layout, splitResult.newPaneId) ?? undefined;
+        now = makeStateWithLayout(now, layout);
+        writeState(now);
+      }
+    } else {
+      notifyPaneLimitReached();
+      return;
+    }
+  }
   if (!target) return;
   layout = focusPane(layout, target.id);
   if (layout !== now.layout) {
@@ -585,14 +740,15 @@ export function openTab(hash = EMPTY_HASH): void {
   go(hash);
 }
 
-export function openBrowserUrl(value: string): string | null {
+export function openBrowserUrl(value: string, paneId?: string): string | null {
   const decision = classifyBrowserAddress(value);
   const safeTarget =
     decision.ok && decision.restorable
       ? (serializeResourceTarget({ kind: 'url', url: decision.url }) ?? URL_UNAVAILABLE_HASH)
       : URL_UNAVAILABLE_HASH;
-  openTab(safeTarget);
-  const tab = getTabForPane(current().pane);
+  const pane = paneId ?? current().pane;
+  showInPane(safeTarget, pane);
+  const tab = getTabForPane(pane);
   if (!tab) return null;
   void desktop?.browserTabs?.navigate(tab.id, value);
   return tab.id;
