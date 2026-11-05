@@ -1,11 +1,24 @@
-import { ChevronDown, ChevronRight, File, FolderClosed, FolderOpen, Settings2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Columns2, File, FolderClosed, FolderOpen, Settings2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { basename, dirname, extension as fileExtension } from '../../core/vault/paths';
 import { filterFileCatalog, nextFileCatalogBatchSize } from '../../core/vault/fileCatalog';
 import type { FileCatalogSnapshot, VaultResource } from '../../core/vault/fileCatalog';
 import { t as translate, useTranslation } from '../i18n';
 import { routeHash } from '../router';
-import { openTab, openBrowserUrl } from '../tabs';
+import {
+  getTabs,
+  getVisiblePanes,
+  notifyPaneLimitReached,
+  openBrowserUrl,
+  openRouteInPane,
+  openTab,
+  targetPane,
+} from '../tabs';
+import {
+  FILE_DRAG_TYPE,
+  shouldIgnorePaneContentDragStart,
+} from '../paneLayout';
+import type { PaneEdge } from '../paneLayout';
 import { parseBrowserDescriptor } from '../browserDescriptors';
 import { desktop } from '../platform/desktop';
 import type { DesktopFileHandlerLocale, DesktopFileHandlerResult } from '../platform/desktop';
@@ -13,6 +26,8 @@ import { fileHandlerErrorKey } from '../platform/fileHandlerMessages';
 import { useFileCatalogPreferences } from '../platform/fileCatalogPreferences';
 import { getSession, useFileCatalog } from '../workspace';
 import { openDialog } from '../ui';
+import { Menu } from './Menu';
+import type { MenuEntry } from './Menu';
 import './fileCatalog.css';
 
 const INITIAL_FILE_COUNT = 200;
@@ -59,11 +74,15 @@ function visibleRows(catalog: FileCatalogSnapshot, files: VaultResource[]) {
   return rows;
 }
 
+export { FILE_DRAG_TYPE };
+
 export async function openCatalogFile(
   path: string,
   chooseOnce: boolean,
   locale: DesktopFileHandlerLocale,
   setOpenFailure: (failure: { path: string; result: Extract<DesktopFileHandlerResult, { ok: false }> } | null) => void,
+  targetPaneId?: string,
+  splitEdge?: PaneEdge,
 ): Promise<void> {
   const session = getSession();
   setOpenFailure(null);
@@ -89,7 +108,19 @@ export async function openCatalogFile(
         setOpenFailure({ path, result: { ok: false, code: descriptor.code, message: translate('fileCatalog.invalidResource') } });
         return;
       }
-      openBrowserUrl(descriptor.url);
+      if (targetPaneId) {
+        const placement = openRouteInPane('#/url/invalid', targetPaneId, splitEdge ? { splitEdge } : undefined);
+        if (!placement.success) {
+          setOpenFailure({
+            path,
+            result: { ok: false, code: 'open-failed', message: placement.reason ?? 'The file could not be opened.' },
+          });
+          return;
+        }
+        openBrowserUrl(descriptor.url, splitEdge ? getTabs().pane : targetPaneId);
+      } else {
+        openBrowserUrl(descriptor.url);
+      }
       return;
     }
     const result = await fileHandlers.openFile(path, chooseOnce ? { chooseOnce: true, locale } : undefined);
@@ -128,7 +159,18 @@ export async function openCatalogFile(
         });
         return;
       }
-      openTab(target);
+      if (targetPaneId) {
+        const placement = openRouteInPane(target, targetPaneId, splitEdge ? { splitEdge } : undefined);
+        if (!placement.success) {
+          setOpenFailure({
+            path,
+            result: { ok: false, code: 'open-failed', message: placement.reason ?? 'The file could not be opened.' },
+          });
+          return;
+        }
+      } else {
+        openTab(target);
+      }
       setOpenFailure(null);
     } else if (result.ok) setOpenFailure(null);
     else if (result.code !== 'cancelled') setOpenFailure({ path, result });
@@ -139,6 +181,33 @@ export async function openCatalogFile(
       result: { ok: false, code: 'open-failed', message: 'The file could not be opened.' },
     });
   }
+}
+
+export async function openCatalogFileInPane(
+  path: string,
+  targetPaneId: string,
+  splitEdge?: PaneEdge,
+  locale?: DesktopFileHandlerLocale,
+): Promise<{ success: boolean; reason?: string }> {
+  if (splitEdge && getVisiblePanes().length >= 4) {
+    notifyPaneLimitReached();
+    return { success: false, reason: 'too-many-panes' };
+  }
+  let failureResult: Extract<DesktopFileHandlerResult, { ok: false }> | null = null;
+  await openCatalogFile(
+    path,
+    false,
+    locale ?? 'en',
+    (failure) => {
+      if (failure) failureResult = failure.result;
+    },
+    targetPaneId,
+    splitEdge,
+  );
+  if (failureResult) {
+    return { success: false, reason: (failureResult as { code: string }).code };
+  }
+  return { success: true };
 }
 
 export function FileCatalog() {
@@ -152,9 +221,35 @@ export function FileCatalog() {
     path: string;
     result: Extract<DesktopFileHandlerResult, { ok: false }>;
   } | null>(null);
+  const [menu, setMenu] = useState<{ path: string; anchor: DOMRect | HTMLElement } | null>(null);
   const filtered = useMemo(() => filterFileCatalog(catalog, preferences), [catalog, preferences]);
   const shownFiles = useMemo(() => filtered.files.slice(0, limit), [filtered.files, limit]);
   const rows = useMemo(() => visibleRows(filtered, shownFiles), [filtered, shownFiles]);
+
+  const fileMenuEntries = (filePath: string): MenuEntry[] => {
+    const visiblePanes = getVisiblePanes();
+    return [
+      {
+        label: t('fileCatalog.openFile', { path: filePath }),
+        icon: File,
+        onSelect: () => void openFile(filePath),
+      },
+      ...(visiblePanes.length > 1
+        ? visiblePanes.map((pane, index) => ({
+            label: t('paneLayout.openInNamedPane', {
+              name: t('paneLayout.paneNumber', { number: index + 1 }),
+            }),
+            icon: Columns2,
+            onSelect: () => void openCatalogFileInPane(filePath, pane.id, undefined, locale),
+          }))
+        : []),
+      {
+        label: t('paneLayout.splitNewPane'),
+        icon: Columns2,
+        onSelect: () => void openCatalogFileInPane(filePath, targetPane(), 'right', locale),
+      },
+    ];
+  };
 
   const toggleFolder = (path: string) => {
     setCollapsed((current) => {
@@ -239,6 +334,25 @@ export function FileCatalog() {
                   style={{ paddingInlineStart: `${22 + row.depth * 12}px` }}
                   aria-label={t('fileCatalog.openFile', { path: row.path })}
                   title={row.path}
+                  draggable
+                  onDragStart={(event) => {
+                    if (shouldIgnorePaneContentDragStart(event.target)) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.setData(FILE_DRAG_TYPE, JSON.stringify({ path: row.path }));
+                    event.dataTransfer.setData('text/plain', row.path);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMenu({ path: row.path, anchor: new DOMRect(event.clientX, event.clientY, 0, 0) });
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+                      event.preventDefault();
+                      setMenu({ path: row.path, anchor: event.currentTarget });
+                    }
+                  }}
                   onClick={() => void openFile(row.path)}
                 >
                   <File size={14} />
@@ -249,6 +363,14 @@ export function FileCatalog() {
             );
           })}
         </ul>
+      )}
+      {menu && (
+        <Menu
+          anchor={menu.anchor}
+          label={t('fileCatalog.openFile', { path: menu.path })}
+          entries={fileMenuEntries(menu.path)}
+          onClose={() => setMenu(null)}
+        />
       )}
       {openFailure && (
         <div className="file-catalog-error" role="alert">

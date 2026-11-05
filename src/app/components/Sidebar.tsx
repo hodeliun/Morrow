@@ -63,6 +63,7 @@ import { pageMenuEntries } from './pageMenu';
 import { PageGlyph } from './Emoji';
 import { Logo } from './primitives';
 import { PAGE_DRAG_TYPE } from '../editor/PageLink';
+import { shouldIgnorePaneContentDragStart } from '../paneLayout';
 import { FileCatalog } from './FileCatalog';
 
 type DropZone = 'before' | 'inside' | 'after';
@@ -328,7 +329,19 @@ export function Sidebar() {
                   <li key={page.id}>
                     <button
                       type="button"
+                      data-page-id={page.id}
+                      draggable
                       className={`tree-row flat${activeId === page.id ? ' is-active' : ''}`}
+                      onDragStart={(event) => {
+                        if (shouldIgnorePaneContentDragStart(event.target)) {
+                          event.preventDefault();
+                          return;
+                        }
+                        event.dataTransfer.setData(PAGE_DRAG_TYPE, page.id);
+                        event.dataTransfer.setData('application/x-morrow-page-id', page.id);
+                        event.dataTransfer.setData('text/plain', displayTitle(page));
+                        event.dataTransfer.effectAllowed = 'move';
+                      }}
                       onClick={go(() => openPage(page.id))}
                     >
                       <span className="tree-icon">
@@ -743,7 +756,12 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
         props.onMenu(event.currentTarget as HTMLElement);
       }}
       onDragStart={(event) => {
+        if (shouldIgnorePaneContentDragStart(event.target)) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData(PAGE_DRAG_TYPE, page.id);
+        event.dataTransfer.setData('application/x-morrow-page-id', page.id);
         event.dataTransfer.setData('text/plain', displayTitle(page));
         event.dataTransfer.effectAllowed = 'move';
         props.onDragStart();

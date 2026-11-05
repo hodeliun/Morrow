@@ -8,13 +8,18 @@ import {
   cancelPaneResize,
   closePane,
   createPaneLayout,
+  detectPaneDropZone,
+  duplicatePaneTab,
   focusPane,
   migrateLegacySplit,
   movePaneTab,
   panePresetOf,
+  placeRouteInPane,
   previewPaneResize,
   removePaneTabs,
   resetPaneSplit,
+  shouldIgnorePaneContentDragStart,
+  splitPane,
   swapPaneTabs,
   validatePaneLayout,
   visiblePaneLeaves,
@@ -341,5 +346,240 @@ describe('pane layout model', () => {
     expect(tabIdsInPanes(closed)).toEqual([null]);
     expect(availablePaneTabs(closed).map((tab) => tab.id)).toEqual(['tab-a']);
     expectValid(closed);
+  });
+
+  describe('T38 — splitting panes, drop zones, placing content, and gestures', () => {
+    it('splits a pane on each edge up to four panes with valid topology and focus', () => {
+      const tabs = [makeTab('tab-1'), makeTab('tab-2'), makeTab('tab-3'), makeTab('tab-4')];
+      let layout = createPaneLayout('split-test', tabs, 'tab-1', 'single');
+      expect(visiblePaneLeaves(layout)).toHaveLength(1);
+
+      // Split 1: right edge (columns)
+      const split1 = splitPane(layout, paneId('split-test', 1), 'right', 'tab-2');
+      expect(split1.success).toBe(true);
+      expect(split1.newPaneId).toBe(paneId('split-test', 2));
+      layout = split1.layout;
+      expect(visiblePaneLeaves(layout)).toHaveLength(2);
+      expect(layout.focusedPaneId).toBe(paneId('split-test', 2));
+      expect(tabIdsInPanes(layout)).toEqual(['tab-1', 'tab-2']);
+      expectValid(layout);
+
+      // Split 2: bottom edge of pane-2 (rows)
+      const split2 = splitPane(layout, paneId('split-test', 2), 'bottom', 'tab-3');
+      expect(split2.success).toBe(true);
+      expect(split2.newPaneId).toBe(paneId('split-test', 3));
+      layout = split2.layout;
+      expect(visiblePaneLeaves(layout)).toHaveLength(3);
+      expect(layout.focusedPaneId).toBe(paneId('split-test', 3));
+      expect(tabIdsInPanes(layout)).toEqual(['tab-1', 'tab-2', 'tab-3']);
+      expectValid(layout);
+
+      // Split 3: left edge of pane-1 (columns)
+      const split3 = splitPane(layout, paneId('split-test', 1), 'left', 'tab-4');
+      expect(split3.success).toBe(true);
+      expect(split3.newPaneId).toBe(paneId('split-test', 4));
+      layout = split3.layout;
+      expect(visiblePaneLeaves(layout)).toHaveLength(4);
+      expect(layout.focusedPaneId).toBe(paneId('split-test', 4));
+      expect(visiblePaneLeaves(layout).map((l) => l.tabId)).toContain('tab-4');
+      expectValid(layout);
+
+      // Split 4: attempted 5th pane must be rejected with too-many-panes and leave layout intact
+      const split4 = splitPane(layout, paneId('split-test', 4), 'right', null);
+      expect(split4.success).toBe(false);
+      expect(split4.reason).toBe('too-many-panes');
+      expect(split4.layout).toBe(layout);
+      expect(visiblePaneLeaves(layout)).toHaveLength(4);
+      expectValid(layout);
+    });
+
+    it('rejects splitting if target pane id is not found in layout', () => {
+      const layout = createPaneLayout('split-missing', [makeTab('tab-1')], 'tab-1', 'single');
+      const result = splitPane(layout, 'non-existent-pane', 'right');
+      expect(result.success).toBe(false);
+      expect(result.reason).toBe('target-not-found');
+      expect(result.layout).toBe(layout);
+    });
+
+    it('clears prior leaf assignment when splitPane is given a tab already assigned elsewhere', () => {
+      const tabs = [makeTab('tab-1'), makeTab('tab-2')];
+      let layout = createPaneLayout('split-move', tabs, 'tab-1', 'two-columns');
+      layout = movePaneTab(layout, 'tab-2', paneId('split-move', 2));
+      expect(tabIdsInPanes(layout)).toEqual(['tab-1', 'tab-2']);
+
+      // Split pane-1 with tab-2: tab-2 should move to the new pane and leave pane-2 empty
+      const splitResult = splitPane(layout, paneId('split-move', 1), 'bottom', 'tab-2');
+      expect(splitResult.success).toBe(true);
+      const leaves = visiblePaneLeaves(splitResult.layout);
+      expect(leaves).toHaveLength(3);
+      const pane2 = leaves.find((l) => l.id === paneId('split-move', 2));
+      expect(pane2?.tabId).toBeNull();
+      const newLeaf = leaves.find((l) => l.id === splitResult.newPaneId);
+      expect(newLeaf?.tabId).toBe('tab-2');
+      expectValid(splitResult.layout);
+    });
+
+    it('places route in an empty pane, creating or assigning a tab', () => {
+      const tabs = [makeTab('tab-1')];
+      let layout = createPaneLayout('place-route', tabs, 'tab-1', 'two-columns');
+      expect(tabIdsInPanes(layout)).toEqual(['tab-1', null]);
+
+      layout = placeRouteInPane(layout, paneId('place-route', 2), '#/page/note-two');
+      expect(visiblePaneLeaves(layout)[1]!.tabId).not.toBeNull();
+      const newTabId = visiblePaneLeaves(layout)[1]!.tabId!;
+      const assignedTab = layout.tabs.find((t) => t.id === newTabId);
+      expect(assignedTab?.target).toBe('#/page/note-two');
+      expect(layout.focusedPaneId).toBe(paneId('place-route', 2));
+      expectValid(layout);
+    });
+
+    it('creates a new tab instance when opening the same note in a second pane, without emptying the first pane', () => {
+      const tabs = [makeTab('tab-1')];
+      let layout = createPaneLayout('same-note', tabs, 'tab-1', 'two-columns');
+      expect(visiblePaneLeaves(layout)[0]!.tabId).toBe('tab-1');
+      expect(visiblePaneLeaves(layout)[1]!.tabId).toBeNull();
+
+      // Open the exact same note target in pane 2:
+      layout = placeRouteInPane(layout, paneId('same-note', 2), '#/page/tab-1');
+
+      const leaves = visiblePaneLeaves(layout);
+      expect(leaves[0]!.tabId).toBe('tab-1'); // FIRST PANE NOT EMPTIED!
+      expect(leaves[1]!.tabId).not.toBeNull();
+      expect(leaves[1]!.tabId).not.toBe('tab-1'); // Second pane has distinct tab instance ID!
+
+      const tab1 = layout.tabs.find((t) => t.id === leaves[0]!.tabId);
+      const tab2 = layout.tabs.find((t) => t.id === leaves[1]!.tabId);
+      expect(tab1?.target).toBe('#/page/tab-1');
+      expect(tab2?.target).toBe('#/page/tab-1');
+      expect(tab1?.id).not.toBe(tab2?.id);
+      expect(layout.focusedPaneId).toBe(paneId('same-note', 2));
+      expectValid(layout);
+    });
+
+    it('reuses an available unassigned tab with the matching target if one already exists', () => {
+      const tab1 = makeTab('tab-1');
+      const tab2: DraftTab = {
+        ...makeTab('tab-2'),
+        target: '#/page/target-x',
+      };
+      // tab-2 is in layout.tabs but unassigned (available)
+      let layout = createPaneLayout('reuse-tab', [tab1, tab2], 'tab-1', 'two-columns');
+      expect(availablePaneTabs(layout).map((t) => t.id)).toEqual(['tab-2']);
+
+      layout = placeRouteInPane(layout, paneId('reuse-tab', 2), '#/page/target-x');
+      expect(visiblePaneLeaves(layout)[1]!.tabId).toBe('tab-2');
+      expect(availablePaneTabs(layout)).toHaveLength(0);
+      expectValid(layout);
+    });
+
+    it('focuses target pane without creating tabs if target pane is already showing this route', () => {
+      const tabs = [makeTab('tab-1')];
+      let layout = createPaneLayout('already-showing', tabs, 'tab-1', 'two-columns');
+      layout = focusPane(layout, paneId('already-showing', 2));
+      expect(layout.focusedPaneId).toBe(paneId('already-showing', 2));
+
+      const placed = placeRouteInPane(layout, paneId('already-showing', 1), '#/page/tab-1');
+      expect(placed.focusedPaneId).toBe(paneId('already-showing', 1));
+      expect(placed.tabs).toHaveLength(1);
+      expect(placed.tabs[0]!.id).toBe('tab-1');
+      expectValid(placed);
+    });
+
+    it('duplicates a tab instance into a target pane preserving distinct identities', () => {
+      const tabs = [makeTab('tab-1')];
+      let layout = createPaneLayout('duplicate-test', tabs, 'tab-1', 'two-columns');
+
+      layout = duplicatePaneTab(layout, 'tab-1', paneId('duplicate-test', 2));
+      const leaves = visiblePaneLeaves(layout);
+      expect(leaves[0]!.tabId).toBe('tab-1');
+      expect(leaves[1]!.tabId).not.toBeNull();
+      expect(leaves[1]!.tabId).not.toBe('tab-1');
+      expect(layout.tabs).toHaveLength(2);
+      expect(layout.tabs[0]!.target).toBe('#/page/tab-1');
+      expect(layout.tabs[1]!.target).toBe('#/page/tab-1');
+      expectValid(layout);
+    });
+
+    it('preserves displaced tabs in layout.tabs when moving a tab into an occupied pane', () => {
+      const tabA = makeTab('tab-a');
+      const tabB = makeTab('tab-b');
+      const tabC = makeTab('tab-c');
+      let layout = createPaneLayout('displace-test', [tabA, tabB, tabC], 'tab-a', 'two-columns');
+      layout = movePaneTab(layout, 'tab-b', paneId('displace-test', 2));
+      expect(tabIdsInPanes(layout)).toEqual(['tab-a', 'tab-b']);
+
+      // Move tab-c into pane 2 (which currently holds tab-b):
+      layout = movePaneTab(layout, 'tab-c', paneId('displace-test', 2));
+      expect(tabIdsInPanes(layout)).toEqual(['tab-a', 'tab-c']);
+      // tab-b is still in layout.tabs and has draft preserved!
+      expect(layout.tabs.some((t) => t.id === 'tab-b')).toBe(true);
+      expect(availablePaneTabs(layout).map((t) => t.id)).toEqual(['tab-b']);
+      const preservedB = layout.tabs.find((t) => t.id === 'tab-b') as DraftTab;
+      expect(preservedB.draft?.text).toBe('draft:tab-b');
+      expectValid(layout);
+    });
+
+    it('detects pane drop zones accurately by coordinate thresholds', () => {
+      const bounds = { left: 100, top: 100, width: 200, height: 200 };
+
+      // Center
+      expect(detectPaneDropZone(bounds, { x: 200, y: 200 })).toBe('center');
+
+      // Left edge (x = 110 => relX = 0.05 < 0.25)
+      expect(detectPaneDropZone(bounds, { x: 110, y: 200 })).toBe('left');
+
+      // Right edge (x = 290 => relX = 0.95 => 1 - relX = 0.05 < 0.25)
+      expect(detectPaneDropZone(bounds, { x: 290, y: 200 })).toBe('right');
+
+      // Top edge (y = 110 => relY = 0.05 < 0.25)
+      expect(detectPaneDropZone(bounds, { x: 200, y: 110 })).toBe('top');
+
+      // Bottom edge (y = 290 => relY = 0.95 => 1 - relY = 0.05 < 0.25)
+      expect(detectPaneDropZone(bounds, { x: 200, y: 290 })).toBe('bottom');
+
+      // Corner (x = 105, y = 115 => distLeft = 0.025, distTop = 0.075 => left is closer)
+      expect(detectPaneDropZone(bounds, { x: 105, y: 115 })).toBe('left');
+
+      // Corner (x = 115, y = 105 => distLeft = 0.075, distTop = 0.025 => top is closer)
+      expect(detectPaneDropZone(bounds, { x: 115, y: 105 })).toBe('top');
+
+      // Out of bounds or invalid dimensions defaults to center
+      expect(detectPaneDropZone(bounds, { x: 50, y: 50 })).toBe('center');
+      expect(detectPaneDropZone({ left: 0, top: 0, width: 0, height: 0 }, { x: 10, y: 10 })).toBe('center');
+    });
+
+    it('identifies media and database content that should ignore pane drag start', () => {
+      // Tags
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'img' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'VIDEO' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'audio' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'table' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'td' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'th' })).toBe(true);
+
+      // Roles
+      expect(shouldIgnorePaneContentDragStart({ role: 'gridcell' })).toBe(true);
+
+      // Classes
+      expect(shouldIgnorePaneContentDragStart({ className: 'image-block other' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ className: 'image-file-view' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ className: 'media-file-view' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ className: 'pdf-file-view' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ className: 'database-view database' })).toBe(true);
+      expect(shouldIgnorePaneContentDragStart({ className: 'ProseMirror-focused ProseMirror' })).toBe(true);
+
+      // DOM element with closest()
+      const mockElement = {
+        closest: (selector: string) => (selector.includes('img') ? {} : null),
+      };
+      expect(shouldIgnorePaneContentDragStart(mockElement)).toBe(true);
+
+      // Regular UI elements should return false
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'button', className: 'tab-button' })).toBe(false);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'div', className: 'tab-strip' })).toBe(false);
+      expect(shouldIgnorePaneContentDragStart({ tagName: 'span', className: 'nav-item' })).toBe(false);
+      expect(shouldIgnorePaneContentDragStart(null)).toBe(false);
+      expect(shouldIgnorePaneContentDragStart(undefined)).toBe(false);
+    });
   });
 });

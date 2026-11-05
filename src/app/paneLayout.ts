@@ -4,9 +4,27 @@ export const MIN_SPLIT_RATIO = 0.2;
 export const MAX_SPLIT_RATIO = 0.8;
 export const MAX_VISIBLE_PANES = 4;
 
+export const TAB_DRAG_TYPE = 'text/x-morrow-tab';
+export const FILE_DRAG_TYPE = 'application/x-morrow-vault-file';
+export const PAGE_DRAG_TYPES = ['application/x-morrow-page', 'application/x-morrow-page-id'] as const;
+
 export type PanePreset = 'single' | 'two-columns' | 'one-left-two-right' | 'two-by-two';
 // `columns` places children side by side; `rows` stacks them vertically.
 export type PaneSplitAxis = 'columns' | 'rows';
+export type PaneEdge = 'left' | 'right' | 'top' | 'bottom';
+export type PaneDropZone = 'center' | PaneEdge;
+
+export interface SplitPaneResult<TTab extends PaneTabInstance = PaneTabInstance> {
+  readonly success: boolean;
+  readonly layout: PaneLayout<TTab>;
+  readonly newPaneId?: string;
+  readonly reason?: 'too-many-panes' | 'target-not-found';
+}
+
+export interface PlaceRouteOptions<TTab extends PaneTabInstance = PaneTabInstance> {
+  readonly createTab?: (id: string, target: string) => TTab;
+  readonly newTabId?: () => string;
+}
 
 export interface PaneTabInstance<TTarget = unknown> {
   readonly id: string;
@@ -518,4 +536,288 @@ export function validatePaneLayout(layout: PaneLayout): readonly PaneLayoutIssue
   }
   if (!leaves.some((pane) => pane.id === layout.focusedPaneId)) issues.add('focused-pane-missing');
   return [...issues];
+}
+
+function nextAvailableSlot(layout: PaneLayout): number {
+  const existingIds = new Set(walkLeaves(layout.root).map((l) => l.id));
+  let slot = 1;
+  while (existingIds.has(paneId(layout.id, slot))) slot++;
+  return slot;
+}
+
+function nextAvailableSplitId(layout: PaneLayout, branch = 'sub'): string {
+  const existingSplitIds = new Set<string>();
+  const collect = (node: PaneNode) => {
+    if (node.kind === 'split') {
+      existingSplitIds.add(node.id);
+      collect(node.first);
+      collect(node.second);
+    }
+  };
+  collect(layout.root);
+  let counter = 1;
+  let candidate = splitId(layout.id, `${branch}-${counter}`);
+  while (existingSplitIds.has(candidate)) {
+    counter++;
+    candidate = splitId(layout.id, `${branch}-${counter}`);
+  }
+  return candidate;
+}
+
+function allocateUniqueTabId(tabs: readonly PaneTabInstance[]): string {
+  const existing = new Set(tabs.map((t) => t.id));
+  let counter = 1;
+  let candidate = `tab-${Date.now().toString(36)}-${(counter++).toString(36)}`;
+  while (existing.has(candidate)) {
+    candidate = `tab-${Date.now().toString(36)}-${(counter++).toString(36)}`;
+  }
+  return candidate;
+}
+
+export function detectPaneDropZone(
+  bounds: { left: number; top: number; width: number; height: number },
+  point: { x: number; y: number },
+  edgeThresholdRatio = 0.25,
+): PaneDropZone {
+  if (bounds.width <= 0 || bounds.height <= 0) return 'center';
+  const relX = (point.x - bounds.left) / bounds.width;
+  const relY = (point.y - bounds.top) / bounds.height;
+  if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return 'center';
+
+  const distLeft = relX;
+  const distRight = 1 - relX;
+  const distTop = relY;
+  const distBottom = 1 - relY;
+
+  const minHorizontal = Math.min(distLeft, distRight);
+  const minVertical = Math.min(distTop, distBottom);
+  const isNearHorizontal = minHorizontal <= edgeThresholdRatio;
+  const isNearVertical = minVertical <= edgeThresholdRatio;
+
+  if (!isNearHorizontal && !isNearVertical) return 'center';
+
+  if (isNearHorizontal && isNearVertical) {
+    if (minHorizontal <= minVertical) {
+      return distLeft <= distRight ? 'left' : 'right';
+    } else {
+      return distTop <= distBottom ? 'top' : 'bottom';
+    }
+  }
+
+  if (isNearHorizontal) {
+    return distLeft <= distRight ? 'left' : 'right';
+  }
+  return distTop <= distBottom ? 'top' : 'bottom';
+}
+
+const IGNORED_DRAG_SELECTORS = [
+  'img',
+  'video',
+  'audio',
+  '.image-block',
+  '.image-file-view',
+  '[data-image-view]',
+  '.media-file-view',
+  '[data-media-view]',
+  '.pdf-file-view',
+  '[data-pdf-view]',
+  'embed[type="application/pdf"]',
+  '.database',
+  '[role="gridcell"]',
+  'table',
+  'td',
+  'th',
+  '.ProseMirror',
+].join(', ');
+
+export function shouldIgnorePaneContentDragStart(target: unknown): boolean {
+  if (!target || typeof target !== 'object') return false;
+  if ('closest' in target && typeof (target as { closest: unknown }).closest === 'function') {
+    try {
+      const match = (target as Element).closest(IGNORED_DRAG_SELECTORS);
+      if (match) return true;
+    } catch {
+      // ignore
+    }
+  }
+  const elementLike = target as {
+    tagName?: string;
+    className?: unknown;
+    role?: unknown;
+  };
+  const tagName = typeof elementLike.tagName === 'string' ? elementLike.tagName.toLowerCase() : '';
+  if (
+    tagName === 'img' ||
+    tagName === 'video' ||
+    tagName === 'audio' ||
+    tagName === 'table' ||
+    tagName === 'td' ||
+    tagName === 'th'
+  ) {
+    return true;
+  }
+  if (elementLike.role === 'gridcell') return true;
+  const classNames =
+    typeof elementLike.className === 'string'
+      ? elementLike.className
+      : typeof (elementLike.className as { baseVal?: string })?.baseVal === 'string'
+      ? (elementLike.className as { baseVal: string }).baseVal
+      : '';
+  if (
+    classNames.includes('image-block') ||
+    classNames.includes('image-file-view') ||
+    classNames.includes('media-file-view') ||
+    classNames.includes('pdf-file-view') ||
+    classNames.includes('database') ||
+    classNames.includes('ProseMirror')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function splitPane<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  targetPaneId: string,
+  edge: PaneEdge,
+  tabId: string | null = null,
+): SplitPaneResult<TTab> {
+  const leaves = walkLeaves(layout.root);
+  if (leaves.length >= MAX_VISIBLE_PANES) {
+    return { success: false, layout, reason: 'too-many-panes' };
+  }
+  const targetLeaf = findLeaf(layout.root, targetPaneId);
+  if (!targetLeaf) {
+    return { success: false, layout, reason: 'target-not-found' };
+  }
+
+  const slot = nextAvailableSlot(layout);
+  const newLeafId = paneId(layout.id, slot);
+  const newLeafNode: PaneLeaf = { kind: 'leaf', id: newLeafId, tabId };
+
+  const axis: PaneSplitAxis = edge === 'left' || edge === 'right' ? 'columns' : 'rows';
+  const branchSplitId = nextAvailableSplitId(layout, edge);
+
+  const firstNode = edge === 'left' || edge === 'top' ? newLeafNode : targetLeaf;
+  const secondNode = edge === 'left' || edge === 'top' ? targetLeaf : newLeafNode;
+
+  const newSplitNode: PaneSplit = {
+    kind: 'split',
+    id: branchSplitId,
+    axis,
+    ratio: DEFAULT_SPLIT_RATIO,
+    first: firstNode,
+    second: secondNode,
+  };
+
+  let root = layout.root;
+  if (tabId !== null) {
+    root = (function clearPrevious(node: PaneNode): PaneNode {
+      if (node.kind === 'leaf') {
+        return node.tabId === tabId && node.id !== targetPaneId ? { ...node, tabId: null } : node;
+      }
+      const first = clearPrevious(node.first);
+      const second = clearPrevious(node.second);
+      return first === node.first && second === node.second ? node : { ...node, first, second };
+    })(root);
+  }
+
+  root = updateNode(root, targetPaneId, () => newSplitNode);
+
+  const nextLayout: PaneLayout<TTab> = {
+    ...layout,
+    root,
+    focusedPaneId: newLeafId,
+    topologyRevision: layout.topologyRevision + 1,
+  };
+
+  return { success: true, layout: nextLayout, newPaneId: newLeafId };
+}
+
+export function placeRouteInPane<TTab extends PaneTabInstance<string>>(
+  layout: PaneLayout<TTab>,
+  targetPaneId: string,
+  route: string,
+  options?: PlaceRouteOptions<TTab>,
+): PaneLayout<TTab> {
+  const targetLeaf = findLeaf(layout.root, targetPaneId);
+  if (!targetLeaf) return layout;
+
+  if (targetLeaf.tabId !== null) {
+    const currentTab = layout.tabs.find((tab) => tab.id === targetLeaf.tabId);
+    if (currentTab && currentTab.target === route) {
+      return focusPane(layout, targetPaneId);
+    }
+  }
+
+  const assignedTabIds = new Set(
+    walkLeaves(layout.root)
+      .map((l) => l.tabId)
+      .filter((id): id is string => id !== null),
+  );
+
+  const availableMatchingTab = layout.tabs.find(
+    (tab) => tab.target === route && !assignedTabIds.has(tab.id),
+  );
+
+  if (availableMatchingTab) {
+    return movePaneTab(layout, availableMatchingTab.id, targetPaneId);
+  }
+
+  const newId = options?.newTabId ? options.newTabId() : allocateUniqueTabId(layout.tabs);
+  const newTab: TTab = options?.createTab
+    ? options.createTab(newId, route)
+    : ({
+        id: newId,
+        groupId: newId,
+        target: route,
+        back: [],
+        forward: [],
+      } as unknown as TTab);
+
+  const nextTabs = [...layout.tabs, newTab];
+  const root = updateNode(layout.root, targetPaneId, (node) =>
+    node.kind === 'leaf' ? { ...node, tabId: newTab.id } : node,
+  );
+
+  return {
+    ...layout,
+    root,
+    tabs: nextTabs,
+    focusedPaneId: targetPaneId,
+  };
+}
+
+export function duplicatePaneTab<TTab extends PaneTabInstance<string>>(
+  layout: PaneLayout<TTab>,
+  sourceTabId: string,
+  targetPaneId: string,
+  options?: PlaceRouteOptions<TTab>,
+): PaneLayout<TTab> {
+  const source = layout.tabs.find((t) => t.id === sourceTabId);
+  if (!source || !findLeaf(layout.root, targetPaneId)) return layout;
+
+  const newId = options?.newTabId ? options.newTabId() : allocateUniqueTabId(layout.tabs);
+  const newTab: TTab = options?.createTab
+    ? options.createTab(newId, source.target)
+    : ({
+        ...source,
+        id: newId,
+        groupId: newId,
+        target: source.target,
+        back: [],
+        forward: [],
+      } as unknown as TTab);
+
+  const nextTabs = [...layout.tabs, newTab];
+  const root = updateNode(layout.root, targetPaneId, (node) =>
+    node.kind === 'leaf' ? { ...node, tabId: newTab.id } : node,
+  );
+
+  return {
+    ...layout,
+    root,
+    tabs: nextTabs,
+    focusedPaneId: targetPaneId,
+  };
 }

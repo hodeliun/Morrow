@@ -43,6 +43,244 @@ html.is-printing .main > .panes > .pane:not([data-print-target]) {
   text-align: center;
 }
 
+.pane-empty-surface {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 20px;
+  overflow-y: auto;
+  background: var(--bg);
+  box-sizing: border-box;
+}
+
+.pane-empty-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.pane-empty-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  color: var(--accent);
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+}
+
+.pane-empty-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--text);
+}
+
+.pane-empty-hint {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin: 0;
+  max-width: 360px;
+  line-height: 1.4;
+}
+
+.pane-empty-filter-wrapper {
+  position: relative;
+  margin-bottom: 14px;
+  width: 100%;
+  max-width: 420px;
+  align-self: center;
+}
+
+.pane-empty-filter-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.pane-empty-filter {
+  width: 100%;
+  padding: 6px 12px 6px 30px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  box-sizing: border-box;
+}
+
+.pane-empty-tabs-section {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+  width: 100%;
+  max-width: 520px;
+  align-self: center;
+}
+
+.pane-empty-empty-msg {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  padding: 20px;
+}
+
+.pane-empty-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pane-empty-tab-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: background 120ms ease, border-color 120ms ease;
+  cursor: pointer;
+}
+
+.pane-empty-tab-item:hover,
+.pane-empty-tab-item:focus-visible {
+  background: var(--surface-hover);
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+.pane-empty-tab-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.pane-empty-tab-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pane-empty-tab-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pane-empty-tab-title {
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.pane-tab-badge {
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pane-tab-badge.origin.is-visible {
+  background: rgba(37, 99, 235, 0.15);
+  color: var(--accent);
+}
+
+.pane-empty-tab-subtitle {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-empty-tab-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pane-empty-quick-actions {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+  max-width: 520px;
+  align-self: center;
+}
+
+.pane-drop-preview {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  border-radius: var(--radius-sm);
+  transition: all 120ms ease;
+  background: rgba(37, 99, 235, 0.12);
+  border: 2px dashed var(--accent, #2563eb);
+}
+
+.pane-drop-preview.is-center {
+  inset: 6px;
+}
+
+.pane-drop-preview.is-left {
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: calc(50% - 9px);
+}
+
+.pane-drop-preview.is-right {
+  top: 6px;
+  bottom: 6px;
+  right: 6px;
+  width: calc(50% - 9px);
+}
+
+.pane-drop-preview.is-top {
+  left: 6px;
+  right: 6px;
+  top: 6px;
+  height: calc(50% - 9px);
+}
+
+.pane-drop-preview.is-bottom {
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  height: calc(50% - 9px);
+}
+
+.pane-drop-preview.is-rejected {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: var(--destructive, #dc2626);
+}
+
 .main > .panes > .split-resizer {
   position: absolute;
   z-index: 4;

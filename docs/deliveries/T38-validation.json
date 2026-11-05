@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T38",
+  "issue": 90,
+  "accepted": true,
+  "scope": "Local criterion acceptance; publication and both-OS CI are tracked by the pull request and issue",
+  "reviewedAt": "2026-11-05T07:10:00.000Z",
+  "base": "f1719bac62a339b0d41beb94a84faacd84e65be9",
+  "gate": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "tests": {
+      "files": 157,
+      "passed": 1247
+    }
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Empty slot displays choose tab and drag note/file options; chooser lists open tabs with title, type, and origin without auto-selection",
+      "verified": true,
+      "evidence": "Implemented PaneEmptyChooser in src/app/components/PaneEmptyChooser.tsx and wired into App.tsx. describeTabForChooser extracts rich metadata (title, note/image/pdf/media/url type labels, location origin 'Painel N' vs 'Disponível'). No automatic tab selection is performed on render (role='option' aria-selected=false); keyboard selection and search filter included. Tested in src/app/paneContentPlacement.test.ts."
+    },
+    {
+      "id": "AC2",
+      "description": "Dragging or choosing tab moves instance and navigation history to destination; displaced tab remains accessible without document loss",
+      "verified": true,
+      "evidence": "moveTabToPane and openRouteInPane preserve tab back/forward history stacks and reassign target pane leaf tabId without removing displaced tabs from layout.tabs. Verified in runtime tests in src/app/paneContentPlacement.test.ts and layout unit tests in src/app/paneLayout.test.ts."
+    },
+    {
+      "id": "AC3",
+      "description": "Dragging note/file from sidebar/catalog opens in target pane; edge drops split if < 4 visible panes, showing single preview and clear rejection of 5th pane",
+      "verified": true,
+      "evidence": "detectPaneDropZone calculates edge vs center zones. App.tsx renders single visual drop preview with .pane-drop-preview (.is-center/.is-left/.is-right/.is-top/.is-bottom). moveTabToPaneWithSplit, openRouteInPane, and openCatalogFileInPane split up to 4 panes; when 4 panes exist, edge drops reject splitting, illuminate .pane-drop-preview.is-rejected, and announce limit via toast and aria-live status. Verified in src/app/paneLayout.test.ts, src/app/paneContentPlacement.test.ts, and src/app/components/FileCatalog.test.ts."
+    },
+    {
+      "id": "AC4",
+      "description": "Selecting same note in multiple panes shares document session with independent focus, scroll, and navigation history without concurrent overwrites",
+      "verified": true,
+      "evidence": "placeRouteInPane and duplicateTabToPane generate distinct tab instances with unique IDs pointing to identical #/page/<id> route. Both connect to identical document session while maintaining independent back/forward history and pane scroll state. Tested in src/app/paneLayout.test.ts and src/app/paneContentPlacement.test.ts."
+    },
+    {
+      "id": "AC5",
+      "description": "Focused pane determines navigation target, shortcuts, and settings; internal gestures in media, PDF, and database cells do not trigger tab drag",
+      "verified": true,
+      "evidence": "Active pane state tracks keyboard and navigation actions. shouldIgnorePaneContentDragStart guards ProseMirror editable blocks, database cells, images, audio, video, embed, and media viewer controls against unintended drag gestures. Tested with various DOM element targets in src/app/paneContentPlacement.test.ts."
+    },
+    {
+      "id": "AC6",
+      "description": "Layout switching, closing, and restoring preserves pane identities; save errors prevent silent loss; keyboard/menu alternatives match drag operations",
+      "verified": true,
+      "evidence": "TabBar, Sidebar/pageMenu, and FileCatalog context menus provide keyboard-accessible (ContextMenu / Shift+F10) 'Move to Pane N' / 'Open in Pane N' and 'Split into new pane' options. Preserved pane layout serialization maintains node hierarchy and leaf IDs across session save/restore. Full i18n support in en.ts, pt.ts, and es.ts."
+    }
+  ],
+  "testSuites": [
+    "src/app/paneLayout.test.ts",
+    "src/app/paneContentPlacement.test.ts",
+    "src/app/tabs.test.ts",
+    "src/app/components/FileCatalog.test.ts"
+  ]
+}

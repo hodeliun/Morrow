@@ -2,6 +2,7 @@ import {
   Archive,
   ArchiveRestore,
   ArrowRightLeft,
+  Columns2,
   Copy,
   Database,
   FolderOpen,
@@ -41,7 +42,8 @@ import {
   turnIntoPage,
 } from '../operations';
 import { desktop } from '../platform/desktop';
-import { navigate } from '../router';
+import { navigate, routeHash } from '../router';
+import { getVisiblePanes, openRouteInPane, targetPane } from '../tabs';
 import { getUi, openDialog, setUi } from '../ui';
 import { childrenOf } from '../../core/tree';
 import { getSession, getState } from '../workspace';
@@ -53,9 +55,32 @@ import { copyDatabase } from '../databaseClipboard';
 export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[] {
   const page = getState().pages[pageId];
   if (!page) return [];
+  const visiblePanes = getVisiblePanes();
+  const pageTarget = routeHash({ name: 'page', id: pageId, find: null });
+  const paneEntries: MenuEntry[] = [
+    ...(visiblePanes.length > 1
+      ? visiblePanes.map((pane, index) => ({
+          label: t('paneLayout.openInNamedPane', {
+            name: t('paneLayout.paneNumber', { number: index + 1 }),
+          }),
+          icon: Columns2,
+          onSelect: () => {
+            openRouteInPane(pageTarget, pane.id);
+          },
+        }))
+      : []),
+    {
+      label: t('paneLayout.splitNewPane'),
+      icon: Columns2,
+      onSelect: () => {
+        openRouteInPane(pageTarget, targetPane(), { splitEdge: 'right' });
+      },
+    },
+  ];
   return [
     { label: t('pageMenu.addSubpage'), icon: Plus, onSelect: () => createPage({ parentId: pageId }) },
     { label: t('pageMenu.rename'), icon: Pencil, shortcut: 'F2', onSelect: rename },
+    ...paneEntries,
     {
       label: page.icon ? t('pageMenu.changeIcon') : t('pageMenu.addIcon'),
       icon: Smile,
