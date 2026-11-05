@@ -12,9 +12,9 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A entrega de escopo original ativa é T30 (#81), validação integrada do Aumento de Escopo 2.
+A entrega de escopo original T30 (#81), validação integrada do Aumento de Escopo 2, foi integrada no PR #116.
 T34 (#86) foi integrado no PR #113, T36 (#88) no PR #114 e T38 (#90) no PR #115, todos encerrados após CI Windows/Linux da main.
-T30 (#81) foi implementado e validado localmente na branch `codex/t30-integrated-acceptance` com aceite completo e verificação `npm run check` (suíte integrada abrangente em `src/core/scope2IntegratedAcceptance.test.ts`, cobertura rastreável de S2-01..S2-30 / T01..T30, medição do banco de 1.000 linhas, abertura sem escrita e preservação de metadados), documentado em `docs/deliveries/T30-integrated-acceptance.md` e `docs/deliveries/T30-validation.json`. T39 permanece preservado até o encerramento de T30.
+T39 (#91) — validação integrada estendida (arquivos, navegação e painéis com o escopo anterior) — foi implementado e validado localmente na branch `codex/t39-extended-acceptance` com aceite completo e verificação `npm run check` (suíte integrada estendida em `src/app/scope2ExtendedAcceptance.test.ts`, cobertura rastreável de S2-31..S2-37 / T31..T39, 4 painéis simultâneos misturando nota, PDF, vídeo e web, abertura sem escrita e preservação de hashes/metadados, streaming Range 206/416 e isolamento de segurança), documentado em `docs/deliveries/T39-extended-acceptance.md` e `docs/deliveries/T39-validation.json`. Com a conclusão de T39, todos os 39 tickets do Aumento de Escopo 2 estão integralmente concluídos.
 O pré-requisito histórico T14 (#65) foi reconciliado no PR105, após verificação
 direta de documentos/arquivos e CI Windows/Linux. Não acrescenta uma entrega às 24 retomadas.
 O formato persistido 13 e seus contratos estritos
@@ -49,6 +49,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T34 #86 | PDFs locais em abas internas isoladas | #113 |
 | T36 #88 | Navegação web isolada em abas internas | #114 |
 | T38 #90 | Escolher abas e arrastar arquivos para cada painel | #115 |
+| T30 #81 | Validação integrada do Aumento de Escopo 2 | #116 |
 
 A dependência histórica T11 (#62), já entregue na integração pública 1.3,
 teve o encerramento reconciliado com seu relatório original em 03/11/2026.

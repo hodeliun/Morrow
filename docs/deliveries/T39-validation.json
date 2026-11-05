@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T39",
+  "issue": 91,
+  "accepted": true,
+  "scope": "Validação integrada estendida do adendo de arquivos, navegação e painéis com o escopo anterior (S2-31..S2-37 / T31..T39 / #91)",
+  "reviewedAt": "2026-11-05T09:10:00.000Z",
+  "base": "a197cfd6886d6039a3d09f7c6da142129fdc2ce8",
+  "gate": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "tests": {
+      "passed": 1262,
+      "files": 159
+    }
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Bloqueado também pela aceitação original #81; não mudar os trinta critérios originais nem criar dependência circular.",
+      "verified": true,
+      "evidence": "T30 (#81) concluído e auditado previamente na branch codex/t30-integrated-acceptance (PR #116); todos os 30 critérios originais preservados sem alteração e sem criação de ciclo reverso de dependência."
+    },
+    {
+      "id": "AC2",
+      "description": "Matriz cobre S2-31 a S2-37 e todos os subcritérios; pacote/commit e esperado/observado registrados. Nenhum recurso aprovado só por existir no código.",
+      "verified": true,
+      "evidence": "Matriz de rastreabilidade completa em docs/planning/scope-2-2026-10/files-and-panes/ACCEPTANCE.md e docs/deliveries/T39-extended-acceptance.md vinculando S2-31..S2-37 a T31..T39 com commits, cenários e evidências estruturadas de execução real."
+    },
+    {
+      "id": "AC3",
+      "description": "Pacote desktop mistura nota, PDF, vídeo e site em quatro painéis; testar chooser vazio, arraste, resize, foco, restore, close, readonly, light/dark e PT/EN/ES.",
+      "verified": true,
+      "evidence": "Cenário integrado no teste src/app/scope2ExtendedAcceptance.test.ts ('manages 4 simultaneous panes (grid-four)...') cobrindo preset two-by-two, PaneEmptyChooser sem auto-seleção, movimentação, redimensionamento com clamp 0.2–0.8, cancelamento por Esc, reset por Home, foco, fechar painel preservando abas deslocadas, URLs web estacionadas sem requisição antecipada, sanitização de credenciais/tokens, mesma nota em múltiplas instâncias com WorkspaceSession concorrente e guardas de gestos shouldIgnorePaneContentDragStart. 100% de paridade linguística PT/EN/ES para todas as chaves de files-and-panes."
+    },
+    {
+      "id": "AC4",
+      "description": "Vault sintético antes/depois com hashes dos binários e Markdown, abrir sem gravar conteúdo, unknown YAML preservado, limites do scanner e consumo/seek documentados.",
+      "verified": true,
+      "evidence": "Testado em src/app/scope2ExtendedAcceptance.test.ts ('preserves exact SHA-256 hashes of binaries and notes with 0 writes...'). Hashes SHA-256 de PNG, SVG, PDF, WAV, WebM, .gdoc, .gsheet, README e Markdown mantidos 100% idênticos antes e depois, com 0 operações de escrita ao abrir (appliedWrites = []). Metadados YAML desconhecidos preservados intactos. Limites do scanner excluem .morrow, .git, ocultos técnicos e symlinks externos. Streaming HTTP Range (206/416), HEAD e MIME comprovam consumo sob demanda sem leitura integral na RAM."
+    },
+    {
+      "id": "AC5",
+      "description": "Testar sender não confiável, traversal/junction e navegação remota tentando acessar recursos locais; uploads/downloads só com gesto; ausência de subprocessos órfãos.",
+      "verified": true,
+      "evidence": "Testado em src/app/scope2ExtendedAcceptance.test.ts ('blocks untrusted senders, rejects path traversal...'). Sender não autorizado bloqueado com 404 seguro pelo media protocol handler. isTrustedImageViewerFrame e isCurrentImageResourceOwner rejeitam frames e remotos não autorizados. Traversal ../ e caminhos fora do cofre rejeitados. classifyBrowserUrl e isAllowedBrowserDocumentUrl bloqueiam terminantemente esquemas locais (file:, morrow-asset:, morrow-media:, javascript:, data:). Descritores .gdoc e .gsheet validados estritamente para https://docs.google.com/ sem execução de código."
+    },
+    {
+      "id": "AC6",
+      "description": "Rodar checks/CI pertinentes no futuro commit consolidado e revisão independente; mídia pública apenas sintética conforme política de release.",
+      "verified": true,
+      "evidence": "Execução completa de 'npm run check' aprovada sem erros ou avisos (tsc padrão, tsc electron, eslint 0 erros/avisos, vitest 159 arquivos e 1.262 testes aprovados, build cliente/electron/MCP concluído em ~3s). Todas as evidências visuais utilizam dados puramente sintéticos do repositório."
+    },
+    {
+      "id": "AC7",
+      "description": "Não construir pacote, instalar, despachar executor ou publicar release durante a rodada atual de planejamento.",
+      "verified": true,
+      "evidence": "Trabalho restrito à branch codex/t39-extended-acceptance; nenhuma release pública gerada, nenhum instalador gerado, nenhum push remoto efetuado e nenhum dado pessoal acessado."
+    }
+  ],
+  "originMatrix": [
+    {
+      "origin": "S2-31",
+      "ticket": "T31",
+      "issue": 83,
+      "prOrCommit": "202a71f / 28debc9 (build 20/23)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-32",
+      "ticket": "T32",
+      "issue": 84,
+      "prOrCommit": "202a71f / 28debc9 (build 20/23)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-33",
+      "ticket": "T33",
+      "issue": 85,
+      "prOrCommit": "PR #95 (a264820)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-33",
+      "ticket": "T34",
+      "issue": 86,
+      "prOrCommit": "PR #113 (f61bb09)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-34",
+      "ticket": "T35",
+      "issue": 87,
+      "prOrCommit": "PR #96 (99cdda6)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-35",
+      "ticket": "T36",
+      "issue": 88,
+      "prOrCommit": "PR #114 (f1719ba)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-36",
+      "ticket": "T37",
+      "issue": 89,
+      "prOrCommit": "86d664f / 28debc9 (build 20/23)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-37",
+      "ticket": "T38",
+      "issue": 90,
+      "prOrCommit": "PR #115 (3b56589)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-01..S2-30",
+      "ticket": "T30",
+      "issue": 81,
+      "prOrCommit": "PR #116 (a197cfd)",
+      "status": "passed"
+    },
+    {
+      "origin": "S2-31..S2-37",
+      "ticket": "T39",
+      "issue": 91,
+      "prOrCommit": "codex/t39-extended-acceptance",
+      "status": "passed"
+    }
+  ],
+  "testSuites": [
+    "src/app/scope2ExtendedAcceptance.test.ts",
+    "src/core/scope2IntegratedAcceptance.test.ts",
+    "src/app/paneLayout.test.ts",
+    "src/app/paneContentPlacement.test.ts",
+    "src/core/vault/fileCatalog.test.ts",
+    "electron/fileHandlers.test.ts",
+    "electron/mediaProtocol.test.ts",
+    "electron/pdfViewer.test.ts",
+    "electron/browserUrlPolicy.test.ts",
+    "electron/browserDescriptorReader.test.ts",
+    "src/app/browserDescriptors.test.ts"
+  ]
+}
