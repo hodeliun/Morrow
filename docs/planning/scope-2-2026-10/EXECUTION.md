@@ -12,9 +12,9 @@ O mantenedor autorizou continuidade automática entre essas entregas: não aguar
 nova mensagem após cada ticket. Interromper somente por bloqueio indispensável que
 dependa dele ou pelo limite de quota semanal restante de 15%, com pausa segura.
 
-A única entrega ativa é T38 (#90), escolher abas e arrastar arquivos para cada painel.
-T34 (#86) foi integrado no PR #113 e T36 (#88) no PR #114, ambos encerrados após CI Windows/Linux da main.
-T38 (#90) foi implementado e validado localmente com aceite completo e verificação `npm run check` (1.247 testes em 157 arquivos), documentado em `docs/deliveries/T38-pane-content-placement.md` e `docs/deliveries/T38-validation.json`. T30 e T39 permanecem preservados até o encerramento de T38.
+A entrega de escopo original ativa é T30 (#81), validação integrada do Aumento de Escopo 2.
+T34 (#86) foi integrado no PR #113, T36 (#88) no PR #114 e T38 (#90) no PR #115, todos encerrados após CI Windows/Linux da main.
+T30 (#81) foi implementado e validado localmente na branch `codex/t30-integrated-acceptance` com aceite completo e verificação `npm run check` (suíte integrada abrangente em `src/core/scope2IntegratedAcceptance.test.ts`, cobertura rastreável de S2-01..S2-30 / T01..T30, medição do banco de 1.000 linhas, abertura sem escrita e preservação de metadados), documentado em `docs/deliveries/T30-integrated-acceptance.md` e `docs/deliveries/T30-validation.json`. T39 permanece preservado até o encerramento de T30.
 O pré-requisito histórico T14 (#65) foi reconciliado no PR105, após verificação
 direta de documentos/arquivos e CI Windows/Linux. Não acrescenta uma entrega às 24 retomadas.
 O formato persistido 13 e seus contratos estritos
@@ -48,6 +48,7 @@ Entregas integradas na main, com CI Windows/Linux e issues encerradas:
 | T29 #80 | Fundo de resultados por nota e preservação de remoções | #112 |
 | T34 #86 | PDFs locais em abas internas isoladas | #113 |
 | T36 #88 | Navegação web isolada em abas internas | #114 |
+| T38 #90 | Escolher abas e arrastar arquivos para cada painel | #115 |
 
 A dependência histórica T11 (#62), já entregue na integração pública 1.3,
 teve o encerramento reconciliado com seu relatório original em 03/11/2026.
