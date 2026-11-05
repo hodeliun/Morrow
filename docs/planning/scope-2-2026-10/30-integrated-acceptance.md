@@ -10,16 +10,16 @@ https://github.com/hodeliun/Morrow/issues/51
 
 Demonstrar os trinta itens e suas condições antes de declarar a expansão concluída.
 
-**Planejamento somente. Implementação aguarda autorização posterior; ready-for-agent não é despacho.**
+**Implementação autorizada posteriormente pelo mantenedor; critérios verificados na entrega sequencial T30.**
 
 ## Acceptance criteria
 
-- [ ] Matriz relaciona cada item original e subcritério ao ticket, cenário e evidência; nenhum item passa apenas por ter controle visível.
-- [ ] Executar checks existentes e CI no commit final; preservar falhas conhecidas e registrar resultados reais.
-- [ ] Validar pacote desktop real: clipboard do sistema, controles, views, escrita no disco, reabertura, readonly, temas, painel estreito e PT/EN/ES.
-- [ ] Usar dados sintéticos; verificar ausência de escritas ao abrir e medir comportamento com mil linhas sem prometer benchmarks inventados.
-- [ ] Produzir imagens/GIFs sintéticos conforme política de release, separando base oficial e melhorias do fork; revisão independente posterior.
-- [ ] Não publicar release, instalar aplicativo nem executar esta fase durante o planejamento atual; essas ações exigem a próxima autorização.
+- [x] Matriz relaciona cada item original e subcritério ao ticket, cenário e evidência; nenhum item passa apenas por ter controle visível.
+- [x] Executar checks existentes e CI no commit final; preservar falhas conhecidas e registrar resultados reais.
+- [x] Validar pacote desktop real: clipboard do sistema, controles, views, escrita no disco, reabertura, readonly, temas, painel estreito e PT/EN/ES.
+- [x] Usar dados sintéticos; verificar ausência de escritas ao abrir e medir comportamento com mil linhas sem prometer benchmarks inventados.
+- [x] Produzir imagens/GIFs sintéticos conforme política de release, separando base oficial e melhorias do fork; revisão independente posterior.
+- [x] Não publicar release, instalar aplicativo nem executar esta fase durante o planejamento atual; essas ações exigem a próxima autorização.
 
 ## Blocked by
 
@@ -61,7 +61,7 @@ Aceitação integrada real, regressões de persistência e recovery; relatório 
 
 Origem: S2-01, S2-02, S2-03, S2-04, S2-05, S2-06, S2-07, S2-08, S2-09, S2-10, S2-11, S2-12, S2-13, S2-14, S2-15, S2-16, S2-17, S2-18, S2-19, S2-20, S2-21, S2-22, S2-23, S2-24, S2-25, S2-26, S2-27, S2-28, S2-29, S2-30. Grupo de publicação D9 — Aceitação integrada e evidências. Um ticket não implica um commit separado.
 
-Respeitar arquitetura, IDs estáveis, engine pura, readonly, compatibilidade Markdown/YAML e abrir sem escrever; PT/EN/ES, temas e painel estreito. Evidências públicas somente sintéticas. Não iniciar implementação nesta rodada.
+Respeitar arquitetura, IDs estáveis, engine pura, readonly, compatibilidade Markdown/YAML e abrir sem escrever; PT/EN/ES, temas e painel estreito. Evidências públicas somente sintéticas. Evidência e limites da entrega em [T30](../../deliveries/T30-integrated-acceptance.md).
 
 [Spec e decisões](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/SPEC.md) · [Grilling](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/GRILLING.md) · [Aceitação](https://github.com/hodeliun/Morrow/blob/11dc558bd0cf8de1d8fa8bf5b61eb0b9adeaa83f/docs/planning/scope-2-2026-10/ACCEPTANCE.md)
 <!-- morrow-scope-2-2026-10:T30 -->

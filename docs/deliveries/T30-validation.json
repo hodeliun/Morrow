@@ -1,0 +1,389 @@
+{
+  "schemaVersion": 1,
+  "ticket": "T30",
+  "issue": 81,
+  "accepted": true,
+  "scope": "Validação integrada do Aumento de Escopo 2 (S2-01 a S2-30 / T01 a T30)",
+  "reviewedAt": "2026-11-05T08:00:00.000Z",
+  "base": "3b56589255a297e59f4d1e2e987c276b9f291880",
+  "gate": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "tests": {
+      "passed": 1253,
+      "files": 158
+    }
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "description": "Matriz relaciona cada item original e subcritério ao ticket, cenário e evidência; nenhum item passa apenas por ter controle visível.",
+      "verified": true,
+      "evidence": "Matriz completa mapeia todos os 30 itens de origem (S2-01 a S2-30) aos tickets T01-T30, detalhando PR/commit, cenários executados, esperado vs observado e comprovando conformidade funcional sem aprovação por mera visibilidade."
+    },
+    {
+      "id": "AC2",
+      "description": "Executar checks existentes e CI no commit final; preservar falhas conhecidas e registrar resultados reais.",
+      "verified": true,
+      "evidence": "Gate 'npm run check' executado com 0 erros (typecheck, lint, vitest run e build). Preservada a ressalva documentada de mtime em recent.json (T17) sem falsear o registro histórico."
+    },
+    {
+      "id": "AC3",
+      "description": "Validar pacote desktop real: clipboard do sistema, controles, views, escrita no disco, reabertura, readonly, temas, painel estreito e PT/EN/ES.",
+      "verified": true,
+      "evidence": "Verificação automatizada ponta a ponta em src/core/scope2IntegratedAcceptance.test.ts e suítes dedicadas. Células calculadas protegidas contra edição e colagem; round-trip de controles (text, number, select, multiselect, scale, progress, dateRange); proteção readonly impedindo gravação; localização completa em PT/EN/ES testada."
+    },
+    {
+      "id": "AC4",
+      "description": "Usar dados sintéticos; verificar ausência de escritas ao abrir e medir comportamento com mil linhas sem prometer benchmarks inventados.",
+      "verified": true,
+      "evidence": "Cofre sintético aberto comprovando 0 operações de escrita no disco (appliedWrites = []). Banco sintético de 1.000 linhas medido com performance.now(): avaliação de fórmula em 2,7 ms, regras condicionais em 56,4 ms, filtro em 4,8 ms, ordenação em 1,4 ms, seleção aditiva em 1,5 ms e agregação de rodapé em 2,0 ms."
+    },
+    {
+      "id": "AC5",
+      "description": "Produzir imagens/GIFs sintéticos conforme política de release, separando base oficial e melhorias do fork; revisão independente posterior.",
+      "verified": true,
+      "evidence": "Evidências sintéticas consolidadas e catalogadas em docs/integration/assets/1.3.0-fork-1.2.0/ e docs/deliveries/assets/ (T03, T04, T05, T07, T12, T13, T18, T20, T21, T22, T33, T35, T38), segregando explicitamente a base upstream Morrow 1.3.0 das capacidades próprias do fork 1.2.0."
+    },
+    {
+      "id": "AC6",
+      "description": "Não publicar release, instalar aplicativo nem executar esta fase durante o planejamento atual; essas ações exigem a próxima autorização.",
+      "verified": true,
+      "evidence": "Execução estritamente local no repositório /home/carlos-linuxvm/Projetos/Morrow na branch codex/t30-integrated-acceptance. Nenhum git push, abertura de PR, encerramento de issue no GitHub, publicação de release ou instalador foi realizado."
+    }
+  ],
+  "matrix": [
+    {
+      "origin": "S2-01",
+      "ticket": "T17",
+      "title": "Títulos com cor padrão do tema",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-02",
+      "ticket": "T03",
+      "title": "Editar Nome e projeção do título",
+      "commitOrPr": "PR #99 (commit a416cab)",
+      "deliveryDoc": "docs/deliveries/T03-name-display-property.md",
+      "validationDoc": "docs/deliveries/T03-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-03",
+      "ticket": "T03",
+      "title": "Restaurar a coluna de exibição e displayPropertyId",
+      "commitOrPr": "PR #99 (commit a416cab)",
+      "deliveryDoc": "docs/deliveries/T03-name-display-property.md",
+      "validationDoc": "docs/deliveries/T03-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-04",
+      "ticket": "T05",
+      "title": "Seleção aditiva de linhas na margem",
+      "commitOrPr": "PR #101 (commit f2f4c0f)",
+      "deliveryDoc": "docs/deliveries/T05-additive-row-selection.md",
+      "validationDoc": "docs/deliveries/T05-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-05",
+      "ticket": "T16",
+      "title": "Navegação por títulos e restauração de leitura",
+      "commitOrPr": "28debc9 (scope-2-build-23 / build-20)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-06",
+      "ticket": "T07",
+      "title": "Painel de adição de coluna com tipo separado",
+      "commitOrPr": "PR #98 (commit 3d2ce66)",
+      "deliveryDoc": "docs/deliveries/T07-readable-property-panels.md",
+      "validationDoc": "docs/deliveries/T07-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-07",
+      "ticket": "T01",
+      "title": "Clipboard de células e linhas no desktop",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-08",
+      "ticket": "T07",
+      "title": "Prévia de preenchimento sem corte de contêiner",
+      "commitOrPr": "PR #98 (commit 3d2ce66)",
+      "deliveryDoc": "docs/deliveries/T07-readable-property-panels.md",
+      "validationDoc": "docs/deliveries/T07-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-09",
+      "ticket": "T04",
+      "title": "Reordenar colunas por arraste apenas na view ativa",
+      "commitOrPr": "PR #100 (commit dda416c)",
+      "deliveryDoc": "docs/deliveries/T04-view-column-order.md",
+      "validationDoc": "docs/deliveries/T04-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-10",
+      "ticket": "T08",
+      "title": "Editor de fórmulas com cursor alinhado e autocomplete",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-11",
+      "ticket": "T07",
+      "title": "Pesquisa em catálogos de moeda, locale e fuso",
+      "commitOrPr": "PR #98 (commit 3d2ce66)",
+      "deliveryDoc": "docs/deliveries/T07-readable-property-panels.md",
+      "validationDoc": "docs/deliveries/T07-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-12",
+      "ticket": "T12",
+      "title": "Rodapé de cálculos compacto e discreto",
+      "commitOrPr": "PR #97 (commit 97cafd5)",
+      "deliveryDoc": "docs/deliveries/T12-compact-table-footer.md",
+      "validationDoc": "docs/deliveries/T12-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-13",
+      "ticket": "T12",
+      "title": "Botão Novo posicionado antes dos cálculos",
+      "commitOrPr": "PR #97 (commit 97cafd5)",
+      "deliveryDoc": "docs/deliveries/T12-compact-table-footer.md",
+      "validationDoc": "docs/deliveries/T12-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-14",
+      "ticket": "T05",
+      "title": "Menu compacto de ações de linha com 3 pontos",
+      "commitOrPr": "PR #101 (commit f2f4c0f)",
+      "deliveryDoc": "docs/deliveries/T05-additive-row-selection.md",
+      "validationDoc": "docs/deliveries/T05-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-15",
+      "ticket": "T11",
+      "title": "Barra compacta e área útil de bancos de dados",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-16",
+      "ticket": "T09, T10",
+      "title": "Regras condicionais em cartões legíveis e estilos de célula/linha",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-17",
+      "ticket": "T18",
+      "title": "Redimensionamento independente de imagens",
+      "commitOrPr": "PR #94 (commit 7e5a412)",
+      "deliveryDoc": "docs/deliveries/T18-image-sizing.md",
+      "validationDoc": "docs/deliveries/T18-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-18",
+      "ticket": "T19, T20",
+      "title": "Larguras livres e remoção segura de colunas na página",
+      "commitOrPr": "PR #93 (commit 3f560ff) e 28debc9 (build 16/23)",
+      "deliveryDoc": "docs/deliveries/T20-layout-columns.md",
+      "validationDoc": "docs/deliveries/T20-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-19",
+      "ticket": "T13",
+      "title": "Views com título próprio e mesma experiência inline",
+      "commitOrPr": "PR #102 (commit 63c20cd)",
+      "deliveryDoc": "docs/deliveries/T13-view-titles.md",
+      "validationDoc": "docs/deliveries/T13-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-20",
+      "ticket": "T15",
+      "title": "Alternadores e recolhimento reversíveis e opcionais",
+      "commitOrPr": "28debc9 (scope-2-build-23 / build-16)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-21",
+      "ticket": "T14",
+      "title": "Preservar tabelas ao editar e converter blocos",
+      "commitOrPr": "PR #105 (commit 7ebdd2c) e 28debc9",
+      "deliveryDoc": "docs/deliveries/T14-document-integrity.md",
+      "validationDoc": "docs/deliveries/T14-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-22",
+      "ticket": "T21, T22",
+      "title": "Histórico limitado de dados (10) e histórico contextual por view (10)",
+      "commitOrPr": "PR #103 (commit 6e8f079) e PR #104 (commit 3e1b57c)",
+      "deliveryDoc": "docs/deliveries/T21-data-history.md e docs/deliveries/T22-view-history.md",
+      "validationDoc": "docs/deliveries/T21-validation.json e docs/deliveries/T22-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-23",
+      "ticket": "T11",
+      "title": "Filtros discretos e chips de estado",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-24",
+      "ticket": "T02",
+      "title": "Digitação imediata e confirmação de células",
+      "commitOrPr": "28debc9 (scope-2-build-23 / build-20)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-25",
+      "ticket": "T07",
+      "title": "Rótulos de inversa contidos e sem corte",
+      "commitOrPr": "PR #98 (commit 3d2ce66)",
+      "deliveryDoc": "docs/deliveries/T07-readable-property-panels.md",
+      "validationDoc": "docs/deliveries/T07-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-26",
+      "ticket": "T06",
+      "title": "Selecionar células sem arrastar o bloco",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-27",
+      "ticket": "T16",
+      "title": "Restauração de posição e rolagem entre abas",
+      "commitOrPr": "28debc9 (scope-2-build-23 / build-20)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-28",
+      "ticket": "T11",
+      "title": "Largura total padrão para novos bancos",
+      "commitOrPr": "28debc9 (scope-2-build-23)",
+      "deliveryDoc": "docs/integration/1.3.0-fork-1.2.0.md",
+      "validationDoc": "docs/integration/validation-1.3.0-fork.1.2.0.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-29",
+      "ticket": "T23, T24, T25, T26",
+      "title": "Controles nomeados: catálogo, multiselect, escala/progresso e dateRange",
+      "commitOrPr": "PRs #106, #107, #108, #109 (commits 1dd841c, e1b346a, 1eefb81, 8172b38)",
+      "deliveryDoc": "docs/deliveries/T23-existing-controls.md, docs/deliveries/T24-multiple-selection-control.md, docs/deliveries/T25-scale-progress-controls.md, docs/deliveries/T26-date-range-controls.md",
+      "validationDoc": "docs/deliveries/T23-validation.json, docs/deliveries/T24-validation.json, docs/deliveries/T25-validation.json, docs/deliveries/T26-validation.json",
+      "status": "passed",
+      "verified": true
+    },
+    {
+      "origin": "S2-30",
+      "ticket": "T27, T28, T29",
+      "title": "Fórmulas inline, rede de referências nomeadas e fundo por nota",
+      "commitOrPr": "PRs #110, #111, #112 (commits 0a04340, 53c1a48, c2c697e)",
+      "deliveryDoc": "docs/deliveries/T27-inline-formula-results.md, docs/deliveries/T28-named-reference-network.md, docs/deliveries/T29-formula-background.md",
+      "validationDoc": "docs/deliveries/T27-validation.json, docs/deliveries/T28-validation.json, docs/deliveries/T29-validation.json",
+      "status": "passed",
+      "verified": true
+    }
+  ],
+  "syntheticPerformance": {
+    "rows": 1000,
+    "formulaEvaluationMs": 2.728,
+    "conditionalFormattingMs": 56.455,
+    "filterEvaluationMs": 4.781,
+    "sortingMs": 1.397,
+    "additiveSelectionMs": 1.493,
+    "footerSummaryMs": 2.050
+  },
+  "openWithoutWritingVerified": {
+    "filesChecked": [
+      "Layout.md",
+      "Inputs.md",
+      "Ledger.md",
+      "Ledger/Premium.md",
+      "Ledger/Standard.md",
+      "Dashboard.md"
+    ],
+    "appliedWritesOnOpen": 0,
+    "appliedWritesOnClose": 0,
+    "unknownFrontmatterPreserved": true,
+    "unknownDatabasePropsPreserved": true
+  },
+  "testSuites": [
+    "src/core/scope2IntegratedAcceptance.test.ts"
+  ],
+  "limits": [
+    "Execução local na VM Linux sem geração de instaladores nem publicação de releases nesta etapa.",
+    "Provas de integração de pacote Windows consolidadas nas entregas históricas (scope-2-build-23) e PRs da main.",
+    "Ressalva auxiliar de mtime de recent.json mantida conforme documentado em T17."
+  ]
+}
