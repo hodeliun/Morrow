@@ -21,6 +21,11 @@ import type {
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { childrenOf } from '../core/tree';
+import {
+  findUnrepresentablePageContent,
+  findUnrepresentableVaultMetadata,
+  hasUnrepresentableDatabaseSchema,
+} from '../core/vault/compatibility';
 import { linkTargets, placePages } from '../core/vault/layout';
 import type { Placement } from '../core/vault/layout';
 import {
@@ -39,6 +44,7 @@ import {
   readPageText,
   takeProperties,
   renderPageText,
+  sameValue,
 } from '../core/vault/pageFile';
 import type { PageSource } from '../core/vault/pageFile';
 import { splitFrontmatter } from '../core/vault/frontmatter';
@@ -86,6 +92,7 @@ export class VaultRepository implements WorkspaceRepository {
   private reserved = new Set<string>();
   // pages that could not be read, their files are never rewritten
   private locked = new Set<PageId>();
+  private protectedReasons = new Map<PageId, string>();
   private others = new Set<string>();
   private registryText: string | null = null;
   private recentText: string | null = null;
@@ -133,13 +140,41 @@ export class VaultRepository implements WorkspaceRepository {
 
   async load(): Promise<Result<LoadedWorkspace & { firstRun: boolean }>> {
     try {
-      const scan = await this.bridge.scan();
-      const loaded = loadVault(scan, this.newId);
+      const [scan, registryText, recentText] = await Promise.all([
+        this.bridge.scan(),
+        this.bridge.readText(REGISTRY_PATH),
+        this.bridge.readText(RECENT_PATH),
+      ]);
+      const parseMetadata = (
+        text: string | null,
+        scanned: unknown,
+        kind: 'workspace' | 'recent',
+      ): { value: unknown; problem: string | null } => {
+        if (text === null) return { value: scanned, problem: findUnrepresentableVaultMetadata(scanned, kind) };
+        let value: unknown;
+        try {
+          value = JSON.parse(text) as unknown;
+        } catch {
+          return { value: null, problem: `The Morrow ${kind} metadata could not be read and was left untouched.` };
+        }
+        if (value === null) {
+          return { value, problem: `The Morrow ${kind} metadata is not a supported object.` };
+        }
+        return { value, problem: findUnrepresentableVaultMetadata(value, kind) };
+      };
+      const registry = parseMetadata(registryText, scan.registry, 'workspace');
+      const recent = parseMetadata(recentText, scan.recent, 'recent');
+      if (registry.problem || recent.problem) {
+        return fail(`${registry.problem ?? recent.problem} Opening this vault was stopped before any file could be changed.`);
+      }
+      const guardedScan = { ...scan, registry: registry.value, recent: recent.value };
+      const loaded = loadVault(guardedScan, this.newId);
       this.adopt(loaded);
       this.others = new Set(scan.others);
-      this.registryText = scan.registry === null ? null : JSON.stringify(scan.registry);
-      this.recentText = scan.recent === null ? null : JSON.stringify(scan.recent);
-      const activity = (scan.recent as { activity?: unknown } | null)?.activity;
+      this.registryText =
+        registryText ?? (registry.value === null ? null : JSON.stringify(registry.value));
+      this.recentText = recentText ?? (recent.value === null ? null : JSON.stringify(recent.value));
+      const activity = (recent.value as { activity?: unknown } | null)?.activity;
       if (activity && typeof activity === 'object') {
         for (const [day, count] of Object.entries(activity as Record<string, unknown>)) {
           if (/^\d{4}-\d{2}-\d{2}$/.test(day) && typeof count === 'number' && count > 0)
@@ -154,13 +189,14 @@ export class VaultRepository implements WorkspaceRepository {
       this.stopWatching = this.bridge.onChange((changes) => this.onChanges(changes));
       const firstRun =
         scan.files.length === 0 &&
-        scan.registry === null &&
+        registry.value === null &&
         scan.folders.every((folder) => isHiddenPath(folder.path) || folder.path === TRASH_DIR);
       return ok({
         pages: loaded.pages,
         docs: loaded.docs,
         problems: loaded.problems,
         unreadable: loaded.unreadable,
+        protectedPages: Object.fromEntries(loaded.protectedPages),
         firstRun,
       });
     } catch (error) {
@@ -175,6 +211,57 @@ export class VaultRepository implements WorkspaceRepository {
     this.texts = loaded.texts;
     this.reserved = loaded.reserved;
     this.locked = new Set(loaded.unreadable);
+    this.protectedReasons = new Map(loaded.protectedPages);
+  }
+
+  validateWrite(batch: WriteBatch): string | null {
+    const state = batch.state ?? this.lastState;
+    if (!state) return 'Nothing to write yet.';
+    const touched = new Set<PageId>([
+      ...batch.pages.map((page) => page.id),
+      ...batch.docs.map((record) => record.id),
+      ...batch.removed,
+      ...(batch.snapshots ?? []).map((snapshot) => snapshot.pageId),
+    ]);
+    for (const id of touched) if (this.locked.has(id)) return this.protectionMessage(id);
+
+    // Adding or moving a child under a read-only page changes its directory contents and, for
+    // databases, the set of rows. Keep the whole parent boundary read only as well.
+    for (const id of touched) {
+      const page = state.pages[id];
+      if (page?.parentId && this.locked.has(page.parentId)) {
+        return this.protectionMessage(page.parentId);
+      }
+    }
+
+    for (const id of this.locked) {
+      const beforePage = this.lastState?.pages[id];
+      const afterPage = state.pages[id];
+      const beforeDoc = this.lastState?.docs[id];
+      const afterDoc = state.docs[id];
+      if (!sameValue(beforePage, afterPage) || !sameValue(beforeDoc, afterDoc)) {
+        return this.protectionMessage(id);
+      }
+    }
+
+    const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
+    const previous = new Map([...this.layout].filter(([id]) => !removed.has(id)));
+    const next = placePages(state, previous, this.folderOnly, this.reserved);
+    for (const id of this.locked) {
+      const before = this.layout.get(id);
+      const after = next.get(id);
+      if (before && (!after || before.file !== after.file || before.folder !== after.folder)) {
+        return this.protectionMessage(id);
+      }
+    }
+    return null;
+  }
+
+  private protectionMessage(id: PageId): string {
+    const reason = this.protectedReasons.get(id);
+    return reason
+      ? `This page is protected because Morrow cannot safely represent its content: ${reason}`
+      : 'This page could not be read and is protected from changes.';
   }
 
   async markInitialized(): Promise<void> {
@@ -185,7 +272,10 @@ export class VaultRepository implements WorkspaceRepository {
   async write(batch: WriteBatch): Promise<void> {
     const state = batch.state ?? this.lastState;
     if (!state) throw new Error('Nothing to write yet.');
-    this.lastState = state;
+    const refusal = this.validateWrite(batch);
+    if (refusal) throw new Error(refusal);
+    const metadataRefusal = await this.validateMetadataBeforeWrite();
+    if (metadataRefusal) throw new Error(metadataRefusal);
     const docChanged = new Set(batch.docs.map((record) => record.id));
     const metaChanged = new Set(batch.pages.map((page) => page.id));
     const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
@@ -197,7 +287,11 @@ export class VaultRepository implements WorkspaceRepository {
 
     const previous = new Map([...this.layout].filter(([id]) => !removed.has(id)));
     const next = placePages(state, previous, this.folderOnly, this.reserved);
-    const ops: VaultOp[] = [];
+    // Put a non-mutating compare ahead of moves/removals, then compare again at each metadata write.
+    const ops: VaultOp[] = [
+      { op: 'check', path: REGISTRY_PATH, expect: this.registryText },
+      { op: 'check', path: RECENT_PATH, expect: this.recentText },
+    ];
 
     for (const id of removed) {
       const before = this.layout.get(id);
@@ -308,9 +402,9 @@ export class VaultRepository implements WorkspaceRepository {
     }
     const registry = this.registryFor(state, next);
     if (registry.workspace !== this.registryText)
-      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace });
+      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace, expect: this.registryText });
     if (registry.recent !== this.recentText)
-      ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent });
+      ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent, expect: this.recentText });
     // the shell only removes empty folders, a folder page keeps its folder because the folder is the page
     const folderPages = new Set(
       [...next.values()].filter((p) => p.file === null).map((p) => p.folder.toLowerCase()),
@@ -320,9 +414,43 @@ export class VaultRepository implements WorkspaceRepository {
     }
 
     await this.run(ops, next);
+    this.lastState = state;
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
     this.registryDirty = false;
+  }
+
+  private async validateMetadataBeforeWrite(): Promise<string | null> {
+    for (const [path, kind, baseline] of [
+      [REGISTRY_PATH, 'workspace', this.registryText],
+      [RECENT_PATH, 'recent', this.recentText],
+    ] as const) {
+      let current: string | null;
+      try {
+        current = await this.bridge.readText(path);
+      } catch {
+        return `The Morrow ${kind} metadata could not be checked; no files were changed.`;
+      }
+      if (current === null) {
+        if (baseline !== null) {
+          return `The Morrow ${kind} metadata changed after opening; reopen this vault before saving.`;
+        }
+        continue;
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(current) as unknown;
+      } catch {
+        return `The Morrow ${kind} metadata could not be read and was left untouched.`;
+      }
+      const issue = findUnrepresentableVaultMetadata(raw, kind);
+      if (issue) return `${issue} No files were changed.`;
+      if (current !== baseline) {
+        return `The Morrow ${kind} metadata changed after opening; reopen this vault before saving.`;
+      }
+    }
+    return null;
   }
 
   private wantsFile(state: WorkspaceState, id: PageId): boolean {
@@ -443,6 +571,19 @@ export class VaultRepository implements WorkspaceRepository {
       const failed = results[failedAt]!;
       const op = pending[failedAt]!;
       if (!failed.ok && failed.code === 'conflict' && op.op === 'write' && op.id) {
+        const reason =
+          failed.current === null
+            ? null
+            : (findUnrepresentablePageContent(failed.current) ??
+              splitFrontmatter(failed.current).error ??
+              (isEncryptedText(failed.current) ? 'The current file is encrypted.' : null));
+        if (reason) {
+          // Earlier renames in this same batch may already have moved the page; keep that layout fact.
+          this.layout = layout;
+          throw new Error(
+            `The page changed on disk and contains content this version cannot safely represent. It was left untouched: ${reason}`,
+          );
+        }
         // the file changed on disk in the meantime, that version is kept in page history before it is replaced
         if (failed.current !== null) await this.keepDiskVersion(op.id, failed.current);
         pending = [{ ...op, expect: failed.current }, ...pending.slice(failedAt + 1)];
@@ -616,7 +757,13 @@ export class VaultRepository implements WorkspaceRepository {
     const opened = await decryptPage(text, password);
     if (!opened) return fail('That password is not right.');
     const read = this.readFile(placement.file, opened.plain, base, state, this.layout);
-    if (!read.ok) return fail('The page was decrypted but could not be read.');
+    if (!read.ok) {
+      return fail(
+        read.reason
+          ? `This encrypted page is protected because Morrow cannot safely represent its content: ${read.reason}`
+          : 'The page was decrypted but could not be read.',
+      );
+    }
     this.keys.set(id, opened.pageKey);
     this.plainTexts.set(id, opened.plain);
     if (read.source) this.sources.set(id, read.source);
@@ -738,6 +885,10 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   async deleteFiles(ids: FileId[]): Promise<void> {
+    if (ids.length > 0 && this.locked.size > 0) {
+      const id = this.locked.values().next().value as PageId;
+      throw new Error(`Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`);
+    }
     const results = await this.bridge.apply(ids.map((path) => ({ op: 'remove', path })));
     for (const id of ids) this.others.delete(id);
     const failed = results.find((result) => !result.ok);
@@ -799,6 +950,8 @@ export class VaultRepository implements WorkspaceRepository {
     const removed = new Set<PageId>();
     const unreadable = new Set<PageId>();
     const readable = new Set<PageId>();
+    const protectedPages = new Map<PageId, string>();
+    const protectedDatabases = new Set<PageId>();
     const texts = new Map<PageId, string>();
     const sources = new Map<PageId, PageSource | null>();
     const becameFolders = new Set<PageId>();
@@ -912,6 +1065,27 @@ export class VaultRepository implements WorkspaceRepository {
       } else {
         pages.set(id, { ...page, encrypted: isEncryptedText(text) || page.encrypted });
         unreadable.add(id);
+        if (read.reason) {
+          protectedPages.set(id, read.reason);
+          docs[id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text } }] };
+          if (hasUnrepresentableDatabaseSchema(text)) protectedDatabases.add(id);
+        }
+      }
+    }
+
+    if (protectedDatabases.size > 0) {
+      const allPages = new Map([...Object.values(state.pages), ...pages.values()].map((page) => [page.id, page]));
+      for (const databaseId of protectedDatabases) {
+        const reason = `The parent database is protected: ${protectedPages.get(databaseId)}`;
+        for (const row of allPages.values()) {
+          if (row.parentId !== databaseId || removed.has(row.id)) continue;
+          protectedPages.set(row.id, reason);
+          unreadable.add(row.id);
+          readable.delete(row.id);
+          pages.set(row.id, row);
+          const raw = this.texts.get(row.id);
+          if (raw !== undefined) docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text: raw } }] };
+        }
       }
     }
 
@@ -922,6 +1096,7 @@ export class VaultRepository implements WorkspaceRepository {
       removed: [...removed],
       unreadable: [...unreadable],
       readable: [...readable],
+      ...(protectedPages.size > 0 ? { protectedPages: Object.fromEntries(protectedPages) } : {}),
     };
     return {
       patch,
@@ -944,8 +1119,13 @@ export class VaultRepository implements WorkspaceRepository {
           const source = sources.get(id);
           if (source) this.sources.set(id, source);
           if (unreadable.has(id)) this.locked.add(id);
-          if (readable.has(id)) this.locked.delete(id);
+          if (protectedPages.has(id)) this.protectedReasons.set(id, protectedPages.get(id)!);
+          if (readable.has(id)) {
+            this.locked.delete(id);
+            this.protectedReasons.delete(id);
+          }
         }
+        this.lastState = this.currentState() ?? this.lastState;
         // registry ids for new pages are written with the next save
         if (patch.pages.some((page) => !this.registryHas(page.id))) this.registryDirty = true;
       },
@@ -969,7 +1149,7 @@ export class VaultRepository implements WorkspaceRepository {
     layout: Map<PageId, Placement>,
   ):
     | { ok: true; page: PageMeta; doc: DocNode; source: PageSource | null; database?: PageMeta }
-    | { ok: false } {
+    | { ok: false; reason?: string } {
     if (text.length > MAX_PAGE_BYTES || isEncryptedText(text)) return { ok: false };
     const folder = stripExtension(path);
     const name = basename(folder);
@@ -993,6 +1173,8 @@ export class VaultRepository implements WorkspaceRepository {
         return { ok: false };
       }
     }
+    const protectionReason = findUnrepresentablePageContent(text);
+    if (protectionReason) return { ok: false, reason: protectionReason };
     const read = readPageText(text);
     if (read.error) return { ok: false };
     const page: PageMeta = {

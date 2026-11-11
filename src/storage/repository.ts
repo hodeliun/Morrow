@@ -24,6 +24,7 @@ export interface ExternalPatch {
   removed: PageId[];
   unreadable: PageId[];
   readable: PageId[];
+  protectedPages?: Record<PageId, string>;
 }
 
 export interface StoredFile {
@@ -33,6 +34,8 @@ export interface StoredFile {
 
 export interface WorkspaceRepository {
   load(): Promise<Result<LoadedWorkspace & { firstRun: boolean }>>;
+  // an optional synchronous preflight lets file storage reject indirect path changes before state commits
+  validateWrite?(batch: WriteBatch): string | null;
   // resolves only after the transaction commits, rejects on any failure
   write(batch: WriteBatch): Promise<void>;
   markInitialized(): Promise<void>;

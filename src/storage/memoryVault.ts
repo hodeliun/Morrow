@@ -10,6 +10,7 @@ export class MemoryVault implements VaultBridge {
   readonly dirs = new Set<string>();
   readonly trashed: string[] = [];
   private listeners = new Set<(changes: VaultChange[]) => void>();
+  private readonly modifiedAt = new Map<string, number>();
   // real time, so files the tests change look newer than what morrow wrote, as they would on disk
   private clock = Date.now();
 
@@ -17,14 +18,19 @@ export class MemoryVault implements VaultBridge {
     for (const [path, text] of Object.entries(initial)) this.put(path, text);
   }
 
-  private put(path: string, data: string | ArrayBuffer): void {
+  private put(path: string, data: string | ArrayBuffer, mtime = this.clock): void {
     this.files.set(path, data);
+    this.modifiedAt.set(path, mtime);
     for (let dir = dirname(path); dir; dir = dirname(dir)) this.dirs.add(dir);
   }
 
   text(path: string): string | undefined {
     const value = this.files.get(path);
     return typeof value === 'string' ? value : undefined;
+  }
+
+  modifiedTime(path: string): number | undefined {
+    return this.modifiedAt.get(path);
   }
 
   paths(): string[] {
@@ -36,14 +42,14 @@ export class MemoryVault implements VaultBridge {
     const others = [];
     for (const [path, data] of this.files) {
       if (typeof data === 'string' && isPageFile(path) && !isHiddenPath(path)) {
-        files.push({ path, text: data, mtime: this.clock, birthtime: this.clock });
+        files.push({ path, text: data, mtime: this.modifiedAt.get(path) ?? this.clock, birthtime: this.clock });
       } else if (!isHiddenPath(path)) others.push(path);
     }
     const folders = [...this.dirs]
       .filter((dir) => !isHiddenPath(dir) || dir === '.trash')
       .map((path) => ({
         path,
-        mtime: this.clock,
+        mtime: this.modifiedAt.get(path) ?? this.clock,
         empty: ![...this.files.keys(), ...this.dirs].some((other) => other.startsWith(`${path}/`)),
       }));
     const json = (path: string) => {
@@ -86,13 +92,20 @@ export class MemoryVault implements VaultBridge {
 
   private applyOne(op: VaultOp): VaultOpResult {
     switch (op.op) {
+      case 'check': {
+        const current = this.text(op.path) ?? null;
+        if (current !== op.expect)
+          return { ok: false, code: 'conflict', message: 'changed on disk', current };
+        return { ok: true };
+      }
       case 'write': {
         if (op.expect !== undefined) {
           const current = this.text(op.path) ?? null;
           if (current !== op.expect)
             return { ok: false, code: 'conflict', message: 'changed on disk', current };
         }
-        this.put(op.path, op.text);
+        this.clock++;
+        this.put(op.path, op.text, this.clock);
         return { ok: true };
       }
       case 'rename': {
@@ -105,13 +118,17 @@ export class MemoryVault implements VaultBridge {
           return { ok: false, code: 'exists', message: `${op.to} exists` };
         if (isFile) {
           const data = this.files.get(op.from)!;
+          const mtime = this.modifiedAt.get(op.from) ?? this.clock;
           this.files.delete(op.from);
-          this.put(op.to, data);
+          this.modifiedAt.delete(op.from);
+          this.put(op.to, data, mtime);
         } else {
           for (const [path, data] of [...this.files]) {
             if (!path.startsWith(`${op.from}/`)) continue;
+            const mtime = this.modifiedAt.get(path) ?? this.clock;
             this.files.delete(path);
-            this.put(op.to + path.slice(op.from.length), data);
+            this.modifiedAt.delete(path);
+            this.put(op.to + path.slice(op.from.length), data, mtime);
           }
           for (const dir of [...this.dirs]) {
             if (dir === op.from || dir.startsWith(`${op.from}/`)) {
@@ -124,10 +141,14 @@ export class MemoryVault implements VaultBridge {
         return { ok: true };
       }
       case 'remove':
-        if (this.files.delete(op.path)) this.trashed.push(op.path);
+        if (this.files.delete(op.path)) {
+          this.modifiedAt.delete(op.path);
+          this.trashed.push(op.path);
+        }
         return { ok: true };
       case 'delete':
         this.files.delete(op.path);
+        this.modifiedAt.delete(op.path);
         return { ok: true };
       case 'rmdir': {
         const busy = [...this.files.keys(), ...this.dirs].some((path) => path.startsWith(`${op.path}/`));
@@ -181,7 +202,7 @@ export class MemoryVault implements VaultBridge {
     const reported: VaultChange[] = [];
     for (const [path, text] of Object.entries(changes)) {
       if (text === null) this.files.delete(path);
-      else this.put(path, text);
+      else this.put(path, text, this.clock);
       reported.push({ path, text, mtime: this.clock, birthtime: this.clock });
     }
     for (const listener of this.listeners) listener(reported);

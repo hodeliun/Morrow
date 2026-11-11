@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { canvasFromDoc } from '../core/canvas';
 import type { Command } from '../core/commands';
+import { encryptPage, newPageKey } from '../core/crypto';
 import type { DocNode, PageId } from '../core/model';
 import { sampleCommands } from '../core/sample';
 import { MemoryVault } from './memoryVault';
+import { E003_POLARIS_DADOS_FIXTURE } from './fixtures/e003-polaris-dados';
 import { WorkspaceSession } from './session';
 import { VaultRepository } from './vaultRepository';
 
@@ -48,6 +51,24 @@ const OBSIDIAN = {
   }),
   '.obsidian/app.json': '{}',
 };
+
+function fingerprint(vault: MemoryVault, paths: string[]) {
+  return Object.fromEntries(
+    paths.map((path) => [
+      path,
+      {
+        hash: createHash('sha256').update(vault.text(path) ?? '<missing>').digest('hex'),
+        mtime: vault.modifiedTime(path),
+      },
+    ]),
+  );
+}
+
+function pageIdAt(session: WorkspaceSession, path: string): PageId {
+  const id = Object.keys(session.getState().pages).find((candidate) => session.pathOf(candidate) === path);
+  if (!id) throw new Error(`no page at ${path}`);
+  return id;
+}
 
 describe('opening a folder of markdown files', () => {
   it('reads pages, folders, links, images and canvases', async () => {
@@ -294,6 +315,239 @@ describe('edits made outside morrow', () => {
     expect(vault.text('Projects/Garden.md')).toBe('Mine\n');
     const history = await session.listSnapshots(garden);
     expect(history.some((snapshot) => JSON.stringify(snapshot.doc).includes('Theirs'))).toBe(true);
+    await session.close();
+  });
+});
+
+describe('E003 Polaris Dados representability guard', () => {
+  it('uses non-mutating expected-content checks for present and absent vault files', async () => {
+    const vault = new MemoryVault({ 'Note.md': 'original\n' });
+    const before = fingerprint(vault, ['Note.md', 'Recent.json']);
+    expect(
+      await vault.apply([
+        { op: 'check', path: 'Note.md', expect: 'original\n' },
+        { op: 'check', path: 'Recent.json', expect: null },
+      ]),
+    ).toEqual([{ ok: true }, { ok: true }]);
+    expect(await vault.apply([{ op: 'check', path: 'Note.md', expect: 'stale\n' }])).toEqual([
+      { ok: false, code: 'conflict', message: 'changed on disk', current: 'original\n' },
+    ]);
+    expect(await vault.apply([{ op: 'check', path: 'Missing.md', expect: 'new\n' }])).toEqual([
+      { ok: false, code: 'conflict', message: 'changed on disk', current: null },
+    ]);
+    expect(fingerprint(vault, ['Note.md', 'Recent.json'])).toEqual(before);
+  });
+
+  it('keeps fork data byte-for-byte after blocked edits, batches, rename and reopen', async () => {
+    const vault = new MemoryVault(E003_POLARIS_DADOS_FIXTURE);
+    const session = await open(vault);
+    const legacyId = pageIdAt(session, 'Archive/Legacy.md');
+    const rowId = pageIdAt(session, 'Archive/Legacy/Row.md');
+    const forkContentId = pageIdAt(session, 'Fork content.md');
+    const inventoryId = pageIdAt(session, 'Inventory.md');
+    const paths = [
+      'Archive/Legacy.md',
+      'Archive/Legacy/Row.md',
+      'Fork content.md',
+      'Inventory.md',
+      'Inventory/Widget.md',
+    ];
+    const before = fingerprint(vault, paths);
+
+    expect(session.unreadable.has(legacyId)).toBe(true);
+    expect(session.unreadable.has(rowId)).toBe(true);
+    expect(session.unreadable.has(forkContentId)).toBe(true);
+    expect(session.protectedReasons.get(legacyId)).toMatch(/database property/i);
+    expect(session.protectedReasons.get(forkContentId)).toMatch(/Morrow block marker/i);
+    const originalForkDoc = session.getState().docs[forkContentId];
+    expect((await session.unlockPage(forkContentId, 'not-a-password')).ok).toBe(false);
+    await session.lockPage(forkContentId);
+    expect(session.getState().docs[forkContentId]).toEqual(originalForkDoc);
+    expect(session.execute({ type: 'page.rename', id: legacyId, title: 'Renamed legacy', now: 50 }).ok).toBe(false);
+    expect(
+      session.execute({
+        type: 'page.create',
+        id: 'new-row',
+        parentId: legacyId,
+        title: 'Unsafe new row',
+        now: 50,
+      }).ok,
+    ).toBe(false);
+    expect(session.execute({ type: 'page.setFields', id: rowId, extra: {}, now: 51 }).ok).toBe(false);
+    expect(
+      session.executeAll([
+        { type: 'page.setIcon', id: inventoryId, icon: '📦', now: 52 },
+        { type: 'page.rename', id: forkContentId, title: 'Edited marker', now: 53 },
+      ]).ok,
+    ).toBe(false);
+    expect(session.getState().pages[inventoryId]?.icon).toBeNull();
+    expect(await session.flush()).toBe(true);
+    expect(fingerprint(vault, paths)).toEqual(before);
+    await session.close();
+
+    const reopened = await open(vault);
+    expect(reopened.unreadable.has(pageIdAt(reopened, 'Archive/Legacy.md'))).toBe(true);
+    expect(reopened.unreadable.has(pageIdAt(reopened, 'Archive/Legacy/Row.md'))).toBe(true);
+    expect(fingerprint(vault, paths)).toEqual(before);
+    await reopened.close();
+  });
+
+  it('still edits and saves the upstream Name/Quantity/Price/Total synthetic database', async () => {
+    const vault = new MemoryVault(E003_POLARIS_DADOS_FIXTURE);
+    const session = await open(vault);
+    const widgetId = pageIdAt(session, 'Inventory/Widget.md');
+    const beforeDatabase = fingerprint(vault, ['Inventory.md']);
+    await run(session, {
+      type: 'page.setProperties',
+      id: widgetId,
+      values: { quantity: 3 },
+      now: 60,
+    });
+    expect(vault.text('Inventory/Widget.md')).toContain('Quantity: 3');
+    expect(vault.text('Inventory/Widget.md')).toContain('opaque-widget-7f21');
+    expect(fingerprint(vault, ['Inventory.md'])).toEqual(beforeDatabase);
+    expect(session.unreadable.has(widgetId)).toBe(false);
+    await session.close();
+  });
+
+  it('rejects permanent deletion of a trashed parent with a protected descendant', async () => {
+    const paths = [
+      '.trash/Archive.md',
+      '.trash/Archive/Legacy.md',
+      '.trash/Archive/Legacy/Row.md',
+      '.morrow/workspace.json',
+    ];
+    const vault = new MemoryVault({
+      '.trash/Archive.md': '# Archive\n',
+      '.trash/Archive/Legacy.md': E003_POLARIS_DADOS_FIXTURE['Archive/Legacy.md']!,
+      '.trash/Archive/Legacy/Row.md': E003_POLARIS_DADOS_FIXTURE['Archive/Legacy/Row.md']!,
+      '.morrow/workspace.json': JSON.stringify({
+        pages: { '.trash/Archive.md': { id: 'archive', trashed: 123 } },
+      }),
+    });
+    const session = await open(vault);
+    const archiveId = pageIdAt(session, '.trash/Archive.md');
+    const before = fingerprint(vault, paths);
+    expect(session.execute({ type: 'page.deleteForever', id: archiveId }).ok).toBe(false);
+    expect(session.getState().pages[archiveId]).toBeDefined();
+    expect(fingerprint(vault, paths)).toEqual(before);
+    await session.close();
+  });
+
+  it('refuses future workspace/recent registries before any file is rewritten', async () => {
+    for (const [metadataPath, text] of [
+      [
+        '.morrow/workspace.json',
+        JSON.stringify({ pages: { 'Inventory.md': { id: 'page-1', futureRegistry: { id: 'opaque' } } } }),
+      ],
+      ['.morrow/recent.json', JSON.stringify({ opened: {}, futureRecent: { id: 'opaque' } })],
+    ]) {
+      const vault = new MemoryVault({
+        'Inventory.md': E003_POLARIS_DADOS_FIXTURE['Inventory.md']!,
+        'Inventory/Widget.md': E003_POLARIS_DADOS_FIXTURE['Inventory/Widget.md']!,
+        [metadataPath!]: text!,
+      });
+      const paths = ['Inventory.md', 'Inventory/Widget.md', metadataPath!];
+      const before = fingerprint(vault, paths);
+      const opened = await WorkspaceSession.open(new VaultRepository(vault, newId));
+      expect(opened.ok).toBe(false);
+      if (!opened.ok) expect(opened.error).toMatch(/workspace registry|recent-items/i);
+      expect(fingerprint(vault, paths)).toEqual(before);
+    }
+  });
+
+  it('does not overwrite future registry metadata added after opening', async () => {
+    const vault = new MemoryVault({ 'Note.md': 'Original note.\n' });
+    const session = await open(vault);
+    await session.markInitialized();
+    const noteId = pageIdAt(session, 'Note.md');
+    const registry = JSON.parse(vault.text('.morrow/workspace.json')!) as Record<string, unknown>;
+    registry.futureField = { id: 'must-survive' };
+    vault.external({ '.morrow/workspace.json': `${JSON.stringify(registry)}\n` });
+    const paths = ['Note.md', 'Renamed.md', '.morrow/workspace.json', '.morrow/recent.json'];
+    const before = fingerprint(vault, paths);
+
+    expect(session.execute({ type: 'page.rename', id: noteId, title: 'Renamed', now: 70 }).ok).toBe(true);
+    expect(await session.flush()).toBe(false);
+    expect(vault.text('.morrow/workspace.json')).toContain('must-survive');
+    expect(fingerprint(vault, paths)).toEqual(before);
+    await session.close();
+  });
+
+  it('enforces protection at the repository write boundary', async () => {
+    const vault = new MemoryVault(E003_POLARIS_DADOS_FIXTURE);
+    const repository = new VaultRepository(vault, newId);
+    const loaded = await repository.load();
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const legacy = loaded.value.pages.find((page) => repository.pathOf(page.id) === 'Archive/Legacy.md')!;
+    const state = {
+      pages: Object.fromEntries(loaded.value.pages.map((page) => [page.id, page])),
+      docs: loaded.value.docs,
+    };
+    const changed = { ...legacy, title: 'Unsafe direct repository edit' };
+    state.pages[legacy.id] = changed;
+    const before = fingerprint(vault, ['Archive/Legacy.md']);
+    await expect(
+      repository.write({ pages: [changed], docs: [], removed: [], state }),
+    ).rejects.toThrow(/cannot safely represent/i);
+    expect(fingerprint(vault, ['Archive/Legacy.md'])).toEqual(before);
+    repository.close();
+  });
+
+  it('keeps encrypted fork-only content locked when unlock finds it is not representable', async () => {
+    const password = 'synthetic-password';
+    const encrypted = await encryptPage(
+      '---\nkind: page\n---\n<!-- morrow:image align="right" width="35%" -->\n',
+      await newPageKey(password),
+    );
+    const vault = new MemoryVault({ 'Secret.md': encrypted });
+    const session = await open(vault);
+    const id = pageIdAt(session, 'Secret.md');
+    const before = fingerprint(vault, ['Secret.md']);
+
+    const unlocked = await session.unlockPage(id, password);
+    expect(unlocked.ok).toBe(false);
+    if (!unlocked.ok) expect(unlocked.error).toMatch(/Morrow cannot safely represent/i);
+    expect(session.unreadable.has(id)).toBe(true);
+    expect(fingerprint(vault, ['Secret.md'])).toEqual(before);
+    await session.close();
+    expect(fingerprint(vault, ['Secret.md'])).toEqual(before);
+  });
+
+  it('refuses attachment deletion through both session and repository when protected pages may reference it', async () => {
+    const vault = new MemoryVault(E003_POLARIS_DADOS_FIXTURE);
+    const session = await open(vault);
+    const path = 'attachments/fork-image.png';
+    const before = fingerprint(vault, [path]);
+    await expect(session.deleteFiles([path])).rejects.toThrow(/protected page may reference them/i);
+    expect(fingerprint(vault, [path])).toEqual(before);
+    await session.close();
+
+    const repository = new VaultRepository(vault, newId);
+    const loaded = await repository.load();
+    expect(loaded.ok).toBe(true);
+    await expect(repository.deleteFiles([path])).rejects.toThrow(/protected page may reference them/i);
+    expect(fingerprint(vault, [path])).toEqual(before);
+    repository.close();
+  });
+
+  it('keeps a database and row protected when both receive unsupported external updates together', async () => {
+    const vault = new MemoryVault(E003_POLARIS_DADOS_FIXTURE);
+    const session = await open(vault);
+    const databaseId = pageIdAt(session, 'Archive/Legacy.md');
+    const rowId = pageIdAt(session, 'Archive/Legacy/Row.md');
+    vault.external({
+      'Archive/Legacy.md': `${E003_POLARIS_DADOS_FIXTURE['Archive/Legacy.md']}\n<!-- morrow:image crop="0,0,1,1" -->\n`,
+      'Archive/Legacy/Row.md': `${E003_POLARIS_DADOS_FIXTURE['Archive/Legacy/Row.md']}\nExternal row update.\n`,
+    });
+    expect(session.unreadable.has(databaseId)).toBe(true);
+    expect(session.unreadable.has(rowId)).toBe(true);
+    expect(session.protectedReasons.has(rowId)).toBe(true);
+    const before = fingerprint(vault, ['Archive/Legacy.md', 'Archive/Legacy/Row.md']);
+    expect(session.execute({ type: 'page.rename', id: rowId, title: 'Unsafe row edit', now: 61 }).ok).toBe(false);
+    expect(await session.flush()).toBe(true);
+    expect(fingerprint(vault, ['Archive/Legacy.md', 'Archive/Legacy/Row.md'])).toEqual(before);
     await session.close();
   });
 });

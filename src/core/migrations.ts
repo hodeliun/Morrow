@@ -39,6 +39,8 @@ export interface LoadedWorkspace {
   problems: string[];
   // pages whose stored content failed validation, opened read only so nothing overwrites it
   unreadable: PageId[];
+  // readable files with Markdown/frontmatter this version cannot safely represent
+  protectedPages?: Record<PageId, string>;
 }
 
 // each entry upgrades data from version n to n + 1

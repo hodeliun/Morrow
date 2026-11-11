@@ -150,6 +150,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
 
   const trashed = isEffectivelyTrashed(state.pages, id);
   const unreadable = getSession().unreadable.has(id);
+  const protectionReason = getSession().protectedReasons.get(id);
   const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
   const doc = state.docs[id] ?? EMPTY_DOC;
 
@@ -165,7 +166,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         t('topBar.edited', { time: exactTime(page.updatedAt) }),
       ].join('\n'),
     };
-    if (trashed) return [info];
+    if (trashed || unreadable) return [info];
     return [info, ...pageMenuEntries(id, () => titleRef.current?.focus())];
   };
 
@@ -249,7 +250,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         {page.kind !== 'database' && !unreadable && !prefs.hiddenOutlines.includes(page.id) && (
           <Outline doc={doc} />
         )}
-        <CoverBanner page={page} editable={!trashed && !reading} />
+        <CoverBanner page={page} editable={!trashed && !unreadable && !reading} />
         <article
           className={`page font-${prefs.font} width-${prefs.pageWidths[page.id] ?? prefs.width}${page.cover ? ' has-cover' : ''}`}
         >
@@ -260,14 +261,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                 type="button"
                 className="page-icon"
                 aria-label={t('page.changeIcon')}
-                disabled={trashed}
+                disabled={trashed || unreadable}
                 onClick={() => openDialog({ kind: 'icon', pageId: id })}
               >
                 <Emoji emoji={page.icon} />
               </button>
             </div>
           )}
-          {!trashed && (!page.icon || !page.cover || canAddProperty) && (
+          {!trashed && !unreadable && (!page.icon || !page.cover || canAddProperty) && (
             <div className="page-header-actions">
               {!page.icon && (
                 <button
@@ -301,7 +302,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
           <h1 className="page-title-heading">
             <TitleField
               page={page}
-              readOnly={trashed || reading}
+              readOnly={trashed || unreadable || reading}
               inputRef={titleRef}
               onEnter={(rest) => {
                 const editor = editorRef.current;
@@ -324,7 +325,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               onAdded={() => setAddingFor(null)}
             />
           )}
-          {unreadable && page.encrypted ? (
+          {unreadable && protectionReason ? (
+            <>
+              <div className="banner is-error" role="alert">
+                {t('page.contentUnreadable')} {protectionReason}
+              </div>
+              <pre className="readonly-text">{docToPlainText(doc)}</pre>
+            </>
+          ) : unreadable && page.encrypted ? (
             <LockedPage page={page} />
           ) : unreadable ? (
             <div className="banner is-error" role="alert">
@@ -385,7 +393,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               />
             )
           )}
-          {page.kind === 'database' && (
+          {page.kind === 'database' && !unreadable && (
             <Suspense fallback={<div className="database" aria-busy="true" />}>
               <DatabaseView page={page} editable={!trashed && !unreadable} />
             </Suspense>

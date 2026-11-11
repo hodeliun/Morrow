@@ -7,7 +7,7 @@ import type { DocNode, FileId, FileMeta, PageId, Snapshot, WorkspaceState } from
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { openRepository } from './repository';
-import type { ExternalPatch, StoredFile, WorkspaceRepository } from './repository';
+import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
 import { SaveQueue } from './saveQueue';
 import type { SaveQueueOptions, SaveStatus } from './saveQueue';
 
@@ -31,6 +31,7 @@ export class WorkspaceSession {
     private readonly repository: WorkspaceRepository,
     initial: WorkspaceState,
     readonly unreadable: Set<PageId>,
+    readonly protectedReasons: Map<PageId, string>,
     readonly problems: readonly string[],
     readonly firstRun: boolean,
     options: SaveQueueOptions,
@@ -74,6 +75,7 @@ export class WorkspaceSession {
   }
 
   async unlockPage(id: PageId, password: string): Promise<Result<WorkspaceState>> {
+    if (this.protectedReasons.has(id)) return fail(this.protectionMessage(id));
     if (!this.repository.unlockPage) return fail('Encrypted pages need a vault folder.');
     const opened = await this.repository.unlockPage(id, password, this.state);
     if (!opened.ok) return opened;
@@ -88,6 +90,7 @@ export class WorkspaceSession {
 
   // saves the page, then forgets its key and its content until it is unlocked again
   async lockPage(id: PageId): Promise<void> {
+    if (this.protectedReasons.has(id)) return;
     await this.queue.flush();
     this.repository.lockPage?.(id);
     this.unreadable.add(id);
@@ -99,6 +102,7 @@ export class WorkspaceSession {
 
   async protectPage(id: PageId, password: string): Promise<Result<WorkspaceState>> {
     if (!this.repository.protectPage) return fail('Encrypted pages need a vault folder.');
+    if (this.unreadable.has(id)) return fail(this.protectionMessage(id));
     await this.queue.flush();
     await this.repository.protectPage(id, password);
     const result = this.execute({ type: 'page.setEncrypted', id, encrypted: true, now: Date.now() });
@@ -160,7 +164,15 @@ export class WorkspaceSession {
     }
     const acceptedSet = new Set(accepted);
     for (const id of patch.unreadable) if (acceptedSet.has(id)) this.unreadable.add(id);
-    for (const id of patch.readable) if (acceptedSet.has(id)) this.unreadable.delete(id);
+    for (const id of patch.readable) {
+      if (!acceptedSet.has(id)) continue;
+      this.unreadable.delete(id);
+      this.protectedReasons.delete(id);
+    }
+    for (const [id, reason] of Object.entries(patch.protectedPages ?? {})) {
+      if (acceptedSet.has(id)) this.protectedReasons.set(id, reason);
+    }
+    for (const id of patch.removed) if (acceptedSet.has(id)) this.protectedReasons.delete(id);
     if (accepted.length > 0) {
       this.state = { pages, docs };
       for (const listener of this.listeners) listener();
@@ -182,6 +194,7 @@ export class WorkspaceSession {
       repo,
       { ...state, pages, docs: loaded.value.docs },
       new Set(loaded.value.unreadable),
+      new Map(Object.entries(loaded.value.protectedPages ?? {})),
       loaded.value.problems,
       loaded.value.firstRun,
       options,
@@ -202,18 +215,12 @@ export class WorkspaceSession {
   }
 
   execute(command: Command): Result<WorkspaceState> {
-    const id = 'id' in command ? command.id : 'pageId' in command ? command.pageId : null;
-    if (
-      typeof id === 'string' &&
-      this.unreadable.has(id) &&
-      (command.type === 'page.setDoc' || command.type === 'task.setChecked')
-    ) {
-      return fail('This page could not be read, so it is protected from changes.');
-    }
     const result = applyCommand(this.state, command);
     if (!result.ok) return result;
     const { state, changes } = result.value;
     if (state === this.state) return ok(state);
+    const refusal = this.validateChanges(changes, state);
+    if (refusal) return fail(refusal);
     this.state = state;
     this.queue.enqueue(changes);
     for (const listener of this.listeners) listener();
@@ -232,6 +239,8 @@ export class WorkspaceSession {
       for (const id of result.value.changes.docs) all.docs.add(id);
       for (const id of result.value.changes.removed) all.removed.add(id);
     }
+    const refusal = this.validateChanges(all, draft);
+    if (refusal) return fail(refusal);
     this.state = draft;
     this.queue.enqueue(all);
     for (const listener of this.listeners) listener();
@@ -264,6 +273,12 @@ export class WorkspaceSession {
   }
 
   deleteFiles(ids: FileId[]): Promise<void> {
+    if (ids.length > 0 && this.unreadable.size > 0) {
+      const id = this.unreadable.values().next().value as PageId;
+      return Promise.reject(
+        new Error(`Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`),
+      );
+    }
     return this.repository.deleteFiles(ids);
   }
 
@@ -276,12 +291,15 @@ export class WorkspaceSession {
   }
 
   changeSnapshot(pageId: PageId, id: string, change: { name: string } | null): Promise<void> {
+    if (this.unreadable.has(pageId)) return Promise.reject(new Error(this.protectionMessage(pageId)));
     return this.repository.changeSnapshot(pageId, id, change);
   }
 
   // earlier versions brought over from another storage, written as they are
   async importSnapshots(snapshots: Snapshot[]): Promise<void> {
     if (snapshots.length === 0) return;
+    const protectedSnapshot = snapshots.find((snapshot) => this.unreadable.has(snapshot.pageId));
+    if (protectedSnapshot) throw new Error(this.protectionMessage(protectedSnapshot.pageId));
     await this.queue.flush();
     await this.exclusive(() =>
       this.repository.write({ pages: [], docs: [], removed: [], snapshots, state: this.state }),
@@ -291,6 +309,7 @@ export class WorkspaceSession {
   // the current content is kept as a version first, so restoring can always be undone
   async restoreSnapshot(snapshot: Snapshot): Promise<Result<WorkspaceState>> {
     if (!this.state.pages[snapshot.pageId]) return fail('That page no longer exists.');
+    if (this.unreadable.has(snapshot.pageId)) return fail(this.protectionMessage(snapshot.pageId));
     await this.queue.flush();
     try {
       const current = this.snapshotOf(snapshot.pageId, this.state, Date.now());
@@ -320,6 +339,7 @@ export class WorkspaceSession {
 
   // the page as it is now is kept in its history, before the assistant changes it for you
   async keepVersion(pageId: PageId): Promise<void> {
+    if (this.unreadable.has(pageId)) return;
     const doc = this.state.docs[pageId];
     if (!doc || isDocEmpty(doc) || this.state.pages[pageId]?.encrypted) return;
     await this.queue.flush();
@@ -330,6 +350,28 @@ export class WorkspaceSession {
       this.repository.write({ pages: [], docs: [], removed: [], snapshots: [current] }),
     );
     this.noteKept(current);
+  }
+
+  private validateChanges(
+    changes: { pages: Set<PageId>; docs: Set<PageId>; removed: Set<PageId> },
+    state: WorkspaceState,
+  ): string | null {
+    const touched = new Set<PageId>([...changes.pages, ...changes.docs, ...changes.removed]);
+    for (const id of touched) if (this.unreadable.has(id)) return this.protectionMessage(id);
+    const batch: WriteBatch = {
+      pages: [...changes.pages].flatMap((id) => (state.pages[id] ? [state.pages[id]!] : [])),
+      docs: [...changes.docs].flatMap((id) => (state.docs[id] ? [{ id, doc: state.docs[id]! }] : [])),
+      removed: [...changes.removed].filter((id) => !state.pages[id]),
+      state,
+    };
+    return this.repository.validateWrite?.(batch) ?? null;
+  }
+
+  private protectionMessage(id: PageId): string {
+    const reason = this.protectedReasons.get(id);
+    return reason
+      ? `This page is protected because Morrow cannot safely represent its content: ${reason}`
+      : 'This page could not be read and is protected from changes.';
   }
 
   private exclusive<T>(write: () => Promise<T>): Promise<T> {
