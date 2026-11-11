@@ -2,6 +2,18 @@
 
 O Morrow original e este fork têm versões independentes. A tela **Sobre** mostra a versão da base oficial, a versão das modificações e a revisão oficial exata. O campo `version` do pacote combina ambas apenas para identificar executáveis: `<base>-fork.<modificações>`.
 
+## Modificações do fork 1.2.0 — base Morrow 1.3.0 (10/11/2026)
+
+Pacote: `1.3.0-fork.1.2.0`. Base oficial atualizada para o **Morrow 1.3.0**, commit [`13ce1908ac7777a16161b5ef0c013de5eadcb3a1`](https://github.com/Aarav2709/Morrow/commit/13ce1908ac7777a16161b5ef0c013de5eadcb3a1), preservando os 39 commits oficiais desde a base `1.2.1` (`5e6392b`). Esta release conclui todos os **39 tickets** do **Aumento de Escopo 2** (`T01`–`T39`, issues [`#51`](https://github.com/hodeliun/Morrow/issues/51)–[`#91`](https://github.com/hodeliun/Morrow/issues/91)).
+
+Os downloads Windows x64 e Linux x64, checksums SHA-256 e registros de validação estão publicados na [release `v1.3.0-fork.1.2.0`](https://github.com/hodeliun/Morrow/releases/tag/v1.3.0-fork.1.2.0). As [notas ilustradas e o guia cumulativo do fork (1.0.0 → 1.2.0)](docs/releases/1.2.0/NOTES.md) descrevem em detalhe cada recurso, exemplo sintético, origem e limitação conhecida.
+
+### Entregas finais de fechamento do escopo 1.2.0
+
+- **Validação integrada estendida (`T39` / `#91`):** comprova a interoperabilidade dos recursos de arquivos, mídia, PDF, web isolada e até quatro painéis (`S2-31`..`S2-37`) com os trinta itens do escopo anterior (`S2-01`..`S2-30`), preservando hashes SHA-256 com zero escritas ao abrir e validando streaming HTTP Range (206/416) e isolamento de segurança. Detalhes: [T39 — aceitação estendida](docs/deliveries/T39-extended-acceptance.md).
+- **Validação integrada do Aumento de Escopo 2 (`T30` / `#81`):** matriz completa e suíte integrada para `S2-01`..`S2-30`, cobrindo abertura sem escrita, round-trip de persistência no formato 13, medições reais em banco sintético de 1.000 linhas, histórico limitado de dados/views, modo `readonly`, contraste claro/escuro e paridade PT/EN/ES. Detalhes: [T30 — aceitação integrada](docs/deliveries/T30-integrated-acceptance.md).
+- **Seletor de abas e arraste por painel (`T38` / `#90`):** painéis vazios exibem seletor pesquisável das abas abertas sem pré-seleção automática; abas, notas e arquivos podem ser arrastados para o centro ou bordas com divisão até 4 painéis e rejeição clara do 5º painel; a mesma nota pode abrir em múltiplos painéis simultâneos sem conflito de gravação. Detalhes: [T38 — conteúdo e abas por painel](docs/deliveries/T38-pane-content-placement.md).
+
 ## Entrega sequencial — sites em abas isoladas (fontes, sem novo download)
 
 - Links e descritores gdoc/gsheet podem abrir no navegador interno, com endereço,

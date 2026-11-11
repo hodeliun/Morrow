@@ -115,19 +115,18 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 ## Status
 
 This fork tracks the official Morrow base and its own version separately.
-The source integrates official **1.3.0** at `13ce190` with fork changes **1.2.0**,
-identified as `1.3.0-fork.1.2.0`. The integrated source passed its build and targeted runtime validation; see
-[the integration report](docs/integration/1.3.0-fork-1.2.0.md) for evidence and limits.
-This source update does not publish a downloadable release. Exact metadata is recorded in
-`package.json` and [the fork changelog](CHANGELOG-FORK.md).
-The old fork label `1.2.4` did not mean that the official1.2.1 fixes were present.
+The current release integrates official **1.3.0** at [`13ce190`](https://github.com/Aarav2709/Morrow/commit/13ce1908ac7777a16161b5ef0c013de5eadcb3a1) with fork changes **1.2.0**,
+identified as `1.3.0-fork.1.2.0` and published at [`v1.3.0-fork.1.2.0`](https://github.com/hodeliun/Morrow/releases/tag/v1.3.0-fork.1.2.0).
+See the [release notes and cumulative fork guide](docs/releases/1.2.0/NOTES.md), [the upstream integration report](docs/integration/1.3.0-fork-1.2.0.md), [T30 integrated acceptance](docs/deliveries/T30-integrated-acceptance.md), and [T39 extended acceptance](docs/deliveries/T39-extended-acceptance.md) for evidence and limits.
+Exact metadata is recorded in `package.json` and [the fork changelog](CHANGELOG-FORK.md).
+The old fork label `1.2.4` did not mean that the official 1.2.1 fixes were present.
 
 Pages stay in a folder you choose as Markdown. Earlier builds kept them inside
 the app; on first open, the app offers to copy those pages into the folder and
 leaves the original copy untouched. Choose a separate folder for the synthetic
 demo vault in [demo/](demo/) and follow [the guide](docs/GUIA.md).
-Official Morrow supports Windows, macOS and Linux. Fork validation and available
-artifacts are reported separately; source integration does not publish a release.
+Official Morrow supports Windows, macOS and Linux. Fork validation and downloadable
+artifacts for Windows x64 and Linux x64 are published on [GitHub Releases](https://github.com/hodeliun/Morrow/releases/tag/v1.3.0-fork.1.2.0).
 
 ## Coming from Obsidian
 
