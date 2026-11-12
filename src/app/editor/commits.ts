@@ -4,16 +4,29 @@ import { stepProperties } from '../workspace';
 import { focusedDatabaseProviderRoot } from '../plugins/providerRegistry';
 
 // open editors register here so exports and shutdown can save the latest keystrokes first
-const pending = new Set<() => void>();
+const pending = new Map<() => boolean, number>();
 let focused: Editor | null = null;
 
-export function registerCommit(commit: () => void): () => void {
-  pending.add(commit);
-  return () => pending.delete(commit);
+export function registerCommit(commit: () => boolean): () => void {
+  pending.set(commit, (pending.get(commit) ?? 0) + 1);
+  return () => {
+    const count = pending.get(commit);
+    if (count === undefined) return;
+    if (count <= 1) pending.delete(commit);
+    else pending.set(commit, count - 1);
+  };
 }
 
-export function commitEditors(): void {
-  for (const commit of pending) commit();
+export function commitEditors(): boolean {
+  let saved = true;
+  for (const commit of pending.keys()) {
+    try {
+      if (!commit()) saved = false;
+    } catch {
+      saved = false;
+    }
+  }
+  return saved;
 }
 
 export function setFocusedEditor(editor: Editor | null): void {
