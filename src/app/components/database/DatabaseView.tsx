@@ -57,6 +57,7 @@ import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from '.
 import { PropertySettings } from './PropertySettings';
 import { dateLocale, t, tp } from '../../i18n';
 import { filterLabel, propLabel, viewLabel, viewName } from '../../i18n/labels';
+import { ProviderDatabaseView } from './ProviderDatabaseView';
 
 const VIEW_ICONS: Record<ViewType, LucideIcon> = {
   table: Table2,
@@ -77,6 +78,14 @@ function readViewChoice(id: PageId): string | null {
 }
 
 export function DatabaseView({ page, editable }: { page: PageMeta; editable: boolean }) {
+  // An extension marker reserves the database for its provider before any native view hooks or
+  // formula renderers are mounted. Unknown and malformed markers stay on the read-only fallback.
+  if (Object.hasOwn(page.extra, 'polarisDados'))
+    return <ProviderDatabaseView page={page} editable={editable} />;
+  return <NativeDatabaseView page={page} editable={editable} />;
+}
+
+function NativeDatabaseView({ page, editable }: { page: PageMeta; editable: boolean }) {
   const state = useWorkspace();
   const database = useMemo(() => page.database ?? { properties: [], views: [] }, [page.database]);
   const [viewId, setViewId] = useState<string | null>(() => readViewChoice(page.id));

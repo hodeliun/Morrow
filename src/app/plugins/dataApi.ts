@@ -71,6 +71,7 @@ export type DataApiErrorCode =
   | 'host-readonly'
   | 'unsupported'
   | 'not-opted-in'
+  | 'out-of-scope'
   | 'stale-revision'
   | 'row-not-found'
   | 'property-not-found'

@@ -1,8 +1,9 @@
 import { Maximize2 } from 'lucide-react';
 import { displayTitle } from '../../../core/model';
 import type { PageId } from '../../../core/model';
+import { isEffectivelyTrashed } from '../../../core/tree';
 import { openPage } from '../../router';
-import { useWorkspace } from '../../workspace';
+import { getSession, useWorkspace } from '../../workspace';
 import { PageIcon } from '../Sidebar';
 import { DatabaseView } from './DatabaseView';
 import { t } from '../../i18n';
@@ -12,6 +13,8 @@ export function EmbeddedDatabase({ pageId, editable }: { pageId: PageId; editabl
   const state = useWorkspace();
   const page = state.pages[pageId];
   if (!page?.database) return null;
+  const databaseEditable =
+    editable && !getSession().unreadable.has(pageId) && !isEffectivelyTrashed(state.pages, pageId);
   return (
     <div className="inline-database">
       <div className="inline-database-head">
@@ -29,7 +32,7 @@ export function EmbeddedDatabase({ pageId, editable }: { pageId: PageId; editabl
           <Maximize2 size={14} />
         </button>
       </div>
-      <DatabaseView page={page} editable={editable} />
+      <DatabaseView page={page} editable={databaseEditable} />
     </div>
   );
 }

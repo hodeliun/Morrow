@@ -6,6 +6,7 @@ import { markdownToDoc } from '../../core/markdown/parse';
 import { docToMarkdown } from '../../core/markdown/serialize';
 import { displayTitle } from '../../core/model';
 import type { PageId } from '../../core/model';
+import { isEffectivelyTrashed } from '../../core/tree';
 import { focusedEditor } from '../editor/commits';
 import { createPage } from '../operations';
 import { desktop } from '../platform/desktop';
@@ -15,6 +16,10 @@ import { toast } from '../ui';
 import { getSession, getState, run } from '../workspace';
 import { addPluginAction, addPluginBlock } from './registry';
 import { createDataApi } from './dataApi';
+import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
+import type { DatabaseProviderRegistration } from './providerApi';
+import { clonePluginPageProperties } from './pageInfo';
+import { selectedProviderMarker } from './providerMarker';
 
 export const PLUGINS_FOLDER = '.morrow/plugins';
 const SETTINGS_FILE = '.morrow/plugins.json';
@@ -119,11 +124,21 @@ function pluginApi(id: string, state: Running) {
     return cleanup;
   };
   const session = getSession();
+  const ownerIsActive = () => running.get(id) === state && !session.isClosed;
   const data = createDataApi({
     session,
-    ownerIsActive: () => running.get(id) === state,
-    // The host has no real database provider in this ticket; expose snapshots as read only until one is mounted.
-    isProviderActive: () => false,
+    ownerIsActive,
+    isProviderActive: (databaseId) => {
+      const state = getState();
+      const page = state.pages[databaseId];
+      if (!page || page.kind !== 'database' || !page.database || !Object.hasOwn(page.extra, 'polarisDados'))
+        return false;
+      if (session.unreadable.has(databaseId) || isEffectivelyTrashed(state.pages, databaseId)) return false;
+      const selection = selectedProviderMarker(page.extra.polarisDados);
+      if (selection?.provider !== 'polaris-dados') return false;
+      const provider = getDatabaseProvider(selection.provider);
+      return provider?.apiVersion === 1 && provider.data === data;
+    },
     isHostReadonly: () => getPreferences().readingMode,
     registerCleanup: keep,
   });
@@ -135,7 +150,7 @@ function pluginApi(id: string, state: Running) {
       title: displayTitle(page),
       path: getSession().pathOf(page.id),
       tags: [...page.tags],
-      properties: { ...page.extra },
+      properties: clonePluginPageProperties(page.extra),
       parentId: page.parentId,
       kind: page.kind,
     };
@@ -144,6 +159,17 @@ function pluginApi(id: string, state: Running) {
     version: desktop?.version ?? '',
     plugin: id,
     data,
+    providers: Object.freeze({
+      version: 1 as const,
+      register: (registration: DatabaseProviderRegistration) => {
+        const unregister = registerDatabaseProvider(id, ownerIsActive, data, registration);
+        const unsubscribeClose = session.onClose(unregister);
+        return keep(() => {
+          unsubscribeClose();
+          unregister();
+        });
+      },
+    }),
     commands: {
       add(command: { id: string; name: string; shortcut?: string; run: () => void }) {
         if (typeof command?.id !== 'string' || typeof command.run !== 'function')

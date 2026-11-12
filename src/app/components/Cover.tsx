@@ -43,7 +43,7 @@ export function CoverBanner({ page, editable }: { page: PageMeta; editable: bool
           </button>
         </div>
       )}
-      {picker && <CoverPicker page={page} anchor={picker} onClose={() => setPicker(null)} />}
+      {editable && picker && <CoverPicker page={page} anchor={picker} onClose={() => setPicker(null)} />}
     </div>
   );
 }

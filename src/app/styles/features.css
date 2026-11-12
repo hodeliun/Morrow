@@ -580,6 +580,20 @@ textarea.text-input.small {
   font-family: var(--font-ui);
   font-size: var(--text-ui);
 }
+.provider-fallback .table {
+  overflow-x: auto;
+}
+.provider-fallback .table > table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.provider-fallback th,
+.provider-fallback td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
 .db-bar {
   display: flex;
   flex-wrap: wrap;

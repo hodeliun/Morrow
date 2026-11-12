@@ -9,6 +9,7 @@ import { RECURRENCE_KEYS } from '../../core/recurring';
 import { findTemplatesPage } from '../../core/templates';
 import { tagColor } from '../../core/tags';
 import { openExternal } from '../platform/desktop';
+import { openPage } from '../router';
 import { setPropertyType, usePropertyTypes } from '../propertyTypes';
 import type { ChosenType } from '../propertyTypes';
 import { getState } from '../workspace';
@@ -30,7 +31,7 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/;
 export function PageProperties({
   page,
   database,
-  editable,
+  editable: requestedEditable,
   adding,
   onAdded,
 }: {
@@ -41,6 +42,10 @@ export function PageProperties({
   adding: boolean;
   onAdded: () => void;
 }) {
+  const providerOwnedRow = Boolean(
+    database && Object.hasOwn(getState().pages[database.id]?.extra ?? {}, 'polarisDados'),
+  );
+  const editable = requestedEditable && !providerOwnedRow;
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const [naming, setNaming] = useState(false);
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -49,7 +54,8 @@ export function PageProperties({
   const chosenTypes = usePropertyTypes();
   // a template's repeat settings have their own bar under its title
   const extraKeys = Object.keys(page.extra).filter(
-    (key) => !(isTemplate(page) && RECURRENCE_KEYS.includes(key.toLowerCase())),
+    (key) =>
+      key !== 'polarisDados' && !(isTemplate(page) && RECURRENCE_KEYS.includes(key.toLowerCase())),
   );
   const props = database?.database.properties ?? [];
   const showNaming = editable && (naming || adding);
@@ -78,6 +84,11 @@ export function PageProperties({
 
   return (
     <section className="row-props" aria-label={t('properties.properties')}>
+      {providerOwnedRow && database && (
+        <button type="button" className="link-button row-props-provider-link" onClick={() => openPage(database.id)}>
+          {t('database.providerOpenBank', { title: displayTitle(getState().pages[database.id] ?? page) })}
+        </button>
+      )}
       {database &&
         props.map((prop) => (
           <div key={prop.id} className="row-prop">
@@ -94,7 +105,15 @@ export function PageProperties({
               <span className="row-prop-name">{prop.name}</span>
             )}
             <span className="row-prop-value">
-              <PropertyInput dbId={database.id} prop={prop} row={page} editable={editable} />
+              {providerOwnedRow ? (
+                prop.type === 'formula' ? (
+                  <code className="formula-source-literal">{prop.formula ?? ''}</code>
+                ) : (
+                  <span className="prop-text">{literalRowProperty(page.properties[prop.id])}</span>
+                )
+              ) : (
+                <PropertyInput dbId={database.id} prop={prop} row={page} editable={editable} />
+              )}
             </span>
           </div>
         ))}
@@ -207,7 +226,7 @@ export function PageProperties({
           )}
         </>
       )}
-      {extraMenu && extraMenu.key in page.extra && (
+      {editable && extraMenu && extraMenu.key in page.extra && (
         <Menu
           anchor={extraMenu.anchor}
           label={t('properties.editProperty')}
@@ -226,7 +245,7 @@ export function PageProperties({
           )}
         />
       )}
-      {database && settings && (
+      {editable && database && settings && (
         <PropertySettings
           dbId={database.id}
           database={database.database}
@@ -237,6 +256,13 @@ export function PageProperties({
       )}
     </section>
   );
+}
+
+function literalRowProperty(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ');
+  if (typeof value === 'object') return JSON.stringify(value) ?? String(value);
+  return String(value);
 }
 
 const isTemplate = (page: PageMeta) =>
@@ -367,7 +393,7 @@ function ExtraValue({
             </span>
           ))}
         </button>
-        {picker && (
+        {editable && picker && (
           <ExtraOptionPicker
             propKey={propKey}
             multi={type === 'multiSelect'}

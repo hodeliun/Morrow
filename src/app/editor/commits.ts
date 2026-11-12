@@ -1,6 +1,7 @@
 import type { Editor } from '@tiptap/core';
 import { isMac } from '../platform/desktop';
 import { stepProperties } from '../workspace';
+import { focusedDatabaseProviderRoot } from '../plugins/providerRegistry';
 
 // open editors register here so exports and shutdown can save the latest keystrokes first
 const pending = new Set<() => void>();
@@ -28,6 +29,20 @@ export function undoRedo(direction: 'undo' | 'redo'): void {
   const active = document.activeElement;
   if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
     document.execCommand(direction);
+    return;
+  }
+  const providerRoot = active instanceof HTMLElement ? focusedDatabaseProviderRoot(active) : null;
+  if (providerRoot) {
+    // Keep this event local to the provider root; bubbling to the app shortcut listener would route it again.
+    providerRoot.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'z',
+        shiftKey: direction === 'redo',
+        bubbles: false,
+        cancelable: true,
+        ...(isMac ? { metaKey: true } : { ctrlKey: true }),
+      }),
+    );
     return;
   }
   // a canvas shown inside a page keeps its own history, the menu sends it the same keys

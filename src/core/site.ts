@@ -342,6 +342,7 @@ export function docToHtml(doc: DocNode, context: RenderContext): string {
 
 export function databaseHtml(state: WorkspaceState, page: PageMeta, context: RenderContext): string {
   const database = page.database!;
+  const providerOptIn = Object.hasOwn(page.extra, 'polarisDados');
   const rows = rowsOf(state, page.id);
   const head = `<tr><th>Name</th>${database.properties.map((prop) => `<th>${escape(prop.name)}</th>`).join('')}</tr>`;
   const body = rows
@@ -349,12 +350,38 @@ export function databaseHtml(state: WorkspaceState, page: PageMeta, context: Ren
       const target = context.href(row.id);
       const title = escape(displayTitle(row));
       const cells = database.properties
-        .map((prop) => `<td>${escape(formatValue(prop, valueOf(row, prop.id, database)))}</td>`)
+        .map((prop) => {
+          const value = providerOptIn
+            ? prop.type === 'formula'
+              ? (prop.formula ?? '')
+              : siteLiteralValue(row.properties[prop.id])
+            : formatValue(prop, valueOf(row, prop.id, database));
+          return `<td>${escape(value)}</td>`;
+        })
         .join('');
       return `<tr><td>${target ? `<a href="${target}">${title}</a>` : title}</td>${cells}</tr>`;
     })
     .join('');
-  return `<div class="table"><table>${head}${body}</table></div>`;
+  const note = providerOptIn
+    ? '<p class="provider-fallback">This export is read only. Stored values are shown as written; formula cells show their source.</p>'
+    : '';
+  const marker = page.extra.polarisDados;
+  const metadata = marker && typeof marker === 'object' ? marker as { provider?: unknown; version?: unknown } : {};
+  const provider = typeof metadata.provider === 'string' ? metadata.provider : 'unknown';
+  const version = typeof metadata.version === 'number' || typeof metadata.version === 'string'
+    ? String(metadata.version)
+    : 'unknown';
+  const details = providerOptIn
+    ? `<details><summary>Technical details</summary><p>Provider: ${escape(provider)}; metadata version: ${escape(version)}; required host API: 1.</p></details>`
+    : '';
+  return `${note}${details}<div class="table"><table>${head}${body}</table></div>`;
+}
+
+function siteLiteralValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ');
+  if (typeof value === 'object') return JSON.stringify(value) ?? String(value);
+  return String(value);
 }
 
 function canvasHtml(doc: DocNode | undefined, context: RenderContext): string {

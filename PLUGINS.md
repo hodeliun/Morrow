@@ -63,6 +63,8 @@ hand unless the plugin made it itself.
 | `morrow.version`, `morrow.plugin`                                     | Morrow's version and this plugin's id.                                                 |
 | `commands.add({ id, name, shortcut?, run })`                          | A command in the search (Ctrl/Cmd+K), with an optional shortcut such as `Mod+Shift+W`. |
 | `slash.add({ id, title, description?, keywords?, markdown? , run? })` | An item in the `/` menu. It inserts `markdown`, or calls `run`.                        |
+| `providers.version`                                                   | Version of the database-provider namespace (`1`).                                     |
+| `providers.register({ id, apiVersion: 1, mount })`                    | Registers one database provider. Returns an unregister function.                      |
 | `pages.list()`                                                        | Every page: `{ id, title, path, tags, properties, parentId, kind }`.                   |
 | `pages.get(id)`, `pages.current()`                                    | One page, or the one open, in the same shape.                                          |
 | `pages.read(id)`                                                      | A page's text as Markdown.                                                             |
@@ -78,6 +80,54 @@ hand unless the plugin made it itself.
 | `register(cleanup)`                                                   | Runs `cleanup` when the plugin is turned off.                                          |
 
 Every `add` returns a function that takes the thing away again.
+
+### Database providers
+
+A provider is selected by a database's `polarisDados` metadata. Registration belongs to the running
+plugin instance; duplicate provider ids and unsupported API versions are rejected. The host mounts a
+registered provider only for a matching opted-in database. Its public mount context is:
+
+```ts
+{
+  element: HTMLElement,
+  databaseId: string,
+  data: DataApi,
+  locale: 'pt' | 'en' | 'es',
+  editable: boolean,
+  signal: AbortSignal
+}
+```
+
+`data` is scoped to that database and that mount. It exposes `version: 1`, `snapshot`, `patchCell`,
+`history`, `subscribe`, and `flush`; calls for another database are rejected. When the view unmounts,
+the provider is unregistered, or the plugin reloads, `signal` is aborted, subscriptions are removed,
+and the scoped data handle becomes inactive. Return a cleanup function to remove listeners and resources
+created outside `element`.
+
+```js
+morrow.providers.register({
+  id: 'polaris-dados',
+  apiVersion: 1,
+  mount({ element, databaseId, data, locale, editable, signal }) {
+    const onUndo = (event) => {
+      if (event.key.toLowerCase() !== 'z' || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      const direction = event.shiftKey ? 'redo' : 'undo';
+      const snapshot = data.snapshot(databaseId);
+      if (snapshot.status === 'ready') data.history({ databaseId, direction, expectedRevision: snapshot.revision });
+    };
+    element.addEventListener('keydown', onUndo, { signal });
+    element.dataset.locale = locale;
+    element.dataset.editable = String(editable);
+    return () => element.replaceChildren();
+  },
+});
+```
+
+The host sends focused undo/redo commands to the provider root as a non-bubbling `keydown` event. A
+provider should consume the command even when its history is empty so the host does not undo an unrelated
+page property. The host keeps opted-in databases out of the native renderer; if a provider is absent or
+its mount fails, it shows raw values and formula source in a read-only fallback.
 
 ## Trying changes
 
