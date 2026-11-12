@@ -12,9 +12,23 @@ export interface WriteBatch {
   pages: PageMeta[];
   docs: Array<{ id: PageId; doc: DocNode }>;
   removed: PageId[];
+  /** Read-only source records that must still match before dependent pilot data is written. */
+  checkPages?: PageId[];
   snapshots?: Snapshot[];
   // the whole workspace at the time of the write, file based storage lays out pages from it
   state?: WorkspaceState;
+}
+
+/** A storage failure with retry semantics the save queue can preserve across its timer. */
+export class WorkspaceWriteError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = 'WorkspaceWriteError';
+  }
 }
 
 // pages changed by another app while morrow was open

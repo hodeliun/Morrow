@@ -393,7 +393,14 @@ describe('E003 Polaris Dados representability guard', () => {
   });
 
   it('still edits and saves the upstream Name/Quantity/Price/Total synthetic database', async () => {
-    const vault = new MemoryVault(E003_POLARIS_DADOS_FIXTURE);
+    const basicDatabaseFixture = {
+      ...E003_POLARIS_DADOS_FIXTURE,
+      'Inventory.md': E003_POLARIS_DADOS_FIXTURE['Inventory.md']!.replace(
+        'polarisDados:\n  version: 1\n  provider: polaris-dados\n',
+        '',
+      ),
+    };
+    const vault = new MemoryVault(basicDatabaseFixture);
     const session = await open(vault);
     const widgetId = pageIdAt(session, 'Inventory/Widget.md');
     const beforeDatabase = fingerprint(vault, ['Inventory.md']);

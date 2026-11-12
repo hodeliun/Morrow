@@ -264,7 +264,13 @@ describe('independent Polaris Dados guard checks over real temporary files', () 
   });
 
   it('allows editing a basic database with Morrow-written pretty metadata and survives restart', async () => {
-    const bridge = await makeVault(E003_POLARIS_DADOS_FIXTURE);
+    const basicFixture = { ...E003_POLARIS_DADOS_FIXTURE };
+    basicFixture['Inventory.md'] = basicFixture['Inventory.md']!.replace(
+      'polarisDados:\n  version: 1\n  provider: polaris-dados\n',
+      '',
+    );
+    expect(basicFixture['Inventory.md']).not.toContain('polarisDados:');
+    const bridge = await makeVault(basicFixture);
     try {
       const first = await open(bridge);
       const row = idAt(first, 'Inventory/Widget.md');

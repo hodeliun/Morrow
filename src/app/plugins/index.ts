@@ -14,6 +14,7 @@ import { activeRoute, openPage } from '../router';
 import { toast } from '../ui';
 import { getSession, getState, run } from '../workspace';
 import { addPluginAction, addPluginBlock } from './registry';
+import { createDataApi } from './dataApi';
 
 export const PLUGINS_FOLDER = '.morrow/plugins';
 const SETTINGS_FILE = '.morrow/plugins.json';
@@ -117,6 +118,15 @@ function pluginApi(id: string, state: Running) {
     state.cleanups.push(cleanup);
     return cleanup;
   };
+  const session = getSession();
+  const data = createDataApi({
+    session,
+    ownerIsActive: () => running.get(id) === state,
+    // The host has no real database provider in this ticket; expose snapshots as read only until one is mounted.
+    isProviderActive: () => false,
+    isHostReadonly: () => getPreferences().readingMode,
+    registerCleanup: keep,
+  });
   const pageInfo = (pageId: PageId) => {
     const page = getState().pages[pageId];
     if (!page) return null;
@@ -133,6 +143,7 @@ function pluginApi(id: string, state: Running) {
   return Object.freeze({
     version: desktop?.version ?? '',
     plugin: id,
+    data,
     commands: {
       add(command: { id: string; name: string; shortcut?: string; run: () => void }) {
         if (typeof command?.id !== 'string' || typeof command.run !== 'function')

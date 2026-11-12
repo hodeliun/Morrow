@@ -67,6 +67,7 @@ import {
 import { planMoves, replayRename } from '../core/vault/plan';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import type { LoadedWorkspace } from '../core/migrations';
+import { WorkspaceWriteError } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
 import type { VaultBridge, VaultChange } from './vaultBridge';
 
@@ -292,6 +293,18 @@ export class VaultRepository implements WorkspaceRepository {
       { op: 'check', path: REGISTRY_PATH, expect: this.registryText },
       { op: 'check', path: RECENT_PATH, expect: this.recentText },
     ];
+    for (const id of batch.checkPages ?? []) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) {
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'The source database for a staged Polaris Dados edit is no longer available.',
+          false,
+        );
+      }
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+    }
 
     for (const id of removed) {
       const before = this.layout.get(id);
@@ -464,6 +477,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       placement ? basename(placement.folder) : '',
       parent?.kind === 'database' ? parent.database : null,
+      parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
     return managed.size > 0 || Object.keys(page.extra).length > 0;
   }
@@ -516,6 +530,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       basename(placement.folder),
       parent?.kind === 'database' ? parent.database : null,
+      parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
     const text = renderPageText(composeFrontmatter(managed, page.extra, source), source, body);
     // the next save starts from what this one wrote, so keys added in morrow keep their spelling and order
@@ -570,7 +585,23 @@ export class VaultRepository implements WorkspaceRepository {
       if (failedAt === -1) throw new Error('The desktop shell stopped before finishing the save.');
       const failed = results[failedAt]!;
       const op = pending[failedAt]!;
+      if (!failed.ok && failed.code === 'conflict' && op.op === 'check' && op.id && this.isPilotDataRecord(op.id)) {
+        this.layout = layout;
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'An opted-in Polaris Dados source changed on disk. The staged row was kept in memory and not written; reopen the vault to review the external version.',
+          false,
+        );
+      }
       if (!failed.ok && failed.code === 'conflict' && op.op === 'write' && op.id) {
+        if (this.isPilotDataRecord(op.id)) {
+          this.layout = layout;
+          throw new WorkspaceWriteError(
+            'save-conflict',
+            'An opted-in Polaris Dados file changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
+            false,
+          );
+        }
         const reason =
           failed.current === null
             ? null
@@ -629,6 +660,15 @@ export class VaultRepository implements WorkspaceRepository {
       default:
         break;
     }
+  }
+
+  private isPilotDataRecord(id: PageId): boolean {
+    const state = this.currentState() ?? this.lastState;
+    const page = state?.pages[id];
+    if (!page) return false;
+    if (page.kind === 'database' && Object.hasOwn(page.extra, 'polarisDados')) return true;
+    const parent = page.parentId ? state?.pages[page.parentId] : undefined;
+    return parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados');
   }
 
   private registryFor(
@@ -1193,7 +1233,13 @@ export class VaultRepository implements WorkspaceRepository {
     let database: PageMeta | undefined;
     if (parent?.kind === 'database' && parent.database) {
       const copy = structuredClone(parent.database);
-      takeProperties(copy, page.extra, page.properties, this.newId);
+      takeProperties(
+        copy,
+        page.extra,
+        page.properties,
+        this.newId,
+        Object.hasOwn(parent.extra, 'polarisDados'),
+      );
       const added = copy.properties.some(
         (prop, i) => prop.options.length !== parent.database!.properties[i]!.options.length,
       );

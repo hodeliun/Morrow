@@ -313,7 +313,13 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
   for (const page of pages.values()) {
     const parent = page.parentId ? pages.get(page.parentId) : undefined;
     if (parent?.kind === 'database' && parent.database)
-      takeProperties(parent.database, page.extra, page.properties, newId);
+      takeProperties(
+        parent.database,
+        page.extra,
+        page.properties,
+        newId,
+        Object.hasOwn(parent.extra, 'polarisDados'),
+      );
   }
 
   // siblings keep the order the registry remembers, the rest follow by name, newest first in the journal
