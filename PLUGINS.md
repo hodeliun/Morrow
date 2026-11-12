@@ -129,6 +129,30 @@ provider should consume the command even when its history is empty so the host d
 page property. The host keeps opted-in databases out of the native renderer; if a provider is absent or
 its mount fails, it shows raw values and formula source in a read-only fallback.
 
+### Linked-view document block
+
+The host preserves a linked view as a standalone Markdown comment, independent of whether its provider
+is installed:
+
+```md
+<!-- morrow:polaris-dados-view:v1:<BASE64URL_UTF8_JSON> -->
+```
+
+The encoder writes compact UTF-8 JSON with the keys in the order shown and canonical unpadded base64url.
+When a filter is present its keys are written in the order `propertyId`, `op`, `value`. The payload has
+exactly these fields:
+
+```json
+{"version":1,"viewId":"view-id","sourceDatabaseId":"database-id","title":"View title","columnOrder":[],"filter":null}
+```
+
+`filter` is either `null` or an object with exactly `propertyId`, `op: "gte"`, and a finite numeric
+`value`. View and source IDs are non-empty strings of at most 128 characters, `title` is at most 300
+characters, `columnOrder` contains at most 1,000 unique IDs, and the decoded JSON payload is at most
+64 KiB. A page may not contain duplicate `viewId` values. Unknown or invalid markers remain protected
+raw content, including noncanonical JSON or base64url. The editor shows an inert fallback with the saved
+title and source ID when the view is unavailable; it does not evaluate or mount a provider from this block.
+
 ## Trying changes
 
 After editing `main.js`, press the reload button beside the plugin in Settings → Plugins. A plugin that

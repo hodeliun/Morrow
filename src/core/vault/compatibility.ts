@@ -1,7 +1,21 @@
 // Detect Markdown data the upstream model cannot represent before pageFile normalizes it.
-import { isRecord } from '../doc';
-import { COLORS, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, PROP_TYPES, validCover, VIEW_TYPES } from '../model';
+import MarkdownIt from 'markdown-it';
+import { isRecord, validateDoc, walk } from '../doc';
+import { markdownToDoc } from '../markdown/parse';
+import type { DocNode } from '../model';
+import {
+  COLORS,
+  MAX_DOC_DEPTH,
+  MAX_ICON_LENGTH,
+  MAX_TITLE_LENGTH,
+  PROP_TYPES,
+  validCover,
+  VIEW_TYPES,
+} from '../model';
+import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import { MANAGED_KEYS, normalizeExtra, readTags, splitFrontmatter } from './frontmatter';
+
+const markerMarkdown = new MarkdownIt('commonmark', { html: true });
 
 const PAGE_KINDS = new Set(['page', 'journal', 'templates', 'database']);
 const FILTER_OPS = new Set([
@@ -426,10 +440,67 @@ function unknownKey(raw: Record<string, unknown>, accepted: ReadonlySet<string>)
 }
 
 function unsupportedMarkerIssue(body: string): string | null {
-  const morrowComments = body.matchAll(/<!--\s*morrow:([a-z][\w:-]*)\b[\s\S]*?-->/gi);
-  for (const match of morrowComments) {
-    if (match[1]!.toLowerCase() !== 'header-column') {
+  if (hasOverdeepPolarisDadosView(body)) {
+    return 'The page contains a Polaris Dados view beyond the supported wrapper depth.';
+  }
+  const viewIds = new Set<string>();
+  const allowedViewMarkers = new Map<string, number>();
+  for (const token of markerTokens(body)) {
+    const markers = /<!--[ \t\r\n]*morrow:([a-z][\w-]*)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = markers.exec(token.content))) {
+      const markerName = match[1]!.toLowerCase();
+      const commentStart = match.index;
+      const commentEnd = token.content.indexOf('-->', commentStart);
+      if (commentEnd === -1) {
+        return 'The page contains a Morrow block marker this version cannot safely edit.';
+      }
+      const comment = token.content.slice(commentStart, commentEnd + 3).trim();
+      if (markerName === 'header-column') continue;
+      if (markerName !== 'polaris-dados-view') {
+        return 'The page contains a Morrow block marker this version cannot safely edit.';
+      }
+      if (token.type !== 'html_block' || token.content.trim() !== comment || token.invalidListPosition) {
+        return 'The page contains a Morrow block marker this version cannot safely edit.';
+      }
+      const view = decodePolarisDadosViewMarker(comment);
+      if (!view || viewIds.has(view.viewId)) {
+        return 'The page contains an unsupported or duplicate Polaris Dados view marker.';
+      }
+      viewIds.add(view.viewId);
+      allowedViewMarkers.set(comment, (allowedViewMarkers.get(comment) ?? 0) + 1);
+    }
+  }
+  for (const marker of rawMorrowComments(body)) {
+    if (marker.name === 'header-column' && marker.closed) continue;
+    if (marker.name !== 'polaris-dados-view' || !marker.closed) {
       return 'The page contains a Morrow block marker this version cannot safely edit.';
+    }
+    const remaining = allowedViewMarkers.get(marker.comment) ?? 0;
+    if (remaining === 0) return 'The page contains a Morrow block marker this version cannot safely edit.';
+    allowedViewMarkers.set(marker.comment, remaining - 1);
+  }
+  if (viewIds.size > 0) {
+    let parsed: DocNode;
+    try {
+      parsed = markdownToDoc(body);
+    } catch {
+      return 'The page contains a Polaris Dados view this version cannot safely represent.';
+    }
+    if (!validateDoc(parsed).ok) {
+      return 'The page contains a Polaris Dados view this version cannot safely represent.';
+    }
+    const parsedViewIds: string[] = [];
+    walk(parsed, (node) => {
+      if (node.type === 'polarisDadosView' && typeof node.attrs?.viewId === 'string') {
+        parsedViewIds.push(node.attrs.viewId);
+      }
+    });
+    if (
+      parsedViewIds.length !== viewIds.size ||
+      parsedViewIds.some((viewId) => !viewIds.has(viewId))
+    ) {
+      return 'The page contains a Polaris Dados view this version cannot safely represent.';
     }
   }
   if (/\bdata-morrow-[\w-]+\b/i.test(body)) {
@@ -439,4 +510,220 @@ function unsupportedMarkerIssue(body: string): string | null {
     return 'The page contains a layout or block identifier this version cannot safely edit.';
   }
   return null;
+}
+
+function hasOverdeepPolarisDadosView(body: string): boolean {
+  const source = markdownOutsideFences(body);
+  const structure = /<\/?(?:details|aside)\b[^>]*>|<div\b[^>]*data-(?:columns|column)\b[^>]*>|<\/div\s*>|<!--[ \t\r\n]*morrow:polaris-dados-view\s*:/gi;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = structure.exec(source))) {
+    const token = match[0];
+    if (/^<!--[ \t\r\n]*morrow:/i.test(token)) {
+      if (depth > MAX_DOC_DEPTH) return true;
+    } else if (/^<\/(?:details|aside|div)\b/i.test(token)) {
+      depth = Math.max(0, depth - 1);
+    } else {
+      depth++;
+    }
+  }
+  return false;
+}
+
+function rawMorrowComments(body: string): Array<{ name: string; comment: string; closed: boolean }> {
+  const visible = markdownOutsideFences(body);
+  const comments: Array<{ name: string; comment: string; closed: boolean }> = [];
+  const openings = /<!--[ \t\r\n]*morrow:([a-z][\w-]*)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = openings.exec(visible))) {
+    const end = visible.indexOf('-->', match.index);
+    comments.push({
+      name: match[1]!.toLowerCase(),
+      comment: (end === -1 ? visible.slice(match.index) : visible.slice(match.index, end + 3)).trim(),
+      closed: end !== -1,
+    });
+  }
+  return comments;
+}
+
+function markdownOutsideFences(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  const output: string[] = [];
+  let fence: { character: '`' | '~'; length: number } | null = null;
+  for (const line of lines) {
+    const content = stripContainerMarkers(line);
+    const run = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
+    if (fence) {
+      if (
+        run &&
+        run[1]![0] === fence.character &&
+        run[1]!.length >= fence.length &&
+        run[2]!.trim() === ''
+      ) {
+        fence = null;
+      }
+      output.push('');
+      continue;
+    }
+    if (run && !(run[1]![0] === '`' && run[2]!.includes('`'))) {
+      fence = { character: run[1]![0] as '`' | '~', length: run[1]!.length };
+      output.push('');
+      continue;
+    }
+    if (/^(?: {4,}|\t)/.test(content)) {
+      output.push('');
+      continue;
+    }
+    output.push(withoutInlineCode(content));
+  }
+  return output.join('\n');
+}
+
+function stripContainerMarkers(line: string): string {
+  let content = line;
+  for (let depth = 0; depth < MAX_DOC_DEPTH; depth++) {
+    const quote = /^ {0,3}>[ \t]?/.exec(content);
+    if (quote) {
+      content = content.slice(quote[0].length);
+      continue;
+    }
+    const list = /^ {0,3}(?:[-+*]|\d+[.)])(?:[ \t]+|$)/.exec(content);
+    if (list) {
+      content = content.slice(list[0].length);
+      continue;
+    }
+    break;
+  }
+  return content;
+}
+
+function withoutInlineCode(line: string): string {
+  let output = '';
+  for (let index = 0; index < line.length; ) {
+    if (line[index] !== '`') {
+      output += line[index]!;
+      index++;
+      continue;
+    }
+    let end = index + 1;
+    while (line[end] === '`') end++;
+    const delimiterLength = end - index;
+    let close = end;
+    let matched = false;
+    while (close < line.length) {
+      if (line[close] !== '`') {
+        close++;
+        continue;
+      }
+      let runEnd = close + 1;
+      while (line[runEnd] === '`') runEnd++;
+      if (runEnd - close === delimiterLength) {
+        index = runEnd;
+        matched = true;
+        break;
+      }
+      close = runEnd;
+    }
+    if (!matched) {
+      output += line.slice(index, end);
+      index = end;
+    }
+  }
+  return output;
+}
+
+interface MarkerToken {
+  type: string;
+  content: string;
+  invalidListPosition: boolean;
+}
+
+function markerTokens(body: string, depth = 0, invalidListAncestor = false): MarkerToken[] {
+  const found: MarkerToken[] = [];
+  const listItems: Array<{ level: number; hasBlock: boolean; leadingParagraph: boolean }> = [];
+  const blockTokens = new Set([
+    'blockquote_open',
+    'bullet_list_open',
+    'ordered_list_open',
+    'heading_open',
+    'fence',
+    'code_block',
+    'hr',
+    'table_open',
+    'html_block',
+  ]);
+  for (const token of markerMarkdown.parse(body, {})) {
+    if (token.type === 'list_item_open') {
+      listItems.push({ level: token.level, hasBlock: false, leadingParagraph: false });
+      continue;
+    }
+    if (token.type === 'list_item_close') {
+      while (listItems.length > 0 && listItems[listItems.length - 1]!.level >= token.level) listItems.pop();
+      continue;
+    }
+    const listItem = listItems[listItems.length - 1];
+    const directListBlock = listItem !== undefined && token.level === listItem.level + 1;
+    if (token.type === 'paragraph_open' && directListBlock && !listItem!.hasBlock) {
+      listItem!.leadingParagraph = true;
+    }
+    if (token.type === 'html_block') {
+      const invalidListPosition = invalidListAncestor || listItems.some((item) => !item.leadingParagraph);
+      if (directListBlock && !listItem!.hasBlock && /^<br\s*\/?>$/i.test(token.content.trim())) {
+        listItem!.leadingParagraph = true;
+      }
+      if (directListBlock) listItem!.hasBlock = true;
+      const nested = depth < MAX_DOC_DEPTH ? nestedHtmlMarkdown(token.content) : null;
+      if (nested) {
+        if (/<!--[ \t\r\n]*morrow:/i.test(nested.outside)) {
+          found.push({ type: token.type, content: token.content, invalidListPosition });
+        } else {
+          found.push(...markerTokens(nested.body, depth + 1, invalidListPosition));
+        }
+      } else {
+        found.push({ type: token.type, content: token.content, invalidListPosition });
+      }
+    }
+    if (
+      directListBlock &&
+      blockTokens.has(token.type) &&
+      token.type !== 'html_block' &&
+      token.type !== 'paragraph_open'
+    ) {
+      listItem!.hasBlock = true;
+    }
+    if (token.type === 'inline') {
+      for (const child of token.children ?? []) {
+        if (child.type === 'html_inline') {
+          found.push({
+            type: child.type,
+            content: child.content,
+            invalidListPosition: invalidListAncestor || listItems.some((item) => !item.leadingParagraph),
+          });
+        }
+      }
+    }
+  }
+  return found;
+}
+
+function nestedHtmlMarkdown(source: string): { body: string; outside: string } | null {
+  const html = source.trim();
+  const details = /^<details[^>]*>/i.exec(html);
+  const aside = /^<aside[^>]*>/i.exec(html);
+  if (!details && !aside) return null;
+
+  let bodyStart = details?.[0].length ?? aside![0].length;
+  const summary = details ? /<summary[^>]*>[\s\S]*?<\/summary>/i.exec(html) : null;
+  if (summary) bodyStart = summary.index + summary[0].length;
+  const after = html.slice(bodyStart);
+  const inner = details
+    ? after.replace(/<\/details>\s*$/i, '')
+    : after.replace(/<\/aside>\s*$/i, '');
+  const body = inner.trim();
+  if (!body || !/<!--[ \t\r\n]*morrow:/i.test(body)) return null;
+
+  const innerStart = html.indexOf(inner, bodyStart);
+  if (innerStart < 0) return null;
+  const outside = html.slice(0, innerStart) + html.slice(innerStart + inner.length);
+  return { body, outside };
 }

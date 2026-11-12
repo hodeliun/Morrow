@@ -1,5 +1,6 @@
 import { BACKGROUND_HEX, TEXT_HEX } from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
+import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
@@ -36,6 +37,8 @@ const MARK_CLOSE: Record<string, (mark: DocMark) => string> = {
 };
 
 export function docToMarkdown(doc: DocNode, options: SerializeOptions = {}): string {
+  const viewIssue = polarisDadosViewDocIssue(doc);
+  if (viewIssue) throw new TypeError(viewIssue);
   const out = blocks(doc.content ?? [], options).trim();
   return out.length > 0 ? `${out}\n` : '';
 }
@@ -49,6 +52,12 @@ export function pageToMarkdown(title: string, doc: DocNode, options: SerializeOp
 
 const isEmptyParagraph = (node: DocNode | undefined) =>
   node?.type === 'paragraph' && !(node.content ?? []).length;
+
+const isEmptyListParagraph = (node: DocNode | undefined) =>
+  node?.type === 'paragraph' &&
+  (node.content ?? []).every(
+    (child) => child.type === 'hardBreak' || (child.type === 'text' && !(child.text ?? '')),
+  );
 
 // an empty line someone left between paragraphs is written as <br>, which markdown keeps, where plain
 // blank lines would all fold into one. empty lines at the very end are left out
@@ -132,6 +141,12 @@ function block(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'tableOfContents':
       return '<!-- toc -->';
+    case 'polarisDadosView': {
+      if (Object.keys(node).length !== 2 || !Object.hasOwn(node, 'attrs')) {
+        throw new TypeError('Invalid Polaris Dados view atom.');
+      }
+      return encodePolarisDadosViewMarker(node.attrs);
+    }
     case 'columns': {
       // plain html wrappers, other markdown apps show the columns one after another
       const columns = (node.content ?? []).map(
@@ -172,6 +187,14 @@ function listItems(
       const bullet = marker(index, item);
       let children = item.content ?? [];
       const parts: string[] = [];
+      const startsWithView = children[0]?.type === 'polarisDadosView';
+      if (startsWithView) {
+        throw new TypeError('A Polaris Dados view cannot be the first block in a list item.');
+      }
+      if (isEmptyListParagraph(children[0]) && children[1]?.type === 'polarisDadosView') {
+        parts.push('<br>');
+        children = children.slice(1);
+      }
       // an item that starts empty never leaves a bare - on its line, under text that reads as a heading
       // underline. a picture moves up onto the line, anything else waits under a <br>
       if (isEmptyParagraph(children[0]) && bullet.trim() === '-') {
@@ -308,6 +331,9 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
   };
 
   for (const node of nodes) {
+    if (node.type === 'polarisDadosView') {
+      throw new TypeError('A Polaris Dados view block cannot be serialized as inline content.');
+    }
     if (node.type === 'hardBreak') {
       closeTo(0);
       out += pendingSpace + (inTable ? '<br>' : '\\\n');

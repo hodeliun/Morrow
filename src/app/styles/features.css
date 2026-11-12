@@ -331,6 +331,21 @@
   background: var(--bg);
 }
 
+.prose .polaris-dados-view-fallback {
+  display: grid;
+  gap: 4px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  color: var(--text-muted);
+}
+.polaris-dados-view-fallback strong {
+  color: var(--text);
+}
+.polaris-dados-view-fallback p {
+  margin: 0;
+}
+
 .prose .tiptap-mathematics-render {
   cursor: default;
 }

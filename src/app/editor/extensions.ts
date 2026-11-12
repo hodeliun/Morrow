@@ -20,6 +20,7 @@ import type { BlockMenuRequest } from './BlockHandle';
 import { MarkdownPaste } from './MarkdownPaste';
 import { PageLink } from './PageLink';
 import type { PageLinkOptions } from './PageLink';
+import { PolarisDadosView } from './PolarisDadosView';
 import { SlashCommand } from './SlashCommand';
 import { IndentedLines, KeepTab, lineContent } from './turnInto';
 import { TextSelection } from '@tiptap/pm/state';
@@ -164,6 +165,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     Highlight,
     TextColor,
     RawBlock,
+    PolarisDadosView,
     ...mathExtensions(),
     MathViewTracker,
     Tags(options.openTag),
