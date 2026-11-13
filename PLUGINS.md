@@ -58,28 +58,51 @@ hand unless the plugin made it itself.
 
 ## The API
 
-| Call                                                                  | What it does                                                                           |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `morrow.version`, `morrow.plugin`                                     | Morrow's version and this plugin's id.                                                 |
-| `commands.add({ id, name, shortcut?, run })`                          | A command in the search (Ctrl/Cmd+K), with an optional shortcut such as `Mod+Shift+W`. |
-| `slash.add({ id, title, description?, keywords?, markdown? , run? })` | An item in the `/` menu. It inserts `markdown`, or calls `run`.                        |
-| `providers.version`                                                   | Version of the database-provider namespace (`1`).                                      |
-| `providers.register({ id, apiVersion: 1, mount })`                    | Registers one database provider. Returns an unregister function.                       |
-| `pages.list()`                                                        | Every page: `{ id, title, path, tags, properties, parentId, kind }`.                   |
-| `pages.get(id)`, `pages.current()`                                    | One page, or the one open, in the same shape.                                          |
-| `pages.read(id)`                                                      | A page's text as Markdown.                                                             |
-| `pages.write(id, markdown)`                                           | Replaces a page's text. The earlier version stays in page history.                     |
-| `pages.create({ title, markdown?, parentId? })`                       | Makes a page and returns its id.                                                       |
-| `pages.open(id)`                                                      | Opens a page.                                                                          |
-| `editor.insert(markdown)`                                             | Inserts at the cursor in the page being edited.                                        |
-| `editor.selectedText()`                                               | The text selected in the page being edited.                                            |
-| `onChange(listener)`                                                  | Calls `listener` whenever a page changes. Returns a function that stops it.            |
-| `notice(message)`                                                     | Shows a short message at the bottom of the window.                                     |
-| `styles.add(css)`                                                     | Adds CSS to the window.                                                                |
-| `storage.get()`, `storage.set(value)`                                 | The plugin's own settings, kept as `data.json` in its folder.                          |
-| `register(cleanup)`                                                   | Runs `cleanup` when the plugin is turned off.                                          |
+| Call                                                                  | What it does                                                                                         |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `morrow.version`, `morrow.plugin`                                     | Morrow's version and this plugin's id.                                                               |
+| `commands.add({ id, name, shortcut?, run })`                          | A command in the search (Ctrl/Cmd+K), with an optional shortcut such as `Mod+Shift+W`.               |
+| `slash.add({ id, title, description?, keywords?, markdown? , run? })` | An item in the `/` menu. It inserts `markdown`, or calls `run`.                                      |
+| `providers.version`                                                   | Version of the database-provider namespace (`1`).                                                    |
+| `providers.register({ id, apiVersion: 1, mount })`                    | Registers one database provider. Returns an unregister function.                                     |
+| `pages.list()`                                                        | Every page: `{ id, title, path, tags, properties, parentId, kind }`.                                 |
+| `pages.get(id)`, `pages.current()`                                    | One page, or the one open, in the same shape.                                                        |
+| `pages.read(id)`                                                      | A page's text as Markdown.                                                                           |
+| `pages.write(id, markdown)`                                           | Replaces a page's text. The earlier version stays in page history.                                   |
+| `pages.create({ title, markdown?, parentId? })`                       | Makes a page and returns its id.                                                                     |
+| `pages.open(id)`                                                      | Opens a page.                                                                                        |
+| `editor.insert(markdown)`                                             | Immediately inserts at the current page editor. Returns `true` only when its guard accepts the edit. |
+| `editor.selectedText()`                                               | The text selected in the page being edited.                                                          |
+| `editor.insertion.version`                                            | Version of the asynchronous insertion namespace (`1`).                                               |
+| `editor.insertion.capture()`                                          | Captures the current editor target before opening a picker; returns a handle or `null`.              |
+| `onChange(listener)`                                                  | Calls `listener` whenever a page changes. Returns a function that stops it.                          |
+| `notice(message)`                                                     | Shows a short message at the bottom of the window.                                                   |
+| `styles.add(css)`                                                     | Adds CSS to the window.                                                                              |
+| `storage.get()`, `storage.set(value)`                                 | The plugin's own settings, kept as `data.json` in its folder.                                        |
+| `register(cleanup)`                                                   | Runs `cleanup` when the plugin is turned off.                                                        |
 
 Every `add` returns a function that takes the thing away again.
+
+### Asynchronous editor insertion
+
+Capture the target before showing an asynchronous picker. The version 1 handle is opaque and exposes only
+`version`, `insert(markdown)`, and `dispose()`. `insert()` is one-shot and returns `{ ok: true }` when the
+captured editor and its coordinator accept the transaction, or `{ ok: false, reason }` when the target is
+stale or the insertion is refused. `dispose()` releases the capture when the picker is cancelled or
+unmounted. A failed or invalidated capture needs a new explicit capture; the old handle never becomes valid
+again.
+
+Blurring the editor to use the picker is allowed. Navigation, changing the target tab or pane, changing the
+document or selection, entering read-only mode, switching workspace sessions, closing the page editor, or
+unloading/reloading the plugin invalidates the handle. The host inserts into the captured editor instance;
+it does not remap an old selection into a new document. `editor.insert(markdown)` remains available for an
+immediate guarded insertion, but capturing a new focused editor after a picker closes does not provide the
+same safety.
+
+`{ ok: true }` confirms that the editor transaction passed the host coordinator and content guards in the
+in-memory editor. It does not confirm that bytes reached the vault; normal autosave and the workspace save
+queue remain responsible for persistence. On refusal, the target text, selection, and undo history remain
+available for recovery or an explicit recapture.
 
 ### Database providers
 

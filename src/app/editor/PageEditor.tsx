@@ -271,6 +271,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       session.getState().docs[pageId] ?? doc,
       editable,
       (dirty) => callbacks.current.onDirty(dirty),
+      pane,
     );
     coordinatorRef.current = coordinator;
 
@@ -455,6 +456,10 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       editor.view.dom.dispatchEvent(new Event('morrow:linked-view-context'));
     }
   }, [editor, editable]);
+
+  useLayoutEffect(() => {
+    coordinatorRef.current?.setPane(pane);
+  }, [pane]);
 
   // opens with the search match selected and in view
   useEffect(() => {

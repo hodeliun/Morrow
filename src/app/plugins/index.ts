@@ -8,6 +8,7 @@ import { displayTitle } from '../../core/model';
 import type { PageId } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
 import { focusedEditor } from '../editor/commits';
+import { captureEditorInsertionTarget } from '../editor/editorInsertion';
 import { createPage } from '../operations';
 import { desktop } from '../platform/desktop';
 import { getPreferences } from '../platform/preferences';
@@ -20,6 +21,7 @@ import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistr
 import type { DatabaseProviderRegistration } from './providerApi';
 import { clonePluginPageProperties } from './pageInfo';
 import { selectedProviderMarker } from './providerMarker';
+import type { PluginEditorInsertionTargetV1 } from './editorApi';
 
 export const PLUGINS_FOLDER = '.morrow/plugins';
 const SETTINGS_FILE = '.morrow/plugins.json';
@@ -40,10 +42,13 @@ export interface PluginInfo extends PluginManifest {
 }
 
 interface Running {
+  generation: number;
+  active: boolean;
   cleanups: Array<() => void>;
 }
 
 const running = new Map<string, Running>();
+const ownerGenerations = new Map<string, number>();
 const errors = new Map<string, string>();
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((listener) => listener());
@@ -124,7 +129,50 @@ function pluginApi(id: string, state: Running) {
     return cleanup;
   };
   const session = getSession();
-  const ownerIsActive = () => running.get(id) === state && !session.isClosed;
+  const ownerIsActive = () => running.get(id) === state && state.active && !session.isClosed;
+  const editorOwnerIsActive = () => {
+    try {
+      return ownerIsActive() && getSession() === session;
+    } catch {
+      return false;
+    }
+  };
+  const bindInsertionTarget = (target: PluginEditorInsertionTargetV1): PluginEditorInsertionTargetV1 => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      target.dispose();
+    };
+    state.cleanups.push(release);
+    const forgetCleanup = () => {
+      const index = state.cleanups.indexOf(release);
+      if (index >= 0) state.cleanups.splice(index, 1);
+    };
+    return Object.freeze({
+      version: target.version,
+      insert(markdown: string) {
+        const result = target.insert(markdown);
+        release();
+        if (state.active) forgetCleanup();
+        return result;
+      },
+      dispose() {
+        release();
+        if (state.active) forgetCleanup();
+      },
+    });
+  };
+  const insertion = Object.freeze({
+    version: 1 as const,
+    capture() {
+      const target = captureEditorInsertionTarget({
+        generation: state.generation,
+        isActive: editorOwnerIsActive,
+      });
+      return target ? bindInsertionTarget(target) : null;
+    },
+  });
   const data = createDataApi({
     session,
     ownerIsActive,
@@ -251,14 +299,18 @@ function pluginApi(id: string, state: Running) {
       },
     },
     editor: {
+      insertion,
       insert(markdown: string) {
-        const editor = focusedEditor();
-        if (!editor || editor.isDestroyed) return false;
-        return editor
-          .chain()
-          .focus()
-          .insertContent(markdownToDoc(String(markdown)).content ?? [])
-          .run();
+        const target = captureEditorInsertionTarget({
+          generation: state.generation,
+          isActive: editorOwnerIsActive,
+        });
+        if (!target) return false;
+        try {
+          return target.insert(String(markdown)).ok;
+        } finally {
+          target.dispose();
+        }
       },
       selectedText() {
         const editor = focusedEditor();
@@ -296,7 +348,9 @@ async function load(id: string): Promise<void> {
     errors.set(id, 'main.js is missing.');
     return;
   }
-  const state: Running = { cleanups: [] };
+  const generation = (ownerGenerations.get(id) ?? 0) + 1;
+  ownerGenerations.set(id, generation);
+  const state: Running = { generation, active: true, cleanups: [] };
   running.set(id, state);
   const url = URL.createObjectURL(
     new Blob([`${code}\n//# sourceURL=morrow-plugin-${id}.js`], { type: 'text/javascript' }),
@@ -322,6 +376,7 @@ function unload(id: string): void {
   const state = running.get(id);
   if (!state) return;
   running.delete(id);
+  state.active = false;
   for (const cleanup of state.cleanups.reverse()) {
     try {
       cleanup();
@@ -329,6 +384,7 @@ function unload(id: string): void {
       // a plugin that fails to tidy up is still turned off
     }
   }
+  state.cleanups.length = 0;
 }
 
 // at start, and when plugins are allowed on this computer, the ones turned on in this vault load

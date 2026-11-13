@@ -5,12 +5,15 @@ import { Plugin } from '@tiptap/pm/state';
 import type { Transaction } from '@tiptap/pm/state';
 import { Step } from '@tiptap/pm/transform';
 import type { DocNode, PageId } from '../../core/model';
+import { isEffectivelyTrashed } from '../../core/tree';
 import type { WorkspaceSession } from '../../storage/session';
+import type { PaneId } from '../tabs';
 import { registerCommit } from './commits';
 import { toast } from '../ui';
 
 const HOST_SYNC = 'morrowPageEditorHostSync';
 const entries = new WeakMap<WorkspaceSession, Map<PageId, Entry>>();
+const peersByEditor = new WeakMap<Editor, Peer>();
 
 type ConflictKind = 'external' | 'peer-sync' | 'external-clean-sync' | 'unrepresentable';
 
@@ -43,13 +46,103 @@ interface Entry {
 interface Peer {
   entry: Entry;
   editor: Editor | null;
+  pane: PaneId;
   editable: boolean;
+  editableGeneration: number;
   ready: boolean;
   disposed: boolean;
+  insertionListeners: Set<() => void>;
   hostSyncDepth: number;
   pendingRoot: Transaction | null;
   pendingExpected: DocNode | null;
   onDirty: (dirty: boolean) => void;
+}
+
+/** Private host identity used by the plugin insertion capture; it never crosses the plugin API. */
+export interface PageEditorInsertionPeer {
+  readonly identity: object;
+  readonly session: WorkspaceSession;
+  readonly pageId: PageId;
+  readonly pane: PaneId;
+  readonly editableGeneration: number;
+}
+
+export function pageEditorInsertionPeerFor(editor: Editor): PageEditorInsertionPeer | null {
+  const peer = peersByEditor.get(editor);
+  if (!peer || peer.disposed || peer.editor !== editor) return null;
+  return {
+    identity: peer,
+    session: peer.entry.session,
+    pageId: peer.entry.pageId,
+    pane: peer.pane,
+    editableGeneration: peer.editableGeneration,
+  };
+}
+
+export function isPageEditorInsertionPeerCurrent(editor: Editor, expected: PageEditorInsertionPeer): boolean {
+  const peer = peersByEditor.get(editor);
+  return Boolean(
+    peer &&
+    peer === expected.identity &&
+    peer.editor === editor &&
+    !peer.disposed &&
+    peer.entry.session === expected.session &&
+    peer.entry.pageId === expected.pageId &&
+    peer.pane === expected.pane &&
+    peer.editableGeneration === expected.editableGeneration,
+  );
+}
+
+export function canInsertPageEditorTarget(editor: Editor, expected: PageEditorInsertionPeer): boolean {
+  const peer = peersByEditor.get(editor);
+  if (
+    !peer ||
+    !isPageEditorInsertionPeerCurrent(editor, expected) ||
+    !peer.ready ||
+    !peer.editable ||
+    peer.disposed ||
+    !editor.isEditable ||
+    editor.isDestroyed ||
+    peer.entry.session.isClosed
+  )
+    return false;
+
+  const entry = peer.entry;
+  if (entry.conflict || entry.error || entry.commitInProgress || !entry.projected || !entry.draftPMDoc)
+    return false;
+  const state = entry.session.getState();
+  const page = state.pages[entry.pageId];
+  const current = state.docs[entry.pageId];
+  if (
+    !page ||
+    page.encrypted ||
+    isEffectivelyTrashed(state.pages, entry.pageId) ||
+    entry.session.unreadable.has(entry.pageId) ||
+    entry.session.protectedReasons.has(entry.pageId) ||
+    !current ||
+    !samePageContent(current, entry.baselineSessionDoc) ||
+    !samePageContent(current, entry.observedSessionDoc) ||
+    !jsonEqual(editor.getJSON(), entry.draftPMDoc)
+  )
+    return false;
+
+  return [...entry.peers].every((item) => {
+    if (!item.ready || item.disposed) return true;
+    return Boolean(
+      item.editor && !item.editor.isDestroyed && jsonEqual(item.editor.getJSON(), entry.draftPMDoc),
+    );
+  });
+}
+
+export function subscribePageEditorInsertionPeer(
+  editor: Editor,
+  expected: PageEditorInsertionPeer,
+  listener: () => void,
+): () => void {
+  const peer = peersByEditor.get(editor);
+  if (!peer || peer !== expected.identity || peer.disposed) return () => {};
+  peer.insertionListeners.add(listener);
+  return () => peer.insertionListeners.delete(listener);
 }
 
 export interface PageEditorCoordinator {
@@ -60,6 +153,7 @@ export interface PageEditorCoordinator {
   handleUpdate(update: EditorEvents['update']): void;
   observeSessionDoc(doc: DocNode): void;
   setEditable(editable: boolean): void;
+  setPane(pane: PaneId): void;
   commit(): boolean;
   dispose(): void;
 }
@@ -742,14 +836,18 @@ export function registerPageEditorCoordinator(
   initialDoc: DocNode,
   editable: boolean,
   onDirty: (dirty: boolean) => void,
+  pane: PaneId = 'main',
 ): PageEditorCoordinator {
   const entry = getEntry(session, pageId, initialDoc);
   const peer: Peer = {
     entry,
     editor: null,
+    pane,
     editable: editable && !session.isClosed,
+    editableGeneration: 0,
     ready: false,
     disposed: false,
+    insertionListeners: new Set(),
     hostSyncDepth: 0,
     pendingRoot: null,
     pendingExpected: null,
@@ -854,6 +952,7 @@ export function registerPageEditorCoordinator(
     extension,
     attach(editor) {
       peer.editor = editor;
+      peersByEditor.set(editor, peer);
       try {
         if (!entry.projected || !entry.baselinePMDoc) {
           entry.baselinePMDoc = projectDoc(editor, entry.baselineSessionDoc);
@@ -885,11 +984,21 @@ export function registerPageEditorCoordinator(
       if (current && jsonEqual(current, doc)) updateFromSession(entry, current);
     },
     setEditable(next) {
-      peer.editable = next && !session.isClosed;
+      const editableNow = next && !session.isClosed;
+      if (peer.editable !== editableNow) {
+        peer.editable = editableNow;
+        peer.editableGeneration += 1;
+        for (const listener of [...peer.insertionListeners]) listener();
+      }
       if (![...entry.peers].some((item) => item.ready && item.editable)) {
         clearTimer(entry);
         if (entry.dirty) entry.commitAuthorized = false;
       }
+    },
+    setPane(next) {
+      if (peer.pane === next) return;
+      peer.pane = next;
+      for (const listener of [...peer.insertionListeners]) listener();
     },
     commit() {
       return commitEntry(entry);
@@ -899,6 +1008,8 @@ export function registerPageEditorCoordinator(
       if (entry.peers.size === 1 && entry.dirty && peer.editable && !session.isClosed) commitEntry(entry);
       peer.disposed = true;
       peer.ready = false;
+      if (peer.editor && peersByEditor.get(peer.editor) === peer) peersByEditor.delete(peer.editor);
+      for (const listener of [...peer.insertionListeners]) listener();
       entry.peers.delete(peer);
       if (entry.peers.size === 0) {
         clearTimer(entry);
