@@ -382,3 +382,126 @@ test('activatable-name summary accepts only the intrinsic bus driver and bounds 
   assert.equal(oversized.valid, false, 'truncation must never make an oversized list acceptable');
   assert.ok(!JSON.stringify(oversized).includes(oversizedOutput), 'receipt summary must not retain the full raw list');
 });
+
+test('app-stage runtime permits only four exact owned automation entries while the base environment stays closed', async () => {
+  const {
+    createPrivateRuntimeEnv,
+    summarizeAppStageRuntimeEnvironment,
+    summarizeRuntimeEnvironment,
+  } = await import(pathToFileURL(HELPER_PATH).href);
+  const profile = '/synthetic-native-app/profile';
+  const xdg = {
+    config: path.join(profile, 'xdg', 'config'),
+    data: path.join(profile, 'xdg', 'data'),
+    cache: path.join(profile, 'xdg', 'cache'),
+    runtime: path.join(profile, 'xdg', 'runtime'),
+  };
+  const actualBase = createPrivateRuntimeEnv({
+    profile,
+    xdg,
+    display: ':731',
+    busAddress: `unix:path=${xdg.runtime}/bus`,
+  });
+  const expectedBase = { ...actualBase };
+  const stageEntries = ({ automation = 'true', webviewAutomation = 'true', overlay = '0', inspector = '127.0.0.1:61357' } = {}) => [
+    { key: 'TAURI_AUTOMATION', value: automation },
+    { key: 'TAURI_WEBVIEW_AUTOMATION', value: webviewAutomation },
+    { key: 'GTK_OVERLAY_SCROLLING', value: overlay },
+    { key: 'WEBKIT_INSPECTOR_SERVER', value: inspector },
+  ];
+  const summarize = ({
+    appStageEntries = stageEntries(),
+    observedKeys = [...Object.keys(actualBase), ...appStageEntries.map(({ key }) => key)],
+    forbiddenKeys = [],
+    inspectorListenerOwned = true,
+    base = actualBase,
+    expected = expectedBase,
+  } = {}) => summarizeAppStageRuntimeEnvironment({
+    actualBase: base,
+    expectedBase: expected,
+    observedKeys,
+    forbiddenKeys,
+    appStageEntries,
+    inspectorListenerOwned,
+  });
+
+  for (const { overlay, port } of [{ overlay: '0', port: 1 }, { overlay: '1', port: 65535 }]) {
+    const result = summarize({ appStageEntries: stageEntries({ overlay, inspector: `127.0.0.1:${port}` }) });
+    assert.equal(result.summary.ok, true, `the exact app-stage allowlist should accept overlay=${overlay} and valid boundary port`);
+    assert.equal(result.inspectorPort, port, 'the validated listener port is returned only for in-memory ownership checking');
+    const serialized = JSON.stringify(result.summary);
+    assert.ok(!serialized.includes(`127.0.0.1:${port}`), 'the sanitized summary must not persist the inspector endpoint');
+    assert.doesNotMatch(serialized, new RegExp(`"port"\\s*:\\s*${port}(?:[,}])`), 'the sanitized summary must not persist the inspector port');
+  }
+
+  const invalidValues = [
+    { automation: 'false' },
+    { webviewAutomation: '1' },
+    { overlay: '2' },
+  ];
+  for (const values of invalidValues) {
+    assert.equal(summarize({ appStageEntries: stageEntries(values) }).summary.ok, false, 'non-contract automation values must fail closed');
+  }
+
+  const portCases = [
+    'localhost:61357',
+    '0.0.0.0:61357',
+    '127.0.0.2:61357',
+    '[::1]:61357',
+    '127.0.0.1:0',
+    '127.0.0.1:65536',
+    '127.0.0.1:061357',
+    '127.0.0.1:+1',
+    '127.0.0.1:61357extra',
+  ];
+  for (const inspector of portCases) {
+    assert.equal(
+      summarize({ appStageEntries: stageEntries({ inspector }) }).summary.ok,
+      false,
+      `inspector endpoint ${inspector} must not satisfy the loopback/canonical-port contract`,
+    );
+  }
+
+  assert.equal(
+    summarize({ inspectorListenerOwned: false }).summary.ok,
+    false,
+    'a valid endpoint without an app-owned listener must fail closed',
+  );
+  assert.equal(
+    summarize({ appStageEntries: stageEntries().filter(({ key }) => key !== 'TAURI_AUTOMATION') }).summary.ok,
+    false,
+    'every exact app-stage key must occur',
+  );
+  assert.equal(
+    summarize({ appStageEntries: [...stageEntries(), { key: 'TAURI_AUTOMATION', value: 'true' }] }).summary.ok,
+    false,
+    'duplicate environment entries must fail even when their values match',
+  );
+
+  const unexpectedMarker = 'SYNTHETIC_UNEXPECTED_APP_ENV_VALUE_DO_NOT_RETAIN';
+  const unknownKey = 'TAURI_AUTOMATION_EXTRA';
+  const unexpected = summarize({
+    appStageEntries: [...stageEntries(), { key: unknownKey, value: unexpectedMarker }],
+  });
+  assert.equal(unexpected.summary.ok, false, 'a similarly prefixed but unlisted key must remain unexpected');
+  assert.ok(!JSON.stringify(unexpected.summary).includes(unexpectedMarker), 'unexpected environment values must not enter receipts');
+
+  const forbidden = summarize({
+    observedKeys: [...Object.keys(actualBase), ...stageEntries().map(({ key }) => key), 'SSH_AUTH_SOCK'],
+    forbiddenKeys: ['SSH_AUTH_SOCK'],
+  });
+  assert.equal(forbidden.summary.ok, false, 'forbidden inherited keys must remain rejected during the app stage');
+
+  const genericBaseCheck = summarizeRuntimeEnvironment({
+    actual: actualBase,
+    expected: expectedBase,
+    observedKeys: [...Object.keys(actualBase), 'TAURI_AUTOMATION', 'TAURI_WEBVIEW_AUTOMATION', 'GTK_OVERLAY_SCROLLING', 'WEBKIT_INSPECTOR_SERVER'],
+  });
+  assert.equal(genericBaseCheck.ok, false, 'the daemon/base-stage allowlist must not inherit app-stage exceptions');
+  assert.equal(genericBaseCheck.unexpected.present, true, 'the generic base-stage check must flag all app-stage names as unexpected');
+  assert.equal(
+    summarize({ base: { ...actualBase, TAURI_AUTOMATION: 'true' } }).summary.ok,
+    false,
+    'app-stage keys must not be accepted when supplied as base/daemon environment values',
+  );
+});

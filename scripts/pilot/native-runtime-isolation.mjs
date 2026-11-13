@@ -5,6 +5,15 @@ const PRIVATE_PATH_SEGMENTS = /^[A-Za-z0-9._/-]+$/;
 export const PRIVATE_DBUS_SYNTHETIC_SERVICE_NAME = 'org.example.Morrow.RuntimeIsolationProbe';
 const PRIVATE_DBUS_DRIVER_NAME = 'org.freedesktop.DBus';
 const MAX_ACTIVATABLE_NAMES_IN_RECEIPT = 32;
+export const APP_STAGE_RUNTIME_ENVIRONMENT_KEYS = Object.freeze([
+  'TAURI_AUTOMATION',
+  'TAURI_WEBVIEW_AUTOMATION',
+  'GTK_OVERLAY_SCROLLING',
+  'WEBKIT_INSPECTOR_SERVER',
+]);
+const APP_STAGE_RUNTIME_ENVIRONMENT_KEY_SET = new Set(APP_STAGE_RUNTIME_ENVIRONMENT_KEYS);
+const MAX_UNEXPECTED_ENVIRONMENT_NAMES_IN_RECEIPT = 32;
+const MAX_UNEXPECTED_ENVIRONMENT_NAME_LENGTH = 128;
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -226,4 +235,110 @@ export function summarizeRuntimeEnvironment({ actual = {}, expected = {}, forbid
   const valuesMatch = Object.values(expectedSummary).every((value) => value.matches);
   const noForbiddenEnvironment = Object.values(forbidden).every((present) => !present);
   return { ok: valuesMatch && noForbiddenEnvironment && !unexpected.present, expected: expectedSummary, forbidden, unexpected };
+}
+
+export function summarizeAppStageRuntimeEnvironment({
+  actualBase = {},
+  expectedBase = {},
+  forbiddenKeys = [],
+  observedKeys = [],
+  appStageEntries = [],
+  inspectorListenerOwned = false,
+} = {}) {
+  const safeObservedKeys = observedKeys.filter((key) => typeof key === 'string');
+  const baseObservedKeys = safeObservedKeys.filter((key) => !APP_STAGE_RUNTIME_ENVIRONMENT_KEY_SET.has(key));
+  const base = summarizeRuntimeEnvironment({
+    actual: actualBase,
+    expected: expectedBase,
+    forbiddenKeys,
+    observedKeys: baseObservedKeys,
+  });
+  const unexpectedNames = [...new Set(baseObservedKeys.filter((key) => !Object.hasOwn(expectedBase, key)))].sort();
+  const boundedUnexpectedNames = unexpectedNames
+    .slice(0, MAX_UNEXPECTED_ENVIRONMENT_NAMES_IN_RECEIPT)
+    .map((key) => key.replace(/[^\x20-\x7E]/g, '?').slice(0, MAX_UNEXPECTED_ENVIRONMENT_NAME_LENGTH));
+  base.unexpected = {
+    ...base.unexpected,
+    count: unexpectedNames.length,
+    names: boundedUnexpectedNames,
+    namesTruncated: unexpectedNames.length > MAX_UNEXPECTED_ENVIRONMENT_NAMES_IN_RECEIPT
+      || unexpectedNames.slice(0, MAX_UNEXPECTED_ENVIRONMENT_NAMES_IN_RECEIPT)
+        .some((key) => key.length > MAX_UNEXPECTED_ENVIRONMENT_NAME_LENGTH),
+  };
+
+  const entries = Array.isArray(appStageEntries) ? appStageEntries : [];
+  const summarizedValues = {};
+  const entryCountByKey = new Map();
+  const observedCountByKey = new Map();
+  for (const key of safeObservedKeys) {
+    if (APP_STAGE_RUNTIME_ENVIRONMENT_KEY_SET.has(key)) {
+      observedCountByKey.set(key, (observedCountByKey.get(key) ?? 0) + 1);
+    }
+  }
+  for (const entry of entries) {
+    if (!entry || !APP_STAGE_RUNTIME_ENVIRONMENT_KEY_SET.has(entry.key)) continue;
+    entryCountByKey.set(entry.key, (entryCountByKey.get(entry.key) ?? 0) + 1);
+  }
+  const entriesByKey = new Map();
+  for (const entry of entries) {
+    if (!entry || !APP_STAGE_RUNTIME_ENVIRONMENT_KEY_SET.has(entry.key)) continue;
+    if (!entriesByKey.has(entry.key)) entriesByKey.set(entry.key, []);
+    entriesByKey.get(entry.key).push(entry.value);
+  }
+
+  const exactValues = {
+    TAURI_AUTOMATION: (value) => value === 'true',
+    TAURI_WEBVIEW_AUTOMATION: (value) => value === 'true',
+    GTK_OVERLAY_SCROLLING: (value) => value === '0' || value === '1',
+  };
+  for (const key of Object.keys(exactValues)) {
+    const count = observedCountByKey.get(key) ?? 0;
+    const capturedCount = entryCountByKey.get(key) ?? 0;
+    const values = entriesByKey.get(key) ?? [];
+    summarizedValues[key] = {
+      present: count > 0,
+      count,
+      capturedCount,
+      valid: count === 1 && capturedCount === 1 && exactValues[key](values[0]),
+    };
+  }
+
+  const inspectorKey = 'WEBKIT_INSPECTOR_SERVER';
+  const inspectorCount = observedCountByKey.get(inspectorKey) ?? 0;
+  const inspectorCapturedCount = entryCountByKey.get(inspectorKey) ?? 0;
+  const inspectorValues = entriesByKey.get(inspectorKey) ?? [];
+  const inspectorValue = inspectorCount === 1 && inspectorCapturedCount === 1 && typeof inspectorValues[0] === 'string'
+    ? inspectorValues[0]
+    : null;
+  const inspectorMatch = inspectorValue === null ? null : /^127\.0\.0\.1:([1-9]\d{0,4})$/.exec(inspectorValue);
+  const inspectorPort = inspectorMatch ? Number(inspectorMatch[1]) : null;
+  const inspectorPortValid = inspectorPort !== null
+    && Number.isInteger(inspectorPort)
+    && inspectorPort >= 1
+    && inspectorPort <= 65_535
+    && String(inspectorPort) === inspectorMatch[1];
+  const unexpectedAppEntries = entries.some((entry) => !entry || !APP_STAGE_RUNTIME_ENVIRONMENT_KEY_SET.has(entry.key));
+  const variablesValid = Object.values(summarizedValues).every((value) => value.valid);
+  const inspectorValid = inspectorCount === 1
+    && inspectorCapturedCount === 1
+    && inspectorPortValid
+    && inspectorListenerOwned === true;
+  const appStage = {
+    ok: variablesValid && inspectorValid && !unexpectedAppEntries,
+    variables: summarizedValues,
+    inspector: {
+      present: inspectorCount > 0,
+      count: inspectorCount,
+      capturedCount: inspectorCapturedCount,
+      loopbackIpv4: inspectorPortValid,
+      portValid: inspectorPortValid,
+      listenerOwned: inspectorListenerOwned === true,
+    },
+  };
+  const summary = {
+    ok: base.ok && appStage.ok,
+    base,
+    appStage,
+  };
+  return { summary, inspectorPort: inspectorPortValid ? inspectorPort : null };
 }
