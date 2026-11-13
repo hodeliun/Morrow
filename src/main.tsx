@@ -29,6 +29,7 @@ import { resolvedTheme, getPreferences } from './app/platform/preferences';
 import { toast } from './app/ui';
 import { setSession } from './app/workspace';
 import { startPlugins } from './app/plugins';
+import { workspaceBootState as bootState } from './app/bootState';
 
 type BootState =
   | { kind: 'loading' }
@@ -36,6 +37,7 @@ type BootState =
   | { kind: 'error'; message: string }
   | { kind: 'choose'; legacy: number }
   | { kind: 'ready' };
+type BootResult = Exclude<BootState, { kind: 'loading' }>;
 
 // the theme is applied before react renders so there is no flash
 document.documentElement.dataset.theme = resolvedTheme(getPreferences().theme);
@@ -44,7 +46,7 @@ document.documentElement.dataset.colorful = getPreferences().colorful ? 'true' :
 // the desktop window has no title bar, styles use this to make room for the native buttons
 if (desktop) document.documentElement.dataset.desktop = desktop.platform;
 
-async function openWorkspace(): Promise<BootState> {
+async function openWorkspace(generation: number): Promise<BootResult> {
   // morrow is a desktop app, pages are files in a folder the person chooses
   if (!desktop?.vault) return { kind: 'desktopOnly' };
   const vault = await desktop.vault.open();
@@ -53,6 +55,7 @@ async function openWorkspace(): Promise<BootState> {
   const opened = await WorkspaceSession.open(repository);
   if (!opened.ok) return { kind: 'error', message: opened.error };
   const session = opened.value;
+  bootState.retainCandidate(generation, session);
   session.beforeExternal = commitEditors;
   const copyLegacy = sessionStorage.getItem(COPY_LEGACY_KEY) === '1';
   sessionStorage.removeItem(COPY_LEGACY_KEY);
@@ -90,12 +93,30 @@ async function openWorkspace(): Promise<BootState> {
   return { kind: 'ready' };
 }
 
-const fail = (error: unknown): BootState => ({ kind: 'error', message: String(error) });
+const fail = (error: unknown): BootResult => ({ kind: 'error', message: String(error) });
 
 // booting runs once even when strict mode mounts twice
 let booting: Promise<BootState> | null = null;
 function bootOnce(): Promise<BootState> {
-  booting ??= openWorkspace().catch(fail);
+  booting ??= (() => {
+    const generation = bootState.begin();
+    const opening = openWorkspace(generation);
+    const promise = opening.then(
+      (state) => {
+        bootState.settle(
+          generation,
+          state.kind === 'ready' ? { kind: 'session' } : { kind: 'no-session', reason: state.kind },
+        );
+        return state;
+      },
+      (error) => {
+        bootState.fail(generation, error);
+        return fail(error);
+      },
+    );
+    bootState.knowPromise(generation, promise);
+    return promise;
+  })();
   return booting;
 }
 
