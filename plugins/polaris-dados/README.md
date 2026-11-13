@@ -3,8 +3,10 @@
 This directory holds the first real Polaris Dados provider for Morrow's public database-provider
 API v1. It renders the opted-in database's schema and rows, lets the user edit finite numeric cells
 with a local draft and Save/Cancel, calculates formula columns through the extracted engine, and
-uses the host's contextual data history. The first synthetic fixture has `Name`, `Quantity`,
-`Price`, and `Total`; it is a P1 pilot, not a claim of full data-domain parity.
+uses the host's contextual data history. Linked views add a local title, column priority, and one
+numeric `gte` filter through linked-view API v1 while sharing the source rows and formulas. The first
+synthetic fixture has `Name`, `Quantity`, `Price`, and `Total`; it is a P1 pilot, not a claim of full
+data-domain parity.
 
 ## Build and synthetic vault
 
@@ -35,11 +37,21 @@ must also be enabled for that test account. Do not point the fixture command at 
 - Undo/redo go through `data.history`, including the host's non-bubbling root key events. Input text
   undo stays with the browser's number editor. Subscription and event cleanup follows the mount's
   `AbortSignal`.
+- A linked view renders a readonly virtual `Row title` column first, then prioritized real columns
+  and the remaining schema columns in source order. Priority does not hide columns. Its title,
+  priority list, and optional numeric `gte` filter are local to that view; values, row IDs, and formula
+  results still come from the same scoped data API as the source grid. The source grid keeps its G01
+  presentation when it has no linked-view context.
+- Linked-view controls show column names. Missing column/filter references remain intact until an
+  explicit repair; while a filter reference is unavailable, all source rows remain visible with a
+  diagnostic. Config drafts use the revision captured when opened, and their undo/redo uses
+  `view.history`, separate from data-cell history. A staged config is flushed through `view.flush`;
+  a failed flush keeps the draft and offers Retry without Cancel-as-rollback.
 - Formula references must resolve to a schema property. Known null or missing cell values stay blank;
   an unknown property is a formula error. Formula-to-formula references have cycle, depth, and work
   limits in the plugin wrapper.
-- The grid does not add an advanced formula editor, linked-view settings, extra database types,
-  controls, or parity claims for the fork's other features.
+- The grid does not add an advanced formula editor, extra database types or controls, or parity claims
+  for the fork's other features.
 
 ## Provenance and license
 

@@ -26,6 +26,30 @@ export interface ProviderMessages {
   readonly nothingToUndo: string;
   readonly nothingToRedo: string;
   readonly formulaError: string;
+  readonly viewSettings: string;
+  readonly undoView: string;
+  readonly redoView: string;
+  readonly removeUnavailableColumns: string;
+  readonly viewTitleLabel: string;
+  readonly rowTitleColumn: string;
+  readonly columnPriority: string;
+  readonly columnPriorityHint: string;
+  readonly moveUp: string;
+  readonly moveDown: string;
+  readonly filterLabel: string;
+  readonly filterNone: string;
+  readonly filterPropertyLabel: string;
+  readonly filterValueLabel: string;
+  readonly unavailableProperty: string;
+  readonly filterUnavailable: string;
+  readonly unavailableColumnReferences: string;
+  readonly viewNoUndo: string;
+  readonly viewNoRedo: string;
+  readonly viewNoChanges: string;
+  readonly unsupportedViewApi: string;
+  readonly viewHistoryError: (detail: string) => string;
+  readonly viewDraftStale: string;
+  readonly viewResolveDraft: string;
 }
 
 const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
@@ -53,6 +77,32 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     nothingToUndo: 'Não há alteração para desfazer.',
     nothingToRedo: 'Não há alteração para refazer.',
     formulaError: 'Erro de fórmula',
+    viewSettings: 'Configurar visualização',
+    undoView: 'Desfazer configuração',
+    redoView: 'Refazer configuração',
+    removeUnavailableColumns: 'Remover referências indisponíveis',
+    viewTitleLabel: 'Título da visualização',
+    rowTitleColumn: 'Título da linha',
+    columnPriority: 'Prioridade das colunas',
+    columnPriorityHint: 'As colunas não priorizadas continuam visíveis na ordem do banco.',
+    moveUp: 'Mover acima',
+    moveDown: 'Mover abaixo',
+    filterLabel: 'Filtro numérico mínimo',
+    filterNone: 'Sem filtro',
+    filterPropertyLabel: 'Propriedade numérica',
+    filterValueLabel: 'Limite mínimo',
+    unavailableProperty: 'Coluna indisponível (preservada)',
+    filterUnavailable:
+      'O filtro aponta para uma coluna ausente ou não numérica. Todas as linhas continuam visíveis até reparar a referência.',
+    unavailableColumnReferences:
+      'Há referências de coluna indisponíveis. Elas serão preservadas até serem reparadas explicitamente.',
+    viewNoUndo: 'Não há configuração para desfazer.',
+    viewNoRedo: 'Não há configuração para refazer.',
+    viewNoChanges: 'Sem alterações.',
+    unsupportedViewApi: 'Esta visualização usa uma versão de API que o Polaris Dados não suporta.',
+    viewHistoryError: () => 'Não foi possível atualizar o histórico desta visualização.',
+    viewDraftStale: 'A configuração mudou. Cancele este rascunho e reabra a configuração atual.',
+    viewResolveDraft: 'Conclua o rascunho aberto antes de desfazer ou refazer.',
   },
   en: {
     region: 'Polaris Data',
@@ -78,6 +128,32 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     nothingToUndo: 'There is no change to undo.',
     nothingToRedo: 'There is no change to redo.',
     formulaError: 'Formula error',
+    viewSettings: 'View settings',
+    undoView: 'Undo view settings',
+    redoView: 'Redo view settings',
+    removeUnavailableColumns: 'Remove unavailable references',
+    viewTitleLabel: 'View title',
+    rowTitleColumn: 'Row title',
+    columnPriority: 'Column priority',
+    columnPriorityHint: 'Unprioritized columns remain visible in database order.',
+    moveUp: 'Move up',
+    moveDown: 'Move down',
+    filterLabel: 'Minimum numeric filter',
+    filterNone: 'No filter',
+    filterPropertyLabel: 'Numeric property',
+    filterValueLabel: 'Minimum value',
+    unavailableProperty: 'Unavailable column (preserved)',
+    filterUnavailable:
+      'The filter references a missing or non-numeric column. All rows remain visible until the reference is repaired.',
+    unavailableColumnReferences:
+      'Some column references are unavailable. They will be preserved until explicitly repaired.',
+    viewNoUndo: 'There is no view configuration to undo.',
+    viewNoRedo: 'There is no view configuration to redo.',
+    viewNoChanges: 'No changes.',
+    unsupportedViewApi: 'This view uses an API version Polaris Data does not support.',
+    viewHistoryError: () => 'Could not update this view’s history.',
+    viewDraftStale: 'The configuration changed. Cancel this draft and reopen the current settings.',
+    viewResolveDraft: 'Finish the open draft before undoing or redoing.',
   },
   es: {
     region: 'Polaris Datos',
@@ -103,6 +179,33 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     nothingToUndo: 'No hay cambios para deshacer.',
     nothingToRedo: 'No hay cambios para rehacer.',
     formulaError: 'Error de fórmula',
+    viewSettings: 'Configurar vista',
+    undoView: 'Deshacer configuración',
+    redoView: 'Rehacer configuración',
+    removeUnavailableColumns: 'Eliminar referencias no disponibles',
+    viewTitleLabel: 'Título de la vista',
+    rowTitleColumn: 'Título de fila',
+    columnPriority: 'Prioridad de columnas',
+    columnPriorityHint: 'Las columnas sin prioridad siguen visibles en el orden de la base.',
+    moveUp: 'Mover arriba',
+    moveDown: 'Mover abajo',
+    filterLabel: 'Filtro numérico mínimo',
+    filterNone: 'Sin filtro',
+    filterPropertyLabel: 'Propiedad numérica',
+    filterValueLabel: 'Valor mínimo',
+    unavailableProperty: 'Columna no disponible (conservada)',
+    filterUnavailable:
+      'El filtro apunta a una columna ausente o no numérica. Todas las filas seguirán visibles hasta reparar la referencia.',
+    unavailableColumnReferences:
+      'Hay referencias de columna no disponibles. Se conservarán hasta repararlas explícitamente.',
+    viewNoUndo: 'No hay configuración de vista para deshacer.',
+    viewNoRedo: 'No hay configuración de vista para rehacer.',
+    viewNoChanges: 'Sin cambios.',
+    unsupportedViewApi: 'Esta vista usa una versión de API que Polaris Datos no admite.',
+    viewHistoryError: () => 'No se pudo actualizar el historial de esta vista.',
+    viewDraftStale:
+      'La configuración cambió. Cancela este borrador y vuelve a abrir la configuración actual.',
+    viewResolveDraft: 'Termina el borrador abierto antes de deshacer o rehacer.',
   },
 };
 
