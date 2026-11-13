@@ -1919,10 +1919,25 @@ function focusKey(action: string, rowId: string, propertyId: string): string {
 function isTextEditingTarget(target: EventTarget | null, document: Document): boolean {
   const view = document.defaultView;
   if (!view || !(target instanceof view.HTMLElement)) return false;
-  if (target.isContentEditable || target.closest('[contenteditable="true"]')) return true;
   if (target instanceof view.HTMLTextAreaElement) return true;
   if (target instanceof view.HTMLInputElement) {
     return ['text', 'number', 'search', 'email', 'url', 'tel', 'password'].includes(target.type);
   }
+  let ancestor: HTMLElement | null = target;
+  while (ancestor) {
+    const value = ancestor.getAttribute('contenteditable');
+    if (value !== null) {
+      switch (value.toLowerCase()) {
+        case '':
+        case 'true':
+        case 'plaintext-only':
+          return true;
+        case 'false':
+          return false;
+      }
+    }
+    ancestor = ancestor.parentElement;
+  }
+  if (target.isContentEditable) return true;
   return false;
 }

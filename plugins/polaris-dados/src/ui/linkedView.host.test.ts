@@ -356,6 +356,48 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
+  it('keeps linked-view keyboard history independent inside an editable document', async () => {
+    const mounted = mountLinked({ title: 'Inventory view', columnOrder: [], filter: null });
+    const { element, window, view, data } = mounted;
+    const document = element.ownerDocument;
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    element.parentElement?.replaceChild(editor, element);
+    editor.append(element);
+    element.setAttribute('contenteditable', 'false');
+    element.tabIndex = -1;
+
+    click(window, element.querySelector('[data-action="view-settings-toggle"]'));
+    const title = element.querySelector<HTMLInputElement>('[data-action="view-title"]');
+    if (!title) throw new Error('The linked view title input did not render.');
+    input(window, title, 'Renamed view');
+    element
+      .querySelector<HTMLFormElement>('[data-view-settings-form]')!
+      .dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event);
+    await flushMicrotasks();
+    expect(view.api.snapshot()).toMatchObject({
+      status: 'ready',
+      config: { title: 'Renamed view' },
+      history: { canUndo: true },
+    });
+
+    const settingsToggle = element.querySelector<HTMLButtonElement>('[data-action="view-settings-toggle"]');
+    if (!settingsToggle) throw new Error('The linked view settings control did not render.');
+    settingsToggle.focus();
+    expect(document.activeElement).toBe(settingsToggle);
+    const undo = new window.KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    settingsToggle.dispatchEvent(undo as unknown as Event);
+    expect(undo.target).toBe(settingsToggle);
+    await flushMicrotasks();
+    expect(undo.defaultPrevented).toBe(true);
+    expect(view.historyCalls.map(({ direction }) => direction)).toEqual(['undo']);
+    expect(data.historyCalls).toHaveLength(0);
+    expect(view.api.snapshot()).toMatchObject({ config: { title: 'Inventory view' } });
+    mounted.cleanup();
+  });
+
   it('returns focus to settings when explicit missing-reference repair removes its own button', () => {
     const mounted = mountLinked({
       title: 'Inventory view',

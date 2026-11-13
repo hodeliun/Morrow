@@ -463,6 +463,112 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('routes history through an opt-in provider boundary inside an editable document', async () => {
+    const data = makeDataDouble();
+    const first = mountPlugin(data.api);
+    const second = mountPlugin(data.api, 'en', true, first.window);
+    const document = second.element.ownerDocument;
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    second.element.parentElement?.replaceChild(editor, second.element);
+    editor.append(second.element);
+    second.element.setAttribute('contenteditable', 'false');
+    second.element.tabIndex = -1;
+
+    const quantity = editQuantity(first.element);
+    setInput(first.window, quantity, '4');
+    click(first.element, 'button[data-action="save"]');
+    await settle();
+    expect(data.persisted().quantity).toBe(4);
+    expect(first.element.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('40');
+    expect(second.element.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('40');
+
+    second.element.focus();
+    expect(document.activeElement).toBe(second.element);
+    const undo = new second.window.KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    dispatch(second.element, undo);
+    expect(undo.target).toBe(second.element);
+    expect(document.activeElement).toBe(second.element);
+    await settle();
+    expect(data.historyCalls.map(({ direction }) => direction)).toEqual(['undo']);
+    expect(undo.defaultPrevented).toBe(true);
+    expect(data.persisted().quantity).toBe(2);
+    expect(first.element.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('20');
+    expect(second.element.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('20');
+
+    const editButton = second.element.querySelector<HTMLButtonElement>('button[data-action="edit"][data-field="quantity"]');
+    if (!editButton) throw new Error('The second provider did not render its quantity control.');
+    editButton.focus();
+    expect(document.activeElement).toBe(editButton);
+    const redo = new second.window.KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    });
+    dispatch(editButton, redo);
+    expect(redo.target).toBe(editButton);
+    await settle();
+    expect(data.historyCalls.map(({ direction }) => direction)).toEqual(['undo', 'redo']);
+    expect(redo.defaultPrevented).toBe(true);
+    expect(data.persisted().quantity).toBe(4);
+    expect(second.element.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('40');
+
+    second.element.focus();
+    const commandUndo = new second.window.KeyboardEvent('keydown', {
+      key: 'z', metaKey: true, bubbles: true, cancelable: true,
+    });
+    dispatch(second.element, commandUndo);
+    await settle();
+    expect(commandUndo.defaultPrevented).toBe(true);
+    expect(data.historyCalls.map(({ direction }) => direction)).toEqual(['undo', 'redo', 'undo']);
+    expect(data.persisted().quantity).toBe(2);
+
+    const commandRedoButton = second.element.querySelector<HTMLButtonElement>(
+      'button[data-action="edit"][data-field="quantity"]',
+    );
+    if (!commandRedoButton) throw new Error('The second provider did not render its quantity control.');
+    commandRedoButton.focus();
+    const commandRedo = new second.window.KeyboardEvent('keydown', {
+      key: 'z', metaKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    });
+    dispatch(commandRedoButton, commandRedo);
+    await settle();
+    expect(commandRedo.defaultPrevented).toBe(true);
+    expect(data.historyCalls.map(({ direction }) => direction)).toEqual(['undo', 'redo', 'undo', 'redo']);
+    expect(data.persisted().quantity).toBe(4);
+
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    const numberInput = document.createElement('input');
+    numberInput.type = 'number';
+    const textarea = document.createElement('textarea');
+    const nestedEditable = document.createElement('div');
+    nestedEditable.setAttribute('contenteditable', 'true');
+    nestedEditable.tabIndex = -1;
+    const emptyEditable = document.createElement('div');
+    emptyEditable.setAttribute('contenteditable', '');
+    emptyEditable.tabIndex = -1;
+    const plaintextEditable = document.createElement('div');
+    plaintextEditable.setAttribute('contenteditable', 'plaintext-only');
+    plaintextEditable.tabIndex = -1;
+    second.element.append(textInput, numberInput, textarea, nestedEditable, emptyEditable, plaintextEditable);
+
+    for (const target of [textInput, numberInput, textarea, nestedEditable, emptyEditable, plaintextEditable]) {
+      target.focus();
+      expect(document.activeElement).toBe(target);
+      const nativeUndo = new second.window.KeyboardEvent('keydown', {
+        key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+      });
+      dispatch(target, nativeUndo);
+      expect(nativeUndo.defaultPrevented).toBe(false);
+      expect(nativeUndo.cancelBubble).toBe(true);
+      expect(data.historyCalls.map(({ direction }) => direction)).toEqual(['undo', 'redo', 'undo', 'redo']);
+    }
+
+    first.unmount();
+    second.unmount();
+  });
+
   it('uses native input undo and redo, syncs the restored draft, and saves it without database history', async () => {
     const data = makeDataDouble();
     const mounted = mountPlugin(data.api);
