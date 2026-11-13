@@ -917,6 +917,7 @@ pub fn run() {
         })
         .setup(|app| {
             paths::init_data_dir(&app.config().identifier, app.path().app_config_dir().ok())?;
+            ai::init_keychain_identity(&app.config().identifier)?;
             // a phone keeps vaults in the app's own storage, synced with a computer over the network
             #[cfg(mobile)]
             paths::set_documents_dir(app.path().app_data_dir().ok().map(|dir| dir.join("Vaults")));
