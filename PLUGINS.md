@@ -153,6 +153,33 @@ characters, `columnOrder` contains at most 1,000 unique IDs, and the decoded JSO
 raw content, including noncanonical JSON or base64url. The editor shows an inert fallback with the saved
 title and source ID when the view is unavailable; it does not evaluate or mount a provider from this block.
 
+### Linked-view configuration and history API
+
+The host's `LinkedViewApi` v1 binds one handle to a note, view ID, source database, and mount generation.
+Its `snapshot()` returns the current config, an opaque revision, source status, diagnostics, readonly state,
+and whether local config undo/redo is available. `patchConfig({ patch, expectedRevision })` changes only the
+view title, property order, and numeric `gte` filter. `history({ direction, expectedRevision })` undoes or
+redoes config changes without consuming database-data history or page-text undo. `subscribe(listener)`
+returns a cleanup function; `flush()` asks the normal workspace save queue to persist staged changes.
+
+`columnOrder` contains real schema property IDs. Listed IDs take priority, followed by the remaining
+properties in schema order; the virtual row title stays first. An empty list uses schema order. Missing
+property references remain in the saved config with a repair diagnostic and can be corrected explicitly.
+The revision tracks config, source identity/schema, and handle lifetime; adjacent text, row values, source
+path, and source title do not change it by themselves.
+
+`staged` means the in-memory page document and open editors accepted the config; it does not mean the file
+was saved. Only `flush()` returning `persisted` confirms the save queue completed. If a result has
+`error` and `staged: true`, the accepted change still needs confirmation: keep the draft visible and retry
+`flush()` after synchronization or save recovery. Do not present Cancel as though it rolled back that
+accepted change. Config history keeps the latest ten before/after steps per view in the current session;
+the saved config survives reopen, but the local undo/redo stack starts empty.
+
+Removing the note/view, changing its source identity, losing the source after it was available, unloading
+the owner, or closing the session makes the old handle inactive or terminal. Reconnecting after source
+restoration requires a new handle. This API contract is host-side in this slice; mounting linked views and
+exposing the handle to plugin UI belong to a later integration slice.
+
 ## Trying changes
 
 After editing `main.js`, press the reload button beside the plugin in Settings → Plugins. A plugin that

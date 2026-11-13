@@ -101,8 +101,33 @@ function samePageContent(first: DocNode, second: DocNode): boolean {
   return jsonEqual(withoutTrailingEmpty(first), withoutTrailingEmpty(second));
 }
 
+function trailingEmptyParagraphs(doc: DocNode): DocNode[] {
+  const content = doc.content ?? [];
+  let count = 0;
+  for (let index = content.length - 1; index >= 0; index--) {
+    const node = content[index]!;
+    if (node.type !== 'paragraph' || (node.content?.length ?? 0) > 0) break;
+    count += 1;
+  }
+  return content.slice(content.length - count);
+}
+
+function preserveTrailingEmptyParagraphs(projected: DocNode, current: DocNode): DocNode {
+  const projectedPads = trailingEmptyParagraphs(projected);
+  const currentPads = trailingEmptyParagraphs(current);
+  if (currentPads.length <= projectedPads.length) return projected;
+  return {
+    ...projected,
+    content: [...(projected.content ?? []), ...currentPads.slice(projectedPads.length)],
+  };
+}
+
 function projectDoc(editor: Editor, doc: DocNode): DocNode {
   return editor.schema.nodeFromJSON(doc).toJSON() as DocNode;
+}
+
+function projectHostSyncDoc(editor: Editor, doc: DocNode): DocNode {
+  return preserveTrailingEmptyParagraphs(projectDoc(editor, doc), editor.getJSON() as DocNode);
 }
 
 interface NodeAttributeChange {
@@ -157,6 +182,77 @@ function preflightHostSync(peer: Peer, transaction: Transaction, expectedDoc: Do
     peer.pendingRoot = pendingRoot;
     peer.pendingExpected = pendingExpected;
   }
+}
+
+function prepareHostSync(peer: Peer, target: DocNode): Transaction | null {
+  const editor = peer.editor;
+  if (!editor || editor.isDestroyed) throw new Error('An open page editor closed before its changes could be shared.');
+  const current = editor.state.doc;
+  const targetNode = editor.schema.nodeFromJSON(target);
+  let transaction = attributeOnlyTransaction(editor, targetNode);
+  if (!transaction) {
+    const start = current.content.findDiffStart(targetNode.content);
+    if (start === null) return null;
+    const end = current.content.findDiffEnd(targetNode.content);
+    if (!end) throw new Error('The page change could not be applied to all open views.');
+    const overlap = start - Math.min(end.a, end.b);
+    const endA = end.a + Math.max(0, overlap);
+    const endB = end.b + Math.max(0, overlap);
+    transaction = editor.state.tr.replace(start, endA, targetNode.slice(start, endB));
+  }
+  if (!jsonEqual(transaction.doc.toJSON(), target)) {
+    throw new Error('The page change could not be applied safely to all open views.');
+  }
+  transaction.setMeta('addToHistory', false).setMeta(HOST_SYNC, true);
+  preflightHostSync(peer, transaction, target);
+  return transaction;
+}
+
+/** Checks that every ready peer can accept a host document without applying it. */
+export function canSynchronizePageEditorDoc(
+  session: WorkspaceSession,
+  pageId: PageId,
+  currentDoc: DocNode,
+  nextDoc: DocNode,
+): boolean {
+  if (session.isClosed || session.getState().docs[pageId] !== currentDoc) return false;
+  const entry = entries.get(session)?.get(pageId);
+  if (!entry) return true;
+  if (!isPageEditorDocumentSynchronized(session, pageId)) return false;
+  const livePeers = [...entry.peers].filter(
+    (peer) => peer.ready && peer.editor && !peer.editor.isDestroyed,
+  );
+  try {
+    const targetByPeer = livePeers.map((peer) => ({ peer, target: projectHostSyncDoc(peer.editor!, nextDoc) }));
+    const firstTarget = targetByPeer[0]?.target;
+    if (firstTarget && targetByPeer.some(({ target }) => !jsonEqual(target, firstTarget))) return false;
+    for (const { peer, target } of targetByPeer) prepareHostSync(peer, target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns whether the coordinator and all ready editors reflect the session's current page. */
+export function isPageEditorDocumentSynchronized(session: WorkspaceSession, pageId: PageId): boolean {
+  if (session.isClosed) return false;
+  const entry = entries.get(session)?.get(pageId);
+  if (!entry) return true;
+  const current = session.getState().docs[pageId];
+  if (
+    !current ||
+    entry.dirty ||
+    entry.conflict ||
+    entry.error ||
+    entry.commitInProgress ||
+    !entry.projected ||
+    !jsonEqual(current, entry.baselineSessionDoc) ||
+    !jsonEqual(current, entry.observedSessionDoc)
+  ) return false;
+  return [...entry.peers].every((peer) => {
+    if (!peer.ready || !peer.editor || peer.editor.isDestroyed) return true;
+    return jsonEqual(peer.editor.getJSON(), entry.draftPMDoc);
+  });
 }
 
 function clearTimer(entry: Entry): void {
@@ -293,7 +389,7 @@ function updateFromSession(entry: Entry, doc: DocNode | undefined): void {
   }
 
   try {
-    const targetByPeer = livePeers.map((peer) => ({ peer, target: projectDoc(peer.editor!, doc) }));
+    const targetByPeer = livePeers.map((peer) => ({ peer, target: projectHostSyncDoc(peer.editor!, doc) }));
     const firstTarget = targetByPeer[0]!.target;
     if (targetByPeer.some(({ target }) => !jsonEqual(target, firstTarget))) {
       throw new Error('The page could not be loaded consistently in all open views.');

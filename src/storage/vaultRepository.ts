@@ -497,6 +497,14 @@ export class VaultRepository implements WorkspaceRepository {
       if (op) ops.push(op);
     }
 
+    const guardedLinkedViewPages = new Set<PageId>();
+    for (const id of candidates) {
+      const placement = next.get(id);
+      if (!placement?.file || extension(placement.file) !== 'md') continue;
+      const stagedHasLinkedView = hasLinkedViewNode(state.docs[id]);
+      if (stagedHasLinkedView) guardedLinkedViewPages.add(id);
+    }
+
     const edited = batch.docs.length;
     if (edited > 0) {
       const day = localDay(new Date());
@@ -515,7 +523,7 @@ export class VaultRepository implements WorkspaceRepository {
       if (!folderPages.has(folder.toLowerCase())) ops.push({ op: 'rmdir', path: folder });
     }
 
-    await this.run(ops, next);
+    await this.run(ops, next, guardedLinkedViewPages);
     this.lastState = state;
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
@@ -805,12 +813,16 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   // carries out the operations and keeps track of what reached the disk, even when something fails halfway
-  private async run(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async run(
+    ops: VaultOp[],
+    next: Map<PageId, Placement>,
+    guardedLinkedViewPages: ReadonlySet<PageId>,
+  ): Promise<void> {
     const started = Date.now();
     for (const op of ops) if (op.op === 'write') this.wroteAt.set(op.path.toLowerCase(), started);
     this.saving++;
     try {
-      await this.runOps(ops, next);
+      await this.runOps(ops, next, guardedLinkedViewPages);
     } finally {
       this.saving--;
       if (this.saving === 0 && this.held.length > 0) {
@@ -821,7 +833,11 @@ export class VaultRepository implements WorkspaceRepository {
     }
   }
 
-  private async runOps(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async runOps(
+    ops: VaultOp[],
+    next: Map<PageId, Placement>,
+    guardedLinkedViewPages: ReadonlySet<PageId>,
+  ): Promise<void> {
     let pending = ops;
     const layout = new Map(this.layout);
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -842,20 +858,32 @@ export class VaultRepository implements WorkspaceRepository {
       if (failedAt === -1) throw new Error('The desktop shell stopped before finishing the save.');
       const failed = results[failedAt]!;
       const op = pending[failedAt]!;
-      if (!failed.ok && failed.code === 'conflict' && op.op === 'check' && op.id && this.isPilotDataRecord(op.id)) {
+      if (
+        !failed.ok &&
+        failed.code === 'conflict' &&
+        op.op === 'check' &&
+        op.id &&
+        (this.isPilotDataRecord(op.id) ||
+          guardedLinkedViewPages.has(op.id) ||
+          this.hasLinkedViewBaseline(op.id))
+      ) {
         this.layout = layout;
         throw new WorkspaceWriteError(
           'save-conflict',
-          'An opted-in Polaris Dados source changed on disk. The staged row was kept in memory and not written; reopen the vault to review the external version.',
+          'A Polaris Dados source or linked-view note changed on disk. The staged change was kept in memory and not written; reopen the vault to review the external version.',
           false,
         );
       }
       if (!failed.ok && failed.code === 'conflict' && op.op === 'write' && op.id) {
-        if (this.isPilotDataRecord(op.id)) {
+        if (
+          this.isPilotDataRecord(op.id) ||
+          guardedLinkedViewPages.has(op.id) ||
+          this.hasLinkedViewBaseline(op.id)
+        ) {
           this.layout = layout;
           throw new WorkspaceWriteError(
             'save-conflict',
-            'An opted-in Polaris Dados file changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
+            'A Polaris Dados source or linked-view note changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
             false,
           );
         }
@@ -926,6 +954,22 @@ export class VaultRepository implements WorkspaceRepository {
     if (page.kind === 'database' && Object.hasOwn(page.extra, 'polarisDados')) return true;
     const parent = page.parentId ? state?.pages[page.parentId] : undefined;
     return parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados');
+  }
+
+  private hasLinkedViewText(text: string): boolean {
+    if (isEncryptedText(text) || findUnrepresentablePageContent(text)) return false;
+    try {
+      const page = readPageText(text);
+      if (page.error) return false;
+      return hasLinkedViewNode(markdownToDoc(page.body));
+    } catch {
+      return false;
+    }
+  }
+
+  private hasLinkedViewBaseline(id: PageId): boolean {
+    const text = this.plainTexts.get(id) ?? this.texts.get(id);
+    return text ? this.hasLinkedViewText(text) : false;
   }
 
   private registryFor(
@@ -1531,6 +1575,16 @@ export class VaultRepository implements WorkspaceRepository {
     if (!valid.ok) return { ok: false };
     return { ok: true, page, doc: valid.value, source: read.source, ...(database ? { database } : {}) };
   }
+}
+
+function hasLinkedViewNode(doc: DocNode | undefined): boolean {
+  if (!doc) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (node.type === 'polarisDadosView') found = true;
+    return !found;
+  });
+  return found;
 }
 
 function linksTo(doc: DocNode, ids: Set<PageId>): boolean {
