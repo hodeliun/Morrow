@@ -13,12 +13,13 @@ export interface ProviderDataScope {
 export function createProviderDataScope(
   source: DataApi,
   databaseId: PageId,
-  options: { isActive: () => boolean; editable: boolean },
+  options: { isActive: () => boolean; editable: boolean | (() => boolean) },
 ): ProviderDataScope {
   const subscriptions = new Set<() => void>();
   let disposed = false;
 
   const active = () => !disposed && options.isActive();
+  const editable = () => (typeof options.editable === 'function' ? options.editable() : options.editable);
   const inactive = () => ({
     status: 'error' as const,
     code: 'owner-inactive' as const,
@@ -40,11 +41,14 @@ export function createProviderDataScope(
   }
 
   function snapshotForScope(snapshot: DataApiSnapshot): DataApiSnapshot {
-    if (!options.editable && snapshot.status === 'ready' && !snapshot.readonly) {
+    if (!editable() && snapshot.status === 'ready' && !snapshot.readonly) {
       return Object.freeze({
         ...snapshot,
         readonly: true,
-        diagnostic: Object.freeze({ code: 'host-readonly' as const, message: 'This database is currently read only.' }),
+        diagnostic: Object.freeze({
+          code: 'host-readonly' as const,
+          message: 'This database is currently read only.',
+        }),
         history: Object.freeze({ canUndo: false, canRedo: false }),
       });
     }
@@ -61,13 +65,13 @@ export function createProviderDataScope(
     patchCell(input) {
       if (!active()) return inactive();
       if (input.databaseId !== databaseId) return outOfScope();
-      if (!options.editable) return readonly();
+      if (!editable()) return readonly();
       return source.patchCell(input);
     },
     history(input) {
       if (!active()) return inactive();
       if (input.databaseId !== databaseId) return outOfScope();
-      if (!options.editable) return readonly();
+      if (!editable()) return readonly();
       return source.history(input);
     },
     subscribe(id, listener) {

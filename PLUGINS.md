@@ -63,8 +63,8 @@ hand unless the plugin made it itself.
 | `morrow.version`, `morrow.plugin`                                     | Morrow's version and this plugin's id.                                                 |
 | `commands.add({ id, name, shortcut?, run })`                          | A command in the search (Ctrl/Cmd+K), with an optional shortcut such as `Mod+Shift+W`. |
 | `slash.add({ id, title, description?, keywords?, markdown? , run? })` | An item in the `/` menu. It inserts `markdown`, or calls `run`.                        |
-| `providers.version`                                                   | Version of the database-provider namespace (`1`).                                     |
-| `providers.register({ id, apiVersion: 1, mount })`                    | Registers one database provider. Returns an unregister function.                      |
+| `providers.version`                                                   | Version of the database-provider namespace (`1`).                                      |
+| `providers.register({ id, apiVersion: 1, mount })`                    | Registers one database provider. Returns an unregister function.                       |
 | `pages.list()`                                                        | Every page: `{ id, title, path, tags, properties, parentId, kind }`.                   |
 | `pages.get(id)`, `pages.current()`                                    | One page, or the one open, in the same shape.                                          |
 | `pages.read(id)`                                                      | A page's text as Markdown.                                                             |
@@ -95,6 +95,8 @@ registered provider only for a matching opted-in database. Its public mount cont
   locale: 'pt' | 'en' | 'es',
   editable: boolean,
   signal: AbortSignal
+  // linked views also receive a view handle bound to this note/view/source/mount
+  view?: LinkedViewApi
 }
 ```
 
@@ -103,6 +105,12 @@ registered provider only for a matching opted-in database. Its public mount cont
 the provider is unregistered, or the plugin reloads, `signal` is aborted, subscriptions are removed,
 and the scoped data handle becomes inactive. Return a cleanup function to remove listeners and resources
 created outside `element`.
+
+For a linked view, the optional `view` handle exposes the linked-view configuration and its local
+undo/redo history. It is bound to the containing note, view ID, source database, and one mount generation.
+Its `subscribe()` reports configuration changes without remounting the provider; its `flush()` uses the
+workspace save queue. Multiple roots keep separate view handles while their scoped `data` handles point
+at the same source database and share its row values and data history. Main database mounts omit `view`.
 
 ```js
 morrow.providers.register({
@@ -114,7 +122,8 @@ morrow.providers.register({
       event.preventDefault();
       const direction = event.shiftKey ? 'redo' : 'undo';
       const snapshot = data.snapshot(databaseId);
-      if (snapshot.status === 'ready') data.history({ databaseId, direction, expectedRevision: snapshot.revision });
+      if (snapshot.status === 'ready')
+        data.history({ databaseId, direction, expectedRevision: snapshot.revision });
     };
     element.addEventListener('keydown', onUndo, { signal });
     element.dataset.locale = locale;
@@ -143,7 +152,14 @@ When a filter is present its keys are written in the order `propertyId`, `op`, `
 exactly these fields:
 
 ```json
-{"version":1,"viewId":"view-id","sourceDatabaseId":"database-id","title":"View title","columnOrder":[],"filter":null}
+{
+  "version": 1,
+  "viewId": "view-id",
+  "sourceDatabaseId": "database-id",
+  "title": "View title",
+  "columnOrder": [],
+  "filter": null
+}
 ```
 
 `filter` is either `null` or an object with exactly `propertyId`, `op: "gte"`, and a finite numeric
@@ -151,7 +167,8 @@ exactly these fields:
 characters, `columnOrder` contains at most 1,000 unique IDs, and the decoded JSON payload is at most
 64 KiB. A page may not contain duplicate `viewId` values. Unknown or invalid markers remain protected
 raw content, including noncanonical JSON or base64url. The editor shows an inert fallback with the saved
-title and source ID when the view is unavailable; it does not evaluate or mount a provider from this block.
+title and source ID when the view is unavailable. For a compatible source, the host mounts the registered
+provider with scoped data and view APIs; the host does not evaluate formulas in the saved payload.
 
 ### Linked-view configuration and history API
 
@@ -177,8 +194,9 @@ the saved config survives reopen, but the local undo/redo stack starts empty.
 
 Removing the note/view, changing its source identity, losing the source after it was available, unloading
 the owner, or closing the session makes the old handle inactive or terminal. Reconnecting after source
-restoration requires a new handle. This API contract is host-side in this slice; mounting linked views and
-exposing the handle to plugin UI belong to a later integration slice.
+restoration requires a new handle. The host mounts compatible linked views and passes the bound handle in
+the provider context. View configuration controls and source capture/insertion workflows belong to separate
+integration slices.
 
 ## Trying changes
 

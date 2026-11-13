@@ -366,6 +366,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           dateMenu: (date, anchor) => setDateMenu({ date, anchor }),
           onBlockMenu: setBlockMenu,
           resolvePage: (title) => pageIdByTitle(getState(), title),
+          linkedViewContext: { session, pageId },
         }),
         coordinator.extension,
         shortcuts,
@@ -451,6 +452,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
     if (editor && !editor.isDestroyed) {
       editor.setEditable(editable, false);
       coordinatorRef.current?.setEditable(editable);
+      editor.view.dom.dispatchEvent(new Event('morrow:linked-view-context'));
     }
   }, [editor, editable]);
 

@@ -232,6 +232,11 @@ export function getPreferences(): Preferences {
   return current;
 }
 
+export function subscribePreferences(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 export function setPreferences(patch: Partial<Preferences>): void {
   current = { ...current, ...patch };
   if ('mcpEnabled' in patch && desktop?.mcp?.setEnabled) {
@@ -247,13 +252,7 @@ export function setPreferences(patch: Partial<Preferences>): void {
 }
 
 export function usePreferences(): Preferences {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => current,
-  );
+  return useSyncExternalStore(subscribePreferences, () => current);
 }
 
 export function resolvedTheme(theme: ThemePreference): 'light' | 'dark' {

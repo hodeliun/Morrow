@@ -1,7 +1,13 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PageId } from '../../core/model';
-import type { DataApi, DataApiFlushResult, DataApiHistoryResult, DataApiPatchResult, DataApiSnapshot } from './dataApi';
+import type {
+  DataApi,
+  DataApiFlushResult,
+  DataApiHistoryResult,
+  DataApiPatchResult,
+  DataApiSnapshot,
+} from './dataApi';
 import { createProviderDataScope } from './providerDataScope';
 import {
   databaseProvidersVersion,
@@ -33,10 +39,25 @@ function fakeDataApi(overrides: Partial<DataApi> = {}): DataApi {
   return {
     version: 1,
     snapshot: vi.fn(() => readySnapshot),
-    patchCell: vi.fn((): DataApiPatchResult => ({ status: 'staged', databaseId: dbId, rowId: 'row' as PageId, propertyId: 'count', revision: 'r2' })),
-    history: vi.fn((): DataApiHistoryResult => ({ status: 'no-op', databaseId: dbId, revision: 'r1', direction: 'undo' })),
+    patchCell: vi.fn((): DataApiPatchResult => ({
+      status: 'staged',
+      databaseId: dbId,
+      rowId: 'row' as PageId,
+      propertyId: 'count',
+      revision: 'r2',
+    })),
+    history: vi.fn((): DataApiHistoryResult => ({
+      status: 'no-op',
+      databaseId: dbId,
+      revision: 'r1',
+      direction: 'undo',
+    })),
     subscribe: vi.fn(() => () => {}),
-    flush: vi.fn(async (): Promise<DataApiFlushResult> => ({ status: 'persisted', databaseId: dbId, revision: 'r1' })),
+    flush: vi.fn(async (): Promise<DataApiFlushResult> => ({
+      status: 'persisted',
+      databaseId: dbId,
+      revision: 'r1',
+    })),
     ...overrides,
   };
 }
@@ -57,11 +78,13 @@ describe('database provider registry', () => {
   it('requires a live owner, API version 1, and a unique provider id', () => {
     const data = fakeDataApi();
     expect(() => register(() => false, data)).toThrow(/no longer active/i);
-    expect(() => registerDatabaseProvider('wrong-version', () => true, data, {
-      id: 'polaris-dados',
-      apiVersion: 2 as 1,
-      mount: () => {},
-    })).toThrow(/version 1/i);
+    expect(() =>
+      registerDatabaseProvider('wrong-version', () => true, data, {
+        id: 'polaris-dados',
+        apiVersion: 2 as 1,
+        mount: () => {},
+      }),
+    ).toThrow(/version 1/i);
 
     const unregister = register(() => true, data);
     const registered = getDatabaseProvider('polaris-dados');
@@ -131,24 +154,28 @@ describe('provider mount data scope', () => {
     expect(Object.isFrozen(snapshot)).toBe(true);
     if (snapshot.status !== 'ready') throw new Error('Expected a ready snapshot.');
     expect(Object.isFrozen(snapshot.history)).toBe(true);
-    expect(scope.api.patchCell({
-      databaseId: dbId,
-      rowId: 'row' as PageId,
-      propertyId: 'count',
-      value: 2,
-      expectedRevision: 'r1',
-    })).toMatchObject({ status: 'error', code: 'host-readonly' });
+    expect(
+      scope.api.patchCell({
+        databaseId: dbId,
+        rowId: 'row' as PageId,
+        propertyId: 'count',
+        value: 2,
+        expectedRevision: 'r1',
+      }),
+    ).toMatchObject({ status: 'error', code: 'host-readonly' });
     expect(scope.api.history({ databaseId: dbId, direction: 'undo', expectedRevision: 'r1' })).toMatchObject({
       status: 'error',
       code: 'host-readonly',
     });
-    expect(scope.api.patchCell({
-      databaseId: otherDbId,
-      rowId: 'row' as PageId,
-      propertyId: 'count',
-      value: 2,
-      expectedRevision: 'r1',
-    })).toMatchObject({ status: 'error', code: 'out-of-scope' });
+    expect(
+      scope.api.patchCell({
+        databaseId: otherDbId,
+        rowId: 'row' as PageId,
+        propertyId: 'count',
+        value: 2,
+        expectedRevision: 'r1',
+      }),
+    ).toMatchObject({ status: 'error', code: 'out-of-scope' });
 
     const unsubscribe = scope.api.subscribe(dbId, () => {});
     unsubscribe();
@@ -156,20 +183,27 @@ describe('provider mount data scope', () => {
     scope.dispose();
     secondUnsubscribe();
     expect(stopSubscription).toHaveBeenCalledTimes(2);
-    expect(scope.api.patchCell({
-      databaseId: dbId,
-      rowId: 'row' as PageId,
-      propertyId: 'count',
-      value: 2,
-      expectedRevision: 'r1',
-    })).toMatchObject({ status: 'error', code: 'owner-inactive' });
+    expect(
+      scope.api.patchCell({
+        databaseId: dbId,
+        rowId: 'row' as PageId,
+        propertyId: 'count',
+        value: 2,
+        expectedRevision: 'r1',
+      }),
+    ).toMatchObject({ status: 'error', code: 'owner-inactive' });
     expect(() => scope.api.snapshot(dbId)).toThrow(/no longer active/i);
   });
 
   it('allows a pending flush in readonly mode, then rechecks disposal after it settles', async () => {
     let finishFlush: ((result: DataApiFlushResult) => void) | undefined;
     const source = fakeDataApi({
-      flush: vi.fn(() => new Promise<DataApiFlushResult>((resolve) => { finishFlush = resolve; })),
+      flush: vi.fn(
+        () =>
+          new Promise<DataApiFlushResult>((resolve) => {
+            finishFlush = resolve;
+          }),
+      ),
     });
     const scope = createProviderDataScope(source, dbId, { isActive: () => true, editable: false });
     const pending = scope.api.flush(dbId);
@@ -178,11 +212,37 @@ describe('provider mount data scope', () => {
     finishFlush!({ status: 'persisted', databaseId: dbId, revision: 'r2' });
     await expect(pending).resolves.toMatchObject({ status: 'error', code: 'owner-inactive' });
   });
+
+  it('rechecks a dynamic readonly callback before every mutation', () => {
+    let editable = true;
+    const source = fakeDataApi();
+    const scope = createProviderDataScope(source, dbId, { isActive: () => true, editable: () => editable });
+
+    expect(scope.api.snapshot(dbId)).toMatchObject({ readonly: false });
+    editable = false;
+    expect(scope.api.snapshot(dbId)).toMatchObject({
+      readonly: true,
+      history: { canUndo: false, canRedo: false },
+    });
+    expect(
+      scope.api.patchCell({
+        databaseId: dbId,
+        rowId: 'row' as PageId,
+        propertyId: 'count',
+        value: 2,
+        expectedRevision: 'r1',
+      }),
+    ).toMatchObject({ status: 'error', code: 'host-readonly' });
+    expect(source.patchCell).not.toHaveBeenCalled();
+  });
 });
 
 describe('plugin page metadata isolation', () => {
   it('deep-copies nested frontmatter values before returning them to a plugin', () => {
-    const canonical = { polarisDados: { version: 1, provider: 'polaris-dados' }, vendor: { keep: ['a', 'b'] } };
+    const canonical = {
+      polarisDados: { version: 1, provider: 'polaris-dados' },
+      vendor: { keep: ['a', 'b'] },
+    };
     const returned = clonePluginPageProperties(canonical);
     (returned.vendor as { keep: string[] }).keep.push('mutated');
     (returned.polarisDados as { version: number }).version = 999;
@@ -225,7 +285,8 @@ describe('provider undo routing', () => {
       expect(execCommand).toHaveBeenCalledWith('undo');
       expect(rootKeydown).toHaveBeenCalledOnce();
     } finally {
-      if (oldExecCommand) Object.defineProperty(document, 'execCommand', { configurable: true, value: oldExecCommand });
+      if (oldExecCommand)
+        Object.defineProperty(document, 'execCommand', { configurable: true, value: oldExecCommand });
       else Reflect.deleteProperty(document, 'execCommand');
       nativeUndo.mockRestore();
       releaseRoot();
