@@ -27,6 +27,8 @@ class TestSession {
   private closed = false;
   private readonly listeners = new Set<() => void>();
   private readonly closeListeners = new Set<() => void>();
+  private readonly mutationFenceLeases = new Set<symbol>();
+  private readonly mutationFenceListeners = new Set<() => void>();
   readonly unreadable = new Set<PageId>();
   readonly protectedReasons = new Map<PageId, string>();
 
@@ -63,6 +65,36 @@ class TestSession {
     return this.closed;
   }
 
+  get isMutationFenced(): boolean {
+    return this.mutationFenceLeases.size > 0;
+  }
+
+  beginMutationFence(): () => void {
+    const wasFenced = this.isMutationFenced;
+    const lease = Symbol('test-mutation-fence');
+    this.mutationFenceLeases.add(lease);
+    let active = true;
+    if (!wasFenced) for (const listener of this.mutationFenceListeners) listener();
+    return () => {
+      if (!active) return;
+      active = false;
+      const wasFenced = this.isMutationFenced;
+      if (!this.mutationFenceLeases.delete(lease)) return;
+      if (wasFenced && !this.isMutationFenced) for (const listener of this.mutationFenceListeners) listener();
+    };
+  }
+
+  subscribeMutationFence(listener: () => void): () => void {
+    const registration = () => listener();
+    this.mutationFenceListeners.add(registration);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.mutationFenceListeners.delete(registration);
+    };
+  }
+
   getState = (): WorkspaceState => this.state;
 
   subscribe = (listener: () => void): (() => void) => {
@@ -93,6 +125,7 @@ class TestSession {
     this.closed = true;
     for (const listener of [...this.closeListeners]) listener();
     this.closeListeners.clear();
+    this.mutationFenceListeners.clear();
   }
 }
 
@@ -197,6 +230,27 @@ describe('asynchronous plugin editor insertion captures', () => {
     expect(editor.commands.undo()).toBe(true);
     expect(editor.getJSON()).toEqual(editorDoc);
     picker.remove();
+  });
+
+  it('invalidates old insertion handles and refuses new captures while a mutation fence is active', () => {
+    const { editor, session } = fixture();
+    const before = capture(editor);
+    const release = session.beginMutationFence();
+    try {
+      expect(session.isMutationFenced).toBe(true);
+      expect(captureEditorInsertionTarget(owner())).toBeNull();
+      expect(before.insert('while fenced')).toMatchObject({ ok: false, reason: 'read-only' });
+
+      release();
+      expect(session.isMutationFenced).toBe(false);
+      expect(before.insert('after release')).toMatchObject({ ok: false, reason: 'read-only' });
+
+      const fresh = capture(editor);
+      expect(fresh.insert('after release')).toEqual({ ok: true });
+      expect(editor.state.doc.textContent).toContain('after release');
+    } finally {
+      release();
+    }
   });
 
   it('permanently invalidates a document edit even when the user undoes it', () => {

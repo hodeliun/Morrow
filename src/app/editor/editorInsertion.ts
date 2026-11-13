@@ -76,6 +76,7 @@ function pageStillWritable(session: ReturnType<typeof getSession>, pageId: strin
     page &&
     state.docs[pageId] &&
     !session.isClosed &&
+    !session.isMutationFenced &&
     !page.encrypted &&
     !session.unreadable.has(pageId) &&
     !session.protectedReasons.has(pageId) &&
@@ -209,6 +210,11 @@ export function captureEditorInsertionTarget(
   addCleanup(() => window.removeEventListener('hashchange', onHashChanged));
   addCleanup(subscribePreferences(onPreferencesChanged));
   addCleanup(subscribeWorkspaceSession(() => invalidate('session-changed')));
+  addCleanup(
+    session.subscribeMutationFence(() => {
+      if (session.isMutationFenced) invalidate('read-only');
+    }),
+  );
   addCleanup(session.subscribe(onSessionChanged));
   addCleanup(session.onClose(() => invalidate('session-closed')));
   addCleanup(

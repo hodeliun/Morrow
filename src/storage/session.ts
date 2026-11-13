@@ -19,10 +19,14 @@ import type {
   PilotDataHistorySnapshot,
 } from './pilotDataHistory';
 
+const MUTATION_FENCE_MESSAGE = 'The workspace session is preparing to close.';
+
 // the single place where commands run, state lives and changes are queued for disk
 export class WorkspaceSession {
   private state: WorkspaceState;
   private closed = false;
+  private readonly mutationFenceLeases = new Set<symbol>();
+  private readonly mutationFenceListeners = new Set<() => void>();
   private readonly pilotDataSessionId = crypto.randomUUID();
   private readonly pilotDataRevisions = new Map<PageId, { fingerprint: string | null; revision: number }>();
   private readonly pilotDataHistory = new PilotDataHistory();
@@ -136,7 +140,9 @@ export class WorkspaceSession {
     if (!this.repository.protectPage) return fail('Encrypted pages need a vault folder.');
     if (this.unreadable.has(id)) return fail(this.protectionMessage(id));
     if (this.isPilotDataPage(id)) {
-      return fail('Opted-in Polaris Dados databases and rows cannot be encrypted through generic page commands.');
+      return fail(
+        'Opted-in Polaris Dados databases and rows cannot be encrypted through generic page commands.',
+      );
     }
     await this.queue.flush();
     await this.repository.protectPage(id, password);
@@ -270,6 +276,54 @@ export class WorkspaceSession {
     return this.closed;
   }
 
+  /** Host-only transient fence; it is deliberately independent of the closed session state. */
+  get isMutationFenced(): boolean {
+    return this.mutationFenceLeases.size > 0;
+  }
+
+  /** Host-only lease for briefly refusing new state mutations while an exit is prepared. */
+  beginMutationFence(): () => void {
+    const wasFenced = this.isMutationFenced;
+    const lease = Symbol('workspace-mutation-fence');
+    this.mutationFenceLeases.add(lease);
+    let active = true;
+    if (!wasFenced) this.notifyMutationFenceListeners();
+
+    return () => {
+      if (!active) return;
+      active = false;
+      const wasFenced = this.isMutationFenced;
+      if (!this.mutationFenceLeases.delete(lease)) return;
+      if (wasFenced && !this.isMutationFenced) this.notifyMutationFenceListeners();
+    };
+  }
+
+  /**
+   * Observes only fence transitions. Each registration has its own cleanup, and listener failures
+   * cannot interrupt another listener or prevent the lease cleanup from being returned.
+   */
+  subscribeMutationFence(listener: () => void): () => void {
+    const registration = () => listener();
+    this.mutationFenceListeners.add(registration);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.mutationFenceListeners.delete(registration);
+    };
+  }
+
+  private notifyMutationFenceListeners(): void {
+    for (const listener of [...this.mutationFenceListeners]) {
+      if (!this.mutationFenceListeners.has(listener)) continue;
+      try {
+        listener();
+      } catch {
+        // A transient fence cannot depend on arbitrary observer callbacks behaving correctly.
+      }
+    }
+  }
+
   /** Opaque, monotonic revision for the structured content of an opted-in database. */
   pilotDataRevision(databaseId: PageId): string {
     this.refreshPilotDataRevisions(this.state);
@@ -299,7 +353,11 @@ export class WorkspaceSession {
           | 'save-conflict';
         message: string;
       } {
-    if (this.closed) return { ok: false, code: 'session-closed', message: 'The workspace session is closed.' };
+    if (this.closed)
+      return { ok: false, code: 'session-closed', message: 'The workspace session is closed.' };
+    if (this.isMutationFenced) {
+      return { ok: false, code: 'read-only', message: MUTATION_FENCE_MESSAGE };
+    }
     const state = this.state;
     const database = state.pages[input.databaseId];
     if (!database || !hasPilotDataMarker(database.extra)) {
@@ -313,7 +371,11 @@ export class WorkspaceSession {
       database.encrypted ||
       isEffectivelyTrashed(state.pages, database.id)
     ) {
-      return { ok: false, code: 'unsupported', message: 'That Polaris Dados database is unavailable or unsupported.' };
+      return {
+        ok: false,
+        code: 'unsupported',
+        message: 'That Polaris Dados database is unavailable or unsupported.',
+      };
     }
     if (hasLiveCanvasRow(state.pages, database.id)) {
       return {
@@ -324,13 +386,19 @@ export class WorkspaceSession {
     }
     const revision = this.pilotDataRevision(database.id);
     if (input.expectedRevision !== revision) {
-      return { ok: false, code: 'stale-revision', message: 'The database changed after this snapshot was read.' };
+      return {
+        ok: false,
+        code: 'stale-revision',
+        message: 'The database changed after this snapshot was read.',
+      };
     }
     if (this.queue.status.errorCode === 'save-conflict') {
       return {
         ok: false,
         code: 'save-conflict',
-        message: this.queue.status.error ?? 'A prior Polaris Dados save conflicted; reopen the vault before editing again.',
+        message:
+          this.queue.status.error ??
+          'A prior Polaris Dados save conflicted; reopen the vault before editing again.',
       };
     }
     const value = input.value;
@@ -349,7 +417,11 @@ export class WorkspaceSession {
       return { ok: false, code: 'property-not-found', message: 'That database property no longer exists.' };
     }
     if (property.type !== 'number') {
-      return { ok: false, code: 'read-only', message: 'Only manual number properties can be edited by this API.' };
+      return {
+        ok: false,
+        code: 'read-only',
+        message: 'Only manual number properties can be edited by this API.',
+      };
     }
     const before = pilotDataCellValue(row.properties, property.id);
     if (!before) {
@@ -402,6 +474,9 @@ export class WorkspaceSession {
       } {
     if (this.closed)
       return { ok: false, code: 'session-closed', message: 'The workspace session is closed.' };
+    if (this.isMutationFenced) {
+      return { ok: false, code: 'read-only', message: MUTATION_FENCE_MESSAGE };
+    }
     if (input.direction !== 'undo' && input.direction !== 'redo') {
       return { ok: false, code: 'invalid-value', message: 'History direction must be undo or redo.' };
     }
@@ -570,6 +645,7 @@ export class WorkspaceSession {
     beforeQueue?: () => void,
   ): Result<WorkspaceState> {
     if (this.closed) return fail('The workspace session is closed.');
+    if (this.isMutationFenced) return fail(MUTATION_FENCE_MESSAGE);
     const result = applyCommand(this.state, command);
     if (!result.ok) return result;
     const { state, changes } = result.value;
@@ -587,6 +663,7 @@ export class WorkspaceSession {
   // runs several commands as one unit, nothing is applied if any of them fails
   executeAll(commands: Command[]): Result<WorkspaceState> {
     if (this.closed) return fail('The workspace session is closed.');
+    if (this.isMutationFenced) return fail(MUTATION_FENCE_MESSAGE);
     let draft = this.state;
     const all = { pages: new Set<PageId>(), docs: new Set<PageId>(), removed: new Set<PageId>() };
     for (const command of commands) {
@@ -635,7 +712,9 @@ export class WorkspaceSession {
     if (ids.length > 0 && this.unreadable.size > 0) {
       const id = this.unreadable.values().next().value as PageId;
       return Promise.reject(
-        new Error(`Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`),
+        new Error(
+          `Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`,
+        ),
       );
     }
     return this.repository.deleteFiles(ids);
@@ -658,7 +737,9 @@ export class WorkspaceSession {
   async importSnapshots(snapshots: Snapshot[]): Promise<void> {
     if (snapshots.length === 0) return;
     if (snapshots.some((snapshot) => this.isPilotDataPage(snapshot.pageId))) {
-      throw new Error('History for opted-in Polaris Dados databases and rows is not writable through generic APIs.');
+      throw new Error(
+        'History for opted-in Polaris Dados databases and rows is not writable through generic APIs.',
+      );
     }
     const protectedSnapshot = snapshots.find((snapshot) => this.unreadable.has(snapshot.pageId));
     if (protectedSnapshot) throw new Error(this.protectionMessage(protectedSnapshot.pageId));
@@ -673,7 +754,9 @@ export class WorkspaceSession {
     if (this.closed) return fail('The workspace session is closed.');
     if (!this.state.pages[snapshot.pageId]) return fail('That page no longer exists.');
     if (this.isPilotDataPage(snapshot.pageId)) {
-      return fail('History for opted-in Polaris Dados databases and rows cannot be restored through generic APIs.');
+      return fail(
+        'History for opted-in Polaris Dados databases and rows cannot be restored through generic APIs.',
+      );
     }
     if (this.unreadable.has(snapshot.pageId)) return fail(this.protectionMessage(snapshot.pageId));
     await this.queue.flush();
