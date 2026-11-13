@@ -5,11 +5,20 @@
 // attaches to an existing app, WebDriver server, vault, or desktop display.
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { access, chmod, mkdir, readFile, readdir, readlink, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, readFile, readdir, readlink, realpath, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildVaultRegistry,
+  copyEvidenceDurably,
+  freezeSourceManifest,
+  readSourceManifest,
+  recordArtifactManifest,
+  verifyArtifactManifest,
+  verifySourceManifest,
+} from './native-preparation.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '../..');
@@ -20,12 +29,12 @@ const BANK_FILES = ['Inventory.md', 'Inventory/Widget.md'];
 const TIMEOUT_MS = 25_000;
 
 function help() {
-  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --check-only <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile <candidate args>\n\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH --tauri-config PATH\n  --vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --driver PATH --webkit-driver PATH\n\nAll output paths must be new directories under the system temporary directory.\nThe native run creates the synthetic vault and owns Xvfb, DBus, tauri-driver, and profile.\n`);
+  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile <candidate args>\n\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nA native run owns Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
 }
 
 function parseArgs(argv) {
   const args = {};
-  const switches = new Set(['--check-only', '--run-native', '--confirm-synthetic-profile', '--help']);
+  const switches = new Set(['--check-only', '--run-native', '--confirm-synthetic-profile', '--freeze-sources', '--record-artifacts', '--help']);
   for (let i = 0; i < argv.length; i += 1) {
     const item = argv[i];
     if (switches.has(item)) {
@@ -105,7 +114,29 @@ async function assertNewTempPath(raw, name) {
     throw new Error(`--${name} must use a simple ASCII directory name for isolated Unix socket paths`);
   }
   try {
-    await access(resolved);
+    await lstat(resolved);
+    throw new Error(`--${name} already exists; refusing to reuse it: ${resolved}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  return resolved;
+}
+
+async function assertNewDurablePath(raw, name) {
+  if (!path.isAbsolute(raw)) throw new Error(`--${name} must be absolute`);
+  const resolved = path.resolve(raw);
+  if (containsPath(REPO_ROOT, resolved) || containsPath(resolved, REPO_ROOT)) {
+    throw new Error(`--${name} must be outside the repository`);
+  }
+  const temp = await realpath(os.tmpdir());
+  if (containsPath(temp, resolved)) throw new Error(`--${name} must be outside the temporary directory`);
+  const parent = path.dirname(resolved);
+  if (await realpath(parent) !== parent) throw new Error(`--${name} parent must not use a symlinked path`);
+  if (!/^[a-zA-Z0-9._-]+$/.test(path.basename(resolved))) {
+    throw new Error(`--${name} must use a simple ASCII directory name`);
+  }
+  try {
+    await lstat(resolved);
     throw new Error(`--${name} already exists; refusing to reuse it: ${resolved}`);
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
@@ -132,6 +163,8 @@ async function verifyInputs(args) {
   const bundle = path.resolve(requireArg(args, 'bundle'));
   const expectedBundleHash = requireArg(args, 'bundle-sha256').toLowerCase();
   const manifest = path.resolve(requireArg(args, 'manifest'));
+  const sourceManifest = path.resolve(requireArg(args, 'source-manifest'));
+  const artifactManifest = path.resolve(requireArg(args, 'artifact-manifest'));
   const fixture = path.join(REPO_ROOT, 'plugins', PILOT_ID, 'fixture');
   const fixtureScript = path.join(REPO_ROOT, 'scripts', 'pilot', 'create-polaris-dados-fixture.mjs');
   const tauriConfig = path.resolve(requireArg(args, 'tauri-config'));
@@ -139,8 +172,10 @@ async function verifyInputs(args) {
   const webkitDriver = path.resolve(requireArg(args, 'webkit-driver'));
   const outputs = {
     vault: await assertNewTempPath(requireArg(args, 'vault'), 'vault'),
+    destinationVault: await assertNewTempPath(requireArg(args, 'destination-vault'), 'destination-vault'),
     profile: await assertNewTempPath(requireArg(args, 'profile'), 'profile'),
     evidence: await assertNewTempPath(requireArg(args, 'evidence'), 'evidence'),
+    retainedEvidence: await assertNewDurablePath(requireArg(args, 'retained-evidence'), 'retained-evidence'),
   };
   assertDistinctOutputPaths(outputs);
   assertHash(expectedBinaryHash, 'binary-sha256');
@@ -149,6 +184,25 @@ async function verifyInputs(args) {
 
   const gitHead = (await runCapture('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT })).trim();
   if (gitHead !== expectedCommit) throw new Error(`Candidate HEAD ${gitHead} differs from --expected-commit ${expectedCommit}`);
+  const sourceVerification = await verifySourceManifest({ repositoryRoot: REPO_ROOT, sourceManifestPath: sourceManifest });
+  if (sourceVerification.head !== expectedCommit) {
+    throw new Error(`Frozen source HEAD ${sourceVerification.head} differs from --expected-commit ${expectedCommit}`);
+  }
+  const frozenSourceManifest = await readSourceManifest(sourceManifest);
+
+  const artifactVerification = await verifyArtifactManifest({
+    repositoryRoot: REPO_ROOT,
+    sourceManifestPath: sourceManifest,
+    artifactManifestPath: artifactManifest,
+    binaryPath: binary,
+    expectedBinarySha256: expectedBinaryHash,
+    bundlePath: bundle,
+    expectedBundleSha256: expectedBundleHash,
+    pluginManifestPath: manifest,
+    tauriConfigPath: tauriConfig,
+    driverPath: driver,
+    webkitDriverPath: webkitDriver,
+  });
 
   const binaryReal = await realpath(binary);
   if (!containsPath(path.join(REPO_ROOT, 'src-tauri', 'target', 'debug'), binaryReal)) {
@@ -199,9 +253,21 @@ async function verifyInputs(args) {
   }
   const runtimePath = path.join(outputs.profile, 'xdg', 'runtime', 'bus');
   if (Buffer.byteLength(runtimePath) > 90) throw new Error(`Private DBus socket path is too long: ${runtimePath}`);
+  const webviewDataPath = path.join(outputs.profile, 'xdg', 'data', APP_IDENTIFIER);
+  const expectedBackendDataPath = outputs.profile;
+  if (!containsPath(outputs.profile, webviewDataPath) || equalPath(outputs.profile, webviewDataPath)) {
+    throw new Error('Expected WebView profile must be inside the isolated profile root and identifier-scoped');
+  }
 
   return {
     expectedCommit,
+    sourceManifest,
+    sourceManifestSha256: artifactVerification.sourceManifestSha256,
+    sourceVerification,
+    sourceTestHashes: frozenSourceManifest.manifest.testHashes,
+    artifactManifest,
+    artifactManifestSha256: artifactVerification.artifactManifestSha256,
+    artifactVerification,
     binary: binaryReal,
     binarySha256: actualBinaryHash,
     bundle: bundleReal,
@@ -214,6 +280,8 @@ async function verifyInputs(args) {
     fixtureFiles,
     fixtureSha256: await hashTree(fixtureReal, fixtureFiles),
     tauriConfig: configReal,
+    expectedBackendDataPath,
+    expectedWebviewDataPath: webviewDataPath,
     driver,
     driverSha256: await hashFile(driver),
     webkitDriver,
@@ -287,6 +355,8 @@ async function launchLogged(command, argv, { cwd, env, logPath, stdio = 'pipe' }
   const child = spawn(command, argv, { cwd, env, detached: true, stdio: ['ignore', stdio, 'pipe'] });
   const log = await import('node:fs');
   const stream = log.createWriteStream(logPath, { flags: 'a' });
+  let resolveClosed;
+  const closed = new Promise((resolve) => { resolveClosed = resolve; });
   let stdout = '';
   if (child.stdout) {
     child.stdout.setEncoding('utf8');
@@ -298,7 +368,72 @@ async function launchLogged(command, argv, { cwd, env, logPath, stdio = 'pipe' }
   if (child.stderr) child.stderr.pipe(stream, { end: false });
   child.once('error', (error) => stream.write(`\nspawn error: ${error.stack ?? error}\n`));
   child.once('exit', (code, signal) => stream.write(`\nexit code=${code} signal=${signal}\n`));
-  return { child, getStdout: () => stdout, stream };
+  child.once('close', (code, signal) => resolveClosed({ code, signal }));
+  return { child, getStdout: () => stdout, stream, closed, groupSignalled: false };
+}
+
+async function processGroupMembers(groupId) {
+  const entries = await readdir('/proc', { withFileTypes: true });
+  const members = [];
+  await Promise.all(entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).map(async (entry) => {
+    const pid = Number(entry.name);
+    const statLine = await readFile(path.join('/proc', entry.name, 'stat'), 'utf8').catch(() => null);
+    if (!statLine) return;
+    const closeParen = statLine.lastIndexOf(')');
+    if (closeParen < 0) return;
+    const fields = statLine.slice(closeParen + 1).trim().split(/\s+/);
+    const processGroup = Number(fields[2]); // /proc/<pid>/stat field 5, after pid and comm.
+    if (processGroup === groupId) members.push(pid);
+  }));
+  return members.sort((a, b) => a - b);
+}
+
+async function finishLoggedProcess(processRecord) {
+  if (!processRecord) return;
+  const errors = [];
+  let processClosed = !processRecord.closed;
+  const groupId = processRecord.child?.pid;
+  if (groupId && !processRecord.groupSignalled) {
+    try {
+      await killProcessGroup(groupId);
+      processRecord.groupSignalled = true;
+    } catch (error) { errors.push(`could not stop owned process group ${groupId}: ${error?.message ?? error}`); }
+  }
+  if (groupId && processRecord.groupSignalled) {
+    try {
+      await waitFor(async () => (await processGroupMembers(groupId)).length === 0, `owned process group ${groupId} to become empty`, 5_000);
+    } catch (error) { errors.push(error?.message ?? String(error)); }
+  }
+  if (processRecord.closed) {
+    let timeout;
+    try {
+      await Promise.race([
+        processRecord.closed.then((result) => { processClosed = true; return result; }),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`Timed out waiting for owned process ${processRecord.child?.pid ?? '<unknown>'} to close`)), 5_000);
+        }),
+      ]);
+    } catch (error) { errors.push(error?.message ?? String(error)); }
+    finally { clearTimeout(timeout); }
+  }
+  if (processRecord.stream && !processRecord.stream.writableFinished && !processClosed) {
+    errors.push('owned child did not close; log stream was kept open to avoid truncating later output');
+  } else if (processRecord.stream && !processRecord.stream.writableFinished) {
+    try {
+      let timeout;
+      await Promise.race([
+        new Promise((resolve, reject) => {
+          processRecord.stream.once('error', reject);
+          if (processRecord.stream.writableEnded) processRecord.stream.once('finish', resolve);
+          else processRecord.stream.end(resolve);
+        }),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('Timed out waiting for owned log stream to flush')), 5_000);
+        }),
+      ]).finally(() => clearTimeout(timeout));
+    } catch (error) { errors.push(`could not flush owned log stream: ${error?.message ?? error}`); }
+  }
+  if (errors.length) throw new Error(errors.join('; '));
 }
 
 async function waitForLine(processRecord, label, timeout = 10_000) {
@@ -312,34 +447,44 @@ async function waitForLine(processRecord, label, timeout = 10_000) {
 
 async function createSyntheticVault(candidate) {
   await mkdir(candidate.evidence, { recursive: false });
+  candidate.evidenceOwned = true;
   let generatorOutput = '';
   try {
-    generatorOutput = await runCapture(process.execPath, [candidate.fixtureScript, candidate.vault], { cwd: REPO_ROOT });
+    generatorOutput = await runCapture(process.execPath, [candidate.fixtureScript, candidate.vault, candidate.destinationVault], { cwd: REPO_ROOT });
     await writeFile(path.join(candidate.evidence, 'fixture-generator.log'), generatorOutput);
   } catch (error) {
     await writeFile(path.join(candidate.evidence, 'fixture-generator.log'), `${generatorOutput}\n${error?.stack ?? error}\n`);
     throw error;
   }
-  const vaultFiles = await listFiles(candidate.vault);
-  const requiredVaultFiles = [
-    ...BANK_FILES,
-    '.morrow/workspace.json',
-    '.morrow/plugins.json',
-    `.morrow/plugins/${PILOT_ID}/main.js`,
-    `.morrow/plugins/${PILOT_ID}/manifest.json`,
+  const generation = JSON.parse(generatorOutput);
+  if (!Array.isArray(generation.vaults) || generation.vaults.length !== 2) {
+    throw new Error('Fixture generator did not create both registered synthetic vaults');
+  }
+  const origin = await verifyGeneratedVault(candidate, candidate.vault, generation.vaults[0], 'OPEN-OLD');
+  const destination = await verifyGeneratedVault(candidate, candidate.destinationVault, generation.vaults[1], 'OPEN-DESTINATION');
+  const allIds = [
+    ...origin.pageIds,
+    origin.sourceViewId,
+    ...origin.linkedViewIds,
+    ...destination.pageIds,
+    destination.sourceViewId,
+    ...destination.linkedViewIds,
   ];
-  const missingVaultFiles = requiredVaultFiles.filter((file) => !vaultFiles.includes(file));
-  if (missingVaultFiles.length) throw new Error(`Generated synthetic vault is missing: ${missingVaultFiles.join(', ')}`);
-  const copiedBundle = path.join(candidate.vault, '.morrow', 'plugins', PILOT_ID, 'main.js');
-  const copiedManifest = path.join(candidate.vault, '.morrow', 'plugins', PILOT_ID, 'manifest.json');
-  if (await hashFile(copiedBundle) !== candidate.bundleSha256) throw new Error('Fixture generator copied a bundle different from the frozen candidate');
-  if (await hashFile(copiedManifest) !== candidate.manifestSha256) throw new Error('Fixture generator copied a different plugin manifest');
-  const enabled = JSON.parse(await readFile(path.join(candidate.vault, '.morrow', 'plugins.json'), 'utf8'));
-  if (!Array.isArray(enabled.enabled) || !enabled.enabled.includes(PILOT_ID)) throw new Error('Generated vault does not enable the Polaris Dados pilot');
-  const workspace = JSON.parse(await readFile(path.join(candidate.vault, '.morrow', 'workspace.json'), 'utf8'));
-  candidate.databaseId = findPathId(workspace, 'Inventory.md');
-  if (!candidate.databaseId) throw new Error('Generated workspace registry does not identify Inventory.md');
-  candidate.vaultFiles = vaultFiles;
+  const orderedNumbers = allIds.map((id) => {
+    const match = /-(\d+)$/.exec(id);
+    if (!match) throw new Error(`Generated fixture ID is not monotonic: ${id}`);
+    return BigInt(match[1]);
+  });
+  if (new Set(allIds).size !== allIds.length) throw new Error('Generated synthetic vault/page/view IDs are not unique');
+  if (orderedNumbers.some((value, index) => index > 0 && value <= orderedNumbers[index - 1])) {
+    throw new Error('Generated synthetic vault/page/view IDs are not strictly monotonic');
+  }
+  if (origin.databaseId === destination.databaseId) throw new Error('Origin and destination database IDs must be distinct');
+  candidate.databaseId = origin.databaseId;
+  candidate.destinationDatabaseId = destination.databaseId;
+  candidate.linkedViews = { origin: origin.views, destination: destination.views };
+  candidate.vaultFiles = origin.vaultFiles;
+  candidate.destinationVaultFiles = destination.vaultFiles;
 
   await mkdir(candidate.profile, { recursive: false });
   const xdg = {
@@ -352,11 +497,25 @@ async function createSyntheticVault(candidate) {
     await mkdir(dir, { recursive: true, mode: key === 'runtime' ? 0o700 : 0o755 });
     if (key === 'runtime') await chmod(dir, 0o700);
   }));
-  await writeFile(path.join(candidate.profile, 'vaults.json'), `${JSON.stringify({
-    current: candidate.vault,
-    recent: [{ path: candidate.vault, openedAt: Date.now() }],
-  }, null, 2)}\n`, { flag: 'wx' });
+  if ((await readdir(xdg.data)).length !== 0) throw new Error('Private XDG data directory was not empty before launch');
+  try {
+    await lstat(candidate.expectedWebviewDataPath);
+    throw new Error(`Identifier-scoped WebView profile already exists before launch: ${candidate.expectedWebviewDataPath}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const vaultRegistry = buildVaultRegistry(candidate.vault, candidate.destinationVault);
+  await writeFile(path.join(candidate.profile, 'vaults.json'), `${JSON.stringify(vaultRegistry, null, 2)}\n`, { flag: 'wx' });
+  const registeredVaults = JSON.parse(await readFile(path.join(candidate.profile, 'vaults.json'), 'utf8'));
+  const recentPaths = Array.isArray(registeredVaults.recent) ? registeredVaults.recent.map((item) => item.path) : [];
+  if (registeredVaults.current !== candidate.vault || !recentPaths.includes(candidate.vault) || !recentPaths.includes(candidate.destinationVault)) {
+    throw new Error('Both synthetic vaults must be registered in the isolated profile before launch');
+  }
   const bankBefore = await captureBank(candidate.vault);
+  const destinationBankBefore = await captureBank(candidate.destinationVault);
+  const originVaultContent = await captureVaultInventory(candidate.vault, origin.vaultFiles);
+  const destinationVaultContent = await captureVaultInventory(candidate.destinationVault, destination.vaultFiles);
+  const profileVaultRegistry = await captureFile(path.join(candidate.profile, 'vaults.json'));
   const row = bankBefore['Inventory/Widget.md'].bytes.toString('utf8');
   const schema = bankBefore['Inventory.md'].bytes.toString('utf8');
   assertNumber(row, 'Quantity', 2);
@@ -366,11 +525,126 @@ async function createSyntheticVault(candidate) {
     fixtureSource: candidate.fixture,
     fixtureSha256: candidate.fixtureSha256,
     fixtureFiles: candidate.fixtureFiles,
-    generatedVaultFiles: vaultFiles,
+    sourceManifest: candidate.sourceManifest,
+    sourceManifestSha256: candidate.sourceManifestSha256,
+    artifactManifest: candidate.artifactManifest,
+    artifactManifestSha256: candidate.artifactManifestSha256,
+    generatedVaults: [origin, destination],
+    generatedVaultFiles: { origin: origin.vaultFiles, destination: destination.vaultFiles },
     generatedDatabaseId: candidate.databaseId,
+    destinationDatabaseId: candidate.destinationDatabaseId,
+    linkedViews: candidate.linkedViews,
+    generatedVaultContent: { origin: originVaultContent, destination: destinationVaultContent },
+    isolatedVaultRegistry: {
+      path: path.join(candidate.profile, 'vaults.json'),
+      sha256: profileVaultRegistry.hash,
+      size: profileVaultRegistry.size,
+      mtimeMs: profileVaultRegistry.mtimeMs,
+    },
     bank: Object.fromEntries(Object.entries(bankBefore).map(([name, value]) => [name, { sha256: value.hash, mtimeMs: value.mtimeMs, size: value.size }])),
+    destinationBank: Object.fromEntries(Object.entries(destinationBankBefore).map(([name, value]) => [name, { sha256: value.hash, mtimeMs: value.mtimeMs, size: value.size }])),
   }, null, 2)}\n`);
-  return { xdg, bankBefore };
+  candidate.generatedVaultContent = { origin: originVaultContent, destination: destinationVaultContent };
+  candidate.isolatedVaultRegistry = {
+    path: path.join(candidate.profile, 'vaults.json'),
+    sha256: profileVaultRegistry.hash,
+    size: profileVaultRegistry.size,
+    mtimeMs: profileVaultRegistry.mtimeMs,
+  };
+  return { xdg, bankBefore, destinationBankBefore };
+}
+
+async function preservePreparationFailure(candidate, error) {
+  if (!candidate.evidenceOwned) return;
+  const failure = {
+    observedAt: new Date().toISOString(),
+    outcome: 'fixture-preparation-failed-before-launch',
+    error: error?.stack ?? String(error),
+    sourceManifest: candidate.sourceManifest,
+    sourceManifestSha256: candidate.sourceManifestSha256,
+    artifactManifest: candidate.artifactManifest,
+    artifactManifestSha256: candidate.artifactManifestSha256,
+    expectedCommit: candidate.expectedCommit,
+    binary: { path: candidate.binary, sha256: candidate.binarySha256 },
+    bundle: { path: candidate.bundle, sha256: candidate.bundleSha256 },
+    syntheticVaults: [candidate.vault, candidate.destinationVault],
+    profile: candidate.profile,
+    evidence: candidate.evidence,
+    retainedEvidence: candidate.retainedEvidence,
+    applicationLaunched: false,
+  };
+  try {
+    await writeFile(path.join(candidate.evidence, 'preparation-failure.json'), `${JSON.stringify(failure, null, 2)}\n`, { flag: 'wx' });
+  } catch (writeError) {
+    process.stderr.write(`Could not persist preparation failure metadata: ${writeError?.stack ?? writeError}\n`);
+  }
+  try {
+    const retained = await copyEvidenceDurably({
+      sourceDirectory: candidate.evidence,
+      destinationDirectory: candidate.retainedEvidence,
+    });
+    process.stderr.write(`Preparation failure evidence retained: ${JSON.stringify({ path: retained.destination, fileCount: retained.fileCount, receiptSha256: retained.receiptSha256 })}\n`);
+  } catch (retentionError) {
+    const report = `Durable evidence copy failed: ${retentionError?.stack ?? retentionError}\n`;
+    try { await writeFile(path.join(candidate.evidence, 'retention-failure.log'), report, { flag: 'wx' }); }
+    catch (writeError) { process.stderr.write(`Could not persist retention failure report: ${writeError?.stack ?? writeError}\n`); }
+    process.stderr.write(report);
+  }
+}
+
+async function verifyGeneratedVault(candidate, vaultPath, descriptor, expectedMarker) {
+  if (path.resolve(descriptor.path) !== path.resolve(vaultPath)) throw new Error(`Fixture generator returned the wrong ${expectedMarker} vault path`);
+  if (descriptor.marker !== expectedMarker) throw new Error(`Fixture generator returned the wrong marker for ${vaultPath}`);
+  const vaultFiles = await listFiles(vaultPath);
+  const requiredVaultFiles = [
+    ...BANK_FILES,
+    'Views.md',
+    '.morrow/workspace.json',
+    '.morrow/plugins.json',
+    `.morrow/plugins/${PILOT_ID}/main.js`,
+    `.morrow/plugins/${PILOT_ID}/manifest.json`,
+  ];
+  const missingVaultFiles = requiredVaultFiles.filter((file) => !vaultFiles.includes(file));
+  if (missingVaultFiles.length) throw new Error(`Generated synthetic vault is missing: ${missingVaultFiles.join(', ')}`);
+  const copiedBundle = path.join(vaultPath, '.morrow', 'plugins', PILOT_ID, 'main.js');
+  const copiedManifest = path.join(vaultPath, '.morrow', 'plugins', PILOT_ID, 'manifest.json');
+  if (await hashFile(copiedBundle) !== candidate.bundleSha256) throw new Error(`${expectedMarker} fixture copied a bundle different from the frozen candidate`);
+  if (await hashFile(copiedManifest) !== candidate.manifestSha256) throw new Error(`${expectedMarker} fixture copied a different plugin manifest`);
+  const enabled = JSON.parse(await readFile(path.join(vaultPath, '.morrow', 'plugins.json'), 'utf8'));
+  if (!Array.isArray(enabled.enabled) || !enabled.enabled.includes(PILOT_ID)) throw new Error(`${expectedMarker} vault does not enable the Polaris Dados pilot`);
+  const workspace = JSON.parse(await readFile(path.join(vaultPath, '.morrow', 'workspace.json'), 'utf8'));
+  const sourceDatabaseId = findPathId(workspace, 'Inventory.md');
+  if (!sourceDatabaseId) throw new Error(`${expectedMarker} workspace registry does not identify Inventory.md`);
+  const pageIds = ['Inventory.md', 'Inventory/Widget.md', 'Views.md'].map((file) => findPathId(workspace, file));
+  if (pageIds.some((id) => !id)) throw new Error(`${expectedMarker} workspace registry is missing a page ID`);
+  const note = await readFile(path.join(vaultPath, 'Views.md'), 'utf8');
+  if (!note.includes(`Synthetic vault marker: ${expectedMarker}`)) throw new Error(`${expectedMarker} note marker is missing`);
+  const markers = [...note.matchAll(/<!-- morrow:polaris-dados-view:v1:([A-Za-z0-9_-]+) -->/g)];
+  if (markers.length !== 2) throw new Error(`${expectedMarker} note must contain exactly two linked-view markers`);
+  const views = markers.map((match) => JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8')));
+  if (JSON.stringify(views.map((view) => view.viewId)) !== JSON.stringify(descriptor.linkedViewIds)) {
+    throw new Error(`${expectedMarker} linked-view IDs differ from the fixture generator receipt`);
+  }
+  if (!((await readFile(path.join(vaultPath, 'Inventory.md'), 'utf8')).includes(`id: ${descriptor.sourceViewId}`))) {
+    throw new Error(`${expectedMarker} source table view ID differs from the fixture generator receipt`);
+  }
+  if (views.some((view) => view.sourceDatabaseId !== sourceDatabaseId)) {
+    throw new Error(`${expectedMarker} linked views must both reference their own vault's database ID`);
+  }
+  if (new Set(views.map((view) => view.viewId)).size !== 2) throw new Error(`${expectedMarker} linked-view IDs must be unique`);
+  if (views[0].title === views[1].title || JSON.stringify(views[0].columnOrder) === JSON.stringify(views[1].columnOrder) || JSON.stringify(views[0].filter) === JSON.stringify(views[1].filter)) {
+    throw new Error(`${expectedMarker} linked views must have distinct titles, ordering, and filters`);
+  }
+  return {
+    path: vaultPath,
+    marker: expectedMarker,
+    databaseId: sourceDatabaseId,
+    pageIds,
+    sourceViewId: descriptor.sourceViewId,
+    linkedViewIds: views.map((view) => view.viewId),
+    views,
+    vaultFiles,
+  };
 }
 
 async function captureFile(file) {
@@ -385,20 +659,61 @@ async function captureBank(vault) {
   return result;
 }
 
+async function captureVaultInventory(vault, files) {
+  const records = {};
+  for (const relative of files) {
+    const info = await captureFile(path.join(vault, relative));
+    const category = relative.startsWith('.morrow/plugins/')
+      ? 'pluginArtifacts'
+      : relative.startsWith('.morrow/')
+        ? 'morrowMetadata'
+        : BANK_FILES.includes(relative)
+          ? 'bankContent'
+          : 'documentContent';
+    records[relative] = { category, sha256: info.hash, size: info.size, mtimeMs: info.mtimeMs };
+  }
+  return records;
+}
+
 function createPrivateEnv(candidate, xdg) {
   const env = { ...process.env };
+  env.HOME = candidate.profile;
   env.MORROW_USER_DATA = candidate.profile;
   env.XDG_CONFIG_HOME = xdg.config;
   env.XDG_DATA_HOME = xdg.data;
   env.XDG_CACHE_HOME = xdg.cache;
   env.XDG_RUNTIME_DIR = xdg.runtime;
   env.GDK_BACKEND = 'x11';
+  env.WEBKIT_DISABLE_DMABUF_RENDERER = '1';
   delete env.MORROW_HIDDEN;
   delete env.WAYLAND_DISPLAY;
+  delete env.XAUTHORITY;
   return env;
 }
 
-async function startPrivateDisplay(candidate, env) {
+async function assertCandidateStillFrozen(candidate) {
+  if (await hashFile(candidate.sourceManifest) !== candidate.sourceManifestSha256) {
+    throw new Error('Source manifest changed after preflight');
+  }
+  if (await hashFile(candidate.artifactManifest) !== candidate.artifactManifestSha256) {
+    throw new Error('Artifact manifest changed after preflight');
+  }
+  return verifyArtifactManifest({
+    repositoryRoot: REPO_ROOT,
+    sourceManifestPath: candidate.sourceManifest,
+    artifactManifestPath: candidate.artifactManifest,
+    binaryPath: candidate.binary,
+    expectedBinarySha256: candidate.binarySha256,
+    bundlePath: candidate.bundle,
+    expectedBundleSha256: candidate.bundleSha256,
+    pluginManifestPath: candidate.manifest,
+    tauriConfigPath: candidate.tauriConfig,
+    driverPath: candidate.driver,
+    webkitDriverPath: candidate.webkitDriver,
+  });
+}
+
+async function startPrivateDisplay(candidate, env, onProcessStart = () => {}) {
   let xvfb;
   let dbus;
   try {
@@ -407,6 +722,7 @@ async function startPrivateDisplay(candidate, env) {
       env,
       logPath: path.join(candidate.evidence, 'xvfb.log'),
     });
+    onProcessStart('xvfb', xvfb);
     const displayNumber = await waitForLine(xvfb, 'Xvfb');
     if (!/^\d+$/.test(displayNumber)) throw new Error(`Xvfb returned unexpected display number: ${displayNumber}`);
     env.DISPLAY = `:${displayNumber}`;
@@ -417,6 +733,7 @@ async function startPrivateDisplay(candidate, env) {
       env,
       logPath: path.join(candidate.evidence, 'dbus.log'),
     });
+    onProcessStart('dbus', dbus);
     const busAddress = await waitForLine(dbus, 'private DBus');
     if (!busAddress.startsWith('unix:path=')) throw new Error(`Unexpected private DBus address: ${busAddress}`);
     env.DBUS_SESSION_BUS_ADDRESS = busAddress;
@@ -424,11 +741,8 @@ async function startPrivateDisplay(candidate, env) {
   } catch (error) {
     const cleanupErrors = [];
     for (const processRecord of [dbus, xvfb]) {
-      if (processRecord?.child?.pid) {
-        try { await killProcessGroup(processRecord.child.pid); }
-        catch (cleanupError) { cleanupErrors.push(String(cleanupError)); }
-      }
-      processRecord?.stream?.end();
+      try { await finishLoggedProcess(processRecord); }
+      catch (cleanupError) { cleanupErrors.push(String(cleanupError)); }
     }
     const details = cleanupErrors.length ? ` Cleanup errors: ${cleanupErrors.join(' | ')}` : '';
     throw new Error(`Could not start the private display/DBus: ${error?.message ?? error}.${details}`, { cause: error });
@@ -459,7 +773,7 @@ async function assertPortFree(port) {
   });
 }
 
-async function startDriver(candidate, env, preferredPort = null) {
+async function startDriver(candidate, env, preferredPort = null, onProcessStart = () => {}) {
   const port = preferredPort ?? await reservePort();
   await assertNoResponse(port);
   await assertPortFree(port);
@@ -471,17 +785,33 @@ async function startDriver(candidate, env, preferredPort = null) {
     env,
     logPath: path.join(candidate.evidence, 'tauri-driver.log'),
   });
-  await waitFor(() => processOwnsTcpListener(record.child.pid, port), `tauri-driver process owns port ${port}`, 10_000);
-  await waitFor(async () => {
-    if (record.child.exitCode !== null) throw new Error('tauri-driver exited during startup');
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(800) });
-      return response.ok;
-    } catch {
-      return false;
+  onProcessStart(record);
+  try {
+    await waitFor(() => processOwnsTcpListener(record.child.pid, port), `tauri-driver process owns port ${port}`, 10_000);
+    await waitFor(async () => {
+      if (record.child.exitCode !== null) throw new Error('tauri-driver exited during startup');
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(800) });
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }, `owned tauri-driver on port ${port}`, 15_000);
+    return { ...record, port };
+  } catch (error) {
+    try { await finishLoggedProcess(record); }
+    catch (cleanupError) {
+      const cleanupReport = `Startup error: ${error?.stack ?? error}\nOwned-process cleanup error: ${cleanupError?.stack ?? cleanupError}\n`;
+      try {
+        await writeFile(path.join(candidate.evidence, 'tauri-driver-cleanup-failure.log'), cleanupReport, { flag: 'wx' });
+      } catch (reportError) {
+        process.stderr.write(`Could not persist tauri-driver cleanup failure: ${reportError?.stack ?? reportError}\n`);
+      }
+      if (error && typeof error === 'object') error.cleanupError = cleanupError;
+      process.stderr.write(cleanupReport);
     }
-  }, `owned tauri-driver on port ${port}`, 15_000);
-  return { ...record, port };
+    throw error;
+  }
 }
 
 class WebDriver {
@@ -643,13 +973,29 @@ async function navigateToRowPage(driver, rowId) {
   }, 'Widget row page');
 }
 
-async function runtimeInfo(driver, expectedDataPath) {
+async function runtimeInfo(driver, expectedDataPath, expectedWebviewDataPath) {
   const info = await waitFor(() => driver.execute(`return window.__MORROW_INFO__ || null`), 'Morrow runtime identity', 30_000);
   if (info.dataPath !== expectedDataPath) {
     throw new Error(`Isolation check failed before UI interaction: runtime dataPath=${info.dataPath}; expected ${expectedDataPath}`);
   }
   if (info.platform !== 'linux') throw new Error(`Expected Linux native build, got platform=${info.platform}`);
-  return info;
+  const webviewDataPath = await waitFor(async () => {
+    try {
+      const entry = await lstat(expectedWebviewDataPath);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error(`WebView profile is not a real directory: ${expectedWebviewDataPath}`);
+      }
+      const resolved = await realpath(expectedWebviewDataPath);
+      if (resolved !== expectedWebviewDataPath) {
+        throw new Error(`WebView profile resolves outside its isolated directory: ${resolved}`);
+      }
+      return resolved;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }, 'the identifier-scoped Tauri/WebView profile before UI interaction', 10_000);
+  return { ...info, backendDataPath: info.dataPath, webviewDataPath };
 }
 
 function parseScalarFromMarkdown(markdown, name) {
@@ -700,9 +1046,24 @@ async function saveRunInfo(candidate, extra) {
     const info = await captureFile(path.join(candidate.vault, relative));
     files[relative] = { sha256: info.hash, size: info.size, mtimeMs: info.mtimeMs };
   }
+  const destinationFiles = {};
+  for (const relative of BANK_FILES) {
+    const info = await captureFile(path.join(candidate.destinationVault, relative));
+    destinationFiles[relative] = { sha256: info.hash, size: info.size, mtimeMs: info.mtimeMs };
+  }
   await writeFile(path.join(candidate.evidence, 'run.json'), `${JSON.stringify({
     candidate: {
       commit: candidate.expectedCommit,
+      sourceManifest: candidate.sourceManifest,
+      sourceManifestSha256: candidate.sourceManifestSha256,
+      sourceStatusAtFreeze: candidate.sourceVerification.frozenStatus,
+      sourceStatusAtRun: candidate.sourceVerification.currentStatus,
+      sourceDiffAtFreezeSha256: candidate.sourceVerification.frozenDiffSha256,
+      sourceDiffAtRunSha256: candidate.sourceVerification.currentDiffSha256,
+      sourceTestHashes: candidate.sourceTestHashes,
+      artifactManifest: candidate.artifactManifest,
+      artifactManifestSha256: candidate.artifactManifestSha256,
+      artifactInventory: candidate.artifactVerification,
       binary: candidate.binary,
       binarySha256: candidate.binarySha256,
       bundle: candidate.bundle,
@@ -719,8 +1080,12 @@ async function saveRunInfo(candidate, extra) {
     },
     isolated: {
       vault: candidate.vault,
+      destinationVault: candidate.destinationVault,
       profile: candidate.profile,
       evidence: candidate.evidence,
+      retainedEvidence: candidate.retainedEvidence,
+      expectedBackendDataPath: candidate.expectedBackendDataPath,
+      expectedWebviewDataPath: candidate.expectedWebviewDataPath,
       display: extra.display,
       dbus: extra.busAddress,
       driverPort: extra.driverPort,
@@ -731,34 +1096,32 @@ async function saveRunInfo(candidate, extra) {
       driverSessions: extra.driverSessions,
     },
     fixtureFiles: candidate.fixtureFiles,
-    generatedVaultFiles: candidate.vaultFiles ?? null,
+    generatedVaultFiles: { origin: candidate.vaultFiles ?? null, destination: candidate.destinationVaultFiles ?? null },
     databaseId: candidate.databaseId,
+    destinationDatabaseId: candidate.destinationDatabaseId,
+    linkedViews: candidate.linkedViews,
+    generatedVaultContent: candidate.generatedVaultContent,
+    isolatedVaultRegistry: candidate.isolatedVaultRegistry,
     runtimeInfo: extra.runtimeInfo ?? null,
     appProcesses: extra.appProcesses ?? [],
     testHashes: extra.testHashes,
     bankFiles: files,
+    destinationBankFiles: destinationFiles,
     outcome: extra.outcome ?? 'running',
     error: extra.error ?? null,
   }, null, 2)}\n`);
 }
 
-async function sourceTestHashes() {
-  const paths = [
-    'plugins/polaris-dados/src/ui/host.independent.test.ts',
-    'src/storage/navigationPreservation.independent.test.ts',
-    'scripts/pilot/native-bank-smoke.mjs',
-  ];
-  const result = {};
-  for (const relative of paths) {
-    try { result[relative] = await hashFile(path.join(REPO_ROOT, relative)); }
-    catch { result[relative] = null; }
-  }
-  return result;
-}
-
 async function preflight(candidate, args) {
   const evidence = {
     commit: candidate.expectedCommit,
+    sourceManifest: candidate.sourceManifest,
+    sourceManifestSha256: candidate.sourceManifestSha256,
+    sourceStatus: candidate.sourceVerification.currentStatus,
+    sourceDiffSha256: candidate.sourceVerification.currentDiffSha256,
+    sourceTestCount: Object.keys(candidate.sourceTestHashes).length,
+    artifactManifest: candidate.artifactManifest,
+    artifactManifestSha256: candidate.artifactManifestSha256,
     binary: candidate.binary,
     binarySha256: candidate.binarySha256,
     bundle: candidate.bundle,
@@ -774,7 +1137,15 @@ async function preflight(candidate, args) {
     fixtureSha256: candidate.fixtureSha256,
     fixtureFiles: candidate.fixtureFiles,
     databaseId: candidate.databaseId,
-    outputPaths: { vault: candidate.vault, profile: candidate.profile, evidence: candidate.evidence },
+    outputPaths: {
+      vault: candidate.vault,
+      destinationVault: candidate.destinationVault,
+      profile: candidate.profile,
+      evidence: candidate.evidence,
+      retainedEvidence: candidate.retainedEvidence,
+    },
+    expectedBackendDataPath: candidate.expectedBackendDataPath,
+    expectedWebviewDataPath: candidate.expectedWebviewDataPath,
     nativeRunRequested: Boolean(args['run-native']),
   };
   process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
@@ -906,8 +1277,9 @@ async function openPageAndCheck(driver, candidate, { quantity, price, total, pre
 
 async function runNative(candidate, prepared) {
   const env = createPrivateEnv(candidate, prepared.xdg);
-  const testHashes = await sourceTestHashes();
+  const testHashes = candidate.sourceTestHashes;
   let display;
+  const displayProcesses = {};
   let runtime = null;
   let driverRecord;
   let webdriver;
@@ -916,14 +1288,16 @@ async function runNative(candidate, prepared) {
   let error = null;
   let primaryFailure = null;
   let cleanupFailure = null;
+  let processLogsFlushed = false;
   const info = { testHashes };
 
   async function openSession() {
-    driverRecord = await startDriver(candidate, env);
+    await assertCandidateStillFrozen(candidate);
+    driverRecord = await startDriver(candidate, env, null, (record) => { driverRecord = record; });
     webdriver = new WebDriver(driverRecord.port);
     await webdriver.createSession(candidate.binary);
     sessionCreated = true;
-    runtime = await runtimeInfo(webdriver, candidate.profile);
+    runtime = await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
     const appProcess = await findOwnedAppProcess(driverRecord.child.pid, candidate, env);
     info.appProcesses ??= [];
     info.appProcesses.push(appProcess);
@@ -950,15 +1324,15 @@ async function runNative(candidate, prepared) {
       finally { sessionCreated = false; }
     }
     if (driverRecord?.child?.pid) {
-      await killProcessGroup(driverRecord.child.pid);
-      driverRecord.stream.end();
+      await finishLoggedProcess(driverRecord);
       driverRecord = null;
     }
     webdriver = null;
   }
 
   try {
-    display = await startPrivateDisplay(candidate, env);
+    await assertCandidateStillFrozen(candidate);
+    display = await startPrivateDisplay(candidate, env, (name, record) => { displayProcesses[name] = record; });
     info.display = display.display;
     info.busAddress = display.busAddress;
     await saveRunInfo(candidate, { ...info, outcome: 'prepared' });
@@ -974,7 +1348,7 @@ async function runNative(candidate, prepared) {
 
     // Inspect runtime identity before changing localStorage, route, or DOM.
     await setPreferences(webdriver, { plugins: true, startPage: 'home', locale: 'en', theme: 'dark' });
-    await runtimeInfo(webdriver, candidate.profile);
+    await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
     const databaseOpenedAtBeforeInitial = await recentOpenedAt(candidate.vault, candidate.databaseId);
     const initial = await openPageAndCheck(webdriver, candidate, {
       quantity: 2,
@@ -1121,7 +1495,7 @@ async function runNative(candidate, prepared) {
     // the host's resolved document attribute, and each locale is a full reload.
     for (const locale of ['pt', 'es', 'en']) {
       await setPreferences(webdriver, { locale, theme: locale === 'es' ? 'light' : 'dark', plugins: true, startPage: 'home' });
-      await runtimeInfo(webdriver, candidate.profile);
+      await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
       await navigateToDatabase(webdriver, candidate.databaseId);
       const localized = await webdriver.execute(`return {
         locale: JSON.parse(localStorage.getItem('morrow.preferences') || '{}').locale,
@@ -1211,7 +1585,7 @@ async function runNative(candidate, prepared) {
     const databaseOpenedAtBeforeRestart = await recentOpenedAt(candidate.vault, candidate.databaseId);
     await stopSession();
     await openSession();
-    await runtimeInfo(webdriver, candidate.profile);
+    await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
     const reopened = await openPageAndCheck(webdriver, candidate, {
       quantity: 3,
       price: 10,
@@ -1307,26 +1681,61 @@ async function runNative(candidate, prepared) {
     await recordStep(candidate, 'native-bank-smoke-passed', { finalStatus });
   } catch (caught) {
     error = caught?.stack ?? String(caught);
+    if (caught?.cleanupError) error += `\nOwned-process cleanup error: ${caught.cleanupError?.stack ?? caught.cleanupError}`;
     outcome = 'failed';
     primaryFailure = caught;
   } finally {
     const cleanupErrors = [];
-    try { await saveRunInfo(candidate, { ...info, outcome, error }); }
-    catch (cleanupError) { cleanupErrors.push(`Could not write run metadata: ${String(cleanupError)}`); }
     try {
       if (webdriver && sessionCreated) await webdriver.closeSession();
     } catch (cleanupError) { cleanupErrors.push(`Could not close WebDriver session: ${String(cleanupError)}`); }
-    try { await stopCurrentChildren(display, driverRecord); }
-    catch (cleanupError) { cleanupErrors.push(`Could not stop isolated processes: ${String(cleanupError)}`); }
+    try {
+      await stopCurrentChildren({ ...displayProcesses, ...display }, driverRecord);
+      processLogsFlushed = true;
+    } catch (cleanupError) { cleanupErrors.push(`Could not stop isolated processes and flush owned logs: ${String(cleanupError)}`); }
     if (cleanupErrors.length) {
       error = [error, ...cleanupErrors].filter(Boolean).join('\n');
       if (outcome === 'passed') outcome = 'failed-cleanup';
       const report = `${cleanupErrors.join('\n')}\n`;
       try { await writeFile(path.join(candidate.evidence, 'cleanup-failures.log'), report); }
       catch (reportError) { process.stderr.write(`Could not save cleanup report: ${String(reportError)}\n`); }
-      try { await saveRunInfo(candidate, { ...info, outcome, error }); }
-      catch (metadataError) { process.stderr.write(`Could not update run metadata after cleanup failure: ${String(metadataError)}\n`); }
       if (outcome === 'failed-cleanup') cleanupFailure = new Error(`Native smoke passed but cleanup failed: ${cleanupErrors.join(' | ')}`);
+    }
+    try { await saveRunInfo(candidate, { ...info, outcome, error }); }
+    catch (metadataError) {
+      const message = `Could not write run metadata after processes/logs were stopped: ${String(metadataError)}`;
+      error = [error, message].filter(Boolean).join('\n');
+      process.stderr.write(`${message}\n`);
+      if (outcome === 'passed') {
+        outcome = 'failed-cleanup';
+        cleanupFailure = new Error(message);
+      }
+    }
+    let retentionError = null;
+    if (!processLogsFlushed) {
+      retentionError = new Error('Refusing durable copy until every owned process has stopped and its log stream has flushed');
+    } else {
+      try {
+        const retained = await copyEvidenceDurably({
+          sourceDirectory: candidate.evidence,
+          destinationDirectory: candidate.retainedEvidence,
+        });
+        process.stdout.write(`${JSON.stringify({ retainedEvidence: retained }, null, 2)}\n`);
+      } catch (caughtRetentionError) {
+        retentionError = caughtRetentionError;
+      }
+    }
+    if (retentionError) {
+      const message = `Could not retain durable evidence at ${candidate.retainedEvidence}: ${retentionError?.stack ?? retentionError}`;
+      error = [error, message].filter(Boolean).join('\n');
+      if (outcome === 'passed') {
+        outcome = 'failed-retention';
+        cleanupFailure = new Error(message);
+      }
+      try { await writeFile(path.join(candidate.evidence, 'retention-failure.log'), `${message}\n`, { flag: 'wx' }); }
+      catch (reportError) { process.stderr.write(`Could not save retention failure report: ${String(reportError)}\n`); }
+      try { await saveRunInfo(candidate, { ...info, outcome, error }); }
+      catch (metadataError) { process.stderr.write(`Could not update run metadata after retention failure: ${String(metadataError)}\n`); }
     }
   }
   if (primaryFailure) throw primaryFailure;
@@ -1342,7 +1751,7 @@ async function readProcInfo(pid) {
   ]);
   const argv = cmdline.toString('utf8').split('\0').filter(Boolean);
   const envBytes = await readFile(path.join(proc, 'environ')).catch(() => Buffer.alloc(0));
-  const allowedEnv = new Set(['MORROW_USER_DATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND']);
+  const allowedEnv = new Set(['HOME', 'MORROW_USER_DATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND', 'WEBKIT_DISABLE_DMABUF_RENDERER', 'WAYLAND_DISPLAY', 'XAUTHORITY']);
   const environment = {};
   for (const item of envBytes.toString('utf8').split('\0')) {
     const separator = item.indexOf('=');
@@ -1405,6 +1814,7 @@ async function findOwnedAppProcess(driverPid, candidate, env) {
       if (!info) continue;
       if (info.exe === candidate.binary) {
         const expected = {
+          HOME: candidate.profile,
           MORROW_USER_DATA: candidate.profile,
           XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
           XDG_DATA_HOME: env.XDG_DATA_HOME,
@@ -1413,9 +1823,13 @@ async function findOwnedAppProcess(driverPid, candidate, env) {
           DISPLAY: env.DISPLAY,
           DBUS_SESSION_BUS_ADDRESS: env.DBUS_SESSION_BUS_ADDRESS,
           GDK_BACKEND: 'x11',
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1',
         };
         for (const [key, value] of Object.entries(expected)) {
           if (info.environment[key] !== value) throw new Error(`Native process isolation mismatch: ${key}=${info.environment[key] ?? '<unset>'}; expected ${value}`);
+        }
+        if (info.environment.WAYLAND_DISPLAY || info.environment.XAUTHORITY) {
+          throw new Error('Native process retained a host display/authentication environment variable');
         }
         return info;
       }
@@ -1432,23 +1846,65 @@ async function killProcessGroup(pid) {
 }
 
 async function stopCurrentChildren(display, driverRecord) {
-  if (driverRecord?.child?.pid) await killProcessGroup(driverRecord.child.pid);
+  const errors = [];
+  if (driverRecord) {
+    try { await finishLoggedProcess(driverRecord); }
+    catch (error) { errors.push(`tauri-driver: ${error?.message ?? error}`); }
+  }
   for (const key of ['dbus', 'xvfb']) {
     const processRecord = display?.[key];
-    if (processRecord?.child?.pid) await killProcessGroup(processRecord.child.pid);
-    processRecord?.stream?.end();
+    if (!processRecord) continue;
+    try { await finishLoggedProcess(processRecord); }
+    catch (error) { errors.push(`${key}: ${error?.message ?? error}`); }
   }
+  if (errors.length) throw new Error(errors.join('\n'));
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) return help();
+  if (args['freeze-sources'] && args['record-artifacts']) throw new Error('Choose one preparation mode at a time');
+  if (args['freeze-sources']) {
+    const result = await freezeSourceManifest({
+      repositoryRoot: REPO_ROOT,
+      sourceManifestOutput: requireArg(args, 'source-manifest-output'),
+      diffOutput: requireArg(args, 'diff-output'),
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (args['record-artifacts']) {
+    const result = await recordArtifactManifest({
+      repositoryRoot: REPO_ROOT,
+      sourceManifestPath: requireArg(args, 'source-manifest'),
+      artifactManifestOutput: requireArg(args, 'artifact-manifest-output'),
+      binaryPath: requireArg(args, 'binary'),
+      bundlePath: requireArg(args, 'bundle'),
+      pluginManifestPath: requireArg(args, 'manifest'),
+      tauriConfigPath: requireArg(args, 'tauri-config'),
+      driverPath: requireArg(args, 'driver'),
+      webkitDriverPath: requireArg(args, 'webkit-driver'),
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (Boolean(args['check-only']) === Boolean(args['run-native'])) {
+    throw new Error('Choose exactly one of --check-only or --run-native');
+  }
+  if (args['check-only'] && args['confirm-synthetic-profile']) {
+    throw new Error('--confirm-synthetic-profile is only valid with --run-native');
+  }
   if (!args['check-only'] && !args['run-native']) throw new Error('Choose --check-only or --run-native');
   const candidate = await verifyInputs(args);
   await preflight(candidate, args);
   if (args['check-only']) return;
 
-  const prepared = await createSyntheticVault(candidate);
+  let prepared;
+  try { prepared = await createSyntheticVault(candidate); }
+  catch (error) {
+    await preservePreparationFailure(candidate, error);
+    throw error;
+  }
   // Output paths were proven new by preflight. runNative preserves all evidence.
   await runNative(candidate, prepared);
 }
