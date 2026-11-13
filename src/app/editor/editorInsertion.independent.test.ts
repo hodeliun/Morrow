@@ -432,6 +432,10 @@ describe('independent editor insertion capture', () => {
     expect(sidePaneTarget.insert('stale side pane target')).toMatchObject({ ok: false });
     sidePaneTarget.dispose();
 
+    // Drain hashchange tasks queued by the panel and pane setup before observing this navigation pair.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
     const navigationTarget = capture(owner, returnedEditor);
     const capturedRoute = window.location.hash;
     await act(async () => {
