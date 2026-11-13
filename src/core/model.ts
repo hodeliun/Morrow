@@ -194,6 +194,7 @@ export const KNOWN_NODE_TYPES = new Set([
   'column',
   'tableOfContents',
   'dateMention',
+  'polarisDadosView',
 ]);
 
 export const KNOWN_MARK_TYPES = new Set([

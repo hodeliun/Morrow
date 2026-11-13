@@ -1,3 +1,4 @@
+import './app/exitInteraction';
 import '@fontsource-variable/inter/index.css';
 import '@fontsource-variable/source-serif-4/index.css';
 import '@fontsource-variable/source-serif-4/wght-italic.css';
@@ -12,13 +13,13 @@ import 'katex/dist/katex.min.css';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { sampleCommands } from './core/sample';
-import { emptyOldTrash } from './app/operations';
+import { emptyOldTrash, writeAutoBackup } from './app/operations';
 import { startRecurring } from './app/recurring';
 import { startReminders } from './app/reminders';
 import { WorkspaceSession } from './storage/session';
 import { VaultRepository } from './storage/vaultRepository';
 import { App } from './app/App';
-import { Logo } from './app/components/primitives';
+import { Logo, Toasts } from './app/components/primitives';
 import { VaultChooser } from './app/components/VaultChooser';
 import { commitEditors } from './app/editor/commits';
 import { COPY_LEGACY_KEY, copyLegacyInto, legacyPageCount } from './app/legacy';
@@ -27,8 +28,30 @@ import { newId } from './app/platform/files';
 import { desktopVaultBridge } from './app/platform/vault';
 import { resolvedTheme, getPreferences } from './app/platform/preferences';
 import { toast } from './app/ui';
-import { setSession } from './app/workspace';
+import { t } from './app/i18n';
+import { getSession, getWorkspaceSessionGeneration, setSession } from './app/workspace';
 import { startPlugins } from './app/plugins';
+import { workspaceBootState as bootState } from './app/bootState';
+import { createExitPreparer, reloadAfterPreparation } from './app/exitPreparation';
+import { registerExitPreparer, getExitPreparer } from './app/exitPreparationRegistry';
+import { acquireExitInteractionGate } from './app/exitInteraction';
+import { flushPlaces } from './app/readingPlace';
+import { startTauriCloseProtocol } from './app/platform/tauri';
+
+registerExitPreparer(
+  createExitPreparer({
+    getBootSnapshot: () => bootState.snapshot(),
+    getWorkspaceSessionGeneration,
+    getSession,
+    commitEditors,
+    flushPlaces,
+    acquireInteractionGate: acquireExitInteractionGate,
+    writeAutoBackup,
+  }),
+);
+startTauriCloseProtocol((_reason) => {
+  toast(t('topBar.saveFailed'), { tone: 'error' });
+});
 
 type BootState =
   | { kind: 'loading' }
@@ -36,6 +59,7 @@ type BootState =
   | { kind: 'error'; message: string }
   | { kind: 'choose'; legacy: number }
   | { kind: 'ready' };
+type BootResult = Exclude<BootState, { kind: 'loading' }>;
 
 // the theme is applied before react renders so there is no flash
 document.documentElement.dataset.theme = resolvedTheme(getPreferences().theme);
@@ -44,7 +68,7 @@ document.documentElement.dataset.colorful = getPreferences().colorful ? 'true' :
 // the desktop window has no title bar, styles use this to make room for the native buttons
 if (desktop) document.documentElement.dataset.desktop = desktop.platform;
 
-async function openWorkspace(): Promise<BootState> {
+async function openWorkspace(generation: number): Promise<BootResult> {
   // morrow is a desktop app, pages are files in a folder the person chooses
   if (!desktop?.vault) return { kind: 'desktopOnly' };
   const vault = await desktop.vault.open();
@@ -53,6 +77,7 @@ async function openWorkspace(): Promise<BootState> {
   const opened = await WorkspaceSession.open(repository);
   if (!opened.ok) return { kind: 'error', message: opened.error };
   const session = opened.value;
+  bootState.retainCandidate(generation, session);
   session.beforeExternal = commitEditors;
   const copyLegacy = sessionStorage.getItem(COPY_LEGACY_KEY) === '1';
   sessionStorage.removeItem(COPY_LEGACY_KEY);
@@ -90,12 +115,30 @@ async function openWorkspace(): Promise<BootState> {
   return { kind: 'ready' };
 }
 
-const fail = (error: unknown): BootState => ({ kind: 'error', message: String(error) });
+const fail = (error: unknown): BootResult => ({ kind: 'error', message: String(error) });
 
 // booting runs once even when strict mode mounts twice
 let booting: Promise<BootState> | null = null;
 function bootOnce(): Promise<BootState> {
-  booting ??= openWorkspace().catch(fail);
+  booting ??= (() => {
+    const generation = bootState.begin();
+    const opening = openWorkspace(generation);
+    const promise = opening.then(
+      (state) => {
+        bootState.settle(
+          generation,
+          state.kind === 'ready' ? { kind: 'session' } : { kind: 'no-session', reason: state.kind },
+        );
+        return state;
+      },
+      (error) => {
+        bootState.fail(generation, error);
+        return fail(error);
+      },
+    );
+    bootState.knowPromise(generation, promise);
+    return promise;
+  })();
   return booting;
 }
 
@@ -112,6 +155,10 @@ function Boot() {
 
   if (state.kind === 'ready') return <App />;
   if (state.kind === 'choose') return <VaultChooser legacy={state.legacy} />;
+  const showRetryFailure = () =>
+    setState((current) =>
+      current.kind === 'error' ? { ...current, message: t('topBar.saveFailed') } : current,
+    );
   return (
     <div className="boot">
       <Logo size={36} />
@@ -126,9 +173,24 @@ function Boot() {
         <>
           <h1>Morrow could not open your workspace</h1>
           <p className="boot-text">{state.message}</p>
-          <p className="boot-text muted">Nothing in the folder has been changed.</p>
           <div className="button-row">
-            <button type="button" className="button primary" onClick={() => window.location.reload()}>
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => {
+                const preparer = getExitPreparer();
+                if (!preparer) {
+                  showRetryFailure();
+                  return;
+                }
+                void reloadAfterPreparation(
+                  () => preparer.prepare(),
+                  () => window.location.reload(),
+                ).then((reloaded) => {
+                  if (!reloaded) showRetryFailure();
+                });
+              }}
+            >
               Try again
             </button>
             <button type="button" className="button" onClick={() => setState({ kind: 'choose', legacy: 0 })}>
@@ -143,6 +205,9 @@ function Boot() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Boot />
+    <>
+      <Boot />
+      <Toasts />
+    </>
   </StrictMode>,
 );

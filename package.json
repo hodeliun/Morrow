@@ -26,6 +26,8 @@
     "build": "tauri build",
     "build:web": "tsc -p tsconfig.json && vite build && npm run build:mcp",
     "build:mcp": "vite build --config vite.config.mcp.ts",
+    "build:polaris-dados": "vite build --config plugins/polaris-dados/vite.config.ts",
+    "fixture:polaris-dados": "node scripts/pilot/create-polaris-dados-fixture.mjs",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",

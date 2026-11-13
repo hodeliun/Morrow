@@ -98,6 +98,7 @@ export function managedFrontmatter(
   page: PageMeta,
   fileBase: string,
   parentDatabase: DatabaseDef | null,
+  preserveNull = false,
 ): Map<string, unknown> {
   const out = new Map<string, unknown>();
   const title = displayTitle(page);
@@ -107,7 +108,7 @@ export function managedFrontmatter(
   if (FILE_KINDS.has(page.kind)) out.set('kind', page.kind);
   if (page.tags.length > 0) out.set('tags', [...page.tags]);
   for (const prop of parentDatabase?.properties ?? []) {
-    const value = writeProperty(prop, page.properties[prop.id]);
+    const value = writeProperty(prop, page.properties[prop.id], preserveNull);
     if (value !== undefined) out.set(prop.name, value);
   }
   if (page.kind === 'database' && page.database) out.set('database', databaseToYaml(page.database));
@@ -153,7 +154,8 @@ export function renderPageText(
   return joinFrontmatter(frontmatter, body);
 }
 
-export function writeProperty(prop: PropDef, value: PropValue | undefined): unknown {
+export function writeProperty(prop: PropDef, value: PropValue | undefined, preserveNull = false): unknown {
+  if (value === null && preserveNull) return null;
   if (value === null || value === undefined || value === '') return undefined;
   switch (prop.type) {
     case 'number':
@@ -259,6 +261,7 @@ export function takeProperties(
   extra: Record<string, unknown>,
   properties: Record<string, PropValue>,
   newOptionId: () => string,
+  preserveNull = false,
 ): void {
   for (const prop of database.properties) {
     if (prop.type === 'formula') continue;
@@ -267,6 +270,7 @@ export function takeProperties(
     const raw = extra[key];
     const read = readProperty(prop, raw, newOptionId);
     if (read.added.length) prop.options.push(...read.added);
+    if (preserveNull && raw === null) properties[prop.id] = null;
     if (read.value !== null) properties[prop.id] = read.value;
     // a value the property can not hold, like a date written in words, stays so saving never drops it
     if (read.value !== null || raw === null || raw === '') delete extra[key];

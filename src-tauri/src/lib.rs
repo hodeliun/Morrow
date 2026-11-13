@@ -4,6 +4,7 @@
 #![cfg_attr(mobile, allow(dead_code, unused_mut))]
 
 mod ai;
+mod close_protocol;
 mod cloud;
 #[cfg(target_os = "android")]
 mod device;
@@ -16,7 +17,7 @@ mod vault;
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{
     AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -34,8 +35,6 @@ const FILE_SCHEME: &str = "morrow-file";
 // the window's first colours, before the interface says which theme it uses
 const LIGHT: tauri::window::Color = tauri::window::Color(0xf8, 0xf8, 0xf7, 0xff);
 const DARK: tauri::window::Color = tauri::window::Color(0x20, 0x20, 0x20, 0xff);
-
-static READY_TO_CLOSE: AtomicBool = AtomicBool::new(false);
 
 type Res<T> = Result<T, String>;
 
@@ -84,11 +83,44 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 // ---- the app
 
 #[tauri::command]
-fn close_ready<R: Runtime>(app: AppHandle<R>) {
-    READY_TO_CLOSE.store(true, Ordering::SeqCst);
-    if let Some(window) = main_window(&app) {
-        let _ = window.close();
+fn close_protocol_snapshot(
+    protocol: tauri::State<'_, Mutex<close_protocol::CloseProtocol>>,
+) -> Res<close_protocol::CloseSnapshot> {
+    protocol
+        .lock()
+        .map(|protocol| protocol.snapshot())
+        .map_err(|error| format!("close protocol state is unavailable: {error}"))
+}
+
+#[tauri::command]
+fn close_protocol_ack<R: Runtime>(
+    app: AppHandle<R>,
+    generation: u64,
+    decision: close_protocol::CloseDecision,
+) -> Res<close_protocol::CloseAckDisposition> {
+    let disposition = app
+        .state::<Mutex<close_protocol::CloseProtocol>>()
+        .lock()
+        .map_err(|error| format!("close protocol state is unavailable: {error}"))?
+        .acknowledge(generation, decision);
+
+    if disposition == close_protocol::CloseAckDisposition::Armed {
+        let window = main_window(&app).ok_or_else(|| "main window is unavailable".to_string())?;
+        window.close().map_err(|error| error.to_string())?;
     }
+
+    Ok(disposition)
+}
+
+#[tauri::command]
+fn close_protocol_cancel<R: Runtime>(
+    app: AppHandle<R>,
+    generation: u64,
+) -> Res<close_protocol::CloseCancelDisposition> {
+    app.state::<Mutex<close_protocol::CloseProtocol>>()
+        .lock()
+        .map(|mut protocol| protocol.cancel(generation))
+        .map_err(|error| format!("close protocol state is unavailable: {error}"))
 }
 
 #[tauri::command]
@@ -868,22 +900,26 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
     let closing = app.clone();
     window.on_window_event(move |event| {
-        // the interface writes pending edits and a backup before the window closes, for five seconds at most
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            if READY_TO_CLOSE.load(Ordering::SeqCst) {
-                vault::close();
-                return;
-            }
-            api.prevent_close();
-            command(&closing, "app.prepareToClose");
-            let later = closing.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                READY_TO_CLOSE.store(true, Ordering::SeqCst);
-                if let Some(window) = main_window(&later) {
-                    let _ = window.close();
+            let action = match closing
+                .state::<Mutex<close_protocol::CloseProtocol>>()
+                .lock()
+            {
+                Ok(mut protocol) => protocol.on_close_requested(),
+                Err(_) => {
+                    api.prevent_close();
+                    return;
                 }
-            });
+            };
+
+            match action {
+                close_protocol::CloseRequestAction::Pending { generation } => {
+                    api.prevent_close();
+                    to_window(&closing, "morrow:close-requested", generation);
+                }
+                close_protocol::CloseRequestAction::Allow => vault::close(),
+                close_protocol::CloseRequestAction::Blocked => api.prevent_close(),
+            }
         }
     });
     Ok(())
@@ -891,7 +927,8 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let mut builder =
+        tauri::Builder::default().manage(Mutex::new(close_protocol::CloseProtocol::default()));
     #[cfg(desktop)]
     {
         builder = builder
@@ -916,7 +953,8 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(serve_file(&request)));
         })
         .setup(|app| {
-            paths::init_data_dir(app.path().app_config_dir().ok());
+            paths::init_data_dir(&app.config().identifier, app.path().app_config_dir().ok())?;
+            ai::init_keychain_identity(&app.config().identifier)?;
             // a phone keeps vaults in the app's own storage, synced with a computer over the network
             #[cfg(mobile)]
             paths::set_documents_dir(app.path().app_data_dir().ok().map(|dir| dir.join("Vaults")));
@@ -952,7 +990,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            close_ready,
+            close_protocol_snapshot,
+            close_protocol_ack,
+            close_protocol_cancel,
             set_theme,
             set_zoom,
             open_external,

@@ -52,6 +52,7 @@ import { pageMenuEntries } from './pageMenu';
 import { exactTime, relativeTime, useShowMore } from './primitives';
 import { PageIcon } from './Sidebar';
 import { TopBar } from './TopBar';
+import { isProviderManagedPage } from './pageEditability';
 
 const EMPTY_DOC = emptyDoc();
 
@@ -150,8 +151,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
 
   const trashed = isEffectivelyTrashed(state.pages, id);
   const unreadable = getSession().unreadable.has(id);
+  const protectionReason = getSession().protectedReasons.get(id);
   const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
   const doc = state.docs[id] ?? EMPTY_DOC;
+  const database = findDatabaseOf(state, page);
+  // Provider-owned metadata and text cannot be saved by native page editors. Keep this separate from
+  // databaseEditable: the provider's grid may still edit through its own DataApi scope.
+  const databaseEditable = !trashed && !unreadable && !reading;
+  const nativeEditable = databaseEditable && !isProviderManagedPage(state, page);
 
   const menu = (): MenuEntry[] => {
     const words = docToPlainText(doc).split(/\s+/).filter(Boolean).length;
@@ -165,19 +172,19 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         t('topBar.edited', { time: exactTime(page.updatedAt) }),
       ].join('\n'),
     };
-    if (trashed) return [info];
-    return [info, ...pageMenuEntries(id, () => titleRef.current?.focus())];
+    if (trashed || unreadable) return [info];
+    return [info, ...pageMenuEntries(id, () => titleRef.current?.focus(), { nativeEditable })];
   };
 
   const hasText = page.kind === 'database' && !isDocEmpty(doc);
   if (hasText && databaseTextFor !== id) setDatabaseTextFor(id);
   const showText = page.kind !== 'database' || hasText || databaseTextFor === id;
 
-  const database = findDatabaseOf(state, page);
   // rows and pages that already show properties add more from that list instead
   const canAddProperty =
     page.kind === 'page' &&
     !database &&
+    nativeEditable &&
     !unreadable &&
     Object.keys(page.extra).length === 0 &&
     addingFor !== id;
@@ -204,7 +211,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
           </div>
         ) : (
           <Suspense fallback={<div className="canvas-view" aria-busy="true" />}>
-            <CanvasView pageId={id} doc={state.docs[id]} editable={!trashed} />
+            <CanvasView pageId={id} doc={state.docs[id]} editable={nativeEditable} />
           </Suspense>
         )}
       </div>
@@ -249,25 +256,30 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         {page.kind !== 'database' && !unreadable && !prefs.hiddenOutlines.includes(page.id) && (
           <Outline doc={doc} />
         )}
-        <CoverBanner page={page} editable={!trashed && !reading} />
+        <CoverBanner page={page} editable={nativeEditable} />
         <article
           className={`page font-${prefs.font} width-${prefs.pageWidths[page.id] ?? prefs.width}${page.cover ? ' has-cover' : ''}`}
         >
           {!trashed && <ConflictBanner id={id} />}
           {page.icon && (
             <div className="page-icon-row">
-              <button
-                type="button"
-                className="page-icon"
-                aria-label={t('page.changeIcon')}
-                disabled={trashed}
-                onClick={() => openDialog({ kind: 'icon', pageId: id })}
-              >
-                <Emoji emoji={page.icon} />
-              </button>
+              {nativeEditable ? (
+                <button
+                  type="button"
+                  className="page-icon"
+                  aria-label={t('page.changeIcon')}
+                  onClick={() => openDialog({ kind: 'icon', pageId: id })}
+                >
+                  <Emoji emoji={page.icon} />
+                </button>
+              ) : (
+                <span className="page-icon" role="img" aria-label={t('page.changeIcon')}>
+                  <Emoji emoji={page.icon} />
+                </span>
+              )}
             </div>
           )}
-          {!trashed && (!page.icon || !page.cover || canAddProperty) && (
+          {nativeEditable && (!page.icon || !page.cover || canAddProperty) && (
             <div className="page-header-actions">
               {!page.icon && (
                 <button
@@ -294,14 +306,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               )}
             </div>
           )}
-          {coverPicker && (
+          {nativeEditable && coverPicker && (
             <CoverPicker page={page} anchor={coverPicker} onClose={() => setCoverPicker(null)} />
           )}
           {page.dailyDate && <DailyNav page={page} />}
           <h1 className="page-title-heading">
             <TitleField
               page={page}
-              readOnly={trashed || reading}
+              readOnly={!nativeEditable}
               inputRef={titleRef}
               onEnter={(rest) => {
                 const editor = editorRef.current;
@@ -312,25 +324,32 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             />
           </h1>
           {page.kind !== 'database' && (
-            <PageTags page={page} editable={!trashed && !unreadable && !reading} />
+            <PageTags page={page} editable={nativeEditable} />
           )}
-          {isTemplate && <RepeatBar page={page} editable={!trashed && !unreadable && !reading} />}
+          {isTemplate && <RepeatBar page={page} editable={nativeEditable} />}
           {!unreadable && (
             <PageProperties
               page={page}
               database={database?.database ? { id: database.id, database: database.database } : null}
-              editable={!trashed && !reading}
+              editable={nativeEditable}
               adding={addingFor === id}
               onAdded={() => setAddingFor(null)}
             />
           )}
-          {unreadable && page.encrypted ? (
+          {unreadable && protectionReason ? (
+            <>
+              <div className="banner is-error" role="alert">
+                {t('page.contentUnreadable')} {protectionReason}
+              </div>
+              <pre className="readonly-text">{docToPlainText(doc)}</pre>
+            </>
+          ) : unreadable && page.encrypted ? (
             <LockedPage page={page} />
           ) : unreadable ? (
             <div className="banner is-error" role="alert">
               {t('page.contentUnreadable')}
             </div>
-          ) : ui.sourceMode === id && page.kind === 'page' ? (
+          ) : nativeEditable && ui.sourceMode === id && page.kind === 'page' ? (
             <>
               <div className="banner source-banner" role="note">
                 <span>{t('page.editingAsMarkdown')}</span>
@@ -338,14 +357,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                   {t('page.backToEditor')}
                 </button>
               </div>
-              <SourceEditor pageId={id} doc={doc} editable={!trashed && !reading} />
+              <SourceEditor pageId={id} doc={doc} editable={nativeEditable} />
             </>
           ) : (
             showText && (
               <PageBody
                 id={id}
                 doc={doc}
-                editable={!trashed && !reading}
+                editable={nativeEditable}
                 find={find}
                 anchor={anchor ?? null}
                 onDirty={setEditing}
@@ -353,7 +372,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                   const title = titleRef.current;
                   if (!title) return;
                   const end = title.value.length;
-                  if (text && !trashed) {
+                  if (text && nativeEditable) {
                     const joined = title.value + text;
                     run({ type: 'page.rename', id, title: joined, now: Date.now() });
                     // the textarea is controlled, set it now so the cursor lands between the two parts
@@ -385,9 +404,9 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               />
             )
           )}
-          {page.kind === 'database' && (
+          {page.kind === 'database' && !unreadable && (
             <Suspense fallback={<div className="database" aria-busy="true" />}>
-              <DatabaseView page={page} editable={!trashed && !unreadable} />
+              <DatabaseView page={page} editable={databaseEditable} />
             </Suspense>
           )}
           {page.kind !== 'database' && <Subpages parentId={id} />}

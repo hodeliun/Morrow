@@ -331,6 +331,21 @@
   background: var(--bg);
 }
 
+.prose .polaris-dados-view-fallback {
+  display: grid;
+  gap: 4px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  color: var(--text-muted);
+}
+.polaris-dados-view-fallback strong {
+  color: var(--text);
+}
+.polaris-dados-view-fallback p {
+  margin: 0;
+}
+
 .prose .tiptap-mathematics-render {
   cursor: default;
 }
@@ -579,6 +594,20 @@ textarea.text-input.small {
   margin-top: 8px;
   font-family: var(--font-ui);
   font-size: var(--text-ui);
+}
+.provider-fallback .table {
+  overflow-x: auto;
+}
+.provider-fallback .table > table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.provider-fallback th,
+.provider-fallback td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
 }
 .db-bar {
   display: flex;

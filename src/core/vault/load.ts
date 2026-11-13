@@ -10,6 +10,7 @@ import { foldText } from '../search';
 import { compareSiblings } from '../tree';
 import type { Layout, Placement } from './layout';
 import { readPageText, takeProperties } from './pageFile';
+import { findUnrepresentablePageContent, hasUnrepresentableDatabaseSchema } from './compatibility';
 import type { PageSource } from './pageFile';
 import { impliedTitle } from './pageFile';
 import {
@@ -70,6 +71,7 @@ export interface LoadedVault {
   docs: Record<PageId, DocNode>;
   problems: string[];
   unreadable: PageId[];
+  protectedPages: Map<PageId, string>;
   layout: Map<PageId, Placement>;
   folderOnly: Set<PageId>;
   sources: Map<PageId, PageSource>;
@@ -131,6 +133,8 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
   const recent = readRecent(scan.recent);
   const problems: string[] = [];
   const unreadable: PageId[] = [];
+  const protectedPages = new Map<PageId, string>();
+  const protectedDatabases = new Set<PageId>();
   let registryChanged = false;
 
   // page files, the folder of each page is its path without the extension
@@ -258,6 +262,15 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
       pages.set(id, page);
       continue;
     }
+    const protectionReason = findUnrepresentablePageContent(candidate.file.text);
+    if (protectionReason) {
+      protectedPages.set(id, protectionReason);
+      unreadable.push(id);
+      problems.push(
+        `“${label}” contains data this version cannot safely represent: ${protectionReason} The original file is shown read only and left untouched.`,
+      );
+      if (hasUnrepresentableDatabaseSchema(candidate.file.text)) protectedDatabases.add(id);
+    }
     const read = readPageText(candidate.file.text);
     if (read.error) {
       unreadable.push(id);
@@ -287,11 +300,26 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     }
   }
 
+  for (const page of pages.values()) {
+    const parent = page.parentId ? pages.get(page.parentId) : undefined;
+    if (!parent || !protectedDatabases.has(parent.id) || protectedPages.has(page.id)) continue;
+    const reason = `The parent database is protected: ${protectedPages.get(parent.id)}`;
+    protectedPages.set(page.id, reason);
+    unreadable.push(page.id);
+    problems.push(`“${layout.get(page.id)?.file ?? page.title}” is a row in an unsupported database and is shown read only.`);
+  }
+
   // database rows read their property values from frontmatter keys named after each property
   for (const page of pages.values()) {
     const parent = page.parentId ? pages.get(page.parentId) : undefined;
     if (parent?.kind === 'database' && parent.database)
-      takeProperties(parent.database, page.extra, page.properties, newId);
+      takeProperties(
+        parent.database,
+        page.extra,
+        page.properties,
+        newId,
+        Object.hasOwn(parent.extra, 'polarisDados'),
+      );
   }
 
   // siblings keep the order the registry remembers, the rest follow by name, newest first in the journal
@@ -323,6 +351,13 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
   const resolver = makeResolver(state, layout, sources);
   const docs: Record<PageId, DocNode> = {};
   for (const [id, { body, file }] of bodies) {
+    if (protectedPages.has(id)) {
+      docs[id] = {
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: texts.get(id) ?? body } }],
+      };
+      continue;
+    }
     const dir = dirname(file);
     const doc = markdownToDoc(
       body,
@@ -354,6 +389,7 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     docs,
     problems,
     unreadable,
+    protectedPages,
     layout,
     folderOnly,
     sources,

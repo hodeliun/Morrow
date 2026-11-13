@@ -292,6 +292,11 @@ export function docToHtml(doc: DocNode, context: RenderContext): string {
           )
           .join('')}</nav>`;
       }
+      case 'polarisDadosView': {
+        const title = escape(String(node.attrs?.title ?? 'Linked view'));
+        const source = escape(String(node.attrs?.sourceDatabaseId ?? ''));
+        return `<aside class="linked-view-fallback"><strong>${title}</strong><p>Linked view unavailable.</p><p>Source database: <code>${source}</code></p></aside>`;
+      }
       case 'details': {
         const [summary, content] = node.content ?? [];
         const level = Number(summary?.attrs?.level);
@@ -342,6 +347,7 @@ export function docToHtml(doc: DocNode, context: RenderContext): string {
 
 export function databaseHtml(state: WorkspaceState, page: PageMeta, context: RenderContext): string {
   const database = page.database!;
+  const providerOptIn = Object.hasOwn(page.extra, 'polarisDados');
   const rows = rowsOf(state, page.id);
   const head = `<tr><th>Name</th>${database.properties.map((prop) => `<th>${escape(prop.name)}</th>`).join('')}</tr>`;
   const body = rows
@@ -349,12 +355,38 @@ export function databaseHtml(state: WorkspaceState, page: PageMeta, context: Ren
       const target = context.href(row.id);
       const title = escape(displayTitle(row));
       const cells = database.properties
-        .map((prop) => `<td>${escape(formatValue(prop, valueOf(row, prop.id, database)))}</td>`)
+        .map((prop) => {
+          const value = providerOptIn
+            ? prop.type === 'formula'
+              ? (prop.formula ?? '')
+              : siteLiteralValue(row.properties[prop.id])
+            : formatValue(prop, valueOf(row, prop.id, database));
+          return `<td>${escape(value)}</td>`;
+        })
         .join('');
       return `<tr><td>${target ? `<a href="${target}">${title}</a>` : title}</td>${cells}</tr>`;
     })
     .join('');
-  return `<div class="table"><table>${head}${body}</table></div>`;
+  const note = providerOptIn
+    ? '<p class="provider-fallback">This export is read only. Stored values are shown as written; formula cells show their source.</p>'
+    : '';
+  const marker = page.extra.polarisDados;
+  const metadata = marker && typeof marker === 'object' ? marker as { provider?: unknown; version?: unknown } : {};
+  const provider = typeof metadata.provider === 'string' ? metadata.provider : 'unknown';
+  const version = typeof metadata.version === 'number' || typeof metadata.version === 'string'
+    ? String(metadata.version)
+    : 'unknown';
+  const details = providerOptIn
+    ? `<details><summary>Technical details</summary><p>Provider: ${escape(provider)}; metadata version: ${escape(version)}; required host API: 1.</p></details>`
+    : '';
+  return `${note}${details}<div class="table"><table>${head}${body}</table></div>`;
+}
+
+function siteLiteralValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ');
+  if (typeof value === 'object') return JSON.stringify(value) ?? String(value);
+  return String(value);
 }
 
 function canvasHtml(doc: DocNode | undefined, context: RenderContext): string {
@@ -396,6 +428,7 @@ main{max-width:760px;width:100%;margin:0 auto;padding:56px 32px}h1{font-size:2.2
 code,pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--code);border-radius:5px}code{padding:.1em .3em}pre{padding:14px 16px;overflow:auto}pre code{padding:0;background:none}
 blockquote{margin:0;padding-left:16px;border-left:3px solid var(--line);color:var(--muted)}mark{background:rgba(214,160,40,.3);color:inherit}
 .callout{padding:10px 16px;margin:1em 0;border-left:3px solid #4f7aa8;background:rgba(79,122,168,.09);border-radius:6px}.tone-tip{border-color:#4d8a5c;background:rgba(77,138,92,.1)}.tone-warning{border-color:#b7791f;background:rgba(183,121,31,.11)}.tone-danger{border-color:#b3261e;background:rgba(179,38,30,.08)}.callout-title{font-weight:600;margin:0}summary>h1,summary>h2,summary>h3{display:inline}
+.linked-view-fallback{padding:10px 14px;border:1px dashed var(--line);border-radius:6px;color:var(--muted);font:15px/1.5 system-ui,sans-serif}.linked-view-fallback strong{color:var(--text)}.linked-view-fallback p{margin:4px 0}
 .table{overflow:auto}table{border-collapse:collapse;font:15px/1.5 system-ui,sans-serif}th,td{border:1px solid var(--line);padding:6px 10px;text-align:left}th{color:var(--muted);font-weight:500}
 ul.tasks{list-style:none;padding-left:4px}img{max-width:100%;border-radius:6px}figure{margin:1em 0}.math-block{overflow:auto;text-align:center}
 .tags span{font:13px system-ui,sans-serif;color:var(--accent);background:var(--soft);padding:2px 8px;border-radius:99px}

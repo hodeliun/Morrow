@@ -21,6 +21,11 @@ import type {
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { childrenOf } from '../core/tree';
+import {
+  findUnrepresentablePageContent,
+  findUnrepresentableVaultMetadata,
+  hasUnrepresentableDatabaseSchema,
+} from '../core/vault/compatibility';
 import { linkTargets, placePages } from '../core/vault/layout';
 import type { Placement } from '../core/vault/layout';
 import {
@@ -39,6 +44,7 @@ import {
   readPageText,
   takeProperties,
   renderPageText,
+  sameValue,
 } from '../core/vault/pageFile';
 import type { PageSource } from '../core/vault/pageFile';
 import { splitFrontmatter } from '../core/vault/frontmatter';
@@ -61,6 +67,7 @@ import {
 import { planMoves, replayRename } from '../core/vault/plan';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import type { LoadedWorkspace } from '../core/migrations';
+import { WorkspaceWriteError } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
 import type { VaultBridge, VaultChange } from './vaultBridge';
 
@@ -69,6 +76,54 @@ export const RECENT_PATH = `${MORROW_DIR}/recent.json`;
 const HISTORY_DIR = `${MORROW_DIR}/history`;
 const MAX_RECENT = 300;
 const MAX_ACTIVITY_DAYS = 400;
+
+type FolderOwnerIndex = ReadonlyMap<
+  string,
+  { readonly count: number; readonly first: PageId; readonly second?: PageId }
+>;
+
+function indexFolderOwners(layout: Map<PageId, Placement>): FolderOwnerIndex {
+  const owners = new Map<
+    string,
+    { count: number; first: PageId; second?: PageId }
+  >();
+  for (const [id, placement] of layout) {
+    const folder = placement.folder.toLowerCase();
+    const current = owners.get(folder);
+    if (!current) {
+      owners.set(folder, { count: 1, first: id });
+    } else if (current.count === 1) {
+      owners.set(folder, { count: 2, first: current.first, second: id });
+    } else {
+      owners.set(folder, { ...current, count: current.count + 1 });
+    }
+  }
+  return owners;
+}
+
+function sourceParentId(
+  id: PageId,
+  placement: Placement,
+  owners: FolderOwnerIndex,
+): PageId | null | undefined {
+  const parentFolder = dirname(placement.folder);
+  if (!parentFolder) return null;
+  const folderOwners = owners.get(parentFolder.toLowerCase());
+  if (!folderOwners) return undefined;
+  if (folderOwners.first !== id)
+    return folderOwners.count === 1 ? folderOwners.first : undefined;
+  return folderOwners.count === 2 ? folderOwners.second : undefined;
+}
+
+interface NavigationReadContext {
+  readonly state: WorkspaceState;
+  readonly layout: Map<PageId, Placement>;
+  readonly sources: Map<PageId, PageSource>;
+  readonly others: Set<string>;
+  readonly resolver: Resolver;
+  readonly otherIndex: Map<string, string>;
+  readonly otherNames: Map<string, string[]>;
+}
 
 function localDay(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -86,6 +141,7 @@ export class VaultRepository implements WorkspaceRepository {
   private reserved = new Set<string>();
   // pages that could not be read, their files are never rewritten
   private locked = new Set<PageId>();
+  private protectedReasons = new Map<PageId, string>();
   private others = new Set<string>();
   private registryText: string | null = null;
   private recentText: string | null = null;
@@ -133,13 +189,41 @@ export class VaultRepository implements WorkspaceRepository {
 
   async load(): Promise<Result<LoadedWorkspace & { firstRun: boolean }>> {
     try {
-      const scan = await this.bridge.scan();
-      const loaded = loadVault(scan, this.newId);
+      const [scan, registryText, recentText] = await Promise.all([
+        this.bridge.scan(),
+        this.bridge.readText(REGISTRY_PATH),
+        this.bridge.readText(RECENT_PATH),
+      ]);
+      const parseMetadata = (
+        text: string | null,
+        scanned: unknown,
+        kind: 'workspace' | 'recent',
+      ): { value: unknown; problem: string | null } => {
+        if (text === null) return { value: scanned, problem: findUnrepresentableVaultMetadata(scanned, kind) };
+        let value: unknown;
+        try {
+          value = JSON.parse(text) as unknown;
+        } catch {
+          return { value: null, problem: `The Morrow ${kind} metadata could not be read and was left untouched.` };
+        }
+        if (value === null) {
+          return { value, problem: `The Morrow ${kind} metadata is not a supported object.` };
+        }
+        return { value, problem: findUnrepresentableVaultMetadata(value, kind) };
+      };
+      const registry = parseMetadata(registryText, scan.registry, 'workspace');
+      const recent = parseMetadata(recentText, scan.recent, 'recent');
+      if (registry.problem || recent.problem) {
+        return fail(`${registry.problem ?? recent.problem} Opening this vault was stopped before any file could be changed.`);
+      }
+      const guardedScan = { ...scan, registry: registry.value, recent: recent.value };
+      const loaded = loadVault(guardedScan, this.newId);
       this.adopt(loaded);
       this.others = new Set(scan.others);
-      this.registryText = scan.registry === null ? null : JSON.stringify(scan.registry);
-      this.recentText = scan.recent === null ? null : JSON.stringify(scan.recent);
-      const activity = (scan.recent as { activity?: unknown } | null)?.activity;
+      this.registryText =
+        registryText ?? (registry.value === null ? null : JSON.stringify(registry.value));
+      this.recentText = recentText ?? (recent.value === null ? null : JSON.stringify(recent.value));
+      const activity = (recent.value as { activity?: unknown } | null)?.activity;
       if (activity && typeof activity === 'object') {
         for (const [day, count] of Object.entries(activity as Record<string, unknown>)) {
           if (/^\d{4}-\d{2}-\d{2}$/.test(day) && typeof count === 'number' && count > 0)
@@ -154,13 +238,14 @@ export class VaultRepository implements WorkspaceRepository {
       this.stopWatching = this.bridge.onChange((changes) => this.onChanges(changes));
       const firstRun =
         scan.files.length === 0 &&
-        scan.registry === null &&
+        registry.value === null &&
         scan.folders.every((folder) => isHiddenPath(folder.path) || folder.path === TRASH_DIR);
       return ok({
         pages: loaded.pages,
         docs: loaded.docs,
         problems: loaded.problems,
         unreadable: loaded.unreadable,
+        protectedPages: Object.fromEntries(loaded.protectedPages),
         firstRun,
       });
     } catch (error) {
@@ -175,6 +260,57 @@ export class VaultRepository implements WorkspaceRepository {
     this.texts = loaded.texts;
     this.reserved = loaded.reserved;
     this.locked = new Set(loaded.unreadable);
+    this.protectedReasons = new Map(loaded.protectedPages);
+  }
+
+  validateWrite(batch: WriteBatch): string | null {
+    const state = batch.state ?? this.lastState;
+    if (!state) return 'Nothing to write yet.';
+    const touched = new Set<PageId>([
+      ...batch.pages.map((page) => page.id),
+      ...batch.docs.map((record) => record.id),
+      ...batch.removed,
+      ...(batch.snapshots ?? []).map((snapshot) => snapshot.pageId),
+    ]);
+    for (const id of touched) if (this.locked.has(id)) return this.protectionMessage(id);
+
+    // Adding or moving a child under a read-only page changes its directory contents and, for
+    // databases, the set of rows. Keep the whole parent boundary read only as well.
+    for (const id of touched) {
+      const page = state.pages[id];
+      if (page?.parentId && this.locked.has(page.parentId)) {
+        return this.protectionMessage(page.parentId);
+      }
+    }
+
+    for (const id of this.locked) {
+      const beforePage = this.lastState?.pages[id];
+      const afterPage = state.pages[id];
+      const beforeDoc = this.lastState?.docs[id];
+      const afterDoc = state.docs[id];
+      if (!sameValue(beforePage, afterPage) || !sameValue(beforeDoc, afterDoc)) {
+        return this.protectionMessage(id);
+      }
+    }
+
+    const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
+    const previous = new Map([...this.layout].filter(([id]) => !removed.has(id)));
+    const next = placePages(state, previous, this.folderOnly, this.reserved);
+    for (const id of this.locked) {
+      const before = this.layout.get(id);
+      const after = next.get(id);
+      if (before && (!after || before.file !== after.file || before.folder !== after.folder)) {
+        return this.protectionMessage(id);
+      }
+    }
+    return null;
+  }
+
+  private protectionMessage(id: PageId): string {
+    const reason = this.protectedReasons.get(id);
+    return reason
+      ? `This page is protected because Morrow cannot safely represent its content: ${reason}`
+      : 'This page could not be read and is protected from changes.';
   }
 
   async markInitialized(): Promise<void> {
@@ -185,7 +321,10 @@ export class VaultRepository implements WorkspaceRepository {
   async write(batch: WriteBatch): Promise<void> {
     const state = batch.state ?? this.lastState;
     if (!state) throw new Error('Nothing to write yet.');
-    this.lastState = state;
+    const refusal = this.validateWrite(batch);
+    if (refusal) throw new Error(refusal);
+    const metadataRefusal = await this.validateMetadataBeforeWrite();
+    if (metadataRefusal) throw new Error(metadataRefusal);
     const docChanged = new Set(batch.docs.map((record) => record.id));
     const metaChanged = new Set(batch.pages.map((page) => page.id));
     const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
@@ -197,19 +336,14 @@ export class VaultRepository implements WorkspaceRepository {
 
     const previous = new Map([...this.layout].filter(([id]) => !removed.has(id)));
     const next = placePages(state, previous, this.folderOnly, this.reserved);
-    const ops: VaultOp[] = [];
-
-    for (const id of removed) {
-      const before = this.layout.get(id);
-      if (before?.file) ops.push({ op: 'remove', path: before.file });
-      // a page deleted for good takes its history with it, which would otherwise keep its pictures and
-      // files in the attachments folder for ever
-      if (before) {
-        ops.push({ op: 'delete', path: this.historyPath(id) });
-        this.history.delete(id);
-      }
-    }
-    ops.push(...planMoves(previous, next));
+    const previousFolderOwners = indexFolderOwners(previous);
+    const nextFolderOwners = indexFolderOwners(next);
+    const persistibleSourceMatches = new Map<PageId, boolean>();
+    // Put a non-mutating compare ahead of moves/removals, then compare again at each metadata write.
+    const ops: VaultOp[] = [
+      { op: 'check', path: REGISTRY_PATH, expect: this.registryText },
+      { op: 'check', path: RECENT_PATH, expect: this.recentText },
+    ];
 
     const oldTargets = linkTargets(previous);
     const newTargets = linkTargets(next);
@@ -238,8 +372,70 @@ export class VaultRepository implements WorkspaceRepository {
         for (const child of childrenOf(state.pages, id, true)) candidates.add(child.id);
     }
 
+    const preservedSources = new Set<PageId>();
+    const sourcesToCheck = new Set<PageId>();
+    let navigationReadContext: NavigationReadContext | null = null;
+    const getNavigationReadContext = (): NavigationReadContext => {
+      navigationReadContext ??= this.createNavigationReadContext(state, next);
+      return navigationReadContext;
+    };
+    for (const id of candidates) {
+      const dependencies = this.navigationSourceDependencies(
+        id,
+        state,
+        previous,
+        next,
+        previousFolderOwners,
+        nextFolderOwners,
+        movedPages,
+        retargeted,
+        docChanged,
+        persistibleSourceMatches,
+        getNavigationReadContext,
+      );
+      if (!dependencies) continue;
+      preservedSources.add(id);
+      for (const dependency of dependencies) sourcesToCheck.add(dependency);
+    }
+
+    const checkedSources = new Set<string>();
+    for (const id of batch.checkPages ?? []) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) {
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'The source database for a staged Polaris Dados edit is no longer available.',
+          false,
+        );
+      }
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+      checkedSources.add(source.file.toLowerCase());
+    }
+    for (const id of sourcesToCheck) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) continue;
+      if (checkedSources.has(source.file.toLowerCase())) continue;
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+      checkedSources.add(source.file.toLowerCase());
+    }
+
+    for (const id of removed) {
+      const before = this.layout.get(id);
+      if (before?.file) ops.push({ op: 'remove', path: before.file });
+      // a page deleted for good takes its history with it, which would otherwise keep its pictures and
+      // files in the attachments folder for ever
+      if (before) {
+        ops.push({ op: 'delete', path: this.historyPath(id) });
+        this.history.delete(id);
+      }
+    }
+    ops.push(...planMoves(previous, next));
+
     const resolveOld = retargeted.size > 0 ? makeResolver(state, previous, this.sources) : null;
     for (const id of candidates) {
+      if (preservedSources.has(id)) continue;
       const placement = next.get(id);
       if (!state.pages[id] || !placement?.file || this.locked.has(id)) continue;
       const text = this.render(
@@ -301,6 +497,14 @@ export class VaultRepository implements WorkspaceRepository {
       if (op) ops.push(op);
     }
 
+    const guardedLinkedViewPages = new Set<PageId>();
+    for (const id of candidates) {
+      const placement = next.get(id);
+      if (!placement?.file || extension(placement.file) !== 'md') continue;
+      const stagedHasLinkedView = hasLinkedViewNode(state.docs[id]);
+      if (stagedHasLinkedView) guardedLinkedViewPages.add(id);
+    }
+
     const edited = batch.docs.length;
     if (edited > 0) {
       const day = localDay(new Date());
@@ -308,9 +512,9 @@ export class VaultRepository implements WorkspaceRepository {
     }
     const registry = this.registryFor(state, next);
     if (registry.workspace !== this.registryText)
-      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace });
+      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace, expect: this.registryText });
     if (registry.recent !== this.recentText)
-      ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent });
+      ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent, expect: this.recentText });
     // the shell only removes empty folders, a folder page keeps its folder because the folder is the page
     const folderPages = new Set(
       [...next.values()].filter((p) => p.file === null).map((p) => p.folder.toLowerCase()),
@@ -319,10 +523,212 @@ export class VaultRepository implements WorkspaceRepository {
       if (!folderPages.has(folder.toLowerCase())) ops.push({ op: 'rmdir', path: folder });
     }
 
-    await this.run(ops, next);
+    await this.run(ops, next, guardedLinkedViewPages);
+    this.lastState = state;
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
     this.registryDirty = false;
+  }
+
+  private navigationSourceDependencies(
+    id: PageId,
+    state: WorkspaceState,
+    previous: Map<PageId, Placement>,
+    next: Map<PageId, Placement>,
+    previousFolderOwners: FolderOwnerIndex,
+    nextFolderOwners: FolderOwnerIndex,
+    movedPages: Set<PageId>,
+    retargeted: Set<PageId>,
+    docChanged: Set<PageId>,
+    persistibleSourceMatches: Map<PageId, boolean>,
+    getNavigationReadContext: () => NavigationReadContext,
+  ): PageId[] | null {
+    const page = state.pages[id];
+    const before = previous.get(id);
+    const after = next.get(id);
+    const parent = page?.parentId ? state.pages[page.parentId] : undefined;
+    if (
+      !page ||
+      !before?.file ||
+      !after?.file ||
+      extension(before.file) !== 'md' ||
+      before.file !== after.file ||
+      before.folder !== after.folder ||
+      movedPages.has(id) ||
+      retargeted.size > 0 ||
+      docChanged.has(id) ||
+      this.locked.has(id) ||
+      page.encrypted ||
+      (!isOptedInDatabase(page) && !isOptedInDatabase(parent))
+    ) {
+      return null;
+    }
+
+    const previousOwner = sourceParentId(id, before, previousFolderOwners);
+    const nextOwner = sourceParentId(id, after, nextFolderOwners);
+    if (
+      previousOwner === undefined ||
+      nextOwner === undefined ||
+      previousOwner !== nextOwner ||
+      page.parentId !== nextOwner
+    ) {
+      return null;
+    }
+
+    const dependencies = [id];
+    if (page.parentId) {
+      const parentId = page.parentId;
+      if (docChanged.has(parentId) || movedPages.has(parentId) || retargeted.has(parentId)) return null;
+      if (parent?.kind === 'database') {
+        const parentBefore = previous.get(parentId);
+        const parentAfter = next.get(parentId);
+        const grandparent = parent.parentId ? state.pages[parent.parentId] : undefined;
+        if (
+          !parent.database ||
+          !parentBefore?.file ||
+          !parentAfter?.file ||
+          parentBefore.file !== parentAfter.file ||
+          parentBefore.folder !== parentAfter.folder ||
+          movedPages.has(parentId) ||
+          grandparent?.kind === 'database' ||
+          !this.sourceMatchesPersistiblePage(
+            parentId,
+            state,
+            next,
+            nextFolderOwners,
+            persistibleSourceMatches,
+            getNavigationReadContext,
+          )
+        ) {
+          return null;
+        }
+        dependencies.push(parentId);
+      }
+    }
+
+    if (
+      !this.sourceMatchesPersistiblePage(
+        id,
+        state,
+        next,
+        nextFolderOwners,
+        persistibleSourceMatches,
+        getNavigationReadContext,
+      )
+    )
+      return null;
+    return dependencies;
+  }
+
+  private sourceMatchesPersistiblePage(
+    id: PageId,
+    state: WorkspaceState,
+    layout: Map<PageId, Placement>,
+    folderOwners: FolderOwnerIndex,
+    matches: Map<PageId, boolean>,
+    getNavigationReadContext: () => NavigationReadContext,
+  ): boolean {
+    const remembered = matches.get(id);
+    if (remembered !== undefined || matches.has(id)) return remembered ?? false;
+    const page = state.pages[id];
+    const placement = layout.get(id);
+    const baseline = this.texts.get(id);
+    if (
+      !page ||
+      !placement?.file ||
+      extension(placement.file) !== 'md' ||
+      baseline === undefined ||
+      this.locked.has(id) ||
+      page.encrypted
+    ) {
+      return false;
+    }
+
+    const sourceParent = sourceParentId(id, placement, folderOwners);
+    if (sourceParent === undefined || page.parentId !== sourceParent) {
+      matches.set(id, false);
+      return false;
+    }
+
+    let matchesSource: boolean;
+    try {
+      const parsed = this.readFile(
+        placement.file,
+        baseline,
+        page,
+        state,
+        layout,
+        () => {
+          throw new Error('A new select option would be required to compare this source safely.');
+        },
+        getNavigationReadContext(),
+      );
+      matchesSource = (
+        parsed.ok &&
+        parsed.database === undefined &&
+        samePersistiblePageContent(page, parsed.page) &&
+        sameValue(state.docs[id], parsed.doc)
+      );
+    } catch {
+      matchesSource = false;
+    }
+    matches.set(id, matchesSource);
+    return matchesSource;
+  }
+
+  private async validateMetadataBeforeWrite(): Promise<string | null> {
+    for (const [path, kind, baseline] of [
+      [REGISTRY_PATH, 'workspace', this.registryText],
+      [RECENT_PATH, 'recent', this.recentText],
+    ] as const) {
+      let current: string | null;
+      try {
+        current = await this.bridge.readText(path);
+      } catch {
+        return `The Morrow ${kind} metadata could not be checked; no files were changed.`;
+      }
+      if (current === null) {
+        if (baseline !== null) {
+          return `The Morrow ${kind} metadata changed after opening; reopen this vault before saving.`;
+        }
+        continue;
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(current) as unknown;
+      } catch {
+        return `The Morrow ${kind} metadata could not be read and was left untouched.`;
+      }
+      const issue = findUnrepresentableVaultMetadata(raw, kind);
+      if (issue) return `${issue} No files were changed.`;
+      if (current !== baseline) {
+        return `The Morrow ${kind} metadata changed after opening; reopen this vault before saving.`;
+      }
+    }
+    return null;
+  }
+
+  private createNavigationReadContext(
+    state: WorkspaceState,
+    layout: Map<PageId, Placement>,
+  ): NavigationReadContext {
+    const otherIndex = new Map<string, string>();
+    const otherNames = new Map<string, string[]>();
+    for (const path of this.others) {
+      otherIndex.set(path.toLowerCase(), path);
+      const name = basename(path).toLowerCase();
+      otherNames.set(name, [...(otherNames.get(name) ?? []), path]);
+    }
+    return {
+      state,
+      layout,
+      sources: this.sources,
+      others: this.others,
+      resolver: makeResolver(state, layout, this.sources),
+      otherIndex,
+      otherNames,
+    };
   }
 
   private wantsFile(state: WorkspaceState, id: PageId): boolean {
@@ -336,6 +742,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       placement ? basename(placement.folder) : '',
       parent?.kind === 'database' ? parent.database : null,
+      parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
     return managed.size > 0 || Object.keys(page.extra).length > 0;
   }
@@ -388,6 +795,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       basename(placement.folder),
       parent?.kind === 'database' ? parent.database : null,
+      parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
     const text = renderPageText(composeFrontmatter(managed, page.extra, source), source, body);
     // the next save starts from what this one wrote, so keys added in morrow keep their spelling and order
@@ -405,12 +813,16 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   // carries out the operations and keeps track of what reached the disk, even when something fails halfway
-  private async run(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async run(
+    ops: VaultOp[],
+    next: Map<PageId, Placement>,
+    guardedLinkedViewPages: ReadonlySet<PageId>,
+  ): Promise<void> {
     const started = Date.now();
     for (const op of ops) if (op.op === 'write') this.wroteAt.set(op.path.toLowerCase(), started);
     this.saving++;
     try {
-      await this.runOps(ops, next);
+      await this.runOps(ops, next, guardedLinkedViewPages);
     } finally {
       this.saving--;
       if (this.saving === 0 && this.held.length > 0) {
@@ -421,7 +833,11 @@ export class VaultRepository implements WorkspaceRepository {
     }
   }
 
-  private async runOps(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async runOps(
+    ops: VaultOp[],
+    next: Map<PageId, Placement>,
+    guardedLinkedViewPages: ReadonlySet<PageId>,
+  ): Promise<void> {
     let pending = ops;
     const layout = new Map(this.layout);
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -442,7 +858,48 @@ export class VaultRepository implements WorkspaceRepository {
       if (failedAt === -1) throw new Error('The desktop shell stopped before finishing the save.');
       const failed = results[failedAt]!;
       const op = pending[failedAt]!;
+      if (
+        !failed.ok &&
+        failed.code === 'conflict' &&
+        op.op === 'check' &&
+        op.id &&
+        (this.isPilotDataRecord(op.id) ||
+          guardedLinkedViewPages.has(op.id) ||
+          this.hasLinkedViewBaseline(op.id))
+      ) {
+        this.layout = layout;
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'A Polaris Dados source or linked-view note changed on disk. The staged change was kept in memory and not written; reopen the vault to review the external version.',
+          false,
+        );
+      }
       if (!failed.ok && failed.code === 'conflict' && op.op === 'write' && op.id) {
+        if (
+          this.isPilotDataRecord(op.id) ||
+          guardedLinkedViewPages.has(op.id) ||
+          this.hasLinkedViewBaseline(op.id)
+        ) {
+          this.layout = layout;
+          throw new WorkspaceWriteError(
+            'save-conflict',
+            'A Polaris Dados source or linked-view note changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
+            false,
+          );
+        }
+        const reason =
+          failed.current === null
+            ? null
+            : (findUnrepresentablePageContent(failed.current) ??
+              splitFrontmatter(failed.current).error ??
+              (isEncryptedText(failed.current) ? 'The current file is encrypted.' : null));
+        if (reason) {
+          // Earlier renames in this same batch may already have moved the page; keep that layout fact.
+          this.layout = layout;
+          throw new Error(
+            `The page changed on disk and contains content this version cannot safely represent. It was left untouched: ${reason}`,
+          );
+        }
         // the file changed on disk in the meantime, that version is kept in page history before it is replaced
         if (failed.current !== null) await this.keepDiskVersion(op.id, failed.current);
         pending = [{ ...op, expect: failed.current }, ...pending.slice(failedAt + 1)];
@@ -488,6 +945,31 @@ export class VaultRepository implements WorkspaceRepository {
       default:
         break;
     }
+  }
+
+  private isPilotDataRecord(id: PageId): boolean {
+    const state = this.currentState() ?? this.lastState;
+    const page = state?.pages[id];
+    if (!page) return false;
+    if (page.kind === 'database' && Object.hasOwn(page.extra, 'polarisDados')) return true;
+    const parent = page.parentId ? state?.pages[page.parentId] : undefined;
+    return parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados');
+  }
+
+  private hasLinkedViewText(text: string): boolean {
+    if (isEncryptedText(text) || findUnrepresentablePageContent(text)) return false;
+    try {
+      const page = readPageText(text);
+      if (page.error) return false;
+      return hasLinkedViewNode(markdownToDoc(page.body));
+    } catch {
+      return false;
+    }
+  }
+
+  private hasLinkedViewBaseline(id: PageId): boolean {
+    const text = this.plainTexts.get(id) ?? this.texts.get(id);
+    return text ? this.hasLinkedViewText(text) : false;
   }
 
   private registryFor(
@@ -616,7 +1098,13 @@ export class VaultRepository implements WorkspaceRepository {
     const opened = await decryptPage(text, password);
     if (!opened) return fail('That password is not right.');
     const read = this.readFile(placement.file, opened.plain, base, state, this.layout);
-    if (!read.ok) return fail('The page was decrypted but could not be read.');
+    if (!read.ok) {
+      return fail(
+        read.reason
+          ? `This encrypted page is protected because Morrow cannot safely represent its content: ${read.reason}`
+          : 'The page was decrypted but could not be read.',
+      );
+    }
     this.keys.set(id, opened.pageKey);
     this.plainTexts.set(id, opened.plain);
     if (read.source) this.sources.set(id, read.source);
@@ -738,6 +1226,10 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   async deleteFiles(ids: FileId[]): Promise<void> {
+    if (ids.length > 0 && this.locked.size > 0) {
+      const id = this.locked.values().next().value as PageId;
+      throw new Error(`Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`);
+    }
     const results = await this.bridge.apply(ids.map((path) => ({ op: 'remove', path })));
     for (const id of ids) this.others.delete(id);
     const failed = results.find((result) => !result.ok);
@@ -799,6 +1291,8 @@ export class VaultRepository implements WorkspaceRepository {
     const removed = new Set<PageId>();
     const unreadable = new Set<PageId>();
     const readable = new Set<PageId>();
+    const protectedPages = new Map<PageId, string>();
+    const protectedDatabases = new Set<PageId>();
     const texts = new Map<PageId, string>();
     const sources = new Map<PageId, PageSource | null>();
     const becameFolders = new Set<PageId>();
@@ -912,6 +1406,27 @@ export class VaultRepository implements WorkspaceRepository {
       } else {
         pages.set(id, { ...page, encrypted: isEncryptedText(text) || page.encrypted });
         unreadable.add(id);
+        if (read.reason) {
+          protectedPages.set(id, read.reason);
+          docs[id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text } }] };
+          if (hasUnrepresentableDatabaseSchema(text)) protectedDatabases.add(id);
+        }
+      }
+    }
+
+    if (protectedDatabases.size > 0) {
+      const allPages = new Map([...Object.values(state.pages), ...pages.values()].map((page) => [page.id, page]));
+      for (const databaseId of protectedDatabases) {
+        const reason = `The parent database is protected: ${protectedPages.get(databaseId)}`;
+        for (const row of allPages.values()) {
+          if (row.parentId !== databaseId || removed.has(row.id)) continue;
+          protectedPages.set(row.id, reason);
+          unreadable.add(row.id);
+          readable.delete(row.id);
+          pages.set(row.id, row);
+          const raw = this.texts.get(row.id);
+          if (raw !== undefined) docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text: raw } }] };
+        }
       }
     }
 
@@ -922,6 +1437,7 @@ export class VaultRepository implements WorkspaceRepository {
       removed: [...removed],
       unreadable: [...unreadable],
       readable: [...readable],
+      ...(protectedPages.size > 0 ? { protectedPages: Object.fromEntries(protectedPages) } : {}),
     };
     return {
       patch,
@@ -944,8 +1460,13 @@ export class VaultRepository implements WorkspaceRepository {
           const source = sources.get(id);
           if (source) this.sources.set(id, source);
           if (unreadable.has(id)) this.locked.add(id);
-          if (readable.has(id)) this.locked.delete(id);
+          if (protectedPages.has(id)) this.protectedReasons.set(id, protectedPages.get(id)!);
+          if (readable.has(id)) {
+            this.locked.delete(id);
+            this.protectedReasons.delete(id);
+          }
         }
+        this.lastState = this.currentState() ?? this.lastState;
         // registry ids for new pages are written with the next save
         if (patch.pages.some((page) => !this.registryHas(page.id))) this.registryDirty = true;
       },
@@ -967,16 +1488,26 @@ export class VaultRepository implements WorkspaceRepository {
     base: PageMeta,
     state: WorkspaceState,
     layout: Map<PageId, Placement>,
+    newOptionId?: () => string,
+    navigationContext?: NavigationReadContext,
   ):
     | { ok: true; page: PageMeta; doc: DocNode; source: PageSource | null; database?: PageMeta }
-    | { ok: false } {
+    | { ok: false; reason?: string } {
     if (text.length > MAX_PAGE_BYTES || isEncryptedText(text)) return { ok: false };
     const folder = stripExtension(path);
     const name = basename(folder);
     const parent = base.parentId ? state.pages[base.parentId] : undefined;
     const dailyDate = parent?.kind === 'journal' && DATE_NAME.test(name) ? name : null;
-    const merged = { ...state, pages: { ...state.pages, [base.id]: base } };
-    const resolver = makeResolver(merged, layout, this.sources);
+    const context =
+      navigationContext?.state === state &&
+      navigationContext.layout === layout &&
+      navigationContext.sources === this.sources &&
+      navigationContext.others === this.others &&
+      state.pages[base.id] === base
+        ? navigationContext
+        : undefined;
+    const merged = context ? state : { ...state, pages: { ...state.pages, [base.id]: base } };
+    const resolver = context?.resolver ?? makeResolver(merged, layout, this.sources);
     if (extension(path) === 'canvas') {
       try {
         const data = readCanvas(JSON.parse(text || '{}'), (target) =>
@@ -993,6 +1524,8 @@ export class VaultRepository implements WorkspaceRepository {
         return { ok: false };
       }
     }
+    const protectionReason = findUnrepresentablePageContent(text);
+    if (protectionReason) return { ok: false, reason: protectionReason };
     const read = readPageText(text);
     if (read.error) return { ok: false };
     const page: PageMeta = {
@@ -1011,16 +1544,28 @@ export class VaultRepository implements WorkspaceRepository {
     let database: PageMeta | undefined;
     if (parent?.kind === 'database' && parent.database) {
       const copy = structuredClone(parent.database);
-      takeProperties(copy, page.extra, page.properties, this.newId);
+      takeProperties(
+        copy,
+        page.extra,
+        page.properties,
+        newOptionId ?? this.newId,
+        Object.hasOwn(parent.extra, 'polarisDados'),
+      );
       const added = copy.properties.some(
         (prop, i) => prop.options.length !== parent.database!.properties[i]!.options.length,
       );
       if (added) database = { ...parent, database: copy };
     }
-    const index = new Map([...this.others].map((other) => [other.toLowerCase(), other]));
-    const names = new Map<string, string[]>();
-    for (const other of this.others)
-      names.set(basename(other).toLowerCase(), [...(names.get(basename(other).toLowerCase()) ?? []), other]);
+    const index =
+      context?.otherIndex ?? new Map([...this.others].map((other) => [other.toLowerCase(), other]));
+    const names = context?.otherNames ?? new Map<string, string[]>();
+    if (!context) {
+      for (const other of this.others)
+        names.set(basename(other).toLowerCase(), [
+          ...(names.get(basename(other).toLowerCase()) ?? []),
+          other,
+        ]);
+    }
     const dir = dirname(path);
     const doc = markdownToDoc(
       read.body,
@@ -1030,6 +1575,16 @@ export class VaultRepository implements WorkspaceRepository {
     if (!valid.ok) return { ok: false };
     return { ok: true, page, doc: valid.value, source: read.source, ...(database ? { database } : {}) };
   }
+}
+
+function hasLinkedViewNode(doc: DocNode | undefined): boolean {
+  if (!doc) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (node.type === 'polarisDadosView') found = true;
+    return !found;
+  });
+  return found;
 }
 
 function linksTo(doc: DocNode, ids: Set<PageId>): boolean {
@@ -1095,6 +1650,24 @@ function safeCanvas(text: string): DocNode | null {
   } catch {
     return null;
   }
+}
+
+function isOptedInDatabase(page: PageMeta | undefined): page is PageMeta {
+  return page?.kind === 'database' && Object.hasOwn(page.extra, 'polarisDados');
+}
+
+function samePersistiblePageContent(current: PageMeta, parsed: PageMeta): boolean {
+  const projection = (page: PageMeta) => ({
+    title: page.title,
+    icon: page.icon,
+    cover: page.cover,
+    kind: page.kind,
+    tags: page.tags,
+    extra: page.extra,
+    database: page.database,
+    properties: page.properties,
+  });
+  return sameValue(projection(current), projection(parsed));
 }
 
 const MIME: Record<string, string> = {

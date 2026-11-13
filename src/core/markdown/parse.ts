@@ -3,6 +3,7 @@ import type { StateBlock, StateInline, Token } from 'markdown-it';
 import { BACKGROUND_HEX, calloutTone, emptyDoc, nearestColor, TEXT_HEX } from '../model';
 import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
+import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import { calloutIcon, HEADER_COLUMN, imageWidth, toggleLevel } from './serialize';
 
 export interface ParseOptions {
@@ -281,7 +282,19 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
           headerColumn = true;
           break;
         }
-        htmlBlock(token.content, options, { push, top, close, stack });
+        {
+          const view = decodePolarisDadosViewMarker(token.content.trim());
+          if (view && hasInvalidViewListStart(stack)) {
+            push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
+          } else if (view) push({ type: 'polarisDadosView', attrs: view });
+          else if (
+            hasInvalidViewListStart(stack) &&
+            /<!--\s*morrow:polaris-dados-view\s*:/i.test(token.content)
+          ) {
+            // Keep nested or malformed protocol markers from becoming atoms after list normalization.
+            push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
+          } else htmlBlock(token.content, options, { push, top, close, stack });
+        }
         break;
       default:
         break;
@@ -290,6 +303,14 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
 
   const doc = normalize(root);
   return (doc.content ?? []).length > 0 ? doc : emptyDoc();
+}
+
+function hasInvalidViewListStart(stack: DocNode[]): boolean {
+  return stack.some((node) => {
+    if (node.type !== 'listItem' && node.type !== 'taskItem') return false;
+    const first = node.content?.[0];
+    return first?.type !== 'paragraph';
+  });
 }
 
 const CELL_LIST_OPEN = /^<(ul|ol)\b([^>]*)>$/i;

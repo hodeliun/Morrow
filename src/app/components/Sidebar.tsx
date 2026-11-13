@@ -67,6 +67,7 @@ import { openDialog, setUi, useUi } from '../ui';
 import { run, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
 import { pageMenuEntries } from './pageMenu';
+import { canMoveTreePage, isProviderManagedPage } from './pageEditability';
 import { Emoji } from './Emoji';
 import { Logo } from './primitives';
 import { PAGE_DRAG_TYPE } from '../editor/PageLink';
@@ -509,15 +510,16 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
     const id = dragging.current;
     dragging.current = null;
     setDrop(null);
-    if (!id || id === target.id) return;
+    const source = id ? state.pages[id] : undefined;
+    if (!source || source.id === target.id || !canMoveTreePage(state, source, target, zone)) return;
     if (zone === 'inside') {
-      if (movePage(id, target.id)) expandPage(target.id);
+      if (movePage(source.id, target.id)) expandPage(target.id);
       return;
     }
     const parentId = effectiveParent(state.pages, target);
-    const siblings = childrenOf(state.pages, parentId).filter((page) => page.id !== id);
+    const siblings = childrenOf(state.pages, parentId).filter((page) => page.id !== source.id);
     const index = siblings.findIndex((page) => page.id === target.id) + (zone === 'after' ? 1 : 0);
-    movePage(id, parentId, index);
+    movePage(source.id, parentId, index);
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -556,11 +558,11 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
         break;
       case 'F2':
         event.preventDefault();
-        setUi({ renaming: id });
+        if (!isProviderManagedPage(state, page)) setUi({ renaming: id });
         break;
       case 'Delete':
         event.preventDefault();
-        trashPage(id);
+        if (!isProviderManagedPage(state, page)) trashPage(id);
         break;
       case 'ContextMenu':
         event.preventDefault();
@@ -592,6 +594,7 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
     const rows = children.map((page) => {
       const hasChildren = childrenOf(state.pages, page.id).length > 0;
       const isOpen = expandedSet.has(page.id);
+      const providerManaged = isProviderManagedPage(state, page);
       return (
         <li key={page.id} role="none">
           <TreeRow
@@ -603,7 +606,8 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
             tabbable={
               activeId ? page.id === activeId : depth === 0 && page === children[0] && parentId === null
             }
-            renaming={ui.renaming === page.id}
+            renaming={ui.renaming === page.id && !providerManaged}
+            providerManaged={providerManaged}
             dropZone={drop?.id === page.id ? drop.zone : null}
             menuOpen={menu?.id === page.id}
             onToggle={toggle}
@@ -611,7 +615,13 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
             onDragStart={() => (dragging.current = page.id)}
             onDragOverZone={(zone) => {
               const id = dragging.current;
-              if (!id || id === page.id || isDescendantOf(state.pages, page.id, id)) {
+              const source = id ? state.pages[id] : undefined;
+              if (
+                !source ||
+                source.id === page.id ||
+                isDescendantOf(state.pages, page.id, source.id) ||
+                !canMoveTreePage(state, source, page, zone)
+              ) {
                 setDrop(null);
                 return false;
               }
@@ -677,6 +687,7 @@ interface RowProps {
   active: boolean;
   tabbable: boolean;
   renaming: boolean;
+  providerManaged: boolean;
   dropZone: DropZone | null;
   menuOpen: boolean;
   onToggle: (id: PageId) => void;
@@ -688,7 +699,18 @@ interface RowProps {
 }
 
 const TreeRow = memo(function TreeRow(props: RowProps) {
-  const { page, depth, hasChildren, isOpen, active, tabbable, renaming, dropZone, menuOpen } = props;
+  const {
+    page,
+    depth,
+    hasChildren,
+    isOpen,
+    active,
+    tabbable,
+    renaming,
+    providerManaged,
+    dropZone,
+    menuOpen,
+  } = props;
 
   const zoneFor = (event: React.DragEvent): DropZone => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -707,7 +729,7 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
       data-page-id={page.id}
       className={`tree-row${active ? ' is-active' : ''}${menuOpen ? ' is-menu-open' : ''}${dropZone ? ` drop-${dropZone}` : ''}`}
       style={{ '--depth': depth } as React.CSSProperties}
-      draggable={!renaming}
+      draggable={!renaming && !providerManaged}
       onClick={() => {
         if (renaming) return;
         openPage(page.id);
@@ -715,13 +737,17 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
       }}
       onDoubleClick={(event) => {
         event.preventDefault();
-        setUi({ renaming: page.id });
+        if (!providerManaged) setUi({ renaming: page.id });
       }}
       onContextMenu={(event) => {
         event.preventDefault();
         props.onMenu(event.currentTarget as HTMLElement);
       }}
       onDragStart={(event) => {
+        if (providerManaged) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData(PAGE_DRAG_TYPE, page.id);
         event.dataTransfer.setData('text/plain', displayTitle(page));
         event.dataTransfer.effectAllowed = 'move';
@@ -755,7 +781,11 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
       <span className="tree-icon">
         <PageIcon page={page} />
       </span>
-      {renaming ? <RenameInput page={page} /> : <span className="tree-title">{displayTitle(page)}</span>}
+      {renaming && !providerManaged ? (
+        <RenameInput page={page} />
+      ) : (
+        <span className="tree-title">{displayTitle(page)}</span>
+      )}
       {!renaming && (
         <span className="tree-actions">
           <button
@@ -771,19 +801,21 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
           >
             <MoreHorizontal size={14} />
           </button>
-          <button
-            type="button"
-            tabIndex={-1}
-            className="icon-button tiny"
-            aria-label={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
-            title={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
-            onClick={(event) => {
-              event.stopPropagation();
-              createPage({ parentId: page.id });
-            }}
-          >
-            <Plus size={14} />
-          </button>
+          {!providerManaged && (
+            <button
+              type="button"
+              tabIndex={-1}
+              className="icon-button tiny"
+              aria-label={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
+              title={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
+              onClick={(event) => {
+                event.stopPropagation();
+                createPage({ parentId: page.id });
+              }}
+            >
+              <Plus size={14} />
+            </button>
+          )}
         </span>
       )}
     </div>

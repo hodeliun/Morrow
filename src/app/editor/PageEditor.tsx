@@ -1,8 +1,7 @@
 import { Editor, Extension } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
-import { Fragment } from '@tiptap/pm/model';
 import { EditorState, TextSelection } from '@tiptap/pm/state';
-import type { Node as ProseNode, Slice } from '@tiptap/pm/model';
+import type { Fragment, Node as ProseNode, Slice } from '@tiptap/pm/model';
 import { EditorContent } from '@tiptap/react';
 import katex from 'katex';
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -25,9 +24,10 @@ import { Popover } from '../components/Popover';
 import { createPage, openToday } from '../operations';
 import { navigate, openPage } from '../router';
 import { targetPane, usePane } from '../tabs';
-import { getSession, getState, run } from '../workspace';
+import { getSession, getState } from '../workspace';
 import type { BlockMenuRequest } from './BlockHandle';
-import { registerCommit, setFocusedEditor } from './commits';
+import { focusedEditor, setFocusedEditor } from './commits';
+import { registerPageEditorCoordinator } from './pageEditorCoordination';
 import { BlockMenu, FormattingMenu, LinkMenu, openHref, TableMenu } from './EditorMenus';
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
@@ -45,8 +45,6 @@ interface Props {
   onDirty: (dirty: boolean) => void;
   onReady?: (editor: Editor) => void;
 }
-
-const COMMIT_DELAY_MS = 250;
 
 const EmbeddedDatabase = lazy(() =>
   import('../components/database/EmbeddedDatabase').then((module) => ({ default: module.EmbeddedDatabase })),
@@ -115,28 +113,6 @@ function embedHtml(id: PageId, hostId: PageId, anchor: string | null): string | 
 
 // the editor adds an empty line after a list or table that ends a page, so there is somewhere to type.
 // that line is never saved, so on its own it is not an edit
-function withoutTrailingEmpty(doc: ProseNode): ProseNode {
-  let count = doc.childCount;
-  while (
-    count > 0 &&
-    doc.child(count - 1).type.name === 'paragraph' &&
-    doc.child(count - 1).content.size === 0
-  )
-    count--;
-  if (count === doc.childCount) return doc;
-  const children: ProseNode[] = [];
-  for (let i = 0; i < count; i++) children.push(doc.child(i));
-  return doc.copy(Fragment.from(children));
-}
-
-function sameContent(editor: Editor, saved: DocNode): boolean {
-  try {
-    return withoutTrailingEmpty(editor.schema.nodeFromJSON(saved)).eq(withoutTrailingEmpty(editor.state.doc));
-  } catch {
-    return false;
-  }
-}
-
 // what other apps get as plain text. words from inside one block copy as they read, more than one block
 // copies as markdown, so a list pastes as a list rather than lines with gaps between them
 // colours, highlights and underlines have no markdown of their own and are written as html tags, which
@@ -279,7 +255,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   // the find bar opens with the words picked on the page, n changes so pressing it again refills it
   const [finding, setFinding] = useState<{ text: string; n: number } | null>(null);
   const pane = usePane();
-  const committed = useRef<DocNode>(doc);
+  const coordinatorRef = useRef<ReturnType<typeof registerPageEditorCoordinator> | null>(null);
   // the editor that already holds its page
   const filled = useRef<Editor | null>(null);
   const callbacks = useRef({ onExitTop, onDirty, onReady });
@@ -288,22 +264,16 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   });
 
   useEffect(() => {
-    let dirty = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    // what this page holds as the editor is made, the editor is filled with it once it is in the window
-    committed.current = doc;
-
-    const commit = () => {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      if (!dirty || instance.isDestroyed) return;
-      dirty = false;
-      callbacks.current.onDirty(false);
-      if (sameContent(instance, committed.current)) return;
-      const next = instance.getJSON() as DocNode;
-      committed.current = next;
-      run({ type: 'page.setDoc', id: pageId, doc: next, now: Date.now() });
-    };
+    const session = getSession();
+    const coordinator = registerPageEditorCoordinator(
+      session,
+      pageId,
+      session.getState().docs[pageId] ?? doc,
+      editable,
+      (dirty) => callbacks.current.onDirty(dirty),
+      pane,
+    );
+    coordinatorRef.current = coordinator;
 
     const shortcuts = Extension.create({
       name: 'morrowShortcuts',
@@ -331,8 +301,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
             return true;
           },
           'Mod-s': () => {
-            commit();
-            void getSession().flush();
+            if (coordinator.commit()) void session.flush();
             return true;
           },
           // backspace at the start of the first line goes back up into the title, the way enter there
@@ -373,7 +342,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
         ...createExtensions({
           getTitle: titleOf,
           getIcon: (id) => getState().pages[id]?.icon ?? null,
-          subscribe: (listener) => getSession().subscribe(listener),
+          subscribe: (listener) => session.subscribe(listener),
           open: (id, target) => openPage(id, null, target),
           findPages: (query) =>
             findPagesByTitle(getState(), query, 8)
@@ -398,7 +367,9 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           dateMenu: (date, anchor) => setDateMenu({ date, anchor }),
           onBlockMenu: setBlockMenu,
           resolvePage: (title) => pageIdByTitle(getState(), title),
+          linkedViewContext: { session, pageId },
         }),
+        coordinator.extension,
         shortcuts,
       ],
       // the editor starts empty and gets the page once it is in the window, see below
@@ -432,31 +403,24 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           return false;
         },
       },
-      // only real edits count, tiptap also reports an update when nothing in the page changed
-      onUpdate: ({ transaction, appendedTransactions }) => {
-        if (!transaction.docChanged && !appendedTransactions.some((tr) => tr.docChanged)) return;
-        if (!dirty) callbacks.current.onDirty(true);
-        dirty = true;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(commit, COMMIT_DELAY_MS);
-      },
+      onUpdate: coordinator.handleUpdate,
     });
 
+    coordinator.attach(instance);
     instance.on('focus', () => setFocusedEditor(instance));
-    const unregister = registerCommit(commit);
     setEditor(instance);
     callbacks.current.onReady?.(instance);
 
     return () => {
-      commit();
-      unregister();
-      setFocusedEditor(null);
+      coordinator.dispose();
+      if (focusedEditor() === instance) setFocusedEditor(null);
+      if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
       setEditor(null);
       setBlockMenu(null);
       // menus unregister their plugins during the same unmount, destroy once they are done
       setTimeout(() => instance.destroy(), 0);
     };
-    // the editor is rebuilt only when the page changes, later doc updates are synced below
+    // the editor is rebuilt only when the page changes, later doc updates are observed by the coordinator
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageId]);
 
@@ -466,7 +430,8 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   useLayoutEffect(() => {
     if (!editor || editor.isDestroyed || filled.current === editor) return;
     filled.current = editor;
-    const content = committed.current;
+    const coordinator = coordinatorRef.current;
+    const content = coordinator?.content() ?? doc;
     try {
       editor.view.updateState(
         EditorState.create({ doc: editor.schema.nodeFromJSON(content), plugins: editor.state.plugins }),
@@ -475,18 +440,26 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       // content the schema does not take as it is goes through tiptap, which mends what it can
       editor.commands.setContent(content as JSONContent, { emitUpdate: false });
     }
-  }, [editor]);
+    coordinator?.ready();
+  }, [editor, doc]);
 
-  // content changed outside this editor, for example a task ticked in the tasks view
+  // the coordinator verifies props against its captured session, then observes its accepted document
   useEffect(() => {
-    if (!editor || editor.isDestroyed || doc === committed.current) return;
-    committed.current = doc;
-    editor.commands.setContent(doc as JSONContent, { emitUpdate: false });
+    if (!editor || editor.isDestroyed) return;
+    coordinatorRef.current?.observeSessionDoc(doc);
   }, [doc, editor]);
 
   useEffect(() => {
-    if (editor && !editor.isDestroyed) editor.setEditable(editable, false);
+    if (editor && !editor.isDestroyed) {
+      editor.setEditable(editable, false);
+      coordinatorRef.current?.setEditable(editable);
+      editor.view.dom.dispatchEvent(new Event('morrow:linked-view-context'));
+    }
   }, [editor, editable]);
+
+  useLayoutEffect(() => {
+    coordinatorRef.current?.setPane(pane);
+  }, [pane]);
 
   // opens with the search match selected and in view
   useEffect(() => {

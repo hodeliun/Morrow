@@ -1,18 +1,33 @@
 import type { Editor } from '@tiptap/core';
 import { isMac } from '../platform/desktop';
+import { isExitInteractionBlocked } from '../exitInteraction';
 import { stepProperties } from '../workspace';
+import { focusedDatabaseProviderRoot } from '../plugins/providerRegistry';
 
 // open editors register here so exports and shutdown can save the latest keystrokes first
-const pending = new Set<() => void>();
+const pending = new Map<() => boolean, number>();
 let focused: Editor | null = null;
 
-export function registerCommit(commit: () => void): () => void {
-  pending.add(commit);
-  return () => pending.delete(commit);
+export function registerCommit(commit: () => boolean): () => void {
+  pending.set(commit, (pending.get(commit) ?? 0) + 1);
+  return () => {
+    const count = pending.get(commit);
+    if (count === undefined) return;
+    if (count <= 1) pending.delete(commit);
+    else pending.set(commit, count - 1);
+  };
 }
 
-export function commitEditors(): void {
-  for (const commit of pending) commit();
+export function commitEditors(): boolean {
+  let saved = true;
+  for (const commit of pending.keys()) {
+    try {
+      if (!commit()) saved = false;
+    } catch {
+      saved = false;
+    }
+  }
+  return saved;
 }
 
 export function setFocusedEditor(editor: Editor | null): void {
@@ -25,9 +40,24 @@ export function focusedEditor(): Editor | null {
 
 // routes native menu undo and redo to the editor, or to a plain text field
 export function undoRedo(direction: 'undo' | 'redo'): void {
+  if (isExitInteractionBlocked()) return;
   const active = document.activeElement;
   if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
     document.execCommand(direction);
+    return;
+  }
+  const providerRoot = active instanceof HTMLElement ? focusedDatabaseProviderRoot(active) : null;
+  if (providerRoot) {
+    // Keep this event local to the provider root; bubbling to the app shortcut listener would route it again.
+    providerRoot.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'z',
+        shiftKey: direction === 'redo',
+        bubbles: false,
+        cancelable: true,
+        ...(isMac ? { metaKey: true } : { ctrlKey: true }),
+      }),
+    );
     return;
   }
   // a canvas shown inside a page keeps its own history, the menu sends it the same keys
