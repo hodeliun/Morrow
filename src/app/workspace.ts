@@ -4,6 +4,7 @@ import type { PageId, PageMeta, WorkspaceState } from '../core/model';
 import type { Result } from '../core/result';
 import type { SaveStatus } from '../storage/saveQueue';
 import type { WorkspaceSession } from '../storage/session';
+import { isExitInteractionBlocked } from './exitInteraction';
 import { toast } from './ui';
 
 let session: WorkspaceSession | null = null;
@@ -102,6 +103,7 @@ export function clearPropertyHistory(): void {
 
 // puts the properties back as they were before the last change, false when there is nothing to undo
 export function stepProperties(direction: 'undo' | 'redo'): boolean {
+  if (isExitInteractionBlocked()) return false;
   const [from, to] = direction === 'undo' ? [undoStack, redoStack] : [redoStack, undoStack];
   const step = from.pop();
   if (!step) return false;

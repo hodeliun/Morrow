@@ -1,3 +1,4 @@
+import './app/exitInteraction';
 import '@fontsource-variable/inter/index.css';
 import '@fontsource-variable/source-serif-4/index.css';
 import '@fontsource-variable/source-serif-4/wght-italic.css';

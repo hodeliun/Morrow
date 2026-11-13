@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from './i18n';
 import { allActions, matchesShortcut, runAction } from './actions';
+import { isExitInteractionBlocked } from './exitInteraction';
 import { CommandPalette } from './components/CommandPalette';
 import { Dialogs } from './components/Dialogs';
 import { ReviewView } from './components/ReviewView';
@@ -163,6 +164,7 @@ function useLifecycle() {
         await writeAutoBackup();
         return;
       }
+      if (isExitInteractionBlocked()) return;
       if (id.startsWith('page:')) {
         if (getState().pages[id.slice(5)]) openPage(id.slice(5));
         return;

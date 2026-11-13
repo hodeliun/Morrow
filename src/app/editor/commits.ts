@@ -1,5 +1,6 @@
 import type { Editor } from '@tiptap/core';
 import { isMac } from '../platform/desktop';
+import { isExitInteractionBlocked } from '../exitInteraction';
 import { stepProperties } from '../workspace';
 import { focusedDatabaseProviderRoot } from '../plugins/providerRegistry';
 
@@ -39,6 +40,7 @@ export function focusedEditor(): Editor | null {
 
 // routes native menu undo and redo to the editor, or to a plain text field
 export function undoRedo(direction: 'undo' | 'redo'): void {
+  if (isExitInteractionBlocked()) return;
   const active = document.activeElement;
   if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
     document.execCommand(direction);
