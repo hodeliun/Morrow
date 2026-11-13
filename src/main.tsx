@@ -19,7 +19,7 @@ import { startReminders } from './app/reminders';
 import { WorkspaceSession } from './storage/session';
 import { VaultRepository } from './storage/vaultRepository';
 import { App } from './app/App';
-import { Logo } from './app/components/primitives';
+import { Logo, Toasts } from './app/components/primitives';
 import { VaultChooser } from './app/components/VaultChooser';
 import { commitEditors } from './app/editor/commits';
 import { COPY_LEGACY_KEY, copyLegacyInto, legacyPageCount } from './app/legacy';
@@ -36,6 +36,7 @@ import { createExitPreparer, reloadAfterPreparation } from './app/exitPreparatio
 import { registerExitPreparer, getExitPreparer } from './app/exitPreparationRegistry';
 import { acquireExitInteractionGate } from './app/exitInteraction';
 import { flushPlaces } from './app/readingPlace';
+import { startTauriCloseProtocol } from './app/platform/tauri';
 
 registerExitPreparer(
   createExitPreparer({
@@ -48,6 +49,9 @@ registerExitPreparer(
     writeAutoBackup,
   }),
 );
+startTauriCloseProtocol((_reason) => {
+  toast(t('topBar.saveFailed'), { tone: 'error' });
+});
 
 type BootState =
   | { kind: 'loading' }
@@ -201,6 +205,9 @@ function Boot() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Boot />
+    <>
+      <Boot />
+      <Toasts />
+    </>
   </StrictMode>,
 );

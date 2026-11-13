@@ -8,7 +8,6 @@ import { ReviewView } from './components/ReviewView';
 import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
-import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
 import { Sidebar } from './components/Sidebar';
@@ -40,7 +39,6 @@ import {
   useTabs,
 } from './tabs';
 import type { PaneId } from './tabs';
-import { flushPlaces } from './readingPlace';
 import { clearPropertyHistory, getSession, getState } from './workspace';
 
 const AUTO_BACKUP_MS = 10 * 60 * 1000;
@@ -157,13 +155,6 @@ function useLifecycle() {
     document.addEventListener('visibilitychange', onVisibility);
 
     const unsubscribe = desktop?.onCommand(async (id) => {
-      if (id === 'app.prepareToClose') {
-        commitEditors();
-        flushPlaces();
-        await session.flush();
-        await writeAutoBackup();
-        return;
-      }
       if (isExitInteractionBlocked()) return;
       if (id.startsWith('page:')) {
         if (getState().pages[id.slice(5)]) openPage(id.slice(5));
@@ -469,7 +460,6 @@ export function App() {
       )}
       {ui.palette && <CommandPalette key={ui.paletteForSide ? 'side' : 'main'} />}
       <Dialogs />
-      <Toasts />
       <ZoomLevel />
     </div>
   );

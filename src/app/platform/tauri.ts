@@ -4,6 +4,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { DesktopBridge } from './desktop';
+import { getExitPreparer } from '../exitPreparationRegistry';
+import {
+  createCloseProtocolCoordinator,
+  type CloseAckDisposition,
+  type CloseCancelDisposition,
+  type CloseDecision,
+  type CloseProtocolFailure,
+  type CloseSnapshot,
+} from './closeProtocol';
 
 interface NativeInfo {
   version: string;
@@ -20,6 +29,27 @@ declare global {
 }
 
 type Listener = (id: string) => void | Promise<void>;
+
+let nativeCloseCoordinator: ReturnType<typeof createCloseProtocolCoordinator> | null = null;
+
+/** Starts the native handshake after main has installed its private exit preparer. */
+export function startTauriCloseProtocol(reportFailure: (reason: CloseProtocolFailure) => void): void {
+  if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return;
+  nativeCloseCoordinator ??= createCloseProtocolCoordinator({
+    transport: {
+      listen: async (handler) => listen<number>('morrow:close-requested', (event) => handler(event.payload)),
+      snapshot: () => invoke<CloseSnapshot>('close_protocol_snapshot'),
+      acknowledge: (generation: number, decision: CloseDecision) =>
+        invoke<CloseAckDisposition>('close_protocol_ack', { generation, decision }),
+      cancel: (generation: number) => invoke<CloseCancelDisposition>('close_protocol_cancel', { generation }),
+    },
+    getPreparer: getExitPreparer,
+    reportFailure,
+  });
+  void nativeCloseCoordinator.start().catch(() => {
+    // No positive acknowledgement was sent; the coordinator owns listener-registration retries.
+  });
+}
 
 // a listener that can be removed straight away, though tauri hands back its remover a moment later
 function subscribe<T>(event: string, handler: (payload: T) => void): () => void {
@@ -67,9 +97,7 @@ export function tauriBridge(): DesktopBridge | null {
 
   subscribe<string>('morrow:command', (id) => {
     if (typeof id !== 'string') return;
-    const done = run(id);
-    // the native side waits for this before closing the window
-    if (id === 'app.prepareToClose') void done.finally(() => invoke('close_ready'));
+    void run(id);
   });
 
   setupWindow(info.platform, run);
