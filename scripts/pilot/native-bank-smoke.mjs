@@ -19,6 +19,19 @@ import {
   verifyArtifactManifest,
   verifySourceManifest,
 } from './native-preparation.mjs';
+import {
+  buildPrivateDbusConfig,
+  buildPrivateDbusClientArgs,
+  buildPrivateDbusLaunch,
+  createPrivateRuntimeEnv,
+  PRIVATE_DBUS_SYNTHETIC_SERVICE_NAME,
+  isFalseNameHasOwnerOutput,
+  parseGdbusStringArray,
+  summarizeActivatableNames,
+  summarizeRuntimeEnvironment,
+} from './native-runtime-isolation.mjs';
+import { runNativeFunctionalScenario } from './native-functional.mjs';
+import { runIndependentFunctionalScenario } from './native-functional.independent.test.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '../..');
@@ -29,12 +42,12 @@ const BANK_FILES = ['Inventory.md', 'Inventory/Widget.md'];
 const TIMEOUT_MS = 25_000;
 
 function help() {
-  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile <candidate args>\n\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nA native run owns Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
+  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario functional|functional-independent|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario functional|functional-independent] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Functional scenarios run under the native isolation guards; dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nFunctional native runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
 }
 
 function parseArgs(argv) {
   const args = {};
-  const switches = new Set(['--check-only', '--run-native', '--confirm-synthetic-profile', '--freeze-sources', '--record-artifacts', '--help']);
+  const switches = new Set(['--check-only', '--run-native', '--confirm-synthetic-profile', '--confirm-private-dbus-probe', '--freeze-sources', '--record-artifacts', '--help']);
   for (let i = 0; i < argv.length; i += 1) {
     const item = argv[i];
     if (switches.has(item)) {
@@ -319,6 +332,144 @@ async function runCapture(command, argv, options = {}) {
   });
 }
 
+async function runPrivateDbusCommand(argv, env) {
+  const summary = summarizeRuntimeEnvironment({ actual: env, expected: env });
+  if (!summary.ok) throw new Error('Refusing to run D-Bus probe client with a non-isolated environment');
+  return new Promise((resolve) => {
+    const child = spawn('gdbus', argv, { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let spawnErrorCode = null;
+    let timedOut = false;
+    let timeoutKillSucceeded = null;
+    const append = (current, chunk) => `${current}${chunk}`.slice(-64 * 1024);
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout = append(stdout, chunk); });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr = append(stderr, chunk); });
+    child.once('error', (error) => { spawnErrorCode = error?.code ?? 'UNKNOWN'; });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try { timeoutKillSucceeded = child.kill('SIGKILL'); }
+      catch { timeoutKillSucceeded = false; }
+    }, 10_000);
+    child.once('close', (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal, stdout, stderr, spawnErrorCode, timedOut, timeoutKillSucceeded });
+    });
+  });
+}
+
+async function privateDbusCall(env, method, parameters = []) {
+  return runPrivateDbusCommand(buildPrivateDbusClientArgs({
+    runtimeDir: env.XDG_RUNTIME_DIR,
+    busAddress: env.DBUS_SESSION_BUS_ADDRESS,
+    method,
+    parameters,
+  }), env);
+}
+
+function assertPrivateDbusCommandCompleted(result, label) {
+  if (result.spawnErrorCode || result.timedOut) {
+    throw new Error(`Private D-Bus probe command ${label} did not complete cleanly (spawnError=${Boolean(result.spawnErrorCode)}, timedOut=${result.timedOut}, timeoutKillSucceeded=${result.timeoutKillSucceeded})`);
+  }
+}
+
+async function probePrivateDbus(env, recordStep, receipt) {
+  const sha = (text) => sha256(Buffer.from(text));
+  const listActivatableBefore = await waitFor(async () => {
+    const result = await privateDbusCall(env, 'ListActivatableNames');
+    assertPrivateDbusCommandCompleted(result, 'ListActivatableNames-before');
+    return result.code === 0 ? result : false;
+  }, 'private D-Bus readiness');
+  const activatableNamesBefore = summarizeActivatableNames(listActivatableBefore.stdout);
+  receipt.activatableNamesBefore = activatableNamesBefore;
+  await recordStep('dbus-probe-activatable-names-before', activatableNamesBefore);
+  if (!activatableNamesBefore.valid) {
+    throw new Error('Private D-Bus activatable-name inventory did not match the driver-only allowlist');
+  }
+
+  const namesBefore = await privateDbusCall(env, 'ListNames');
+  assertPrivateDbusCommandCompleted(namesBefore, 'ListNames-before');
+  const namesBeforeParsed = namesBefore.code === 0 ? parseGdbusStringArray(namesBefore.stdout) : null;
+  const namesBeforePrivateOnly = Array.isArray(namesBeforeParsed)
+    && namesBeforeParsed.includes('org.freedesktop.DBus')
+    && namesBeforeParsed.every((name) => name === 'org.freedesktop.DBus' || /^:\d+(?:\.\d+)?$/.test(name));
+  await recordStep('dbus-probe-owned-names-before', {
+    privateOnly: namesBeforePrivateOnly,
+    outputSha256: sha(namesBefore.stdout),
+  });
+  if (!namesBeforePrivateOnly) throw new Error('Private D-Bus reported an unexpected owned service before the probe');
+
+  const secretOwnerBefore = await privateDbusCall(env, 'NameHasOwner', ['org.freedesktop.secrets']);
+  assertPrivateDbusCommandCompleted(secretOwnerBefore, 'NameHasOwner-secrets-before');
+  const secretsUnownedBefore = secretOwnerBefore.code === 0 && isFalseNameHasOwnerOutput(secretOwnerBefore.stdout);
+  await recordStep('dbus-probe-secrets-owner-before', {
+    unowned: secretsUnownedBefore,
+    outputSha256: sha(secretOwnerBefore.stdout),
+  });
+  if (!secretsUnownedBefore) throw new Error('Private D-Bus unexpectedly reported an owner for org.freedesktop.secrets');
+
+  const syntheticName = PRIVATE_DBUS_SYNTHETIC_SERVICE_NAME;
+  const activationAttempt = await privateDbusCall(env, 'StartServiceByName', [syntheticName, '0']);
+  assertPrivateDbusCommandCompleted(activationAttempt, 'StartServiceByName-synthetic');
+  const activationError = `${activationAttempt.stdout}\n${activationAttempt.stderr}`;
+  const activationRejected = activationAttempt.code !== 0
+    && /org\.freedesktop\.DBus\.Error\.ServiceUnknown/.test(activationError);
+  await recordStep('dbus-probe-synthetic-activation', {
+    rejectedAsUnregistered: activationRejected,
+    exitCode: activationAttempt.code,
+    outputSha256: sha(activationError),
+  });
+  if (!activationRejected) throw new Error('Private D-Bus did not reject activation of an unregistered synthetic service name');
+
+  const syntheticOwner = await privateDbusCall(env, 'NameHasOwner', [syntheticName]);
+  assertPrivateDbusCommandCompleted(syntheticOwner, 'NameHasOwner-synthetic-after');
+  const syntheticNameUnowned = syntheticOwner.code === 0 && isFalseNameHasOwnerOutput(syntheticOwner.stdout);
+  await recordStep('dbus-probe-synthetic-owner-after', {
+    unowned: syntheticNameUnowned,
+    outputSha256: sha(syntheticOwner.stdout),
+  });
+  if (!syntheticNameUnowned) throw new Error('Private D-Bus reported an owner for the unregistered synthetic service name');
+
+  const listActivatableAfter = await privateDbusCall(env, 'ListActivatableNames');
+  assertPrivateDbusCommandCompleted(listActivatableAfter, 'ListActivatableNames-after');
+  const activatableNamesAfter = listActivatableAfter.code === 0
+    ? summarizeActivatableNames(listActivatableAfter.stdout)
+    : summarizeActivatableNames(null);
+  receipt.activatableNamesAfter = activatableNamesAfter;
+  await recordStep('dbus-probe-activatable-names-after', activatableNamesAfter);
+  if (!activatableNamesAfter.valid) {
+    throw new Error('Private D-Bus activatable-name inventory changed from the driver-only allowlist');
+  }
+  const namesAfter = await privateDbusCall(env, 'ListNames');
+  assertPrivateDbusCommandCompleted(namesAfter, 'ListNames-after');
+  const namesAfterParsed = namesAfter.code === 0 ? parseGdbusStringArray(namesAfter.stdout) : null;
+  const namesAfterPrivateOnly = Array.isArray(namesAfterParsed)
+    && namesAfterParsed.includes('org.freedesktop.DBus')
+    && namesAfterParsed.every((name) => name === 'org.freedesktop.DBus' || /^:\d+(?:\.\d+)?$/.test(name));
+  await recordStep('dbus-probe-owned-names-after', {
+    privateOnly: namesAfterPrivateOnly,
+    outputSha256: sha(namesAfter.stdout),
+  });
+  if (!namesAfterPrivateOnly) throw new Error('Private D-Bus reported an unexpected owned service after the probe');
+
+  return {
+    activatableNamesBefore,
+    namesBeforePrivateOnly,
+    namesBeforeSha256: sha(namesBefore.stdout),
+    secretsUnownedBefore,
+    secretOwnerBeforeSha256: sha(secretOwnerBefore.stdout),
+    syntheticActivationRejected: activationRejected,
+    syntheticActivationExitCode: activationAttempt.code,
+    syntheticActivationErrorSha256: sha(activationError),
+    syntheticNameUnowned,
+    syntheticOwnerSha256: sha(syntheticOwner.stdout),
+    activatableNamesAfter,
+    namesAfterPrivateOnly,
+    namesAfterSha256: sha(namesAfter.stdout),
+    ...receipt,
+  };
+}
+
 async function reservePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -354,7 +505,7 @@ async function waitFor(check, label, timeout = TIMEOUT_MS) {
 async function launchLogged(command, argv, { cwd, env, logPath, stdio = 'pipe' }) {
   const child = spawn(command, argv, { cwd, env, detached: true, stdio: ['ignore', stdio, 'pipe'] });
   const log = await import('node:fs');
-  const stream = log.createWriteStream(logPath, { flags: 'a' });
+  const stream = log.createWriteStream(logPath, { flags: 'a', mode: 0o600 });
   let resolveClosed;
   const closed = new Promise((resolve) => { resolveClosed = resolve; });
   let stdout = '';
@@ -448,9 +599,43 @@ async function waitForLine(processRecord, label, timeout = 10_000) {
 async function createSyntheticVault(candidate) {
   await mkdir(candidate.evidence, { recursive: false });
   candidate.evidenceOwned = true;
+  await mkdir(candidate.profile, { recursive: false, mode: 0o700 });
+  await chmod(candidate.profile, 0o700);
+  const xdg = {
+    config: path.join(candidate.profile, 'xdg', 'config'),
+    data: path.join(candidate.profile, 'xdg', 'data'),
+    cache: path.join(candidate.profile, 'xdg', 'cache'),
+    runtime: path.join(candidate.profile, 'xdg', 'runtime'),
+  };
+  await Promise.all(Object.values(xdg).map(async (dir) => {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700);
+  }));
+  if ((await readdir(xdg.data)).length !== 0) throw new Error('Private XDG data directory was not empty before launch');
+  const dbusConfig = buildPrivateDbusConfig({ profile: candidate.profile, runtimeDir: xdg.runtime });
+  await writeFile(dbusConfig.configPath, dbusConfig.contents, { flag: 'wx', mode: 0o600 });
+  await chmod(dbusConfig.configPath, 0o600);
+  const dbusConfigEvidencePath = path.join(candidate.evidence, 'dbus-session.conf');
+  await writeFile(dbusConfigEvidencePath, dbusConfig.contents, { flag: 'wx', mode: 0o600 });
+  const initialRuntimeEnv = privateRuntimeEnv(candidate, xdg);
+  const initialRuntimeSummary = summarizeRuntimeEnvironment({ actual: initialRuntimeEnv, expected: initialRuntimeEnv });
+  if (!initialRuntimeSummary.ok) throw new Error('Private runtime environment failed its pre-spawn isolation check');
+  await writeFile(path.join(candidate.evidence, 'runtime-isolation.json'), `${JSON.stringify({
+    observedAt: new Date().toISOString(),
+    profile: candidate.profile,
+    xdg,
+    dbusConfigPath: dbusConfig.configPath,
+    dbusConfigSha256: dbusConfig.sha256,
+    dbusConfigEvidencePath,
+    dbusSocketPath: dbusConfig.socketPath,
+    environment: initialRuntimeSummary,
+    displaySetBeforeSpawn: false,
+    sessionBusSetBeforeSpawn: false,
+  }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+
   let generatorOutput = '';
   try {
-    generatorOutput = await runCapture(process.execPath, [candidate.fixtureScript, candidate.vault, candidate.destinationVault], { cwd: REPO_ROOT });
+    generatorOutput = await runCapture(process.execPath, [candidate.fixtureScript, candidate.vault, candidate.destinationVault], { cwd: REPO_ROOT, env: initialRuntimeEnv });
     await writeFile(path.join(candidate.evidence, 'fixture-generator.log'), generatorOutput);
   } catch (error) {
     await writeFile(path.join(candidate.evidence, 'fixture-generator.log'), `${generatorOutput}\n${error?.stack ?? error}\n`);
@@ -486,18 +671,6 @@ async function createSyntheticVault(candidate) {
   candidate.vaultFiles = origin.vaultFiles;
   candidate.destinationVaultFiles = destination.vaultFiles;
 
-  await mkdir(candidate.profile, { recursive: false });
-  const xdg = {
-    config: path.join(candidate.profile, 'xdg', 'config'),
-    data: path.join(candidate.profile, 'xdg', 'data'),
-    cache: path.join(candidate.profile, 'xdg', 'cache'),
-    runtime: path.join(candidate.profile, 'xdg', 'runtime'),
-  };
-  await Promise.all(Object.entries(xdg).map(async ([key, dir]) => {
-    await mkdir(dir, { recursive: true, mode: key === 'runtime' ? 0o700 : 0o755 });
-    if (key === 'runtime') await chmod(dir, 0o700);
-  }));
-  if ((await readdir(xdg.data)).length !== 0) throw new Error('Private XDG data directory was not empty before launch');
   try {
     await lstat(candidate.expectedWebviewDataPath);
     throw new Error(`Identifier-scoped WebView profile already exists before launch: ${candidate.expectedWebviewDataPath}`);
@@ -551,7 +724,15 @@ async function createSyntheticVault(candidate) {
     size: profileVaultRegistry.size,
     mtimeMs: profileVaultRegistry.mtimeMs,
   };
-  return { xdg, bankBefore, destinationBankBefore };
+  return {
+    xdg,
+    dbusConfig,
+    dbusConfigEvidencePath,
+    bankBefore,
+    destinationBankBefore,
+    originVaultContent,
+    destinationVaultContent,
+  };
 }
 
 async function preservePreparationFailure(candidate, error) {
@@ -653,6 +834,66 @@ async function captureFile(file) {
   return { bytes, hash: sha256(bytes), mtimeMs: info.mtimeMs, size: info.size };
 }
 
+async function captureFinalVaultContent(candidate) {
+  const allowedFiles = ['Inventory.md', 'Inventory/Widget.md', 'Views.md'];
+  const root = path.resolve(candidate.vault);
+  const rootInfo = await lstat(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory() || await realpath(root) !== root) {
+    throw new Error('Refusing to retain final Markdown from a non-canonical synthetic vault root.');
+  }
+  const evidenceRoot = path.resolve(candidate.evidence);
+  const evidenceInfo = await lstat(evidenceRoot);
+  if (evidenceInfo.isSymbolicLink() || !evidenceInfo.isDirectory() || await realpath(evidenceRoot) !== evidenceRoot) {
+    throw new Error('Refusing to retain final Markdown outside the owned evidence directory.');
+  }
+  for (const relative of allowedFiles) {
+    if (!candidate.vaultFiles?.includes(relative)) {
+      throw new Error(`Refusing to retain a Markdown file absent from the generated vault manifest: ${relative}`);
+    }
+  }
+
+  const outputRoot = path.join(candidate.evidence, 'final-vault-content');
+  await mkdir(outputRoot, { recursive: false });
+  const files = {};
+  for (const relative of allowedFiles) {
+    const segments = relative.split('/');
+    let source = root;
+    for (let index = 0; index < segments.length; index += 1) {
+      source = path.join(source, segments[index]);
+      const info = await lstat(source);
+      const finalSegment = index === segments.length - 1;
+      if (info.isSymbolicLink() || (finalSegment ? !info.isFile() : !info.isDirectory())) {
+        throw new Error(`Refusing to retain a non-regular synthetic vault path: ${relative}`);
+      }
+      const canonical = await realpath(source);
+      if (!containsPath(root, canonical) || canonical !== source) {
+        throw new Error(`Refusing to retain a synthetic vault path that escapes or resolves through an alias: ${relative}`);
+      }
+    }
+    const bytes = await readFile(source);
+    const info = await stat(source);
+    const destination = path.join(outputRoot, ...segments);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, bytes, { flag: 'wx' });
+    files[relative] = {
+      source,
+      evidencePath: path.relative(candidate.evidence, destination).split(path.sep).join('/'),
+      sha256: sha256(bytes),
+      size: bytes.length,
+      mtimeMs: info.mtimeMs,
+    };
+  }
+  const manifest = {
+    capturedAt: new Date().toISOString(),
+    syntheticVault: root,
+    generatedVaultFileCount: candidate.vaultFiles.length,
+    files,
+    scope: 'three whitelisted Markdown files from the verified synthetic origin vault only',
+  };
+  await writeFile(path.join(candidate.evidence, 'final-vault-content.json'), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
+  return manifest;
+}
+
 async function captureBank(vault) {
   const result = {};
   for (const relative of BANK_FILES) result[relative] = await captureFile(path.join(vault, relative));
@@ -675,20 +916,8 @@ async function captureVaultInventory(vault, files) {
   return records;
 }
 
-function createPrivateEnv(candidate, xdg) {
-  const env = { ...process.env };
-  env.HOME = candidate.profile;
-  env.MORROW_USER_DATA = candidate.profile;
-  env.XDG_CONFIG_HOME = xdg.config;
-  env.XDG_DATA_HOME = xdg.data;
-  env.XDG_CACHE_HOME = xdg.cache;
-  env.XDG_RUNTIME_DIR = xdg.runtime;
-  env.GDK_BACKEND = 'x11';
-  env.WEBKIT_DISABLE_DMABUF_RENDERER = '1';
-  delete env.MORROW_HIDDEN;
-  delete env.WAYLAND_DISPLAY;
-  delete env.XAUTHORITY;
-  return env;
+function privateRuntimeEnv(candidate, xdg, { display, busAddress } = {}) {
+  return createPrivateRuntimeEnv({ profile: candidate.profile, xdg, display, busAddress });
 }
 
 async function assertCandidateStillFrozen(candidate) {
@@ -713,10 +942,77 @@ async function assertCandidateStillFrozen(candidate) {
   });
 }
 
-async function startPrivateDisplay(candidate, env, onProcessStart = () => {}) {
-  let xvfb;
+async function startPrivateDbus(candidate, xdg, config, onProcessStart = () => {}) {
+  const env = privateRuntimeEnv(candidate, xdg);
+  if (!config || config.configPath !== path.join(candidate.profile, 'dbus-session.conf')) {
+    throw new Error('Private D-Bus config must be generated under this candidate profile before runtime launch');
+  }
+  const configInfo = await lstat(config.configPath);
+  if (configInfo.isSymbolicLink() || !configInfo.isFile() || (configInfo.mode & 0o777) !== 0o600) {
+    throw new Error('Private D-Bus config must remain a mode-0600 regular file in the candidate profile');
+  }
+  if (await hashFile(config.configPath) !== config.sha256) {
+    throw new Error('Private D-Bus config changed after its pre-spawn hash was recorded');
+  }
+  if (await hashFile(path.join(candidate.evidence, 'dbus-session.conf')) !== config.sha256) {
+    throw new Error('Retained private D-Bus config copy differs from the profile configuration hash');
+  }
   let dbus;
   try {
+    dbus = await launchLogged('dbus-daemon', buildPrivateDbusLaunch(config.configPath), {
+      cwd: REPO_ROOT,
+      env,
+      logPath: path.join(candidate.evidence, 'dbus.log'),
+    });
+    onProcessStart('dbus', dbus);
+    const busAddress = await waitForLine(dbus, 'private DBus');
+    dbus.busAddress = busAddress;
+    dbus.busAddressSha256 = sha256(Buffer.from(busAddress));
+    const runtimeEnv = privateRuntimeEnv(candidate, xdg, { busAddress });
+    const daemonInfo = await waitFor(async () => {
+      const current = await readProcInfo(dbus.child.pid).catch(() => null);
+      return current?.exe ? current : false;
+    }, 'owned private D-Bus process metadata');
+    const expectedDaemonArgv = buildPrivateDbusLaunch(config.configPath);
+    const daemonArgvMatches = daemonInfo.argv.length === expectedDaemonArgv.length + 1
+      && expectedDaemonArgv.every((argument, index) => daemonInfo.argv[index + 1] === argument);
+    const daemonExecutableMatches = path.basename(daemonInfo.exe) === 'dbus-daemon';
+    const daemonEnvironment = summarizeRuntimeEnvironment({
+      actual: daemonInfo.environment,
+      expected: env,
+      forbiddenKeys: daemonInfo.forbiddenEnvironmentKeys,
+      observedKeys: daemonInfo.observedEnvironmentKeys,
+    });
+    if (!daemonExecutableMatches || !daemonArgvMatches || !daemonEnvironment.ok) {
+      throw new Error(`Owned private D-Bus process isolation mismatch: ${JSON.stringify({
+        executableNameMatches: daemonExecutableMatches,
+        expectedArgumentsMatch: daemonArgvMatches,
+        environment: daemonEnvironment,
+      })}`);
+    }
+    const daemonIsolation = {
+      executableNameMatches: daemonExecutableMatches,
+      expectedArgumentsMatch: daemonArgvMatches,
+      environment: daemonEnvironment,
+      argvSha256: sha256(Buffer.from(daemonInfo.argv.join('\0'))),
+    };
+    dbus.daemonIsolation = daemonIsolation;
+    return { dbus, busAddress, busAddressSha256: dbus.busAddressSha256, dbusConfig: config, daemonIsolation, env: runtimeEnv };
+  } catch (error) {
+    const cleanupErrors = [];
+    try { await finishLoggedProcess(dbus); }
+    catch (cleanupError) { cleanupErrors.push(String(cleanupError)); }
+    const details = cleanupErrors.length ? ` Cleanup errors: ${cleanupErrors.join(' | ')}` : '';
+    throw new Error(`Could not start private DBus: ${error?.message ?? error}.${details}`, { cause: error });
+  }
+}
+
+async function startPrivateDisplay(candidate, prepared, onProcessStart = () => {}) {
+  const { xdg, dbusConfig } = prepared;
+  let xvfb;
+  let dbusRuntime;
+  try {
+    const env = privateRuntimeEnv(candidate, xdg);
     xvfb = await launchLogged('Xvfb', ['-displayfd', '1', '-screen', '0', '1440x1000x24', '-nolisten', 'tcp', '-noreset', '-ac'], {
       cwd: REPO_ROOT,
       env,
@@ -725,27 +1021,27 @@ async function startPrivateDisplay(candidate, env, onProcessStart = () => {}) {
     onProcessStart('xvfb', xvfb);
     const displayNumber = await waitForLine(xvfb, 'Xvfb');
     if (!/^\d+$/.test(displayNumber)) throw new Error(`Xvfb returned unexpected display number: ${displayNumber}`);
-    env.DISPLAY = `:${displayNumber}`;
-
-    const busPath = path.join(env.XDG_RUNTIME_DIR, 'bus');
-    dbus = await launchLogged('dbus-daemon', ['--session', '--nofork', '--address', `unix:path=${busPath}`, '--print-address=1'], {
-      cwd: REPO_ROOT,
-      env,
-      logPath: path.join(candidate.evidence, 'dbus.log'),
-    });
-    onProcessStart('dbus', dbus);
-    const busAddress = await waitForLine(dbus, 'private DBus');
-    if (!busAddress.startsWith('unix:path=')) throw new Error(`Unexpected private DBus address: ${busAddress}`);
-    env.DBUS_SESSION_BUS_ADDRESS = busAddress;
-    return { xvfb, dbus, display: env.DISPLAY, busAddress };
+    const display = `:${displayNumber}`;
+    dbusRuntime = await startPrivateDbus(candidate, xdg, dbusConfig, onProcessStart);
+    const runtimeEnv = privateRuntimeEnv(candidate, xdg, { display, busAddress: dbusRuntime.busAddress });
+    return {
+      xvfb,
+      dbus: dbusRuntime.dbus,
+      display,
+      busAddress: dbusRuntime.busAddress,
+      busAddressSha256: dbusRuntime.busAddressSha256,
+      dbusConfig: dbusRuntime.dbusConfig,
+      daemonIsolation: dbusRuntime.daemonIsolation,
+      env: runtimeEnv,
+    };
   } catch (error) {
     const cleanupErrors = [];
-    for (const processRecord of [dbus, xvfb]) {
+    for (const processRecord of [dbusRuntime?.dbus, xvfb]) {
       try { await finishLoggedProcess(processRecord); }
       catch (cleanupError) { cleanupErrors.push(String(cleanupError)); }
     }
     const details = cleanupErrors.length ? ` Cleanup errors: ${cleanupErrors.join(' | ')}` : '';
-    throw new Error(`Could not start the private display/DBus: ${error?.message ?? error}.${details}`, { cause: error });
+    throw new Error(`Could not start the private display and DBus: ${error?.message ?? error}.${details}`, { cause: error });
   }
 }
 
@@ -1054,6 +1350,7 @@ async function saveRunInfo(candidate, extra) {
   await writeFile(path.join(candidate.evidence, 'run.json'), `${JSON.stringify({
     candidate: {
       commit: candidate.expectedCommit,
+      scenario: candidate.scenario ?? 'legacy',
       sourceManifest: candidate.sourceManifest,
       sourceManifestSha256: candidate.sourceManifestSha256,
       sourceStatusAtFreeze: candidate.sourceVerification.frozenStatus,
@@ -1087,11 +1384,17 @@ async function saveRunInfo(candidate, extra) {
       expectedBackendDataPath: candidate.expectedBackendDataPath,
       expectedWebviewDataPath: candidate.expectedWebviewDataPath,
       display: extra.display,
-      dbus: extra.busAddress,
+      dbusAddressSha256: extra.dbusAddressSha256,
+      dbusConfigPath: extra.dbusConfigPath,
+      dbusConfigSha256: extra.dbusConfigSha256,
+      dbusConfigEvidencePath: extra.dbusConfigEvidencePath,
+      dbusDaemonIsolation: extra.dbusDaemonIsolation ?? null,
+      dbusLogAddressRedacted: extra.dbusLogAddressRedacted ?? null,
       driverPort: extra.driverPort,
       driverPid: extra.driverPid,
       xvfbPid: extra.xvfbPid,
       dbusPid: extra.dbusPid,
+      dbusProcessTermination: extra.dbusProcessTermination ?? null,
       xdg: extra.xdg,
       driverSessions: extra.driverSessions,
     },
@@ -1102,14 +1405,29 @@ async function saveRunInfo(candidate, extra) {
     linkedViews: candidate.linkedViews,
     generatedVaultContent: candidate.generatedVaultContent,
     isolatedVaultRegistry: candidate.isolatedVaultRegistry,
+    finalVaultContent: extra.finalVaultContent ?? null,
     runtimeInfo: extra.runtimeInfo ?? null,
     appProcesses: extra.appProcesses ?? [],
+    dbusProbe: extra.dbusProbe ?? null,
     testHashes: extra.testHashes,
     bankFiles: files,
     destinationBankFiles: destinationFiles,
     outcome: extra.outcome ?? 'running',
     error: extra.error ?? null,
   }, null, 2)}\n`);
+}
+
+async function redactPrivateDbusLogAddress(candidate, dbusProcess) {
+  if (!dbusProcess?.busAddress) return false;
+  const logPath = path.join(candidate.evidence, 'dbus.log');
+  const log = await readFile(logPath, 'utf8');
+  if (!log.includes(dbusProcess.busAddress)) throw new Error('Private D-Bus log did not contain the owned address for redaction');
+  const replacement = `<private D-Bus address sha256=${dbusProcess.busAddressSha256}>`;
+  const sanitized = log.replaceAll(dbusProcess.busAddress, replacement);
+  if (sanitized.includes(dbusProcess.busAddress)) throw new Error('Private D-Bus log address redaction was incomplete');
+  await writeFile(logPath, sanitized, { mode: 0o600 });
+  await chmod(logPath, 0o600);
+  return true;
 }
 
 async function preflight(candidate, args) {
@@ -1136,6 +1454,10 @@ async function preflight(candidate, args) {
     fixtureScript: candidate.fixtureScript,
     fixtureSha256: candidate.fixtureSha256,
     fixtureFiles: candidate.fixtureFiles,
+    scenario: args.scenario ?? 'legacy',
+    scenarioDispatchesToNativeRun: Boolean(args['run-native'] && candidate.scenario !== 'dbus-isolation'),
+    scenarioDispatchesToPrivateDbusProbe: Boolean(args['run-native'] && candidate.scenario === 'dbus-isolation'),
+    privateDbusProbeConfirmationPresent: Boolean(args['confirm-private-dbus-probe']),
     databaseId: candidate.databaseId,
     outputPaths: {
       vault: candidate.vault,
@@ -1275,8 +1597,8 @@ async function openPageAndCheck(driver, candidate, { quantity, price, total, pre
   return { rootText, rowId };
 }
 
-async function runNative(candidate, prepared) {
-  const env = createPrivateEnv(candidate, prepared.xdg);
+async function runNative(candidate, prepared, scenarioCallback = null, scenarioName = 'legacy') {
+  let env = privateRuntimeEnv(candidate, prepared.xdg);
   const testHashes = candidate.sourceTestHashes;
   let display;
   const displayProcesses = {};
@@ -1332,23 +1654,82 @@ async function runNative(candidate, prepared) {
 
   try {
     await assertCandidateStillFrozen(candidate);
-    display = await startPrivateDisplay(candidate, env, (name, record) => { displayProcesses[name] = record; });
-    info.display = display.display;
-    info.busAddress = display.busAddress;
-    await saveRunInfo(candidate, { ...info, outcome: 'prepared' });
-    await recordStep(candidate, 'synthetic-vault-profile-prepared', {
-      bankBaseline: Object.fromEntries(Object.entries(prepared.bankBefore).map(([name, value]) => [name, { sha256: value.hash, mtimeMs: value.mtimeMs }])),
-    });
-    const initialRow = prepared.bankBefore['Inventory/Widget.md'].bytes.toString('utf8');
-    const initialSchema = prepared.bankBefore['Inventory.md'].bytes.toString('utf8');
-    assertNumber(initialRow, 'Quantity', 2);
-    assertNumber(initialRow, 'Price', 10);
-    assertFormula(initialSchema);
-    await openSession();
+    if (scenarioName === 'dbus-isolation') {
+      display = await startPrivateDbus(candidate, prepared.xdg, prepared.dbusConfig, (name, record) => { displayProcesses[name] = record; });
+      env = display.env;
+      info.display = null;
+      info.dbusAddressSha256 = sha256(Buffer.from(display.busAddress));
+      info.dbusConfigPath = display.dbusConfig.configPath;
+      info.dbusConfigSha256 = display.dbusConfig.sha256;
+      info.dbusConfigEvidencePath = prepared.dbusConfigEvidencePath;
+      info.dbusDaemonIsolation = display.daemonIsolation;
+      info.dbusPid = display.dbus.child.pid;
+      info.xdg = {
+        config: env.XDG_CONFIG_HOME,
+        data: env.XDG_DATA_HOME,
+        cache: env.XDG_CACHE_HOME,
+        runtime: env.XDG_RUNTIME_DIR,
+      };
+      await saveRunInfo(candidate, { ...info, outcome: 'prepared' });
+      await recordStep(candidate, 'private-dbus-started-without-app-or-display', {
+        dbusPid: info.dbusPid,
+        dbusAddressSha256: info.dbusAddressSha256,
+        dbusConfigSha256: info.dbusConfigSha256,
+      });
+      info.dbusProbe = {
+        secretServiceWasContacted: false,
+        applicationLaunched: false,
+        xvfbLaunched: false,
+        webdriverLaunched: false,
+      };
+      info.dbusProbe = await probePrivateDbus(
+        env,
+        (name, details) => recordStep(candidate, name, details),
+        info.dbusProbe,
+      );
+      outcome = 'passed';
+      await recordStep(candidate, 'private-dbus-isolation-probe-passed', info.dbusProbe);
+    } else {
+      display = await startPrivateDisplay(candidate, prepared, (name, record) => { displayProcesses[name] = record; });
+      env = display.env;
+      info.display = display.display;
+      info.dbusAddressSha256 = display.busAddressSha256;
+      info.dbusConfigPath = display.dbusConfig.configPath;
+      info.dbusConfigSha256 = display.dbusConfig.sha256;
+      info.dbusConfigEvidencePath = prepared.dbusConfigEvidencePath;
+      info.dbusDaemonIsolation = display.daemonIsolation;
+      await saveRunInfo(candidate, { ...info, outcome: 'prepared' });
+      await recordStep(candidate, 'synthetic-vault-profile-prepared', {
+        bankBaseline: Object.fromEntries(Object.entries(prepared.bankBefore).map(([name, value]) => [name, { sha256: value.hash, mtimeMs: value.mtimeMs }])),
+      });
+      const initialRow = prepared.bankBefore['Inventory/Widget.md'].bytes.toString('utf8');
+      const initialSchema = prepared.bankBefore['Inventory.md'].bytes.toString('utf8');
+      assertNumber(initialRow, 'Quantity', 2);
+      assertNumber(initialRow, 'Price', 10);
+      assertFormula(initialSchema);
+      await openSession();
 
-    // Inspect runtime identity before changing localStorage, route, or DOM.
-    await setPreferences(webdriver, { plugins: true, startPage: 'home', locale: 'en', theme: 'dark' });
-    await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
+      // Inspect runtime identity before changing localStorage, route, or DOM.
+      await setPreferences(webdriver, { plugins: true, startPage: 'home', locale: 'en', theme: 'dark' });
+      await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
+      if (scenarioCallback) {
+      const context = {
+        get driver() { return webdriver; },
+        candidate,
+        prepared,
+        restartSession: async () => {
+          await stopSession();
+          await openSession();
+          return webdriver;
+        },
+        recordStep: (name, details = {}) => recordStep(candidate, name, details),
+      };
+      await scenarioCallback(context);
+      const finalStatus = await webdriver.execute(`return [...document.querySelectorAll('[role="status"]')].map((node) => node.innerText).join(' | ')`);
+      if (/pending|saving|error|failed/i.test(finalStatus)) throw new Error(`Refusing to close with pending/error status: ${finalStatus}`);
+      outcome = 'passed';
+      await recordStep(candidate, `native-${scenarioName}-scenario-passed`, { finalStatus });
+    } else {
     const databaseOpenedAtBeforeInitial = await recentOpenedAt(candidate.vault, candidate.databaseId);
     const initial = await openPageAndCheck(webdriver, candidate, {
       quantity: 2,
@@ -1679,6 +2060,8 @@ async function runNative(candidate, prepared) {
     if (/pending|saving|error|failed/i.test(finalStatus)) throw new Error(`Refusing to close with pending/error status: ${finalStatus}`);
     outcome = 'passed';
     await recordStep(candidate, 'native-bank-smoke-passed', { finalStatus });
+      }
+    }
   } catch (caught) {
     error = caught?.stack ?? String(caught);
     if (caught?.cleanupError) error += `\nOwned-process cleanup error: ${caught.cleanupError?.stack ?? caught.cleanupError}`;
@@ -1693,6 +2076,19 @@ async function runNative(candidate, prepared) {
       await stopCurrentChildren({ ...displayProcesses, ...display }, driverRecord);
       processLogsFlushed = true;
     } catch (cleanupError) { cleanupErrors.push(`Could not stop isolated processes and flush owned logs: ${String(cleanupError)}`); }
+    const ownedDbus = display?.dbus ?? displayProcesses.dbus;
+    if (ownedDbus?.closed) {
+      try { info.dbusProcessTermination = await ownedDbus.closed; }
+      catch (cleanupError) { cleanupErrors.push(`Could not read the owned DBus exit status: ${String(cleanupError)}`); }
+    }
+    if (processLogsFlushed && ownedDbus?.busAddress) {
+      try { info.dbusLogAddressRedacted = await redactPrivateDbusLogAddress(candidate, ownedDbus); }
+      catch (cleanupError) { cleanupErrors.push(`Could not redact the private D-Bus endpoint from its log: ${String(cleanupError)}`); }
+    }
+    if (processLogsFlushed) {
+      try { info.finalVaultContent = await captureFinalVaultContent(candidate); }
+      catch (captureError) { cleanupErrors.push(`Could not capture final synthetic Markdown bytes: ${String(captureError)}`); }
+    }
     if (cleanupErrors.length) {
       error = [error, ...cleanupErrors].filter(Boolean).join('\n');
       if (outcome === 'passed') outcome = 'failed-cleanup';
@@ -1751,13 +2147,20 @@ async function readProcInfo(pid) {
   ]);
   const argv = cmdline.toString('utf8').split('\0').filter(Boolean);
   const envBytes = await readFile(path.join(proc, 'environ')).catch(() => Buffer.alloc(0));
-  const allowedEnv = new Set(['HOME', 'MORROW_USER_DATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND', 'WEBKIT_DISABLE_DMABUF_RENDERER', 'WAYLAND_DISPLAY', 'XAUTHORITY']);
+  const allowedEnv = new Set(['HOME', 'MORROW_USER_DATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND', 'WEBKIT_DISABLE_DMABUF_RENDERER', 'PATH']);
+  const forbiddenEnvKey = (key) => key.startsWith('DBUS_STARTER_')
+    || key.startsWith('GNOME_KEYRING_')
+    || ['DBUS_SYSTEM_BUS_ADDRESS', 'DBUS_SYSTEM_BUS_PID', 'SSH_AUTH_SOCK', 'GPG_AGENT_INFO', 'AT_SPI_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'LD_PRELOAD', 'GTK_MODULES'].includes(key);
   const environment = {};
+  const forbiddenEnvironmentKeys = [];
+  const observedEnvironmentKeys = [];
   for (const item of envBytes.toString('utf8').split('\0')) {
     const separator = item.indexOf('=');
     if (separator < 0) continue;
     const key = item.slice(0, separator);
+    observedEnvironmentKeys.push(key);
     if (allowedEnv.has(key)) environment[key] = item.slice(separator + 1);
+    if (forbiddenEnvKey(key)) forbiddenEnvironmentKeys.push(key);
   }
   return {
     pid,
@@ -1765,6 +2168,8 @@ async function readProcInfo(pid) {
     argv,
     children: children.trim().split(/\s+/).filter(Boolean).map(Number),
     environment,
+    forbiddenEnvironmentKeys,
+    observedEnvironmentKeys,
   };
 }
 
@@ -1824,14 +2229,23 @@ async function findOwnedAppProcess(driverPid, candidate, env) {
           DBUS_SESSION_BUS_ADDRESS: env.DBUS_SESSION_BUS_ADDRESS,
           GDK_BACKEND: 'x11',
           WEBKIT_DISABLE_DMABUF_RENDERER: '1',
+          PATH: '/usr/bin:/bin',
         };
-        for (const [key, value] of Object.entries(expected)) {
-          if (info.environment[key] !== value) throw new Error(`Native process isolation mismatch: ${key}=${info.environment[key] ?? '<unset>'}; expected ${value}`);
+        const environmentSummary = summarizeRuntimeEnvironment({
+          actual: info.environment,
+          expected,
+          forbiddenKeys: info.forbiddenEnvironmentKeys,
+          observedKeys: info.observedEnvironmentKeys,
+        });
+        if (!environmentSummary.ok) {
+          throw new Error(`Native process isolation mismatch: ${JSON.stringify(environmentSummary)}`);
         }
-        if (info.environment.WAYLAND_DISPLAY || info.environment.XAUTHORITY) {
-          throw new Error('Native process retained a host display/authentication environment variable');
-        }
-        return info;
+        return {
+          ...info,
+          environment: environmentSummary,
+          forbiddenEnvironmentKeys: undefined,
+          observedEnvironmentKeys: undefined,
+        };
       }
       stack.push(...info.children);
     }
@@ -1863,6 +2277,17 @@ async function stopCurrentChildren(display, driverRecord) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) return help();
+  const scenarioName = args.scenario ?? 'legacy';
+  const scenarioCallbacks = {
+    functional: runNativeFunctionalScenario,
+    'functional-independent': runIndependentFunctionalScenario,
+  };
+  if (scenarioName !== 'legacy' && scenarioName !== 'dbus-isolation' && !Object.hasOwn(scenarioCallbacks, scenarioName)) {
+    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, functional, functional-independent, or dbus-isolation`);
+  }
+  if (args.scenario && (args['freeze-sources'] || args['record-artifacts'])) {
+    throw new Error('--scenario is valid only with --check-only or --run-native');
+  }
   if (args['freeze-sources'] && args['record-artifacts']) throw new Error('Choose one preparation mode at a time');
   if (args['freeze-sources']) {
     const result = await freezeSourceManifest({
@@ -1894,8 +2319,15 @@ async function main() {
   if (args['check-only'] && args['confirm-synthetic-profile']) {
     throw new Error('--confirm-synthetic-profile is only valid with --run-native');
   }
+  if (args['confirm-private-dbus-probe'] && (args.scenario !== 'dbus-isolation' || !args['run-native'])) {
+    throw new Error('--confirm-private-dbus-probe is valid only for --run-native --scenario dbus-isolation');
+  }
+  if (args.scenario === 'dbus-isolation' && args['run-native'] && !args['confirm-private-dbus-probe']) {
+    throw new Error('The private D-Bus probe requires --confirm-private-dbus-probe after its separate root gate');
+  }
   if (!args['check-only'] && !args['run-native']) throw new Error('Choose --check-only or --run-native');
   const candidate = await verifyInputs(args);
+  candidate.scenario = scenarioName;
   await preflight(candidate, args);
   if (args['check-only']) return;
 
@@ -1906,11 +2338,13 @@ async function main() {
     throw error;
   }
   // Output paths were proven new by preflight. runNative preserves all evidence.
-  await runNative(candidate, prepared);
+  await runNative(candidate, prepared, scenarioCallbacks[scenarioName] ?? null, scenarioName);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error?.stack ?? error}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
+  main().catch((error) => {
+    process.stderr.write(`${error?.stack ?? error}\n`);
+    process.exitCode = 1;
+  });
+}
 
