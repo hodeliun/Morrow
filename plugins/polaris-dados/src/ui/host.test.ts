@@ -204,6 +204,22 @@ function mountPlugin(
   let registered = 0;
   const pluginApi: PolarisDadosPluginApi = {
     data,
+    locale,
+    pages: {
+      list: () => [{ id: DATABASE_ID, title: 'Inventory', kind: 'database' }],
+    },
+    editor: {
+      insertion: {
+        version: 1,
+        capture: () => null,
+      },
+    },
+    commands: {
+      add: () => () => {},
+    },
+    slash: {
+      add: () => () => {},
+    },
     providers: {
       version: 1,
       register(candidate) {
@@ -276,6 +292,28 @@ describe('Polaris Dados provider module', () => {
       expect(() => activate(incompatible)).toThrow('data API v1 and database-provider API v1');
       expect(registrations).toBe(0);
     }
+  });
+
+  it('rejects an unsupported insertion API before registering the provider', () => {
+    let registrations = 0;
+    const incompatible = {
+      data: { version: 1, snapshot: () => null },
+      providers: {
+        version: 1,
+        register() {
+          registrations += 1;
+          return () => {};
+        },
+      },
+      editor: { insertion: { version: 2, capture: () => null } },
+      pages: { list: () => [] },
+      locale: 'en',
+      commands: { add: () => () => {} },
+      slash: { add: () => () => {} },
+    } as unknown as PolarisDadosPluginApi;
+
+    expect(() => activate(incompatible)).toThrow('editor insertion API v1');
+    expect(registrations).toBe(0);
   });
 
   it('registers the provider and uses the extracted formula engine while editing with keyboard', async () => {

@@ -12,6 +12,7 @@ import { captureEditorInsertionTarget } from '../editor/editorInsertion';
 import { createPage } from '../operations';
 import { desktop } from '../platform/desktop';
 import { getPreferences } from '../platform/preferences';
+import { getLocale } from '../i18n';
 import { activeRoute, openPage } from '../router';
 import { toast } from '../ui';
 import { getSession, getState, run } from '../workspace';
@@ -22,6 +23,9 @@ import type { DatabaseProviderRegistration } from './providerApi';
 import { clonePluginPageProperties } from './pageInfo';
 import { selectedProviderMarker } from './providerMarker';
 import type { PluginEditorInsertionTargetV1 } from './editorApi';
+import { definePluginLocaleApi } from './localeApi';
+
+export type { PluginLocaleApi } from './localeApi';
 
 export const PLUGINS_FOLDER = '.morrow/plugins';
 const SETTINGS_FILE = '.morrow/plugins.json';
@@ -203,7 +207,7 @@ function pluginApi(id: string, state: Running) {
       kind: page.kind,
     };
   };
-  return Object.freeze({
+  return Object.freeze(definePluginLocaleApi({
     version: desktop?.version ?? '',
     plugin: id,
     data,
@@ -337,7 +341,7 @@ function pluginApi(id: string, state: Running) {
       set: (value: unknown) => writeText(`${PLUGINS_FOLDER}/${id}/data.json`, JSON.stringify(value, null, 2)),
     },
     register: (cleanup: () => void) => keep(cleanup),
-  });
+  }, getLocale));
 }
 
 async function load(id: string): Promise<void> {

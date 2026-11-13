@@ -42,6 +42,12 @@ must also be enabled for that test account. Do not point the fixture command at 
   priority list, and optional numeric `gte` filter are local to that view; values, row IDs, and formula
   results still come from the same scoped data API as the source grid. The source grid keeps its G01
   presentation when it has no linked-view context.
+- The **Polaris Dados: insert linked view** command and slash action capture the current note editor
+  before opening a non-modal picker. The picker lists only editable, supported Polaris Dados databases;
+  use **Recapture note target** after selecting a different insertion point behind the picker. Each
+  inserted view gets a new ID, a readable title based on the source, an empty column-priority list,
+  and no filter. The host's normal autosave path persists an accepted insertion; acceptance by the
+  editor does not itself mean that the note has been saved.
 - Linked-view controls show column names. Missing column/filter references remain intact until an
   explicit repair; while a filter reference is unavailable, all source rows remain visible with a
   diagnostic. Config drafts use the revision captured when opened, and their undo/redo uses

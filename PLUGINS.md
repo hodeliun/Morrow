@@ -61,6 +61,7 @@ hand unless the plugin made it itself.
 | Call                                                                  | What it does                                                                                         |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `morrow.version`, `morrow.plugin`                                     | Morrow's version and this plugin's id.                                                               |
+| `morrow.locale`                                                       | Readonly getter for the current supported UI locale (`'en'`, `'es'`, or `'pt'`).                   |
 | `commands.add({ id, name, shortcut?, run })`                          | A command in the search (Ctrl/Cmd+K), with an optional shortcut such as `Mod+Shift+W`.               |
 | `slash.add({ id, title, description?, keywords?, markdown? , run? })` | An item in the `/` menu. It inserts `markdown`, or calls `run`.                                      |
 | `providers.version`                                                   | Version of the database-provider namespace (`1`).                                                    |
@@ -82,6 +83,9 @@ hand unless the plugin made it itself.
 | `register(cleanup)`                                                   | Runs `cleanup` when the plugin is turned off.                                                        |
 
 Every `add` returns a function that takes the thing away again.
+
+The `locale` getter exposes only the current supported interface locale. It does not expose general
+preferences or infer a language from the document or WebView.
 
 ### Asynchronous editor insertion
 
