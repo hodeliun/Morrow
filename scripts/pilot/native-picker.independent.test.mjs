@@ -530,8 +530,8 @@ export async function runIndependentNativePickerScenario(context) {
       'Only the placeholder and the one eligible synthetic Inventory database should be listed.');
     assert.deepEqual(pickerBeforeSelection.options[1], { value: ids.source, text: 'Inventory' },
       'The picker must expose the correct source through its user-facing option.');
-    assert.match(pickerBeforeSelection.status ?? '', /Insertion target captured/i,
-      'The picker must report the target captured from the real page editor caret.');
+    assert.equal(pickerBeforeSelection.status, 'Choose a Polaris Data database.',
+      'Before source selection, the picker must prompt for a Polaris Data database.');
     assert.equal(pickerBeforeSelection.insertDisabled, true,
       'Insert must stay disabled until the user selects a source.');
 
@@ -544,6 +544,8 @@ export async function runIndependentNativePickerScenario(context) {
     }, 'keyboard selection of the synthetic Inventory source');
     assert.equal(pickerSelected.options[pickerSelected.options.findIndex((option) => option.value === ids.source)]?.text,
       'Inventory');
+    assert.match(pickerSelected.status ?? '', /Insertion target captured/i,
+      'After source selection, the picker must report the target captured from the real page editor caret.');
 
     noteFileBeforeInsert = await capture(notePath);
     tokenPersistedBeforeInsert = noteFileBeforeInsert.bytes.includes(Buffer.from(proseToken));
