@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { Editor } from '@tiptap/core';
+import { EditorState } from '@tiptap/pm/state';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PageId } from '../../core/model';
 import { encodePolarisDadosViewMarker } from '../../core/polarisDadosView';
@@ -146,8 +147,15 @@ function mountEditor(session: WorkspaceSession): Editor {
       renderEmbed: () => {},
       linkedViewContext: { session, pageId: NOTE_ID },
     } as never),
-    content: session.getState().docs[NOTE_ID] as never,
   });
+  editor.view.updateState(
+    EditorState.create({
+      doc: editor.schema.nodeFromJSON(session.getState().docs[NOTE_ID]),
+      plugins: editor.state.plugins,
+    }),
+  );
+  editor.setEditable(true, false);
+  editor.view.dom.dispatchEvent(new Event('morrow:linked-view-context'));
   return editor;
 }
 

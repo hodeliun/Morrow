@@ -350,6 +350,83 @@ async function waitForBootReady(driver, candidate, description) {
   );
 }
 
+async function inspectWelcomeDialog(driver) {
+  return driver.execute(`
+    const welcomeDialogs = [...document.querySelectorAll('[role="dialog"]')]
+      .filter((dialog) => dialog.querySelector('.welcome-step'));
+    const closeButtons = welcomeDialogs.length === 1
+      ? [...welcomeDialogs[0].querySelectorAll('button.dialog-close')]
+      : [];
+    return {
+      dialogCount: welcomeDialogs.length,
+      closeButtonCount: closeButtons.length,
+      closeButton: closeButtons.length === 1 ? closeButtons[0] : null,
+    };
+  `);
+}
+
+async function countWelcomeDialogs(driver) {
+  return driver.execute(`
+    return [...document.querySelectorAll('[role="dialog"]')]
+      .filter((dialog) => dialog.querySelector('.welcome-step')).length;
+  `);
+}
+
+async function readPublicOnboarded(driver) {
+  return driver.execute(`
+    const storedPreferences = localStorage.getItem('morrow.preferences');
+    if (storedPreferences === null) return null;
+    try {
+      const preferences = JSON.parse(storedPreferences);
+      if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) return null;
+      return typeof preferences.onboarded === 'boolean' ? preferences.onboarded : null;
+    } catch {
+      return null;
+    }
+  `);
+}
+
+export async function prepareNativeOnboarding({ driver, recordStep }) {
+  if (!driver || typeof recordStep !== 'function') {
+    throw new Error('Native onboarding preparation requires the isolated WebDriver and evidence callback.');
+  }
+
+  const welcome = await inspectWelcomeDialog(driver);
+  if (!Number.isInteger(welcome?.dialogCount) || welcome.dialogCount < 0) {
+    throw new Error('Could not inspect the Welcome dialog count safely.');
+  }
+  if (welcome.dialogCount > 1) {
+    throw new Error('Multiple Welcome dialogs containing .welcome-step are open.');
+  }
+
+  const present = welcome.dialogCount === 1;
+  if (present && welcome.closeButtonCount !== 1) {
+    throw new Error('The unique Welcome dialog is missing its single button.dialog-close control.');
+  }
+
+  if (present) {
+    await clickReference(driver, welcome.closeButton, 'Welcome dialog close');
+    await waitFor(
+      'the Welcome dialog to disappear',
+      () => countWelcomeDialogs(driver),
+      (count) => count === 0,
+    );
+  }
+
+  const onboarded = await readPublicOnboarded(driver);
+  await recordStep('native-readiness-welcome-ui', {
+    present,
+    dismissed: present,
+    onboarded,
+  });
+  if (onboarded !== true) {
+    const context = present ? 'after closing the Welcome dialog' : 'while the Welcome dialog is absent';
+    throw new Error(`Public morrow.preferences.onboarded is not true ${context}.`);
+  }
+
+  return { present, dismissed: present, onboarded };
+}
+
 export async function prepareNativeUi({
   driver,
   candidate,
@@ -369,8 +446,10 @@ export async function prepareNativeUi({
     throw new Error('Native UI preparation requires evidence and runtime identity callbacks.');
   }
 
+  await verifyRuntimeIdentity();
   const before = await waitForBootReady(driver, candidate, 'conclusive native app boot before UI setup');
   await recordStep('native-readiness-before-settings-ui', { snapshot: before });
+  await prepareNativeOnboarding({ driver, recordStep });
 
   let controls = await openPluginsSettings(driver, candidate);
   if (!controls.settings.masterEnabled) {

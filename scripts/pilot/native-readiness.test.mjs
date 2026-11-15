@@ -8,6 +8,7 @@ import {
   isNativeHomeSourceClosed,
   isNativeBootReady,
   normalizeNativeRoute,
+  prepareNativeOnboarding,
   sanitizeNativeReadinessSnapshot,
 } from './native-readiness.mjs';
 
@@ -171,4 +172,137 @@ test('readiness source requires exactly one numeric Q2/P10/Total20 projection', 
       /fixed readiness source/,
     );
   }
+});
+
+function onboardingDriver({
+  dialogCount = 0,
+  closeButtonCount = 1,
+  onboarded = true,
+  onboardedAfterClose = onboarded,
+} = {}) {
+  let openWelcomeDialogs = dialogCount;
+  let publicOnboarded = onboarded;
+  const events = [];
+  const closeButton = { 'element-6066-11e4-a52e-4f735466cecf': 'welcome-close-reference' };
+
+  return {
+    events,
+    driver: {
+      async execute(script) {
+        if (script.includes('storedPreferences')) {
+          events.push('read-public-onboarded');
+          return publicOnboarded;
+        }
+        if (script.includes('closeButtonCount')) {
+          events.push('inspect-welcome');
+          return {
+            dialogCount: openWelcomeDialogs,
+            closeButtonCount,
+            closeButton: closeButtonCount === 1 ? closeButton : null,
+          };
+        }
+        if (script.includes('.welcome-step')) {
+          events.push('count-welcome');
+          return openWelcomeDialogs;
+        }
+        throw new Error('Unexpected WebDriver script in onboarding test.');
+      },
+      path(value) {
+        return value;
+      },
+      async request(method, requestPath, body) {
+        events.push({ method, requestPath, body });
+        openWelcomeDialogs = 0;
+        publicOnboarded = onboardedAfterClose;
+      },
+    },
+  };
+}
+
+test('native onboarding is a no-op without Welcome and records only sanitized readiness booleans', async () => {
+  const { driver, events } = onboardingDriver({ dialogCount: 0, onboarded: true });
+  const records = [];
+  const result = await prepareNativeOnboarding({
+    driver,
+    recordStep: async (name, details) => records.push({ name, details }),
+  });
+
+  assert.deepEqual(result, { present: false, dismissed: false, onboarded: true });
+  assert.deepEqual(events, ['inspect-welcome', 'read-public-onboarded']);
+  assert.deepEqual(records, [{
+    name: 'native-readiness-welcome-ui',
+    details: { present: false, dismissed: false, onboarded: true },
+  }]);
+});
+
+test('native onboarding clicks only the unique Welcome close control through a WebDriver element reference', async () => {
+  const { driver, events } = onboardingDriver({
+    dialogCount: 1,
+    onboarded: false,
+    onboardedAfterClose: true,
+  });
+  const records = [];
+
+  const result = await prepareNativeOnboarding({
+    driver,
+    recordStep: async (name, details) => records.push({ name, details }),
+  });
+
+  assert.deepEqual(result, { present: true, dismissed: true, onboarded: true });
+  assert.deepEqual(events, [
+    'inspect-welcome',
+    {
+      method: 'POST',
+      requestPath: '/element/welcome-close-reference/click',
+      body: {},
+    },
+    'count-welcome',
+    'read-public-onboarded',
+  ]);
+  assert.deepEqual(records, [{
+    name: 'native-readiness-welcome-ui',
+    details: { present: true, dismissed: true, onboarded: true },
+  }]);
+});
+
+test('native onboarding fails clearly for duplicate Welcome dialogs or a missing close button', async () => {
+  for (const [options, message] of [
+    [{ dialogCount: 2 }, /Multiple Welcome dialogs/],
+    [{ dialogCount: 1, closeButtonCount: 0 }, /missing its single button\.dialog-close/],
+  ]) {
+    const { driver, events } = onboardingDriver(options);
+    await assert.rejects(
+      prepareNativeOnboarding({ driver, recordStep: async () => assert.fail('invalid Welcome state was recorded') }),
+      message,
+    );
+    assert.deepEqual(events, ['inspect-welcome']);
+  }
+});
+
+test('native onboarding fails when the public onboarded flag stays false after closing Welcome', async () => {
+  const { driver, events } = onboardingDriver({ dialogCount: 1, onboarded: false });
+  const records = [];
+
+  await assert.rejects(
+    prepareNativeOnboarding({
+      driver,
+      recordStep: async (name, details) => records.push({ name, details }),
+    }),
+    /Public morrow\.preferences\.onboarded is not true after closing the Welcome dialog\./,
+  );
+
+  assert.deepEqual(events, [
+    'inspect-welcome',
+    {
+      method: 'POST',
+      requestPath: '/element/welcome-close-reference/click',
+      body: {},
+    },
+    'count-welcome',
+    'read-public-onboarded',
+  ]);
+  assert.deepEqual(records, [{
+    name: 'native-readiness-welcome-ui',
+    details: { present: true, dismissed: true, onboarded: false },
+  }]);
 });
