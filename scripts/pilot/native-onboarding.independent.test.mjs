@@ -26,15 +26,8 @@ class WelcomeDriverHarness {
         dialogCount: this.dialogs,
         closeButtonCount: this.closeButtons,
         closeButton: this.closeButtons === 1 ? this.closeElement : null,
+        onboarded: this.onboarded,
       };
-    }
-    if (script.includes('storedPreferences')) {
-      this.events.push('read-onboarded');
-      return this.onboarded;
-    }
-    if (script.includes('.welcome-step')) {
-      this.events.push('count');
-      return this.dialogs;
     }
     throw new Error('Unexpected driver script.');
   }
@@ -49,11 +42,12 @@ class WelcomeDriverHarness {
   }
 }
 
-async function runOnboarding(driver) {
+async function runOnboarding(driver, timeoutMs) {
   const records = [];
   const result = await prepareNativeOnboarding({
     driver,
     recordStep: async (name, details) => records.push({ name, details }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   return { result, records };
 }
@@ -64,7 +58,7 @@ test('leaves an absent Welcome alone and records only the public onboarding resu
   const { result, records } = await runOnboarding(driver);
 
   assert.deepEqual(result, { present: false, dismissed: false, onboarded: true });
-  assert.deepEqual(driver.events, ['inspect', 'read-onboarded']);
+  assert.deepEqual(driver.events, ['inspect']);
   assert.deepEqual(records, [{
     name: 'native-readiness-welcome-ui',
     details: { present: false, dismissed: false, onboarded: true },
@@ -84,8 +78,7 @@ test('dismisses one Welcome by its returned WebDriver element reference and wait
   assert.deepEqual(driver.events, [
     'inspect',
     { method: 'POST', requestPath: '/element/welcome-control-1/click', body: {} },
-    'count',
-    'read-onboarded',
+    'inspect',
   ]);
   assert.deepEqual(records, [{
     name: 'native-readiness-welcome-ui',
@@ -109,14 +102,14 @@ test('rejects duplicate or uncloseable Welcome and a false public onboarded flag
     },
     {
       options: { dialogs: 1, onboarded: false, afterClose: false },
-      message: /Public morrow\.preferences\.onboarded is not true after closing the Welcome dialog\./,
+      timeoutMs: 0,
+      message: /Timed out waiting/,
       events: [
         'inspect',
         { method: 'POST', requestPath: '/element/welcome-control-1/click', body: {} },
-        'count',
-        'read-onboarded',
+        'inspect',
       ],
-      records: 1,
+      records: 0,
     },
   ]) {
     const driver = new WelcomeDriverHarness(scenario.options);
@@ -126,18 +119,13 @@ test('rejects duplicate or uncloseable Welcome and a false public onboarded flag
       prepareNativeOnboarding({
         driver,
         recordStep: async (name, details) => records.push({ name, details }),
+        ...(scenario.timeoutMs === undefined ? {} : { timeoutMs: scenario.timeoutMs }),
       }),
       scenario.message,
     );
 
     assert.deepEqual(driver.events, scenario.events);
     assert.equal(records.length, scenario.records);
-    if (scenario.records === 1) {
-      assert.deepEqual(records[0], {
-        name: 'native-readiness-welcome-ui',
-        details: { present: true, dismissed: true, onboarded: false },
-      });
-    }
   }
 });
 
@@ -169,11 +157,7 @@ test('prepareNativeUi verifies runtime identity before its first UI observation'
       }
       if (script.includes('closeButtonCount')) {
         events.push('inspect-welcome');
-        return { dialogCount: 0, closeButtonCount: 0, closeButton: null };
-      }
-      if (script.includes('storedPreferences')) {
-        events.push('read-onboarded');
-        return true;
+        return { dialogCount: 0, closeButtonCount: 0, closeButton: null, onboarded: true };
       }
       events.push('find-settings-control');
       return null;
@@ -212,9 +196,95 @@ test('prepareNativeUi verifies runtime identity before its first UI observation'
     'observe-ui',
     'record-native-readiness-before-settings-ui',
     'inspect-welcome',
-    'read-onboarded',
     'record-native-readiness-welcome-ui',
     'observe-ui',
     'find-settings-control',
   ]);
+});
+
+class AtomicWelcomeRaceDriver {
+  constructor(snapshots) {
+    this.snapshots = snapshots;
+    this.observation = 0;
+    this.events = [];
+  }
+
+  path(value) {
+    return value;
+  }
+
+  async execute() {
+    this.events.push('observe');
+    const index = Math.min(this.observation, this.snapshots.length - 1);
+    this.observation += 1;
+    return this.snapshots[index];
+  }
+
+  async request(method, requestPath, body) {
+    this.events.push({ method, requestPath, body });
+    assert.equal(method, 'POST');
+    assert.equal(requestPath, '/element/atomic-welcome-close/click');
+    assert.deepEqual(body, {});
+  }
+}
+
+function welcomeSnapshot(dialogCount, onboarded) {
+  const closeButtonCount = dialogCount === 1 ? 1 : 0;
+  return {
+    dialogCount,
+    closeButtonCount,
+    closeButton: closeButtonCount === 1
+      ? { [ELEMENT_KEY]: 'atomic-welcome-close' }
+      : null,
+    onboarded,
+  };
+}
+
+test('waits through a late Welcome and a transient post-close false flag using successive snapshots', async () => {
+  const driver = new AtomicWelcomeRaceDriver([
+    welcomeSnapshot(0, false),
+    welcomeSnapshot(1, false),
+    welcomeSnapshot(0, false),
+    welcomeSnapshot(0, true),
+  ]);
+  const records = [];
+
+  const result = await prepareNativeOnboarding({
+    driver,
+    recordStep: async (name, details) => {
+      driver.events.push('record');
+      records.push({ name, details });
+    },
+  });
+
+  assert.deepEqual(result, { present: true, dismissed: true, onboarded: true });
+  assert.deepEqual(driver.events, [
+    'observe',
+    'observe',
+    { method: 'POST', requestPath: '/element/atomic-welcome-close/click', body: {} },
+    'observe',
+    'observe',
+    'record',
+  ]);
+  assert.deepEqual(records, [{
+    name: 'native-readiness-welcome-ui',
+    details: { present: true, dismissed: true, onboarded: true },
+  }]);
+});
+
+test('a Welcome that never arrives while onboarded stays false fails only at the bounded wait', async () => {
+  const driver = new AtomicWelcomeRaceDriver([welcomeSnapshot(0, false)]);
+  const records = [];
+  await assert.rejects(
+    prepareNativeOnboarding({
+      driver,
+      recordStep: async (...args) => records.push(args),
+      timeoutMs: 0,
+    }),
+    /Timed out waiting/,
+  );
+
+  assert.equal(driver.observation, 1);
+  assert.deepEqual(driver.events, Array(driver.observation).fill('observe'));
+  assert.deepEqual(records, []);
 });

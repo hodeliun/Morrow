@@ -243,6 +243,7 @@ function waitFor(description, read, predicate, timeoutMs = WAIT_TIMEOUT_MS) {
         }
         setTimeout(poll, WAIT_INTERVAL_MS);
       } catch (error) {
+        if (error?.waitForFatal === true) return reject(error);
         if (Date.now() >= deadline) return reject(error);
         setTimeout(poll, WAIT_INTERVAL_MS);
       }
@@ -350,79 +351,86 @@ async function waitForBootReady(driver, candidate, description) {
   );
 }
 
-async function inspectWelcomeDialog(driver) {
+function fatalWelcomeStateError(message) {
+  const error = new Error(message);
+  error.waitForFatal = true;
+  return error;
+}
+
+async function readWelcomeSnapshot(driver) {
   return driver.execute(`
     const welcomeDialogs = [...document.querySelectorAll('[role="dialog"]')]
       .filter((dialog) => dialog.querySelector('.welcome-step'));
     const closeButtons = welcomeDialogs.length === 1
       ? [...welcomeDialogs[0].querySelectorAll('button.dialog-close')]
       : [];
+    let onboarded = null;
+    try {
+      const storedPreferences = localStorage.getItem('morrow.preferences');
+      if (storedPreferences !== null) {
+        const preferences = JSON.parse(storedPreferences);
+        if (preferences && typeof preferences === 'object' && !Array.isArray(preferences)) {
+          onboarded = typeof preferences.onboarded === 'boolean' ? preferences.onboarded : null;
+        }
+      }
+    } catch {}
     return {
       dialogCount: welcomeDialogs.length,
       closeButtonCount: closeButtons.length,
       closeButton: closeButtons.length === 1 ? closeButtons[0] : null,
+      onboarded,
     };
   `);
 }
 
-async function countWelcomeDialogs(driver) {
-  return driver.execute(`
-    return [...document.querySelectorAll('[role="dialog"]')]
-      .filter((dialog) => dialog.querySelector('.welcome-step')).length;
-  `);
+function validateWelcomeSnapshot(snapshot) {
+  if (!Number.isInteger(snapshot?.dialogCount) || snapshot.dialogCount < 0) {
+    throw fatalWelcomeStateError('Could not inspect the Welcome dialog count safely.');
+  }
+  if (snapshot.dialogCount > 1) {
+    throw fatalWelcomeStateError('Multiple Welcome dialogs containing .welcome-step are open.');
+  }
+  if (snapshot.dialogCount === 1 && snapshot.closeButtonCount !== 1) {
+    throw fatalWelcomeStateError('The unique Welcome dialog is missing its single button.dialog-close control.');
+  }
+  if (snapshot.onboarded !== null && typeof snapshot.onboarded !== 'boolean') {
+    throw fatalWelcomeStateError('Could not inspect public morrow.preferences.onboarded safely.');
+  }
+  return snapshot;
 }
 
-async function readPublicOnboarded(driver) {
-  return driver.execute(`
-    const storedPreferences = localStorage.getItem('morrow.preferences');
-    if (storedPreferences === null) return null;
-    try {
-      const preferences = JSON.parse(storedPreferences);
-      if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) return null;
-      return typeof preferences.onboarded === 'boolean' ? preferences.onboarded : null;
-    } catch {
-      return null;
-    }
-  `);
-}
-
-export async function prepareNativeOnboarding({ driver, recordStep }) {
+export async function prepareNativeOnboarding({ driver, recordStep, timeoutMs = WAIT_TIMEOUT_MS }) {
   if (!driver || typeof recordStep !== 'function') {
     throw new Error('Native onboarding preparation requires the isolated WebDriver and evidence callback.');
   }
 
-  const welcome = await inspectWelcomeDialog(driver);
-  if (!Number.isInteger(welcome?.dialogCount) || welcome.dialogCount < 0) {
-    throw new Error('Could not inspect the Welcome dialog count safely.');
-  }
-  if (welcome.dialogCount > 1) {
-    throw new Error('Multiple Welcome dialogs containing .welcome-step are open.');
-  }
-
+  const boundedTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs >= 0
+    ? Math.min(timeoutMs, WAIT_TIMEOUT_MS)
+    : WAIT_TIMEOUT_MS;
+  const welcome = await waitFor(
+    'one valid Welcome dialog or no Welcome with public onboarded=true',
+    async () => validateWelcomeSnapshot(await readWelcomeSnapshot(driver)),
+    (snapshot) => snapshot.dialogCount === 1 || (snapshot.dialogCount === 0 && snapshot.onboarded === true),
+    boundedTimeoutMs,
+  );
   const present = welcome.dialogCount === 1;
-  if (present && welcome.closeButtonCount !== 1) {
-    throw new Error('The unique Welcome dialog is missing its single button.dialog-close control.');
-  }
-
+  let settled = welcome;
   if (present) {
     await clickReference(driver, welcome.closeButton, 'Welcome dialog close');
-    await waitFor(
-      'the Welcome dialog to disappear',
-      () => countWelcomeDialogs(driver),
-      (count) => count === 0,
+    settled = await waitFor(
+      'Welcome to disappear with public onboarded=true',
+      async () => validateWelcomeSnapshot(await readWelcomeSnapshot(driver)),
+      (snapshot) => snapshot.dialogCount === 0 && snapshot.onboarded === true,
+      boundedTimeoutMs,
     );
   }
 
-  const onboarded = await readPublicOnboarded(driver);
+  const onboarded = settled.onboarded;
   await recordStep('native-readiness-welcome-ui', {
     present,
     dismissed: present,
     onboarded,
   });
-  if (onboarded !== true) {
-    const context = present ? 'after closing the Welcome dialog' : 'while the Welcome dialog is absent';
-    throw new Error(`Public morrow.preferences.onboarded is not true ${context}.`);
-  }
 
   return { present, dismissed: present, onboarded };
 }
