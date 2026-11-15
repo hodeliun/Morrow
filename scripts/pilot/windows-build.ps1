@@ -105,11 +105,37 @@ function Get-PackageFiles([string] $Root) {
   })
 }
 
-function Write-BuildInfo([string] $Path) {
+function Get-Sha256Text([string] $Text) {
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    $digest = $algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+    return ([BitConverter]::ToString($digest).Replace('-', '')).ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+  }
+}
+
+function Get-TreeHash([string] $Root) {
+  $files = @(Get-PackageFiles $Root)
+  $lines = [string[]]@(
+    foreach ($file in $files) {
+      $relative = [IO.Path]::GetRelativePath($Root, $file.FullName).Replace('\', '/')
+      '{0}  {1}' -f $relative, (Get-Sha256 $file.FullName)
+    }
+  )
+  [Array]::Sort($lines, [StringComparer]::Ordinal)
+  return Get-Sha256Text (($lines -join "`n") + "`n")
+}
+
+function Write-BuildInfo([string] $Path, [object[]] $FileInventory, [string] $TemplateHash) {
   $buildInfo = [ordered]@{
     schemaVersion = 1
-    scope = 'Morrow E003-G07 issue 166'
-    validationBoundary = 'Windows compile and package verification only; no application or GUI launch'
+    scope = 'Morrow E003-G12 issue 178'
+    validationBoundary = 'Native Windows x64 compile and package verification only; no application or GUI launch or Windows runtime test'
+    sourceBuildPlatform = 'windows-native'
+    appLaunched = $false
+    windowsRuntimeTested = $false
+    pilotIdentifier = 'app.morrow.polaris-dados-pilot'
     run = @{ id = $runId; attempt = $runAttempt; sha = $sha }
     applicationVersion = $metadata.applicationVersion
     git = $metadata.git
@@ -118,6 +144,8 @@ function Write-BuildInfo([string] $Path) {
     lockHashes = $metadata.lockHashes
     overlay = $metadata.overlay
     buildCommands = $gateResults.ToArray()
+    template = [ordered]@{ path = 'DemoVault'; sha256 = $TemplateHash }
+    fileInventory = @($FileInventory)
   }
   $json = $buildInfo | ConvertTo-Json -Depth 12
   [IO.File]::WriteAllText($Path, $json, [Text.UTF8Encoding]::new($false))
@@ -229,7 +257,12 @@ try {
     (Join-Path $repoRoot 'dist/polaris-dados/main.js'),
     (Join-Path $repoRoot 'plugins/polaris-dados/manifest.json'),
     (Join-Path $repoRoot 'plugins/polaris-dados/README.md'),
-    (Join-Path $repoRoot 'LICENSE')
+    (Join-Path $repoRoot 'LICENSE'),
+    (Join-Path $repoRoot 'scripts/pilot/windows-launch.ps1'),
+    (Join-Path $repoRoot 'scripts/pilot/windows-launch.cmd'),
+    (Join-Path $repoRoot 'scripts/pilot/windows-launch.test.ps1'),
+    (Join-Path $repoRoot 'scripts/pilot/windows-launch.independent.test.ps1'),
+    (Join-Path $repoRoot 'plugins/polaris-dados/TESTAR-NO-WINDOWS.md')
   )
   foreach ($requiredSource in $requiredSources) {
     if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) { throw "Required build/package input is missing: $requiredSource" }
@@ -237,6 +270,9 @@ try {
   }
 
   Copy-Item -LiteralPath $exeSource -Destination (Join-Path $packageDir 'morrow.exe')
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/pilot/windows-launch.ps1') -Destination (Join-Path $packageDir 'windows-launch.ps1')
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/pilot/windows-launch.cmd') -Destination (Join-Path $packageDir 'windows-launch.cmd')
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'plugins/polaris-dados/TESTAR-NO-WINDOWS.md') -Destination (Join-Path $packageDir 'TESTAR-NO-WINDOWS.md')
   $mcpTarget = Join-Path $packageDir 'mcp/index.js'
   New-Item -ItemType Directory -Path (Split-Path -Parent $mcpTarget) -Force | Out-Null
   Copy-Item -LiteralPath $mcpSource -Destination $mcpTarget
@@ -256,7 +292,25 @@ try {
   }
   if (-not (Test-Path -LiteralPath $mcpTarget -PathType Leaf)) { throw 'Package is missing the Tauri MCP resource at mcp/index.js.' }
 
-  Write-BuildInfo (Join-Path $packageDir 'BUILD-INFO.json')
+  $packageComparisons = @(
+    @{ Source = (Join-Path $repoRoot 'scripts/pilot/windows-launch.ps1'); Package = (Join-Path $packageDir 'windows-launch.ps1'); Name = 'Windows launcher' },
+    @{ Source = (Join-Path $repoRoot 'scripts/pilot/windows-launch.cmd'); Package = (Join-Path $packageDir 'windows-launch.cmd'); Name = 'Windows launcher wrapper' },
+    @{ Source = (Join-Path $repoRoot 'plugins/polaris-dados/TESTAR-NO-WINDOWS.md'); Package = (Join-Path $packageDir 'TESTAR-NO-WINDOWS.md'); Name = 'Windows test guide' }
+  )
+  foreach ($item in $packageComparisons) {
+    if (-not (Test-Path -LiteralPath $item.Package -PathType Leaf)) { throw "Package is missing $($item.Name)." }
+    if ((Get-Sha256 $item.Source) -ne (Get-Sha256 $item.Package)) { throw "Packaged $($item.Name) hash differs from its source." }
+  }
+
+  $fileInventory = foreach ($file in Get-PackageFiles $packageDir) {
+    [ordered]@{
+      path = [IO.Path]::GetRelativePath($packageDir, $file.FullName).Replace('\', '/')
+      sizeBytes = $file.Length
+      sha256 = Get-Sha256 $file.FullName
+    }
+  }
+  $templateHash = Get-TreeHash $fixtureDir
+  Write-BuildInfo (Join-Path $packageDir 'BUILD-INFO.json') $fileInventory $templateHash
   $payloadFiles = @(Get-PackageFiles $packageDir)
   $sumLines = foreach ($file in $payloadFiles) {
     $relative = [IO.Path]::GetRelativePath($packageDir, $file.FullName).Replace('\', '/')
@@ -286,6 +340,36 @@ try {
   if ((Get-Sha256 (Join-Path $extractionDir 'morrow.exe')) -ne (Get-Sha256 $exeSource)) { throw 'The extracted executable hash differs from the Windows build output.' }
   if ((Get-Sha256 (Join-Path $extractionDir 'mcp/index.js')) -ne (Get-Sha256 $mcpSource)) { throw 'The extracted Tauri MCP resource hash differs from dist-mcp/index.js.' }
   if ((Get-Sha256 (Join-Path $extractionDir 'DemoVault/.morrow/plugins/polaris-dados/main.js')) -ne (Get-Sha256 (Join-Path $repoRoot 'dist/polaris-dados/main.js'))) { throw 'The extracted plugin bundle hash differs from the built plugin.' }
+  $extractedSumsHashBeforeLauncherChecks = Get-Sha256 (Join-Path $extractionDir 'SHA256SUMS')
+
+  $launcherTestPlan = @(
+    @{ Label = 'windows-launch-own-powershell-51-checks'; Executable = 'powershell.exe'; Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/pilot/windows-launch.test.ps1', '-PackagePath', $extractionDir) },
+    @{ Label = 'windows-launch-independent-powershell-51-checks'; Executable = 'powershell.exe'; Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts/pilot/windows-launch.independent.test.ps1', '-PackagePath', $extractionDir) },
+    @{ Label = 'windows-launch-own-pwsh-checks'; Executable = 'pwsh'; Arguments = @('-NoProfile', '-File', 'scripts/pilot/windows-launch.test.ps1', '-PackagePath', $extractionDir) },
+    @{ Label = 'windows-launch-independent-pwsh-checks'; Executable = 'pwsh'; Arguments = @('-NoProfile', '-File', 'scripts/pilot/windows-launch.independent.test.ps1', '-PackagePath', $extractionDir) }
+  )
+  foreach ($item in $launcherTestPlan) {
+    $result = Invoke-LoggedCommand $item.Label $item.Executable $item.Arguments $repoRoot
+    $stepStatus = if ($result.ExitCode -eq 0) { 'passed' } else { 'failed' }
+    $gateResults.Add([ordered]@{
+      label = $item.Label
+      command = (@($item.Executable) + @($item.Arguments)) -join ' '
+      startedAt = $result.StartedAt
+      finishedAt = $result.FinishedAt
+      exitCode = $result.ExitCode
+      status = $stepStatus
+    })
+    if ($result.ExitCode -ne 0) { throw "Windows launcher verification failed: $($item.Label) (exit $($result.ExitCode))." }
+  }
+  if (Test-Path -LiteralPath (Join-Path $extractionDir 'PilotState')) { throw 'Launcher tests wrote PilotState into the extracted package.' }
+  $filesAfterLauncherChecks = @(Get-PackageFiles $extractionDir)
+  $namesAfterLauncherChecks = @($filesAfterLauncherChecks | ForEach-Object { [IO.Path]::GetRelativePath($extractionDir, $_.FullName).Replace('\', '/') } | Where-Object { $_ -ne 'SHA256SUMS' } | Sort-Object)
+  if (Compare-Object -ReferenceObject $expectedNames -DifferenceObject $namesAfterLauncherChecks) { throw 'Launcher tests changed the extracted package inventory.' }
+  if ((Get-Sha256 (Join-Path $extractionDir 'SHA256SUMS')) -ne $extractedSumsHashBeforeLauncherChecks) { throw 'Launcher tests changed SHA256SUMS in the extracted package.' }
+  foreach ($relative in $expectedNames) {
+    $extractedPath = Join-Path $extractionDir ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    if ((Get-Sha256 $extractedPath) -ne $checksumMap[$relative]) { throw "Launcher tests changed extracted payload: $relative" }
+  }
   $packageVerifiedAt = [DateTimeOffset]::UtcNow
 
   $fileInventory = foreach ($file in $payloadFiles) {
@@ -300,7 +384,7 @@ try {
     status = 'passed'
     startedAt = $packageStartedAt.ToString('o')
     verifiedAt = $packageVerifiedAt.ToString('o')
-    layout = 'morrow.exe; mcp/index.js; DemoVault/.morrow/plugins/polaris-dados/{main.js,manifest.json,README.md,LICENSE}; fixture data; BUILD-INFO.json; SHA256SUMS'
+    layout = 'windows-launch.cmd; windows-launch.ps1; morrow.exe; mcp/index.js; DemoVault template; TESTAR-NO-WINDOWS.md; BUILD-INFO.json; SHA256SUMS'
     executableLaunched = $false
     zip = [ordered]@{ name = [IO.Path]::GetFileName($tempZip); sizeBytes = $zipInfo.Length; sha256 = Get-Sha256 $tempZip }
     sha256sumsSha256 = Get-Sha256 (Join-Path $packageDir 'SHA256SUMS')
@@ -309,11 +393,16 @@ try {
     verification = [ordered]@{
       zipCreated = $true
       extractedToCleanDirectory = $true
+      zipContentIntegrityValidated = $true
       inventoryMatched = $true
       sha256sumsMatched = $true
       executableHashMatched = $true
       mcpResourceHashMatched = $true
       pluginBundleHashMatched = $true
+      launcherOwnPowerShell51CheckOnlyPassed = $true
+      launcherIndependentPowerShell51CheckOnlyPassed = $true
+      launcherOwnPowerShell7CheckOnlyPassed = $true
+      launcherIndependentPowerShell7CheckOnlyPassed = $true
     }
   }
 
@@ -330,7 +419,7 @@ try {
   $finishedAt = [DateTimeOffset]::UtcNow
   $receipt = [ordered]@{
     schemaVersion = 1
-    issue = 166
+    issue = 178
     status = $pipelineStatus
     startedAt = $scriptStartedAt.ToString('o')
     finishedAt = $finishedAt.ToString('o')
@@ -341,6 +430,7 @@ try {
     package = $packageResult
     failure = $failure
     appLaunched = $false
+    windowsRuntimeTested = $false
   }
   $receiptJson = $receipt | ConvertTo-Json -Depth 16
   [IO.File]::WriteAllText((Join-Path $evidenceDir 'receipt.json'), $receiptJson, [Text.UTF8Encoding]::new($false))
