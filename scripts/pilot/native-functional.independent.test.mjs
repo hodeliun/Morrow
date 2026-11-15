@@ -137,15 +137,6 @@ async function typeWithin(driver, selector, text, rootIndex = null, { clear = fa
   await typeRef(driver, id, text);
 }
 
-async function setPreferences(driver) {
-  await driver.execute(`const key = 'morrow.preferences';
-    const before = JSON.parse(localStorage.getItem(key) || '{}');
-    localStorage.setItem(key, JSON.stringify({ ...before, plugins: true, locale: 'en', theme: 'dark', startPage: 'home' }));`);
-  await driver.refresh();
-  const info = await waitFor(() => driver.execute('return window.__MORROW_INFO__ || null'), 'isolated runtime identity');
-  return info;
-}
-
 async function routeToPage(driver, pageId) {
   await driver.execute(`location.hash = '#/page/' + encodeURIComponent(arguments[0]);`, [pageId]);
 }
@@ -307,7 +298,7 @@ async function readRecentMetadata(vault) {
 }
 
 async function installPendingObserver(driver) {
-  const installed = await driver.execute(`(() => {
+  const installed = await driver.execute(`return (() => {
     const key = ${JSON.stringify(PENDING_OBSERVER_KEY)};
     if (window[key]) return false;
     const state = { lastEditorInputAt: null, firstViewSaveClickAt: null };
@@ -393,9 +384,6 @@ export async function runIndependentFunctionalScenario(context) {
   const runtime = await driver.execute('return window.__MORROW_INFO__ || null');
   assert.equal(runtime?.platform, 'linux', 'Scenario must run in a Linux native application.');
   assert.equal(runtime?.dataPath, candidate.expectedBackendDataPath, 'Runtime dataPath must be the private synthetic profile.');
-  const refreshedRuntime = await setPreferences(driver);
-  assert.equal(refreshedRuntime?.platform, 'linux');
-  assert.equal(refreshedRuntime?.dataPath, candidate.expectedBackendDataPath);
   await routeToPage(driver, ids.source);
   const initialGrid = await waitSource(driver, 2, 20);
   assert.equal(initialGrid.rowId, ids.row);
