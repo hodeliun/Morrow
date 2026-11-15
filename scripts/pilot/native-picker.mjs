@@ -353,16 +353,16 @@ async function readFilesystemNoteObservation(vault, token, typedAtMs) {
   };
 }
 
-async function observePrePaletteState(driver, vault, token, typedAtMs) {
+export async function observePrePaletteState(driver, vault, token, typedAtMs) {
   const caret = await readCaretState(driver, token);
   assertCollapsedParagraphCaret(caret, token);
   if (!caret.anchorTextEndsWithToken) fail(`Caret is not at the end of the typed paragraph: ${JSON.stringify(caret)}`);
-  const saveStatus = await saveStatus(driver);
-  if (!saveStatus.found || saveStatus.error) {
-    fail(`Autosave status was unavailable or failed before Ctrl+K: ${JSON.stringify(saveStatus)}`);
+  const observedSaveStatus = await saveStatus(driver);
+  if (!observedSaveStatus.found || observedSaveStatus.error) {
+    fail(`Autosave status was unavailable or failed before Ctrl+K: ${JSON.stringify(observedSaveStatus)}`);
   }
   const note = await readFilesystemNoteObservation(vault, token, typedAtMs);
-  const observation = { ...note, saveStatus, caret };
+  const observation = { ...note, saveStatus: observedSaveStatus, caret };
   if (note.filesystem.tokenPresent) {
     fail(`Views.md already contained the token immediately before Ctrl+K: ${JSON.stringify(observation)}`);
   }

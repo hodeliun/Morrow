@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -8,6 +11,7 @@ import {
   assertPickerConfigSequence,
   decodePickerViewMarkers,
   findSourceSentenceParagraphIndex,
+  observePrePaletteState,
 } from './native-picker.mjs';
 
 const RUNNER = fileURLToPath(new URL('./native-bank-smoke.mjs', import.meta.url));
@@ -90,6 +94,48 @@ test('picker locates the source sentence inside a combined fixture paragraph and
   assert.throws(() => assertCollapsedParagraphCaret({ ...valid, isCollapsed: false }, token), /Pending text\/caret/);
   assert.throws(() => assertCollapsedParagraphCaret({ ...valid, anchorInEditor: false }, token), /Pending text\/caret/);
   assert.throws(() => assertCollapsedParagraphCaret({ ...valid, editorText: `${valid.editorText} ${token}` }, token), /Pending text\/caret/);
+});
+
+test('pre-palette observation reaches the filesystem token guard after DOM and save-state reads', async () => {
+  const token = 'E158-PICKER-observation-test';
+  const vault = await mkdtemp(path.join(os.tmpdir(), 'morrow-picker-observation-'));
+  const observed = [];
+  const caret = {
+    focusedEditor: true,
+    anchorInEditor: true,
+    anchorIsText: true,
+    isCollapsed: true,
+    anchorOffset: token.length,
+    anchorTextLength: token.length,
+    paragraphText: token,
+    editorText: token,
+    anchorTextEndsWithToken: true,
+  };
+  const save = { found: true, saving: true, error: false, text: 'Saving...' };
+  const driver = {
+    async execute(script) {
+      if (script.includes('.ProseMirror[contenteditable="true"]')) {
+        observed.push('caret');
+        return caret;
+      }
+      if (script.includes("document.querySelector('.save-status')")) {
+        observed.push('save-status');
+        return save;
+      }
+      throw new Error(`Unexpected observation script: ${script}`);
+    },
+  };
+
+  try {
+    await writeFile(path.join(vault, 'Views.md'), `Seed text ${token}\n`);
+    await assert.rejects(
+      observePrePaletteState(driver, vault, token, Date.now()),
+      /Views\.md already contained the token immediately before Ctrl\+K/,
+    );
+    assert.deepEqual(observed, ['caret', 'save-status']);
+  } finally {
+    await rm(vault, { recursive: true, force: true });
+  }
 });
 
 test('native runner exposes picker scenarios and rejects invalid dispatch before preflight', () => {
