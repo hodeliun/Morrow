@@ -124,15 +124,30 @@ fn close_protocol_cancel<R: Runtime>(
 }
 
 #[tauri::command]
-fn set_theme<R: Runtime>(window: WebviewWindow<R>, theme: String) {
-    let color = if theme == "dark" { DARK } else { LIGHT };
-    let _ = window.set_background_color(Some(color));
+fn set_theme<R: Runtime>(window: WebviewWindow<R>, theme: String, color: Option<String>) {
+    // the page's own colour when it sends one, a colour theme changes it
+    let page = color.filter(|hex| {
+        hex.len() == 7 && hex.starts_with('#') && hex[1..].chars().all(|c| c.is_ascii_hexdigit())
+    });
+    let background = page
+        .as_deref()
+        .and_then(|hex| {
+            let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+            Some(tauri::window::Color(
+                channel(1)?,
+                channel(3)?,
+                channel(5)?,
+                0xff,
+            ))
+        })
+        .unwrap_or(if theme == "dark" { DARK } else { LIGHT });
+    let _ = window.set_background_color(Some(background));
     #[cfg(target_os = "android")]
     {
         let dark = theme == "dark";
         // the colour of the page itself, so the strips beside the notch and behind the status bar read as
         // part of it
-        let hex = if dark { "#191919" } else { "#ffffff" };
+        let hex = page.unwrap_or_else(|| if dark { "#191919" } else { "#ffffff" }.to_string());
         device::set_theme(window.app_handle(), dark, hex);
     }
 }
@@ -152,6 +167,42 @@ fn open_external<R: Runtime>(app: AppHandle<R>, url: String) {
 #[tauri::command]
 fn copy_text<R: Runtime>(app: AppHandle<R>, text: String) -> bool {
     app.clipboard().write_text(text).is_ok()
+}
+
+const CLIPBOARD_MEDIA: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "mp3", "wav", "ogg", "m4a", "flac",
+    "mp4", "webm", "mov", "m4v", "pdf",
+];
+
+// pictures, sound, video and pdfs copied in the file manager, by path
+#[tauri::command]
+fn clipboard_files() -> Vec<String> {
+    native::clipboard_files()
+        .into_iter()
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| CLIPBOARD_MEDIA.contains(&ext.to_ascii_lowercase().as_str()))
+        })
+        .collect()
+}
+
+// one of those files, read only while it is still on the clipboard, so the page can't read any other file
+#[tauri::command]
+fn read_clipboard_file(path: String) -> Res<Response> {
+    if !clipboard_files().contains(&path) {
+        return Err("Not on the clipboard.".into());
+    }
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size > 100 * 1024 * 1024 {
+        return Err("Too large.".into());
+    }
+    Ok(Response::new(
+        std::fs::read(&path).map_err(|error| error.to_string())?,
+    ))
 }
 
 // text and html together, so pictures copied with the words reach other apps too
@@ -429,6 +480,19 @@ async fn vault_choose<R: Runtime>(app: AppHandle<R>, start: Option<String>) -> O
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+// what another app shared with morrow on android, nothing anywhere else
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn take_shared<R: Runtime>(app: AppHandle<R>) -> Option<String> {
+    device::take_shared(&app).await
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn take_shared() -> Option<String> {
+    None
+}
+
 // on android a folder that is already on the phone can be opened, once morrow may read files outside its own
 // storage. the person is asked for that here, the first time a folder is opened
 #[cfg(target_os = "android")]
@@ -470,6 +534,11 @@ async fn vault_select(dir: String) -> Res<Value> {
 #[tauri::command]
 async fn vault_forget(dir: String) -> Res<()> {
     blocking(move || vault::forget(&dir)).await?
+}
+
+#[tauri::command]
+async fn vault_reorder(order: Vec<String>) -> Res<()> {
+    blocking(move || vault::reorder(&order)).await?
 }
 
 #[tauri::command]
@@ -884,6 +953,8 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         });
     #[cfg(desktop)]
     let builder = builder.decorations(cfg!(target_os = "macos"));
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(&native::browser_args());
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
@@ -998,6 +1069,8 @@ pub fn run() {
             open_external,
             copy_text,
             copy_rich,
+            clipboard_files,
+            read_clipboard_file,
             fetch_image,
             show_data_folder,
             show_backups,
@@ -1013,6 +1086,8 @@ pub fn run() {
             vault_create_default,
             vault_select,
             vault_forget,
+            vault_reorder,
+            take_shared,
             vault_open,
             vault_close,
             vault_scan,
@@ -1073,7 +1148,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("clip.mp4");
         std::fs::write(&file, (0u8..=255).collect::<Vec<_>>()).unwrap();
-        let path = file.to_string_lossy().trim_start_matches('/').to_string();
+        // the way the interface writes a path into an address: forward slashes on every system, C:/folder
+        // on windows, and no slash at the start
+        let address = |file: &Path| {
+            file.to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+                .to_string()
+        };
+        let path = address(&file);
         let request = |range: Option<&str>| {
             let mut builder = tauri::http::Request::builder()
                 .uri(format!("morrow-file://localhost/local/{path}"));
@@ -1096,10 +1179,7 @@ mod tests {
         let text = dir.join("secret.txt");
         std::fs::write(&text, "no").unwrap();
         let other = tauri::http::Request::builder()
-            .uri(format!(
-                "morrow-file://localhost/local/{}",
-                text.to_string_lossy().trim_start_matches('/')
-            ))
+            .uri(format!("morrow-file://localhost/local/{}", address(&text)))
             .body(Vec::new())
             .unwrap();
         assert_eq!(serve_file(&other).status(), 404);

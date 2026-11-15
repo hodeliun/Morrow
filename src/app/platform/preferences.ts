@@ -19,11 +19,52 @@ export interface Reminder {
 }
 // what morrow shows when it opens: today's note, the home page, or where you left off
 export type StartPage = 'today' | 'home' | 'last';
+export type WeekStart = 0 | 1 | 6;
 // the views the sidebar lists, each one can be left out, daily notes turn off everywhere with theirs
-export const SIDEBAR_MODULES = ['daily', 'tasks', 'tags', 'review', 'graph', 'import'] as const;
+export const SIDEBAR_MODULES = [
+  'search',
+  'daily',
+  'tasks',
+  'tags',
+  'review',
+  'graph',
+  'files',
+  'favorites',
+  'templates',
+  'import',
+  'archive',
+  'trash',
+] as const;
 export type SidebarModule = (typeof SIDEBAR_MODULES)[number];
+// everything in the sidebar in the order it is shown, in three groups: the links at the top, the sections
+// that scroll, and the links at the bottom. home, pages and settings are always there
+export const SIDEBAR_GROUPS = {
+  top: ['search', 'home', 'daily', 'tasks', 'review', 'tags', 'graph', 'files', 'assistant'],
+  sections: ['favorites', 'custom', 'templates', 'pages'],
+  bottom: ['import', 'archive', 'trash', 'settings'],
+} as const;
+export type SidebarItem =
+  | (typeof SIDEBAR_GROUPS.top)[number]
+  | (typeof SIDEBAR_GROUPS.sections)[number]
+  | (typeof SIDEBAR_GROUPS.bottom)[number];
+export const SIDEBAR_FIXED: readonly SidebarItem[] = ['home', 'pages', 'settings'];
 // accent colours, each tuned for light and dark in features.css
-export const ACCENTS = ['ember', 'ocean', 'aqua', 'violet', 'forest', 'rose', 'amber', 'graphite'] as const;
+export const ACCENTS = [
+  'ember',
+  'ocean',
+  'aqua',
+  'violet',
+  'forest',
+  'rose',
+  'amber',
+  'graphite',
+  'custom',
+] as const;
+// colour themes for the page and sidebar, each with a light and a dark version
+export const PALETTES = ['default', 'paper', 'sepia', 'nord', 'forest', 'midnight'] as const;
+export type Palette = (typeof PALETTES)[number];
+export const TEXT_SCALES = [0.9, 1, 1.1, 1.25] as const;
+export type TextScale = (typeof TEXT_SCALES)[number];
 export type Accent = (typeof ACCENTS)[number];
 // a canvas shown inside a page, width null fills the page
 export interface CanvasSize {
@@ -34,6 +75,7 @@ export interface CanvasSize {
 export interface Preferences {
   locale: SupportedLocale;
   theme: ThemePreference;
+  palette: Palette;
   font: WritingFont;
   width: PageWidth;
   sidebarOpen: boolean;
@@ -45,7 +87,11 @@ export interface Preferences {
   assistantWidth: number;
   expanded: string[];
   accent: Accent;
-  // colourful headings, lists, icons and tags, off for a quieter page
+  // a colour of your own for the accent, used while accent is custom
+  accentColor: string;
+  // how large the writing on pages is, 1 as designed
+  textScale: TextScale;
+  // colourful headings, lists, icons and tags, off by default so the accent stays on buttons and links
   colorful: boolean;
   // what the home page calls you, empty for no name
   name: string;
@@ -62,6 +108,12 @@ export interface Preferences {
   // how much of a split tab the first side takes
   splitShare: number;
   startPage: StartPage;
+  // the welcome steps were gone through, or morrow was in use before they existed
+  onboarded: boolean;
+  // the day calendars start their weeks on, 0 for sunday, 1 for monday, 6 for saturday
+  weekStart: WeekStart;
+  // today's note is made when morrow opens on it, off opens home instead until the note is made by hand
+  autoDaily: boolean;
   // the optional assistant, off until turned on in settings
   assistant: boolean;
   assistantOpen: boolean;
@@ -76,6 +128,8 @@ export interface Preferences {
   spellcheck: boolean;
   // views left out of the sidebar, they still open from search and their shortcuts
   hiddenModules: SidebarModule[];
+  // the order of what the sidebar shows, dragged in settings
+  sidebarOrder: SidebarItem[];
   // plugins in a vault only run on a computer where this was turned on
   plugins: boolean;
   // the colour last picked for words, which ctrl shift h puts on again
@@ -96,6 +150,7 @@ function defaultLocale(): SupportedLocale {
 const defaults: Preferences = {
   locale: defaultLocale(),
   theme: 'system',
+  palette: 'default',
   font: 'sans',
   width: 'comfortable',
   sidebarOpen: true,
@@ -105,7 +160,9 @@ const defaults: Preferences = {
   assistantWidth: 380,
   expanded: [],
   accent: 'ember',
-  colorful: true,
+  accentColor: '#c0582f',
+  textScale: 1,
+  colorful: false,
   name: '',
   canvasSizes: {},
   pageWidths: {},
@@ -114,6 +171,9 @@ const defaults: Preferences = {
   reminders: [],
   splitShare: 0.5,
   startPage: 'today',
+  onboarded: false,
+  weekStart: 1,
+  autoDaily: true,
   assistant: false,
   assistantOpen: false,
   assistantAsk: true,
@@ -122,6 +182,7 @@ const defaults: Preferences = {
   codeLanguage: '',
   spellcheck: true,
   hiddenModules: [],
+  sidebarOrder: [...SIDEBAR_GROUPS.top, ...SIDEBAR_GROUPS.sections, ...SIDEBAR_GROUPS.bottom],
   plugins: false,
   lastColor: null,
 };
@@ -140,6 +201,24 @@ function readCanvasSizes(raw: unknown): Record<string, CanvasSize> {
   return sizes;
 }
 
+// an order saved before an item existed gets it in its usual place
+function readSidebarOrder(raw: unknown): SidebarItem[] {
+  const all = [...SIDEBAR_GROUPS.top, ...SIDEBAR_GROUPS.sections, ...SIDEBAR_GROUPS.bottom] as SidebarItem[];
+  if (!Array.isArray(raw)) return all;
+  const kept = raw.filter(
+    (item, index): item is SidebarItem => all.includes(item) && raw.indexOf(item) === index,
+  );
+  for (const item of all) {
+    if (kept.includes(item)) continue;
+    const before = all
+      .slice(0, all.indexOf(item))
+      .reverse()
+      .find((other) => kept.includes(other));
+    kept.splice(before ? kept.indexOf(before) + 1 : 0, 0, item);
+  }
+  return kept;
+}
+
 function read(): Preferences {
   try {
     const raw = localStorage.getItem(KEY);
@@ -150,13 +229,19 @@ function read(): Preferences {
         ? (parsed.locale as SupportedLocale)
         : defaults.locale,
       theme: ['system', 'light', 'dark'].includes(parsed.theme as string) ? parsed.theme! : defaults.theme,
+      palette: PALETTES.find((palette) => palette === parsed.palette) ?? 'default',
       font: ['serif', 'sans', 'mono'].includes(parsed.font as string) ? parsed.font! : defaults.font,
       width: PAGE_WIDTHS.find((width) => width === parsed.width) ?? 'comfortable',
       sidebarOpen: parsed.sidebarOpen !== false,
       sidebarPeek: parsed.sidebarPeek === true,
       readingMode: parsed.readingMode === true,
       accent: ACCENTS.includes(parsed.accent as Accent) ? parsed.accent! : defaults.accent,
-      colorful: parsed.colorful !== false,
+      colorful: parsed.colorful === true,
+      accentColor:
+        typeof parsed.accentColor === 'string' && /^#[0-9a-f]{6}$/i.test(parsed.accentColor)
+          ? parsed.accentColor
+          : defaults.accentColor,
+      textScale: TEXT_SCALES.find((scale) => scale === parsed.textScale) ?? 1,
       name: typeof parsed.name === 'string' ? parsed.name.trim().slice(0, 60) : '',
       sidebarWidth:
         typeof parsed.sidebarWidth === 'number'
@@ -196,6 +281,10 @@ function read(): Preferences {
       startPage: ['today', 'home', 'last'].includes(parsed.startPage as string)
         ? parsed.startPage!
         : defaults.startPage,
+      // preferences saved before the welcome existed mean morrow is already in use
+      onboarded: parsed.onboarded !== false,
+      autoDaily: parsed.autoDaily !== false,
+      weekStart: ([0, 1, 6] as const).find((day) => day === parsed.weekStart) ?? 1,
       assistant: parsed.assistant === true,
       assistantOpen: parsed.assistantOpen === true,
       assistantAsk: parsed.assistantAsk !== false,
@@ -216,6 +305,7 @@ function read(): Preferences {
       hiddenModules: Array.isArray(parsed.hiddenModules)
         ? SIDEBAR_MODULES.filter((module) => parsed.hiddenModules!.includes(module))
         : [],
+      sidebarOrder: readSidebarOrder(parsed.sidebarOrder),
     };
   } catch {
     return defaults;

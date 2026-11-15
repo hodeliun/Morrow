@@ -11,6 +11,8 @@ const MOVABLE_ITEMS = new Set(['listItem', 'taskItem']);
 export interface BlockMenuRequest {
   pos: number;
   rect: DOMRect;
+  // several blocks the selected words run across, which turn together
+  range?: { from: number; to: number };
 }
 
 // finds the block the selection is in, preferring the nearest list item
@@ -90,9 +92,22 @@ function contains(element: Element, y: number): boolean {
   return y >= rect.top && y < rect.bottom;
 }
 
-// every item of a list and every line inside an open toggle is a block of its own, the way notion has it,
-// so the handle picks the innermost one under the pointer rather than the whole list or toggle
-function innerBlock(element: HTMLElement, y: number): HTMLElement {
+// every item of a list, every line inside an open toggle and every block in a column is a block of its own,
+// the way notion has it, so the handle picks the innermost one under the pointer rather than the whole
+// list, toggle or row of columns
+function innerBlock(element: HTMLElement, y: number, x: number): HTMLElement {
+  if (element.hasAttribute('data-columns')) {
+    const column = Array.from(element.children).find((child): child is HTMLElement => {
+      if (!(child instanceof HTMLElement) || !child.hasAttribute('data-column')) return false;
+      const rect = child.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right;
+    });
+    if (!column) return element;
+    const child = Array.from(column.children).find(
+      (candidate): candidate is HTMLElement => candidate instanceof HTMLElement && contains(candidate, y),
+    );
+    return child ? innerBlock(child, y, x) : element;
+  }
   if (element.tagName === 'UL' || element.tagName === 'OL') {
     const item = Array.from(element.children).find(
       (child): child is HTMLElement => child.tagName === 'LI' && contains(child, y),
@@ -101,7 +116,7 @@ function innerBlock(element: HTMLElement, y: number): HTMLElement {
     const nested = Array.from(item.querySelectorAll<HTMLElement>('ul, ol')).find(
       (list) => list.parentElement?.closest('li') === item && contains(list, y),
     );
-    return nested ? innerBlock(nested, y) : item;
+    return nested ? innerBlock(nested, y, x) : item;
   }
   if (element.dataset.type === 'details') {
     const content = Array.from(element.querySelectorAll<HTMLElement>('[data-type="detailsContent"]')).find(
@@ -111,7 +126,7 @@ function innerBlock(element: HTMLElement, y: number): HTMLElement {
     const child = Array.from(content.children).find(
       (candidate): candidate is HTMLElement => candidate instanceof HTMLElement && contains(candidate, y),
     );
-    return child ? innerBlock(child, y) : element;
+    return child ? innerBlock(child, y, x) : element;
   }
   return element;
 }
@@ -154,6 +169,16 @@ function firstTextMiddle(block: HTMLElement): number | null {
   return null;
 }
 
+// the blocks the selected words run across, when they run across more than one: the items of a list, the
+// lines in a toggle, or blocks on the page
+export function selectedTextBlocks(state: EditorState): { from: number; to: number } | null {
+  const { $from, $to, empty } = state.selection;
+  if (empty) return null;
+  const range = $from.blockRange($to);
+  if (!range || range.endIndex - range.startIndex < 2) return null;
+  return { from: range.start, to: range.end };
+}
+
 function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
   return new Plugin({
     key: new PluginKey('blockHandle'),
@@ -183,7 +208,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
           return event.clientY >= rect.top - 4 && event.clientY <= rect.bottom + 4;
         });
         if (!top) return;
-        let target = innerBlock(top, event.clientY);
+        let target = innerBlock(top, event.clientY, event.clientX);
         let pos = blockPosition(view, target, target === top);
         if (pos === null) {
           target = top;
@@ -216,8 +241,34 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         hide();
       };
 
+      // the blocks a drag takes: the ones picked in the margin, or the lines the selected words run across,
+      // when the handle is on one of them, otherwise the block beside the handle
+      const dragRange = (pos: number): { from: number; to: number } | null => {
+        const { state } = view;
+        const picked = selectedBlocks(state);
+        if (picked && pos >= picked.from && pos < picked.to) return picked;
+        const range = selectedTextBlocks(state);
+        return range && pos >= range.from && pos < range.to ? range : null;
+      };
+
       const onDragStart = (event: DragEvent) => {
         if (!current || !event.dataTransfer) return;
+        const range = dragRange(current.pos);
+        if (range) {
+          const slice = view.state.doc.slice(range.from, range.to);
+          const { dom, text } = view.serializeForClipboard(slice);
+          event.dataTransfer.clearData();
+          event.dataTransfer.setData('text/html', dom.innerHTML);
+          event.dataTransfer.setData('text/plain', text);
+          event.dataTransfer.effectAllowed = 'copyMove';
+          event.dataTransfer.setDragImage(current.element, 0, 0);
+          // a drop takes the blocks out of where they were, all of them rather than only the first
+          const from = range.from;
+          const to = range.to;
+          const move = { replace: (tr: Transaction) => tr.delete(from, to) } as unknown as NodeSelection;
+          view.dragging = { slice, move: true, node: move } as typeof view.dragging;
+          return;
+        }
         const selection = NodeSelection.create(view.state.doc, current.pos);
         view.dispatch(view.state.tr.setSelection(selection));
         const slice = selection.content();
@@ -232,12 +283,17 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
 
       const onClick = () => {
         if (!current) return;
-        // a block among several picked in the margin opens the menu for all of them
-        const picked = selectedBlocks(view.state);
-        if (!picked || current.pos < picked.from || current.pos >= picked.to)
+        // a block among several picked in the margin, or among the lines the selected words run across,
+        // opens the menu for all of them
+        const range = dragRange(current.pos);
+        if (!range)
           view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, current.pos)));
         view.focus();
-        onMenu({ pos: current.pos, rect: handle.getBoundingClientRect() });
+        onMenu({
+          pos: current.pos,
+          rect: handle.getBoundingClientRect(),
+          ...(range && !selectedBlocks(view.state) ? { range } : {}),
+        });
       };
 
       host?.addEventListener('mousemove', onMove);

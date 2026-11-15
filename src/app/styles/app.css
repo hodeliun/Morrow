@@ -243,6 +243,12 @@ kbd,
   display: none !important;
 }
 
+/* the pointer is hidden while typing, until the mouse moves */
+:root[data-typing] .page-scroll,
+:root[data-typing] .page-scroll * {
+  cursor: none !important;
+}
+
 /* sidebar */
 
 .sidebar {
@@ -256,8 +262,17 @@ kbd,
   user-select: none;
 }
 
+/* a hidden sidebar is moved out past the window's edge, so showing and hiding it can slide */
 .sidebar-collapsed .sidebar {
-  display: none;
+  margin-left: calc(-1 * var(--sidebar-width, 264px));
+  visibility: hidden;
+}
+
+/* only while it is being shown or hidden, a sidebar peeking from the edge comes and goes on its own */
+.sidebar-sliding .sidebar {
+  transition:
+    margin-left 200ms var(--ease),
+    visibility 200ms;
 }
 
 /* the strip along the left edge that brings a hidden sidebar back while the pointer is on it */
@@ -271,6 +286,8 @@ kbd,
 
 .sidebar-collapsed.sidebar-peeking .sidebar {
   display: flex;
+  margin-left: 0;
+  visibility: visible;
   position: fixed;
   inset: 0 auto 0 0;
   z-index: 35;
@@ -294,12 +311,15 @@ kbd,
   align-items: center;
   justify-content: space-between;
   padding: 12px 10px 6px 12px;
+  /* the vault's name is sized by how wide the sidebar is */
+  container-type: inline-size;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 4px 6px;
   border-radius: var(--radius);
   color: var(--text);
@@ -309,11 +329,21 @@ kbd,
   background: var(--hover);
 }
 
+.brand > svg,
+.sidebar-header > .icon-button {
+  flex-shrink: 0;
+}
+
+/* a long vault name gets smaller in a narrow sidebar, then ends in … rather than pushing the button out */
 .brand-name {
   font-family: var(--font-ui);
-  font-size: 17px;
+  font-size: clamp(13px, calc(6px + 4cqi), 17px);
   font-weight: 600;
   letter-spacing: -0.01em;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-nav {
@@ -392,6 +422,14 @@ kbd,
   color: var(--text-faint);
   padding: 6px 8px 4px;
   letter-spacing: 0.02em;
+}
+
+/* a heading that opens its page, the templates page from its section */
+.sidebar-heading.link-heading {
+  text-align: left;
+}
+.sidebar-heading.link-heading:hover {
+  color: var(--text-muted);
 }
 
 .sidebar-empty {
@@ -874,7 +912,7 @@ button.crumb:hover {
 }
 
 .pane[data-size='narrow'] .page-title {
-  font-size: 30px;
+  font-size: calc(30px * var(--text-scale, 1));
   margin-top: 16px;
 }
 
@@ -950,7 +988,7 @@ button.crumb:hover {
   margin: 24px 0 18px;
   background: transparent;
   font-family: var(--font-ui);
-  font-size: 40px;
+  font-size: calc(40px * var(--text-scale, 1));
   font-weight: 700;
   line-height: 1.18;
   letter-spacing: -0.022em;
@@ -969,7 +1007,7 @@ button.crumb:hover {
 
 .page.font-mono .page-title {
   font-family: var(--font-mono);
-  font-size: 32px;
+  font-size: calc(32px * var(--text-scale, 1));
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -1325,6 +1363,7 @@ input[type='checkbox']:checked::after {
 
 .menu-item:hover,
 .menu-item.is-active,
+.menu-item.is-open,
 .menu-item:focus-visible {
   background: var(--hover);
   outline: none;
@@ -1357,6 +1396,14 @@ input[type='checkbox']:checked::after {
 
 .menu-check {
   color: var(--accent);
+}
+
+/* the arrow on a row that opens a submenu */
+.menu-arrow {
+  display: grid;
+  place-items: center;
+  margin-right: -2px;
+  color: var(--text-faint);
 }
 
 .menu-separator {
@@ -1859,6 +1906,8 @@ html.is-printing .window-controls {
     inset: 0 auto 0 0;
     z-index: 40;
     width: min(300px, 86vw);
+    margin-left: 0;
+    visibility: visible;
     transform: translateX(-102%);
     /* the sidebar is kept drawn on its own layer, so sliding it in only moves a picture that is already
        there. animating its shadow as well made a phone repaint the whole list on every frame */
@@ -1898,7 +1947,7 @@ html.is-printing .window-controls {
   }
 
   .page-title {
-    font-size: 32px;
+    font-size: calc(32px * var(--text-scale, 1));
     margin-top: 12px;
   }
 
@@ -2128,7 +2177,7 @@ html.is-printing .window-controls {
   }
 
   .app .page-title {
-    font-size: 28px;
+    font-size: calc(28px * var(--text-scale, 1));
     margin-top: 8px;
   }
 

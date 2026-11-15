@@ -427,6 +427,36 @@ describe('colours', () => {
     expect(markdownToDoc(out)).toEqual(doc);
   });
 
+  it('round trips a block background as a comment above the block', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        { ...p(text('Shaded')), attrs: { backgroundColor: 'yellow' } },
+        { type: 'heading', attrs: { level: 2, backgroundColor: 'blue' }, content: [text('Title')] },
+        p(text('Plain')),
+      ],
+    };
+    const out = docToMarkdown(doc);
+    expect(out).toBe('<!-- background: yellow -->\nShaded\n\n<!-- background: blue -->\n## Title\n\nPlain\n');
+    expect(markdownToDoc(out)).toEqual(doc);
+  });
+
+  it('keeps a list counted in letters, numbered in the file', () => {
+    const item = (words: string) => ({ type: 'listItem', content: [p(text(words))] });
+    const doc: DocNode = {
+      type: 'doc',
+      content: [{ type: 'orderedList', attrs: { start: 1, type: 'a' }, content: [item('One'), item('Two')] }],
+    };
+    const out = docToMarkdown(doc);
+    expect(out).toBe('<!-- letters -->\n1. One\n2. Two\n');
+    expect(markdownToDoc(out)).toEqual(doc);
+  });
+
+  it('leaves a comment with a colour it does not know alone', () => {
+    const doc = markdownToDoc('<!-- background: mauve -->\nWords');
+    expect(doc.content!.some((node) => node.attrs?.backgroundColor)).toBe(false);
+  });
+
   it('snaps other colours to the nearest one in the palette', () => {
     const doc = markdownToDoc('<span style="color: #ff0000">alarm</span>');
     expect(doc.content![0]!.content![0]!.marks).toEqual([{ type: 'textColor', attrs: { color: 'red' } }]);
@@ -506,6 +536,21 @@ describe('block ids and anchors', () => {
 });
 
 describe('things that used to change on a reload', () => {
+  it('keeps the time written with a date', () => {
+    const doc = markdownToDoc('Feed the cats [[2026-11-10]] 17:05 sharp');
+    expect(doc.content![0]!.content).toEqual([
+      { type: 'text', text: 'Feed the cats ' },
+      { type: 'dateMention', attrs: { date: '2026-11-10', time: '17:05' } },
+      { type: 'text', text: ' sharp' },
+    ]);
+    expect(docToMarkdown(doc)).toBe('Feed the cats [[2026-11-10]] 17:05 sharp\n');
+  });
+
+  it('keeps a date a date when that day has a note', () => {
+    const doc = markdownToDoc('Feed the cats [[2026-11-10]]', { resolvePage: () => 'daily-note' });
+    expect(doc.content![0]!.content![1]).toEqual({ type: 'dateMention', attrs: { date: '2026-11-10' } });
+  });
+
   const files = {
     resolveFile: (href: string) => ({ fileId: href, name: href, image: href.endsWith('.png') }),
   };
@@ -537,5 +582,30 @@ describe('things that used to change on a reload', () => {
       '- parent\n  - ![](attachments/pic.png)\n',
     );
     expect(settles('- parent\n  - <br>\n  - b\n')).toBe('- parent\n  - <br>\n  - b\n');
+  });
+});
+
+describe('table column widths', () => {
+  it('keeps the widths columns were dragged to in a comment above the table', () => {
+    const cell = (type: string, words: string, width?: number) => ({
+      type,
+      ...(width ? { attrs: { colwidth: [width] } } : {}),
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: words }] }],
+    });
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            { type: 'tableRow', content: [cell('tableHeader', 'Name', 240), cell('tableHeader', 'Note')] },
+            { type: 'tableRow', content: [cell('tableCell', 'Ada', 240), cell('tableCell', 'Hi')] },
+          ],
+        },
+      ],
+    };
+    const out = docToMarkdown(doc);
+    expect(out.startsWith('<!-- column-widths: 240 0 -->\n| Name | Note |')).toBe(true);
+    expect(markdownToDoc(out)).toEqual(doc);
   });
 });

@@ -17,6 +17,8 @@ export interface DesktopVaultApi {
   createDefault(): Promise<string>;
   select(dir: string): Promise<{ ok: boolean; error?: string }>;
   forget(dir: string): Promise<void>;
+  // the vaults known to morrow in the order to list them
+  reorder?(order: string[]): Promise<void>;
   open(): Promise<{ ok: boolean; root: string | null }>;
   close(): Promise<void>;
   scan(): Promise<unknown>;
@@ -185,7 +187,8 @@ export interface DesktopBridge {
   dataPath: string;
   onCommand(listener: (id: string) => void): () => void;
   onZoom?(listener: (percent: number) => void): () => void;
-  setTheme(theme: 'light' | 'dark'): void;
+  // the colour of the page, for the window behind it
+  setTheme(theme: 'light' | 'dark', color?: string): void;
   // the native window buttons of the electron versions, which took the colours under them
   paintTitleBar?(color: string, symbolColor: string): void;
   openExternal(url: string): Promise<void>;
@@ -200,6 +203,10 @@ export interface DesktopBridge {
   ): Promise<{ ok: true; path: string } | { ok: false; error: string | null }>;
   copyText(text: string): Promise<boolean> | void;
   copyRich?(text: string, html: string): Promise<boolean>;
+  // pictures, sound and video copied in the file manager, which the web view only names
+  clipboardFiles?(): Promise<File[]>;
+  // a link or words another app shared with morrow on a phone, once
+  takeShared?(): Promise<string | null>;
   setSpellcheck?(enabled: boolean): void;
   fetchImage?(url: string): Promise<{ type: string; data: ArrayBuffer } | null>;
   // a file made in the app, saved where the person picks. the webview has no downloads of its own

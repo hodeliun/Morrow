@@ -6,6 +6,7 @@ import { E003_POLARIS_DADOS_FIXTURE } from '../../storage/fixtures/e003-polaris-
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
+import { newPageMeta } from '../../core/model';
 import type { PageId } from '../../core/model';
 import { setPreferences, getPreferences } from '../platform/preferences';
 import { setUi } from '../ui';
@@ -199,6 +200,7 @@ describe('provider-managed page editing', () => {
       expect(labels).not.toContain(t('pageMenu.duplicate'));
       expect(labels).not.toContain(t('pageMenu.moveTo'));
       expect(labels).not.toContain(t('pageMenu.moveToTrash'));
+      expect(labels).toContain(t('pageMenu.addToSection'));
       expect(labels).toContain(t('pageMenu.pageHistory'));
       expect(labels).toContain(t('pageMenu.openLocalGraph'));
       expect(
@@ -208,6 +210,46 @@ describe('provider-managed page editing', () => {
       ).not.toContain(t('pageMenu.rename'));
     } finally {
       await page.unmount();
+      await session.close();
+    }
+  });
+
+  it('offers templates on editable empty pages but not provider-managed rows', async () => {
+    const files = {
+      ...E003_POLARIS_DADOS_FIXTURE,
+      'Inventory/Blank.md': '---\nName: Blank\n---\n',
+    };
+    const session = await openFixture(files);
+    const templateRootId = 'provider-readonly-templates' as PageId;
+    const templateId = 'provider-readonly-template' as PageId;
+    const emptyPageId = 'provider-readonly-empty' as PageId;
+    const inserted = session.execute({
+      type: 'pages.insert',
+      pages: [
+        newPageMeta({ id: templateRootId, parentId: null, title: 'Templates', kind: 'templates' }),
+        newPageMeta({ id: templateId, parentId: templateRootId, title: 'Example' }),
+        newPageMeta({ id: emptyPageId, parentId: null, title: 'Empty' }),
+      ],
+      docs: {
+        [templateRootId]: { type: 'doc', content: [] },
+        [templateId]: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Template' }] }] },
+        [emptyPageId]: { type: 'doc', content: [] },
+      },
+    });
+    if (!inserted.ok) throw new Error(inserted.error);
+    const blankRowId = Object.keys(session.getState().pages).find(
+      (id) => session.pathOf(id as PageId) === 'Inventory/Blank.md',
+    )! as PageId;
+    const row = renderPage(blankRowId);
+    const basic = renderPage(emptyPageId);
+    try {
+      await row.render();
+      expect(row.container.querySelector('.template-start')).toBeNull();
+      await basic.render();
+      expect(basic.container.querySelector('.template-start')).not.toBeNull();
+    } finally {
+      await row.unmount();
+      await basic.unmount();
       await session.close();
     }
   });

@@ -1,4 +1,4 @@
-import { Check, Columns3, Pencil, Plus, X } from 'lucide-react';
+import { Check, Columns3, ExternalLink, Palette, Pencil, Plus, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { stringify } from 'yaml';
 import { displayTitle } from '../../core/model';
@@ -8,6 +8,8 @@ import { findKey, MANAGED_KEYS } from '../../core/vault/frontmatter';
 import { RECURRENCE_KEYS } from '../../core/recurring';
 import { findTemplatesPage } from '../../core/templates';
 import { tagColor } from '../../core/tags';
+import { useTagColors } from '../tagColors';
+import { TagColorMenu } from './TagColorMenu';
 import { openExternal } from '../platform/desktop';
 import { openPage } from '../router';
 import { setPropertyType, usePropertyTypes } from '../propertyTypes';
@@ -374,6 +376,7 @@ function ExtraValue({
   const [editingLinks, setEditingLinks] = useState(false);
   const [picker, setPicker] = useState<HTMLElement | null>(null);
   const [editingUrl, setEditingUrl] = useState(false);
+  useTagColors();
   if (type === 'select' || (type === 'multiSelect' && inferFrontmatterType([value]) !== 'relation')) {
     const chosen = (Array.isArray(value) ? value : value ? [value] : []).map(String).filter(Boolean);
     return (
@@ -406,6 +409,35 @@ function ExtraValue({
       </>
     );
   }
+  // a link opens in the browser, written without https:// it is taken as a web address
+  const openUrl = (address: string) =>
+    openExternal(/^[a-z][a-z0-9+.-]*:/i.test(address) ? address : `https://${address}`);
+  const openButton = (address: string) => (
+    <button
+      type="button"
+      className="icon-button tiny"
+      aria-label={t('editor.openLink')}
+      title={t('editor.openLink')}
+      onClick={() => openUrl(address)}
+    >
+      <ExternalLink size={12} />
+    </button>
+  );
+  if (type === 'url' && typeof value === 'string' && value.trim() && (editingUrl || autoFocus))
+    return (
+      <span className="prop-url">
+        <DraftInput
+          type="text"
+          label={label}
+          value={value}
+          editable={editable}
+          autoFocus
+          onCommit={(next) => onChange(next)}
+          onDone={() => setEditingUrl(false)}
+        />
+        {openButton(value.trim())}
+      </span>
+    );
   if (type === 'url' && typeof value === 'string' && value && !editingUrl && !autoFocus)
     return (
       <span className="prop-url">
@@ -413,11 +445,12 @@ function ExtraValue({
           href={value}
           onClick={(event) => {
             event.preventDefault();
-            openExternal(value);
+            openUrl(value.trim());
           }}
         >
           {value.replace(/^https?:\/\//i, '')}
         </a>
+        {openButton(value.trim())}
         {editable && (
           <button
             type="button"
@@ -543,6 +576,8 @@ function ExtraOptionPicker({
   const wanted = query.trim();
   const shown = options.filter((option) => option.toLowerCase().includes(wanted.toLowerCase()));
   const exact = options.some((option) => option.toLowerCase() === wanted.toLowerCase());
+  const [colouring, setColouring] = useState<{ name: string; at: HTMLElement } | null>(null);
+  useTagColors();
   const choose = (name: string) => {
     if (multi) {
       onChange(selected.includes(name) ? selected.filter((item) => item !== name) : [...selected, name]);
@@ -586,6 +621,15 @@ function ExtraOptionPicker({
               <span className={`chip color-${tagColor(option)}`}>{option}</span>
               {selected.includes(option) && <Check size={14} className="option-check" />}
             </button>
+            <button
+              type="button"
+              className="icon-button small option-colour"
+              aria-label={t('tags.colour', { tag: option })}
+              title={t('tags.colour', { tag: option })}
+              onClick={(event) => setColouring({ name: option, at: event.currentTarget })}
+            >
+              <Palette size={13} />
+            </button>
           </li>
         ))}
         {wanted && !exact && (
@@ -597,6 +641,9 @@ function ExtraOptionPicker({
           </li>
         )}
       </ul>
+      {colouring && (
+        <TagColorMenu name={colouring.name} anchor={colouring.at} onClose={() => setColouring(null)} />
+      )}
     </Popover>
   );
 }

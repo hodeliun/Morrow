@@ -23,6 +23,8 @@ export const pt: TranslationSchema = {
     remove: 'Remover',
   },
   sidebar: {
+    removeFromSection: 'Tirar de {name}',
+    customSections: 'Suas seções',
     daily: 'Notas diárias',
     sidebar: 'Barra lateral',
     morrowHome: 'Início do Morrow',
@@ -67,15 +69,15 @@ export const pt: TranslationSchema = {
     forward: 'Avançar ({shortcut})',
     swapTheTwoSides: 'Trocar os dois lados',
     closeThisSide: 'Fechar este lado',
-    openSplitWithShortcut: 'Abrir ao lado, em tela dividida ({shortcut})',
+    openSplitWithShortcut: 'Modo dividido ({shortcut})',
     breadcrumb: 'Trilha de navegação',
     openSidebar: 'Abrir barra lateral',
-    readingMode: 'Ler sem editar',
-    editingMode: 'Editar esta página',
+    readingMode: 'Modo de leitura',
+    editingMode: 'Modo de edição',
     showSidebar: 'Mostrar barra lateral',
     goBack: 'Voltar',
     goForward: 'Avançar',
-    openSplit: 'Abrir ao lado, em divisão',
+    openSplit: 'Modo dividido',
     closeSplit: 'Fechar divisão',
     swapSplit: 'Alternar lados',
     saving: 'Salvando…',
@@ -152,6 +154,9 @@ export const pt: TranslationSchema = {
       whenOpens: 'Ao abrir o Morrow',
       whenOpensHelp:
         '{shortcutDaily} abre a nota de hoje, {shortcutCapture} anota nela de qualquer aplicativo.',
+      autoDaily: 'Criar a nota de hoje sozinha',
+      autoDailyHelp: 'Desligado, o Morrow abre no início nos dias sem nota, até você criar uma.',
+      weekStart: 'A semana começa no',
       spellcheck: 'Verificar ortografia',
       spellcheckHelp: 'Sublinha as palavras que o corretor não conhece enquanto você escreve.',
       startPages: {
@@ -163,6 +168,20 @@ export const pt: TranslationSchema = {
     sidebar: {
       title: 'Barra lateral',
       show: 'Mostrar {name}',
+      groupTop: 'Links no topo',
+      groupSections: 'Seções',
+      groupBottom: 'Links embaixo',
+      moveAria: 'Mover {name}',
+      moveHint: 'Arraste para reordenar, ou use as setas',
+      conditionalHelp:
+        'Início, Páginas e Configurações sempre ficam. Favoritos, Modelos, Arquivo e Lixeira só aparecem quando têm algo.',
+      customHelp:
+        'Seções suas, mostradas como Favoritos. Coloque uma página numa pelo menu dela, Adicionar a uma seção da barra lateral.',
+      sectionName: 'Nome da seção',
+      sectionPages: '{count} páginas',
+      deleteSection: 'Apagar a seção {name}',
+      addSection: 'Adicionar uma seção',
+      addSectionHelp: 'As páginas ficam onde estão, uma seção só as lista.',
       peek: 'Mostrar ao apontar para a borda esquerda',
       peekHelp:
         'Com a barra lateral oculta, ela aparece enquanto o ponteiro está na borda esquerda da janela.',
@@ -174,6 +193,15 @@ export const pt: TranslationSchema = {
         light: 'Claro',
         dark: 'Escuro',
       },
+      colourTheme: 'Tema de cor',
+      palettes: {
+        default: 'Padrão',
+        paper: 'Papel',
+        sepia: 'Sépia',
+        nord: 'Nord',
+        forest: 'Floresta',
+        midnight: 'Meia-noite',
+      },
       accentColour: 'Cor de destaque',
       accents: {
         ember: 'Brasa',
@@ -183,7 +211,15 @@ export const pt: TranslationSchema = {
         forest: 'Floresta',
         rose: 'Rosa',
         amber: 'Âmbar',
+        custom: 'Sua própria cor',
         graphite: 'Grafite',
+      },
+      textSize: 'Tamanho do texto',
+      textSizes: {
+        small: 'Pequeno',
+        normal: 'Normal',
+        large: 'Grande',
+        larger: 'Maior',
       },
       colourfulPages: 'Páginas coloridas',
       colourfulPagesHelp: 'Títulos, listas, ícones e etiquetas coloridos.',
@@ -211,6 +247,15 @@ export const pt: TranslationSchema = {
       customCssFailed: 'Não foi possível salvar o CSS.',
     },
     vault: {
+      knownTitle: 'Seus cofres',
+      knownHelp:
+        'Os cofres que o Morrow conhece neste computador, na ordem do menu de cofres. Esquecer um só o tira desta lista, a pasta e os arquivos ficam onde estão.',
+      open: 'Aberto',
+      missing: 'Pasta não encontrada',
+      forget: 'Esquecer',
+      forgetTitle: 'Esquecer “{name}”?',
+      forgetBody:
+        'Ele sai desta lista. A pasta e todos os arquivos ficam no seu computador, e você pode abri-lo de novo quando quiser.',
       groupHelp:
         'Cada página é um arquivo Markdown nesta pasta. Abra em qualquer app ou faça backup como preferir.',
       currentFolder: 'Pasta do cofre',
@@ -261,6 +306,11 @@ export const pt: TranslationSchema = {
         'Sem contas, sem rastreamento e sem anúncios. Nada sai deste computador a menos que você ative o assistente, a sincronização ou a verificação de atualizações.',
     },
     sync: {
+      diagnostics: 'Diagnóstico',
+      diagnosticsHelp:
+        'Quando dois aparelhos não pareiam ou sincronizam, copie isto nos dois e cole numa issue do GitHub.',
+      copyDiagnostics: 'Copiar diagnóstico',
+      diagnosticsCopied: 'Copiado o que a sincronização sabe deste aparelho.',
       networkTitle: 'Seus computadores',
       networkHelp:
         'Criptografado e direto, sem servidor intermediário. Se uma página mudar em ambos, ambas as versões são mantidas.',
@@ -351,12 +401,16 @@ export const pt: TranslationSchema = {
         'Permite que agentes e assistentes de IA externos como Cursor, Claude Desktop ou Antigravity consultem e gerenciem suas notas pelo protocolo MCP.',
       mcpSwitch: 'Habilitar servidor MCP',
       mcpConfigTitle: 'Configuração para Agente (JSON)',
-      mcpConfigHelp: 'Copie este bloco no arquivo de configuração do seu agente para conectar ao Morrow.',
+      mcpConfigHelp:
+        'Copie este bloco no arquivo de configuração do seu agente para conectar ao Morrow. Ele roda o servidor com Node, então o Morrow não abre. Configurou com o Morrow 1.x? Copie de novo, o antigo abria o app do Morrow.',
       mcpCopyButton: 'Copiar JSON',
       mcpCopied: 'Copiado!',
     },
   },
   pageMenu: {
+    addToSection: 'Adicionar a uma seção da barra lateral',
+    newSection: 'Nova seção',
+    newSectionName: 'Nova seção',
     fullWidth: 'Largura total',
     showOutline: 'Mostrar Nesta página',
     width: 'Largura da página',
@@ -548,6 +602,7 @@ export const pt: TranslationSchema = {
     },
   },
   page: {
+    startFromTemplate: 'Começar com um modelo',
     gradient: 'Degradê {number}',
     conflictCopy:
       'Esta é uma cópia que {app} guardou porque “{title}” mudou em dois computadores ao mesmo tempo. Compare as duas, mantenha o que precisar em “{title}” e depois mova esta cópia para a lixeira.',
@@ -654,6 +709,15 @@ export const pt: TranslationSchema = {
     editDiagram: 'Editar diagrama',
     baseEmpty: 'Nenhuma página corresponde a esta vista.',
     lowercase: 'Minúsculas',
+    embedPlaceholder: 'Cole um link do YouTube ou um caminho deste computador',
+    toggleHeadings: 'Título recolhível',
+    columns: 'Colunas',
+    defaultBackground: 'Fundo padrão',
+    colourBackground: 'Fundo {colour}',
+    equation: 'Equação embutida',
+    heading: 'Título',
+    clearFormatting: 'Limpar a formatação',
+    moreOptions: 'Mais opções',
     colour: 'Cor',
     link: 'Link',
     copyLink: 'Copiar link',
@@ -698,6 +762,7 @@ export const pt: TranslationSchema = {
     previousMatch: 'Resultado anterior',
     nextMatch: 'Próximo resultado',
     useRegex: 'Expressão regular',
+    matchCase: 'Diferenciar maiúsculas',
     closeFind: 'Fechar busca',
     suggestion: {
       toChoose: 'para escolher',
@@ -766,6 +831,11 @@ export const pt: TranslationSchema = {
         title: 'Lista numerada',
         description: 'Lista com números',
         keywords: 'lista numerada ordenada ol numeros',
+      },
+      lettered: {
+        title: 'Lista com letras',
+        description: 'Lista contada a, b, c',
+        keywords: 'alfabetica letras esboço abc',
       },
       task: {
         title: 'Lista de tarefas',
@@ -843,12 +913,12 @@ export const pt: TranslationSchema = {
         keywords: 'tabela grade planilha linhas colunas table',
       },
       math: {
-        title: 'Fórmula',
+        title: 'Bloco de equação',
         description: 'Exiba matemática em LaTeX',
         keywords: 'matematica equacao latex katex formula math',
       },
       inlineMath: {
-        title: 'Fórmula em linha',
+        title: 'Equação embutida',
         description: 'Matemática dentro de uma frase',
         keywords: 'matematica equacao latex em linha inline',
       },
@@ -887,6 +957,16 @@ export const pt: TranslationSchema = {
         description: 'Três blocos lado a lado',
         keywords: 'colunas 3 layout lado a lado dividir split',
       },
+      columns4: {
+        title: '4 colunas',
+        description: 'Quatro blocos lado a lado',
+        keywords: 'colunas 4 layout lado a lado dividir split',
+      },
+      columns5: {
+        title: '5 colunas',
+        description: 'Cinco blocos lado a lado',
+        keywords: 'colunas 5 layout lado a lado dividir split',
+      },
       toc: {
         title: 'Sumário',
         description: 'Todos os títulos desta página',
@@ -906,6 +986,11 @@ export const pt: TranslationSchema = {
         title: 'Data',
         description: 'Mencione um dia, como @amanhã',
         keywords: 'data dia hoje amanha lembrete mencao date',
+      },
+      embedMedia: {
+        title: 'Incorporar',
+        description: 'Um vídeo do YouTube, ou uma imagem, som, vídeo ou pasta deste computador',
+        keywords: 'youtube video audio som musica imagem pasta caminho arquivo incorporar embed',
       },
       embed: {
         title: 'Incorporar página',
@@ -950,6 +1035,34 @@ export const pt: TranslationSchema = {
     emptyMessage: 'Nada arquivado. Arquive uma página pelo menu da página.',
     archivedAt: 'Arquivada {time}',
   },
+  welcome: {
+    title: 'Boas-vindas ao Morrow',
+    intro:
+      'O Morrow guarda suas notas como arquivos Markdown neste computador. Primeiro algumas perguntas, tudo pode ser mudado depois em Configurações.',
+    nameQuestion: 'Como o Morrow deve chamar você?',
+    lookTitle: 'A aparência',
+    tipsTitle: 'Bom saber',
+    tipSlash: 'Digite / numa linha para títulos, listas, tabelas, recolhíveis e qualquer outro bloco.',
+    tipLinks: 'Digite [[ para ligar outra página, os links aparecem como referências nessa página.',
+    tipDates: 'Digite @ para datas como @hoje ou @sexta 17:00, uma data pode lembrar você.',
+    tipSearch: '{shortcut} busca em tudo e executa qualquer comando.',
+    tipToday: '{shortcut} abre a nota de hoje.',
+    tipFiles: 'Cada página é um arquivo .md na pasta do seu cofre, outros apps também podem abri-lo.',
+    back: 'Voltar',
+    next: 'Próximo',
+    start: 'Começar a escrever',
+  },
+  files: {
+    title: 'Arquivos',
+    subtitle: 'Imagens, som, vídeo e documentos guardados neste cofre, e as páginas que os usam.',
+    all: 'Todos',
+    pictures: 'Imagens',
+    media: 'Som e vídeo',
+    documents: 'Documentos',
+    unused: 'Sem uso',
+    empty: 'Ainda não há arquivos aqui.',
+    notUsed: 'Não usado em nenhuma página',
+  },
   tags: {
     title: 'Tags',
     subtitle:
@@ -961,6 +1074,9 @@ export const pt: TranslationSchema = {
     removeTag: 'Remover tag {tag}',
     newTag: 'Nova tag',
     tagPlaceholder: 'tag',
+    colour: 'Cor de {tag}',
+    automaticColour: 'Automática',
+    changeColour: 'Mudar a cor',
   },
   review: {
     deckCardsOne: '{count} cartão',
@@ -1039,6 +1155,7 @@ export const pt: TranslationSchema = {
     },
   },
   toasts: {
+    sharedSaved: 'Salvo na nota de hoje.',
     legacyWriteFailed: 'Não foi possível gravar as páginas na pasta.',
     importTooLarge: 'Arquivos maiores que 500 MB não são importados.',
     noMarkdownFound: 'Nenhum arquivo Markdown foi encontrado.',
@@ -1114,8 +1231,8 @@ export const pt: TranslationSchema = {
     syncCopyFailed: 'Falha ao copiar: {error}',
   },
   math: {
-    editTitle: 'Editar fórmula',
-    latexLabel: 'Fórmula em LaTeX',
+    editTitle: 'Editar equação',
+    latexLabel: 'Equação em LaTeX',
     previewLabel: 'Pré-visualização',
     saveHint: '{shortcut} para salvar',
     learnMore: 'Ajuda de LaTeX',
@@ -1227,6 +1344,11 @@ export const pt: TranslationSchema = {
     madeThisDay: 'Criado neste dia',
   },
   emoji: {
+    icons: 'Ícones',
+    searchIcons: 'Buscar um ícone',
+    iconStyle: 'Estilo do ícone',
+    outline: 'Contorno',
+    filled: 'Preenchido',
     noMatch: 'Nenhum emoji corresponde a “{query}”.',
     smileys: 'Carinhas',
     people: 'Pessoas',
@@ -1303,7 +1425,8 @@ export const pt: TranslationSchema = {
   reminders: {
     dateMenu: 'Data',
     openNote: 'Abrir a nota deste dia',
-    otherTime: 'Em outro horário…',
+    otherTime: 'Em um horário personalizado…',
+    atScheduled: 'No horário marcado, {time}',
     inThePast: 'Esse horário já passou.',
     remind: 'Lembrar-me',
     remindMe: 'Lembrar-me',
@@ -1364,6 +1487,9 @@ export const pt: TranslationSchema = {
     providerTechnicalDetails: 'Detalhes técnicos',
     providerMetadataDiagnostic: 'Provedor: {provider}; versão dos metadados: {version}; API exigida pelo host: 1.',
     providerMountDiagnostic: 'Falha ao montar: {message}',
+    exportIcsHint: 'Salve as linhas com data como um arquivo .ics para outros apps de calendário',
+    importIcsHint: 'Adicione os eventos de um arquivo .ics como linhas',
+    importedIcs: '{count} eventos adicionados.',
     doesNotExist: '“{target}” não existe',
     findOrCreateOption: 'Encontre ou crie uma opção',
     createOption: 'Crie uma opção',

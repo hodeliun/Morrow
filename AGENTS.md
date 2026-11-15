@@ -1,7 +1,7 @@
 # Morrow — isolated Polaris Dados pilot
 
-This branch is an experimental candidate on upstream Morrow v2.0.0 at
-ad0471b61047ab5630d91b72f8f4bcb883253035. The published fork is preserved
+This branch is an experimental candidate based on upstream Morrow v2.1.0 at
+95b120f72cdf49aa34e7c64944ceade7b2a35daa. The published fork is preserved
 on main at 778c6b6ef7d30aad8678dbbbcb50fdcab6bc1106 (base 1.3 / fork 1.2).
 This candidate is NOT a complete migration or replacement for that fork.
 Preserve Apache-2.0 attribution and public history; never publish private source history.

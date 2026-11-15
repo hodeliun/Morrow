@@ -7,6 +7,10 @@ import {
   RefreshCw,
   SlidersHorizontal,
   X,
+  GripVertical,
+  Trash2,
+  ArrowDown,
+  ArrowUp,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -14,7 +18,7 @@ import { formatShortcut } from '../actions';
 import { AssistantSettings } from '../assistant/AssistantSettings';
 import { previewCustomCss, saveCustomCss, useCustomCss } from '../customCss';
 import { openHref } from '../editor/EditorMenus';
-import { SUPPORTED_LOCALES, useTranslation } from '../i18n';
+import { dateLocale, SUPPORTED_LOCALES, useTranslation } from '../i18n';
 import type { SupportedLocale, TranslationKey } from '../i18n';
 import { copyLegacyInto, legacyPageCount } from '../legacy';
 import {
@@ -28,11 +32,34 @@ import {
 } from '../operations';
 import { formatBytes } from '../platform/attachments';
 import { canOpenFolders, desktop, isMobile } from '../platform/desktop';
-import { ACCENTS, SIDEBAR_MODULES, setPreferences, usePreferences } from '../platform/preferences';
+import {
+  ACCENTS,
+  PALETTES,
+  resolvedTheme,
+  SIDEBAR_FIXED,
+  SIDEBAR_GROUPS,
+  SIDEBAR_MODULES,
+  setPreferences,
+  usePreferences,
+} from '../platform/preferences';
+import type {
+  Palette as PaletteName,
+  SidebarItem,
+  SidebarModule,
+  TextScale,
+  WeekStart,
+} from '../platform/preferences';
 import type { PageWidth, StartPage, ThemePreference, TrashDays, WritingFont } from '../platform/preferences';
-import { closeDialog, openDialog, toast } from '../ui';
+import { closeDialog, confirmAction, openDialog, toast } from '../ui';
 import type { SettingsSection } from '../ui';
-import { chooseVaultFolder } from '../vaults';
+import { chooseVaultFolder, switchVault } from '../vaults';
+import {
+  addSection,
+  moveSection,
+  removeSection,
+  updateSection,
+  useSidebarSections,
+} from '../sidebarSections';
 import { checkForUpdate, installUpdate, useUpdateState } from '../updates';
 import { getSession } from '../workspace';
 import { Dialog, Logo, Switch } from './primitives';
@@ -58,7 +85,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'about', key: 'settings.sections.about', icon: Info },
 ];
 
-function Segmented<T extends string>({
+function Segmented<T extends string | number>({
   label,
   value,
   options,
@@ -195,6 +222,27 @@ function GeneralSettings() {
           onChange={(startPage) => setPreferences({ startPage })}
         />
       </SettingRow>
+      {!prefs.hiddenModules.includes('daily') && (
+        <SettingRow label={t('settings.general.autoDaily')} help={t('settings.general.autoDailyHelp')}>
+          <Switch
+            label={t('settings.general.autoDaily')}
+            checked={prefs.autoDaily}
+            onChange={(autoDaily) => setPreferences({ autoDaily })}
+          />
+        </SettingRow>
+      )}
+      <SettingRow label={t('settings.general.weekStart')}>
+        <Segmented<WeekStart>
+          label={t('settings.general.weekStart')}
+          value={prefs.weekStart}
+          options={([1, 0, 6] as const).map((day) => [
+            day,
+            // 2023-12-31 was a sunday
+            new Date(2023, 11, 31 + day).toLocaleDateString(dateLocale(), { weekday: 'long' }),
+          ])}
+          onChange={(weekStart) => setPreferences({ weekStart })}
+        />
+      </SettingRow>
       <SettingRow label={t('settings.general.spellcheck')} help={t('settings.general.spellcheckHelp')}>
         <Switch
           label={t('settings.general.spellcheck')}
@@ -224,6 +272,39 @@ function AppearanceSettings() {
             onChange={(theme) => setPreferences({ theme })}
           />
         </SettingRow>
+        <SettingRow label={t('settings.appearance.colourTheme')}>
+          <div
+            className="palette-swatches"
+            role="radiogroup"
+            aria-label={t('settings.appearance.colourTheme')}
+          >
+            {PALETTES.map((palette) => {
+              const label = t(`settings.appearance.palettes.${palette}` as TranslationKey);
+              const [page, side, text] = PALETTE_PREVIEW[palette][resolvedTheme(prefs.theme)]!;
+              return (
+                <button
+                  key={palette}
+                  type="button"
+                  role="radio"
+                  aria-checked={prefs.palette === palette}
+                  aria-label={label}
+                  title={label}
+                  className="palette-swatch"
+                  onClick={() => setPreferences({ palette })}
+                >
+                  <span className="palette-preview" style={{ background: page }}>
+                    <span style={{ background: side }} />
+                    <span className="palette-lines">
+                      <i style={{ background: text }} />
+                      <i style={{ background: text }} />
+                    </span>
+                  </span>
+                  <span className="palette-name">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </SettingRow>
         <SettingRow label={t('settings.appearance.accentColour')}>
           <div
             className="accent-swatches"
@@ -232,6 +313,26 @@ function AppearanceSettings() {
           >
             {ACCENTS.map((accent) => {
               const label = t(`settings.appearance.accents.${accent}` as TranslationKey);
+              // a colour of your own, picked with the system's colour picker
+              if (accent === 'custom')
+                return (
+                  <label
+                    key={accent}
+                    className={`accent-swatch accent-custom${prefs.accent === 'custom' ? ' is-picked' : ''}`}
+                    title={label}
+                    style={{ '--swatch': prefs.accentColor } as React.CSSProperties}
+                  >
+                    <input
+                      type="color"
+                      aria-label={label}
+                      value={prefs.accentColor}
+                      onClick={() => setPreferences({ accent: 'custom' })}
+                      onChange={(event) =>
+                        setPreferences({ accent: 'custom', accentColor: event.target.value })
+                      }
+                    />
+                  </label>
+                );
               return (
                 <button
                   key={accent}
@@ -255,6 +356,19 @@ function AppearanceSettings() {
             label={t('settings.appearance.colourfulPages')}
             checked={prefs.colorful}
             onChange={(colorful) => setPreferences({ colorful })}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.appearance.textSize')}>
+          <Segmented<TextScale>
+            label={t('settings.appearance.textSize')}
+            value={prefs.textScale}
+            options={[
+              [0.9, t('settings.appearance.textSizes.small')],
+              [1, t('settings.appearance.textSizes.normal')],
+              [1.1, t('settings.appearance.textSizes.large')],
+              [1.25, t('settings.appearance.textSizes.larger')],
+            ]}
+            onChange={(textScale) => setPreferences({ textScale })}
           />
         </SettingRow>
       </SettingsGroup>
@@ -291,39 +405,228 @@ function AppearanceSettings() {
 }
 
 // which views the sidebar lists
+// what each colour theme looks like in light and in dark: the page, the sidebar and the text, as in palettes.css
+const PALETTE_PREVIEW: Record<PaletteName, Record<'light' | 'dark', [string, string, string]>> = {
+  default: { light: ['#ffffff', '#f8f8f7', '#1d1d1f'], dark: ['#191919', '#202020', '#ececec'] },
+  paper: { light: ['#fbf8f1', '#f3eee3', '#2b2620'], dark: ['#1f1c17', '#26221c', '#ece4d4'] },
+  sepia: { light: ['#f4ecd8', '#ebe0c6', '#3d2f1f'], dark: ['#241d16', '#2b231a', '#e9dcc4'] },
+  nord: { light: ['#eceff4', '#e5e9f0', '#2e3440'], dark: ['#2e3440', '#3b4252', '#eceff4'] },
+  forest: { light: ['#f4f7f2', '#ebf0e7', '#1f2a1f'], dark: ['#171d18', '#1d241e', '#e2eadf'] },
+  midnight: { light: ['#f5f6f8', '#eceef2', '#1d1d1f'], dark: ['#000000', '#0b0b0c', '#e8e8ea'] },
+};
+
 function SidebarSettings() {
   const { t } = useTranslation();
   const prefs = usePreferences();
+  const [dragging, setDragging] = useState<SidebarItem | null>(null);
+  const label = (item: SidebarItem): string => {
+    switch (item) {
+      case 'search':
+        return t('common.search');
+      case 'home':
+        return t('settings.general.startPages.home');
+      case 'daily':
+        return t('sidebar.today');
+      case 'templates':
+        return t('dialogs.templates');
+      case 'files':
+        return t('files.title');
+      case 'custom':
+        return t('sidebar.customSections');
+      case 'pages':
+        return t('sidebar.pagesHeading');
+      case 'settings':
+        return t('settings.title');
+      case 'assistant':
+        return t('settings.sections.assistant');
+      default:
+        return t(`sidebar.${item}` as TranslationKey);
+    }
+  };
+  // an item moves within its own group, before the one it is dropped on or a step up or down
+  const move = (item: SidebarItem, to: SidebarItem | number) => {
+    const order = prefs.sidebarOrder.filter((other) => other !== item);
+    const group = groupOf(item);
+    const members = order.filter((other) => groupOf(other) === group);
+    let target: SidebarItem | undefined;
+    if (typeof to === 'number') {
+      const index = prefs.sidebarOrder.filter((other) => groupOf(other) === group).indexOf(item) + to;
+      if (index < 0 || index > members.length) return;
+      target = members[index];
+      if (!target) {
+        const last = members[members.length - 1];
+        order.splice(last ? order.indexOf(last) + 1 : order.length, 0, item);
+        setPreferences({ sidebarOrder: order });
+        return;
+      }
+    } else target = to;
+    if (!target || groupOf(target) !== group) return;
+    order.splice(order.indexOf(target), 0, item);
+    setPreferences({ sidebarOrder: order });
+  };
+  const groups: Array<[keyof typeof SIDEBAR_GROUPS, string]> = [
+    ['top', t('settings.sidebar.groupTop')],
+    ['sections', t('settings.sidebar.groupSections')],
+    ['bottom', t('settings.sidebar.groupBottom')],
+  ];
   return (
-    <SettingsGroup title={t('settings.sidebar.title')}>
-      {SIDEBAR_MODULES.map((module) => {
-        const label = t(`sidebar.${module}` as TranslationKey);
-        return (
-          <SettingRow key={module} label={t('settings.sidebar.show', { name: label })}>
-            <Switch
-              label={t('settings.sidebar.show', { name: label })}
-              checked={!prefs.hiddenModules.includes(module)}
-              onChange={(show) =>
-                setPreferences({
-                  hiddenModules: show
-                    ? prefs.hiddenModules.filter((item) => item !== module)
-                    : [...prefs.hiddenModules, module],
-                })
-              }
-            />
-          </SettingRow>
-        );
-      })}
-      <SettingRow label={t('settings.sidebar.peek')} help={t('settings.sidebar.peekHelp')}>
-        <Switch
-          label={t('settings.sidebar.peek')}
-          checked={prefs.sidebarPeek}
-          onChange={(sidebarPeek) => setPreferences({ sidebarPeek })}
-        />
+    <>
+      <SettingsGroup title={t('settings.sidebar.title')}>
+        <SettingRow label={t('settings.sidebar.peek')} help={t('settings.sidebar.peekHelp')}>
+          <Switch
+            label={t('settings.sidebar.peek')}
+            checked={prefs.sidebarPeek}
+            onChange={(sidebarPeek) => setPreferences({ sidebarPeek })}
+          />
+        </SettingRow>
+      </SettingsGroup>
+      {groups.map(([group, title]) => (
+        <SettingsGroup key={group} title={title}>
+          {prefs.sidebarOrder
+            .filter((item) => groupOf(item) === group && item !== 'assistant')
+            .map((item) => {
+              const fixed = SIDEBAR_FIXED.includes(item);
+              const module = (SIDEBAR_MODULES as readonly string[]).includes(item)
+                ? (item as SidebarModule)
+                : null;
+              return (
+                <div
+                  key={item}
+                  className={`settings-row sidebar-layout-row${dragging === item ? ' is-dragging' : ''}`}
+                  onDragOver={(event) => {
+                    if (dragging && groupOf(dragging) === group) event.preventDefault();
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (dragging && dragging !== item) move(dragging, item);
+                    setDragging(null);
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="icon-button small drag-grip"
+                    draggable
+                    aria-label={t('settings.sidebar.moveAria', { name: label(item) })}
+                    title={t('settings.sidebar.moveHint')}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', item);
+                      setDragging(item);
+                    }}
+                    onDragEnd={() => setDragging(null)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                      event.preventDefault();
+                      move(item, event.key === 'ArrowUp' ? -1 : 1);
+                    }}
+                  >
+                    <GripVertical size={14} />
+                  </button>
+                  <span className="settings-row-label sidebar-layout-label">{label(item)}</span>
+                  <Switch
+                    label={t('settings.sidebar.show', { name: label(item) })}
+                    // your own sections are each shown or hidden below
+                    checked={
+                      fixed || item === 'custom' || (module !== null && !prefs.hiddenModules.includes(module))
+                    }
+                    disabled={fixed || module === null}
+                    onChange={(show) =>
+                      module &&
+                      setPreferences({
+                        hiddenModules: show
+                          ? prefs.hiddenModules.filter((other) => other !== module)
+                          : [...prefs.hiddenModules, module],
+                      })
+                    }
+                  />
+                </div>
+              );
+            })}
+        </SettingsGroup>
+      ))}
+      <CustomSections />
+      <p className="muted small settings-note">{t('settings.sidebar.conditionalHelp')}</p>
+    </>
+  );
+}
+
+// sections of your own in the sidebar, named, shown or hidden and put in order here, filled from a page's
+// menu with Add to a sidebar section
+function CustomSections() {
+  const { t } = useTranslation();
+  const sections = useSidebarSections();
+  return (
+    <SettingsGroup title={t('sidebar.customSections')} help={t('settings.sidebar.customHelp')}>
+      {sections.map((section, index) => (
+        <div key={section.id} className="settings-row sidebar-layout-row">
+          <input
+            className="text-input small settings-input sidebar-layout-label"
+            aria-label={t('settings.sidebar.sectionName')}
+            defaultValue={section.name}
+            onBlur={(event) => {
+              const name = event.target.value.trim();
+              if (name && name !== section.name) void updateSection(section.id, { name });
+            }}
+            onKeyDown={(event) => event.key === 'Enter' && event.currentTarget.blur()}
+          />
+          <span className="muted small">
+            {t('settings.sidebar.sectionPages', { count: section.pages.length })}
+          </span>
+          <button
+            type="button"
+            className="icon-button small"
+            aria-label={t('editor.moveUp')}
+            title={t('editor.moveUp')}
+            disabled={index === 0}
+            onClick={() => void moveSection(section.id, -1)}
+          >
+            <ArrowUp size={14} />
+          </button>
+          <button
+            type="button"
+            className="icon-button small"
+            aria-label={t('editor.moveDown')}
+            title={t('editor.moveDown')}
+            disabled={index === sections.length - 1}
+            onClick={() => void moveSection(section.id, 1)}
+          >
+            <ArrowDown size={14} />
+          </button>
+          <Switch
+            label={t('settings.sidebar.show', { name: section.name })}
+            checked={!section.hidden}
+            onChange={(show) => void updateSection(section.id, { hidden: !show })}
+          />
+          <button
+            type="button"
+            className="icon-button small"
+            aria-label={t('settings.sidebar.deleteSection', { name: section.name })}
+            title={t('settings.sidebar.deleteSection', { name: section.name })}
+            onClick={() => void removeSection(section.id)}
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+      <SettingRow label={t('settings.sidebar.addSection')} help={t('settings.sidebar.addSectionHelp')}>
+        <button
+          type="button"
+          className="button small"
+          onClick={() => void addSection(t('pageMenu.newSectionName'))}
+        >
+          {t('pageMenu.newSection')}
+        </button>
       </SettingRow>
     </SettingsGroup>
   );
 }
+
+const groupOf = (item: SidebarItem): keyof typeof SIDEBAR_GROUPS =>
+  (SIDEBAR_GROUPS.top as readonly SidebarItem[]).includes(item)
+    ? 'top'
+    : (SIDEBAR_GROUPS.sections as readonly SidebarItem[]).includes(item)
+      ? 'sections'
+      : 'bottom';
 
 // styles of your own, saved in the vault and shown as you type
 function CustomCss() {
@@ -386,6 +689,85 @@ function CustomCss() {
           </div>
         </div>
       )}
+    </SettingsGroup>
+  );
+}
+
+// every vault morrow knows on this computer, in the order the vault menu lists them. one can be moved up or
+// down, or forgotten, which takes it off the list and leaves its folder and files where they are
+function KnownVaults() {
+  const { t } = useTranslation();
+  const current = getSession().location;
+  const [vaults, setVaults] = useState<Array<{ path: string; name: string; exists: boolean }>>([]);
+  const refresh = () => void desktop?.vault?.state().then((state) => setVaults(state.recent));
+  useEffect(refresh, []);
+  const move = (index: number, by: -1 | 1) => {
+    const next = [...vaults];
+    const [item] = next.splice(index, 1);
+    next.splice(index + by, 0, item!);
+    setVaults(next);
+    void desktop?.vault?.reorder?.(next.map((vault) => vault.path));
+  };
+  const forget = (path: string, name: string) =>
+    confirmAction({
+      title: t('settings.vault.forgetTitle', { name }),
+      body: t('settings.vault.forgetBody'),
+      confirmLabel: t('settings.vault.forget'),
+      danger: true,
+      onConfirm: () => {
+        void desktop?.vault?.forget(path).then(async () => {
+          if (path !== current) return;
+          // the open vault goes, morrow moves to the next one it knows, or asks for a folder
+          const other = vaults.find((vault) => vault.path !== path && vault.exists);
+          if (other) await switchVault(other.path);
+          else window.location.reload();
+        });
+      },
+    });
+  if (vaults.length === 0) return null;
+  return (
+    <SettingsGroup title={t('settings.vault.knownTitle')} help={t('settings.vault.knownHelp')}>
+      {vaults.map((vault, index) => (
+        <div key={vault.path} className="settings-row known-vault">
+          <div className="settings-row-text">
+            <span className="settings-row-label">
+              {vault.name}
+              {vault.path === current && <span className="badge">{t('settings.vault.open')}</span>}
+              {!vault.exists && <span className="badge is-muted">{t('settings.vault.missing')}</span>}
+            </span>
+            <span className="settings-row-help settings-path">{vault.path}</span>
+          </div>
+          <div className="known-vault-actions">
+            <button
+              type="button"
+              className="icon-button small"
+              aria-label={t('editor.moveUp')}
+              title={t('editor.moveUp')}
+              disabled={index === 0}
+              onClick={() => move(index, -1)}
+            >
+              <ArrowUp size={14} />
+            </button>
+            <button
+              type="button"
+              className="icon-button small"
+              aria-label={t('editor.moveDown')}
+              title={t('editor.moveDown')}
+              disabled={index === vaults.length - 1}
+              onClick={() => move(index, 1)}
+            >
+              <ArrowDown size={14} />
+            </button>
+            <button
+              type="button"
+              className="button small is-danger"
+              onClick={() => forget(vault.path, vault.name)}
+            >
+              {t('settings.vault.forget')}
+            </button>
+          </div>
+        </div>
+      ))}
     </SettingsGroup>
   );
 }
@@ -453,6 +835,7 @@ function VaultSettings() {
           </SettingRow>
         )}
       </SettingsGroup>
+      {desktop?.vault && <KnownVaults />}
       <SettingsGroup title={t('settings.vault.filesTitle')}>
         <SettingRow label={t('settings.vault.exportBackup')} help={t('settings.vault.exportBackupHelp')}>
           <button type="button" className="button small" onClick={() => void exportBackup()}>

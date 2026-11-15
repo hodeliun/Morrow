@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
-import { Editor, Extension } from '@tiptap/core';
+import { Editor, Extension, Node as TiptapNode } from '@tiptap/core';
+import type { AnyExtension } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { EditorState, Plugin } from '@tiptap/pm/state';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Command } from '../../core/commands';
+import { newPageMeta } from '../../core/model';
 import type { DocNode, PageId, WorkspaceState } from '../../core/model';
 import type { Result } from '../../core/result';
 import type { WorkspaceSession } from '../../storage/session';
@@ -29,8 +31,46 @@ class TestSession {
   private readonly closeListeners = new Set<() => void>();
   readonly executed: Command[] = [];
 
-  constructor(initial: DocNode) {
-    this.state = { pages: {}, docs: { [pageId]: initial } } as WorkspaceState;
+  constructor(initial: DocNode, linkedIds: string[] = []) {
+    const references = linkedIds.map((blockId, index) => {
+      const id = `${pageId}-reference-${index}` as PageId;
+      return {
+        id,
+        page: newPageMeta({ id, parentId: null, title: `Reference ${index}` }),
+        doc: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'pageLink',
+                  attrs: { id: pageId, label: 'Page', anchor: `^${blockId}` },
+                },
+              ],
+            },
+          ],
+        } satisfies DocNode,
+      };
+    });
+    this.state = {
+      pages: {
+        [pageId]: newPageMeta({ id: pageId, parentId: null, title: 'Page' }),
+        ...Object.fromEntries(references.map(({ id, page }) => [id, page])),
+      },
+      docs: {
+        [pageId]: initial,
+        ...Object.fromEntries(references.map(({ id, doc }) => [id, doc])),
+      },
+    } as WorkspaceState;
+  }
+
+  addPage(id: PageId, initial: DocNode): void {
+    this.state = {
+      ...this.state,
+      pages: { ...this.state.pages, [id]: newPageMeta({ id, parentId: null, title: 'Reference' }) },
+      docs: { ...this.state.docs, [id]: initial },
+    };
   }
 
   get isClosed(): boolean {
@@ -92,19 +132,27 @@ function appendIfTextContains(trigger: string, marker: string): Extension {
   });
 }
 
-function openSession(initial: DocNode): TestSession {
-  const session = new TestSession(initial);
+function openSession(initial: DocNode, linkedIds: string[] = []): TestSession {
+  const session = new TestSession(initial, linkedIds);
   testSessions.push(session);
   return session;
 }
 
-function openPeer(session: TestSession, extra: Extension[] = [], onDirty: (dirty: boolean) => void = () => {}): Editor {
+function openPeer(
+  session: TestSession,
+  extra: AnyExtension[] = [],
+  onDirty: (dirty: boolean) => void = () => {},
+  preserveBlockId: (id: string) => boolean = () => false,
+  editorPageId: PageId = pageId,
+): Editor {
   const coordinator = registerPageEditorCoordinator(
     session as unknown as WorkspaceSession,
-    pageId,
-    session.getState().docs[pageId]!,
+    editorPageId,
+    session.getState().docs[editorPageId]!,
     true,
     onDirty,
+    'main',
+    preserveBlockId,
   );
   const editor = new Editor({
     element: document.createElement('div'),
@@ -122,6 +170,57 @@ function openPeer(session: TestSession, extra: Extension[] = [], onDirty: (dirty
   coordinator.ready();
   livePeers.push({ editor, dispose: coordinator.dispose });
   return editor;
+}
+
+const blockIdAttributes = Extension.create({
+  name: 'coordinatorBlockIdAttributes',
+  addGlobalAttributes() {
+    return [{ types: ['paragraph'], attributes: { blockId: { default: null } } }];
+  },
+});
+
+const pageLinkNode = TiptapNode.create({
+  name: 'pageLink',
+  inline: true,
+  group: 'inline',
+  atom: true,
+  addAttributes() {
+    return {
+      id: { default: null },
+      label: { default: null },
+      anchor: { default: null },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'a[data-page-link]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['a', { ...HTMLAttributes, 'data-page-link': 'true' }];
+  },
+});
+
+const rejectBlockIdCleanup = Extension.create({
+  name: 'rejectBlockIdCleanup',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        filterTransaction(transaction) {
+          return !(
+            transaction.getMeta('morrowPageEditorHostSync') &&
+            transaction.docChanged &&
+            transaction.doc.firstChild?.attrs.blockId === null
+          );
+        },
+      }),
+    ];
+  },
+});
+
+function pageWithBlockId(blockId: string): DocNode {
+  return {
+    type: 'doc',
+    content: [{ ...paragraph('initial'), attrs: { blockId } }],
+  };
 }
 
 afterEach(() => {
@@ -304,6 +403,85 @@ describe('page editor coordination', () => {
 
     expect(first.getText()).toBe('aaaaa');
     expect(second.getText()).toBe('aaaaa');
+  });
+
+  it('cleans unlinked block IDs in one no-undo update shared by every open editor', () => {
+    const session = openSession(pageWithBlockId('orphan'));
+    const first = openPeer(session, [blockIdAttributes]);
+    const second = openPeer(session, [blockIdAttributes]);
+    first.commands.setTextSelection(first.state.doc.content.size - 1);
+    first.view.dispatch(first.state.tr.insertText('!'));
+
+    expect(commitEditors()).toBe(true);
+    expect((session.getState().docs[pageId]!.content?.[0]!.attrs as { blockId: string | null }).blockId).toBeNull();
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBeNull();
+    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBeNull();
+
+    expect(first.commands.undo()).toBe(true);
+    expect(first.getText()).toBe('initial');
+    expect(second.getText()).toBe('initial');
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBeNull();
+    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBeNull();
+    expect(commitEditors()).toBe(true);
+  });
+
+  it('keeps linked and just-copied block IDs when the shared editor draft is saved', () => {
+    const linkedSession = openSession(pageWithBlockId('linked'), ['linked']);
+    const linkedEditor = openPeer(linkedSession, [blockIdAttributes]);
+    linkedEditor.commands.setTextSelection(linkedEditor.state.doc.content.size - 1);
+    linkedEditor.view.dispatch(linkedEditor.state.tr.insertText('!'));
+    expect(commitEditors()).toBe(true);
+    expect((linkedSession.getState().docs[pageId]!.content?.[0]!.attrs as { blockId: string | null }).blockId).toBe(
+      'linked',
+    );
+
+    const copiedSession = openSession(pageWithBlockId('copied'));
+    const copiedEditor = openPeer(copiedSession, [blockIdAttributes], () => {}, (id) => id === 'copied');
+    copiedEditor.commands.setTextSelection(copiedEditor.state.doc.content.size - 1);
+    copiedEditor.view.dispatch(copiedEditor.state.tr.insertText('!'));
+    expect(commitEditors()).toBe(true);
+    expect((copiedSession.getState().docs[pageId]!.content?.[0]!.attrs as { blockId: string | null }).blockId).toBe(
+      'copied',
+    );
+  });
+
+  it('keeps an anchor used by another page editor draft until that draft is saved', () => {
+    const referencePageId = 'coordinator-pending-reference' as PageId;
+    const session = openSession(pageWithBlockId('pending'));
+    session.addPage(referencePageId, page(''));
+    const source = openPeer(session, [blockIdAttributes]);
+    const reference = openPeer(session, [pageLinkNode], () => {}, () => false, referencePageId);
+    const link = reference.state.schema.nodes.pageLink!.create({
+      id: pageId,
+      label: 'Page',
+      anchor: '^pending',
+    });
+    reference.view.dispatch(reference.state.tr.insert(reference.state.doc.content.size - 1, link));
+    source.commands.setTextSelection(source.state.doc.content.size - 1);
+    source.view.dispatch(source.state.tr.insertText('!'));
+
+    expect(commitPageEditorDraft(session as unknown as WorkspaceSession, pageId)).toBe(true);
+    expect((session.getState().docs[pageId]!.content?.[0]!.attrs as { blockId: string | null }).blockId).toBe(
+      'pending',
+    );
+    expect(session.getState().docs[referencePageId]).toEqual(page(''));
+    expect(commitPageEditorDraft(session as unknown as WorkspaceSession, referencePageId)).toBe(true);
+    expect(session.getState().docs[referencePageId]?.content?.[0]?.content?.[0]?.type).toBe('pageLink');
+  });
+
+  it('refuses block ID cleanup if any peer cannot accept it and keeps every draft', () => {
+    const session = openSession(pageWithBlockId('orphan'));
+    const first = openPeer(session, [blockIdAttributes]);
+    const second = openPeer(session, [blockIdAttributes, rejectBlockIdCleanup]);
+    first.commands.setTextSelection(first.state.doc.content.size - 1);
+    first.view.dispatch(first.state.tr.insertText('!'));
+
+    expect(commitEditors()).toBe(false);
+    expect(session.executed).toHaveLength(0);
+    expect(first.getText()).toBe('initial!');
+    expect(second.getText()).toBe('initial!');
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('orphan');
+    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('orphan');
   });
 
   it('notifies observers only after clean external changes reach every peer', () => {

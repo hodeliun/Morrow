@@ -95,7 +95,8 @@ export function buildSite(state: WorkspaceState, options: SiteOptions): Site {
         : `<ul>${list
             .map((page) => {
               const children = childrenOf(state.pages, page.id).filter((child) => ids.has(child.id));
-              const label = `${page.icon ? `${escape(page.icon)} ` : ''}${escape(displayTitle(page))}`;
+              // a flat icon is drawn by the app, the site only shows emoji
+              const label = `${page.icon && !page.icon.startsWith('icon:') ? `${escape(page.icon)} ` : ''}${escape(displayTitle(page))}`;
               return `<li><a href="${names.get(page.id)}"${page.id === current ? ' aria-current="page"' : ''}>${label}</a>${branch(children, depth + 1)}</li>`;
             })
             .join('')}</ul>`;
@@ -262,7 +263,7 @@ export function docToHtml(doc: DocNode, context: RenderContext): string {
       case 'bulletList':
         return `<ul>${children()}</ul>`;
       case 'orderedList':
-        return `<ol start="${Number(node.attrs?.start ?? 1) || 1}">${children()}</ol>`;
+        return `<ol start="${Number(node.attrs?.start ?? 1) || 1}"${node.attrs?.type === 'a' ? ' type="a"' : ''}>${children()}</ol>`;
       case 'listItem':
         return `<li>${children()}</li>`;
       case 'taskList':

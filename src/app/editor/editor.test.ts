@@ -4,7 +4,7 @@ import { CellSelection } from '@tiptap/pm/tables';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { DocNode } from '../../core/model';
 import { selectBlockRange } from './BlockSelect';
-import { changeCase, setHeading } from './EditorMenus';
+import { changeCase, setBlockBackground, setHeading, turnInto } from './EditorMenus';
 import { createExtensions } from './extensions';
 import { tagDecorations } from './Extras';
 import type { DecorationSet } from '@tiptap/pm/view';
@@ -23,6 +23,7 @@ function make(content: unknown): Editor {
       createChild: () => null,
       openDate: () => {},
       pages: () => [],
+      findPages: () => [],
       createPage: () => null,
       renderEmbed: () => {},
     } as never),
@@ -125,6 +126,31 @@ describe('the editor', () => {
     expect(target.getText()).toContain('ada');
   });
 
+  it('changes the case of every cell picked, not only the first', () => {
+    const cell = (text: string) => ({ type: 'tableCell', content: [p(text)] });
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            { type: 'tableRow', content: [cell('one'), cell('two')] },
+            { type: 'tableRow', content: [cell('three'), cell('four')] },
+          ],
+        },
+      ],
+    });
+    const cells: number[] = [];
+    target.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'tableCell') cells.push(pos);
+    });
+    target.view.dispatch(
+      target.state.tr.setSelection(CellSelection.create(target.state.doc, cells[0]!, cells[3]!)),
+    );
+    changeCase(target, (text) => text.toUpperCase());
+    expect(target.getText()).toMatch(/ONE.*TWO.*THREE.*FOUR/s);
+  });
+
   it('makes a toggle heading from the toolbar inside a toggle title', () => {
     const target = make({ type: 'doc', content: [p('Plans')] });
     target.commands.setTextSelection(1);
@@ -178,5 +204,300 @@ describe('the editor', () => {
       const live = (plugin ?? { getState: () => null }).getState(target.state) as DecorationSet | null;
       expect(live && shown(live)).toBe(shown(tagDecorations(target.state.doc)));
     }
+  });
+});
+
+describe('turn into', () => {
+  it('puts a line in the first of several columns', () => {
+    const target = make({ type: 'doc', content: [p('Left'), p('After')] });
+    turnInto(target, 0, { kind: 'columns', count: 4 });
+    const columns = json(target).content![0]!;
+    expect(columns.type).toBe('columns');
+    expect(columns.content).toHaveLength(4);
+    expect(columns.content![0]!.content![0]!.content![0]!.text).toBe('Left');
+    expect(json(target).content![1]!.content![0]!.text).toBe('After');
+  });
+
+  it('makes a lettered list and a callout', () => {
+    const target = make({ type: 'doc', content: [p('First'), p('Second')] });
+    turnInto(target, 0, { kind: 'letteredList' });
+    const list = json(target).content![0]!;
+    expect(list.type).toBe('orderedList');
+    expect(list.attrs?.type).toBe('a');
+    const second = target.state.doc.child(0).nodeSize;
+    turnInto(target, second, { kind: 'callout' });
+    expect(json(target).content![1]!.type).toBe('callout');
+  });
+
+  it('colours the whole block rather than its words', () => {
+    const target = make({ type: 'doc', content: [p('Shaded')] });
+    setBlockBackground(target, [0], 'green');
+    const line = json(target).content![0]!;
+    expect(line.attrs?.backgroundColor).toBe('green');
+    expect(line.content![0]!.marks).toBeUndefined();
+    setBlockBackground(target, [0], null);
+    expect(json(target).content![0]!.attrs?.backgroundColor ?? null).toBeNull();
+  });
+
+  it('starts a lettered list from a. and a space', () => {
+    const target = make({ type: 'doc', content: [p('')] });
+    target.commands.setTextSelection(1);
+    type(target, 'a. ');
+    expect(json(target).content![0]!.attrs?.type).toBe('a');
+  });
+});
+
+describe('nested lists', () => {
+  const item = (text: string, ...nested: unknown[]) => ({ type: 'listItem', content: [p(text), ...nested] });
+  const list = (...items: unknown[]) => ({ type: 'bulletList', content: items });
+  const press = (target: Editor, key: string) => {
+    const event = new KeyboardEvent('keydown', { key });
+    target.view.someProp('handleKeyDown', (handler) => handler(target.view, event));
+  };
+  const endOf = (target: Editor, text: string) => {
+    let at = 0;
+    target.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === text) at = pos + node.nodeSize;
+    });
+    return at;
+  };
+
+  // the json without the attributes that are all empty, to compare the shape
+  const shape = (node: DocNode): unknown => ({
+    type: node.type,
+    ...(node.text !== undefined ? { text: node.text } : {}),
+    ...(node.content?.length ? { content: node.content.map(shape) } : {}),
+  });
+  const plain = (doc: unknown) => shape(doc as DocNode);
+
+  it('indents the new line, not the item under it, when tab is pressed between them', () => {
+    const target = make({ type: 'doc', content: [list(item('One', list(item('Two'))))] });
+    target.commands.setTextSelection(endOf(target, 'One'));
+    press(target, 'Enter');
+    press(target, 'Tab');
+    expect(shape(json(target))).toEqual(
+      plain({ type: 'doc', content: [list(item('One', list(item(''), item('Two'))))] }),
+    );
+    // the cursor stays on the line that moved
+    expect(target.state.selection.$from.parent.content.size).toBe(0);
+    expect(target.state.selection.$from.depth).toBe(5);
+  });
+
+  it('takes the new line away again with backspace or delete, keeping the item under it', () => {
+    for (const key of ['Backspace', 'Delete']) {
+      const target = make({ type: 'doc', content: [list(item('One', list(item('Two'))))] });
+      target.commands.setTextSelection(endOf(target, 'One'));
+      press(target, 'Enter');
+      press(target, key);
+      expect(shape(json(target))).toEqual(
+        plain({ type: 'doc', content: [list(item('One', list(item('Two'))))] }),
+      );
+      target.destroy();
+    }
+  });
+});
+
+describe('home and end', () => {
+  it('move to the start and end of the line, and shift selects', () => {
+    const target = make({ type: 'doc', content: [p('Hello world'), p('Next')] });
+    target.commands.setTextSelection(4);
+    const press = (key: string, shiftKey = false, ctrlKey = false) =>
+      target.view.someProp('handleKeyDown', (handler) =>
+        handler(target.view, new KeyboardEvent('keydown', { key, shiftKey, ctrlKey })),
+      );
+    press('End');
+    expect(target.state.selection.head).toBe(12);
+    press('Home', true);
+    expect(target.state.selection.from).toBe(1);
+    expect(target.state.selection.to).toBe(12);
+    press('End', false, true);
+    expect(target.state.selection.head).toBe(target.state.doc.content.size - 1);
+  });
+});
+
+describe('the / and @ menus', () => {
+  const active = (target: Editor, name: string) => {
+    const plugin = target.state.plugins.find((entry) =>
+      (entry as unknown as { key: string }).key.startsWith(name),
+    );
+    return Boolean((plugin?.getState(target.state) as { active?: boolean } | undefined)?.active);
+  };
+
+  it('stay away after a space or words that match nothing', () => {
+    for (const [char, key] of [
+      ['/', 'slashCommand'],
+      ['@', 'dateMentionSuggestion'],
+    ] as const) {
+      const target = make({ type: 'doc', content: [p('')] });
+      target.commands.setTextSelection(1);
+      type(target, `${char}to`);
+      expect(active(target, key)).toBe(true);
+      type(target, 'qqzz');
+      expect(active(target, key)).toBe(false);
+      target.commands.setContent({ type: 'doc', content: [p('')] });
+      target.commands.setTextSelection(1);
+      type(target, `a ${char} b`);
+      expect(active(target, key)).toBe(false);
+      // coming back to it later doesn't open it either
+      target.commands.setTextSelection(6);
+      expect(active(target, key)).toBe(false);
+      target.destroy();
+    }
+  });
+});
+
+describe('dates with a time', () => {
+  it('reads a time typed after a date', async () => {
+    const { typedTime } = await import('./Structure');
+    expect(typedTime('today 17:05')).toEqual({ rest: 'today', time: '17:05' });
+    expect(typedTime('friday 5pm')).toEqual({ rest: 'friday', time: '17:00' });
+    expect(typedTime('next 5')).toBeNull();
+    expect(typedTime('today 25:00')).toBeNull();
+  });
+});
+
+describe('finding words in a folded toggle', () => {
+  it('opens the toggle to show the match', async () => {
+    const { setFindQuery } = await import('./Blocks');
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'details',
+          attrs: { open: false },
+          content: [
+            { type: 'detailsSummary', content: [{ type: 'text', text: 'Title' }] },
+            { type: 'detailsContent', content: [p('hidden treasure')] },
+          ],
+        },
+      ],
+    });
+    setFindQuery(target.state, target.view.dispatch, 'treasure');
+    expect(json(target).content![0]!.attrs?.open).toBe(true);
+  });
+});
+
+describe('pasting a list', () => {
+  it('fills the empty line it is pasted on rather than going under it', () => {
+    const item = (text: string) => ({ type: 'listItem', content: [p(text)] });
+    const target = make({
+      type: 'doc',
+      content: [p('Above'), p(''), p('Below'), { type: 'bulletList', content: [item('One'), item('Two')] }],
+    });
+    const list = target.state.doc.child(3);
+    const at =
+      target.state.doc.child(0).nodeSize +
+      target.state.doc.child(1).nodeSize +
+      target.state.doc.child(2).nodeSize;
+    // copied from inside the list, the way selecting its items and copying gives it
+    const slice = target.state.doc.slice(at + 2, at + list.nodeSize - 2);
+    target.commands.setTextSelection(target.state.doc.child(0).nodeSize + 1);
+    const handled = target.view.someProp('handlePaste', (handler) =>
+      handler(target.view, new Event('paste') as ClipboardEvent, slice),
+    );
+    if (!handled) target.view.dispatch(target.state.tr.replaceSelection(slice));
+    const types = json(target).content!.map((node) => node.type);
+    expect(types.slice(0, 3)).toEqual(['paragraph', 'bulletList', 'paragraph']);
+    expect(json(target).content![1]!.content![0]!.content![0]!.content![0]!.text).toBe('One');
+  });
+});
+
+describe('turning a line into a toggle', () => {
+  it('folds the section under it into the toggle, up to the next heading', () => {
+    const heading = (level: number, text: string) => ({
+      type: 'heading',
+      attrs: { level },
+      content: [{ type: 'text', text }],
+    });
+    const target = make({
+      type: 'doc',
+      content: [
+        heading(2, 'Plans'),
+        p('One'),
+        heading(3, 'Detail'),
+        p('Two'),
+        heading(2, 'Next'),
+        p('Three'),
+      ],
+    });
+    turnInto(target, 0, { kind: 'toggle', level: 2 });
+    const doc = json(target);
+    expect(doc.content!.map((node) => node.type)).toEqual(['details', 'heading', 'paragraph']);
+    const inside = doc.content![0]!.content![1]!.content!.map((node) => node.type);
+    expect(inside).toEqual(['paragraph', 'heading', 'paragraph']);
+    expect(doc.content![0]!.attrs?.open).toBe(false);
+  });
+});
+
+describe('turning several blocks at once', () => {
+  it('turns every selected item of a list into a checklist', async () => {
+    const { selectedTextBlocks } = await import('./BlockHandle');
+    const { turnBlocks } = await import('./EditorMenus');
+    const item = (text: string) => ({ type: 'listItem', content: [p(text)] });
+    const target = make({
+      type: 'doc',
+      content: [{ type: 'bulletList', content: [item('One'), item('Two'), item('Three')] }],
+    });
+    target.commands.setTextSelection({ from: 3, to: target.state.doc.content.size - 3 });
+    const range = selectedTextBlocks(target.state)!;
+    expect(range).not.toBeNull();
+    turnBlocks(target, range, { kind: 'taskList' });
+    const doc = json(target);
+    expect(doc.content!.map((node) => node.type)).toEqual(['taskList']);
+    expect(doc.content![0]!.content).toHaveLength(3);
+  });
+});
+
+describe('turning several lines at once', () => {
+  it('makes one list of them', async () => {
+    const { selectedTextBlocks } = await import('./BlockHandle');
+    const { turnBlocks } = await import('./EditorMenus');
+    const target = make({ type: 'doc', content: [p('One'), p('Two'), p('Three')] });
+    target.commands.setTextSelection({ from: 2, to: target.state.doc.content.size - 2 });
+    turnBlocks(target, selectedTextBlocks(target.state)!, { kind: 'bulletList' });
+    const doc = json(target);
+    expect(doc.content!.map((node) => node.type)).toEqual(['bulletList']);
+    expect(doc.content![0]!.content).toHaveLength(3);
+  });
+});
+
+describe('blocks inside columns', () => {
+  it('turn on their own, inside a toggle in a column too', () => {
+    const item = (text: string) => ({ type: 'listItem', content: [p(text)] });
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          content: [
+            {
+              type: 'column',
+              content: [
+                {
+                  type: 'details',
+                  attrs: { open: true },
+                  content: [
+                    { type: 'detailsSummary', content: [{ type: 'text', text: 'Title' }] },
+                    {
+                      type: 'detailsContent',
+                      content: [{ type: 'bulletList', content: [item('Buy milk')] }],
+                    },
+                  ],
+                },
+              ],
+            },
+            { type: 'column', content: [p('Right')] },
+          ],
+        },
+      ],
+    });
+    let at = 0;
+    target.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'listItem') at = pos;
+    });
+    turnInto(target, at, { kind: 'taskList' });
+    const toggle = json(target).content![0]!.content![0]!.content![0]!;
+    expect(toggle.type).toBe('details');
+    expect(toggle.content![1]!.content![0]!.type).toBe('taskList');
   });
 });

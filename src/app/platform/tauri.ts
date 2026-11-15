@@ -70,6 +70,29 @@ function subscribe<T>(event: string, handler: (payload: T) => void): () => void 
 // small values travel as json, file contents as raw bytes with their path in a header
 const pathHeader = (path: string) => ({ headers: { path: encodeURIComponent(path) } });
 
+const MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  flac: 'audio/flac',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  m4v: 'video/mp4',
+  pdf: 'application/pdf',
+};
+const mimeOfName = (name: string) =>
+  MIME[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
+
 async function bytesOrNull(command: string, args: Record<string, unknown>): Promise<Uint8Array | null> {
   try {
     return new Uint8Array(await invoke<ArrayBuffer>(command, args));
@@ -146,7 +169,7 @@ export function tauriBridge(): DesktopBridge | null {
       zoomListeners.add(listener);
       return () => zoomListeners.delete(listener);
     },
-    setTheme: (theme) => void invoke('set_theme', { theme }),
+    setTheme: (theme, color) => void invoke('set_theme', { theme, color: color ?? null }),
     openExternal: (url) => invoke('open_external', { url }),
     showDataFolder: () => invoke('show_data_folder'),
     showBackupsFolder: () => invoke('show_backups'),
@@ -161,6 +184,18 @@ export function tauriBridge(): DesktopBridge | null {
       : {}),
     copyText: (text) => invoke<boolean>('copy_text', { text }),
     copyRich: (text, html) => invoke<boolean>('copy_rich', { text, html }),
+    takeShared: () => invoke<string | null>('take_shared').catch(() => null),
+    async clipboardFiles() {
+      const paths = await invoke<string[]>('clipboard_files').catch(() => []);
+      const files: File[] = [];
+      for (const path of paths) {
+        const data = await bytesOrNull('read_clipboard_file', { path });
+        const name = path.split(/[\\/]/).pop() || 'file';
+        if (data)
+          files.push(new File([data.slice().buffer as ArrayBuffer], name, { type: mimeOfName(name) }));
+      }
+      return files;
+    },
     // the webview checks spelling itself, a page without spellcheck turns it off
     setSpellcheck: () => undefined,
     async fetchImage(url) {
@@ -209,6 +244,7 @@ export function tauriBridge(): DesktopBridge | null {
       createDefault: () => invoke('vault_create_default'),
       select: (dir) => invoke('vault_select', { dir }),
       forget: (dir) => invoke('vault_forget', { dir }),
+      reorder: (order) => invoke('vault_reorder', { order }),
       open: () => invoke('vault_open'),
       close: () => invoke('vault_close'),
       scan: () => invoke('vault_scan'),

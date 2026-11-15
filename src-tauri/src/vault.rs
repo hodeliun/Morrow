@@ -136,6 +136,18 @@ pub fn select(dir: &str) -> Value {
     }
 }
 
+// the vaults in the order they were dragged into in settings, any left out keep their place after them
+pub fn reorder(order: &[String]) -> Result<()> {
+    let mut list = read_list();
+    list.recent.sort_by_key(|(path, _)| {
+        order
+            .iter()
+            .position(|item| item == path)
+            .unwrap_or(usize::MAX)
+    });
+    write_list(&list)
+}
+
 pub fn forget(dir: &str) -> Result<()> {
     let mut list = read_list();
     list.recent.retain(|(path, _)| path != dir);
@@ -664,7 +676,16 @@ pub fn is_synced_path(relative: &str) -> bool {
     if relative.is_empty() || relative.contains(TEMP_MARK) || relative.contains(".morrow-move-") {
         return false;
     }
-    if relative == ".morrow/workspace.json" || relative == ".morrow/review.json" {
+    // what the vault keeps about itself goes to the other computers too: page order, flashcard progress,
+    // the types picked for properties, tag colours and the sidebar's own sections
+    if matches!(
+        relative,
+        ".morrow/workspace.json"
+            | ".morrow/review.json"
+            | ".morrow/property-types.json"
+            | ".morrow/tag-colors.json"
+            | ".morrow/sidebar-sections.json"
+    ) {
         return true;
     }
     !is_hidden(relative)
@@ -1080,6 +1101,8 @@ mod tests {
         assert!(is_hidden("a/.trash/x"));
         assert!(is_synced_path(".morrow/workspace.json"));
         assert!(!is_synced_path(".morrow/recent.json"));
+        assert!(is_synced_path(".morrow/tag-colors.json"));
+        assert!(is_synced_path(".morrow/sidebar-sections.json"));
         assert!(is_synced_path("Notes/Page.md"));
     }
 

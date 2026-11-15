@@ -4,6 +4,7 @@ import type { Node as ProseNode } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import type { Transaction } from '@tiptap/pm/state';
 import { Step } from '@tiptap/pm/transform';
+import { linkedBlockIds } from '../../core/links';
 import type { DocNode, PageId } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
 import type { WorkspaceSession } from '../../storage/session';
@@ -56,6 +57,7 @@ interface Peer {
   pendingRoot: Transaction | null;
   pendingExpected: DocNode | null;
   onDirty: (dirty: boolean) => void;
+  preserveBlockId: (id: string) => boolean;
 }
 
 /** Private host identity used by the plugin insertion capture; it never crosses the plugin API. */
@@ -300,6 +302,78 @@ function prepareHostSync(peer: Peer, target: DocNode): Transaction | null {
   transaction.setMeta('addToHistory', false).setMeta(HOST_SYNC, true);
   preflightHostSync(peer, transaction, target);
   return transaction;
+}
+
+function dropUnlinkedBlockIds(doc: DocNode, linked: Set<string>, preserve: (id: string) => boolean): DocNode {
+  const visit = (node: DocNode): DocNode => {
+    const id = node.attrs?.blockId;
+    const attrs =
+      typeof id === 'string' && id.length > 0 && !linked.has(id) && !preserve(id)
+        ? { ...(node.attrs ?? {}), blockId: null }
+        : node.attrs;
+    const content = node.content?.map(visit);
+    const contentChanged = Boolean(content && content.some((child, index) => child !== node.content?.[index]));
+    if (attrs === node.attrs && !contentChanged) return node;
+    return {
+      ...node,
+      ...(attrs ? { attrs } : {}),
+      ...(content ? { content } : {}),
+    };
+  };
+  return visit(doc);
+}
+
+/** Removes obsolete block anchors in the shared draft without adding undo history. */
+function cleanUnlinkedBlockIds(entry: Entry): boolean {
+  if (!entry.draftPMDoc) return false;
+  const state = entry.session.getState();
+  const drafts = [...(entries.get(entry.session)?.values() ?? [])]
+    .filter((draft) => draft.dirty && draft.draftPMDoc)
+    .map((draft) => [draft.pageId, draft.draftPMDoc!] as const);
+  const docs = Object.fromEntries(drafts);
+  docs[entry.pageId] = entry.draftPMDoc;
+  const linked = linkedBlockIds({ ...state, docs: { ...state.docs, ...docs } }, entry.pageId);
+  const isPendingCopy = (id: string) => [...entry.peers].some((peer) => peer.preserveBlockId(id));
+  const cleaned = dropUnlinkedBlockIds(entry.draftPMDoc, linked, isPendingCopy);
+  if (jsonEqual(cleaned, entry.draftPMDoc)) return true;
+
+  const livePeers = [...entry.peers].filter(
+    (peer) => peer.ready && peer.editor && !peer.editor.isDestroyed,
+  );
+  try {
+    const targetByPeer = livePeers.map((peer) => ({
+      peer,
+      target: projectHostSyncDoc(peer.editor!, cleaned),
+    }));
+    const target = targetByPeer[0]?.target ?? cleaned;
+    if (targetByPeer.some(({ target: peerTarget }) => !jsonEqual(peerTarget, target))) {
+      throw new Error('The page could not be cleaned consistently in all open views.');
+    }
+    const prepared = targetByPeer.flatMap(({ peer }) => {
+      const transaction = prepareHostSync(peer, target);
+      return transaction ? [{ peer, transaction }] : [];
+    });
+
+    for (const { peer, transaction } of prepared) {
+      peer.hostSyncDepth++;
+      try {
+        peer.editor!.view.dispatch(transaction);
+        if (!jsonEqual(peer.editor!.getJSON(), target)) {
+          throw new Error('An open view changed during block ID cleanup.');
+        }
+      } finally {
+        peer.hostSyncDepth--;
+      }
+    }
+    entry.draftPMDoc = target;
+    return true;
+  } catch (error) {
+    preservePeerDrafts(entry);
+    const message = error instanceof Error ? error.message : String(error);
+    reportError(entry, `${message} The page draft is being kept and autosave stopped.`, 'peer-sync');
+    notifyDirty(entry);
+    return false;
+  }
 }
 
 /** Checks that every ready peer can accept a host document without applying it. */
@@ -712,6 +786,8 @@ function commitEntry(entry: Entry): boolean {
     return false;
   }
 
+  if (!cleanUnlinkedBlockIds(entry)) return false;
+
   if (!entry.baselinePMDoc || samePageContent(entry.baselinePMDoc, entry.draftPMDoc)) {
     setClean(entry, current, entry.draftPMDoc);
     return !entry.dirty && !entry.conflict && !entry.error;
@@ -837,6 +913,7 @@ export function registerPageEditorCoordinator(
   editable: boolean,
   onDirty: (dirty: boolean) => void,
   pane: PaneId = 'main',
+  preserveBlockId: (id: string) => boolean = () => false,
 ): PageEditorCoordinator {
   const entry = getEntry(session, pageId, initialDoc);
   const peer: Peer = {
@@ -852,6 +929,7 @@ export function registerPageEditorCoordinator(
     pendingRoot: null,
     pendingExpected: null,
     onDirty,
+    preserveBlockId,
   };
   entry.peers.add(peer);
   if (!session.isClosed && !entry.unregisterCommit) {

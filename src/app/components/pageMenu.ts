@@ -26,6 +26,7 @@ import {
   StarOff,
   Trash2,
   ListTree,
+  ListPlus,
 } from 'lucide-react';
 import { cardsInDeck, collectCards } from '../../core/flashcards';
 import type { PageId } from '../../core/model';
@@ -53,6 +54,7 @@ import { getSession, getState, run } from '../workspace';
 import { t } from '../i18n';
 import type { MenuEntry } from './Menu';
 import { isProviderManagedPage } from './pageEditability';
+import { addSection, getSidebarSections, togglePageInSection } from '../sidebarSections';
 
 // one menu definition for the sidebar row and the page header
 export function pageMenuEntries(
@@ -96,6 +98,23 @@ export function pageMenuEntries(
     page.favorite
       ? { label: t('pageMenu.removeFromFavorites'), icon: StarOff, onSelect: () => toggleFavorite(pageId) }
       : { label: t('pageMenu.addToFavorites'), icon: Star, onSelect: () => toggleFavorite(pageId) },
+    // Sections only organize sidebar visibility; provider-owned pages can still be listed there.
+    {
+      label: t('pageMenu.addToSection'),
+      icon: ListPlus,
+      submenu: [
+        ...getSidebarSections().map((section) => ({
+          label: section.name,
+          checked: section.pages.includes(pageId),
+          onSelect: () => void togglePageInSection(section.id, pageId),
+        })),
+        {
+          label: t('pageMenu.newSection'),
+          icon: Plus,
+          onSelect: () => void addSection(t('pageMenu.newSectionName'), pageId),
+        },
+      ],
+    },
     ...(!providerManaged
       ? [
           { label: t('pageMenu.duplicate'), icon: Copy, onSelect: () => duplicatePage(pageId) },

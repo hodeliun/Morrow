@@ -304,6 +304,7 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(view.dateProp ? { dateProp: view.dateProp } : {}),
       ...(view.hidden.length ? { hidden: [...view.hidden] } : {}),
       ...(view.widths && Object.keys(view.widths).length ? { widths: { ...view.widths } } : {}),
+      ...(view.columns?.length ? { columns: [...view.columns] } : {}),
     })),
   };
 }
