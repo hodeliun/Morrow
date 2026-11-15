@@ -43,6 +43,7 @@ const VIEW_KEYS = new Set([
   'dateProp',
   'hidden',
   'widths',
+  'columns',
 ]);
 const FILTER_KEYS = new Set(['id', 'prop', 'op', 'value']);
 const SORT_KEYS = new Set(['prop', 'dir']);
@@ -403,6 +404,18 @@ function viewIssue(raw: unknown): string | null {
   if (Object.hasOwn(raw, 'hidden')) {
     if (!Array.isArray(raw.hidden) || raw.hidden.some((id) => typeof id !== 'string' || id.length > 64)) {
       return 'A database view column list is not supported.';
+    }
+  }
+  if (Object.hasOwn(raw, 'columns')) {
+    if (!Array.isArray(raw.columns) || raw.columns.length === 0 || raw.columns.length > 200) {
+      return 'A database view column order is not supported.';
+    }
+    const seen = new Set<string>();
+    for (const id of raw.columns) {
+      if (typeof id !== 'string' || id.length === 0 || id.length > 64 || seen.has(id)) {
+        return 'A database view column order contains values this version cannot preserve.';
+      }
+      seen.add(id);
     }
   }
   if (Object.hasOwn(raw, 'widths')) {
