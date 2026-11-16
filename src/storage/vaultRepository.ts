@@ -1292,7 +1292,10 @@ export class VaultRepository implements WorkspaceRepository {
     const unreadable = new Set<PageId>();
     const readable = new Set<PageId>();
     const protectedPages = new Map<PageId, string>();
+    const clearProtected = new Set<PageId>();
     const protectedDatabases = new Set<PageId>();
+    const recoveredDatabases = new Set<PageId>();
+    const requiresAccepted = new Map<PageId, PageId[]>();
     const texts = new Map<PageId, string>();
     const sources = new Map<PageId, PageSource | null>();
     const becameFolders = new Set<PageId>();
@@ -1382,6 +1385,8 @@ export class VaultRepository implements WorkspaceRepository {
         id = folderPage && layout.get(folderPage)?.file === null ? folderPage : this.newId();
       }
       const current = pageOf(id);
+      const wasStructurallyProtectedDatabase =
+        this.locked.has(id) && hasUnrepresentableDatabaseSchema(this.texts.get(id) ?? '');
       const parentId = parentFolder === TRASH_DIR ? (current?.parentId ?? null) : ensureFolder(parentFolder);
       const base =
         current ??
@@ -1403,6 +1408,9 @@ export class VaultRepository implements WorkspaceRepository {
         docs[id] = read.doc;
         sources.set(id, read.source);
         if (this.locked.has(id)) readable.add(id);
+        if (wasStructurallyProtectedDatabase && read.page.kind === 'database' && read.page.database) {
+          recoveredDatabases.add(id);
+        }
       } else {
         pages.set(id, { ...page, encrypted: isEncryptedText(text) || page.encrypted });
         unreadable.add(id);
@@ -1410,6 +1418,8 @@ export class VaultRepository implements WorkspaceRepository {
           protectedPages.set(id, read.reason);
           docs[id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text } }] };
           if (hasUnrepresentableDatabaseSchema(text)) protectedDatabases.add(id);
+        } else if (this.protectedReasons.has(id)) {
+          clearProtected.add(id);
         }
       }
     }
@@ -1420,12 +1430,70 @@ export class VaultRepository implements WorkspaceRepository {
         const reason = `The parent database is protected: ${protectedPages.get(databaseId)}`;
         for (const row of allPages.values()) {
           if (row.parentId !== databaseId || removed.has(row.id)) continue;
+          requiresAccepted.set(row.id, [databaseId]);
           protectedPages.set(row.id, reason);
           unreadable.add(row.id);
           readable.delete(row.id);
           pages.set(row.id, row);
-          const raw = this.texts.get(row.id);
+          const raw = texts.get(row.id) ?? this.texts.get(row.id);
           if (raw !== undefined) docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text: raw } }] };
+        }
+      }
+    }
+
+    if (recoveredDatabases.size > 0) {
+      for (const databaseId of recoveredDatabases) {
+        const mergedPages = { ...state.pages, ...Object.fromEntries(pages) };
+        const readState: WorkspaceState = { ...state, pages: mergedPages };
+        const rows = Object.values(mergedPages).filter(
+          (page) => page.parentId === databaseId && !removed.has(page.id),
+        );
+        for (const row of rows) {
+          if (row.parentId !== databaseId || removed.has(row.id)) continue;
+          requiresAccepted.set(row.id, [databaseId]);
+          const base = pages.get(row.id) ?? row;
+          const placement = layout.get(row.id);
+          const text = texts.get(row.id) ?? this.texts.get(row.id);
+          if (!placement?.file || text === undefined) {
+            pages.set(row.id, base);
+            if (this.locked.has(row.id)) {
+              unreadable.delete(row.id);
+              readable.add(row.id);
+              clearProtected.add(row.id);
+            }
+            continue;
+          }
+
+          const wasUnreadable = this.locked.has(row.id) || unreadable.has(row.id);
+          const read = this.readFile(placement.file, text, base, readState, layout);
+          if (read.ok) {
+            pages.set(row.id, read.page);
+            mergedPages[row.id] = read.page;
+            if (read.database) {
+              pages.set(read.database.id, read.database);
+              mergedPages[read.database.id] = read.database;
+            }
+            docs[row.id] = read.doc;
+            sources.set(row.id, read.source);
+            unreadable.delete(row.id);
+            protectedPages.delete(row.id);
+            clearProtected.delete(row.id);
+            if (wasUnreadable) readable.add(row.id);
+          } else {
+            const unreadablePage = { ...base, encrypted: isEncryptedText(text) || base.encrypted };
+            pages.set(row.id, unreadablePage);
+            mergedPages[row.id] = unreadablePage;
+            unreadable.add(row.id);
+            readable.delete(row.id);
+            if (read.reason) {
+              protectedPages.set(row.id, read.reason);
+              clearProtected.delete(row.id);
+              docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text } }] };
+            } else {
+              protectedPages.delete(row.id);
+              if (this.protectedReasons.has(row.id) || clearProtected.has(row.id)) clearProtected.add(row.id);
+            }
+          }
         }
       }
     }
@@ -1438,6 +1506,8 @@ export class VaultRepository implements WorkspaceRepository {
       unreadable: [...unreadable],
       readable: [...readable],
       ...(protectedPages.size > 0 ? { protectedPages: Object.fromEntries(protectedPages) } : {}),
+      ...(clearProtected.size > 0 ? { clearProtected: [...clearProtected] } : {}),
+      ...(requiresAccepted.size > 0 ? { requiresAccepted: Object.fromEntries(requiresAccepted) } : {}),
     };
     return {
       patch,
@@ -1458,7 +1528,11 @@ export class VaultRepository implements WorkspaceRepository {
           if (texts.has(id)) this.texts.set(id, texts.get(id)!);
           else if (becameFolders.has(id)) this.texts.delete(id);
           const source = sources.get(id);
-          if (source) this.sources.set(id, source);
+          if (sources.has(id)) {
+            if (source) this.sources.set(id, source);
+            else this.sources.delete(id);
+          }
+          if (clearProtected.has(id)) this.protectedReasons.delete(id);
           if (unreadable.has(id)) this.locked.add(id);
           if (protectedPages.has(id)) this.protectedReasons.set(id, protectedPages.get(id)!);
           if (readable.has(id)) {

@@ -39,6 +39,10 @@ export interface ExternalPatch {
   unreadable: PageId[];
   readable: PageId[];
   protectedPages?: Record<PageId, string>;
+  /** Clears stale protection messages without making a still-unreadable page readable. */
+  clearProtected?: PageId[];
+  /** A page is applied only if every listed page was accepted from this patch first. */
+  requiresAccepted?: Record<PageId, PageId[]>;
 }
 
 export interface StoredFile {

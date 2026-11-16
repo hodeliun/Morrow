@@ -197,24 +197,47 @@ export class WorkspaceSession {
     const pages = { ...this.state.pages };
     const docs = { ...this.state.docs };
     const accepted: PageId[] = [];
-    for (const page of patch.pages) {
-      if (this.queue.isDirty(page.id)) continue;
-      pages[page.id] = page;
-      if (patch.docs[page.id]) docs[page.id] = patch.docs[page.id]!;
-      accepted.push(page.id);
+    const acceptedSet = new Set<PageId>();
+    const patchPageIds = new Set(patch.pages.map((page) => page.id));
+    const pendingPages = patch.pages.filter((page) => !this.queue.isDirty(page.id));
+    while (pendingPages.length > 0) {
+      let acceptedInPass = false;
+      for (let index = 0; index < pendingPages.length; ) {
+        const page = pendingPages[index]!;
+        const dependencies = patch.requiresAccepted?.[page.id] ?? [];
+        if (
+          dependencies.some(
+            (dependency) => !patchPageIds.has(dependency) || !acceptedSet.has(dependency),
+          )
+        ) {
+          index += 1;
+          continue;
+        }
+        pages[page.id] = page;
+        if (patch.docs[page.id]) docs[page.id] = patch.docs[page.id]!;
+        accepted.push(page.id);
+        acceptedSet.add(page.id);
+        pendingPages.splice(index, 1);
+        acceptedInPass = true;
+      }
+      // Missing, rejected, or cyclic dependencies remain unapplied.
+      if (!acceptedInPass) break;
     }
     for (const id of patch.removed) {
       if (this.queue.isDirty(id)) continue;
       delete pages[id];
       delete docs[id];
       accepted.push(id);
+      acceptedSet.add(id);
     }
-    const acceptedSet = new Set(accepted);
     for (const id of patch.unreadable) if (acceptedSet.has(id)) this.unreadable.add(id);
     for (const id of patch.readable) {
       if (!acceptedSet.has(id)) continue;
       this.unreadable.delete(id);
       this.protectedReasons.delete(id);
+    }
+    for (const id of patch.clearProtected ?? []) {
+      if (acceptedSet.has(id)) this.protectedReasons.delete(id);
     }
     for (const [id, reason] of Object.entries(patch.protectedPages ?? {})) {
       if (acceptedSet.has(id)) this.protectedReasons.set(id, reason);

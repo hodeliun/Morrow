@@ -458,7 +458,7 @@ export async function runIndependentNativePickerScenario(context) {
   const proseToken = `independent-picker-prose-${Date.now()}`;
   const notePath = path.join(candidate.vault, 'Views.md');
   await installEventObserver(driver);
-  let eventObservation = null;
+  let eventObservation;
   let caretEvidence;
   let saveStatusBeforePalette;
   let prePaletteDom;
