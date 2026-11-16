@@ -180,6 +180,56 @@ async function waitSource(driver, quantity, total) {
   }, `one provider grid with Quantity=${quantity} and Total=${total}`);
 }
 
+async function readSaveIndicator(driver) {
+  return driver.execute(`const status = document.querySelector('.save-status');
+    const label = status?.querySelector('.save-label');
+    return {
+      visible: Boolean(status && status.getClientRects().length > 0),
+      label: label?.textContent?.trim() ?? null,
+      className: status?.className ?? '',
+      role: status?.getAttribute('role') ?? null,
+      title: status?.getAttribute('title') ?? null,
+    };`);
+}
+
+function isStableSavedStatus(status) {
+  return status.visible && status.label === 'Saved' && status.role !== 'alert'
+    && !/(?:^|\s)is-(?:saving|error)(?:\s|$)/.test(status.className);
+}
+
+async function waitForStableSaved(driver, label, stableMs = 500) {
+  return waitFor(async () => {
+    const observations = [];
+    const stableUntil = Date.now() + stableMs;
+    do {
+      const status = await readSaveIndicator(driver);
+      observations.push(status);
+      if (!isStableSavedStatus(status)) return false;
+      const remaining = stableUntil - Date.now();
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(100, remaining)));
+    } while (Date.now() < stableUntil);
+    return { stableMs, observations, final: observations.at(-1) };
+  }, `${label}: visible Saved indicator without pending/error for ${stableMs}ms`);
+}
+
+async function bounded(promise, label, timeoutMs = 5_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function screenshotBounded(driver, target, timeoutMs = 5_000) {
+  return bounded(driver.screenshot(target), 'Screenshot capture', timeoutMs);
+}
+
 async function waitProviderCount(driver, expected) {
   return waitFor(async () => {
     const state = await readViewState(driver);
@@ -454,12 +504,23 @@ export async function runIndependentNativeLifecycleScenario(context) {
   assertSameFile(originalBundle, await capture(candidate.bundle), 'Fault injection must never alter the frozen source bundle.');
   await closeSettings(driver);
 
+  await routeToPage(driver, ids.source);
+  const unsupportedSourceBefore = await waitSource(driver, 2, 20);
+  const unsupportedSaveStatusBefore = await waitForStableSaved(
+    driver,
+    'source page save state before unsupported-schema injection',
+  );
   const unsupportedMarkdownBaseline = await captureMarkdownFiles(vaultRoot);
   const originalSchema = unsupportedMarkdownBaseline['Inventory.md'];
   const schemaText = originalSchema.bytes.toString('utf8');
   const formulaType = '      type: formula\n';
   assert.equal(schemaText.split(formulaType).length - 1, 1, 'Synthetic source fixture must contain one formula property.');
   const unsupportedBytes = Buffer.from(schemaText.replace(formulaType, '      type: future-v153\n'));
+  await recordStep('independent-153-unsupported-injection-precondition-saved', {
+    sourceState: unsupportedSourceBefore,
+    saveIndicator: unsupportedSaveStatusBefore,
+    markdownBeforeInjection: summarizeFiles(unsupportedMarkdownBaseline),
+  });
   let unsupportedMarkdownRestored;
   try {
     await writeFile(sourcePath, unsupportedBytes);
@@ -472,7 +533,6 @@ export async function runIndependentNativeLifecycleScenario(context) {
       'Unsupported-schema injection must not change the synthetic linked-view note.');
     assertSameFile(unsupported, markdownAfterInjection['Inventory.md'],
       'The intended unsupported source bytes must be the only injected Markdown change.');
-    await routeToPage(driver, ids.source);
     const protectedState = await waitFor(async () => {
       const state = await readSourceState(driver);
       const text = state.rootText.toLowerCase();
@@ -493,6 +553,48 @@ export async function runIndependentNativeLifecycleScenario(context) {
       markdownAfterReadOnlyOpen: summarizeFiles(unsupportedMarkdownAfterWait),
       ui: protectedState,
     });
+  } catch (error) {
+    const failureCapture = {
+      observedAt: new Date().toISOString(),
+      originalError: {
+        name: error instanceof Error ? error.name : 'Error',
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack?.slice(0, 2_000) ?? null : null,
+      },
+    };
+    try {
+      failureCapture.dom = await bounded(readSourceState(driver), 'DOM failure snapshot');
+    } catch (captureError) {
+      failureCapture.domCaptureError = String(captureError);
+    }
+    try {
+      failureCapture.saveIndicator = await bounded(readSaveIndicator(driver), 'Save indicator failure snapshot');
+    } catch (captureError) {
+      failureCapture.saveIndicatorCaptureError = String(captureError);
+    }
+    try {
+      failureCapture.markdownAtFailure = summarizeFiles(
+        await bounded(captureMarkdownFiles(vaultRoot), 'Markdown failure snapshot'),
+      );
+    } catch (captureError) {
+      failureCapture.markdownCaptureError = String(captureError);
+    }
+    const failureScreenshot = 'independent-153-unsupported-diagnostic-failure.png';
+    try {
+      await screenshotBounded(driver, path.join(candidate.evidence, failureScreenshot));
+      failureCapture.screenshot = failureScreenshot;
+    } catch (captureError) {
+      failureCapture.screenshotError = String(captureError);
+    }
+    try {
+      await bounded(
+        recordStep('independent-153-unsupported-diagnostic-failure-captured', failureCapture),
+        'Failure evidence record',
+      );
+    } catch {
+      // Keep the original assertion or timeout as the test failure if evidence recording also fails.
+    }
+    throw error;
   } finally {
     await writeFile(sourcePath, originalSchema.bytes);
     const restored = await capture(sourcePath);
@@ -516,9 +618,18 @@ export async function runIndependentNativeLifecycleScenario(context) {
   await routeToPage(driver, ids.note);
   await waitProviderCount(driver, 2);
   await routeToPage(driver, ids.source);
-  await waitSource(driver, 2, 20);
+  const conflictSourceBefore = await waitSource(driver, 2, 20);
+  const conflictSaveStatusBefore = await waitForStableSaved(
+    driver,
+    'source page save state before external row-conflict injection',
+  );
 
   const conflictMarkdownBaseline = await captureMarkdownFiles(vaultRoot);
+  await recordStep('independent-153-conflict-injection-precondition-saved', {
+    sourceState: conflictSourceBefore,
+    saveIndicator: conflictSaveStatusBefore,
+    markdownBeforeInjection: summarizeFiles(conflictMarkdownBaseline),
+  });
   const rowBeforeConflict = conflictMarkdownBaseline['Inventory/Widget.md'];
   const rowText = rowBeforeConflict.bytes.toString('utf8');
   const quantityLine = /^Quantity: 2$/m;
