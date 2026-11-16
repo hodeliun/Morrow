@@ -34,6 +34,8 @@ import {
 } from './native-runtime-isolation.mjs';
 import { runNativeFunctionalScenario } from './native-functional.mjs';
 import { runIndependentFunctionalScenario } from './native-functional.independent.test.mjs';
+import { runNativeLifecycleScenario } from './native-lifecycle.mjs';
+import { runIndependentNativeLifecycleScenario } from './native-lifecycle.independent.test.mjs';
 import { runNativePickerScenario } from './native-picker.mjs';
 import { runIndependentNativePickerScenario } from './native-picker.independent.test.mjs';
 import {
@@ -53,12 +55,14 @@ const UI_PREPARATION_SCENARIOS = new Set([
   'readiness',
   'functional',
   'functional-independent',
+  'lifecycle',
+  'lifecycle-independent',
   'picker',
   'picker-independent',
 ]);
 
 function help() {
-  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario readiness|functional|functional-independent|picker|picker-independent|app-identity-only|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario readiness|functional|functional-independent|picker|picker-independent|app-identity-only] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Readiness observes boot and real Settings UI before checking the fixed synthetic source Total=20. app-identity-only checks the private app runtime identity without changing Settings, routing, or synthetic data. Functional and picker scenarios use real WebDriver UI under the native isolation guards; picker uses Ctrl+K and the exact insert-linked-view command. dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nNative runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
+  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|app-identity-only|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|app-identity-only] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Readiness observes boot and real Settings UI before checking the fixed synthetic source Total=20. app-identity-only checks the private app runtime identity without changing Settings, routing, or synthetic data. Functional, lifecycle and picker scenarios use real WebDriver UI under the native isolation guards; lifecycle covers plugin disable/reload, synthetic activation failure, and unsupported/conflict fallback. Picker uses Ctrl+K and the exact insert-linked-view command. dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nNative runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
 }
 
 function parseArgs(argv) {
@@ -2319,12 +2323,14 @@ async function main() {
     readiness: runNativeReadinessScenario,
     functional: runNativeFunctionalScenario,
     'functional-independent': runIndependentFunctionalScenario,
+    lifecycle: runNativeLifecycleScenario,
+    'lifecycle-independent': runIndependentNativeLifecycleScenario,
     picker: runNativePickerScenario,
     'picker-independent': runIndependentNativePickerScenario,
     'app-identity-only': runNativeAppIdentityOnlyScenario,
   };
   if (scenarioName !== 'legacy' && scenarioName !== 'dbus-isolation' && !Object.hasOwn(scenarioCallbacks, scenarioName)) {
-    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, readiness, functional, functional-independent, picker, picker-independent, app-identity-only, or dbus-isolation`);
+    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, readiness, functional, functional-independent, lifecycle, lifecycle-independent, picker, picker-independent, app-identity-only, or dbus-isolation`);
   }
   if (args.scenario && (args['freeze-sources'] || args['record-artifacts'])) {
     throw new Error('--scenario is valid only with --check-only or --run-native');
