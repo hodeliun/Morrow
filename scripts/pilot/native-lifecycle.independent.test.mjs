@@ -267,8 +267,43 @@ async function closeSettings(driver) {
   await waitFor(() => driver.execute('return !document.querySelector(".settings-dialog");'), 'Settings closed');
 }
 
-async function clickReload(driver) {
-  await clickRef(driver, await elementRef(driver, '.settings-dialog button[aria-label="Reload"]', 'plugin Reload button'));
+async function waitForReloadReadiness(driver, pluginName) {
+  const ready = await waitFor(async () => driver.execute(`
+    const dialogs = [...document.querySelectorAll('.settings-dialog')];
+    const dialog = dialogs.length === 1 ? dialogs[0] : null;
+    const activeSection = dialog?.querySelector('.settings-nav-item.is-active')?.textContent?.trim() ?? null;
+    const switches = [...(dialog?.querySelectorAll('[role="switch"]') ?? [])];
+    const globalSwitch = switches.find((item) => item.getAttribute('aria-label') === 'Turn on plugins on this computer');
+    const pluginSwitch = switches.find((item) => item.getAttribute('aria-label') === arguments[0]);
+    const reloadButtons = [...(dialog?.querySelectorAll('button[aria-label="Reload"]') ?? [])];
+    const reloadButton = reloadButtons.length === 1 ? reloadButtons[0] : null;
+    const style = reloadButton ? getComputedStyle(reloadButton) : null;
+    const reloadVisible = Boolean(reloadButton
+      && reloadButton.getClientRects().length > 0
+      && style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && Number(style.opacity) > 0);
+    const snapshot = {
+      settingsDialogCount: dialogs.length,
+      activeSection,
+      globalPluginsEnabled: globalSwitch?.getAttribute('aria-checked') === 'true',
+      pluginEnabled: pluginSwitch?.getAttribute('aria-checked') === 'true',
+      reloadButtonCount: reloadButtons.length,
+      reloadVisible,
+      reloadDisabled: reloadButton ? reloadButton.disabled || reloadButton.getAttribute('aria-disabled') === 'true' : null,
+    };
+    const isReady = snapshot.settingsDialogCount === 1
+      && snapshot.activeSection === 'Plugins'
+      && snapshot.globalPluginsEnabled
+      && snapshot.pluginEnabled
+      && snapshot.reloadButtonCount === 1
+      && snapshot.reloadVisible
+      && snapshot.reloadDisabled === false;
+    return isReady ? { snapshot, button: reloadButton } : false;
+  `, [pluginName]), `Settings Plugins with ${pluginName} enabled and exactly one visible, enabled Reload button`);
+  const elementId = ready.button?.[ELEMENT_KEY] ?? ready.button?.ELEMENT;
+  assert.ok(elementId, 'The ready Reload button must return a WebDriver element reference.');
+  return { snapshot: ready.snapshot, elementId };
 }
 
 async function assertReadonlyFallback(driver, sourceId, expectedCount, label) {
@@ -386,7 +421,13 @@ export async function runIndependentNativeLifecycleScenario(context) {
     const reenabled = await waitProviderCount(driver, 2);
     assert.equal(reenabled.fallbacks.length, 0, `Cycle ${cycle}: enabling must remount exactly two views.`);
     for (let reload = 1; reload <= 2; reload += 1) {
-      await clickReload(driver);
+      const reloadReady = await waitForReloadReadiness(driver, candidate.pluginName);
+      await clickRef(driver, reloadReady.elementId);
+      await recordStep(`independent-153-reload-ready-cycle-${cycle}-${reload}`, {
+        cycle,
+        reload,
+        readiness: reloadReady.snapshot,
+      });
       const mounted = await waitProviderCount(driver, 2);
       assert.equal(mounted.fallbacks.length, 0,
         `Cycle ${cycle}, reload ${reload}: plugin reload must not duplicate or lose provider mounts.`);
@@ -468,7 +509,12 @@ export async function runIndependentNativeLifecycleScenario(context) {
     await writeFile(installedMainPath, faultBytes);
     const injected = await capture(installedMainPath);
     assert.notEqual(injected.sha256, faultBackup.sha256, 'The installed synthetic copy must have its own fault hash.');
-    await clickReload(driver);
+    const faultReloadReady = await waitForReloadReadiness(driver, candidate.pluginName);
+    await clickRef(driver, faultReloadReady.elementId);
+    await recordStep('independent-153-activation-failure-reload-ready', {
+      readiness: faultReloadReady.snapshot,
+      faultInstalledSha256: injected.sha256,
+    });
     const fallback = await assertReadonlyFallback(driver, ids.source, 2, 'synthetic activation failure');
     const visibleFailure = await waitFor(() => driver.execute('return document.body.innerText.includes(arguments[0]);', ['synthetic lifecycle activation fault']),
       'activation failure visible in Settings');
@@ -497,7 +543,12 @@ export async function runIndependentNativeLifecycleScenario(context) {
     await writeFile(installedMainPath, faultBackup.bytes);
     const restored = await capture(installedMainPath);
     assert.equal(restored.sha256, faultBackup.sha256, 'The installed synthetic bundle copy must be restored byte for byte.');
-    await clickReload(driver);
+    const restoredReloadReady = await waitForReloadReadiness(driver, candidate.pluginName);
+    await clickRef(driver, restoredReloadReady.elementId);
+    await recordStep('independent-153-restored-bundle-reload-ready', {
+      readiness: restoredReloadReady.snapshot,
+      restoredInstalledSha256: restored.sha256,
+    });
     const remounted = await waitProviderCount(driver, 2);
     assert.equal(remounted.fallbacks.length, 0, 'Restoring the installed original must remount both original views.');
   }
