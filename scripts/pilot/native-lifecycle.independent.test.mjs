@@ -308,12 +308,29 @@ export async function runIndependentNativeLifecycleScenario(context) {
     assert.equal(checked, 'true', `Cycle ${cycle}: the UI must start with the plugin enabled.`);
     await switchPlugin(driver, candidate.pluginName, false);
     await waitPluginSetting(vaultRoot, false);
-    const disabled = await assertReadonlyFallback(driver, ids.source, 2, `cycle ${cycle} disable`);
+    await assertReadonlyFallback(driver, ids.source, 2, `cycle ${cycle} disable`);
+    await closeSettings(driver);
+    const settingsClosed = await driver.execute('return !document.querySelector(".settings-dialog");');
+    assert.equal(settingsClosed, true, `Cycle ${cycle}: Settings must be closed for the fallback screenshot.`);
+    const visibleFallback = await assertReadonlyFallback(
+      driver,
+      ids.source,
+      2,
+      `cycle ${cycle} disable with Settings closed`,
+    );
+    const fallbackScreenshot = `independent-153-disabled-fallback-${cycle}.png`;
+    await driver.screenshot(path.join(candidate.evidence, fallbackScreenshot));
     await recordStep(`independent-153-plugin-disabled-${cycle}`, {
-      providerCount: disabled.providerCount,
-      fallbacks: disabled.fallbacks.map(({ text, contentEditable }) => ({ text, contentEditable })),
+      providerCount: visibleFallback.providerCount,
+      settingsClosed,
+      fallbackScreenshot,
+      fallbacks: visibleFallback.fallbacks.map(({ text, contentEditable }) => ({ text, contentEditable })),
       enabledFile: summary(await capture(vaultFile(vaultRoot, '.morrow/plugins.json'))),
     });
+    await openPluginSettings(driver, candidate.pluginName);
+    const disabledChecked = await driver.execute(`return [...document.querySelectorAll('.settings-dialog [role="switch"]')]
+      .find((item) => item.getAttribute('aria-label') === arguments[0])?.getAttribute('aria-checked') ?? null;`, [candidate.pluginName]);
+    assert.equal(disabledChecked, 'false', `Cycle ${cycle}: the UI must show the plugin disabled before re-enabling.`);
     await switchPlugin(driver, candidate.pluginName, true);
     await waitPluginSetting(vaultRoot, true);
     const reenabled = await waitProviderCount(driver, 2);
