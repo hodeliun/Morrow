@@ -157,6 +157,22 @@ async function readSourceState(driver) {
     const cell = (name) => row?.querySelector('[data-field="' + name + '"]')?.textContent?.trim() ?? null;
     const input = root?.querySelector('input[type="number"][data-field="quantity"]') ?? null;
     const save = input?.closest('td')?.querySelector('button[data-action="save"]') ?? null;
+    const articles = [...document.querySelectorAll('article.page')];
+    const article = articles[0] ?? null;
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      return element.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const hostAlerts = [...(article?.querySelectorAll('[role="alert"]') ?? [])]
+      .filter(visible)
+      .map((node) => node.textContent?.trim() ?? '');
+    const rawPres = [...(article?.querySelectorAll('pre.readonly-text') ?? [])];
+    const rawPre = rawPres[0] ?? null;
+    const title = article?.querySelector('textarea.page-title') ?? null;
+    const editableInputs = [...(article?.querySelectorAll('input, textarea') ?? [])]
+      .filter((element) => !element.disabled && !element.readOnly);
+    const editableContent = [...(article?.querySelectorAll('[contenteditable]') ?? [])]
+      .filter((element) => element.isContentEditable);
     return {
       providerCount: roots.length,
       tablePresent: Boolean(root?.querySelector('table')),
@@ -169,6 +185,18 @@ async function readSourceState(driver) {
       saveDisabled: save?.disabled ?? null,
       saveAlerts: [...(root?.querySelectorAll('[role="alert"]') ?? [])].map((node) => node.textContent?.trim() ?? ''),
       rootText: root?.textContent ?? '',
+      currentRoute: location.hash,
+      hostArticleCount: articles.length,
+      hostArticleText: article?.textContent?.trim() ?? '',
+      hostTitle: title?.value ?? null,
+      titleReadOnly: title?.readOnly ?? null,
+      hostAlerts,
+      rawPreCount: rawPres.length,
+      rawPreText: rawPre?.textContent ?? null,
+      rawPreContentEditable: rawPre?.contentEditable ?? null,
+      rawPreIsContentEditable: rawPre?.isContentEditable ?? null,
+      editableInputCount: editableInputs.length,
+      editableContentCount: editableContent.length,
     };`);
 }
 
@@ -584,13 +612,43 @@ export async function runIndependentNativeLifecycleScenario(context) {
       'Unsupported-schema injection must not change the synthetic linked-view note.');
     assertSameFile(unsupported, markdownAfterInjection['Inventory.md'],
       'The intended unsupported source bytes must be the only injected Markdown change.');
+    const expectedUnsupportedText = unsupportedBytes.toString('utf8');
+    const expectedSourceRoute = `#/page/${encodeURIComponent(ids.source)}`;
     const protectedState = await waitFor(async () => {
       const state = await readSourceState(driver);
-      const text = state.rootText.toLowerCase();
-      return state.providerCount === 1 && /unsupported|not supported|cannot safely represent/.test(text) ? state : false;
-    }, 'read-only message for the synthetic unsupported schema');
+      const alertText = state.hostAlerts.join('\n').toLowerCase();
+      const expectedHostWarning = state.hostAlerts.length === 1
+        && alertText.includes('the content of this page could not be read')
+        && alertText.includes('property type is not supported');
+      return state.providerCount === 0
+        && state.tablePresent === false
+        && state.editCount === 0
+        && state.currentRoute === expectedSourceRoute
+        && state.hostArticleCount === 1
+        && expectedHostWarning
+        && state.rawPreCount === 1
+        && state.rawPreText?.includes('future-v153')
+        ? state : false;
+    }, 'host read-only alert and raw text for the synthetic unsupported schema');
+    assert.equal(protectedState.providerCount, 0, 'Unsupported source must remove the plugin provider mount from the host page.');
     assert.equal(protectedState.tablePresent, false, 'Unsupported schema must not be rendered as an editable provider table.');
     assert.equal(protectedState.editCount, 0, 'Unsupported synthetic schema must expose no edit action.');
+    assert.equal(protectedState.currentRoute, expectedSourceRoute, 'The protected host snapshot must be for the synthetic source route.');
+    assert.equal(protectedState.hostArticleCount, 1, 'The protected source route must show one host page article.');
+    assert.equal(protectedState.hostTitle, 'Inventory', 'The host article must belong to the synthetic source page.');
+    assert.equal(protectedState.hostAlerts.length, 1, 'The protected host article must expose exactly one visible alert.');
+    assert.match(protectedState.hostAlerts[0], /the content of this page could not be read/i,
+      'The host must explain that the page content could not be read.');
+    assert.match(protectedState.hostAlerts[0], /property type is not supported/i,
+      'The visible host alert must include the unsupported property type reason.');
+    assert.equal(protectedState.rawPreCount, 1, 'The host must preserve exactly one raw read-only text block.');
+    assert.equal(protectedState.rawPreText.trim(), expectedUnsupportedText.trim(),
+      'The host raw text block must retain the exact unsupported Markdown bytes as UTF-8 text.');
+    assert.notEqual(protectedState.rawPreContentEditable, 'true', 'The raw text block must not be content editable.');
+    assert.equal(protectedState.rawPreIsContentEditable, false, 'The raw text block must not inherit content editability.');
+    assert.equal(protectedState.titleReadOnly, true, 'The host page title must be read only while content is protected.');
+    assert.equal(protectedState.editableInputCount, 0, 'The protected host page must expose no editable input or textarea.');
+    assert.equal(protectedState.editableContentCount, 0, 'The protected host page must expose no content-editable region.');
     await new Promise((resolve) => setTimeout(resolve, 500));
     const unsupportedMarkdownAfterWait = await captureMarkdownFiles(vaultRoot);
     assertMarkdownFilesSame(markdownAfterInjection, unsupportedMarkdownAfterWait,
