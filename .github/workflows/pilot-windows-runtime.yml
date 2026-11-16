@@ -1,0 +1,82 @@
+name: Pilot Windows runtime preflight
+
+on:
+  push:
+    branches:
+      - codex/e003-g07-windows-runtime
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    name: Pinned package, drivers, and isolated path preflight
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout without a persisted token
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize separate control receipt
+        shell: pwsh
+        run: |
+          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          New-Item -ItemType Directory -Path $control -ErrorAction Stop | Out-Null
+          $receipt = [ordered]@{
+            schemaVersion = 1
+            status = 'initializing'
+            scope = 'Morrow E003 G13 issue 179 preflight only'
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            sha = $env:GITHUB_SHA
+            branch = 'codex/e003-g07-windows-runtime'
+            appLaunched = $false
+            driverServiceStarted = $false
+            startedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+          } | ConvertTo-Json -Depth 5
+          [IO.File]::WriteAllText((Join-Path $control 'receipt.json'), $receipt, [Text.UTF8Encoding]::new($false))
+
+      - name: Run own preflight tests without downloads or launches
+        shell: pwsh
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.test.ps1
+
+      - name: Set up Rust for the pinned tauri-driver install
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Stage pinned package and tools
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode Stage
+
+      - name: Verify staged inputs and run package check-only
+        shell: pwsh
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode CheckOnly
+
+      - name: Mark interrupted preflight receipt failed
+        if: failure()
+        shell: pwsh
+        run: |
+          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $receiptPath = Join-Path $control 'receipt.json'
+          if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+            if ($receipt.status -in @('initializing', 'staged')) {
+              $receipt.status = 'failed'
+              $receipt | Add-Member -NotePropertyName 'failure' -NotePropertyValue 'A workflow step failed before the preflight completed; inspect the job logs.' -Force
+              $receipt | Add-Member -NotePropertyName 'completedAtUtc' -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
+              [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+            }
+          }
+
+      - name: Upload durable preflight receipt and tool logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-179-windows-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/issue-179-control-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 7
