@@ -151,7 +151,7 @@ try {
   Assert-Throws 'duplicate ZIP entry rejected' { Assert-ZipArchiveSafe $duplicateZip }
 
   $linkZip = Join-Path $testRoot 'link.zip'
-  $symlinkAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]0xA1FF0000), 0)
+  $symlinkAttributes = -1577123840
   New-ZipFixture $linkZip @(@{ Name = 'link.txt'; Content = 'target'; ExternalAttributes = $symlinkAttributes })
   Assert-Throws 'ZIP symlink rejected' { Assert-ZipArchiveSafe $linkZip }
 
