@@ -93,6 +93,17 @@ function Get-SafeError([object] $ErrorRecord) {
   return (Protect-Text $message)
 }
 
+function Assert-SafeDriverInvocation([string] $Executable, [string[]] $Arguments) {
+  $name = [IO.Path]::GetFileName($Executable)
+  if ($name -match '^(?i:tauri-driver)(?:\.exe)?$') {
+    throw 'The tauri-driver executable is never started by this preflight; version comes from Cargo installation metadata.'
+  }
+  if ($name -match '^(?i:msedgedriver)(?:\.exe)?$' -and
+      ($Arguments.Count -ne 1 -or $Arguments[0] -cne '--version')) {
+    throw 'The only allowed msedgedriver invocation is the non-service --version probe.'
+  }
+}
+
 function Assert-LocalNormalizedPath([string] $Path, [string] $Label) {
   if ([string]::IsNullOrWhiteSpace($Path)) { throw "$Label is empty." }
   if ($Path.Contains('/') -or $Path.StartsWith('\\') -or $Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
@@ -569,6 +580,7 @@ function Invoke-CapturedCommand(
   [int] $TimeoutSeconds = 5400,
   [switch] $VersionProbe
 ) {
+  Assert-SafeDriverInvocation $Executable $Arguments
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $Executable
   $startInfo.WorkingDirectory = $WorkingDirectory
@@ -614,6 +626,19 @@ function Get-VersionFromOutput([string] $Output, [string] $Label) {
   $match = [regex]::Match($Output, '(?<!\d)(\d+\.\d+\.\d+\.\d+|\d+\.\d+\.\d+)(?!\d)')
   if (-not $match.Success) { throw "$Label --version output contained no semantic version." }
   return $match.Groups[1].Value
+}
+
+function Get-CargoInstalledPackageVersion([string] $Output, [string] $Package, [string] $ExpectedVersion) {
+  $packageName = [regex]::Escape($Package)
+  $headers = [regex]::Matches($Output, "(?m)^$packageName v(?<version>\d+\.\d+\.\d+):[ \t]*\r?$")
+  if ($headers.Count -ne 1) { throw "cargo install --list did not report exactly one $Package package entry." }
+  $version = $headers[0].Groups['version'].Value
+  if ($version -ne $ExpectedVersion) { throw "cargo install --list reported $Package $version; expected exactly $ExpectedVersion." }
+  $binaryPattern = "(?m)^[ \t]+$packageName(?:\.exe)?[ \t]*\r?$"
+  if (-not [regex]::IsMatch($Output, $binaryPattern)) {
+    throw "cargo install --list did not list the expected $Package binary (with or without the Windows .exe suffix)."
+  }
+  return $version
 }
 
 function Select-OfficialEdgeDriverRelease([string] $RuntimeVersion, [string] $PageContent) {
@@ -816,7 +841,7 @@ function Invoke-GitHubJson([string] $Url, [string] $Token) {
   return Invoke-RestMethod -Uri $Url -Headers $headers -ErrorAction Stop
 }
 
-function Install-AndProbeDrivers([string] $ToolStage, [string] $ControlPath, [string] $RuntimeVersion) {
+function Install-AndVerifyDrivers([string] $ToolStage, [string] $ControlPath, [string] $RuntimeVersion) {
   $driverRoot = Join-Path $ToolStage 'drivers'
   $tauriRoot = Join-Path $driverRoot 'tauri-driver'
   $edgeRoot = Join-Path $driverRoot 'msedgedriver'
@@ -829,9 +854,8 @@ function Install-AndProbeDrivers([string] $ToolStage, [string] $ControlPath, [st
   ) $ToolStage (Join-Path $ControlPath 'tauri-driver-install.log') 5400
   $tauriDriverPath = Join-Path $tauriRoot 'bin/tauri-driver.exe'
   if (-not (Test-Path -LiteralPath $tauriDriverPath -PathType Leaf)) { throw 'Pinned tauri-driver installation did not produce tauri-driver.exe.' }
-  $tauriProbe = Invoke-CapturedCommand $tauriDriverPath @('--version') $ToolStage (Join-Path $ControlPath 'tauri-driver-version.log') 30 -VersionProbe
-  $tauriVersion = Get-VersionFromOutput $tauriProbe.StdOut 'tauri-driver'
-  if ($tauriVersion -ne $script:TauriDriver.version) { throw 'tauri-driver --version differs from the exact pinned 2.1.0 release.' }
+  $tauriList = Invoke-CapturedCommand $cargo.Source @('install', '--list', '--root', $tauriRoot) $ToolStage (Join-Path $ControlPath 'tauri-driver-install-list.log') 120
+  $tauriVersion = Get-CargoInstalledPackageVersion ($tauriList.StdOut + [Environment]::NewLine + $tauriList.StdErr) 'tauri-driver' $script:TauriDriver.version
 
   $edgeRelease = Get-OfficialEdgeDriverRelease $RuntimeVersion
   $runtimeMajorMinorBuild = $edgeRelease.CompatibleFirstThreeComponents
@@ -853,7 +877,8 @@ function Install-AndProbeDrivers([string] $ToolStage, [string] $ControlPath, [st
     cargo = @{ version = $cargoVersion.StdOut; executable = (Get-SanitizedPath $cargo.Source) }
     tauriDriver = @{
       version = $tauriVersion
-      versionOutput = $tauriProbe.StdOut
+      installedPackageMetadata = 'cargo install --list --root <tool-stage>/drivers/tauri-driver'
+      installedBinaryName = 'tauri-driver.exe'
       source = 'crates.io'
       sourceUrl = $script:TauriDriver.sourceUrl
       downloadUrl = $script:TauriDriver.downloadUrl
@@ -861,7 +886,7 @@ function Install-AndProbeDrivers([string] $ToolStage, [string] $ControlPath, [st
       installCommand = 'cargo install tauri-driver --version 2.1.0 --locked --root <tool-stage>'
       executableSha256 = Get-Sha256 $tauriDriverPath
       serviceStarted = $false
-      versionProbeExitCode = $tauriProbe.ExitCode
+      installListExitCode = $tauriList.ExitCode
       installExitCode = $cargoInstall.ExitCode
     }
     edgeDriver = @{
@@ -970,6 +995,7 @@ function Assert-StagedArtifactPackage([string] $ToolStage, [object] $StagedMetad
 }
 
 function Verify-StagedDrivers([object] $StagedDrivers, [string] $ToolStage, [string] $ControlPath, [string] $RuntimeVersion) {
+  $tauriRoot = Join-Path $ToolStage 'drivers/tauri-driver'
   $tauriDriverPath = Join-Path $ToolStage 'drivers/tauri-driver/bin/tauri-driver.exe'
   if ($StagedDrivers.tauriDriver.version -ne $script:TauriDriver.version -or
       $StagedDrivers.tauriDriver.sourceUrl -ne $script:TauriDriver.sourceUrl -or
@@ -979,9 +1005,10 @@ function Verify-StagedDrivers([object] $StagedDrivers, [string] $ToolStage, [str
     throw 'The already-staged tauri-driver is missing or differs from the pinned crates.io release receipt.'
   }
   Assert-NoReparsePath $tauriDriverPath 'Staged tauri-driver executable' | Out-Null
-  $tauriProbe = Invoke-CapturedCommand $tauriDriverPath @('--version') $ToolStage (Join-Path $ControlPath 'tauri-driver-checkonly-version.log') 30 -VersionProbe
-  $tauriVersion = Get-VersionFromOutput $tauriProbe.StdOut 'tauri-driver'
-  if ($tauriVersion -ne $script:TauriDriver.version) { throw 'The staged tauri-driver --version probe differs from pinned 2.1.0.' }
+  $cargo = Get-Command cargo -ErrorAction Stop
+  $tauriList = Invoke-CapturedCommand $cargo.Source @('install', '--list', '--root', $tauriRoot) $ToolStage (Join-Path $ControlPath 'tauri-driver-checkonly-install-list.log') 120
+  $tauriVersion = Get-CargoInstalledPackageVersion ($tauriList.StdOut + [Environment]::NewLine + $tauriList.StdErr) 'tauri-driver' $script:TauriDriver.version
+  if ($tauriVersion -ne $StagedDrivers.tauriDriver.version) { throw 'The staged tauri-driver installation metadata changed after tool staging.' }
 
   $edgeRoot = Join-Path $ToolStage 'drivers/msedgedriver'
   $edgeArchive = Join-Path $ToolStage 'drivers/msedgedriver.zip'
@@ -1013,7 +1040,20 @@ function Verify-StagedDrivers([object] $StagedDrivers, [string] $ToolStage, [str
 
   return [pscustomobject]@{
     cargo = $StagedDrivers.cargo
-    tauriDriver = $StagedDrivers.tauriDriver
+    tauriDriver = @{
+      version = $tauriVersion
+      installedPackageMetadata = 'cargo install --list --root <tool-stage>/drivers/tauri-driver'
+      installedBinaryName = 'tauri-driver.exe'
+      source = $StagedDrivers.tauriDriver.source
+      sourceUrl = $StagedDrivers.tauriDriver.sourceUrl
+      downloadUrl = $StagedDrivers.tauriDriver.downloadUrl
+      executablePath = Get-SanitizedPath $tauriDriverPath
+      installCommand = $StagedDrivers.tauriDriver.installCommand
+      executableSha256 = Get-Sha256 $tauriDriverPath
+      serviceStarted = $false
+      installListExitCode = $tauriList.ExitCode
+      installExitCode = $StagedDrivers.tauriDriver.installExitCode
+    }
     edgeDriver = $StagedDrivers.edgeDriver
   }
 }
@@ -1100,7 +1140,7 @@ function Stage-WindowsPreflight {
   Assert-NoReparsePath $paths.ToolStage 'Tool/download stage' | Out-Null
   $runtime = Get-WebView2Runtime
   $artifact = Stage-PinnedArtifactPackage $paths.ToolStage $script:Artifact.repository $env:GITHUB_TOKEN
-  $drivers = Install-AndProbeDrivers $paths.ToolStage $context.ControlPath $runtime.Version
+  $drivers = Install-AndVerifyDrivers $paths.ToolStage $context.ControlPath $runtime.Version
   $stage = [ordered]@{
     schemaVersion = 1
     status = 'staged'

@@ -26,6 +26,14 @@ function Assert-Throws([string] $Label, [scriptblock] $Action) {
   if (-not $thrown) { throw "Expected failure was not raised: $Label" }
 }
 
+Assert-True ($null -eq (Assert-SafeDriverInvocation 'C:\tools\msedgedriver.exe' @('--version'))) 'msedgedriver version probe is the only permitted driver invocation'
+Assert-Throws 'msedgedriver service arguments are rejected before process start' {
+  Assert-SafeDriverInvocation 'C:\tools\msedgedriver.exe' @('--port', '0')
+}
+Assert-Throws 'tauri-driver is never invoked as a server or version probe' {
+  Assert-SafeDriverInvocation 'C:\tools\tauri-driver.exe' @('--help')
+}
+
 $script:orchestrationReceipt = [ordered]@{ status = 'initializing'; appLaunched = $false; driverServiceStarted = $false }
 $script:stageDispatchCount = 0
 $script:checkOnlyDispatchCount = 0
@@ -199,6 +207,13 @@ try {
   }
   Assert-Throws 'invalid registry pv rejected' {
     Select-WebView2RuntimeVersion @([pscustomobject]@{ Present = $true; Value = ''; Kind = 'REG_SZ'; RegistryPath = 'HKCU64 test' })
+  }
+  $cargoListWithExe = "tauri-driver v2.1.0:`r`n    tauri-driver.exe`r`n"
+  $cargoListWithoutExe = "tauri-driver v2.1.0:`r`n    tauri-driver`r`n"
+  Assert-True ((Get-CargoInstalledPackageVersion $cargoListWithExe 'tauri-driver' '2.1.0') -eq '2.1.0') 'Cargo installed metadata pins tauri-driver 2.1.0 with Windows binary suffix'
+  Assert-True ((Get-CargoInstalledPackageVersion $cargoListWithoutExe 'tauri-driver' '2.1.0') -eq '2.1.0') 'Cargo installed metadata accepts the binary name without an extension'
+  Assert-Throws 'Cargo installed metadata rejects a different tauri-driver version' {
+    Get-CargoInstalledPackageVersion "tauri-driver v2.2.0:`r`n    tauri-driver.exe`r`n" 'tauri-driver' '2.1.0'
   }
   $edgePageFixture = @'
 <a href="https://msedgedriver.microsoft.com/157.0.4341.36/edgedriver_win64.zip">old patch</a>
