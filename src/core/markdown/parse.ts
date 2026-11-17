@@ -1,9 +1,18 @@
 import MarkdownIt from 'markdown-it';
 import type { StateBlock, StateInline, Token } from 'markdown-it';
-import { BACKGROUND_HEX, calloutTone, emptyDoc, nearestColor, TEXT_HEX } from '../model';
+import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, nearestColor, TEXT_HEX } from '../model';
 import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
-import { calloutIcon, HEADER_COLUMN, imageWidth, toggleLevel } from './serialize';
+import { decodePolarisDadosViewMarker } from '../polarisDadosView';
+import {
+  BACKGROUND_PATTERN,
+  calloutIcon,
+  LETTERS_COMMENT,
+  HEADER_COLUMN,
+  imageWidth,
+  toggleLevel,
+} from './serialize';
+import { COLUMN_WIDTHS_PATTERN } from './serialize';
 
 export interface ParseOptions {
   // resolves a [[wiki link]] target, a title or a path inside the vault, to a page id
@@ -180,7 +189,18 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   const root: DocNode = { type: 'doc', content: [] };
   const stack: DocNode[] = [root];
   const top = () => stack[stack.length - 1]!;
+  // what a comment morrow writes above a block says about it: its background colour, or a list counted in
+  // letters. it goes on the next block at the same level
+  let pending: { attrs: Record<string, unknown>; parent: DocNode } | null = null;
+  const note = (attrs: Record<string, unknown>) => {
+    pending = { attrs: { ...(pending?.parent === top() ? pending.attrs : {}), ...attrs }, parent: top() };
+  };
   const push = (node: DocNode) => {
+    if (pending?.parent === top()) {
+      const { type, ...rest } = pending.attrs;
+      node.attrs = { ...node.attrs, ...rest, ...(type && node.type === 'orderedList' ? { type } : {}) };
+    }
+    pending = null;
     (top().content ??= []).push(node);
   };
   const open = (node: DocNode) => {
@@ -193,9 +213,15 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   // set by the comment morrow writes above a table whose first column is a header
   let headerColumn = false;
   let tableHasHeaderColumn = false;
+  // the widths from a comment above a table, for its cells
+  let columnWidths: number[] = [];
+  let tableWidths: number[] = [];
 
   for (const token of tokens) {
-    if (token.type !== 'table_open' && token.type !== 'html_block') headerColumn = false;
+    if (token.type !== 'table_open' && token.type !== 'html_block') {
+      headerColumn = false;
+      columnWidths = [];
+    }
     switch (token.type) {
       case 'paragraph_open':
         open({ type: 'paragraph', content: [] });
@@ -220,6 +246,8 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
       case 'table_open':
         tableHasHeaderColumn = headerColumn;
         headerColumn = false;
+        tableWidths = columnWidths;
+        columnWidths = [];
         open({ type: 'table', content: [] });
         break;
       case 'tr_open':
@@ -227,9 +255,14 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         break;
       case 'th_open':
       case 'td_open': {
-        const first = (top().content ?? []).length === 0;
-        const header = token.type === 'th_open' || (tableHasHeaderColumn && first);
-        open({ type: header ? 'tableHeader' : 'tableCell', content: [] });
+        const index = (top().content ?? []).length;
+        const header = token.type === 'th_open' || (tableHasHeaderColumn && index === 0);
+        const width = tableWidths[index] ?? 0;
+        open({
+          type: header ? 'tableHeader' : 'tableCell',
+          ...(width > 0 ? { attrs: { colwidth: [width] } } : {}),
+          content: [],
+        });
         open({ type: 'paragraph', content: [] });
         break;
       }
@@ -281,7 +314,35 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
           headerColumn = true;
           break;
         }
-        htmlBlock(token.content, options, { push, top, close, stack });
+        {
+          const view = decodePolarisDadosViewMarker(token.content.trim());
+          if (view && hasInvalidViewListStart(stack)) {
+            push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
+          } else if (view) push({ type: 'polarisDadosView', attrs: view });
+          else if (
+            hasInvalidViewListStart(stack) &&
+            /<!--\s*morrow:polaris-dados-view\s*:/i.test(token.content)
+          ) {
+            // Keep nested or malformed protocol markers from becoming atoms after list normalization.
+            push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
+          } else {
+            const widths = COLUMN_WIDTHS_PATTERN.exec(token.content.trim())?.[1];
+            if (widths) {
+              columnWidths = widths.split(/\s+/).map((width) => Math.min(2000, Number(width) || 0));
+              break;
+            }
+            const color = BACKGROUND_PATTERN.exec(token.content.trim())?.[1];
+            if (color && (COLORS as readonly string[]).includes(color)) {
+              note({ backgroundColor: color });
+              break;
+            }
+            if (token.content.trim() === LETTERS_COMMENT) {
+              note({ type: 'a' });
+              break;
+            }
+            htmlBlock(token.content, options, { push, top, close, stack });
+          }
+        }
         break;
       default:
         break;
@@ -290,6 +351,14 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
 
   const doc = normalize(root);
   return (doc.content ?? []).length > 0 ? doc : emptyDoc();
+}
+
+function hasInvalidViewListStart(stack: DocNode[]): boolean {
+  return stack.some((node) => {
+    if (node.type !== 'listItem' && node.type !== 'taskItem') return false;
+    const first = node.content?.[0];
+    return first?.type !== 'paragraph';
+  });
 }
 
 const CELL_LIST_OPEN = /^<(ul|ol)\b([^>]*)>$/i;
@@ -493,6 +562,22 @@ export function markdownToPage(
   return { title: fallbackTitle, doc };
 }
 
+// a time written just after a date, [[2026-11-10]] 17:05, belongs to the date
+function dateTimes(nodes: DocNode[]): DocNode[] {
+  for (let index = 0; index < nodes.length - 1; index++) {
+    const date = nodes[index]!;
+    const next = nodes[index + 1]!;
+    if (date.type !== 'dateMention' || next.type !== 'text' || next.marks?.length) continue;
+    const match = /^ (([01]\d|2[0-3]):[0-5]\d)(?![\d:])/.exec(next.text ?? '');
+    if (!match) continue;
+    date.attrs = { ...date.attrs, time: match[1] };
+    const rest = next.text!.slice(match[0].length);
+    if (rest) next.text = rest;
+    else nodes.splice(index + 1, 1);
+  }
+  return nodes;
+}
+
 function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
   const out: DocNode[] = [];
   const marks: DocMark[] = [];
@@ -606,7 +691,7 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         if (token.content) add(token.content);
     }
   }
-  return mergeText(out);
+  return dateTimes(mergeText(out));
 }
 
 // obsidian sizes a picture in its alt text: "a cat|300", "a cat|300x200", or just "300" in an embed
@@ -631,16 +716,11 @@ function wikiNode(link: WikiLink, markup: string, options: ParseOptions, marks: 
       return [{ type: 'text', text: link.alias ?? file.name, marks: fileMarks }];
     }
   }
-  const id = link.target ? (options.resolvePage?.(link.target) ?? null) : null;
-  // [[2026-10-16]] with no page of that name is a date, it opens that day's note
-  if (
-    !id &&
-    !link.embed &&
-    link.alias === null &&
-    link.anchor === null &&
-    /^\d{4}-\d{2}-\d{2}$/.test(link.target)
-  )
+  // [[2026-10-16]] is a date, which opens that day's note. it stays a date once the note exists, rather
+  // than becoming a link titled with the day written out, which lost its reminder and could not be edited
+  if (!link.embed && link.alias === null && link.anchor === null && /^\d{4}-\d{2}-\d{2}$/.test(link.target))
     return [{ type: 'dateMention', attrs: { date: link.target } }];
+  const id = link.target ? (options.resolvePage?.(link.target) ?? null) : null;
   if (!id && options.keepUnresolved === false) {
     return [
       marks.length ? { type: 'text', text: markup, marks: [...marks] } : { type: 'text', text: markup },

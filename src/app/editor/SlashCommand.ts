@@ -6,6 +6,7 @@ import {
   CalendarDays,
   Columns2,
   Columns3,
+  Columns4,
   ListTree,
   Workflow,
   ChevronRight,
@@ -29,11 +30,13 @@ import {
   Pilcrow,
   Quote,
   Table,
+  Clapperboard,
 } from 'lucide-react';
 import { foldText } from '../../core/search';
 import { t } from '../i18n';
 import type { TranslationKey } from '../i18n';
 import { pickFiles } from '../platform/files';
+import { promptEmbed } from './PasteMenu';
 import { editMathNear } from './Extras';
 import { insertFiles } from './Media';
 import type { MenuItem } from './SuggestionMenu';
@@ -85,7 +88,11 @@ const turnItem = (editor: Editor, range: Range, target: TurnTarget): boolean => 
   const item = listItemAtCursor(editor);
   if (item === null) return false;
   const list = editor.state.doc.resolve(item).parent.type.name;
-  if (list === target.kind) return false;
+  const kind =
+    list === 'orderedList' && editor.state.doc.resolve(item).parent.attrs.type === 'a'
+      ? 'letteredList'
+      : list;
+  if (kind === target.kind) return false;
   chain(editor, range).run();
   turnListItem(editor, item, target);
   return true;
@@ -157,6 +164,17 @@ export const BLOCK_ITEMS: BlockItem[] = [
     hint: '1.',
     keywords: 'ordered ol',
     run: (e, r) => turnItem(e, r, { kind: 'orderedList' }) || chain(e, r).toggleOrderedList().run(),
+  },
+  {
+    id: 'lettered',
+    title: 'Lettered list',
+    description: 'List counted a, b, c',
+    icon: ListOrdered,
+    hint: 'a.',
+    keywords: 'alphabetical letters outline abc',
+    run: (e, r) =>
+      turnItem(e, r, { kind: 'letteredList' }) ||
+      chain(e, r).toggleOrderedList().updateAttributes('orderedList', { type: 'a' }).run(),
   },
   {
     id: 'task',
@@ -266,7 +284,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
   },
   {
     id: 'math',
-    title: 'Formula',
+    title: 'Equation block',
     description: 'Display maths in LaTeX',
     icon: Sigma,
     hint: '$$',
@@ -281,7 +299,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
   },
   {
     id: 'inlineMath',
-    title: 'Inline formula',
+    title: 'Equation inline',
     description: 'Maths inside a sentence',
     icon: Sigma,
     hint: '$…$',
@@ -352,6 +370,22 @@ export const BLOCK_ITEMS: BlockItem[] = [
     run: (e, r) => chain(e, r).setColumns(3).run(),
   },
   {
+    id: 'columns4',
+    title: '4 columns',
+    description: 'Four blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split wide',
+    run: (e, r) => chain(e, r).setColumns(4).run(),
+  },
+  {
+    id: 'columns5',
+    title: '5 columns',
+    description: 'Five blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split wide',
+    run: (e, r) => chain(e, r).setColumns(5).run(),
+  },
+  {
     id: 'toc',
     title: 'Table of contents',
     description: 'Every heading on this page',
@@ -397,6 +431,17 @@ export const BLOCK_ITEMS: BlockItem[] = [
     hint: '@',
     keywords: 'date day today tomorrow reminder mention due',
     run: (e, r) => chain(e, r).insertContent('@').run(),
+  },
+  {
+    id: 'embedMedia',
+    title: 'Embed',
+    description: 'A YouTube video, or a picture, sound, video or folder on this computer',
+    icon: Clapperboard,
+    keywords: 'youtube video audio sound music picture folder path local file embed',
+    run: (e, r) => {
+      chain(e, r).run();
+      promptEmbed(e);
+    },
   },
   {
     id: 'embed',
@@ -453,6 +498,7 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
       'h6',
       'bullet',
       'ordered',
+      'lettered',
       'task',
       'toggle',
       'toggleH1',
@@ -468,8 +514,8 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
     ],
     'slash.sections.basic',
   ],
-  ['media', ['image', 'file'], 'slash.sections.media'],
-  ['layout', ['columns2', 'columns3', 'table', 'toc'], 'slash.sections.layout'],
+  ['media', ['image', 'file', 'embedMedia'], 'slash.sections.media'],
+  ['layout', ['columns2', 'columns3', 'columns4', 'columns5', 'table', 'toc'], 'slash.sections.layout'],
   [
     'pagesAndData',
     ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas'],
@@ -522,6 +568,9 @@ export function filterBlocks(query: string): BlockItem[] {
     .map((entry) => entry.item);
 }
 
+const slashItems = (query: string): MenuItem[] =>
+  query.length > 40 || /^\s|\s{2}/.test(query) ? [] : filterBlocks(query).slice(0, 40);
+
 export const SlashCommand = Extension.create<SlashOptions>({
   name: 'slashCommand',
   addOptions() {
@@ -537,12 +586,14 @@ export const SlashCommand = Extension.create<SlashOptions>({
         startOfLine: false,
         // names like "2 columns" have spaces, a sentence typed after a slash simply finds nothing
         allowSpaces: true,
-        allow: ({ state }) => {
+        // a slash followed by a space or by words no block is called is just a slash in a sentence, so the
+        // menu goes away and doesn't come back when the cursor returns there
+        allow: ({ state, range }) => {
           const parent = state.selection.$from.parent;
-          return parent.type.name !== 'codeBlock';
+          if (parent.type.name === 'codeBlock') return false;
+          return slashItems(state.doc.textBetween(range.from + 1, range.to, ' ')).length > 0;
         },
-        items: ({ query }) =>
-          query.length > 40 || /\s{2}/.test(query) ? [] : filterBlocks(query).slice(0, 40),
+        items: ({ query }) => slashItems(query),
         command: ({ editor, range, props }) => {
           const item = BLOCK_ITEMS.find((candidate) => candidate.id === props.id);
           item?.run(editor, range, options);

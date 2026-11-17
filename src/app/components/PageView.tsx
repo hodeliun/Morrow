@@ -11,6 +11,8 @@ import {
   Smile,
   Trash2,
   ChevronRight,
+  FileText,
+  LayoutTemplate,
 } from 'lucide-react';
 import {
   lazy,
@@ -27,7 +29,7 @@ import { backlinksTo, unlinkedMentions } from '../../core/links';
 import { displayTitle, emptyDoc } from '../../core/model';
 import type { DocNode, PageId, PageMeta } from '../../core/model';
 import { childrenOf, isEffectivelyTrashed } from '../../core/tree';
-import { findTemplatesPage } from '../../core/templates';
+import { findTemplatesPage, listTemplates } from '../../core/templates';
 import { RepeatBar } from './RepeatBar';
 import { findDatabaseOf } from '../../core/database';
 import { basename, conflictOriginal, stripExtension } from '../../core/vault/paths';
@@ -39,19 +41,21 @@ import { Emoji } from './Emoji';
 import { LockedPage } from './EncryptDialog';
 import { PageProperties } from './PageProperties';
 import { PageTags } from './TagsView';
-import { deleteForever, restorePage, setArchived, trashPage } from '../operations';
+import { applyTemplateTo, deleteForever, restorePage, setArchived, trashPage } from '../operations';
 import { usePreferences } from '../platform/preferences';
 import { readingPlace, rememberPlace } from '../readingPlace';
 import { navigate, openPage, routeHash } from '../router';
-import { openSide } from '../tabs';
+import { openSide, usePane } from '../tabs';
 import { getUi, openDialog, setUi, useUi } from '../ui';
 import { getSession, run, useWorkspace } from '../workspace';
+import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
 import { getLocale, t } from '../i18n';
 import { pageMenuEntries } from './pageMenu';
 import { exactTime, relativeTime, useShowMore } from './primitives';
 import { PageIcon } from './Sidebar';
 import { TopBar } from './TopBar';
+import { isProviderManagedPage } from './pageEditability';
 
 const EMPTY_DOC = emptyDoc();
 
@@ -86,8 +90,9 @@ let firstPage = true;
 
 // puts the page back where it was left: scrolled as far down, the cursor where it was. the page can still be
 // growing as images load, so the scroll is set again for a moment until it holds
-function restorePlace(editor: Editor, scroller: HTMLElement | null, id: PageId, focus: boolean): void {
-  const place = readingPlace(id);
+function restorePlace(editor: Editor, scroller: HTMLElement | null, id: string, focus: boolean): void {
+  // the second side of a split has a place of its own, the same page open on both sides keeps both
+  const place = readingPlace(id) ?? readingPlace(id.replace(/@side$/, ''));
   if (!place || editor.isDestroyed) return;
   const { doc, tr } = editor.state;
   const size = doc.content.size;
@@ -120,6 +125,8 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   // enter in the title can arrive before the editor exists, focus it once it does
   const focusWhenReady = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pane = usePane();
+  const placeKey = pane === 'side' ? `${id}@side` : id;
   // the place is only written down once it has been put back, the empty page loading first is not it
   const placed = useRef(false);
   const prefs = usePreferences();
@@ -150,8 +157,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
 
   const trashed = isEffectivelyTrashed(state.pages, id);
   const unreadable = getSession().unreadable.has(id);
+  const protectionReason = getSession().protectedReasons.get(id);
   const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
   const doc = state.docs[id] ?? EMPTY_DOC;
+  const database = findDatabaseOf(state, page);
+  // Provider-owned metadata and text cannot be saved by native page editors. Keep this separate from
+  // databaseEditable: the provider's grid may still edit through its own DataApi scope.
+  const databaseEditable = !trashed && !unreadable && !reading;
+  const nativeEditable = databaseEditable && !isProviderManagedPage(state, page);
 
   const menu = (): MenuEntry[] => {
     const words = docToPlainText(doc).split(/\s+/).filter(Boolean).length;
@@ -165,19 +178,19 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         t('topBar.edited', { time: exactTime(page.updatedAt) }),
       ].join('\n'),
     };
-    if (trashed) return [info];
-    return [info, ...pageMenuEntries(id, () => titleRef.current?.focus())];
+    if (trashed || unreadable) return [info];
+    return [info, ...pageMenuEntries(id, () => titleRef.current?.focus(), { nativeEditable })];
   };
 
   const hasText = page.kind === 'database' && !isDocEmpty(doc);
   if (hasText && databaseTextFor !== id) setDatabaseTextFor(id);
   const showText = page.kind !== 'database' || hasText || databaseTextFor === id;
 
-  const database = findDatabaseOf(state, page);
   // rows and pages that already show properties add more from that list instead
   const canAddProperty =
     page.kind === 'page' &&
     !database &&
+    nativeEditable &&
     !unreadable &&
     Object.keys(page.extra).length === 0 &&
     addingFor !== id;
@@ -204,7 +217,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
           </div>
         ) : (
           <Suspense fallback={<div className="canvas-view" aria-busy="true" />}>
-            <CanvasView pageId={id} doc={state.docs[id]} editable={!trashed} />
+            <CanvasView pageId={id} doc={state.docs[id]} editable={nativeEditable} />
           </Suspense>
         )}
       </div>
@@ -217,7 +230,9 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
       <div
         className="page-scroll"
         ref={scrollRef}
-        onScroll={(event) => placed.current && rememberPlace(id, { scroll: event.currentTarget.scrollTop })}
+        onScroll={(event) =>
+          placed.current && rememberPlace(placeKey, { scroll: event.currentTarget.scrollTop })
+        }
       >
         {trashed && (
           <div className="banner" role="note">
@@ -249,25 +264,30 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         {page.kind !== 'database' && !unreadable && !prefs.hiddenOutlines.includes(page.id) && (
           <Outline doc={doc} />
         )}
-        <CoverBanner page={page} editable={!trashed && !reading} />
+        <CoverBanner page={page} editable={nativeEditable} />
         <article
           className={`page font-${prefs.font} width-${prefs.pageWidths[page.id] ?? prefs.width}${page.cover ? ' has-cover' : ''}`}
         >
           {!trashed && <ConflictBanner id={id} />}
           {page.icon && (
             <div className="page-icon-row">
-              <button
-                type="button"
-                className="page-icon"
-                aria-label={t('page.changeIcon')}
-                disabled={trashed}
-                onClick={() => openDialog({ kind: 'icon', pageId: id })}
-              >
-                <Emoji emoji={page.icon} />
-              </button>
+              {nativeEditable ? (
+                <button
+                  type="button"
+                  className="page-icon"
+                  aria-label={t('page.changeIcon')}
+                  onClick={() => openDialog({ kind: 'icon', pageId: id })}
+                >
+                  <Emoji emoji={page.icon} />
+                </button>
+              ) : (
+                <span className="page-icon" role="img" aria-label={t('page.changeIcon')}>
+                  <Emoji emoji={page.icon} />
+                </span>
+              )}
             </div>
           )}
-          {!trashed && (!page.icon || !page.cover || canAddProperty) && (
+          {nativeEditable && (!page.icon || !page.cover || canAddProperty) && (
             <div className="page-header-actions">
               {!page.icon && (
                 <button
@@ -294,14 +314,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               )}
             </div>
           )}
-          {coverPicker && (
+          {nativeEditable && coverPicker && (
             <CoverPicker page={page} anchor={coverPicker} onClose={() => setCoverPicker(null)} />
           )}
           {page.dailyDate && <DailyNav page={page} />}
           <h1 className="page-title-heading">
             <TitleField
               page={page}
-              readOnly={trashed || reading}
+              readOnly={!nativeEditable}
               inputRef={titleRef}
               onEnter={(rest) => {
                 const editor = editorRef.current;
@@ -312,25 +332,32 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             />
           </h1>
           {page.kind !== 'database' && (
-            <PageTags page={page} editable={!trashed && !unreadable && !reading} />
+            <PageTags page={page} editable={nativeEditable} />
           )}
-          {isTemplate && <RepeatBar page={page} editable={!trashed && !unreadable && !reading} />}
+          {isTemplate && <RepeatBar page={page} editable={nativeEditable} />}
           {!unreadable && (
             <PageProperties
               page={page}
               database={database?.database ? { id: database.id, database: database.database } : null}
-              editable={!trashed && !reading}
+              editable={nativeEditable}
               adding={addingFor === id}
               onAdded={() => setAddingFor(null)}
             />
           )}
-          {unreadable && page.encrypted ? (
+          {unreadable && protectionReason ? (
+            <>
+              <div className="banner is-error" role="alert">
+                {t('page.contentUnreadable')} {protectionReason}
+              </div>
+              <pre className="readonly-text">{docToPlainText(doc)}</pre>
+            </>
+          ) : unreadable && page.encrypted ? (
             <LockedPage page={page} />
           ) : unreadable ? (
             <div className="banner is-error" role="alert">
               {t('page.contentUnreadable')}
             </div>
-          ) : ui.sourceMode === id && page.kind === 'page' ? (
+          ) : nativeEditable && ui.sourceMode === id && page.kind === 'page' ? (
             <>
               <div className="banner source-banner" role="note">
                 <span>{t('page.editingAsMarkdown')}</span>
@@ -338,56 +365,59 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                   {t('page.backToEditor')}
                 </button>
               </div>
-              <SourceEditor pageId={id} doc={doc} editable={!trashed && !reading} />
+              <SourceEditor pageId={id} doc={doc} editable={nativeEditable} />
             </>
           ) : (
             showText && (
-              <PageBody
-                id={id}
-                doc={doc}
-                editable={!trashed && !reading}
-                find={find}
-                anchor={anchor ?? null}
-                onDirty={setEditing}
-                onExitTop={(text) => {
-                  const title = titleRef.current;
-                  if (!title) return;
-                  const end = title.value.length;
-                  if (text && !trashed) {
-                    const joined = title.value + text;
-                    run({ type: 'page.rename', id, title: joined, now: Date.now() });
-                    // the textarea is controlled, set it now so the cursor lands between the two parts
-                    title.value = joined;
-                  }
-                  title.focus();
-                  title.setSelectionRange(end, end);
-                }}
-                onReady={(editor) => {
-                  editorRef.current = editor;
-                  editor.on('selectionUpdate', ({ editor: current }) => {
-                    if (!placed.current) return;
-                    const { from, to } = current.state.selection;
-                    rememberPlace(id, { from, to });
-                  });
-                  const startup = firstPage;
-                  firstPage = false;
-                  if (!focusWhenReady.current) {
-                    requestAnimationFrame(() => {
-                      if (!find && !anchor) restorePlace(editor, scrollRef.current, id, startup);
-                      placed.current = true;
+              <>
+                {nativeEditable && <TemplateStart pageId={id} doc={doc} />}
+                <PageBody
+                  id={id}
+                  doc={doc}
+                  editable={nativeEditable}
+                  find={find}
+                  anchor={anchor ?? null}
+                  onDirty={setEditing}
+                  onExitTop={(text) => {
+                    const title = titleRef.current;
+                    if (!title) return;
+                    const end = title.value.length;
+                    if (text && nativeEditable) {
+                      const joined = title.value + text;
+                      run({ type: 'page.rename', id, title: joined, now: Date.now() });
+                      // the textarea is controlled, set it now so the cursor lands between the two parts
+                      title.value = joined;
+                    }
+                    title.focus();
+                    title.setSelectionRange(end, end);
+                  }}
+                  onReady={(editor) => {
+                    editorRef.current = editor;
+                    editor.on('selectionUpdate', ({ editor: current }) => {
+                      if (!placed.current) return;
+                      const { from, to } = current.state.selection;
+                      rememberPlace(placeKey, { from, to });
                     });
-                    return;
-                  }
-                  placed.current = true;
-                  focusWhenReady.current = false;
-                  requestAnimationFrame(() => focusStart(editor));
-                }}
-              />
+                    const startup = firstPage;
+                    firstPage = false;
+                    if (!focusWhenReady.current) {
+                      requestAnimationFrame(() => {
+                        if (!find && !anchor) restorePlace(editor, scrollRef.current, placeKey, startup);
+                        placed.current = true;
+                      });
+                      return;
+                    }
+                    placed.current = true;
+                    focusWhenReady.current = false;
+                    requestAnimationFrame(() => focusStart(editor));
+                  }}
+                />
+              </>
             )
           )}
-          {page.kind === 'database' && (
+          {page.kind === 'database' && !unreadable && (
             <Suspense fallback={<div className="database" aria-busy="true" />}>
-              <DatabaseView page={page} editable={!trashed && !unreadable} />
+              <DatabaseView page={page} editable={databaseEditable} />
             </Suspense>
           )}
           {page.kind !== 'database' && <Subpages parentId={id} />}
@@ -811,5 +841,35 @@ function Outline({ doc }: { doc: DocNode }) {
         )}
       </ul>
     </nav>
+  );
+}
+
+// an empty page offers the templates there are, one click fills it in
+function TemplateStart({ pageId, doc }: { pageId: PageId; doc: typeof EMPTY_DOC }) {
+  const state = useWorkspace();
+  const [menu, setMenu] = useState<HTMLElement | null>(null);
+  const templates = useMemo(() => listTemplates(state), [state]);
+  const page = state.pages[pageId];
+  const empty = isDocEmpty(doc);
+  if (!empty || templates.length === 0 || !page || page.kind !== 'page') return null;
+  if (templates.some((template) => template.id === pageId)) return null;
+  return (
+    <div className="template-start">
+      <button type="button" className="link-button" onClick={(event) => setMenu(event.currentTarget)}>
+        <LayoutTemplate size={14} /> {t('page.startFromTemplate')}
+      </button>
+      {menu && (
+        <Menu
+          anchor={menu}
+          label={t('dialogs.templates')}
+          onClose={() => setMenu(null)}
+          entries={templates.map((template) => ({
+            label: displayTitle(template),
+            icon: FileText,
+            onSelect: () => applyTemplateTo(pageId, template.id),
+          }))}
+        />
+      )}
+    </div>
   );
 }

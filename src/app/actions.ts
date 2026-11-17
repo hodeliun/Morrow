@@ -1,4 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
+import { isExitInteractionBlocked } from './exitInteraction';
 import {
   Archive,
   ArrowLeft,
@@ -588,6 +589,7 @@ export function allActions(): Action[] {
 }
 
 export function runAction(id: string): void {
+  if (isExitInteractionBlocked()) return;
   const action = allActions().find((candidate) => candidate.id === id);
   if (!action) return;
   const context = currentContext();

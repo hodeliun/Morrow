@@ -1,5 +1,6 @@
-import { BACKGROUND_HEX, TEXT_HEX } from '../model';
+import { BACKGROUND_HEX, COLORS, TEXT_HEX } from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
+import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
@@ -36,6 +37,8 @@ const MARK_CLOSE: Record<string, (mark: DocMark) => string> = {
 };
 
 export function docToMarkdown(doc: DocNode, options: SerializeOptions = {}): string {
+  const viewIssue = polarisDadosViewDocIssue(doc);
+  if (viewIssue) throw new TypeError(viewIssue);
   const out = blocks(doc.content ?? [], options).trim();
   return out.length > 0 ? `${out}\n` : '';
 }
@@ -50,6 +53,12 @@ export function pageToMarkdown(title: string, doc: DocNode, options: SerializeOp
 const isEmptyParagraph = (node: DocNode | undefined) =>
   node?.type === 'paragraph' && !(node.content ?? []).length;
 
+const isEmptyListParagraph = (node: DocNode | undefined) =>
+  node?.type === 'paragraph' &&
+  (node.content ?? []).every(
+    (child) => child.type === 'hardBreak' || (child.type === 'text' && !(child.text ?? '')),
+  );
+
 // an empty line someone left between paragraphs is written as <br>, which markdown keeps, where plain
 // blank lines would all fold into one. empty lines at the very end are left out
 function blocks(nodes: DocNode[], options: SerializeOptions): string {
@@ -58,7 +67,13 @@ function blocks(nodes: DocNode[], options: SerializeOptions): string {
   const parts: string[] = [];
   for (const node of nodes.slice(0, last + 1)) {
     const text = isEmptyParagraph(node) ? '<br>' : block(node, options);
-    if (text !== null) parts.push(text);
+    if (text === null) continue;
+    const background = blockBackground(node);
+    const notes = [
+      ...(background ? [BACKGROUND_COMMENT(background)] : []),
+      ...(node.type === 'orderedList' && node.attrs?.type === 'a' ? [LETTERS_COMMENT] : []),
+    ];
+    parts.push([...notes, text].join('\n'));
   }
   return parts.join('\n\n');
 }
@@ -132,6 +147,12 @@ function block(node: DocNode, options: SerializeOptions): string | null {
     }
     case 'tableOfContents':
       return '<!-- toc -->';
+    case 'polarisDadosView': {
+      if (Object.keys(node).length !== 2 || !Object.hasOwn(node, 'attrs')) {
+        throw new TypeError('Invalid Polaris Dados view atom.');
+      }
+      return encodePolarisDadosViewMarker(node.attrs);
+    }
     case 'columns': {
       // plain html wrappers, other markdown apps show the columns one after another
       const columns = (node.content ?? []).map(
@@ -172,6 +193,14 @@ function listItems(
       const bullet = marker(index, item);
       let children = item.content ?? [];
       const parts: string[] = [];
+      const startsWithView = children[0]?.type === 'polarisDadosView';
+      if (startsWithView) {
+        throw new TypeError('A Polaris Dados view cannot be the first block in a list item.');
+      }
+      if (isEmptyListParagraph(children[0]) && children[1]?.type === 'polarisDadosView') {
+        parts.push('<br>');
+        children = children.slice(1);
+      }
       // an item that starts empty never leaves a bare - on its line, under text that reads as a heading
       // underline. a picture moves up onto the line, anything else waits under a <br>
       if (isEmptyParagraph(children[0]) && bullet.trim() === '-') {
@@ -223,6 +252,22 @@ export function toggleLevel(value: unknown): 1 | 2 | 3 | 4 | 5 | 6 | null {
 }
 
 export const HEADER_COLUMN = '<!-- header-column -->';
+// a table's column widths in pixels, a comment above it like the header column, other apps leave it out
+export const COLUMN_WIDTHS = (widths: number[]) => `<!-- column-widths: ${widths.join(' ')} -->`;
+export const COLUMN_WIDTHS_PATTERN = /^<!--\s*column-widths:\s*([\d ]+?)\s*-->$/;
+
+// a block's background colour is a comment on the line above it, other apps hide it and show the block as is
+export const BACKGROUND_COMMENT = (color: ColorName) => `<!-- background: ${color} -->`;
+export const BACKGROUND_PATTERN = /^<!--\s*background:\s*([a-z]+)\s*-->$/;
+// a numbered list counted a, b, c. markdown only has numbers, so other apps show it numbered
+export const LETTERS_COMMENT = '<!-- letters -->';
+
+export function blockBackground(node: DocNode): ColorName | null {
+  const color = node.attrs?.backgroundColor;
+  return typeof color === 'string' && (COLORS as readonly string[]).includes(color)
+    ? (color as ColorName)
+    : null;
+}
 
 // a table row is one line of markdown, so what sits in a cell is written on that line: text, pictures as
 // ![](path), and lists as the html obsidian also reads inside a cell
@@ -279,7 +324,13 @@ function table(node: DocNode, options: SerializeOptions): string {
   // with a header cell when it is on
   const later = (node.content ?? []).slice(1);
   const headerColumn = later.length > 0 && later.every((row) => row.content?.[0]?.type === 'tableHeader');
-  return [...(headerColumn ? [HEADER_COLUMN] : []), ...lines].join('\n');
+  // the widths columns were dragged to, by the first row's cells, 0 for one left to fit
+  const widths = (node.content?.[0]?.content ?? []).map((cell) => {
+    const width = Array.isArray(cell.attrs?.colwidth) ? Number(cell.attrs.colwidth[0]) : 0;
+    return Number.isFinite(width) && width > 0 ? Math.round(width) : 0;
+  });
+  const sized = widths.some((width) => width > 0) ? [COLUMN_WIDTHS(widths)] : [];
+  return [...(headerColumn ? [HEADER_COLUMN] : []), ...sized, ...lines].join('\n');
 }
 
 export function wikiLink(node: DocNode, options: SerializeOptions, inTable = false): string {
@@ -308,6 +359,9 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
   };
 
   for (const node of nodes) {
+    if (node.type === 'polarisDadosView') {
+      throw new TypeError('A Polaris Dados view block cannot be serialized as inline content.');
+    }
     if (node.type === 'hardBreak') {
       closeTo(0);
       out += pendingSpace + (inTable ? '<br>' : '\\\n');
@@ -323,7 +377,8 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
     if (node.type === 'dateMention') {
       // dates are written as links to that day's note, the way obsidian names daily notes
       closeTo(0);
-      out += `${pendingSpace}[[${String(node.attrs?.date ?? '')}]]`;
+      const time = String(node.attrs?.time ?? '');
+      out += `${pendingSpace}[[${String(node.attrs?.date ?? '')}]]${/^\d{2}:\d{2}$/.test(time) ? ` ${time}` : ''}`;
       pendingSpace = '';
       continue;
     }

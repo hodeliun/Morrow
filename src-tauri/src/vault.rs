@@ -136,6 +136,18 @@ pub fn select(dir: &str) -> Value {
     }
 }
 
+// the vaults in the order they were dragged into in settings, any left out keep their place after them
+pub fn reorder(order: &[String]) -> Result<()> {
+    let mut list = read_list();
+    list.recent.sort_by_key(|(path, _)| {
+        order
+            .iter()
+            .position(|item| item == path)
+            .unwrap_or(usize::MAX)
+    });
+    write_list(&list)
+}
+
 pub fn forget(dir: &str) -> Result<()> {
     let mut list = read_list();
     list.recent.retain(|(path, _)| path != dir);
@@ -438,6 +450,12 @@ fn some<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum VaultOp {
+    Check {
+        path: String,
+        // Missing is invalid; null expects an absent file, like write's explicit expectation.
+        #[serde(default, deserialize_with = "some")]
+        expect: Option<Option<String>>,
+    },
     Write {
         path: String,
         text: String,
@@ -468,6 +486,12 @@ fn failed(code: &str, message: impl Into<String>) -> Value {
 
 fn apply_one(op: VaultOp) -> Result<Value> {
     match op {
+        VaultOp::Check { path, expect } => {
+            let absolute = resolve(&path)?;
+            let expect =
+                expect.ok_or_else(|| "Check operations need expected contents.".to_string())?;
+            return check_path(&path, &absolute, expect);
+        }
         VaultOp::Write { path, text, expect } => {
             let absolute = resolve(&path)?;
             if let Some(expect) = expect {
@@ -549,6 +573,19 @@ fn apply_one(op: VaultOp) -> Result<Value> {
             // folders that still hold something stay
             let _ = fs::remove_dir(resolve(&path)?);
         }
+    }
+    Ok(json!({ "ok": true }))
+}
+
+fn check_path(relative: &str, absolute: &Path, expect: Option<String>) -> Result<Value> {
+    let current = read_text_or_none(absolute)?;
+    if current != expect {
+        return Ok(json!({
+            "ok": false,
+            "code": "conflict",
+            "message": format!("{relative} changed on disk."),
+            "current": current,
+        }));
     }
     Ok(json!({ "ok": true }))
 }
@@ -639,7 +676,16 @@ pub fn is_synced_path(relative: &str) -> bool {
     if relative.is_empty() || relative.contains(TEMP_MARK) || relative.contains(".morrow-move-") {
         return false;
     }
-    if relative == ".morrow/workspace.json" || relative == ".morrow/review.json" {
+    // what the vault keeps about itself goes to the other computers too: page order, flashcard progress,
+    // the types picked for properties, tag colours and the sidebar's own sections
+    if matches!(
+        relative,
+        ".morrow/workspace.json"
+            | ".morrow/review.json"
+            | ".morrow/property-types.json"
+            | ".morrow/tag-colors.json"
+            | ".morrow/sidebar-sections.json"
+    ) {
         return true;
     }
     !is_hidden(relative)
@@ -1055,6 +1101,8 @@ mod tests {
         assert!(is_hidden("a/.trash/x"));
         assert!(is_synced_path(".morrow/workspace.json"));
         assert!(!is_synced_path(".morrow/recent.json"));
+        assert!(is_synced_path(".morrow/tag-colors.json"));
+        assert!(is_synced_path(".morrow/sidebar-sections.json"));
         assert!(is_synced_path("Notes/Page.md"));
     }
 
@@ -1074,5 +1122,67 @@ mod tests {
                 ..
             }
         ));
+
+        let check_missing: VaultOp =
+            serde_json::from_value(json!({ "op": "check", "path": "a.md" })).unwrap();
+        let check_null: VaultOp = serde_json::from_value(json!({
+            "op": "check",
+            "path": "a.md",
+            "expect": null
+        }))
+        .unwrap();
+        assert!(matches!(check_missing, VaultOp::Check { expect: None, .. }));
+        assert!(matches!(
+            check_null,
+            VaultOp::Check {
+                expect: Some(None),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn check_ops_compare_existing_and_missing_files_without_mutating_them() {
+        let root = std::env::temp_dir().join(format!("morrow-check-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let existing = root.join("workspace.json");
+        let missing = root.join("recent.json");
+        let original = "{\n  \"pages\": {}\n}\n";
+        fs::write(&existing, original).unwrap();
+        let before = fs::read(&existing).unwrap();
+
+        assert_eq!(
+            check_path(
+                ".morrow/workspace.json",
+                &existing,
+                Some(original.to_string())
+            )
+            .unwrap(),
+            json!({ "ok": true }),
+        );
+        let mismatch = check_path(
+            ".morrow/workspace.json",
+            &existing,
+            Some("stale".to_string()),
+        )
+        .unwrap();
+        assert_eq!(mismatch["code"], "conflict");
+        assert_eq!(mismatch["current"], original);
+        assert_eq!(
+            check_path(".morrow/recent.json", &missing, None).unwrap(),
+            json!({ "ok": true })
+        );
+        let missing_mismatch = check_path(
+            ".morrow/recent.json",
+            &missing,
+            Some("expected".to_string()),
+        )
+        .unwrap();
+        assert_eq!(missing_mismatch["code"], "conflict");
+        assert!(missing_mismatch["current"].is_null());
+
+        assert_eq!(fs::read(&existing).unwrap(), before);
+        assert!(!missing.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

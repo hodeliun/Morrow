@@ -22,7 +22,7 @@ declare module '@tiptap/core' {
 export const Columns = Node.create({
   name: 'columns',
   group: 'block',
-  content: 'column{2,4}',
+  content: 'column{2,5}',
   defining: true,
   isolating: true,
 
@@ -52,7 +52,7 @@ export const Columns = Node.create({
             chain()
               .insertContent({
                 type: 'columns',
-                content: Array.from({ length: Math.min(4, Math.max(2, count)) }, () => ({
+                content: Array.from({ length: Math.min(5, Math.max(2, count)) }, () => ({
                   type: 'column',
                   content: [{ type: 'paragraph' }],
                 })),
@@ -216,7 +216,7 @@ export const TableOfContents = Node.create<object, { prefix: string }>({
 export interface DateMentionOptions {
   openDate: (date: Date) => void;
   // a click on a date shows what can be done with it, its day's note or a reminder
-  dateMenu?: (date: Date, anchor: HTMLElement) => void;
+  dateMenu?: (date: Date, anchor: HTMLElement, time: string | null) => void;
   findPages: (query: string) => Array<{ id: string; title: string; path: string }>;
 }
 
@@ -272,6 +272,36 @@ export function dateSuggestions(query: string, today = new Date()): Date[] {
     .slice(0, text ? 6 : 4);
 }
 
+// a time typed after a date, 17:05, 5:05pm or 5pm, as hh:mm. null when the words end in no time
+export function typedTime(query: string): { rest: string; time: string } | null {
+  const match = /\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i.exec(query);
+  if (!match || (!match[2] && !match[3])) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? 0);
+  const half = match[3]?.toLowerCase();
+  if (half && (hour < 1 || hour > 12)) return null;
+  if (half === 'pm' && hour < 12) hour += 12;
+  if (half === 'am' && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return { rest: query.slice(0, match.index), time: `${pad(hour)}:${pad(minute)}` };
+}
+
+// a time as this computer writes it, 05:05 PM or 17:05
+export function describeTime(time: string): string {
+  const [hour, minute] = time.split(':').map(Number);
+  return new Date(2000, 0, 1, hour ?? 0, minute ?? 0).toLocaleTimeString(dateLocale(), {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+const VALID_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const describeMention = (date: string, time: unknown) =>
+  typeof time === 'string' && VALID_TIME.test(time)
+    ? `${describeDate(date)} ${describeTime(time)}`
+    : describeDate(date);
+
 // @today and friends, a date that opens that day's note
 export const DateMention = Node.create<DateMentionOptions>({
   name: 'dateMention',
@@ -285,7 +315,20 @@ export const DateMention = Node.create<DateMentionOptions>({
   },
 
   addAttributes() {
-    return { date: { default: null, parseHTML: (element) => element.getAttribute('datetime') } };
+    return {
+      date: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('datetime')?.slice(0, 10) ?? null,
+      },
+      // a time of day written with the date, @today 17:05
+      time: {
+        default: null,
+        parseHTML: (element) => {
+          const time = element.getAttribute('datetime')?.slice(11, 16) ?? '';
+          return VALID_TIME.test(time) ? time : null;
+        },
+      },
+    };
   },
 
   parseHTML() {
@@ -295,13 +338,16 @@ export const DateMention = Node.create<DateMentionOptions>({
   renderHTML({ node, HTMLAttributes }) {
     return [
       'time',
-      mergeAttributes(HTMLAttributes, { datetime: node.attrs.date, class: 'date-mention' }),
-      describeDate(String(node.attrs.date)),
+      mergeAttributes(HTMLAttributes, {
+        class: 'date-mention',
+        datetime: node.attrs.time ? `${node.attrs.date}T${node.attrs.time}` : node.attrs.date,
+      }),
+      describeMention(String(node.attrs.date), node.attrs.time),
     ];
   },
 
   renderText({ node }) {
-    return describeDate(String(node.attrs.date));
+    return describeMention(String(node.attrs.date), node.attrs.time);
   },
 
   addNodeView() {
@@ -313,7 +359,7 @@ export const DateMention = Node.create<DateMentionOptions>({
       dom.contentEditable = 'false';
       const paint = () => {
         const key = String(current.attrs.date ?? '');
-        dom.textContent = `@${describeDate(key)}`;
+        dom.textContent = `@${describeMention(key, current.attrs.time)}`;
         dom.title = t('editor.openNoteFor', {
           date: parseDateKey(key)?.toLocaleDateString(dateLocale(), { dateStyle: 'full' }) ?? key,
         });
@@ -327,7 +373,8 @@ export const DateMention = Node.create<DateMentionOptions>({
         event.preventDefault();
         const date = parseDateKey(String(current.attrs.date ?? ''));
         if (!date) return;
-        if (this.options.dateMenu) this.options.dateMenu(date, dom);
+        const time = typeof current.attrs.time === 'string' ? current.attrs.time : null;
+        if (this.options.dateMenu) this.options.dateMenu(date, dom, time);
         else this.options.openDate(date);
       });
       return {
@@ -344,37 +391,45 @@ export const DateMention = Node.create<DateMentionOptions>({
 
   addProseMirrorPlugins() {
     const options = this.options;
+    const mentionItems = (query: string): MenuItem[] => {
+      if (query.length > 30 || /^\s/.test(query)) return [];
+      // @today 17:05 keeps the time with the date
+      const timed = typedTime(query);
+      const days = timed ? dateSuggestions(timed.rest) : dateSuggestions(query);
+      const dates: MenuItem[] = days.map((date) => ({
+        id: `date:${dateKey(date)}${timed ? `T${timed.time}` : ''}`,
+        title: describeMention(dateKey(date), timed?.time),
+        description: date.toLocaleDateString(dateLocale(), {
+          weekday: 'short',
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
+        icon: CalendarDays,
+      }));
+      const pages: MenuItem[] = options
+        .findPages(query.trim())
+        .slice(0, 5)
+        .map((page) => ({
+          id: `page:${page.id}`,
+          title: page.title,
+          ...(page.path ? { description: page.path } : {}),
+          icon: FileText,
+        }));
+      return [...dates, ...pages];
+    };
     return [
       Suggestion<MenuItem, MenuItem>({
         editor: this.editor,
         pluginKey: new PluginKey('dateMentionSuggestion'),
         char: '@',
         allowSpaces: true,
-        allow: ({ state }) => state.selection.$from.parent.type.name !== 'codeBlock',
-        items: ({ query }) => {
-          if (query.length > 30) return [];
-          const dates: MenuItem[] = dateSuggestions(query).map((date) => ({
-            id: `date:${dateKey(date)}`,
-            title: describeDate(dateKey(date)),
-            description: date.toLocaleDateString(dateLocale(), {
-              weekday: 'short',
-              day: 'numeric',
-              month: 'short',
-              year: 'numeric',
-            }),
-            icon: CalendarDays,
-          }));
-          const pages: MenuItem[] = options
-            .findPages(query.trim())
-            .slice(0, 5)
-            .map((page) => ({
-              id: `page:${page.id}`,
-              title: page.title,
-              ...(page.path ? { description: page.path } : {}),
-              icon: FileText,
-            }));
-          return [...dates, ...pages];
-        },
+        // an @ followed by a space or by words that match no date or page is just an @ in a sentence, so
+        // the menu goes away and doesn't come back when the cursor returns there
+        allow: ({ state, range }) =>
+          state.selection.$from.parent.type.name !== 'codeBlock' &&
+          mentionItems(state.doc.textBetween(range.from + 1, range.to, ' ')).length > 0,
+        items: ({ query }) => mentionItems(query),
         command: ({ editor, range, props }) => insertMention(editor, range, props),
         render: renderSuggestion(
           () => t('editor.mentionDateOrPage'),
@@ -386,8 +441,9 @@ export const DateMention = Node.create<DateMentionOptions>({
 });
 
 function insertMention(editor: Editor, range: { from: number; to: number }, item: MenuItem): void {
+  const [date, time] = item.id.slice(5).split('T');
   const node = item.id.startsWith('date:')
-    ? { type: 'dateMention', attrs: { date: item.id.slice(5) } }
+    ? { type: 'dateMention', attrs: { date, time: time ?? null } }
     : { type: 'pageLink', attrs: { id: item.id.slice(5), label: item.title } };
   editor
     .chain()

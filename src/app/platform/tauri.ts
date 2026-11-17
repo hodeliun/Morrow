@@ -4,6 +4,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { DesktopBridge } from './desktop';
+import { getExitPreparer } from '../exitPreparationRegistry';
+import {
+  createCloseProtocolCoordinator,
+  type CloseAckDisposition,
+  type CloseCancelDisposition,
+  type CloseDecision,
+  type CloseProtocolFailure,
+  type CloseSnapshot,
+} from './closeProtocol';
 
 interface NativeInfo {
   version: string;
@@ -20,6 +29,27 @@ declare global {
 }
 
 type Listener = (id: string) => void | Promise<void>;
+
+let nativeCloseCoordinator: ReturnType<typeof createCloseProtocolCoordinator> | null = null;
+
+/** Starts the native handshake after main has installed its private exit preparer. */
+export function startTauriCloseProtocol(reportFailure: (reason: CloseProtocolFailure) => void): void {
+  if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return;
+  nativeCloseCoordinator ??= createCloseProtocolCoordinator({
+    transport: {
+      listen: async (handler) => listen<number>('morrow:close-requested', (event) => handler(event.payload)),
+      snapshot: () => invoke<CloseSnapshot>('close_protocol_snapshot'),
+      acknowledge: (generation: number, decision: CloseDecision) =>
+        invoke<CloseAckDisposition>('close_protocol_ack', { generation, decision }),
+      cancel: (generation: number) => invoke<CloseCancelDisposition>('close_protocol_cancel', { generation }),
+    },
+    getPreparer: getExitPreparer,
+    reportFailure,
+  });
+  void nativeCloseCoordinator.start().catch(() => {
+    // No positive acknowledgement was sent; the coordinator owns listener-registration retries.
+  });
+}
 
 // a listener that can be removed straight away, though tauri hands back its remover a moment later
 function subscribe<T>(event: string, handler: (payload: T) => void): () => void {
@@ -39,6 +69,29 @@ function subscribe<T>(event: string, handler: (payload: T) => void): () => void 
 
 // small values travel as json, file contents as raw bytes with their path in a header
 const pathHeader = (path: string) => ({ headers: { path: encodeURIComponent(path) } });
+
+const MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  flac: 'audio/flac',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  m4v: 'video/mp4',
+  pdf: 'application/pdf',
+};
+const mimeOfName = (name: string) =>
+  MIME[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 
 async function bytesOrNull(command: string, args: Record<string, unknown>): Promise<Uint8Array | null> {
   try {
@@ -67,9 +120,7 @@ export function tauriBridge(): DesktopBridge | null {
 
   subscribe<string>('morrow:command', (id) => {
     if (typeof id !== 'string') return;
-    const done = run(id);
-    // the native side waits for this before closing the window
-    if (id === 'app.prepareToClose') void done.finally(() => invoke('close_ready'));
+    void run(id);
   });
 
   setupWindow(info.platform, run);
@@ -118,7 +169,7 @@ export function tauriBridge(): DesktopBridge | null {
       zoomListeners.add(listener);
       return () => zoomListeners.delete(listener);
     },
-    setTheme: (theme) => void invoke('set_theme', { theme }),
+    setTheme: (theme, color) => void invoke('set_theme', { theme, color: color ?? null }),
     openExternal: (url) => invoke('open_external', { url }),
     showDataFolder: () => invoke('show_data_folder'),
     showBackupsFolder: () => invoke('show_backups'),
@@ -133,6 +184,18 @@ export function tauriBridge(): DesktopBridge | null {
       : {}),
     copyText: (text) => invoke<boolean>('copy_text', { text }),
     copyRich: (text, html) => invoke<boolean>('copy_rich', { text, html }),
+    takeShared: () => invoke<string | null>('take_shared').catch(() => null),
+    async clipboardFiles() {
+      const paths = await invoke<string[]>('clipboard_files').catch(() => []);
+      const files: File[] = [];
+      for (const path of paths) {
+        const data = await bytesOrNull('read_clipboard_file', { path });
+        const name = path.split(/[\\/]/).pop() || 'file';
+        if (data)
+          files.push(new File([data.slice().buffer as ArrayBuffer], name, { type: mimeOfName(name) }));
+      }
+      return files;
+    },
     // the webview checks spelling itself, a page without spellcheck turns it off
     setSpellcheck: () => undefined,
     async fetchImage(url) {
@@ -181,6 +244,7 @@ export function tauriBridge(): DesktopBridge | null {
       createDefault: () => invoke('vault_create_default'),
       select: (dir) => invoke('vault_select', { dir }),
       forget: (dir) => invoke('vault_forget', { dir }),
+      reorder: (order) => invoke('vault_reorder', { order }),
       open: () => invoke('vault_open'),
       close: () => invoke('vault_close'),
       scan: () => invoke('vault_scan'),

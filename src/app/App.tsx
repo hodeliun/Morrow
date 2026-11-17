@@ -1,20 +1,22 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from './i18n';
 import { allActions, matchesShortcut, runAction } from './actions';
+import { isExitInteractionBlocked } from './exitInteraction';
 import { CommandPalette } from './components/CommandPalette';
 import { Dialogs } from './components/Dialogs';
 import { ReviewView } from './components/ReviewView';
 import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
-import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
 import { Sidebar } from './components/Sidebar';
 import { HomeView } from './components/Home';
 import { ArchiveView, TasksView, TrashView } from './components/Views';
+import { FilesView } from './components/FilesView';
 import { commitEditors, ownsUndo, undoRedo } from './editor/commits';
-import { ensureToday, writeAutoBackup } from './operations';
+import { captureToToday, ensureToday, writeAutoBackup } from './operations';
+import { dateKey, findDailyNote } from '../core/daily';
 import { startAutoSync, syncWith } from './sync';
 import { startUpdateChecks } from './updates';
 import { desktop, isMac, watchTitleBar } from './platform/desktop';
@@ -25,10 +27,12 @@ import {
   setPreferences,
   usePreferences,
 } from './platform/preferences';
+import type { Palette } from './platform/preferences';
 import { navigate, openPage, parseRoute, routeHash, useRoute } from './router';
 import type { Route } from './router';
-import { getUi, setUi, toast, useUi } from './ui';
+import { getUi, openDialog, setUi, toast, useUi } from './ui';
 import { loadCustomCss } from './customCss';
+import { loadTagColors } from './tagColors';
 import {
   activateTabAt,
   claimNavigation,
@@ -39,7 +43,6 @@ import {
   useTabs,
 } from './tabs';
 import type { PaneId } from './tabs';
-import { flushPlaces } from './readingPlace';
 import { clearPropertyHistory, getSession, getState } from './workspace';
 
 const AUTO_BACKUP_MS = 10 * 60 * 1000;
@@ -54,20 +57,24 @@ const GraphView = lazy(() =>
   import('./components/GraphView').then((module) => ({ default: module.GraphView })),
 );
 
-function useTheme(theme: 'system' | 'light' | 'dark') {
+function useTheme(theme: 'system' | 'light' | 'dark', palette: Palette) {
   useEffect(() => {
     const apply = () => {
       const resolved = resolvedTheme(theme);
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.style.colorScheme = resolved;
-      desktop?.setTheme(resolved);
+      const root = document.documentElement;
+      root.dataset.theme = resolved;
+      root.dataset.palette = palette;
+      root.style.colorScheme = resolved;
+      // the window behind the page, and on a phone the strips around it, take the page's colour
+      const page = getComputedStyle(root).getPropertyValue('--bg').trim();
+      desktop?.setTheme(resolved, /^#[0-9a-f]{6}$/i.test(page) ? page : undefined);
     };
     watchTitleBar();
     apply();
     const media = matchMedia('(prefers-color-scheme: dark)');
     media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);
-  }, [theme]);
+  }, [theme, palette]);
 }
 
 function useGlobalShortcuts() {
@@ -114,6 +121,58 @@ function useGlobalShortcuts() {
   }, []);
 }
 
+// the mouse pointer hides while typing and comes back when the mouse moves, the way the electron app did
+// and the system does in its own text fields. the web view on windows leaves it standing over the words
+function useHidePointerWhileTyping() {
+  useEffect(() => {
+    const root = document.documentElement;
+    let hidden = false;
+    const onKey = (event: KeyboardEvent) => {
+      if (hidden || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.length !== 1 && !['Enter', 'Backspace', 'Delete', 'Tab'].includes(event.key)) return;
+      const target = event.target as HTMLElement | null;
+      if (!target?.isContentEditable && !(target instanceof HTMLTextAreaElement)) return;
+      hidden = true;
+      root.dataset.typing = '';
+    };
+    const onMove = (event: PointerEvent) => {
+      // a move of no distance comes with some keys and scrolling, only a real move shows it again
+      if (!hidden || (event.type === 'pointermove' && event.movementX === 0 && event.movementY === 0)) return;
+      hidden = false;
+      delete root.dataset.typing;
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerdown', onMove, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerdown', onMove, true);
+    };
+  }, []);
+}
+
+// links and words shared from another app on a phone go into today's note, when morrow opens from the share
+// sheet or comes back to the front
+function useSharedText() {
+  useEffect(() => {
+    if (!desktop?.takeShared) return;
+    const take = () => {
+      if (document.visibilityState !== 'visible') return;
+      void desktop?.takeShared?.().then((text) => {
+        if (text && captureToToday(text)) toast(t('toasts.sharedSaved'), { durationMs: 3000 });
+      });
+    };
+    take();
+    document.addEventListener('visibilitychange', take);
+    window.addEventListener('focus', take);
+    return () => {
+      document.removeEventListener('visibilitychange', take);
+      window.removeEventListener('focus', take);
+    };
+  }, []);
+}
+
 // copying text says so at the bottom of the window, the way copying a picture does. a copy that put
 // nothing on the clipboard says nothing
 function useCopyToast() {
@@ -156,13 +215,7 @@ function useLifecycle() {
     document.addEventListener('visibilitychange', onVisibility);
 
     const unsubscribe = desktop?.onCommand(async (id) => {
-      if (id === 'app.prepareToClose') {
-        commitEditors();
-        flushPlaces();
-        await session.flush();
-        await writeAutoBackup();
-        return;
-      }
+      if (isExitInteractionBlocked()) return;
       if (id.startsWith('page:')) {
         if (getState().pages[id.slice(5)]) openPage(id.slice(5));
         return;
@@ -220,6 +273,8 @@ function viewFor(route: Route) {
       return <TrashView />;
     case 'archive':
       return <ArchiveView />;
+    case 'files':
+      return <FilesView />;
     case 'tags':
       return <TagsView />;
     case 'tag':
@@ -382,6 +437,20 @@ function ZoomLevel() {
   );
 }
 
+// true for a moment after the sidebar is shown or hidden, while it slides
+function useSidebarSlide(open: boolean): boolean {
+  const [sliding, setSliding] = useState(false);
+  const was = useRef(open);
+  useEffect(() => {
+    if (was.current === open) return;
+    was.current = open;
+    setSliding(true);
+    const timer = setTimeout(() => setSliding(false), 240);
+    return () => clearTimeout(timer);
+  }, [open]);
+  return sliding;
+}
+
 let started = false;
 function useStartPage() {
   useEffect(() => {
@@ -389,10 +458,11 @@ function useStartPage() {
     started = true;
     // a window opened at a particular place, or a brand new vault showing its guide, stays as it is
     if ((window.location.hash && window.location.hash !== '#/') || getSession().firstRun) return;
-    const { startPage: start, hiddenModules } = getPreferences();
+    const { startPage: start, hiddenModules, autoDaily } = getPreferences();
     if (start === 'last') goBack('main');
     else if (start === 'today' && !hiddenModules.includes('daily')) {
-      const id = ensureToday();
+      // with notes made by hand only, a day without one opens on home rather than making an empty note
+      const id = autoDaily ? ensureToday() : (findDailyNote(getState(), dateKey(new Date()))?.id ?? null);
       if (id) navigate({ name: 'page', id, find: null }, { replace: true, pane: 'main' });
     }
   }, []);
@@ -403,17 +473,30 @@ export function App() {
   const ui = useUi();
   const prefs = usePreferences();
   const tabs = useTabs();
-  useTheme(prefs.theme);
+  useTheme(prefs.theme, prefs.palette);
   useEffect(() => {
-    document.documentElement.dataset.accent = prefs.accent;
-    document.documentElement.dataset.colorful = prefs.colorful ? 'true' : 'false';
-  }, [prefs.accent, prefs.colorful]);
+    const root = document.documentElement;
+    root.dataset.accent = prefs.accent;
+    root.dataset.colorful = prefs.colorful ? 'true' : 'false';
+    root.style.setProperty('--text-scale', String(prefs.textScale));
+    // a custom accent sets the colour, the softer shades are mixed from it in color.css
+    if (prefs.accent === 'custom') root.style.setProperty('--custom-accent', prefs.accentColor);
+    else root.style.removeProperty('--custom-accent');
+  }, [prefs.accent, prefs.colorful, prefs.textScale, prefs.accentColor]);
   useGlobalShortcuts();
   useCopyToast();
   useEffect(() => applySpellcheck(prefs.spellcheck), [prefs.spellcheck]);
   useEffect(() => startTabs(), []);
   useStartPage();
   useLifecycle();
+  useHidePointerWhileTyping();
+  useSharedText();
+  // the first time morrow opens on this computer it says hello and asks how it should look
+  useEffect(() => {
+    if (!getPreferences().onboarded) openDialog({ kind: 'welcome' });
+  }, []);
+  // tags keep the colours picked for them from the first page drawn
+  useEffect(() => void loadTagColors(), []);
 
   useEffect(() => {
     setUi({ mobileSidebar: false, sidebarPeek: false });
@@ -421,13 +504,14 @@ export function App() {
     clearPropertyHistory();
   }, [route]);
   useSidebarPeek(!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek);
+  const sliding = useSidebarSlide(prefs.sidebarOpen);
 
   const side = tabs.tabs.find((tab) => tab.id === tabs.active)?.side ?? null;
   const sideRoute = useMemo(() => (side ? parseRoute(side.hash) : null), [side]);
 
   return (
     <div
-      className={`app${prefs.sidebarOpen ? '' : ' sidebar-collapsed'}${!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek ? ' sidebar-peeking' : ''}${prefs.assistant && prefs.assistantOpen ? ' has-assistant' : ''}${ui.mobileSidebar ? ' mobile-sidebar-open' : ''}${ui.focusMode ? ' focus-mode' : ''}`}
+      className={`app${prefs.sidebarOpen ? '' : ' sidebar-collapsed'}${sliding ? ' sidebar-sliding' : ''}${!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek ? ' sidebar-peeking' : ''}${prefs.assistant && prefs.assistantOpen ? ' has-assistant' : ''}${ui.mobileSidebar ? ' mobile-sidebar-open' : ''}${ui.focusMode ? ' focus-mode' : ''}`}
     >
       <Sidebar />
       {!prefs.sidebarOpen && prefs.sidebarPeek && (
@@ -467,7 +551,6 @@ export function App() {
       )}
       {ui.palette && <CommandPalette key={ui.paletteForSide ? 'side' : 'main'} />}
       <Dialogs />
-      <Toasts />
       <ZoomLevel />
     </div>
   );

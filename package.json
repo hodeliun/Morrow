@@ -2,7 +2,7 @@
   "name": "morrow",
   "productName": "Morrow",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "A free, open source, local first workspace for notes, databases and canvases, kept as plain Markdown files. No account, no cloud, and no AI unless you bring your own.",
   "license": "Apache-2.0",
   "author": {
@@ -26,6 +26,8 @@
     "build": "tauri build",
     "build:web": "tsc -p tsconfig.json && vite build && npm run build:mcp",
     "build:mcp": "vite build --config vite.config.mcp.ts",
+    "build:polaris-dados": "vite build --config plugins/polaris-dados/vite.config.ts",
+    "fixture:polaris-dados": "node scripts/pilot/create-polaris-dados-fixture.mjs",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",

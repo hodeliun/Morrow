@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Morrow Polaris Dados Pilot",
+  "identifier": "app.morrow.polaris-dados-pilot",
+  "bundle": {
+    "active": false
+  }
+}

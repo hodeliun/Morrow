@@ -17,27 +17,61 @@ import { EmojiSuggest } from './EmojiSuggest';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
 import type { BlockMenuRequest } from './BlockHandle';
-import { MarkdownPaste } from './MarkdownPaste';
+import { MarkdownPaste, PasteOnEmptyLine } from './MarkdownPaste';
 import { PageLink } from './PageLink';
 import type { PageLinkOptions } from './PageLink';
+import { PolarisDadosView } from './PolarisDadosView';
+import type { PolarisDadosViewMountContext } from './PolarisDadosView';
 import { SlashCommand } from './SlashCommand';
-import { IndentedLines, KeepTab, lineContent } from './turnInto';
-import { TextSelection } from '@tiptap/pm/state';
+import { IndentedLines, KeepTab, lineContent, LineEdges } from './turnInto';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import { Fragment, Slice } from '@tiptap/pm/model';
+import type { Node as PMNode } from '@tiptap/pm/model';
 import { Column, Columns, DateMention, TableOfContents } from './Structure';
 
 export interface ExtensionOptions extends PageLinkOptions {
+  linkedViewContext?: PolarisDadosViewMountContext;
   onBlockMenu: (request: BlockMenuRequest) => void;
   resolvePage: (title: string) => string | null;
   openTag: (tag: string) => void;
   createChild: (kind: 'database' | 'canvas') => string | null;
   openDate: (date: Date) => void;
-  dateMenu?: (date: Date, anchor: HTMLElement) => void;
+  dateMenu?: (date: Date, anchor: HTMLElement, time: string | null) => void;
 }
 
 // obsidian block ids live on paragraphs and are written back as " ^id". pressing enter at the end of one
 // never hands its id to the new paragraph
 const BlockIds = Extension.create({
   name: 'blockIds',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('blockIdsPaste'),
+        props: {
+          transformPasted: (slice, view) => {
+            const taken = new Set<string>();
+            view.state.doc.descendants((node) => {
+              if (typeof node.attrs.blockId === 'string' && node.attrs.blockId) taken.add(node.attrs.blockId);
+            });
+            if (!taken.size) return slice;
+            const strip = (fragment: Fragment): Fragment => {
+              const children: PMNode[] = [];
+              fragment.forEach((child) => {
+                const id = child.attrs.blockId;
+                const attrs =
+                  typeof id === 'string' && taken.has(id) ? { ...child.attrs, blockId: null } : child.attrs;
+                children.push(
+                  child.isText ? child : child.type.create(attrs, strip(child.content), child.marks),
+                );
+              });
+              return Fragment.from(children);
+            };
+            return new Slice(strip(slice.content), slice.openStart, slice.openEnd);
+          },
+        },
+      }),
+    ];
+  },
   addGlobalAttributes() {
     return [
       {
@@ -46,8 +80,35 @@ const BlockIds = Extension.create({
           blockId: {
             default: null,
             keepOnSplit: false,
+            // a pasted copy of a block on the same page leaves its ^id behind, links go to the original
             parseHTML: (element) => element.getAttribute('data-block-id'),
             renderHTML: (attrs) => (attrs.blockId ? { 'data-block-id': attrs.blockId } : {}),
+          },
+        },
+      },
+    ];
+  },
+});
+
+// a block's own background colour, from the colour in its Turn into menu
+const BlockBackground = Extension.create({
+  name: 'blockBackground',
+  addGlobalAttributes() {
+    return [
+      {
+        types: ['paragraph', 'heading', 'blockquote', 'bulletList', 'orderedList', 'taskList', 'details'],
+        attributes: {
+          backgroundColor: {
+            default: null,
+            keepOnSplit: true,
+            parseHTML: (element) => element.getAttribute('data-background'),
+            renderHTML: (attrs) =>
+              attrs.backgroundColor
+                ? {
+                    'data-background': attrs.backgroundColor,
+                    class: `block-bg block-bg-${attrs.backgroundColor}`,
+                  }
+                : {},
           },
         },
       },
@@ -76,6 +137,15 @@ const ToggleSummary = DetailsSummary.extend({
 const Quote = Blockquote.extend({
   addInputRules() {
     return [wrappingInputRule({ find: /^\s*["“]\s$/, type: this.type })];
+  },
+});
+
+// a. and a space at the start of a line starts a list counted in letters
+const LetteredShortcut = Extension.create({
+  name: 'letteredShortcut',
+  addInputRules() {
+    const type = this.editor.schema.nodes.orderedList;
+    return type ? [wrappingInputRule({ find: /^\s*a\.\s$/, type, getAttributes: { type: 'a' } })] : [];
   },
 });
 
@@ -140,6 +210,7 @@ const InlineCode = Code.extend({ excludes: '' });
 export function createExtensions(options: ExtensionOptions): AnyExtension[] {
   return [
     BlockIds,
+    BlockBackground,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       link: {
@@ -158,20 +229,24 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
       blockquote: false,
     }),
     Quote,
+    LetteredShortcut,
     ToggleShortcut,
     InlineCode,
     CodeBlock,
     Highlight,
     TextColor,
     RawBlock,
+    PolarisDadosView.configure({ mountContext: options.linkedViewContext ?? null }),
     ...mathExtensions(),
     MathViewTracker,
     Tags(options.openTag),
     TaskList,
     TaskItem.configure({ nested: true }),
     IndentedLines,
+    LineEdges,
     KeepTab,
-    Table.configure({ resizable: false }),
+    // columns are dragged wider or narrower at their edges, the widths are kept in the file
+    Table.configure({ resizable: true, cellMinWidth: 60, lastColumnResizable: false }),
     TableRow,
     TableHeader,
     TableCell,
@@ -218,6 +293,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     ToggleSummary,
     DetailsContent,
     FindReplace,
+    PasteOnEmptyLine,
     PasteMenu,
     ClickBelow,
     BlockHandle.configure({ onMenu: options.onBlockMenu }),

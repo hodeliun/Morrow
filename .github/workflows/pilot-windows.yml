@@ -1,0 +1,70 @@
+name: Pilot Windows build
+
+on:
+  push:
+    branches:
+      - pilot/e003-polaris-dados-2.0
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize evidence directory
+        shell: pwsh
+        run: |
+          $runDir = Join-Path $env:RUNNER_TEMP "issue-166-$($env:GITHUB_SHA)-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $evidenceDir = Join-Path $runDir 'evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          $initialReceipt = [ordered]@{
+            status = 'initializing'
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            sha = $env:GITHUB_SHA
+            startedAt = [DateTimeOffset]::UtcNow.ToString('o')
+          } | ConvertTo-Json
+          [IO.File]::WriteAllText((Join-Path $evidenceDir 'receipt.json'), $initialReceipt, [Text.UTF8Encoding]::new($false))
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust stable, rustfmt and clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run build gates and package verification
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/pilot/windows-build.ps1
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/issue-166-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload verified technical package
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrow-polaris-dados-windows-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/issue-166-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}/candidate/*.zip
+          if-no-files-found: error
+          retention-days: 7

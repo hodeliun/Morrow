@@ -6,14 +6,26 @@ import { markdownToDoc } from '../../core/markdown/parse';
 import { docToMarkdown } from '../../core/markdown/serialize';
 import { displayTitle } from '../../core/model';
 import type { PageId } from '../../core/model';
+import { isEffectivelyTrashed } from '../../core/tree';
 import { focusedEditor } from '../editor/commits';
+import { captureEditorInsertionTarget } from '../editor/editorInsertion';
 import { createPage } from '../operations';
 import { desktop } from '../platform/desktop';
 import { getPreferences } from '../platform/preferences';
+import { getLocale } from '../i18n';
 import { activeRoute, openPage } from '../router';
 import { toast } from '../ui';
 import { getSession, getState, run } from '../workspace';
 import { addPluginAction, addPluginBlock } from './registry';
+import { createDataApi } from './dataApi';
+import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
+import type { DatabaseProviderRegistration } from './providerApi';
+import { clonePluginPageProperties } from './pageInfo';
+import { selectedProviderMarker } from './providerMarker';
+import type { PluginEditorInsertionTargetV1 } from './editorApi';
+import { definePluginLocaleApi } from './localeApi';
+
+export type { PluginLocaleApi } from './localeApi';
 
 export const PLUGINS_FOLDER = '.morrow/plugins';
 const SETTINGS_FILE = '.morrow/plugins.json';
@@ -34,10 +46,13 @@ export interface PluginInfo extends PluginManifest {
 }
 
 interface Running {
+  generation: number;
+  active: boolean;
   cleanups: Array<() => void>;
 }
 
 const running = new Map<string, Running>();
+const ownerGenerations = new Map<string, number>();
 const errors = new Map<string, string>();
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((listener) => listener());
@@ -117,6 +132,68 @@ function pluginApi(id: string, state: Running) {
     state.cleanups.push(cleanup);
     return cleanup;
   };
+  const session = getSession();
+  const ownerIsActive = () => running.get(id) === state && state.active && !session.isClosed;
+  const editorOwnerIsActive = () => {
+    try {
+      return ownerIsActive() && getSession() === session;
+    } catch {
+      return false;
+    }
+  };
+  const bindInsertionTarget = (target: PluginEditorInsertionTargetV1): PluginEditorInsertionTargetV1 => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      target.dispose();
+    };
+    state.cleanups.push(release);
+    const forgetCleanup = () => {
+      const index = state.cleanups.indexOf(release);
+      if (index >= 0) state.cleanups.splice(index, 1);
+    };
+    return Object.freeze({
+      version: target.version,
+      insert(markdown: string) {
+        const result = target.insert(markdown);
+        release();
+        if (state.active) forgetCleanup();
+        return result;
+      },
+      dispose() {
+        release();
+        if (state.active) forgetCleanup();
+      },
+    });
+  };
+  const insertion = Object.freeze({
+    version: 1 as const,
+    capture() {
+      const target = captureEditorInsertionTarget({
+        generation: state.generation,
+        isActive: editorOwnerIsActive,
+      });
+      return target ? bindInsertionTarget(target) : null;
+    },
+  });
+  const data = createDataApi({
+    session,
+    ownerIsActive,
+    isProviderActive: (databaseId) => {
+      const state = getState();
+      const page = state.pages[databaseId];
+      if (!page || page.kind !== 'database' || !page.database || !Object.hasOwn(page.extra, 'polarisDados'))
+        return false;
+      if (session.unreadable.has(databaseId) || isEffectivelyTrashed(state.pages, databaseId)) return false;
+      const selection = selectedProviderMarker(page.extra.polarisDados);
+      if (selection?.provider !== 'polaris-dados') return false;
+      const provider = getDatabaseProvider(selection.provider);
+      return provider?.apiVersion === 1 && provider.data === data;
+    },
+    isHostReadonly: () => getPreferences().readingMode,
+    registerCleanup: keep,
+  });
   const pageInfo = (pageId: PageId) => {
     const page = getState().pages[pageId];
     if (!page) return null;
@@ -125,14 +202,26 @@ function pluginApi(id: string, state: Running) {
       title: displayTitle(page),
       path: getSession().pathOf(page.id),
       tags: [...page.tags],
-      properties: { ...page.extra },
+      properties: clonePluginPageProperties(page.extra),
       parentId: page.parentId,
       kind: page.kind,
     };
   };
-  return Object.freeze({
+  return Object.freeze(definePluginLocaleApi({
     version: desktop?.version ?? '',
     plugin: id,
+    data,
+    providers: Object.freeze({
+      version: 1 as const,
+      register: (registration: DatabaseProviderRegistration) => {
+        const unregister = registerDatabaseProvider(id, ownerIsActive, data, registration);
+        const unsubscribeClose = session.onClose(unregister);
+        return keep(() => {
+          unsubscribeClose();
+          unregister();
+        });
+      },
+    }),
     commands: {
       add(command: { id: string; name: string; shortcut?: string; run: () => void }) {
         if (typeof command?.id !== 'string' || typeof command.run !== 'function')
@@ -214,14 +303,18 @@ function pluginApi(id: string, state: Running) {
       },
     },
     editor: {
+      insertion,
       insert(markdown: string) {
-        const editor = focusedEditor();
-        if (!editor || editor.isDestroyed) return false;
-        return editor
-          .chain()
-          .focus()
-          .insertContent(markdownToDoc(String(markdown)).content ?? [])
-          .run();
+        const target = captureEditorInsertionTarget({
+          generation: state.generation,
+          isActive: editorOwnerIsActive,
+        });
+        if (!target) return false;
+        try {
+          return target.insert(String(markdown)).ok;
+        } finally {
+          target.dispose();
+        }
       },
       selectedText() {
         const editor = focusedEditor();
@@ -248,7 +341,7 @@ function pluginApi(id: string, state: Running) {
       set: (value: unknown) => writeText(`${PLUGINS_FOLDER}/${id}/data.json`, JSON.stringify(value, null, 2)),
     },
     register: (cleanup: () => void) => keep(cleanup),
-  });
+  }, getLocale));
 }
 
 async function load(id: string): Promise<void> {
@@ -259,7 +352,9 @@ async function load(id: string): Promise<void> {
     errors.set(id, 'main.js is missing.');
     return;
   }
-  const state: Running = { cleanups: [] };
+  const generation = (ownerGenerations.get(id) ?? 0) + 1;
+  ownerGenerations.set(id, generation);
+  const state: Running = { generation, active: true, cleanups: [] };
   running.set(id, state);
   const url = URL.createObjectURL(
     new Blob([`${code}\n//# sourceURL=morrow-plugin-${id}.js`], { type: 'text/javascript' }),
@@ -285,6 +380,7 @@ function unload(id: string): void {
   const state = running.get(id);
   if (!state) return;
   running.delete(id);
+  state.active = false;
   for (const cleanup of state.cleanups.reverse()) {
     try {
       cleanup();
@@ -292,6 +388,7 @@ function unload(id: string): void {
       // a plugin that fails to tidy up is still turned off
     }
   }
+  state.cleanups.length = 0;
 }
 
 // at start, and when plugins are allowed on this computer, the ones turned on in this vault load

@@ -39,6 +39,8 @@ export interface LoadedWorkspace {
   problems: string[];
   // pages whose stored content failed validation, opened read only so nothing overwrites it
   unreadable: PageId[];
+  // readable files with Markdown/frontmatter this version cannot safely represent
+  protectedPages?: Record<PageId, string>;
 }
 
 // each entry upgrades data from version n to n + 1
@@ -186,6 +188,13 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     dateProp: propRef(raw.dateProp),
     hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((id): id is string => propRef(id) !== null) : [],
     ...(isRecord(raw.widths) ? { widths: normalizeWidths(raw.widths) } : {}),
+    ...(Array.isArray(raw.columns)
+      ? {
+          columns: raw.columns
+            .filter((key): key is string => typeof key === 'string' && key.length > 0 && key.length <= 64)
+            .slice(0, 200),
+        }
+      : {}),
   };
 }
 

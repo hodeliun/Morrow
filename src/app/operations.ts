@@ -227,12 +227,17 @@ export function captureToToday(text: string): boolean {
   const blocks = clean.split(/\n{2,}/).map((part, index) => {
     const task = /^\[( |x)\]\s*/i.exec(part);
     const body = task ? part.slice(task[0].length) : part;
-    const lines = body
-      .split('\n')
-      .flatMap((line, i) => [
-        ...(i > 0 ? [{ type: 'hardBreak' }] : []),
-        ...(line ? [{ type: 'text', text: line }] : []),
-      ]);
+    const lines = body.split('\n').flatMap((line, i) => [
+      ...(i > 0 ? [{ type: 'hardBreak' }] : []),
+      // a web address on a line of its own, such as a shared link, can be clicked
+      ...(line
+        ? [
+            /^https?:\/\/\S+$/.test(line.trim())
+              ? { type: 'text', text: line.trim(), marks: [{ type: 'link', attrs: { href: line.trim() } }] }
+              : { type: 'text', text: line },
+          ]
+        : []),
+    ]);
     const content =
       index === 0 && !task
         ? [{ type: 'text', text: `${time} `, marks: [{ type: 'bold' }] }, ...lines]
@@ -276,6 +281,25 @@ export function createTemplatesPage(): PageId | null {
 }
 
 // a new page that starts as a copy of a template, with its date and title fields filled in
+// an empty page takes on a template, its text and its icon and tags where it has none of its own
+export function applyTemplateTo(pageId: PageId, templateId: PageId): boolean {
+  commitEditors();
+  const state = getState();
+  const page = state.pages[pageId];
+  const template = state.pages[templateId];
+  if (!page || !template) return false;
+  const doc = applyTemplate(state.docs[templateId] ?? { type: 'doc', content: [{ type: 'paragraph' }] }, {
+    title: displayTitle(page),
+    date: new Date(),
+  });
+  const now = Date.now();
+  if (!run({ type: 'page.setDoc', id: pageId, doc, now }).ok) return false;
+  if (!page.icon && template.icon) run({ type: 'page.setIcon', id: pageId, icon: template.icon, now });
+  if (page.tags.length === 0 && template.tags.length)
+    run({ type: 'page.setTags', id: pageId, tags: template.tags, now });
+  return true;
+}
+
 export function createFromTemplate(templateId: PageId, parentId: PageId | null): PageId | null {
   const state = getState();
   const template = state.pages[templateId];

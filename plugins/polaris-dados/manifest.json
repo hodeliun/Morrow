@@ -1,0 +1,7 @@
+{
+  "id": "polaris-dados",
+  "name": "Polaris Dados",
+  "version": "0.1.0",
+  "description": "A formula-backed data grid for opted-in databases.",
+  "author": "Polaris"
+}
