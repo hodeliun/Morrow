@@ -6,6 +6,30 @@ $child = $null
 $identity = $null
 $marker = [Guid]::NewGuid().ToString('N')
 $failed = $false
+$runnerTemp = [Environment]::GetEnvironmentVariable('RUNNER_TEMP', [EnvironmentVariableTarget]::Process)
+
+function Get-SafeErrorMessage {
+  param([Parameter(Mandatory)][Exception] $Exception)
+
+  $message = [string]$Exception.Message
+  $message = $message -replace '[\r\n\t]+', ' '
+  foreach ($sensitivePath in @($runnerTemp, [Environment]::GetEnvironmentVariable('USERPROFILE', [EnvironmentVariableTarget]::Process))) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$sensitivePath)) {
+      $message = [regex]::Replace($message, [regex]::Escape([string]$sensitivePath), '<PRIVATE_PATH>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+  }
+  $message = [regex]::Replace($message, '(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|eyJ[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{12,})', '<REDACTED_SECRET>')
+  $message = [regex]::Replace($message, '(?i)\b([A-Z_][A-Z0-9_]*)\s*=\s*[^,\s;]+', '$1=<REDACTED_ENV>')
+  $message = [regex]::Replace($message, '(?i)--[A-Za-z0-9-]+(?:=|\s+)(?:"[^"]*"|''[^'']*''|[^,\s;]+)', '--<REDACTED_ARG>')
+  $message = [regex]::Replace($message, '"[^"]*"|''[^'']*''', '<REDACTED_TEXT>')
+  $message = [regex]::Replace($message, '(?i)\b[A-Za-z]:\\[^\s,;<>|"'']+', '<PATH>')
+  $message = [regex]::Replace($message, '\\\\[^\\\s,;"'']+(?:\\[^\\\s,;"'']+)*', '<PATH>')
+  $message = [regex]::Replace($message, '\b[A-Za-z0-9_+/=-]{32,}\b', '<REDACTED_VALUE>')
+  $message = [regex]::Replace($message, '[^\x20-\x7E]', ' ')
+  $message = $message.Trim()
+  if ($message.Length -gt 240) { $message = $message.Substring(0, 240) }
+  return $message
+}
 
 function New-SyntheticNativeOwnershipChain {
   $sid = 'S-1-5-21-1200000000-1200000001-1200000002-1001'
@@ -153,7 +177,7 @@ try {
   } finally {
     if ([IO.Directory]::Exists($pathJunction)) { [IO.Directory]::Delete($pathJunction) }
     if ([IO.File]::Exists($pathMarkerFile) -and [IO.File]::ReadAllText($pathMarkerFile) -ceq $pathMarker) {
-      $fixtureAttributes = [IO.Directory]::GetAttributes($pathFixture)
+      $fixtureAttributes = [IO.File]::GetAttributes($pathFixture)
       if (($fixtureAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'The synthetic path fixture became a reparse point; path cleanup was refused.'
       }
@@ -342,51 +366,16 @@ try {
     if (-not $productRefused) { throw 'The pre-181 cleanup helper accepted a product or driver executable.' }
   }
 
-  # Keep a sanitized contract receipt in the hosted runner logs before cleanup.
-  # These probes prove only synthetic process and loopback ownership.
-  $receipt = [ordered]@{
-    schemaVersion = 1
-    probe = 'issue-180-synthetic-process-ownership'
-    profileOutsideRunnerTempRejected = $true
-    runnerTempRootCollisionRejected = $true
-    syntheticWebViewArgvContractChecked = $true
-    duplicateWebViewUserDataDirRejected = $true
-    ambiguousWebViewUserDataDirRejected = $true
-    alternateDataStreamPathRejected = $true
-    reparsePathRejected = $true
-    nativeOwnershipChainContractChecked = $true
-    issue184ObservationSchemaChecked = $true
-    nonLoopbackListenerRejected = $true
-    missingNoReparseProofRejected = $true
-    non4444PortRejected = $true
-    wrongNativeDriverParentRejected = $true
-    directTauriDriverToAppEdgeRejected = $true
-    invalidTupleRejected = $true
-    mixedOwnerSidRejected = $true
-    credentialEnvironmentNotInherited = $true
-    syntheticProcessOwned = $true
-    syntheticLoopbackListenerOwned = $true
-    staleTupleCleanupRefused = $true
-    productAndDriverCleanupRefused = $true
-    appLaunched = $false
-    driverServiceStarted = $false
-    nativeDriverLaunched = $false
-    morrowAppLaunched = $false
-    webviewProcessLaunched = $false
-    windowsRuntimeIdentityConfirmed = $false
-    ready = $false
-  }
-  [Console]::WriteLine(($receipt | ConvertTo-Json -Compress))
-
   $stopResult = Stop-VerifiedSyntheticWindowsProcess -Expected $identity -OwnershipMarker $marker
   if (-not $stopResult.stopped -or -not $stopResult.ownedSyntheticOnly -or -not $child.WaitForExit(5000)) {
     throw 'The exact synthetic process was not stopped after its tuple was revalidated.'
   }
   $remaining = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
   if ($remaining.Count -ne 0) { throw 'The synthetic loopback listener remained after its owned process stopped.' }
-  [Console]::WriteLine('PASS: issue 180 synthetic process ownership and revalidated cleanup.')
 } catch {
-  [Console]::Error.WriteLine('FAIL: issue 180 synthetic process ownership contract failed.')
+  $line = $_.InvocationInfo.ScriptLineNumber
+  $message = Get-SafeErrorMessage -Exception $_.Exception
+  [Console]::Error.WriteLine(('FAIL: issue 180 synthetic process ownership contract failed at line {0}: {1}' -f $line, $message))
   $failed = $true
 } finally {
   if ($null -ne $child) {
@@ -399,10 +388,49 @@ try {
       }
     } catch {
       $failed = $true
-      [Console]::Error.WriteLine('FAIL: the test child was not cleaned because ownership could not be revalidated.')
+      $line = $_.InvocationInfo.ScriptLineNumber
+      $message = Get-SafeErrorMessage -Exception $_.Exception
+      [Console]::Error.WriteLine(('FAIL: the test child was not cleaned because ownership could not be revalidated at line {0}: {1}' -f $line, $message))
     }
     $child.Dispose()
   }
 }
 
 if ($failed) { exit 1 }
+
+# Emit the receipt only after the owned child and listener cleanup has completed.
+# These probes prove only synthetic process and loopback ownership.
+$receipt = [ordered]@{
+  schemaVersion = 1
+  probe = 'issue-180-synthetic-process-ownership'
+  profileOutsideRunnerTempRejected = $true
+  runnerTempRootCollisionRejected = $true
+  syntheticWebViewArgvContractChecked = $true
+  duplicateWebViewUserDataDirRejected = $true
+  ambiguousWebViewUserDataDirRejected = $true
+  alternateDataStreamPathRejected = $true
+  reparsePathRejected = $true
+  nativeOwnershipChainContractChecked = $true
+  issue184ObservationSchemaChecked = $true
+  nonLoopbackListenerRejected = $true
+  missingNoReparseProofRejected = $true
+  non4444PortRejected = $true
+  wrongNativeDriverParentRejected = $true
+  directTauriDriverToAppEdgeRejected = $true
+  invalidTupleRejected = $true
+  mixedOwnerSidRejected = $true
+  credentialEnvironmentNotInherited = $true
+  syntheticProcessOwned = $true
+  syntheticLoopbackListenerOwned = $true
+  staleTupleCleanupRefused = $true
+  productAndDriverCleanupRefused = $true
+  appLaunched = $false
+  driverServiceStarted = $false
+  nativeDriverLaunched = $false
+  morrowAppLaunched = $false
+  webviewProcessLaunched = $false
+  windowsRuntimeIdentityConfirmed = $false
+  ready = $false
+}
+[Console]::WriteLine(($receipt | ConvertTo-Json -Compress))
+[Console]::WriteLine('PASS: issue 180 synthetic process ownership and revalidated cleanup.')
