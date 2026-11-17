@@ -39,6 +39,11 @@ import { runIndependentNativeLifecycleScenario } from './native-lifecycle.indepe
 import { runNativePickerScenario } from './native-picker.mjs';
 import { runIndependentNativePickerScenario } from './native-picker.independent.test.mjs';
 import { runNativeExportScenario } from './native-export.mjs';
+import {
+  assertOwnedNaturalCloseReceiptContract,
+  captureNativeCloseMarkdownFiles,
+  runNativeCloseScenario,
+} from './native-close.mjs';
 import { runIndependentNativeExportScenario } from './native-export.independent.test.mjs';
 import {
   captureNativeReadinessFailure,
@@ -53,6 +58,7 @@ const PILOT_ID = 'polaris-dados';
 const APP_IDENTIFIER = 'app.morrow.polaris-dados-pilot';
 const BANK_FILES = ['Inventory.md', 'Inventory/Widget.md'];
 const TIMEOUT_MS = 25_000;
+const CLOSE_SCENARIOS = new Set(['close', 'close-independent']);
 const UI_PREPARATION_SCENARIOS = new Set([
   'readiness',
   'functional',
@@ -63,10 +69,12 @@ const UI_PREPARATION_SCENARIOS = new Set([
   'picker-independent',
   'export',
   'export-independent',
+  'close',
+  'close-independent',
 ]);
 
 function help() {
-  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|app-identity-only|export-independent|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|app-identity-only|export-independent] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Readiness observes boot and real Settings UI before checking the fixed synthetic source Total=20. app-identity-only checks the private app runtime identity without changing Settings, routing, or synthetic data. Functional, lifecycle, picker, and export scenarios use real WebDriver UI under the native isolation guards; lifecycle covers plugin disable/reload, synthetic activation failure, and unsupported/conflict fallback. Picker and export use Ctrl+K command-palette actions. Export captures only the existing public window.morrow.saveFile sink and retains its canceller until the isolated app is torn down. dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nNative runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
+  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|close|close-independent|app-identity-only|export-independent|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|close|close-independent|app-identity-only|export-independent] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Readiness observes boot and real Settings UI before checking the fixed synthetic source Total=20. app-identity-only checks the private app runtime identity without changing Settings, routing, or synthetic data. Functional, lifecycle, picker, export, and close scenarios use real WebDriver UI under the native isolation guards; lifecycle covers plugin disable/reload, synthetic activation failure, and unsupported/conflict fallback. Picker and export use Ctrl+K command-palette actions. Export captures only the existing public window.morrow.saveFile sink and retains its canceller until the isolated app is torn down. Close blocks writes on the synthetic Markdown parent directory, proves a denied Close remains open, then requires a retry receipt tied to the same app PID/starttime and persisted bytes before runner cleanup. dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nNative runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
 }
 
 function parseArgs(argv) {
@@ -1225,6 +1233,67 @@ async function runtimeInfo(driver, expectedDataPath, expectedWebviewDataPath) {
   return { ...info, backendDataPath: info.dataPath, webviewDataPath };
 }
 
+function sameOwnedProcessIdentity(actual, expected) {
+  return Boolean(actual && expected && [
+    'pid',
+    'startTimeTicks',
+    'effectiveUid',
+    'executablePathSha256',
+    'argvSha256',
+    'driverPid',
+    'runtimeIdentityConfirmed',
+  ].every((key) => actual[key] === expected[key]));
+}
+
+async function verifyNativeCloseReceiptBeforeCleanup({ receipt, candidate, expectedIdentity, readOwnedAppIdentity: readIdentity }) {
+  assertOwnedNaturalCloseReceiptContract(receipt, expectedIdentity);
+  const finalFiles = await captureNativeCloseMarkdownFiles(candidate.vault);
+  for (const relative of ['Inventory.md', 'Inventory/Widget.md', 'Views.md']) {
+    const expected = receipt.files.finalBeforeCleanup[relative];
+    const actual = finalFiles[relative];
+    if (!['sha256', 'size', 'mtimeMs', 'mode', 'quantity'].every((key) => expected[key] === actual[key])) {
+      throw new Error(`Runner pre-cleanup re-read differs from receipt for ${relative}.`);
+    }
+  }
+  if (finalFiles['Inventory/Widget.md'].quantity !== 3) {
+    throw new Error('Runner did not physically read Quantity=3 from Inventory/Widget.md before cleanup.');
+  }
+
+  const vaultRoot = path.resolve(candidate.vault);
+  const directory = path.join(vaultRoot, 'Inventory');
+  const markdown = path.join(directory, 'Widget.md');
+  if (await realpath(directory) !== directory || await realpath(markdown) !== markdown) {
+    throw new Error('Runner refused a non-canonical synthetic Markdown path during receipt verification.');
+  }
+  const directoryInfo = await lstat(directory);
+  const markdownInfo = await lstat(markdown);
+  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory() || markdownInfo.isSymbolicLink() || !markdownInfo.isFile()) {
+    throw new Error('Runner refused a non-regular Markdown parent/file during receipt verification.');
+  }
+  const directoryMode = directoryInfo.mode & 0o7777;
+  const markdownMode = markdownInfo.mode & 0o7777;
+  if (directoryMode !== receipt.mode.before || directoryMode !== receipt.mode.restored) {
+    throw new Error('Runner observed a Markdown parent mode different from the exact original mode.');
+  }
+  if (markdownMode !== receipt.mode.targetFileModeBefore) {
+    throw new Error('Runner observed that the Markdown file mode changed during the permission probe.');
+  }
+
+  const processState = await readIdentity();
+  if (processState !== null) {
+    throw new Error('Runner observed the owned app PID/starttime before cleanup; natural exit is unproven.');
+  }
+  receipt.runnerVerification = {
+    verifiedAt: new Date().toISOString(),
+    appProcessAbsentBeforeCleanup: true,
+    identity: expectedIdentity,
+    markdownParentMode: directoryMode,
+    markdownFileMode: markdownMode,
+    finalFiles,
+  };
+  return receipt;
+}
+
 function parseScalarFromMarkdown(markdown, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const line of markdown.split(/\r?\n/)) {
@@ -1342,6 +1411,7 @@ async function saveRunInfo(candidate, extra) {
     identityConfirmed: extra.identityConfirmed === true,
     appProcessCandidates: extra.appProcessCandidates ?? [],
     appProcesses: extra.appProcesses ?? [],
+    ownedNaturalCloseReceipt: extra.ownedNaturalCloseReceipt ?? null,
     dbusProbe: extra.dbusProbe ?? null,
     testHashes: extra.testHashes,
     bankFiles: files,
@@ -1546,7 +1616,7 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
   let cleanupFailure = null;
   let processLogsFlushed = false;
   let identityConfirmed = false;
-  const info = { testHashes, identityConfirmed: false, appProcessCandidates: [] };
+  const info = { testHashes, identityConfirmed: false, appProcessCandidates: [], ownedNaturalCloseReceipt: null };
 
   async function openSession() {
     identityConfirmed = false;
@@ -1574,16 +1644,27 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
     const appProcess = await findOwnedAppProcess(driverRecord.child.pid, candidate);
     const appProcessCandidate = summarizeAppProcessCandidate(appProcess, driverRecord.child.pid, candidate);
     driverSession.appPid = appProcess.pid;
+    if (CLOSE_SCENARIOS.has(scenarioName)) {
+      const runnerUid = typeof process.geteuid === 'function' ? process.geteuid() : null;
+      if (runnerUid === null || runnerUid === 0 || appProcess.effectiveUid !== runnerUid) {
+        throw new Error('Native close probe requires the identified app and runner to share the same non-root effective UID before UI interaction.');
+      }
+      if (!/^\d+$/.test(String(appProcess.startTimeTicks ?? ''))) {
+        throw new Error('Native close probe could not read the app process starttime before UI interaction.');
+      }
+    }
     info.appProcessCandidates ??= [];
     info.appProcessCandidates.push(appProcessCandidate);
     await saveRunInfo(candidate, { ...info, identityConfirmed: false, outcome: 'running' });
 
     runtime = await runtimeInfo(webdriver, candidate.expectedBackendDataPath, candidate.expectedWebviewDataPath);
     const appEnvironment = await verifyAppStageRuntimeEnvironment(appProcess, candidate, env);
+    const ownedAppIdentity = summarizeOwnedAppIdentity(appProcess, driverRecord.child.pid);
     identityConfirmed = true;
     info.identityConfirmed = true;
     info.appProcesses ??= [];
-    info.appProcesses.push({ ...appProcessCandidate, identityConfirmed: true, environment: appEnvironment });
+    driverSession.ownedAppIdentity = ownedAppIdentity;
+    info.appProcesses.push({ ...appProcessCandidate, identityConfirmed: true, ownedAppIdentity, environment: appEnvironment });
     info.runtimeInfo = runtime;
     await saveRunInfo(candidate, { ...info, identityConfirmed: true, outcome: 'running' });
     await recordStep(candidate, 'isolated-runtime-path-confirmed', { dataPath: runtime.dataPath, pid: driverRecord.child.pid });
@@ -1673,6 +1754,11 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
           throw identityError;
         }
       };
+      const readCurrentOwnedAppIdentity = async () => {
+        const expected = info.driverSessions?.at(-1)?.ownedAppIdentity;
+        if (!expected) throw new Error('No runtime-confirmed app process identity is available.');
+        return readOwnedAppIdentity(expected, candidate);
+      };
       if (UI_PREPARATION_SCENARIOS.has(scenarioName)) {
         await prepareNativeUi({
           driver: webdriver,
@@ -1700,6 +1786,8 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
       } else if (scenarioCallback) {
         const context = {
           get driver() { return webdriver; },
+          get ownedAppIdentity() { return info.driverSessions?.at(-1)?.ownedAppIdentity ?? null; },
+          readOwnedAppIdentity: readCurrentOwnedAppIdentity,
           candidate,
           prepared,
           restartSession: async () => {
@@ -1709,11 +1797,37 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
           },
           recordStep: (name, details = {}) => recordStep(candidate, name, details),
         };
-        await scenarioCallback(context);
-        const finalStatus = await webdriver.execute(`return [...document.querySelectorAll('[role="status"]')].map((node) => node.innerText).join(' | ')`);
-        if (/pending|saving|error|failed/i.test(finalStatus)) throw new Error(`Refusing to close with pending/error status: ${finalStatus}`);
-        outcome = 'passed';
-        await recordStep(candidate, `native-${scenarioName}-scenario-passed`, { finalStatus });
+        const callbackResult = await scenarioCallback(context);
+        if (CLOSE_SCENARIOS.has(scenarioName)) {
+          const expectedIdentity = context.ownedAppIdentity;
+          if (!expectedIdentity) throw new Error('Native close callback has no owned app identity.');
+          info.ownedNaturalCloseReceipt = await verifyNativeCloseReceiptBeforeCleanup({
+            receipt: callbackResult,
+            candidate,
+            expectedIdentity,
+            readOwnedAppIdentity: readCurrentOwnedAppIdentity,
+          });
+          await writeFile(
+            path.join(candidate.evidence, 'native-close-receipt.json'),
+            `${JSON.stringify(info.ownedNaturalCloseReceipt, null, 2)}\n`,
+            { flag: 'wx', mode: 0o600 },
+          );
+          sessionCreated = false;
+          await recordStep(candidate, `native-${scenarioName}-owned-natural-close-receipt-verified`, {
+            appPid: expectedIdentity.pid,
+            startTimeTicks: expectedIdentity.startTimeTicks,
+            quantity: 3,
+            files: info.ownedNaturalCloseReceipt.files.finalBeforeCleanup,
+            modeRestored: info.ownedNaturalCloseReceipt.mode.restored,
+            retryClickResult: info.ownedNaturalCloseReceipt.retry.clickResult,
+          });
+          outcome = 'passed';
+        } else {
+          const finalStatus = await webdriver.execute(`return [...document.querySelectorAll('[role="status"]')].map((node) => node.innerText).join(' | ')`);
+          if (/pending|saving|error|failed/i.test(finalStatus)) throw new Error(`Refusing to close with pending/error status: ${finalStatus}`);
+          outcome = 'passed';
+          await recordStep(candidate, `native-${scenarioName}-scenario-passed`, { finalStatus });
+        }
     } else {
     const databaseOpenedAtBeforeInitial = await recentOpenedAt(candidate.vault, candidate.databaseId);
     const initial = await openPageAndCheck(webdriver, candidate, {
@@ -2143,11 +2257,18 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
 
 async function readProcInfo(pid, { appExecutable = null } = {}) {
   const proc = `/proc/${pid}`;
-  const [exe, cmdline, children] = await Promise.all([
+  const [exe, cmdline, children, statLine, statusText] = await Promise.all([
     realpath(path.join(proc, 'exe')).catch(() => null),
     readFile(path.join(proc, 'cmdline')).catch(() => Buffer.alloc(0)),
     readFile(path.join(proc, 'task', String(pid), 'children'), 'utf8').catch(() => ''),
+    readFile(path.join(proc, 'stat'), 'utf8').catch(() => null),
+    readFile(path.join(proc, 'status'), 'utf8').catch(() => ''),
   ]);
+  const statFields = statLine ? statLine.slice(statLine.lastIndexOf(')') + 1).trim().split(/\s+/) : [];
+  const uidMatch = /^Uid:\s+(\d+)\s+(\d+)/m.exec(statusText);
+  const effectiveUid = uidMatch ? Number(uidMatch[2]) : null;
+  const processState = statFields[0] ?? null;
+  const startTimeTicks = /^\d+$/.test(statFields[19] ?? '') ? statFields[19] : null;
   const argv = cmdline.toString('utf8').split('\0').filter(Boolean);
   const envBytes = await readFile(path.join(proc, 'environ')).catch(() => Buffer.alloc(0));
   const allowedEnv = new Set(['HOME', 'MORROW_USER_DATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND', 'WEBKIT_DISABLE_DMABUF_RENDERER', 'PATH']);
@@ -2174,6 +2295,9 @@ async function readProcInfo(pid, { appExecutable = null } = {}) {
     pid,
     exe,
     argv,
+    effectiveUid,
+    processState,
+    startTimeTicks,
     children: children.trim().split(/\s+/).filter(Boolean).map(Number),
     environment,
     forbiddenEnvironmentKeys,
@@ -2238,12 +2362,79 @@ async function findOwnedAppProcess(driverPid, candidate) {
 function summarizeAppProcessCandidate(info, driverPid, candidate) {
   return {
     pid: info.pid,
+    startTimeTicks: info.startTimeTicks,
+    effectiveUid: info.effectiveUid,
+    processState: info.processState,
     executableMatchesExpected: info.exe === candidate.binary,
     executablePathSha256: sha256(Buffer.from(info.exe ?? '')),
     argvSha256: sha256(Buffer.from(info.argv.join('\0'))),
     ownedDescendantOfDriver: true,
     ownerDriverPid: driverPid,
   };
+}
+
+function summarizeOwnedAppIdentity(info, driverPid) {
+  return {
+    pid: info.pid,
+    startTimeTicks: info.startTimeTicks,
+    effectiveUid: info.effectiveUid,
+    executablePathSha256: sha256(Buffer.from(info.exe ?? '')),
+    argvSha256: sha256(Buffer.from(info.argv.join('\0'))),
+    driverPid,
+    runtimeIdentityConfirmed: true,
+  };
+}
+
+async function readOwnedAppIdentity(expected, candidate) {
+  const proc = `/proc/${expected.pid}`;
+  let firstStat;
+  try {
+    firstStat = await readFile(path.join(proc, 'stat'), 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    try {
+      await lstat(proc);
+    } catch (directoryError) {
+      if (directoryError?.code === 'ENOENT') return null;
+      throw directoryError;
+    }
+    throw new Error(`Owned app PID ${expected.pid} exists but /proc stat is unreadable.`, { cause: error });
+  }
+
+  const firstFields = firstStat.slice(firstStat.lastIndexOf(')') + 1).trim().split(/\s+/);
+  const firstStartTimeTicks = /^\d+$/.test(firstFields[19] ?? '') ? firstFields[19] : null;
+  if (firstStartTimeTicks !== expected.startTimeTicks) {
+    throw new Error(`Owned app PID ${expected.pid} was reused or has an ambiguous starttime.`);
+  }
+
+  const info = await readProcInfo(expected.pid, { appExecutable: candidate.binary });
+  if (info.processState === 'Z' || info.processState === 'X') {
+    if (info.effectiveUid !== expected.effectiveUid || info.startTimeTicks !== expected.startTimeTicks) {
+      throw new Error(`Exited app PID ${expected.pid} no longer matches the captured UID/starttime.`);
+    }
+    return { ...expected, processState: info.processState };
+  }
+  if (!info.exe || info.startTimeTicks === null || info.effectiveUid === null) {
+    try {
+      await readFile(path.join(proc, 'stat'), 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        try {
+          await lstat(proc);
+        } catch (directoryError) {
+          if (directoryError?.code === 'ENOENT') return null;
+          throw directoryError;
+        }
+      }
+      throw new Error(`Owned app PID ${expected.pid} has incomplete process identity facts.`, { cause: error });
+    }
+    throw new Error(`Owned app PID ${expected.pid} has incomplete process identity facts.`);
+  }
+  const actual = summarizeOwnedAppIdentity(info, expected.driverPid);
+  if (!sameOwnedProcessIdentity(actual, expected)) {
+    throw new Error(`Owned app PID ${expected.pid} process facts changed while observing natural close.`);
+  }
+  return actual;
 }
 
 async function verifyAppStageRuntimeEnvironment(info, candidate, env) {
@@ -2333,10 +2524,11 @@ async function main() {
     'picker-independent': runIndependentNativePickerScenario,
     export: runNativeExportScenario,
     'export-independent': runIndependentNativeExportScenario,
+    close: runNativeCloseScenario,
     'app-identity-only': runNativeAppIdentityOnlyScenario,
   };
-  if (scenarioName !== 'legacy' && scenarioName !== 'dbus-isolation' && !Object.hasOwn(scenarioCallbacks, scenarioName)) {
-    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, readiness, functional, functional-independent, lifecycle, lifecycle-independent, picker, picker-independent, export, app-identity-only, export-independent, or dbus-isolation`);
+  if (scenarioName !== 'legacy' && scenarioName !== 'dbus-isolation' && !Object.hasOwn(scenarioCallbacks, scenarioName) && !CLOSE_SCENARIOS.has(scenarioName)) {
+    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, readiness, functional, functional-independent, lifecycle, lifecycle-independent, picker, picker-independent, export, close, close-independent, app-identity-only, export-independent, or dbus-isolation`);
   }
   if (args.scenario && (args['freeze-sources'] || args['record-artifacts'])) {
     throw new Error('--scenario is valid only with --check-only or --run-native');
@@ -2384,6 +2576,18 @@ async function main() {
   await preflight(candidate, args);
   if (args['check-only']) return;
 
+  let scenarioCallback = scenarioCallbacks[scenarioName] ?? null;
+  if (scenarioName === 'close-independent') {
+    const independentModule = await import('./native-close.independent.test.mjs');
+    scenarioCallback = independentModule.runIndependentNativeCloseScenario;
+    if (typeof scenarioCallback !== 'function') {
+      throw new Error('Independent close module does not export runIndependentNativeCloseScenario.');
+    }
+  }
+  if (CLOSE_SCENARIOS.has(scenarioName) && typeof scenarioCallback !== 'function') {
+    throw new Error(`Fixed close scenario ${scenarioName} has no callback in this frozen candidate.`);
+  }
+
   let prepared;
   try { prepared = await createSyntheticVault(candidate); }
   catch (error) {
@@ -2391,7 +2595,7 @@ async function main() {
     throw error;
   }
   // Output paths were proven new by preflight. runNative preserves all evidence.
-  await runNative(candidate, prepared, scenarioCallbacks[scenarioName] ?? null, scenarioName);
+  await runNative(candidate, prepared, scenarioCallback, scenarioName);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
