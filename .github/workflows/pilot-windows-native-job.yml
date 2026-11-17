@@ -1,0 +1,104 @@
+name: Pilot Windows native JobObject probes
+
+on:
+  push:
+    branches: [codex/e003-g07-windows-runtime]
+    paths:
+      - .github/workflows/pilot-windows-native-job.yml
+      - scripts/pilot/windows-native-job*.ps1
+      - scripts/pilot/windows-process*.ps1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: morrow-e003-native-job-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  synthetic-job:
+    name: Synthetic JobObject ${{ matrix.suite }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [own, independent]
+    steps:
+      - name: Checkout exact source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run isolated synthetic probes and record exact source
+        shell: pwsh
+        env:
+          PILOT_TEST_SUITE: ${{ matrix.suite }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ($env:GITHUB_EVENT_NAME -ne 'push' -or $env:GITHUB_REF -ne 'refs/heads/codex/e003-g07-windows-runtime') { throw 'Unexpected workflow context.' }
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Windows X64 runner required.' }
+          if ($env:GITHUB_RUN_ATTEMPT -ne '1') { throw 'A new commit/run is required instead of rerun.' }
+          if ($env:PILOT_TEST_SUITE -notin @('own', 'independent')) { throw 'Unknown probe suite.' }
+          $control = Join-Path $env:RUNNER_TEMP "issue-188-$($env:PILOT_TEST_SUITE)-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          if (Test-Path -LiteralPath $control) { throw 'Probe control path must be new.' }
+          [void](New-Item -ItemType Directory -Path $control)
+          $sourcePaths = @('.github/workflows/pilot-windows-native-job.yml', 'scripts/pilot/windows-native-job.ps1', 'scripts/pilot/windows-native-job.own.test.ps1', 'scripts/pilot/windows-native-job.independent.test.ps1', 'scripts/pilot/windows-process.ps1', 'scripts/pilot/windows-process.test.ps1', 'scripts/pilot/windows-process.independent.test.ps1')
+          $sources = @($sourcePaths | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { [ordered]@{ path = $_; sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant(); bytes = (Get-Item -LiteralPath $_).Length } })
+          $test = if ($env:PILOT_TEST_SUITE -eq 'own') { 'scripts/pilot/windows-native-job.own.test.ps1' } else { 'scripts/pilot/windows-native-job.independent.test.ps1' }
+          $available = Test-Path -LiteralPath $test
+          $receipt = [ordered]@{ schemaVersion = 1; scope = 'E003 issue188 synthetic process probes only'; runId = $env:GITHUB_RUN_ID; attempt = $env:GITHUB_RUN_ATTEMPT; sha = $env:GITHUB_SHA; suite = $env:PILOT_TEST_SUITE; testAvailable = $available; testRan = $false; exitCode = $null; status = 'initializing'; appLaunched = $false; driverServiceStarted = $false; guiTested = $false; sources = $sources; powershell = $PSVersionTable.PSVersion.ToString(); os = [Environment]::OSVersion.VersionString }
+          $receiptPath = Join-Path $control 'workflow-receipt.json'
+          $receipt | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+          if (-not $available) {
+            $receipt.status = 'required-test-missing'
+            $receipt | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+            throw 'Both required probe suites must be staged in the exact checkout.'
+          }
+          $engine = (Get-Process -Id $PID).Path
+          $evidence = Join-Path $control 'evidence'
+          $log = Join-Path $control 'test.log'
+          $testExit = $null
+          try {
+            $receipt.testRan = $true
+            $receipt.status = 'synthetic-probes-running'
+            $receipt | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+            & $engine -NoLogo -NoProfile -NonInteractive -File $test -EvidenceRoot $evidence *> $log
+            $testExit = $LASTEXITCODE
+            if ($null -eq $testExit) { throw 'The test process did not expose a numeric exit code.' }
+            $receipt.testRan = $true
+            $receipt.exitCode = [int]$testExit
+            $receipt.status = if ($testExit -eq 0) { 'synthetic-probes-passed' } else { 'synthetic-probes-failed' }
+            [IO.File]::WriteAllText((Join-Path $control 'test.exit'), [string]$testExit)
+          } finally {
+            $receipt | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $receiptPath -Encoding utf8
+          }
+          if ($testExit -ne 0) { throw "Synthetic probe suite failed with exit $testExit; inspect retained logs." }
+      - name: Recheck existing process ownership contracts
+        if: matrix.suite == 'own'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-188-own-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $engine = (Get-Process -Id $PID).Path
+          $results = @()
+          foreach ($kind in @('own', 'independent')) {
+            $test = if ($kind -eq 'own') { 'scripts/pilot/windows-process.test.ps1' } else { 'scripts/pilot/windows-process.independent.test.ps1' }
+            $log = Join-Path $control "regression-180-$kind.log"
+            & $engine -NoLogo -NoProfile -NonInteractive -File $test *> $log
+            $code = $LASTEXITCODE
+            if ($null -eq $code) { throw 'Regression process did not expose an exit code.' }
+            [IO.File]::WriteAllText((Join-Path $control "regression-180-$kind.exit"), [string]$code)
+            $results += [ordered]@{ suite = $kind; exitCode = [int]$code; logSha256 = (Get-FileHash -LiteralPath $log -Algorithm SHA256).Hash.ToLowerInvariant() }
+            $results | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $control 'regression-180.json') -Encoding utf8
+            if ($code -ne 0) { throw "Existing process contract suite $kind failed with exit $code." }
+          }
+      - name: Preserve probe receipts and evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-188-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/issue-188-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}/
+          retention-days: 30
+          if-no-files-found: warn
