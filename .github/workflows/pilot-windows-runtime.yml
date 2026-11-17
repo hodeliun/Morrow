@@ -1,4 +1,4 @@
-name: Pilot Windows runtime preflight
+name: Pilot Windows runtime gate
 
 on:
   push:
@@ -10,95 +10,321 @@ permissions:
   contents: read
 
 jobs:
-  preflight:
-    name: Pinned package, drivers, and isolated path preflight
+  prepare:
+    name: Prepare immutable #181 binding
     runs-on: windows-latest
     timeout-minutes: 120
+    outputs:
+      binding_artifact_id: ${{ steps.upload-binding.outputs.artifact-id }}
+      binding_artifact_digest: ${{ steps.upload-binding.outputs.artifact-digest }}
+      binding_artifact_name: ${{ steps.prepare-binding.outputs.binding_artifact_name }}
+      binding_payload_sha256: ${{ steps.prepare-binding.outputs.binding_payload_sha256 }}
+      prepare_evidence_artifact_id: ${{ steps.upload-prepare-evidence.outputs.artifact-id }}
     steps:
-      - name: Checkout without a persisted token
+      - name: Checkout the pushed commit without persisted credentials
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Initialize separate control receipt
+      - name: Initialize run-bound controls
+        shell: pwsh
+        run: node scripts/pilot/windows-run-gate.mjs prepare-init
+
+      - name: Run Node gate, runtime, and client contracts
         shell: pwsh
         run: |
-          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          New-Item -ItemType Directory -Path $control -ErrorAction Stop | Out-Null
-          $receipt = [ordered]@{
-            schemaVersion = 1
-            status = 'initializing'
-            scope = 'Morrow E003 G13 issue 179 preflight only'
-            runId = $env:GITHUB_RUN_ID
-            runAttempt = $env:GITHUB_RUN_ATTEMPT
-            sha = $env:GITHUB_SHA
-            branch = 'codex/e003-g07-windows-runtime'
-            appLaunched = $false
-            driverServiceStarted = $false
-            startedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
-          } | ConvertTo-Json -Depth 5
-          [IO.File]::WriteAllText((Join-Path $control 'receipt.json'), $receipt, [Text.UTF8Encoding]::new($false))
-
-      - name: Run own preflight tests without downloads or launches
-        shell: pwsh
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.test.ps1
-
-      - name: Run issue 180 synthetic process and ownership tests
-        shell: pwsh
-        run: |
+          $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          $inputs = Get-FileHash -Algorithm SHA256 scripts/pilot/windows-process.ps1,scripts/pilot/windows-process.test.ps1,scripts/pilot/windows-process.independent.test.ps1 | Select-Object Path,Hash
-          [IO.File]::WriteAllText((Join-Path $control 'issue-180-inputs.json'), ($inputs | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.test.ps1 2>&1 | Tee-Object -FilePath (Join-Path $control 'issue-180-own.log')
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'node-contracts.log'
+          & node --test scripts/pilot/windows-run-gate.test.mjs scripts/pilot/windows-run-gate.independent.test.mjs scripts/pilot/windows-runtime.test.mjs scripts/pilot/windows-runtime.independent.test.mjs scripts/pilot/webdriver-client.test.mjs scripts/pilot/webdriver-client.independent.test.mjs 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
-          [IO.File]::WriteAllText((Join-Path $control 'issue-180-own.exit'), [string]$code)
+          [IO.File]::WriteAllText((Join-Path $control 'node-contracts.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
           exit $code
 
-      - name: Run independent issue 180 adapter probes
+      - name: Run issue 185 preflight regression tests
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.independent.test.ps1 -AdapterPath scripts/pilot/windows-process.ps1 2>&1 | Tee-Object -FilePath (Join-Path $control 'issue-180-independent.log')
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-preflight-tests.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.test.ps1 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
-          [IO.File]::WriteAllText((Join-Path $control 'issue-180-independent.exit'), [string]$code)
+          [IO.File]::WriteAllText((Join-Path $control 'windows-preflight-tests.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
           exit $code
 
-      - name: Set up Rust for the pinned tauri-driver install
+      - name: Run issue 180 synthetic process ownership tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-process-own.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.test.ps1 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-process-own.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Run independent issue 180 process ownership probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-process-independent.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.independent.test.ps1 -AdapterPath scripts/pilot/windows-process.ps1 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-process-independent.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Set up pinned Cargo installation toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Stage pinned package and tools
+      - name: Stage the pinned package and drivers
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode Stage
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-preflight-stage.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode Stage 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-preflight-stage.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
 
-      - name: Verify staged inputs and run package check-only
-        shell: pwsh
-        run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode CheckOnly
-
-      - name: Mark interrupted preflight receipt failed
-        if: failure()
+      - name: Verify the pinned package in check-only mode
         shell: pwsh
         run: |
-          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          $receiptPath = Join-Path $control 'receipt.json'
-          if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
-            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-            if ($receipt.status -in @('initializing', 'staged')) {
-              $receipt.status = 'failed'
-              $receipt | Add-Member -NotePropertyName 'failure' -NotePropertyValue 'A workflow step failed before the preflight completed; inspect the job logs.' -Force
-              $receipt | Add-Member -NotePropertyName 'completedAtUtc' -NotePropertyValue ([DateTimeOffset]::UtcNow.ToString('o')) -Force
-              [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
-            }
-          }
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-preflight-check-only.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode CheckOnly 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-preflight-check-only.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
 
-      - name: Upload durable preflight receipt and tool logs
+      - name: Bind the prepared driver and preflight provenance
+        id: prepare-binding
+        if: success()
+        shell: pwsh
+        run: node scripts/pilot/windows-run-gate.mjs prepare-bind
+
+      - name: Upload immutable binding and approved driver bytes
+        id: upload-binding
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepare-binding.outputs.binding_artifact_name }}
+          path: ${{ runner.temp }}/issue-181-binding-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload prepare receipts and logs
+        id: upload-prepare-evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: issue-179-windows-preflight-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
-          path: ${{ runner.temp }}/issue-179-control-${{ github.run_id }}-${{ github.run_attempt }}/
+          name: issue-181-prepare-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/issue-181-control-${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/issue-179-control-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+  protected-check-only:
+    name: Single protected fresh-VM CheckOnly consumer
+    if: github.run_attempt == 1 && needs.prepare.result == 'success'
+    needs: [prepare]
+    runs-on: windows-latest
+    timeout-minutes: 120
+    environment:
+      name: morrow-e003-windows-pilot
+    outputs:
+      consumer_ran: ${{ steps.claim.outputs.gate_consumer_ran }}
+      approved_driver_path: ${{ steps.verify.outputs.approved_driver_path }}
+      approved_driver_sha256: ${{ steps.verify.outputs.approved_driver_sha256 }}
+      protected_evidence_artifact_id: ${{ steps.upload-protected-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout the approved source commit without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize protected-run receipt
+        shell: pwsh
+        run: node scripts/pilot/windows-run-gate.mjs protected-init
+
+      - name: Download the exact immutable binding artifact by ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.binding_artifact_id }}
+          path: ${{ runner.temp }}/issue-181-input-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Verify the binding artifact and claim its sole consumer slot
+        id: claim
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GATE_BINDING_ARTIFACT_ID: ${{ needs.prepare.outputs.binding_artifact_id }}
+          GATE_BINDING_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.binding_artifact_digest }}
+          GATE_BINDING_PAYLOAD_SHA256: ${{ needs.prepare.outputs.binding_payload_sha256 }}
+          GATE_BINDING_DOWNLOAD_ROOT: ${{ runner.temp }}\issue-181-input-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/pilot/windows-run-gate.mjs protected-claim
+
+      - name: Run Node gate, runtime, and client contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'node-contracts.log'
+          & node --test scripts/pilot/windows-run-gate.test.mjs scripts/pilot/windows-run-gate.independent.test.mjs scripts/pilot/windows-runtime.test.mjs scripts/pilot/windows-runtime.independent.test.mjs scripts/pilot/webdriver-client.test.mjs scripts/pilot/webdriver-client.independent.test.mjs 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'node-contracts.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Run issue 185 preflight regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-preflight-tests.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.test.ps1 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-preflight-tests.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Run issue 180 synthetic process ownership tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-process-own.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.test.ps1 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-process-own.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Run independent issue 180 process ownership probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-process-independent.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.independent.test.ps1 -AdapterPath scripts/pilot/windows-process.ps1 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-process-independent.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Set up pinned Cargo installation toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Stage the pinned package and fresh local drivers
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-preflight-stage.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode Stage 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-preflight-stage.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Verify fresh Stage and transfer the approved driver before check-only
+        id: precheck
+        shell: pwsh
+        env:
+          GATE_BINDING_ARTIFACT_ID: ${{ needs.prepare.outputs.binding_artifact_id }}
+          GATE_BINDING_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.binding_artifact_digest }}
+          GATE_BINDING_PAYLOAD_SHA256: ${{ needs.prepare.outputs.binding_payload_sha256 }}
+          GATE_BINDING_DOWNLOAD_ROOT: ${{ runner.temp }}\issue-181-input-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/pilot/windows-run-gate.mjs protected-precheck
+
+      - name: Verify the package in fresh-VM check-only mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-181-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $log = Join-Path $control 'windows-preflight-check-only.log'
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.ps1 -Mode CheckOnly 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'windows-preflight-check-only.exit'), [string]$code, [Text.UTF8Encoding]::new($false))
+          exit $code
+
+      - name: Verify both driver provenances and record the approved path
+        id: verify
+        shell: pwsh
+        env:
+          GATE_BINDING_ARTIFACT_ID: ${{ needs.prepare.outputs.binding_artifact_id }}
+          GATE_BINDING_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.binding_artifact_digest }}
+          GATE_BINDING_PAYLOAD_SHA256: ${{ needs.prepare.outputs.binding_payload_sha256 }}
+          GATE_BINDING_DOWNLOAD_ROOT: ${{ runner.temp }}\issue-181-input-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/pilot/windows-run-gate.mjs protected-verify
+
+      - name: Finalize protected receipt
+        if: always()
+        shell: pwsh
+        env:
+          GATE_JOB_STATUS: ${{ job.status }}
+        run: node scripts/pilot/windows-run-gate.mjs protected-finalize
+
+      - name: Upload protected receipts and logs
+        id: upload-protected-evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-181-protected-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/issue-181-control-${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/issue-179-control-${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/issue-181-approved-driver-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+  audit:
+    name: Read-only run and artifact audit
+    if: always()
+    needs: [prepare, protected-check-only]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout gate source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read workflow, artifact, and deployment status
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GATE_PREPARE_RESULT: ${{ needs.prepare.result }}
+          GATE_PROTECTED_RESULT: ${{ needs.protected-check-only.result }}
+          GATE_CONSUMER_RAN: ${{ needs.protected-check-only.outputs.consumer_ran }}
+          GATE_BINDING_ARTIFACT_ID: ${{ needs.prepare.outputs.binding_artifact_id }}
+          GATE_BINDING_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.binding_artifact_digest }}
+          GATE_BINDING_PAYLOAD_SHA256: ${{ needs.prepare.outputs.binding_payload_sha256 }}
+          GATE_PREPARE_EVIDENCE_ID: ${{ needs.prepare.outputs.prepare_evidence_artifact_id }}
+          GATE_PROTECTED_EVIDENCE_ID: ${{ needs.protected-check-only.outputs.protected_evidence_artifact_id }}
+          GATE_APPROVED_DRIVER_PATH: ${{ needs.protected-check-only.outputs.approved_driver_path }}
+          GATE_APPROVED_DRIVER_SHA256: ${{ needs.protected-check-only.outputs.approved_driver_sha256 }}
+        run: node scripts/pilot/windows-run-gate.mjs audit
+
+      - name: Upload read-only audit receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-181-audit-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/issue-181-audit-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
