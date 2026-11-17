@@ -10,19 +10,41 @@ Set-StrictMode -Version Latest
 
 $script:Artifact = [ordered]@{
   repository = 'hodeliun/Morrow'
-  runId = '43727800851'
+  runId = '43854570751'
   runAttempt = '1'
-  sourceSha = 'eed6ca16125998c6d0b4d32ae9db87fa60b70bb6'
-  artifactId = '14167805134'
-  artifactName = 'morrow-polaris-dados-windows-build-43727800851-1-eed6ca16125998c6d0b4d32ae9db87fa60b70bb6'
-  artifactSizeBytes = 31894058
-  outerSha256 = 'ef2d00a46183996f97cf8a90c5db006888f03f4a388c8f02996ae2a0f0a533e6'
-  innerName = 'morrow-polaris-dados-windows-43727800851-1-eed6ca16125998c6d0b4d32ae9db87fa60b70bb6.zip'
-  innerSizeBytes = 31940421
-  innerSha256 = '5d1534474449796a11c38104ae1d674e246334ef3d9f1a680ffd1209cc6582ac'
-  executableSha256 = '6426c04925a6a9e2f1977a0977ae6d46759d8144377d183bc99b01f8a6b25c7e'
+  sourceSha = '9d6d264828d9be8dd393f13d922f25bec1fe74b5'
+  sourceTree = 'df94a7bafd5eb60bda5cbcf6f2fc112b3cff4709'
+  artifactId = '14221286819'
+  artifactName = 'morrow-polaris-dados-windows-build-43854570751-1-9d6d264828d9be8dd393f13d922f25bec1fe74b5'
+  artifactSizeBytes = 31890998
+  outerSha256 = '7ac7898e93f3c6b81cc0be80b20db3f7c4be2b540ebf95365a6f370f75560d7d'
+  innerName = 'morrow-polaris-dados-windows-43854570751-1-9d6d264828d9be8dd393f13d922f25bec1fe74b5.zip'
+  innerSizeBytes = 31938060
+  innerSha256 = '2dfabfd3efdd48bc95ef139bf653d90c81fe802ca5699558f33aa14a9050de04'
+  innerEntryCount = 16
+  innerTotalBytes = 53660508
+  fileInventoryCount = 14
+  buildInfoSizeBytes = 6323
+  buildInfoSha256 = '656398893d80fee9bd6b6626d291219233828a0394b9b3b9b6aebde5e247dcc1'
+  sha256SumsSizeBytes = 1440
+  sha256SumsSha256 = '566f542caf22373a08523de466f17da05ee62e59d54edb3ec7122107b3e90d40'
+  launcherSha256 = '321b9e8cc723e292225ef3819110776363843bf6c85761a5e22ae9871bc2ef79'
+  mcpResourceSha256 = '03678201ed39d3fed222bb9328eada9dd359eb0a550c26354be02f4f44699b40'
+  overlayPath = 'src-tauri/tauri.pilot.conf.json'
+  overlaySha256 = 'c2e8898d991f38da8418a0cdac156f163c0e8b968a3f03c601bac67d2bbbcf9f'
+  mcpResourceSource = '../dist-mcp/index.js'
+  mcpResourceTarget = 'mcp/index.js'
+  demoVaultPath = 'DemoVault'
+  demoVaultSha256 = '00bb5d0e6b97411e99995efe0247eb17f4cb4bde8fb4b7495c49deeab68bb4b2'
+  executableSizeBytes = 51608064
+  executableSha256 = 'c7dc0677a1fa254d08eb06856956a23e7f4729d27793b6a8cc65cc39282b68d3'
   pilotIdentifier = 'app.morrow.polaris-dados-pilot'
 }
+$script:OfficialEdgeDriverPageUrl = 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver'
+$script:OfficialEdgeDriverCatalogUrl = 'https://msedgedriver.microsoft.com/listing.json'
+$script:MaxOfficialCatalogBytes = 4MB
+$script:MaxOfficialCatalogItems = 50000
+$script:MaxOfficialDriverBytes = 64MB
 $script:TauriDriver = [ordered]@{
   version = '2.1.0'
   sourceUrl = 'https://crates.io/crates/tauri-driver/2.1.0'
@@ -641,40 +663,318 @@ function Get-CargoInstalledPackageVersion([string] $Output, [string] $Package, [
   return $version
 }
 
-function Select-OfficialEdgeDriverRelease([string] $RuntimeVersion, [string] $PageContent) {
-  $runtimeBuild = ($RuntimeVersion.Split('.')[0..2] -join '.')
-  $pattern = 'https://msedgedriver\.microsoft\.com/(?<version>\d+\.\d+\.\d+\.\d+)/edgedriver_win64\.zip'
-  $candidates = New-Object System.Collections.ArrayList
-  foreach ($match in [regex]::Matches($PageContent, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-    $version = [version]$match.Groups['version'].Value
-    $build = $version.Major.ToString() + '.' + $version.Minor + '.' + $version.Build
-    if ($build -eq $runtimeBuild) {
-      [void]$candidates.Add([pscustomobject]@{ Version = [string]$match.Groups['version'].Value; Parsed = $version })
+function Assert-OfficialMicrosoftUrl([string] $Url, [string] $ExpectedPath) {
+  if ([string]::IsNullOrWhiteSpace($Url)) { throw 'An official Microsoft EdgeDriver URL is empty.' }
+  try { $uri = [Uri]::new($Url, [UriKind]::Absolute) }
+  catch { throw 'An official Microsoft EdgeDriver URL is malformed.' }
+  if ($uri.Scheme -cne 'https' -or $uri.DnsSafeHost -cne 'msedgedriver.microsoft.com' -or
+      $uri.Port -ne 443 -or -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+      -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment) -or
+      $uri.AbsolutePath -cnotmatch $ExpectedPath) {
+    throw 'The EdgeDriver request or response is outside the exact official Microsoft HTTPS origin and path allowlist.'
+  }
+  return $uri
+}
+
+function Invoke-OfficialMicrosoftGet([string] $Url, [string] $ExpectedPath, [long] $MaxBytes, [string[]] $AllowedContentTypes) {
+  $requestUri = Assert-OfficialMicrosoftUrl $Url $ExpectedPath
+  Add-Type -AssemblyName System.Net.Http
+  $handler = [Net.Http.HttpClientHandler]::new()
+  $handler.AllowAutoRedirect = $false
+  $handler.UseCookies = $false
+  $client = [Net.Http.HttpClient]::new($handler)
+  $client.Timeout = [TimeSpan]::FromSeconds(30)
+  $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $requestUri)
+  [void]$request.Headers.TryAddWithoutValidation('Accept', ($AllowedContentTypes -join ', '))
+  $response = $null
+  $bodyStream = $null
+  $memory = $null
+  $timeout = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(30))
+  try {
+    try {
+      $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $timeout.Token).GetAwaiter().GetResult()
+    } catch {
+      throw 'The official Microsoft EdgeDriver request failed before a complete response was received.'
     }
+    $responseUri = [string]$response.RequestMessage.RequestUri.AbsoluteUri
+    $statusCode = [int]$response.StatusCode
+    $contentType = if ($null -ne $response.Content.Headers.ContentType) { [string]$response.Content.Headers.ContentType.MediaType } else { '' }
+    $declaredLength = $response.Content.Headers.ContentLength
+    if ($responseUri -cne $requestUri.AbsoluteUri) { throw 'The official Microsoft EdgeDriver request changed origin or URL.' }
+    if ($statusCode -ge 300 -and $statusCode -lt 400) { throw 'The official Microsoft EdgeDriver endpoint redirected; redirects are not followed.' }
+    if ($statusCode -ne 200) { throw "The official Microsoft EdgeDriver endpoint returned HTTP $statusCode." }
+    if ($AllowedContentTypes -cnotcontains $contentType) { throw 'The official Microsoft EdgeDriver endpoint returned an unexpected content type.' }
+    if ($null -ne $declaredLength -and ($declaredLength -le 0 -or $declaredLength -gt $MaxBytes)) {
+      throw 'The official Microsoft EdgeDriver response is empty or exceeds its byte limit.'
+    }
+
+    $bodyStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $memory = [IO.MemoryStream]::new()
+    $buffer = New-Object byte[] 65536
+    $totalBytes = 0L
+    while (($read = $bodyStream.ReadAsync($buffer, 0, $buffer.Length, $timeout.Token).GetAwaiter().GetResult()) -gt 0) {
+      $totalBytes += $read
+      if ($totalBytes -gt $MaxBytes) { throw 'The official Microsoft EdgeDriver response exceeded its byte limit while streaming.' }
+      $memory.Write($buffer, 0, $read)
+    }
+    if ($totalBytes -le 0 -or ($null -ne $declaredLength -and $totalBytes -ne [long]$declaredLength)) {
+      throw 'The official Microsoft EdgeDriver response is empty or has a mismatched content length.'
+    }
+    return [pscustomobject]@{
+      RequestUrl = $requestUri.AbsoluteUri
+      ResponseUrl = $responseUri
+      StatusCode = $statusCode
+      ContentType = $contentType
+      DeclaredContentLength = if ($null -eq $declaredLength) { $null } else { [long]$declaredLength }
+      ContentBytes = $memory.ToArray()
+    }
+  } finally {
+    if ($null -ne $memory) { $memory.Dispose() }
+    if ($null -ne $bodyStream) { $bodyStream.Dispose() }
+    if ($null -ne $response) { $response.Dispose() }
+    $timeout.Dispose()
+    $request.Dispose()
+    $client.Dispose()
+    $handler.Dispose()
   }
+}
+
+function ConvertFrom-OfficialCatalogJsonElement([object] $Element) {
+  switch ([string]$Element.ValueKind) {
+    'Object' {
+      $value = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+      foreach ($property in $Element.EnumerateObject()) {
+        if ($value.ContainsKey($property.Name)) { throw 'The official Microsoft EdgeDriver catalog contains a duplicate JSON property.' }
+        $value.Add($property.Name, (ConvertFrom-OfficialCatalogJsonElement $property.Value))
+      }
+      return ,$value
+    }
+    'Array' {
+      $value = [Collections.ArrayList]::new()
+      foreach ($entry in $Element.EnumerateArray()) {
+        [void]$value.Add((ConvertFrom-OfficialCatalogJsonElement $entry))
+      }
+      return ,$value
+    }
+    'String' { return $Element.GetString() }
+    'Number' {
+      $integer = 0L
+      if (-not $Element.TryGetInt64([ref]$integer)) { throw 'The official Microsoft EdgeDriver catalog contains a non-integer JSON number.' }
+      return $integer
+    }
+    'True' { return $true }
+    'False' { return $false }
+    'Null' { return $null }
+    default { throw 'The official Microsoft EdgeDriver catalog contains an unsupported JSON value.' }
+  }
+}
+
+function ConvertFrom-OfficialCatalogJson([string] $Json, [switch] $ForceJsonDom) {
+  $convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+  if (-not $ForceJsonDom -and $convertFromJson.Parameters.ContainsKey('DateKind')) {
+    return (ConvertFrom-Json -InputObject $Json -AsHashtable -NoEnumerate -DateKind String -ErrorAction Stop)
+  }
+  Add-Type -AssemblyName System.Text.Json -ErrorAction Stop
+  $document = [System.Text.Json.JsonDocument]::Parse($Json)
+  try { return ,(ConvertFrom-OfficialCatalogJsonElement $document.RootElement) }
+  finally { $document.Dispose() }
+}
+
+function Convert-OfficialEdgeDriverCatalog(
+  [string] $RequestUrl,
+  [string] $ResponseUrl,
+  [int] $StatusCode,
+  [string] $ContentType,
+  [byte[]] $ContentBytes,
+  [object] $DeclaredContentLength
+) {
+  $requestUri = Assert-OfficialMicrosoftUrl $RequestUrl '^/listing\.json$'
+  $responseUri = Assert-OfficialMicrosoftUrl $ResponseUrl '^/listing\.json$'
+  if ($requestUri.AbsoluteUri -cne $responseUri.AbsoluteUri) { throw 'The official Microsoft EdgeDriver catalog response changed URL or origin.' }
+  if ($StatusCode -ge 300 -and $StatusCode -lt 400) { throw 'The official Microsoft EdgeDriver catalog redirected; redirects are rejected.' }
+  if ($StatusCode -ne 200) { throw "The official Microsoft EdgeDriver catalog returned HTTP $StatusCode." }
+  if ($ContentType -cne 'application/json') { throw 'The official Microsoft EdgeDriver catalog content type is not application/json.' }
+  if ($null -eq $ContentBytes -or $ContentBytes.Length -le 0 -or $ContentBytes.Length -gt $script:MaxOfficialCatalogBytes) {
+    throw 'The official Microsoft EdgeDriver catalog is empty or exceeds its byte limit.'
+  }
+  if ($null -ne $DeclaredContentLength -and
+      ([long]$DeclaredContentLength -le 0 -or [long]$DeclaredContentLength -ne $ContentBytes.Length)) {
+    throw 'The official Microsoft EdgeDriver catalog has a mismatched content length.'
+  }
+
+  try { $json = [Text.UTF8Encoding]::new($false, $true).GetString($ContentBytes) }
+  catch { throw 'The official Microsoft EdgeDriver catalog is not valid UTF-8.' }
+  try { $catalog = ConvertFrom-OfficialCatalogJson $json }
+  catch { throw 'The official Microsoft EdgeDriver catalog is malformed JSON.' }
+  if ($catalog -isnot [Collections.IDictionary]) { throw 'The official Microsoft EdgeDriver catalog root is not an object.' }
+  $catalogKeys = @($catalog.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+  if ($catalogKeys.Count -ne 2 -or $catalogKeys[0] -cne 'generatedAt' -or $catalogKeys[1] -cne 'items') {
+    throw 'The official Microsoft EdgeDriver catalog has an unexpected top-level schema.'
+  }
+  if ($catalog['generatedAt'] -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$catalog['generatedAt'])) {
+    throw 'The official Microsoft EdgeDriver catalog has no generatedAt timestamp.'
+  }
+  try { $generatedAt = [DateTimeOffset]::Parse([string]$catalog['generatedAt'], [Globalization.CultureInfo]::InvariantCulture) }
+  catch { throw 'The official Microsoft EdgeDriver catalog generatedAt timestamp is malformed.' }
+  $itemsValue = $catalog['items']
+  if ($itemsValue -isnot [Collections.IList] -or $itemsValue -is [string]) {
+    throw 'The official Microsoft EdgeDriver catalog items field is not an array.'
+  }
+  $items = @($itemsValue)
+  if ($items.Count -le 0 -or $items.Count -gt $script:MaxOfficialCatalogItems) {
+    throw 'The official Microsoft EdgeDriver catalog item count is empty or exceeds its limit.'
+  }
+
+  $seenNames = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+  $normalized = New-Object System.Collections.ArrayList
+  foreach ($item in $items) {
+    if ($item -isnot [Collections.IDictionary]) { throw 'The official Microsoft EdgeDriver catalog contains a non-object item.' }
+    $itemKeys = @($item.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+    if ($itemKeys.Count -ne 4 -or $itemKeys[0] -cne 'contentLength' -or $itemKeys[1] -cne 'isDirectory' -or
+        $itemKeys[2] -cne 'lastModified' -or $itemKeys[3] -cne 'name') {
+      throw 'The official Microsoft EdgeDriver catalog contains an unexpected item schema.'
+    }
+    if ($item['isDirectory'] -isnot [bool]) { throw 'The official Microsoft EdgeDriver catalog item has an invalid isDirectory value.' }
+    $rawLength = $item['contentLength']
+    if ($rawLength -isnot [int] -and $rawLength -isnot [long]) { throw 'The official Microsoft EdgeDriver catalog item has a non-integer contentLength.' }
+    $contentLength = [long]$rawLength
+    if ($contentLength -lt 0) { throw 'The official Microsoft EdgeDriver catalog item has a negative contentLength.' }
+    if ($item['lastModified'] -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$item['lastModified'])) {
+      throw 'The official Microsoft EdgeDriver catalog item has no lastModified timestamp.'
+    }
+    try { $lastModified = [DateTimeOffset]::Parse([string]$item['lastModified'], [Globalization.CultureInfo]::InvariantCulture) }
+    catch { throw 'The official Microsoft EdgeDriver catalog item has a malformed lastModified timestamp.' }
+    if ($item['name'] -isnot [string]) { throw 'The official Microsoft EdgeDriver catalog item name is not text.' }
+    $name = [string]$item['name']
+    $kind = $null
+    $versionText = ''
+    $fileName = ''
+    $parsedVersion = $null
+    $driverMatch = [regex]::Match($name, '^(?<version>\d+\.\d+\.\d+\.\d+)/(?<file>edgedriver_(?<architecture>arm64|win32|win64|linux64|mac64|mac64_m1)\.zip)$')
+    if ($driverMatch.Success) {
+      $kind = 'driverArchive'
+      $versionText = $driverMatch.Groups['version'].Value
+      $fileName = $driverMatch.Groups['file'].Value
+      try { $parsedVersion = [version]$versionText }
+      catch { throw 'The official Microsoft EdgeDriver catalog contains an invalid driver version path.' }
+    } elseif ($name -cmatch '^wpt-mojom/\d+\.\d+\.\d+\.\d+/linux64/mojojs\.zip$') {
+      $kind = 'wptArchive'
+    } elseif ($name -cmatch '^LATEST_(?:BETA|CANARY|DEV|EXTENDEDSTABLE|STABLE|RELEASE_\d+(?:_(?:LINUX|MACOS|WINDOWS))?)$') {
+      $kind = 'versionAlias'
+    } elseif ($name -cin @('EMPTY', 'EULA', 'credits.html', 'listing.json')) {
+      $kind = 'catalogMetadata'
+    } else {
+      throw 'The official Microsoft EdgeDriver catalog contains an unknown or malformed item name.'
+    }
+    if ($item['isDirectory'] -or $contentLength -le 0) {
+      throw 'The official Microsoft EdgeDriver catalog item is not a non-empty file.'
+    }
+    $signature = ([string]$item['isDirectory']) + '|' + $contentLength + '|' + [string]$item['lastModified']
+    if ($seenNames.ContainsKey($name)) {
+      $prior = $seenNames[$name]
+      if ($prior.Name -cne $name -or $prior.Signature -cne $signature) {
+        throw 'The official Microsoft EdgeDriver catalog repeats a name with conflicting metadata.'
+      }
+      continue
+    }
+    $seenNames.Add($name, [pscustomobject]@{ Name = $name; Signature = $signature })
+    [void]$normalized.Add([pscustomobject]@{
+      Name = $name
+      Kind = $kind
+      FileName = $fileName
+      Version = $versionText
+      ParsedVersion = $parsedVersion
+      IsDirectory = [bool]$item['isDirectory']
+      ContentLength = $contentLength
+      LastModified = $lastModified.ToString('o')
+    })
+  }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $catalogSha256 = ([BitConverter]::ToString($sha.ComputeHash($ContentBytes))).Replace('-', '').ToLowerInvariant() }
+  finally { $sha.Dispose() }
+  return [pscustomobject]@{
+    GeneratedAt = $generatedAt.ToString('o')
+    Items = @($normalized)
+    ItemCount = $items.Count
+    SizeBytes = $ContentBytes.Length
+    Sha256 = $catalogSha256
+    SourceUrl = $requestUri.AbsoluteUri
+  }
+}
+
+function Select-OfficialEdgeDriverRelease([string] $RuntimeVersion, [object] $Catalog) {
+  if ([string]$RuntimeVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'The observed WebView2 pv is not a four-component version.' }
+  try { $runtimeParsed = [version]$RuntimeVersion }
+  catch { throw 'The observed WebView2 pv is not a valid version.' }
+  $runtimeBuild = $runtimeParsed.Major.ToString() + '.' + $runtimeParsed.Minor + '.' + $runtimeParsed.Build
+  $candidates = @($Catalog.Items | Where-Object {
+    $_.Kind -ceq 'driverArchive' -and $_.FileName -ceq 'edgedriver_win64.zip' -and
+    $null -ne $_.ParsedVersion -and
+    ($_.ParsedVersion.Major.ToString() + '.' + $_.ParsedVersion.Minor + '.' + $_.ParsedVersion.Build) -ceq $runtimeBuild
+  })
   if ($candidates.Count -eq 0) {
-    throw 'The official Microsoft Edge WebDriver page has no x64 driver matching the WebView2 pv first three components.'
+    throw 'The official Microsoft EdgeDriver catalog has no x64 driver matching the observed WebView2 pv first three components.'
   }
-  $selected = $candidates | Sort-Object -Property Parsed -Descending | Select-Object -First 1
+  $selected = @($candidates | Sort-Object -Property ParsedVersion -Descending)[0]
+  if ($selected.ContentLength -gt $script:MaxOfficialDriverBytes) {
+    throw 'The selected official Microsoft EdgeDriver archive exceeds its download byte limit.'
+  }
   return [pscustomobject]@{
     Version = [string]$selected.Version
     Url = 'https://msedgedriver.microsoft.com/' + $selected.Version + '/edgedriver_win64.zip'
     RuntimeVersion = $RuntimeVersion
     CompatibleFirstThreeComponents = $runtimeBuild
+    ExpectedArchiveBytes = [long]$selected.ContentLength
+    SelectedLastModified = [string]$selected.LastModified
+    SourcePage = $script:OfficialEdgeDriverPageUrl
+    SourceCatalogUrl = [string]$Catalog.SourceUrl
+    CatalogGeneratedAt = [string]$Catalog.GeneratedAt
+    CatalogSizeBytes = [long]$Catalog.SizeBytes
+    CatalogSha256 = [string]$Catalog.Sha256
+    CatalogItemCount = [int]$Catalog.ItemCount
+    CompatibleCandidateCount = $candidates.Count
   }
 }
 
 function Get-OfficialEdgeDriverRelease([string] $RuntimeVersion) {
-  $pageUrl = 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver'
-  $page = Invoke-WebRequest -Uri $pageUrl -ErrorAction Stop
-  $selected = Select-OfficialEdgeDriverRelease $RuntimeVersion ([string]$page.Content)
-  $selected | Add-Member -NotePropertyName SourcePage -NotePropertyValue $pageUrl
-  return $selected
+  $response = Invoke-OfficialMicrosoftGet $script:OfficialEdgeDriverCatalogUrl '^/listing\.json$' $script:MaxOfficialCatalogBytes @('application/json')
+  $catalog = Convert-OfficialEdgeDriverCatalog $response.RequestUrl $response.ResponseUrl $response.StatusCode `
+    $response.ContentType $response.ContentBytes $response.DeclaredContentLength
+  return (Select-OfficialEdgeDriverRelease $RuntimeVersion $catalog)
+}
+
+function Save-OfficialEdgeDriverArchive([object] $Release, [string] $Destination) {
+  if ($Release.SourceCatalogUrl -cne $script:OfficialEdgeDriverCatalogUrl -or
+      $Release.ExpectedArchiveBytes -le 0 -or $Release.ExpectedArchiveBytes -gt $script:MaxOfficialDriverBytes) {
+    throw 'The selected EdgeDriver release has invalid official provenance or an unsafe archive size.'
+  }
+  $pathPattern = '^/' + [regex]::Escape([string]$Release.Version) + '/edgedriver_win64\.zip$'
+  $response = Invoke-OfficialMicrosoftGet ([string]$Release.Url) $pathPattern $script:MaxOfficialDriverBytes @(
+    'application/x-zip-compressed', 'application/zip', 'application/octet-stream'
+  )
+  if ($response.ContentBytes.Length -ne [long]$Release.ExpectedArchiveBytes) {
+    throw 'The downloaded Microsoft EdgeDriver archive length differs from the official catalog entry.'
+  }
+  if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
+    throw 'The Microsoft EdgeDriver archive destination already exists; the preflight will not overwrite it.'
+  }
+  $stream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $stream.Write($response.ContentBytes, 0, $response.ContentBytes.Length) }
+  finally { $stream.Dispose() }
+  return [pscustomobject]@{
+    Url = $response.RequestUrl
+    ResponseUrl = $response.ResponseUrl
+    ContentType = $response.ContentType
+    SizeBytes = $response.ContentBytes.Length
+    ExpectedSizeBytes = [long]$Release.ExpectedArchiveBytes
+    Sha256 = Get-Sha256 $Destination
+  }
 }
 
 function Assert-PeAndPilotResources([string] $PackageRoot, [object] $BuildInfo) {
   $exePath = Join-Path $PackageRoot 'morrow.exe'
-  if ((Get-Sha256 $exePath) -ne $script:Artifact.executableSha256) {
+  if ((Get-Item -LiteralPath $exePath).Length -ne [long]$script:Artifact.executableSizeBytes -or
+      (Get-Sha256 $exePath) -ne $script:Artifact.executableSha256) {
     throw 'The extracted executable SHA-256 does not match the pinned Windows pilot executable.'
   }
   $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($exePath))
@@ -708,7 +1008,13 @@ function Assert-PeAndPilotResources([string] $PackageRoot, [object] $BuildInfo) 
   }
   if ($BuildInfo.pilotIdentifier -ne $script:Artifact.pilotIdentifier -or
       $BuildInfo.overlay.identifier -ne $script:Artifact.pilotIdentifier -or
-      $BuildInfo.overlay.bundleActive -ne $false) {
+      $BuildInfo.overlay.bundleActive -ne $false -or
+      $BuildInfo.overlay.path -ne $script:Artifact.overlayPath -or
+      $BuildInfo.overlay.sha256 -ne $script:Artifact.overlaySha256 -or
+      $BuildInfo.overlay.mcpResourceSource -ne $script:Artifact.mcpResourceSource -or
+      $BuildInfo.overlay.mcpResourceTarget -ne $script:Artifact.mcpResourceTarget -or
+      $BuildInfo.template.path -ne $script:Artifact.demoVaultPath -or
+      $BuildInfo.template.sha256 -ne $script:Artifact.demoVaultSha256) {
     throw 'BUILD-INFO does not identify the isolated pilot Tauri resource/identifier configuration.'
   }
   return [pscustomobject]@{
@@ -722,9 +1028,89 @@ function Assert-PeAndPilotResources([string] $PackageRoot, [object] $BuildInfo) 
   }
 }
 
+function Assert-PinnedPackageInventory([string] $PackageRoot, [object] $BuildInfo) {
+  $buildInfoPath = Join-Path $PackageRoot 'BUILD-INFO.json'
+  $sumsPath = Join-Path $PackageRoot 'SHA256SUMS'
+  if ((Get-Item -LiteralPath $buildInfoPath).Length -ne [long]$script:Artifact.buildInfoSizeBytes -or
+      (Get-Sha256 $buildInfoPath) -ne $script:Artifact.buildInfoSha256) {
+    throw 'The package BUILD-INFO.json size or digest differs from the exact issue 185 pin.'
+  }
+  if (-not [IO.File]::Exists($sumsPath) -or
+      (Get-Item -LiteralPath $sumsPath).Length -ne [long]$script:Artifact.sha256SumsSizeBytes -or
+      (Get-Sha256 $sumsPath) -ne $script:Artifact.sha256SumsSha256) {
+    throw 'The package SHA256SUMS inventory size or digest differs from the exact issue 185 pin.'
+  }
+
+  $inventory = @($BuildInfo.fileInventory)
+  if ($inventory.Count -ne [int]$script:Artifact.fileInventoryCount) { throw 'The pinned BUILD-INFO file inventory has an unexpected entry count.' }
+  $expectedHashes = @{}
+  $expectedHashes['BUILD-INFO.json'] = $script:Artifact.buildInfoSha256
+  foreach ($entry in $inventory) {
+    if ($null -eq $entry -or [string]$entry.path -ne (Get-ZipEntryPath ([string]$entry.path) $false) -or
+        [string]$entry.sha256 -notmatch '^[0-9a-f]{64}$') {
+      throw 'A BUILD-INFO inventory entry has an invalid path or SHA-256.'
+    }
+    if ($expectedHashes.ContainsKey([string]$entry.path)) { throw 'The BUILD-INFO inventory repeats a package path.' }
+    $size = 0L
+    try { $size = [long]$entry.sizeBytes } catch { throw 'A BUILD-INFO inventory entry has an invalid size.' }
+    if ($size -lt 0) { throw 'A BUILD-INFO inventory entry has a negative size.' }
+    $expectedHashes[[string]$entry.path] = [string]$entry.sha256
+  }
+  if ($expectedHashes['windows-launch.ps1'] -ne $script:Artifact.launcherSha256 -or
+      $expectedHashes['mcp/index.js'] -ne $script:Artifact.mcpResourceSha256 -or
+      $expectedHashes['morrow.exe'] -ne $script:Artifact.executableSha256) {
+    throw 'The pinned launcher, MCP resource, or executable digest differs from BUILD-INFO.'
+  }
+
+  $sumLines = @(Get-Content -LiteralPath $sumsPath -ErrorAction Stop)
+  if ($sumLines.Count -ne $expectedHashes.Count) { throw 'SHA256SUMS does not list the exact pinned package inventory.' }
+  $sumHashes = @{}
+  foreach ($line in $sumLines) {
+    if ([string]$line -notmatch '^([0-9a-f]{64})  (.+)$') { throw 'SHA256SUMS contains a malformed entry.' }
+    $hash = $Matches[1]
+    $path = $Matches[2]
+    if ($sumHashes.ContainsKey($path)) { throw 'SHA256SUMS repeats a package path.' }
+    $sumHashes[$path] = $hash
+  }
+  if ($sumHashes.Count -ne $expectedHashes.Count) { throw 'SHA256SUMS has ambiguous or missing package paths.' }
+  foreach ($path in $expectedHashes.Keys) {
+    if (-not $sumHashes.ContainsKey($path) -or $sumHashes[$path] -cne $expectedHashes[$path]) {
+      throw 'SHA256SUMS does not match the pinned BUILD-INFO inventory.'
+    }
+  }
+
+  $expectedFilePaths = @($expectedHashes.Keys) + @('SHA256SUMS')
+  $actualFiles = @(Get-ChildItem -LiteralPath $PackageRoot -File -Force -Recurse -ErrorAction Stop)
+  if ($actualFiles.Count -ne $expectedFilePaths.Count) { throw 'The extracted package file count differs from the pinned inventory.' }
+  foreach ($file in $actualFiles) {
+    Assert-NoReparsePath $file.FullName 'Pinned package inventory file' | Out-Null
+    $relative = [IO.Path]::GetRelativePath($PackageRoot, $file.FullName).Replace('\', '/')
+    if ($expectedFilePaths -cnotcontains $relative) { throw 'The extracted package contains a file outside the pinned inventory.' }
+    if ($relative -eq 'SHA256SUMS') { continue }
+    $expectedHash = [string]$expectedHashes[$relative]
+    $expectedInventoryEntry = @($inventory | Where-Object { [string]$_.path -ceq $relative })
+    $expectedSize = if ($relative -eq 'BUILD-INFO.json') { [long]$script:Artifact.buildInfoSizeBytes } else { [long]$expectedInventoryEntry[0].sizeBytes }
+    if ((Get-Item -LiteralPath $file.FullName).Length -ne $expectedSize -or (Get-Sha256 $file.FullName) -cne $expectedHash) {
+      throw 'An extracted package file size or SHA-256 differs from the pinned inventory.'
+    }
+  }
+  return [pscustomobject]@{
+    fileCount = $actualFiles.Count
+    fileInventoryCount = $inventory.Count
+    buildInfoSha256 = $script:Artifact.buildInfoSha256
+    sha256SumsSha256 = $script:Artifact.sha256SumsSha256
+    launcherSha256 = $script:Artifact.launcherSha256
+    mcpResourceSha256 = $script:Artifact.mcpResourceSha256
+  }
+}
+
 function Assert-PinnedPackage([string] $PackageRoot) {
   $buildInfoPath = Join-Path $PackageRoot 'BUILD-INFO.json'
   if (-not (Test-Path -LiteralPath $buildInfoPath -PathType Leaf)) { throw 'Extracted package has no BUILD-INFO.json.' }
+  if ((Get-Item -LiteralPath $buildInfoPath).Length -ne [long]$script:Artifact.buildInfoSizeBytes -or
+      (Get-Sha256 $buildInfoPath) -ne $script:Artifact.buildInfoSha256) {
+    throw 'The extracted BUILD-INFO.json does not match the pinned issue 185 provenance digest.'
+  }
   try { $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw | ConvertFrom-Json -ErrorAction Stop }
   catch { throw 'Extracted package BUILD-INFO.json is invalid JSON.' }
   if ($buildInfo.schemaVersion -ne 1 -or $buildInfo.scope -ne 'Morrow E003-G12 issue 178' -or
@@ -733,7 +1119,7 @@ function Assert-PinnedPackage([string] $PackageRoot) {
       $buildInfo.run.id -ne $script:Artifact.runId -or $buildInfo.run.attempt -ne $script:Artifact.runAttempt -or
       $buildInfo.run.sha -ne $script:Artifact.sourceSha -or $buildInfo.git.head -ne $script:Artifact.sourceSha -or
       $buildInfo.git.branch -ne 'pilot/e003-polaris-dados-2.0' -or
-      $buildInfo.git.tree -ne '2798bec2a826531056cafe5c16f4514580a567b1' -or
+      $buildInfo.git.tree -ne $script:Artifact.sourceTree -or
       $buildInfo.git.status -ne 'clean' -or $buildInfo.runner.os -ne 'Windows' -or $buildInfo.runner.architecture -ne 'X64' -or
       $buildInfo.pilotIdentifier -ne $script:Artifact.pilotIdentifier) {
     throw 'BUILD-INFO does not match the pinned native Windows issue 178 artifact provenance.'
@@ -749,7 +1135,12 @@ function Assert-PinnedPackage([string] $PackageRoot) {
   if ($manifest.id -ne 'polaris-dados' -or $manifest.name -ne 'Polaris Dados') {
     throw 'The extracted Polaris Dados plugin manifest has an unexpected identifier or name.'
   }
-  return [pscustomobject]@{ BuildInfo = $buildInfo; Pe = Assert-PeAndPilotResources $PackageRoot $buildInfo }
+  $inventory = Assert-PinnedPackageInventory $PackageRoot $buildInfo
+  return [pscustomobject]@{
+    BuildInfo = $buildInfo
+    Pe = Assert-PeAndPilotResources $PackageRoot $buildInfo
+    Inventory = $inventory
+  }
 }
 
 function Invoke-PackageCheckOnly([string] $PackageRoot) {
@@ -857,12 +1248,53 @@ function Install-AndVerifyDrivers([string] $ToolStage, [string] $ControlPath, [s
   $tauriList = Invoke-CapturedCommand $cargo.Source @('install', '--list', '--root', $tauriRoot) $ToolStage (Join-Path $ControlPath 'tauri-driver-install-list.log') 120
   $tauriVersion = Get-CargoInstalledPackageVersion ($tauriList.StdOut + [Environment]::NewLine + $tauriList.StdErr) 'tauri-driver' $script:TauriDriver.version
 
-  $edgeRelease = Get-OfficialEdgeDriverRelease $RuntimeVersion
+  $edgeDiscovery = [ordered]@{
+    status = 'discovering'
+    sourcePageUrl = $script:OfficialEdgeDriverPageUrl
+    sourceCatalogUrl = $script:OfficialEdgeDriverCatalogUrl
+    runtimeVersion = $RuntimeVersion
+    startedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+  }
+  Set-EdgeDriverDiscoveryReceipt $ControlPath $edgeDiscovery
+  try {
+    $edgeRelease = Get-OfficialEdgeDriverRelease $RuntimeVersion
+  } catch {
+    $edgeDiscovery.status = 'failed'
+    $edgeDiscovery.failure = 'Official catalog retrieval, validation, or compatible x64 selection failed.'
+    $edgeDiscovery.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    Set-EdgeDriverDiscoveryReceipt $ControlPath $edgeDiscovery
+    throw
+  }
+  $edgeDiscovery.status = 'selected'
+  $edgeDiscovery.version = $edgeRelease.Version
+  $edgeDiscovery.compatibleFirstThreeComponents = $edgeRelease.CompatibleFirstThreeComponents
+  $edgeDiscovery.compatibleCandidateCount = $edgeRelease.CompatibleCandidateCount
+  $edgeDiscovery.catalogGeneratedAt = $edgeRelease.CatalogGeneratedAt
+  $edgeDiscovery.catalogSizeBytes = $edgeRelease.CatalogSizeBytes
+  $edgeDiscovery.catalogSha256 = $edgeRelease.CatalogSha256
+  $edgeDiscovery.catalogItemCount = $edgeRelease.CatalogItemCount
+  $edgeDiscovery.selectedLastModified = $edgeRelease.SelectedLastModified
+  Set-EdgeDriverDiscoveryReceipt $ControlPath $edgeDiscovery
   $runtimeMajorMinorBuild = $edgeRelease.CompatibleFirstThreeComponents
   $edgeUrl = $edgeRelease.Url
   $edgeZip = Join-Path $driverRoot 'msedgedriver.zip'
-  Invoke-WebRequestToFile $edgeUrl $edgeZip ''
-  $edgeZipSha = Get-Sha256 $edgeZip
+  try {
+    $edgeDownload = Save-OfficialEdgeDriverArchive $edgeRelease $edgeZip
+  } catch {
+    $edgeDiscovery.status = 'failed'
+    $edgeDiscovery.failure = 'Official x64 driver archive download or size validation failed.'
+    $edgeDiscovery.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    Set-EdgeDriverDiscoveryReceipt $ControlPath $edgeDiscovery
+    throw
+  }
+  $edgeDiscovery.status = 'downloaded'
+  $edgeDiscovery.downloadUrl = $edgeDownload.Url
+  $edgeDiscovery.responseUrl = $edgeDownload.ResponseUrl
+  $edgeDiscovery.contentType = $edgeDownload.ContentType
+  $edgeDiscovery.archiveSizeBytes = $edgeDownload.SizeBytes
+  $edgeDiscovery.archiveSha256 = $edgeDownload.Sha256
+  $edgeDiscovery.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+  Set-EdgeDriverDiscoveryReceipt $ControlPath $edgeDiscovery
   [void](Expand-SafeZipArchive $edgeZip $edgeRoot)
   $edgeExecutables = @(Get-ChildItem -LiteralPath $edgeRoot -Filter 'msedgedriver.exe' -File -Recurse -Force)
   if ($edgeExecutables.Count -ne 1) { throw 'The official Microsoft EdgeDriver ZIP did not contain exactly one msedgedriver.exe.' }
@@ -895,8 +1327,19 @@ function Install-AndVerifyDrivers([string] $ToolStage, [string] $ControlPath, [s
       source = 'Microsoft Edge WebDriver official download'
       downloadUrl = $edgeUrl
       sourcePageUrl = $edgeRelease.SourcePage
+      sourceCatalogUrl = $edgeRelease.SourceCatalogUrl
+      catalogGeneratedAt = $edgeRelease.CatalogGeneratedAt
+      catalogSizeBytes = $edgeRelease.CatalogSizeBytes
+      catalogSha256 = $edgeRelease.CatalogSha256
+      catalogItemCount = $edgeRelease.CatalogItemCount
+      compatibleCandidateCount = $edgeRelease.CompatibleCandidateCount
+      expectedArchiveBytes = $edgeRelease.ExpectedArchiveBytes
+      selectedLastModified = $edgeRelease.SelectedLastModified
+      responseUrl = $edgeDownload.ResponseUrl
+      contentType = $edgeDownload.ContentType
+      archiveSizeBytes = $edgeDownload.SizeBytes
       executablePath = Get-SanitizedPath $edgeDriverPath
-      archiveSha256 = $edgeZipSha
+      archiveSha256 = $edgeDownload.Sha256
       executableSha256 = Get-Sha256 $edgeDriverPath
       runtimeVersion = $RuntimeVersion
       compatibleFirstThreeComponents = $runtimeMajorMinorBuild
@@ -911,18 +1354,19 @@ function Stage-PinnedArtifactPackage([string] $ToolStage, [string] $Repository, 
   $metadata = Invoke-GitHubJson ($apiRoot + '/actions/artifacts/' + $script:Artifact.artifactId) $Token
   if ($metadata.id -ne [long]$script:Artifact.artifactId -or $metadata.name -ne $script:Artifact.artifactName -or
       $metadata.expired -ne $false -or $metadata.size_in_bytes -ne [long]$script:Artifact.artifactSizeBytes -or
+      $metadata.digest -cne ('sha256:' + $script:Artifact.outerSha256) -or
       $metadata.workflow_run.id -ne [long]$script:Artifact.runId -or
       $metadata.workflow_run.head_sha -ne $script:Artifact.sourceSha -or
       $metadata.workflow_run.head_branch -ne 'pilot/e003-polaris-dados-2.0') {
-    throw 'GitHub artifact metadata does not match the pinned issue 178 run, attempt, branch, name, or size.'
+    throw 'GitHub artifact metadata does not match the pinned issue 185 source run, attempt, branch, name, size, or digest.'
   }
   $downloads = Join-Path $ToolStage 'downloads'
   [void][IO.Directory]::CreateDirectory($downloads)
-  $outerZip = Join-Path $downloads 'issue-178-artifact-14167805134.zip'
+  $outerZip = Join-Path $downloads ('issue-185-artifact-' + $script:Artifact.artifactId + '.zip')
   Invoke-WebRequestToFile ($apiRoot + '/actions/artifacts/' + $script:Artifact.artifactId + '/zip') $outerZip $Token
   if ((Get-Item -LiteralPath $outerZip).Length -ne [long]$script:Artifact.artifactSizeBytes -or
       (Get-Sha256 $outerZip) -ne $script:Artifact.outerSha256) {
-    throw 'The original GitHub artifact ZIP size or outer SHA-256 differs from the pinned issue 178 evidence.'
+    throw 'The GitHub artifact ZIP size or outer SHA-256 differs from the exact issue 185 pin.'
   }
   $outerRoot = Join-Path $ToolStage 'source-artifact'
   $outerValidation = Expand-SafeZipArchive $outerZip $outerRoot
@@ -931,22 +1375,39 @@ function Stage-PinnedArtifactPackage([string] $ToolStage, [string] $Repository, 
   if (-not (Test-Path -LiteralPath $innerZip -PathType Leaf) -or
       (Get-Item -LiteralPath $innerZip).Length -ne [long]$script:Artifact.innerSizeBytes -or
       (Get-Sha256 $innerZip) -ne $script:Artifact.innerSha256) {
-    throw 'The pinned issue 178 inner package ZIP is missing or has an unexpected size/digest.'
+    throw 'The pinned issue 185 inner package ZIP is missing or has an unexpected size/digest.'
   }
   $packageRoot = Join-Path $ToolStage 'package'
   $innerValidation = Expand-SafeZipArchive $innerZip $packageRoot
+  if ($innerValidation.EntryCount -ne [int]$script:Artifact.innerEntryCount -or
+      $innerValidation.TotalUncompressedBytes -ne [long]$script:Artifact.innerTotalBytes) {
+    throw 'The pinned issue 185 inner package inventory count or total size changed.'
+  }
+  $pinnedPackage = Assert-PinnedPackage $packageRoot
   return [pscustomobject]@{
     metadata = @{
       repository = $Repository
       artifactId = [string]$metadata.id
       artifactName = [string]$metadata.name
+      artifactSizeBytes = [long]$metadata.size_in_bytes
+      artifactDigest = [string]$metadata.digest
       runId = [string]$metadata.workflow_run.id
       runAttempt = $script:Artifact.runAttempt
       sourceSha = [string]$metadata.workflow_run.head_sha
       sourceBranch = [string]$metadata.workflow_run.head_branch
+      sourceTree = [string]$pinnedPackage.BuildInfo.git.tree
+      buildInfo = $pinnedPackage.BuildInfo
       outerSha256 = Get-Sha256 $outerZip
+      outerSizeBytes = (Get-Item -LiteralPath $outerZip).Length
       innerSha256 = Get-Sha256 $innerZip
+      innerSizeBytes = (Get-Item -LiteralPath $innerZip).Length
       sourceExeSha256 = Get-Sha256 (Join-Path $packageRoot 'morrow.exe')
+      buildInfoSha256 = $pinnedPackage.Inventory.buildInfoSha256
+      sha256SumsSha256 = $pinnedPackage.Inventory.sha256SumsSha256
+      launcherSha256 = $pinnedPackage.Inventory.launcherSha256
+      mcpResourceSha256 = $pinnedPackage.Inventory.mcpResourceSha256
+      packageFileCount = $pinnedPackage.Inventory.fileCount
+      fileInventoryCount = $pinnedPackage.Inventory.fileInventoryCount
       outerEntries = $outerValidation.EntryCount
       innerEntries = $innerValidation.EntryCount
       innerTotalBytes = $innerValidation.TotalUncompressedBytes
@@ -957,22 +1418,37 @@ function Stage-PinnedArtifactPackage([string] $ToolStage, [string] $Repository, 
 
 function Assert-StagedArtifactPackage([string] $ToolStage, [object] $StagedMetadata) {
   $downloads = Join-Path $ToolStage 'downloads'
-  $outerZip = Join-Path $downloads 'issue-178-artifact-14167805134.zip'
+  $outerZip = Join-Path $downloads ('issue-185-artifact-' + $script:Artifact.artifactId + '.zip')
   $outerRoot = Join-Path $ToolStage 'source-artifact'
   $innerZip = Join-Path $outerRoot $script:Artifact.innerName
   $packageRoot = Join-Path $ToolStage 'package'
   if ($StagedMetadata.repository -ne $script:Artifact.repository -or
       $StagedMetadata.artifactId -ne $script:Artifact.artifactId -or
       $StagedMetadata.artifactName -ne $script:Artifact.artifactName -or
+      $StagedMetadata.artifactSizeBytes -ne [long]$script:Artifact.artifactSizeBytes -or
+      $StagedMetadata.artifactDigest -cne ('sha256:' + $script:Artifact.outerSha256) -or
       $StagedMetadata.runId -ne $script:Artifact.runId -or
       $StagedMetadata.runAttempt -ne $script:Artifact.runAttempt -or
       $StagedMetadata.sourceSha -ne $script:Artifact.sourceSha -or
-      $StagedMetadata.sourceBranch -ne 'pilot/e003-polaris-dados-2.0') {
-    throw 'The staged GitHub artifact metadata differs from the pinned issue 178 run.'
+      $StagedMetadata.sourceTree -ne $script:Artifact.sourceTree -or
+      $StagedMetadata.sourceBranch -ne 'pilot/e003-polaris-dados-2.0' -or
+      $StagedMetadata.buildInfo.run.id -ne $script:Artifact.runId -or
+      $StagedMetadata.buildInfo.run.attempt -ne $script:Artifact.runAttempt -or
+      $StagedMetadata.buildInfo.git.head -ne $script:Artifact.sourceSha -or
+      $StagedMetadata.buildInfo.git.tree -ne $script:Artifact.sourceTree -or
+      $StagedMetadata.buildInfo.overlay.sha256 -ne $script:Artifact.overlaySha256 -or
+      $StagedMetadata.buildInfo.template.sha256 -ne $script:Artifact.demoVaultSha256) {
+    throw 'The staged GitHub artifact metadata differs from the pinned issue 185 package run.'
+  }
+  if ($StagedMetadata.outerSizeBytes -ne [long]$script:Artifact.artifactSizeBytes -or
+      $StagedMetadata.outerSha256 -cne $script:Artifact.outerSha256 -or
+      $StagedMetadata.innerSizeBytes -ne [long]$script:Artifact.innerSizeBytes -or
+      $StagedMetadata.innerSha256 -cne $script:Artifact.innerSha256) {
+    throw 'The staged outer or inner archive receipt differs from the exact issue 185 pins.'
   }
   if (-not [IO.File]::Exists($outerZip) -or (Get-Item -LiteralPath $outerZip).Length -ne [long]$script:Artifact.artifactSizeBytes -or
       (Get-Sha256 $outerZip) -ne $script:Artifact.outerSha256) {
-    throw 'The already-staged original GitHub artifact ZIP has an unexpected size or digest.'
+    throw 'The already-staged GitHub artifact ZIP has an unexpected size or digest.'
   }
   if (-not [IO.File]::Exists($innerZip) -or (Get-Item -LiteralPath $innerZip).Length -ne [long]$script:Artifact.innerSizeBytes -or
       (Get-Sha256 $innerZip) -ne $script:Artifact.innerSha256) {
@@ -981,17 +1457,72 @@ function Assert-StagedArtifactPackage([string] $ToolStage, [object] $StagedMetad
   if (-not [IO.Directory]::Exists($packageRoot)) { throw 'The issue 178 package has not been extracted into the tool stage.' }
   $outerValidation = Assert-ZipArchiveSafe $outerZip
   $innerValidation = Assert-ZipArchiveSafe $innerZip
-  if ($outerValidation.EntryCount -ne 1 -or $innerValidation.EntryCount -ne [int]$StagedMetadata.innerEntries -or
+  if ($outerValidation.EntryCount -ne 1 -or
+      $innerValidation.EntryCount -ne [int]$script:Artifact.innerEntryCount -or
+      $innerValidation.EntryCount -ne [int]$StagedMetadata.innerEntries -or
+      $innerValidation.TotalUncompressedBytes -ne [long]$script:Artifact.innerTotalBytes -or
       $innerValidation.TotalUncompressedBytes -ne [long]$StagedMetadata.innerTotalBytes) {
     throw 'The staged ZIP directory or uncompressed package inventory differs from its stage receipt.'
   }
   $pinnedPackage = Assert-PinnedPackage $packageRoot
+  if ($StagedMetadata.buildInfoSha256 -cne $pinnedPackage.Inventory.buildInfoSha256 -or
+      $StagedMetadata.sha256SumsSha256 -cne $pinnedPackage.Inventory.sha256SumsSha256 -or
+      $StagedMetadata.launcherSha256 -cne $pinnedPackage.Inventory.launcherSha256 -or
+      $StagedMetadata.mcpResourceSha256 -cne $pinnedPackage.Inventory.mcpResourceSha256 -or
+      $StagedMetadata.sourceExeSha256 -cne $pinnedPackage.Pe.sha256 -or
+      $StagedMetadata.packageFileCount -ne $pinnedPackage.Inventory.fileCount -or
+      $StagedMetadata.fileInventoryCount -ne $pinnedPackage.Inventory.fileInventoryCount) {
+    throw 'The staged package BUILD-INFO, resource inventory, launcher, or executable binding changed.'
+  }
   return [pscustomobject]@{
     metadata = $StagedMetadata
     packageRoot = $packageRoot
     buildInfo = $pinnedPackage.BuildInfo
     pe = $pinnedPackage.Pe
   }
+}
+
+function Get-VerifiedStagedEdgeDriverVersion([object] $EdgeDriver, [string] $RuntimeVersion) {
+  $edgeUrl = [string]$EdgeDriver.downloadUrl
+  $releaseUrlMatch = [regex]::Match(
+    $edgeUrl,
+    '^https://msedgedriver\.microsoft\.com/(?<version>\d+\.\d+\.\d+\.\d+)/edgedriver_win64\.zip\z',
+    [Text.RegularExpressions.RegexOptions]::CultureInvariant
+  )
+  if (-not $releaseUrlMatch.Success) { throw 'The staged Microsoft EdgeDriver source is not the official x64 Microsoft download.' }
+  $edgeReleaseVersion = $releaseUrlMatch.Groups['version'].Value
+
+  if ($EdgeDriver.sourcePageUrl -cne $script:OfficialEdgeDriverPageUrl -or
+      $EdgeDriver.sourceCatalogUrl -cne $script:OfficialEdgeDriverCatalogUrl -or
+      $EdgeDriver.responseUrl -cne $edgeUrl -or
+      [string]$EdgeDriver.catalogSha256 -notmatch '^[0-9a-f]{64}$' -or
+      [long]$EdgeDriver.catalogSizeBytes -le 0 -or
+      [long]$EdgeDriver.catalogSizeBytes -gt $script:MaxOfficialCatalogBytes -or
+      [int]$EdgeDriver.catalogItemCount -le 0 -or
+      [int]$EdgeDriver.catalogItemCount -gt $script:MaxOfficialCatalogItems -or
+      [int]$EdgeDriver.compatibleCandidateCount -le 0 -or
+      [long]$EdgeDriver.expectedArchiveBytes -le 0 -or
+      [long]$EdgeDriver.expectedArchiveBytes -gt $script:MaxOfficialDriverBytes -or
+      [long]$EdgeDriver.archiveSizeBytes -ne [long]$EdgeDriver.expectedArchiveBytes -or
+      [string]$EdgeDriver.archiveSha256 -notmatch '^[0-9a-f]{64}$' -or
+      [string]$EdgeDriver.executableSha256 -notmatch '^[0-9a-f]{64}$' -or
+      $EdgeDriver.contentType -cnotin @('application/x-zip-compressed', 'application/zip', 'application/octet-stream')) {
+    throw 'The staged Microsoft EdgeDriver source is not the official x64 Microsoft download.'
+  }
+  try { [void][DateTimeOffset]::Parse([string]$EdgeDriver.catalogGeneratedAt, [Globalization.CultureInfo]::InvariantCulture) }
+  catch { throw 'The staged Microsoft EdgeDriver catalog generation time is malformed.' }
+  try { [void][DateTimeOffset]::Parse([string]$EdgeDriver.selectedLastModified, [Globalization.CultureInfo]::InvariantCulture) }
+  catch { throw 'The selected Microsoft EdgeDriver lastModified time is malformed.' }
+  if ([string]$RuntimeVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+    throw 'The current WebView2 pv is not a four-component version.'
+  }
+  $runtimeMajorMinorBuild = ($RuntimeVersion.Split('.')[0..2] -join '.')
+  if ($edgeReleaseVersion -cne [string]$EdgeDriver.version -or
+      ($edgeReleaseVersion.Split('.')[0..2] -join '.') -cne $runtimeMajorMinorBuild -or
+      [string]$EdgeDriver.runtimeVersion -cne $RuntimeVersion) {
+    throw 'The staged Microsoft EdgeDriver does not match the WebView2 runtime first-three-component requirement.'
+  }
+  return $edgeReleaseVersion
 }
 
 function Verify-StagedDrivers([object] $StagedDrivers, [string] $ToolStage, [string] $ControlPath, [string] $RuntimeVersion) {
@@ -1014,21 +1545,11 @@ function Verify-StagedDrivers([object] $StagedDrivers, [string] $ToolStage, [str
   $edgeArchive = Join-Path $ToolStage 'drivers/msedgedriver.zip'
   $edgeExecutables = @(Get-ChildItem -LiteralPath $edgeRoot -Filter 'msedgedriver.exe' -File -Recurse -Force)
   if ($edgeExecutables.Count -ne 1 -or -not [IO.File]::Exists($edgeArchive) -or
+      (Get-Item -LiteralPath $edgeArchive).Length -ne [long]$StagedDrivers.edgeDriver.archiveSizeBytes -or
       (Get-Sha256 $edgeArchive) -ne $StagedDrivers.edgeDriver.archiveSha256) {
     throw 'The already-staged Microsoft EdgeDriver archive or executable is missing or changed.'
   }
-  $edgeUrl = [string]$StagedDrivers.edgeDriver.downloadUrl
-  if ($edgeUrl -notmatch '^https://msedgedriver\.microsoft\.com/(?<version>\d+\.\d+\.\d+\.\d+)/edgedriver_win64\.zip$' -or
-      $StagedDrivers.edgeDriver.sourcePageUrl -ne 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver') {
-    throw 'The staged Microsoft EdgeDriver source is not the official x64 Microsoft download.'
-  }
-  $edgeReleaseVersion = $Matches.version
-  $runtimeMajorMinorBuild = ($RuntimeVersion.Split('.')[0..2] -join '.')
-  if ($edgeReleaseVersion -ne $StagedDrivers.edgeDriver.version -or
-      ($edgeReleaseVersion.Split('.')[0..2] -join '.') -ne $runtimeMajorMinorBuild -or
-      $StagedDrivers.edgeDriver.runtimeVersion -ne $RuntimeVersion) {
-    throw 'The staged Microsoft EdgeDriver does not match the WebView2 runtime first-three-component requirement.'
-  }
+  $edgeReleaseVersion = Get-VerifiedStagedEdgeDriverVersion $StagedDrivers.edgeDriver $RuntimeVersion
   $edgeDriverPath = $edgeExecutables[0].FullName
   Assert-NoReparsePath $edgeDriverPath 'Staged Microsoft EdgeDriver executable' | Out-Null
   if ((Get-Sha256 $edgeDriverPath) -ne $StagedDrivers.edgeDriver.executableSha256) {
@@ -1063,6 +1584,15 @@ function Set-ControlReceipt([string] $ControlPath, [object] $Receipt) {
   $safePath = Join-Path $ControlPath 'receipt.json'
   $json = $Receipt | ConvertTo-Json -Depth 15
   [IO.File]::WriteAllText($safePath, $json, [Text.UTF8Encoding]::new($false))
+}
+
+function Set-EdgeDriverDiscoveryReceipt([string] $ControlPath, [object] $Discovery) {
+  $receiptPath = Join-Path $ControlPath 'receipt.json'
+  if (-not [IO.File]::Exists($receiptPath)) { throw 'The control receipt is missing before EdgeDriver discovery.' }
+  $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json -ErrorAction Stop
+  if ($receipt.status -ne 'initializing') { throw 'EdgeDriver discovery can update only an initializing preflight receipt.' }
+  $receipt | Add-Member -NotePropertyName 'edgeDriverDiscovery' -NotePropertyValue $Discovery -Force
+  Set-ControlReceipt $ControlPath $receipt
 }
 
 function Set-PreflightReceiptStatus([object] $Receipt, [ValidateSet('staged', 'passed', 'failed')][string] $NextStatus) {
@@ -1139,12 +1669,27 @@ function Stage-WindowsPreflight {
   [void][IO.Directory]::CreateDirectory($paths.ToolStage)
   Assert-NoReparsePath $paths.ToolStage 'Tool/download stage' | Out-Null
   $runtime = Get-WebView2Runtime
+  $runtimeObservation = [ordered]@{
+    selection = 'Microsoft documented 64-bit WebView2 pv values; exact HKLM/HKCU agreement required'
+    version = $runtime.Version
+    sources = $runtime.Sources
+    recordedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    recordedBeforeDriverDiscovery = $true
+  }
+  $context.Receipt | Add-Member -NotePropertyName 'webView2Runtime' -NotePropertyValue $runtimeObservation -Force
+  $context.Receipt | Add-Member -NotePropertyName 'edgeDriverDiscovery' -NotePropertyValue ([ordered]@{
+    status = 'pending'
+    sourcePageUrl = $script:OfficialEdgeDriverPageUrl
+    sourceCatalogUrl = $script:OfficialEdgeDriverCatalogUrl
+  }) -Force
+  $context.Receipt.scope = 'Morrow E003 G13 issue 185 preflight only'
+  Set-ControlReceipt $context.ControlPath $context.Receipt
   $artifact = Stage-PinnedArtifactPackage $paths.ToolStage $script:Artifact.repository $env:GITHUB_TOKEN
   $drivers = Install-AndVerifyDrivers $paths.ToolStage $context.ControlPath $runtime.Version
   $stage = [ordered]@{
     schemaVersion = 1
     status = 'staged'
-    scope = 'Morrow E003 G13 issue 179 tool/download stage only'
+    scope = 'Morrow E003 G13 issue 185 tool/download stage only'
     runId = $env:GITHUB_RUN_ID
     runAttempt = $env:GITHUB_RUN_ATTEMPT
     sha = $env:GITHUB_SHA
@@ -1161,12 +1706,14 @@ function Stage-WindowsPreflight {
   $receipt = [ordered]@{
     schemaVersion = 1
     status = 'initializing'
-    scope = 'Morrow E003 G13 issue 179 preflight only'
+    scope = 'Morrow E003 G13 issue 185 preflight only'
     runId = $env:GITHUB_RUN_ID
     runAttempt = $env:GITHUB_RUN_ATTEMPT
     sha = $env:GITHUB_SHA
     branch = 'codex/e003-g07-windows-runtime'
     stageManifest = 'stage.json'
+    webView2Runtime = $runtimeObservation
+    edgeDriverDiscovery = $drivers.edgeDriver
     appLaunched = $false
     driverServiceStarted = $false
     stagedAtUtc = $stage.completedAtUtc
@@ -1240,16 +1787,17 @@ function Invoke-WindowsPreflightCheckOnly {
   $receipt = [ordered]@{
     schemaVersion = 1
     status = 'staged'
-    scope = 'Morrow E003 G13 issue 179 preflight only'
+    scope = 'Morrow E003 G13 issue 185 preflight only'
     runId = $env:GITHUB_RUN_ID
     runAttempt = $env:GITHUB_RUN_ATTEMPT
     sha = $env:GITHUB_SHA
     branch = 'codex/e003-g07-windows-runtime'
     runner = @{ os = $env:RUNNER_OS; architecture = $env:RUNNER_ARCH; name = $env:RUNNER_NAME; imageOs = $env:ImageOS; imageVersion = $env:ImageVersion }
     ciIdentity = @{ sid = $identity.Sid; account = $identity.Account }
+    webView2Runtime = @{ selection = 'Microsoft documented pv REG_SZ; exact 64-bit HKLM/HKCU agreement required'; version = $runtime.Version; sources = $runtime.Sources }
+    edgeDriverDiscovery = $drivers.edgeDriver
     sourceArtifact = $artifact.metadata
     package = @{ buildInfoRun = $artifact.buildInfo.run; applicationVersion = $artifact.buildInfo.applicationVersion; pilotIdentifier = $artifact.buildInfo.pilotIdentifier; pe = $artifact.pe }
-    webView2Runtime = @{ selection = 'Microsoft documented pv REG_SZ; exact 64-bit HKLM/HKCU agreement required'; version = $runtime.Version; sources = $runtime.Sources }
     drivers = $drivers
     knownFolders = @{ localAppData = Get-SanitizedPath $knownFolders.LocalAppData; roamingAppData = Get-SanitizedPath $knownFolders.RoamingAppData; api = 'SHGetKnownFolderPath' }
     plannedPaths = $planned

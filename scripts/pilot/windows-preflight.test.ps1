@@ -99,6 +99,25 @@ $testRoot = Join-Path $runnerTemp ('morrow-preflight-tests-' + [Guid]::NewGuid()
 [void][IO.Directory]::CreateDirectory($testRoot)
 
 try {
+  $discoveryControl = Join-Path $testRoot 'discovery-control'
+  [void][IO.Directory]::CreateDirectory($discoveryControl)
+  $discoveryReceipt = [ordered]@{
+    status = 'initializing'
+    webView2Runtime = @{ version = '157.0.4341.60'; recordedBeforeDriverDiscovery = $true }
+    edgeDriverDiscovery = @{ status = 'pending'; sourceCatalogUrl = 'https://msedgedriver.microsoft.com/listing.json' }
+  }
+  Set-ControlReceipt $discoveryControl $discoveryReceipt
+  Set-EdgeDriverDiscoveryReceipt $discoveryControl ([ordered]@{
+    status = 'failed'
+    runtimeVersion = '157.0.4341.60'
+    failure = 'Synthetic catalog validation failure.'
+  })
+  $failedDiscoveryReceipt = Get-Content -LiteralPath (Join-Path $discoveryControl 'receipt.json') -Raw | ConvertFrom-Json
+  Assert-True ($failedDiscoveryReceipt.webView2Runtime.version -eq '157.0.4341.60' -and
+    $failedDiscoveryReceipt.webView2Runtime.recordedBeforeDriverDiscovery -and
+    $failedDiscoveryReceipt.edgeDriverDiscovery.status -eq 'failed' -and
+    $failedDiscoveryReceipt.edgeDriverDiscovery.runtimeVersion -eq '157.0.4341.60') 'runtime pv remains in the control receipt when official catalog discovery fails'
+
   $validZip = Join-Path $testRoot 'valid.zip'
   New-ZipFixture $validZip @(
     @{ Name = 'DemoVault/index.md'; Content = 'synthetic vault' },
@@ -215,15 +234,177 @@ try {
   Assert-Throws 'Cargo installed metadata rejects a different tauri-driver version' {
     Get-CargoInstalledPackageVersion "tauri-driver v2.2.0:`r`n    tauri-driver.exe`r`n" 'tauri-driver' '2.1.0'
   }
-  $edgePageFixture = @'
-<a href="https://msedgedriver.microsoft.com/157.0.4341.36/edgedriver_win64.zip">old patch</a>
-<a href="https://msedgedriver.microsoft.com/157.0.4341.57/edgedriver_win64.zip">latest matching patch</a>
-<a href="https://msedgedriver.microsoft.com/158.0.4370.21/edgedriver_win64.zip">different build</a>
-'@
-  $edgeRelease = Select-OfficialEdgeDriverRelease '157.0.4341.60' $edgePageFixture
-  Assert-True ($edgeRelease.Version -eq '157.0.4341.57') 'official EdgeDriver candidate selected by WebView2 first three components'
-  Assert-Throws 'no matching official EdgeDriver build rejected' {
-    Select-OfficialEdgeDriverRelease '159.0.4393.0' $edgePageFixture
+  function New-TestEdgeDriverItem([string] $Name, [long] $ContentLength = 1024, [bool] $IsDirectory = $false, [string] $LastModified = '2026-11-16T23:24:23+00:00') {
+    return [ordered]@{
+      isDirectory = $IsDirectory
+      name = $Name
+      contentLength = $ContentLength
+      lastModified = $LastModified
+    }
+  }
+  function New-TestEdgeDriverCatalog([object[]] $Items, [string] $GeneratedAt = '2026-11-16T23:24:23.4075781+00:00') {
+    $document = [ordered]@{ generatedAt = $GeneratedAt; items = @($Items) }
+    $json = ConvertTo-Json -InputObject $document -Depth 8 -Compress
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    return [pscustomobject]@{ Json = $json; Bytes = $bytes; Length = $bytes.Length }
+  }
+  function Convert-TestEdgeDriverCatalog([object] $Fixture, [string] $RequestUrl = 'https://msedgedriver.microsoft.com/listing.json', [string] $ResponseUrl = 'https://msedgedriver.microsoft.com/listing.json', [int] $StatusCode = 200, [string] $ContentType = 'application/json', [object] $DeclaredContentLength = $null) {
+    $declared = if ($null -eq $DeclaredContentLength) { $Fixture.Length } else { $DeclaredContentLength }
+    return (Convert-OfficialEdgeDriverCatalog $RequestUrl $ResponseUrl $StatusCode $ContentType $Fixture.Bytes $declared)
+  }
+
+  $edgeCatalogFixture = New-TestEdgeDriverCatalog @(
+    (New-TestEdgeDriverItem '157.0.4341.36/edgedriver_win64.zip'),
+    (New-TestEdgeDriverItem '157.0.4341.9/edgedriver_win64.zip'),
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip'),
+    (New-TestEdgeDriverItem '157.0.4341.99/edgedriver_win32.zip'),
+    (New-TestEdgeDriverItem '158.0.4370.21/edgedriver_win64.zip'),
+    (New-TestEdgeDriverItem 'wpt-mojom/122.0.2325.0/linux64/mojojs.zip'),
+    (New-TestEdgeDriverItem 'LATEST_STABLE' 32),
+    (New-TestEdgeDriverItem 'LATEST_RELEASE_157_WINDOWS' 32),
+    (New-TestEdgeDriverItem 'EMPTY' 30),
+    (New-TestEdgeDriverItem 'EULA' 10999),
+    (New-TestEdgeDriverItem 'credits.html' 5866824),
+    (New-TestEdgeDriverItem 'listing.json' 1346441)
+  )
+  $edgeCatalog = Convert-TestEdgeDriverCatalog $edgeCatalogFixture
+  $isoCatalogJson = '{"generatedAt":"2026-11-16T23:24:23.4075781+00:00","items":[{"isDirectory":false,"name":"157.0.4341.57/edgedriver_win64.zip","contentLength":1024,"lastModified":"2026-11-16T23:24:23+00:00"}]}'
+  $preservedDates = ConvertFrom-OfficialCatalogJson $isoCatalogJson
+  Assert-True ($preservedDates['generatedAt'] -is [string] -and $preservedDates['items'][0]['lastModified'] -is [string]) 'catalog ISO timestamps remain strings during JSON conversion'
+  $domPreservedDates = ConvertFrom-OfficialCatalogJson $isoCatalogJson -ForceJsonDom
+  Assert-True ($domPreservedDates['generatedAt'] -is [string] -and $domPreservedDates['items'][0]['lastModified'] -is [string]) 'compatible JSON DOM fallback also preserves ISO timestamp strings'
+  $edgeRelease = Select-OfficialEdgeDriverRelease '157.0.4341.60' $edgeCatalog
+  Assert-True ($edgeRelease.Version -eq '157.0.4341.57') 'compatible x64 patches are legitimate and selected by numeric version order'
+  Assert-True ($edgeRelease.CompatibleCandidateCount -eq 3 -and $edgeRelease.ExpectedArchiveBytes -eq 1024) 'catalog reports all compatible x64 candidates and selected archive size'
+  Assert-True ($edgeRelease.SourceCatalogUrl -eq 'https://msedgedriver.microsoft.com/listing.json' -and $edgeRelease.CatalogSha256 -match '^[0-9a-f]{64}$') 'selected driver retains official catalog provenance and digest'
+  Assert-True (@($edgeCatalog.Items | Where-Object { $_.Kind -eq 'driverArchive' }).Count -eq 5 -and
+    @($edgeCatalog.Items | Where-Object { $_.Kind -in @('wptArchive', 'versionAlias', 'catalogMetadata') }).Count -eq 7) 'observed Microsoft WPT, LATEST, and metadata records are accepted but excluded from driver selection'
+  $verifiedStagedEdgeDriver = [pscustomobject]@{
+    downloadUrl = 'https://msedgedriver.microsoft.com/157.0.4341.57/edgedriver_win64.zip'
+    version = '157.0.4341.57'
+    sourcePageUrl = $script:OfficialEdgeDriverPageUrl
+    sourceCatalogUrl = $script:OfficialEdgeDriverCatalogUrl
+    responseUrl = 'https://msedgedriver.microsoft.com/157.0.4341.57/edgedriver_win64.zip'
+    catalogSha256 = 'a' * 64
+    catalogSizeBytes = 1024
+    catalogItemCount = 12
+    compatibleCandidateCount = 3
+    expectedArchiveBytes = 1024
+    archiveSizeBytes = 1024
+    archiveSha256 = 'b' * 64
+    executableSha256 = 'c' * 64
+    contentType = 'application/zip'
+    catalogGeneratedAt = '2026-11-16T23:24:23.4075781+00:00'
+    selectedLastModified = '2026-11-16T23:24:23+00:00'
+    runtimeVersion = '157.0.4341.60'
+  }
+  Assert-True ((Get-VerifiedStagedEdgeDriverVersion $verifiedStagedEdgeDriver '157.0.4341.60') -eq '157.0.4341.57') 'valid official URL and hashes retain the captured release version without starting a process'
+  $driverBoundaryCatalog = Convert-TestEdgeDriverCatalog (New-TestEdgeDriverCatalog @(
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip' $script:MaxOfficialDriverBytes)
+  ))
+  Assert-True ((Select-OfficialEdgeDriverRelease '157.0.4341.60' $driverBoundaryCatalog).ExpectedArchiveBytes -eq $script:MaxOfficialDriverBytes) 'driver archive exactly at the byte limit remains eligible'
+  Assert-Throws 'no compatible first-three-component build rejected' {
+    Select-OfficialEdgeDriverRelease '159.0.4393.0' $edgeCatalog
+  }
+  $wrongArchCatalog = Convert-TestEdgeDriverCatalog (New-TestEdgeDriverCatalog @(
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win32.zip')
+  ))
+  Assert-Throws 'wrong architecture does not satisfy x64 driver selection' {
+    Select-OfficialEdgeDriverRelease '157.0.4341.60' $wrongArchCatalog
+  }
+  $oversizedDriverCatalog = Convert-TestEdgeDriverCatalog (New-TestEdgeDriverCatalog @(
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip' ($script:MaxOfficialDriverBytes + 1))
+  ))
+  Assert-Throws 'driver archive length above the download limit rejected' {
+    Select-OfficialEdgeDriverRelease '157.0.4341.60' $oversizedDriverCatalog
+  }
+
+  $conflictingDuplicate = New-TestEdgeDriverCatalog @(
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip' 1024),
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip' 2048)
+  )
+  Assert-Throws 'conflicting duplicate catalog names rejected' { Convert-TestEdgeDriverCatalog $conflictingDuplicate }
+  $identicalDuplicate = Convert-TestEdgeDriverCatalog (New-TestEdgeDriverCatalog @(
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip'),
+    (New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip')
+  ))
+  Assert-True ($identicalDuplicate.Items.Count -eq 1) 'identical repeated catalog metadata is deduplicated without rejecting multiple patches'
+
+  $badResponseUrl = 'https://downloads.example.invalid/listing.json'
+  Assert-Throws 'unofficial catalog response origin rejected' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://msedgedriver.microsoft.com/listing.json' $badResponseUrl
+  }
+  Assert-Throws 'catalog redirect rejected without following it' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 302
+  }
+  Assert-Throws 'catalog 404 rejected' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 404
+  }
+  Assert-Throws 'unofficial request origin rejected' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://downloads.example.invalid/listing.json' 'https://downloads.example.invalid/listing.json'
+  }
+  Assert-Throws 'catalog query parameters rejected' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://msedgedriver.microsoft.com/listing.json?redirect=1' 'https://msedgedriver.microsoft.com/listing.json?redirect=1'
+  }
+  Assert-Throws 'unexpected catalog content type rejected' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 200 'text/html'
+  }
+  Assert-Throws 'declared catalog content length mismatch rejected' {
+    Convert-TestEdgeDriverCatalog $edgeCatalogFixture 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 200 'application/json' ($edgeCatalogFixture.Length + 1)
+  }
+  Assert-Throws 'empty catalog body rejected' {
+    $emptyCatalogBody = [byte[]]::new(0)
+    Convert-OfficialEdgeDriverCatalog -RequestUrl 'https://msedgedriver.microsoft.com/listing.json' `
+      -ResponseUrl 'https://msedgedriver.microsoft.com/listing.json' -StatusCode 200 -ContentType 'application/json' `
+      -ContentBytes $emptyCatalogBody -DeclaredContentLength 0
+  }
+  Assert-Throws 'malformed catalog JSON rejected' {
+    Convert-OfficialEdgeDriverCatalog 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 200 'application/json' ([Text.Encoding]::UTF8.GetBytes('{malformed')) 10
+  }
+  $unexpectedCatalogSchema = [ordered]@{ generatedAt = '2026-11-16T23:24:23+00:00'; items = @((New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip')); extra = $true }
+  $unexpectedSchemaJson = ConvertTo-Json -InputObject $unexpectedCatalogSchema -Depth 8 -Compress
+  $unexpectedSchemaFixture = [pscustomobject]@{
+    Json = $unexpectedSchemaJson
+    Bytes = [Text.Encoding]::UTF8.GetBytes($unexpectedSchemaJson)
+    Length = [Text.Encoding]::UTF8.GetByteCount($unexpectedSchemaJson)
+  }
+  Assert-Throws 'unexpected catalog root key rejected' { Convert-TestEdgeDriverCatalog $unexpectedSchemaFixture }
+  $badItemFixture = New-TestEdgeDriverCatalog @([ordered]@{ name = '157.0.4341.57/edgedriver_win64.zip'; isDirectory = $false; contentLength = 1024 })
+  Assert-Throws 'missing catalog item schema field rejected' { Convert-TestEdgeDriverCatalog $badItemFixture }
+  $badNameFixture = New-TestEdgeDriverCatalog @((New-TestEdgeDriverItem '../157.0.4341.57/edgedriver_win64.zip'))
+  Assert-Throws 'malformed catalog path rejected' { Convert-TestEdgeDriverCatalog $badNameFixture }
+  $badGeneratedAtFixture = New-TestEdgeDriverCatalog @((New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip')) 'not-a-timestamp'
+  Assert-Throws 'malformed catalog generatedAt rejected' { Convert-TestEdgeDriverCatalog $badGeneratedAtFixture }
+  $badLastModifiedFixture = New-TestEdgeDriverCatalog @((New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip' 1024 $false 'not-a-timestamp'))
+  Assert-Throws 'malformed catalog item lastModified rejected' { Convert-TestEdgeDriverCatalog $badLastModifiedFixture }
+  $unknownNameFixture = New-TestEdgeDriverCatalog @((New-TestEdgeDriverItem 'unrecognized/157.0.4341.57/edgedriver_win64.zip'))
+  Assert-Throws 'unknown catalog namespace rejected' { Convert-TestEdgeDriverCatalog $unknownNameFixture }
+  $emptyItemsJson = '{"generatedAt":"2026-11-16T23:24:23+00:00","items":[]}'
+  $emptyItemsFixture = [pscustomobject]@{
+    Json = $emptyItemsJson
+    Bytes = [Text.Encoding]::UTF8.GetBytes($emptyItemsJson)
+    Length = [Text.Encoding]::UTF8.GetByteCount($emptyItemsJson)
+  }
+  Assert-Throws 'catalog with an empty items array rejected' { Convert-TestEdgeDriverCatalog $emptyItemsFixture }
+  $directoryArchiveFixture = New-TestEdgeDriverCatalog @((New-TestEdgeDriverItem '157.0.4341.57/edgedriver_win64.zip' 1024 $true))
+  Assert-Throws 'catalog driver archive marked as a directory rejected' { Convert-TestEdgeDriverCatalog $directoryArchiveFixture }
+
+  $baseCatalogJson = $edgeCatalogFixture.Json
+  $baseCatalogBytes = [Text.Encoding]::UTF8.GetByteCount($baseCatalogJson)
+  $boundaryCatalogJson = $baseCatalogJson + (' ' * ($script:MaxOfficialCatalogBytes - $baseCatalogBytes))
+  $boundaryCatalogBytes = [Text.Encoding]::UTF8.GetBytes($boundaryCatalogJson)
+  $boundaryCatalog = Convert-OfficialEdgeDriverCatalog 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 200 'application/json' $boundaryCatalogBytes $boundaryCatalogBytes.Length
+  Assert-True ($boundaryCatalog.SizeBytes -eq $script:MaxOfficialCatalogBytes) 'catalog body at the byte limit remains accepted'
+  $overLimitBytes = New-Object byte[] ($script:MaxOfficialCatalogBytes + 1)
+  Assert-Throws 'catalog body over byte limit rejected before JSON parsing' {
+    Convert-OfficialEdgeDriverCatalog 'https://msedgedriver.microsoft.com/listing.json' 'https://msedgedriver.microsoft.com/listing.json' 200 'application/json' $overLimitBytes $overLimitBytes.Length
+  }
+  $oldItemLimit = $script:MaxOfficialCatalogItems
+  try {
+    $script:MaxOfficialCatalogItems = 2
+    Assert-Throws 'catalog item count over its configured limit rejected' { Convert-TestEdgeDriverCatalog $edgeCatalogFixture }
+  } finally {
+    $script:MaxOfficialCatalogItems = $oldItemLimit
   }
 
   $known = Get-WindowsKnownFolderPaths
