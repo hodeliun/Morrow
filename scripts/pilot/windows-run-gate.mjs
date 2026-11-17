@@ -49,6 +49,31 @@ const HEX_40 = /^[0-9a-f]{40}$/i;
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const RUN_ID = /^[1-9][0-9]{0,19}$/;
 const API_VERSION = '2022-11-28';
+const OFFICIAL_EDGE_DRIVER_PAGE_URL = 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver';
+const OFFICIAL_EDGE_DRIVER_CATALOG_URL = 'https://msedgedriver.microsoft.com/listing.json';
+const EDGE_CATALOG_PROVENANCE_FIELDS = Object.freeze([
+  'catalogGeneratedAt',
+  'catalogSizeBytes',
+  'catalogItemCount',
+  'catalogSha256',
+]);
+const EDGE_SELECTED_IDENTITY_FIELDS = Object.freeze([
+  'version',
+  'runtimeVersion',
+  'compatibleFirstThreeComponents',
+  'source',
+  'sourcePageUrl',
+  'sourceCatalogUrl',
+  'downloadUrl',
+  'responseUrl',
+  'contentType',
+  'selectedLastModified',
+  'expectedArchiveBytes',
+  'archiveSizeBytes',
+  'archiveSha256',
+  'executableSha256',
+]);
+const EDGE_TIMESTAMP_FIELDS = new Set(['catalogGeneratedAt', 'selectedLastModified']);
 
 function fail(message) {
   throw new Error(message);
@@ -66,6 +91,89 @@ function requireString(value, label) {
 
 function assertEqual(actual, expected, label) {
   if (actual !== expected) fail(`${label} does not match the authorized value.`);
+}
+
+function parsePreciseInstant(value, label) {
+  const timestamp = requireString(value, label);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,100}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+    timestamp,
+  );
+  if (!match) fail(`${label} is malformed.`);
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction = '', zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const daysPerMonth = [
+    31,
+    year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysPerMonth[month - 1] ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    fail(`${label} is malformed.`);
+  }
+  const wallClock = `${yearText}-${monthText}-${dayText}T${hourText}:${minuteText}:${secondText}`;
+  const wallClockMilliseconds = Date.parse(`${wallClock}Z`);
+  if (
+    !Number.isFinite(wallClockMilliseconds) ||
+    new Date(wallClockMilliseconds).toISOString().slice(0, 19) !== wallClock
+  ) {
+    fail(`${label} is malformed.`);
+  }
+  let offsetSeconds = 0;
+  if (zone !== 'Z') {
+    const offsetHours = Number(zone.slice(1, 3));
+    const offsetMinutes = Number(zone.slice(4, 6));
+    if (offsetHours > 14 || offsetMinutes > 59 || (offsetHours === 14 && offsetMinutes !== 0)) {
+      fail(`${label} has an invalid UTC offset.`);
+    }
+    const direction = zone[0] === '+' ? 1 : -1;
+    offsetSeconds = direction * (offsetHours * 60 + offsetMinutes) * 60;
+  }
+  return Object.freeze({
+    utcSeconds: BigInt(Math.trunc(wallClockMilliseconds / 1000)) - BigInt(offsetSeconds),
+    fraction: fraction.replace(/0+$/, ''),
+  });
+}
+
+function assertSamePreciseInstant(actual, expected, label) {
+  const actualInstant = parsePreciseInstant(actual, `${label} actual timestamp`);
+  const expectedInstant = parsePreciseInstant(expected, `${label} authorized timestamp`);
+  const precision = Math.max(actualInstant.fraction.length, expectedInstant.fraction.length);
+  const actualFraction = BigInt((actualInstant.fraction || '').padEnd(precision, '0') || '0');
+  const expectedFraction = BigInt((expectedInstant.fraction || '').padEnd(precision, '0') || '0');
+  if (actualInstant.utcSeconds !== expectedInstant.utcSeconds || actualFraction !== expectedFraction) {
+    fail(`${label} does not match the authorized instant.`);
+  }
+}
+
+function assertEdgeFieldsEqual(actual, expected, fields, label) {
+  for (const field of fields) {
+    if (EDGE_TIMESTAMP_FIELDS.has(field)) {
+      assertSamePreciseInstant(actual[field], expected[field], `${label} ${field}`);
+    } else {
+      assertEqual(actual[field], expected[field], `${label} ${field}`);
+    }
+  }
 }
 
 function assertHex(value, pattern, label) {
@@ -276,39 +384,122 @@ function validatedTauriDriver(stage, receipt) {
   return staged;
 }
 
+function validatedRuntimeSources(sources, runtimeVersion, label = 'Prepared WebView2 pv') {
+  if (!Array.isArray(sources) || sources.length === 0) fail(`${label} observations are empty.`);
+  for (const source of sources) {
+    requireObject(source, `${label} source observation`);
+    assertEqual(source.Version, runtimeVersion, `${label} source version`);
+    requireString(source.RegistryPath, `${label} registry source`);
+  }
+  return sources;
+}
+
+function validatedEdgeDriver(edge, runtimeVersion, label = 'Prepared EdgeDriver') {
+  requireObject(edge, `${label} provenance`);
+  const version = requireString(edge.version, `${label} version`);
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(version)) fail(`${label} version is malformed.`);
+  if (version.split('.').slice(0, 3).join('.') !== runtimeVersion.split('.').slice(0, 3).join('.')) {
+    fail(`${label} and WebView2 pv versions are incompatible.`);
+  }
+  assertEqual(edge.source, 'Microsoft Edge WebDriver official download', `${label} source`);
+  assertEqual(edge.sourcePageUrl, OFFICIAL_EDGE_DRIVER_PAGE_URL, `${label} official download page URL`);
+  assertEqual(edge.sourceCatalogUrl, OFFICIAL_EDGE_DRIVER_CATALOG_URL, `${label} official catalog URL`);
+  const officialDownloadUrl = `https://msedgedriver.microsoft.com/${version}/edgedriver_win64.zip`;
+  assertEqual(edge.downloadUrl, officialDownloadUrl, `${label} official x64 download URL`);
+  assertEqual(edge.responseUrl, officialDownloadUrl, `${label} official x64 response URL`);
+  const contentType = requireString(edge.contentType, `${label} archive content type`);
+  if (
+    !['application/x-zip-compressed', 'application/zip', 'application/octet-stream'].includes(contentType)
+  ) {
+    fail(`${label} archive content type is not an approved ZIP type.`);
+  }
+  assertEqual(edge.runtimeVersion, runtimeVersion, `${label} WebView2 pv version`);
+  const compatibleFirstThreeComponents = runtimeVersion.split('.').slice(0, 3).join('.');
+  assertEqual(
+    edge.compatibleFirstThreeComponents,
+    compatibleFirstThreeComponents,
+    `${label} compatible WebView2 pv components`,
+  );
+  const catalogGeneratedAt = requireString(edge.catalogGeneratedAt, `${label} catalog generation time`);
+  parsePreciseInstant(catalogGeneratedAt, `${label} catalog generation time`);
+  const selectedLastModified = requireString(
+    edge.selectedLastModified,
+    `${label} selected release modification time`,
+  );
+  parsePreciseInstant(selectedLastModified, `${label} selected release modification time`);
+  const catalogSizeBytes = edge.catalogSizeBytes;
+  if (
+    !Number.isSafeInteger(catalogSizeBytes) ||
+    catalogSizeBytes <= 0 ||
+    catalogSizeBytes > 4 * 1024 * 1024
+  ) {
+    fail(`${label} catalog size is outside the authorized bounds.`);
+  }
+  const catalogItemCount = edge.catalogItemCount;
+  if (!Number.isSafeInteger(catalogItemCount) || catalogItemCount <= 0 || catalogItemCount > 50_000) {
+    fail(`${label} catalog item count is outside the authorized bounds.`);
+  }
+  const compatibleCandidateCount = edge.compatibleCandidateCount;
+  if (
+    !Number.isSafeInteger(compatibleCandidateCount) ||
+    compatibleCandidateCount <= 0 ||
+    compatibleCandidateCount > catalogItemCount
+  ) {
+    fail(`${label} compatible candidate count is invalid.`);
+  }
+  const expectedArchiveBytes = edge.expectedArchiveBytes;
+  const archiveSizeBytes = edge.archiveSizeBytes;
+  if (
+    !Number.isSafeInteger(expectedArchiveBytes) ||
+    expectedArchiveBytes <= 0 ||
+    expectedArchiveBytes > 64 * 1024 * 1024
+  ) {
+    fail(`${label} expected archive size is outside the authorized bounds.`);
+  }
+  if (!Number.isSafeInteger(archiveSizeBytes) || archiveSizeBytes !== expectedArchiveBytes) {
+    fail(`${label} downloaded archive size differs from the selected catalog entry.`);
+  }
+  const catalogSha256 = assertHex(edge.catalogSha256, HEX_64, `${label} catalog SHA-256`);
+  const archiveSha256 = assertHex(edge.archiveSha256, HEX_64, `${label} archive SHA-256`);
+  const executableSha256 = assertHex(edge.executableSha256, HEX_64, `${label} executable SHA-256`);
+  assertEqual(edge.versionProbeExitCode, 0, `${label} version probe exit code`);
+  assertEqual(edge.serviceStarted, false, `${label} service state`);
+  return Object.freeze({
+    version,
+    source: edge.source,
+    sourcePageUrl: edge.sourcePageUrl,
+    sourceCatalogUrl: edge.sourceCatalogUrl,
+    catalogGeneratedAt,
+    catalogSizeBytes,
+    catalogSha256,
+    catalogItemCount,
+    compatibleCandidateCount,
+    compatibleFirstThreeComponents,
+    selectedLastModified,
+    runtimeVersion,
+    downloadUrl: edge.downloadUrl,
+    responseUrl: edge.responseUrl,
+    contentType,
+    expectedArchiveBytes,
+    archiveSizeBytes,
+    archiveSha256,
+    executableSha256,
+    versionProbeExitCode: 0,
+    serviceStarted: false,
+  });
+}
+
 function validatedStageRuntimeAndEdge(stage) {
   const runtimeVersion = requireString(stage.runtimeVersion, 'Prepared WebView2 pv version');
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(runtimeVersion)) fail('Prepared WebView2 pv version is malformed.');
-  const runtimeSources = stage.runtimeSources;
-  if (!Array.isArray(runtimeSources) || runtimeSources.length === 0)
-    fail('Prepared WebView2 pv observations are empty.');
-  for (const source of runtimeSources) {
-    requireObject(source, 'Prepared WebView2 pv source observation');
-    assertEqual(source.Version, runtimeVersion, 'WebView2 pv source version');
-    requireString(source.RegistryPath, 'WebView2 pv registry source');
-  }
-  const edge = requireObject(stage.drivers?.edgeDriver, 'Prepared EdgeDriver provenance');
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(edge.version ?? '')) fail('Prepared EdgeDriver version is malformed.');
-  if (edge.version.split('.').slice(0, 3).join('.') !== runtimeVersion.split('.').slice(0, 3).join('.')) {
-    fail('Prepared EdgeDriver and WebView2 pv versions are incompatible.');
-  }
-  assertEqual(edge.source, 'Microsoft Edge WebDriver official download', 'EdgeDriver source');
-  assertEqual(
-    edge.sourceCatalogUrl,
-    'https://msedgedriver.microsoft.com/listing.json',
-    'EdgeDriver official catalog URL',
+  const runtimeSources = validatedRuntimeSources(stage.runtimeSources, runtimeVersion);
+  const edgeDriver = validatedEdgeDriver(
+    requireObject(stage.drivers?.edgeDriver, 'Prepared EdgeDriver provenance'),
+    runtimeVersion,
   );
-  assertEqual(edge.serviceStarted, false, 'EdgeDriver service state');
   return Object.freeze({
     webView2Pv: Object.freeze({ version: runtimeVersion, sources: runtimeSources }),
-    edgeDriver: Object.freeze({
-      version: edge.version,
-      source: edge.source,
-      catalogSha256: assertHex(edge.catalogSha256, HEX_64, 'EdgeDriver catalog SHA-256'),
-      archiveSha256: assertHex(edge.archiveSha256, HEX_64, 'EdgeDriver archive SHA-256'),
-      executableSha256: assertHex(edge.executableSha256, HEX_64, 'EdgeDriver executable SHA-256'),
-      sourceCatalogUrl: edge.sourceCatalogUrl,
-    }),
+    edgeDriver,
   });
 }
 
@@ -316,23 +507,23 @@ function validatedRuntimeAndEdge(stage, receipt) {
   const staged = validatedStageRuntimeAndEdge(stage);
   assertEqual(receipt.webView2Runtime?.version, staged.webView2Pv.version, 'Check-only WebView2 pv version');
   const checkedEdge = requireObject(receipt.drivers?.edgeDriver, 'Check-only EdgeDriver provenance');
-  assertEqual(checkedEdge.version, staged.edgeDriver.version, 'Check-only EdgeDriver version');
-  assertEqual(
-    checkedEdge.archiveSha256,
-    staged.edgeDriver.archiveSha256,
-    'Check-only EdgeDriver archive hash',
+  const checked = validatedStageRuntimeAndEdge({
+    runtimeVersion: receipt.webView2Runtime.version,
+    runtimeSources: receipt.webView2Runtime.sources,
+    drivers: { edgeDriver: checkedEdge },
+  });
+  assertEdgeFieldsEqual(
+    checked.edgeDriver,
+    staged.edgeDriver,
+    EDGE_SELECTED_IDENTITY_FIELDS,
+    'Check-only EdgeDriver',
   );
-  assertEqual(
-    checkedEdge.executableSha256,
-    staged.edgeDriver.executableSha256,
-    'Check-only EdgeDriver executable hash',
+  assertEdgeFieldsEqual(
+    checked.edgeDriver,
+    staged.edgeDriver,
+    EDGE_CATALOG_PROVENANCE_FIELDS,
+    'Check-only EdgeDriver',
   );
-  assertEqual(
-    checkedEdge.catalogSha256,
-    staged.edgeDriver.catalogSha256,
-    'Check-only EdgeDriver catalog hash',
-  );
-  assertEqual(checkedEdge.serviceStarted, false, 'Check-only EdgeDriver service state');
   if (JSON.stringify(receipt.webView2Runtime?.sources) !== JSON.stringify(staged.webView2Pv.sources)) {
     fail('Check-only WebView2 pv registry observations differ from Stage.');
   }
@@ -564,13 +755,19 @@ export function validateBinding(binding, context, currentSourceHashes, now = Dat
   assertEqual(prepared.appLaunched, false, 'Prepared app launch state');
   assertEqual(prepared.driverServiceStarted, false, 'Prepared driver service state');
   assertEqual(prepared.guiTested, false, 'Prepared GUI state');
-  requireString(prepared.webView2Pv?.version, 'Bound WebView2 pv version');
-  requireString(prepared.cargo?.version, 'Bound Cargo version');
-  assertEqual(prepared.cargo?.executableName?.toLowerCase(), 'cargo.exe', 'Bound Cargo executable name');
-  requireString(prepared.edgeDriver?.version, 'Bound EdgeDriver version');
-  for (const field of ['catalogSha256', 'archiveSha256', 'executableSha256']) {
-    assertHex(prepared.edgeDriver?.[field], HEX_64, `Bound EdgeDriver ${field}`);
-  }
+  const webView2PvVersion = requireString(prepared.webView2Pv?.version, 'Bound WebView2 pv version');
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(webView2PvVersion)) fail('Bound WebView2 pv version is malformed.');
+  const webView2PvSources = validatedRuntimeSources(
+    prepared.webView2Pv?.sources,
+    webView2PvVersion,
+    'Bound WebView2 pv',
+  );
+  const cargo = Object.freeze({
+    version: requireString(prepared.cargo?.version, 'Bound Cargo version'),
+    executableName: requireString(prepared.cargo?.executableName, 'Bound Cargo executable name'),
+  });
+  assertEqual(cargo.executableName.toLowerCase(), 'cargo.exe', 'Bound Cargo executable name');
+  const edgeDriver = validatedEdgeDriver(prepared.edgeDriver, webView2PvVersion, 'Bound EdgeDriver');
   assertEqual(prepared.package?.artifactId, packagePin.artifactId, 'Bound prepared package artifact ID');
   assertEqual(prepared.package?.sourceTree, packagePin.sourceTree, 'Bound prepared package source tree');
   assertEqual(
@@ -580,7 +777,13 @@ export function validateBinding(binding, context, currentSourceHashes, now = Dat
   );
   assertEqual(binding.procedurePaths?.scenario, WINDOWS_RUN_GATE.scenario, 'Procedure path scenario');
   assertEqual(binding.artifactName, expectedArtifactName(context), 'Binding artifact name');
-  return Object.freeze({ package: packagePin, driver });
+  return Object.freeze({
+    package: packagePin,
+    driver,
+    cargo,
+    webView2Pv: Object.freeze({ version: webView2PvVersion, sources: webView2PvSources }),
+    edgeDriver,
+  });
 }
 
 export function validateArtifactApiMetadata(metadata, { context, artifactId, artifactDigest, artifactName }) {
@@ -1096,7 +1299,7 @@ async function verifyDownloadedBundle(env) {
     'Prepared driver provenance',
   );
   assertEqual(sha256(driverBytes), bindingSummary.driver.sha256, 'Downloaded approved tauri-driver bytes');
-  assertSameRuntimeAndDrivers(prepareSummary, binding);
+  assertSameRuntimeAndDrivers(prepareSummary, bindingSummary);
   const ownReceiptPath = path.win32.join(paths.gateControl, 'receipt.json');
   const ownReceipt = await readJson(ownReceiptPath, 'Issue 181 protected receipt');
   assertEqual(ownReceipt.phase, 'protected', 'Issue 181 protected phase');
@@ -1151,60 +1354,53 @@ async function verifyDownloadedBundle(env) {
   };
 }
 
-function assertSameRuntimeAndDrivers(actual, binding) {
-  assertEqual(actual.cargo.version, binding.preflight.cargo.version, 'Protected Cargo version');
+function assertSameRuntimeAndDrivers(actual, bindingSummary) {
+  assertEqual(actual.cargo.version, bindingSummary.cargo.version, 'Protected Cargo version');
   assertEqual(
     actual.cargo.executableName,
-    binding.preflight.cargo.executableName,
+    bindingSummary.cargo.executableName,
     'Protected Cargo executable name',
   );
-  assertEqual(
-    actual.webView2Pv.version,
-    binding.preflight.webView2Pv.version,
-    'Protected WebView2 pv version',
-  );
+  assertEqual(actual.webView2Pv.version, bindingSummary.webView2Pv.version, 'Protected WebView2 pv version');
   assertEqual(
     JSON.stringify(actual.webView2Pv.sources),
-    JSON.stringify(binding.preflight.webView2Pv.sources),
+    JSON.stringify(bindingSummary.webView2Pv.sources),
     'Protected WebView2 pv source observations',
   );
-  assertEqual(
-    actual.edgeDriver.version,
-    binding.preflight.edgeDriver.version,
-    'Protected EdgeDriver version',
-  );
-  assertEqual(
-    actual.edgeDriver.catalogSha256,
-    binding.preflight.edgeDriver.catalogSha256,
-    'Protected EdgeDriver catalog hash',
-  );
+  assertEqual(actual.edgeDriver.version, bindingSummary.edgeDriver.version, 'Protected EdgeDriver version');
   assertEqual(
     actual.edgeDriver.archiveSha256,
-    binding.preflight.edgeDriver.archiveSha256,
+    bindingSummary.edgeDriver.archiveSha256,
     'Protected EdgeDriver archive hash',
   );
   assertEqual(
     actual.edgeDriver.executableSha256,
-    binding.preflight.edgeDriver.executableSha256,
+    bindingSummary.edgeDriver.executableSha256,
     'Protected EdgeDriver executable hash',
   );
-  assertEqual(actual.package.artifactId, binding.package.artifactId, 'Protected package artifact ID');
-  assertEqual(actual.package.sourceTree, binding.package.sourceTree, 'Protected package source tree');
+  assertEdgeFieldsEqual(
+    actual.edgeDriver,
+    bindingSummary.edgeDriver,
+    EDGE_SELECTED_IDENTITY_FIELDS,
+    'Protected EdgeDriver selected',
+  );
+  assertEqual(actual.package.artifactId, bindingSummary.package.artifactId, 'Protected package artifact ID');
+  assertEqual(actual.package.sourceTree, bindingSummary.package.sourceTree, 'Protected package source tree');
   assertEqual(
     normalizeDigest(actual.package.artifactDigest),
-    normalizeDigest(binding.package.artifactDigest),
+    normalizeDigest(bindingSummary.package.artifactDigest),
     'Protected package artifact digest',
   );
   assertEqual(
     actual.package.sourceExeSha256,
-    binding.package.sourceExeSha256,
+    bindingSummary.package.sourceExeSha256,
     'Protected package executable hash',
   );
-  assertEqual(actual.tauriDriver.version, binding.approvedDriver.version, 'Protected tauri-driver version');
-  assertEqual(actual.tauriDriver.source, binding.approvedDriver.source, 'Protected tauri-driver source');
+  assertEqual(actual.tauriDriver.version, bindingSummary.driver.version, 'Protected tauri-driver version');
+  assertEqual(actual.tauriDriver.source, bindingSummary.driver.source, 'Protected tauri-driver source');
   assertEqual(
     actual.tauriDriver.installCommand,
-    binding.approvedDriver.installCommand,
+    bindingSummary.driver.installCommand,
     'Protected tauri-driver install provenance',
   );
   assertEqual(actual.tauriDriver.serviceStarted, false, 'Protected tauri-driver service state');
@@ -1213,7 +1409,7 @@ function assertSameRuntimeAndDrivers(actual, binding) {
 export function validateProtectedStage(stage, binding, context, currentSourceHashes, now = Date.now()) {
   const stageSummary = validateStage(stage, context);
   const bindingSummary = validateBinding(binding, context, currentSourceHashes, now);
-  assertSameRuntimeAndDrivers(stageSummary, binding);
+  assertSameRuntimeAndDrivers(stageSummary, bindingSummary);
   return Object.freeze({ stage: stageSummary, binding: bindingSummary });
 }
 
@@ -1365,7 +1561,7 @@ async function verifyProtectedCheckOnly(env) {
   const binding = parseTrustedBindingPayload(bindingBytes, bindingPayloadSha256);
   const summary = validateBinding(binding, context, sourceFiles);
   const actual = validatePreflight(stage, receipt, context);
-  assertSameRuntimeAndDrivers(actual, binding);
+  assertSameRuntimeAndDrivers(actual, summary);
   const localToolDriver = path.win32.join(
     context.runnerTemp,
     paths.relative.protectedToolStage,

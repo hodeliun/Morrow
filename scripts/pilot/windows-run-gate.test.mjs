@@ -65,12 +65,26 @@ function stageAndReceipt(overrides = {}) {
   ];
   const edgeDriver = {
     version: '156.0.4314.84',
+    versionOutput: 'Microsoft Edge WebDriver 156.0.4314.84 (80b2677ad41c39cab5b059161520c2ada1a92c3d)',
     source: 'Microsoft Edge WebDriver official download',
+    downloadUrl: 'https://msedgedriver.microsoft.com/156.0.4314.84/edgedriver_win64.zip',
+    responseUrl: 'https://msedgedriver.microsoft.com/156.0.4314.84/edgedriver_win64.zip',
+    sourcePageUrl: 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver',
     sourceCatalogUrl: 'https://msedgedriver.microsoft.com/listing.json',
+    catalogGeneratedAt: '2026-11-13T23:11:37.8486030+00:00',
+    catalogSizeBytes: 1348710,
     catalogSha256: EDGE_CATALOG_HASH,
+    catalogItemCount: 10089,
+    compatibleCandidateCount: 12,
+    compatibleFirstThreeComponents: '156.0.4314',
+    selectedLastModified: '2026-11-12T23:18:26.0000000+00:00',
+    contentType: 'application/x-zip-compressed',
+    expectedArchiveBytes: 11631106,
+    archiveSizeBytes: 11631106,
     archiveSha256: EDGE_ARCHIVE_HASH,
     executableSha256: EDGE_EXE_HASH,
     runtimeVersion: '156.0.4314.58',
+    versionProbeExitCode: 0,
     serviceStarted: false,
   };
   const tauriDriver = {
@@ -120,7 +134,15 @@ function stageAndReceipt(overrides = {}) {
       pilotIdentifier: 'app.morrow.polaris-dados-pilot',
       pe: { sha256: PACKAGE.sourceExeSha256 },
     },
-    drivers: { cargo, tauriDriver, edgeDriver },
+    drivers: {
+      cargo,
+      tauriDriver,
+      edgeDriver: {
+        ...edgeDriver,
+        catalogGeneratedAt: '2026-11-13T23:11:37.848603+00:00',
+        selectedLastModified: '2026-11-12T23:18:26+00:00',
+      },
+    },
     plannedPaths: { newPathsCreatedByCheckOnly: false, profileObserved: false },
     appLaunched: false,
     driverServiceStarted: false,
@@ -183,9 +205,26 @@ function bindingFixture() {
       webView2Pv: { version: '156.0.4314.58', sources: stage.runtimeSources },
       edgeDriver: {
         version: '156.0.4314.84',
+        source: 'Microsoft Edge WebDriver official download',
+        sourcePageUrl: 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver',
+        sourceCatalogUrl: 'https://msedgedriver.microsoft.com/listing.json',
+        catalogGeneratedAt: '2026-11-13T23:11:37.8486030+00:00',
+        catalogSizeBytes: 1348710,
         catalogSha256: EDGE_CATALOG_HASH,
+        catalogItemCount: 10089,
+        compatibleCandidateCount: 12,
+        compatibleFirstThreeComponents: '156.0.4314',
+        selectedLastModified: '2026-11-12T23:18:26.0000000+00:00',
+        runtimeVersion: '156.0.4314.58',
+        downloadUrl: 'https://msedgedriver.microsoft.com/156.0.4314.84/edgedriver_win64.zip',
+        responseUrl: 'https://msedgedriver.microsoft.com/156.0.4314.84/edgedriver_win64.zip',
+        contentType: 'application/x-zip-compressed',
+        expectedArchiveBytes: 11631106,
+        archiveSizeBytes: 11631106,
         archiveSha256: EDGE_ARCHIVE_HASH,
         executableSha256: EDGE_EXE_HASH,
+        versionProbeExitCode: 0,
+        serviceStarted: false,
       },
     },
     procedurePaths: { scenario: WINDOWS_RUN_GATE.scenario },
@@ -245,6 +284,10 @@ test('preflight acceptance requires the exact run, package pins, and check-only 
   const summary = validatePreflight(stage, receipt, run);
   assert.equal(summary.tauriDriver.executableSha256, TAURI_HASH);
   assert.equal(summary.webView2Pv.version, '156.0.4314.58');
+  assert.equal(summary.edgeDriver.catalogGeneratedAt, '2026-11-13T23:11:37.8486030+00:00');
+  assert.equal(summary.edgeDriver.selectedLastModified, '2026-11-12T23:18:26.0000000+00:00');
+  assert.equal(receipt.drivers.edgeDriver.catalogGeneratedAt, '2026-11-13T23:11:37.848603+00:00');
+  assert.equal(receipt.drivers.edgeDriver.selectedLastModified, '2026-11-12T23:18:26+00:00');
   assert.throws(() => validatePreflight({ ...stage, runAttempt: '2' }, receipt, run), /attempt/);
   assert.throws(() => validatePreflight({ ...stage, runId: '99' }, receipt, run), /run ID/);
   assert.throws(() => validatePreflight(stage, { ...receipt, appLaunched: true }, run), /app launch/);
@@ -268,24 +311,98 @@ test('preflight acceptance requires the exact run, package pins, and check-only 
       ),
     /service state/,
   );
+  for (const [field, value] of [
+    ['catalogSha256', 'f'.repeat(64)],
+    ['catalogGeneratedAt', '2026-11-14T23:11:37.8486030+00:00'],
+    ['catalogSizeBytes', 1348711],
+    ['catalogItemCount', 10090],
+  ]) {
+    assert.throws(
+      () =>
+        validatePreflight(
+          stage,
+          {
+            ...receipt,
+            drivers: {
+              ...receipt.drivers,
+              edgeDriver: { ...receipt.drivers.edgeDriver, [field]: value },
+            },
+          },
+          run,
+        ),
+      new RegExp(`Check-only EdgeDriver ${field}`),
+    );
+  }
+  for (const [field, value] of [
+    ['catalogGeneratedAt', '2026-11-13T23:11:37.8486031+00:00'],
+    ['selectedLastModified', '2026-11-12T23:18:26.0000001+00:00'],
+  ]) {
+    assert.throws(
+      () =>
+        validatePreflight(
+          stage,
+          {
+            ...receipt,
+            drivers: {
+              ...receipt.drivers,
+              edgeDriver: { ...receipt.drivers.edgeDriver, [field]: value },
+            },
+          },
+          run,
+        ),
+      new RegExp(`Check-only EdgeDriver ${field} does not match the authorized instant`),
+    );
+  }
+  assert.doesNotThrow(() =>
+    validatePreflight(
+      stage,
+      {
+        ...receipt,
+        drivers: {
+          ...receipt.drivers,
+          edgeDriver: {
+            ...receipt.drivers.edgeDriver,
+            catalogGeneratedAt: '2026-11-13T18:11:37.848603-05:00',
+            selectedLastModified: '2026-11-12T18:18:26-05:00',
+          },
+        },
+      },
+      run,
+    ),
+  );
 });
 
-test('protected Stage precheck binds package and runtime before check-only while allowing local driver byte drift', () => {
+test('protected Stage precheck binds selected EdgeDriver identity while allowing fresh catalog and local driver drift', () => {
   const run = context();
   const binding = bindingFixture();
   const { stage } = stageAndReceipt();
+  const freshEdge = {
+    ...stage.drivers.edgeDriver,
+    catalogGeneratedAt: '2026-11-16T23:24:23.4075781+00:00',
+    catalogSizeBytes: 1346958,
+    catalogSha256: '5'.repeat(64),
+    catalogItemCount: 10076,
+    selectedLastModified: '2026-11-12T23:18:26+00:00',
+  };
   const freshStage = {
     ...stage,
     drivers: {
       ...stage.drivers,
       tauriDriver: { ...stage.drivers.tauriDriver, executableSha256: '5'.repeat(64) },
+      edgeDriver: freshEdge,
     },
   };
   assert.equal(validateStage(freshStage, run).tauriDriver.executableSha256, '5'.repeat(64));
+  assert.equal(validateStage(freshStage, run).edgeDriver.catalogSha256, '5'.repeat(64));
   assert.equal(
     validateProtectedStage(freshStage, binding, run, SOURCE_FILES, BINDING_VALIDATION_TIME).stage.package
       .sourceTree,
     PACKAGE.sourceTree,
+  );
+  assert.equal(
+    validateProtectedStage(freshStage, binding, run, SOURCE_FILES, BINDING_VALIDATION_TIME).stage.edgeDriver
+      .catalogSha256,
+    '5'.repeat(64),
   );
   assert.throws(
     () =>
@@ -314,6 +431,112 @@ test('protected Stage precheck binds package and runtime before check-only while
         BINDING_VALIDATION_TIME,
       ),
     /Protected EdgeDriver archive hash/,
+  );
+  const changedVersion = {
+    ...freshStage,
+    drivers: {
+      ...freshStage.drivers,
+      edgeDriver: {
+        ...freshEdge,
+        version: '156.0.4314.85',
+        downloadUrl: 'https://msedgedriver.microsoft.com/156.0.4314.85/edgedriver_win64.zip',
+        responseUrl: 'https://msedgedriver.microsoft.com/156.0.4314.85/edgedriver_win64.zip',
+      },
+    },
+  };
+  assert.throws(
+    () => validateProtectedStage(changedVersion, binding, run, SOURCE_FILES, BINDING_VALIDATION_TIME),
+    /Protected EdgeDriver version/,
+  );
+  for (const [field, value, expectedError] of [
+    ['downloadUrl', 'https://example.invalid/edgedriver_win64.zip', /official x64 download URL/],
+    ['responseUrl', 'https://example.invalid/edgedriver_win64.zip', /official x64 response URL/],
+  ]) {
+    assert.throws(
+      () =>
+        validateProtectedStage(
+          {
+            ...freshStage,
+            drivers: {
+              ...freshStage.drivers,
+              edgeDriver: { ...freshEdge, [field]: value },
+            },
+          },
+          binding,
+          run,
+          SOURCE_FILES,
+          BINDING_VALIDATION_TIME,
+        ),
+      expectedError,
+    );
+  }
+  assert.throws(
+    () =>
+      validateProtectedStage(
+        {
+          ...freshStage,
+          drivers: {
+            ...freshStage.drivers,
+            edgeDriver: {
+              ...freshEdge,
+              expectedArchiveBytes: 11631107,
+              archiveSizeBytes: 11631107,
+            },
+          },
+        },
+        binding,
+        run,
+        SOURCE_FILES,
+        BINDING_VALIDATION_TIME,
+      ),
+    /Protected EdgeDriver selected expectedArchiveBytes/,
+  );
+  assert.throws(
+    () =>
+      validateProtectedStage(
+        {
+          ...freshStage,
+          drivers: {
+            ...freshStage.drivers,
+            edgeDriver: { ...freshEdge, executableSha256: 'f'.repeat(64) },
+          },
+        },
+        binding,
+        run,
+        SOURCE_FILES,
+        BINDING_VALIDATION_TIME,
+      ),
+    /Protected EdgeDriver executable hash/,
+  );
+  const changedPv = {
+    ...freshStage,
+    runtimeVersion: '156.0.4314.59',
+    runtimeSources: freshStage.runtimeSources.map((source) => ({ ...source, Version: '156.0.4314.59' })),
+    drivers: {
+      ...freshStage.drivers,
+      edgeDriver: { ...freshEdge, runtimeVersion: '156.0.4314.59' },
+    },
+  };
+  assert.throws(
+    () => validateProtectedStage(changedPv, binding, run, SOURCE_FILES, BINDING_VALIDATION_TIME),
+    /Protected WebView2 pv version/,
+  );
+  assert.throws(
+    () =>
+      validateProtectedStage(
+        {
+          ...freshStage,
+          drivers: {
+            ...freshStage.drivers,
+            edgeDriver: { ...freshEdge, selectedLastModified: '2026-11-12T23:18:26.0000001+00:00' },
+          },
+        },
+        binding,
+        run,
+        SOURCE_FILES,
+        BINDING_VALIDATION_TIME,
+      ),
+    /Protected EdgeDriver selected selectedLastModified does not match the authorized instant/,
   );
 });
 

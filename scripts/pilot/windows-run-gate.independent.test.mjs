@@ -25,6 +25,7 @@ const {
   validateArtifactApiMetadata,
   validateBinding,
   validatePackagePin,
+  validatePreflight,
   validateProtectedStage,
   validateStage,
 } = gate;
@@ -44,13 +45,51 @@ const RUN_ENV = Object.freeze({
   RUNNER_ARCH: 'X64',
 });
 const NOW = Date.parse('2026-11-17T05:00:00.000Z');
-const CARGO_VERSION = 'cargo 1.92.0 (111111111 2025-10-01)';
-const TAURI_HASH = '1'.repeat(64);
-const EDGE_HASHES = Object.freeze({
-  catalogSha256: '2'.repeat(64),
-  archiveSha256: '3'.repeat(64),
-  executableSha256: '4'.repeat(64),
+const CARGO_VERSION = 'cargo 1.100.0 (3acc79c0c 2026-11-05)';
+const TAURI_PREPARE_HASH = '3bd720c493fc7662d4cd3c184bb306350ec7101d6d4e793d2529c92735820abd';
+const TAURI_PROTECTED_HASH = 'af80990420eac83a779b2466dd9d0019bef18c9930cb56e9b1e16e3ffd0a8204';
+const EDGE_SELECTED = Object.freeze({
+  version: '156.0.4314.84',
+  versionOutput: 'Microsoft Edge WebDriver 156.0.4314.84 (80b2677ad41c39cab5b059161520c2ada1a92c3d)',
+  source: 'Microsoft Edge WebDriver official download',
+  sourcePageUrl: 'https://developer.microsoft.com/en-us/microsoft-edge/tools/webdriver',
+  sourceCatalogUrl: 'https://msedgedriver.microsoft.com/listing.json',
+  downloadUrl: 'https://msedgedriver.microsoft.com/156.0.4314.84/edgedriver_win64.zip',
+  responseUrl: 'https://msedgedriver.microsoft.com/156.0.4314.84/edgedriver_win64.zip',
+  contentType: 'application/x-zip-compressed',
+  selectedLastModified: '2026-11-12T23:18:26.0000000+00:00',
+  expectedArchiveBytes: 11631106,
+  archiveSizeBytes: 11631106,
+  archiveSha256: '8da63dd8eab4086c37f862bd227cef60263d3fa837f4ccca98590dc2c7889d97',
+  executableSha256: '6b211417e8c8b09e9c8c3d39cb928f718708ab47c83f08c2ca15596083fbf26b',
+  runtimeVersion: '156.0.4314.58',
+  compatibleFirstThreeComponents: '156.0.4314',
+  compatibleCandidateCount: 12,
+  versionProbeExitCode: 0,
+  serviceStarted: false,
 });
+const PREPARE_EDGE = Object.freeze({
+  ...EDGE_SELECTED,
+  catalogGeneratedAt: '2026-11-13T23:11:37.8486030+00:00',
+  catalogSizeBytes: 1348710,
+  catalogItemCount: 10089,
+  catalogSha256: 'fcdf088fa509a4382e396438785f7f24f336fe5731258eec5c64a1ddf334640b',
+});
+const PROTECTED_EDGE = Object.freeze({
+  ...EDGE_SELECTED,
+  catalogGeneratedAt: '2026-11-16T23:24:23.4075781+00:00',
+  catalogSizeBytes: 1346958,
+  catalogItemCount: 10076,
+  catalogSha256: 'dae047c0817a16f04ad9d03b6757c43d40b77ac0b353c20b5e526ddd6e3aa7ac',
+});
+const RUNTIME_SOURCES = Object.freeze([
+  Object.freeze({
+    RegistryPath:
+      'HKLM64\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+    Version: '156.0.4314.58',
+    MajorMinorBuild: '156.0.4314',
+  }),
+]);
 const SOURCE_FILES = Object.freeze(
   WINDOWS_RUN_GATE.sourcePaths.map((filePath, index) => ({
     path: filePath,
@@ -64,7 +103,7 @@ function runContext() {
 }
 
 function makeStage(overrides = {}) {
-  const runtimeSources = [{ RegistryPath: 'HKLM64\\WebView2', Version: '156.0.4314.58' }];
+  const runtimeSources = RUNTIME_SOURCES.map((source) => ({ ...source }));
   const stage = {
     schemaVersion: 1,
     status: 'staged',
@@ -86,25 +125,56 @@ function makeStage(overrides = {}) {
         installedPackageMetadata: 'cargo install --list --root <tool-stage>\\drivers\\tauri-driver',
         installedBinaryName: 'tauri-driver.exe',
         installCommand: 'cargo install tauri-driver --version 2.1.0 --locked --root <tool-stage>',
-        executableSha256: TAURI_HASH,
+        executableSha256: TAURI_PREPARE_HASH,
         serviceStarted: false,
       },
-      edgeDriver: {
-        version: '156.0.4314.84',
-        source: 'Microsoft Edge WebDriver official download',
-        sourceCatalogUrl: 'https://msedgedriver.microsoft.com/listing.json',
-        catalogSha256: EDGE_HASHES.catalogSha256,
-        archiveSha256: EDGE_HASHES.archiveSha256,
-        executableSha256: EDGE_HASHES.executableSha256,
-        runtimeVersion: '156.0.4314.58',
-        serviceStarted: false,
-      },
+      edgeDriver: { ...PREPARE_EDGE },
     },
     appLaunched: false,
     driverServiceStarted: false,
     ...overrides,
   };
   return stage;
+}
+
+function makeProtectedStage() {
+  const stage = makeStage();
+  stage.drivers.tauriDriver.executableSha256 = TAURI_PROTECTED_HASH;
+  stage.drivers.edgeDriver = { ...PROTECTED_EDGE };
+  return stage;
+}
+
+function makeReceipt(stage) {
+  return {
+    schemaVersion: 1,
+    status: 'passed',
+    scope: 'Morrow E003 G13 issue 185 preflight only',
+    runId: stage.runId,
+    runAttempt: stage.runAttempt,
+    sha: stage.sha,
+    branch: stage.branch,
+    webView2Runtime: {
+      version: stage.runtimeVersion,
+      sources: stage.runtimeSources.map((source) => ({ ...source })),
+    },
+    sourceArtifact: { ...stage.artifact },
+    package: {
+      buildInfoRun: { id: stage.artifact.runId, attempt: stage.artifact.runAttempt },
+      applicationVersion: '2.1.0',
+      pilotIdentifier: 'app.morrow.polaris-dados-pilot',
+      pe: { sha256: stage.artifact.sourceExeSha256 },
+    },
+    drivers: {
+      cargo: { ...stage.drivers.cargo },
+      tauriDriver: { ...stage.drivers.tauriDriver },
+      edgeDriver: { ...stage.drivers.edgeDriver },
+    },
+    plannedPaths: { newPathsCreatedByCheckOnly: false, profileObserved: false },
+    appLaunched: false,
+    driverServiceStarted: false,
+    windowsRuntimeTested: false,
+    guiTested: false,
+  };
 }
 
 function makeBinding(overrides = {}) {
@@ -117,7 +187,7 @@ function makeBinding(overrides = {}) {
     sourceUrl: 'https://crates.io/crates/tauri-driver/2.1.0',
     installCommand: 'cargo install tauri-driver --version 2.1.0 --locked --root <tool-stage>',
     cargoVersion: CARGO_VERSION,
-    sha256: TAURI_HASH,
+    sha256: TAURI_PREPARE_HASH,
     serviceStarted: false,
   };
   const binding = {
@@ -156,12 +226,9 @@ function makeBinding(overrides = {}) {
       },
       webView2Pv: {
         version: '156.0.4314.58',
-        sources: [{ RegistryPath: 'HKLM64\\WebView2', Version: '156.0.4314.58' }],
+        sources: RUNTIME_SOURCES.map((source) => ({ ...source })),
       },
-      edgeDriver: {
-        version: '156.0.4314.84',
-        ...EDGE_HASHES,
-      },
+      edgeDriver: { ...PREPARE_EDGE },
     },
     procedurePaths: { scenario: WINDOWS_RUN_GATE.scenario },
   };
@@ -209,7 +276,7 @@ function workflowUrl() {
 test('immutable binding rejects a different attempt, commit, or incomplete source inventory', () => {
   const context = runContext();
   const binding = makeBinding();
-  assert.equal(validateBinding(binding, context, SOURCE_FILES, NOW).driver.sha256, TAURI_HASH);
+  assert.equal(validateBinding(binding, context, SOURCE_FILES, NOW).driver.sha256, TAURI_PREPARE_HASH);
   assert.throws(() =>
     validateBinding(makeBinding({ run: { sha: 'b'.repeat(40) } }), context, SOURCE_FILES, NOW),
   );
@@ -275,35 +342,92 @@ test('trusted producer payload hash rejects valid JSON tampering despite valid a
   );
 });
 
-test('fresh Stage is independently checked before CheckOnly and tolerates a rebuilt local tauri-driver hash', () => {
+test('fresh Stage permits global catalog snapshot drift while preserving the selected driver identity', () => {
   const context = runContext();
   const preparedStage = makeStage();
   const stageSummary = validateStage(preparedStage, context);
   assert.equal(stageSummary.cargo.version, CARGO_VERSION);
   assert.equal(stageSummary.package.sourceTree, WINDOWS_RUN_GATE.package.sourceTree);
 
-  const freshStage = makeStage();
-  freshStage.drivers.tauriDriver.executableSha256 = 'f'.repeat(64);
+  const freshStage = makeProtectedStage();
   const protectedSummary = validateProtectedStage(freshStage, makeBinding(), context, SOURCE_FILES, NOW);
-  assert.equal(protectedSummary.stage.tauriDriver.executableSha256, 'f'.repeat(64));
+  assert.equal(protectedSummary.stage.tauriDriver.executableSha256, TAURI_PROTECTED_HASH);
+  assert.equal(protectedSummary.stage.edgeDriver.catalogSha256, PROTECTED_EDGE.catalogSha256);
+  assert.equal(protectedSummary.stage.edgeDriver.archiveSha256, EDGE_SELECTED.archiveSha256);
+  assert.equal(protectedSummary.stage.edgeDriver.executableSha256, EDGE_SELECTED.executableSha256);
 
-  const wrongPackage = makeStage();
+  const equivalentTimestampStage = makeProtectedStage();
+  equivalentTimestampStage.drivers.edgeDriver.selectedLastModified = '2026-11-12T23:18:26+00:00';
+  assert.doesNotThrow(() =>
+    validateProtectedStage(equivalentTimestampStage, makeBinding(), context, SOURCE_FILES, NOW),
+  );
+
+  const wrongPackage = makeProtectedStage();
   wrongPackage.artifact = { ...wrongPackage.artifact, sourceTree: 'e'.repeat(40) };
   assert.throws(() => validateProtectedStage(wrongPackage, makeBinding(), context, SOURCE_FILES, NOW));
 
-  const wrongPv = makeStage();
-  wrongPv.runtimeVersion = '157.0.4314.58';
+  const wrongPv = makeProtectedStage();
+  wrongPv.runtimeVersion = '156.0.4314.59';
   wrongPv.runtimeSources = wrongPv.runtimeSources.map((source) => ({
     ...source,
     Version: wrongPv.runtimeVersion,
+    MajorMinorBuild: '156.0.4314',
   }));
-  wrongPv.drivers.edgeDriver.version = '157.0.4314.84';
   wrongPv.drivers.edgeDriver.runtimeVersion = wrongPv.runtimeVersion;
   assert.throws(() => validateProtectedStage(wrongPv, makeBinding(), context, SOURCE_FILES, NOW));
 
-  const wrongEdge = makeStage();
-  wrongEdge.drivers.edgeDriver.archiveSha256 = 'e'.repeat(64);
-  assert.throws(() => validateProtectedStage(wrongEdge, makeBinding(), context, SOURCE_FILES, NOW));
+  const changedVersion = makeProtectedStage();
+  changedVersion.drivers.edgeDriver.version = '156.0.4314.85';
+  changedVersion.drivers.edgeDriver.downloadUrl =
+    'https://msedgedriver.microsoft.com/156.0.4314.85/edgedriver_win64.zip';
+  changedVersion.drivers.edgeDriver.responseUrl =
+    'https://msedgedriver.microsoft.com/156.0.4314.85/edgedriver_win64.zip';
+  assert.throws(() => validateProtectedStage(changedVersion, makeBinding(), context, SOURCE_FILES, NOW));
+
+  for (const [field, value] of [
+    ['sourcePageUrl', 'https://example.invalid/webdriver'],
+    ['downloadUrl', 'https://example.invalid/edgedriver_win64.zip'],
+    ['responseUrl', 'https://example.invalid/edgedriver_win64.zip'],
+    ['expectedArchiveBytes', EDGE_SELECTED.expectedArchiveBytes + 1],
+    ['archiveSizeBytes', EDGE_SELECTED.archiveSizeBytes + 1],
+    ['archiveSha256', 'e'.repeat(64)],
+    ['executableSha256', 'e'.repeat(64)],
+    ['selectedLastModified', '2026-11-12T23:18:26.0000001+00:00'],
+  ]) {
+    const changedStage = makeProtectedStage();
+    changedStage.drivers.edgeDriver[field] = value;
+    if (field === 'expectedArchiveBytes' || field === 'archiveSizeBytes') {
+      changedStage.drivers.edgeDriver.expectedArchiveBytes = EDGE_SELECTED.expectedArchiveBytes + 1;
+      changedStage.drivers.edgeDriver.archiveSizeBytes = EDGE_SELECTED.archiveSizeBytes + 1;
+    }
+    assert.throws(() => validateProtectedStage(changedStage, makeBinding(), context, SOURCE_FILES, NOW));
+  }
+});
+
+test('within-VM Stage and CheckOnly compare precise timestamps and full catalog snapshots', () => {
+  const stage = makeStage();
+  const receipt = makeReceipt(stage);
+  receipt.drivers.edgeDriver.catalogGeneratedAt = '2026-11-13T23:11:37.848603+00:00';
+  receipt.drivers.edgeDriver.selectedLastModified = '2026-11-12T23:18:26+00:00';
+  assert.doesNotThrow(() => validatePreflight(stage, receipt, runContext()));
+
+  for (const [field, value] of [
+    ['catalogGeneratedAt', '2026-11-13T23:11:37.8486031+00:00'],
+    ['selectedLastModified', '2026-11-12T23:18:26.0000001+00:00'],
+    ['catalogSizeBytes', PREPARE_EDGE.catalogSizeBytes + 1],
+    ['catalogItemCount', PREPARE_EDGE.catalogItemCount + 1],
+    ['catalogSha256', 'e'.repeat(64)],
+  ]) {
+    const changedReceipt = makeReceipt(stage);
+    if (field === 'catalogGeneratedAt') {
+      changedReceipt.drivers.edgeDriver[field] = value;
+    } else if (field === 'selectedLastModified') {
+      changedReceipt.drivers.edgeDriver[field] = value;
+    } else {
+      changedReceipt.drivers.edgeDriver[field] = value;
+    }
+    assert.throws(() => validatePreflight(stage, changedReceipt, runContext()));
+  }
 });
 
 test('both job phases create an initial issue 185 receipt before Stage or CheckOnly', async () => {
