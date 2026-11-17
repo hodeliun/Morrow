@@ -92,10 +92,156 @@ async function clickReference(driver, reference, description) {
   return bounded(driver.request('POST', driver.path(`/element/${identifier}/click`), {}), `Click ${description}`);
 }
 
-async function textOfReference(driver, reference, description) {
+function canonicalPaletteTitleFromOption(option) {
+  const title = option.querySelector('.palette-item-title');
+  if (!title) return null;
+  const directText = [...title.childNodes]
+    .filter((node) => node.nodeType === 3)
+    .map((node) => node.nodeValue ?? '')
+    .join('')
+    .trim();
+  return directText || null;
+}
+
+export function selectUniqueCanonicalPaletteOption(inventory, expectedTitle = EXPECTED_COMMAND) {
+  const matching = inventory.flatMap((option, index) => (
+    option?.visible === true && option.canonicalTitle === expectedTitle ? [{ index, reference: option.reference }] : []
+  ));
+  if (matching.length === 1) return { status: 'unique', ...matching[0] };
+  if (matching.length > 1) return { status: 'ambiguous', indexes: matching.map((option) => option.index) };
+  return { status: 'missing', indexes: [] };
+}
+
+export function assertPaletteSelectionUnitCases() {
+  const sandbox = new Window({
+    settings: {
+      disableCSSFileLoading: true,
+      disableJavaScriptFileLoading: true,
+      disableIframePageLoading: true,
+      handleDisabledFileLoadingAsSuccess: true,
+    },
+  });
+  let inventory;
+  const createPageReference = { optionId: 'create-page' };
+  const publishReference = { optionId: 'publish-exact' };
+  try {
+    const container = sandbox.document.createElement('div');
+    container.innerHTML = `<div role="option"><div class="palette-item-title">Create a page called “${EXPECTED_COMMAND}”</div><div class="palette-snippet">${EXPECTED_COMMAND}</div></div>
+      <div role="option"><div class="palette-item-title">${EXPECTED_COMMAND}<span class="palette-item-detail"> Website</span></div><div class="palette-snippet">Create a page</div></div>`;
+    inventory = [...container.querySelectorAll('[role="option"]')].map((option, index) => ({
+      reference: index === 0 ? createPageReference : publishReference,
+      visible: true,
+      canonicalTitle: canonicalPaletteTitleFromOption(option),
+      domAggregate: option.textContent?.trim() ?? '',
+      getAggregate: option.textContent?.trim() ?? '',
+    }));
+  } finally {
+    sandbox.close();
+  }
+  requireThat(inventory[1].canonicalTitle === EXPECTED_COMMAND && inventory[1].domAggregate !== EXPECTED_COMMAND,
+    'Canonical title extraction must exclude the command detail and snippet aggregates.');
+  const unique = selectUniqueCanonicalPaletteOption(inventory);
+  requireThat(unique.status === 'unique' && unique.index === 1 && unique.reference === publishReference,
+    'Canonical title selection must ignore Create page and preserve the exact reference paired with the Publish title.');
+  const duplicate = selectUniqueCanonicalPaletteOption([inventory[1], { ...inventory[1] }]);
+  requireThat(duplicate.status === 'ambiguous' && duplicate.indexes.length === 2,
+    'Canonical title selection must reject duplicate visible exact options.');
+  const hidden = selectUniqueCanonicalPaletteOption([{ ...inventory[1], visible: false }]);
+  requireThat(hidden.status === 'missing', 'Canonical title selection must ignore hidden exact options.');
+  return true;
+}
+
+async function readPaletteOptionInventory(driver) {
+  const dom = await bounded(() => driver.execute(`const dialogs = [...document.querySelectorAll('.palette[role="dialog"]')];
+    const dialog = dialogs.length === 1 ? dialogs[0] : null;
+    const inputCount = dialog?.querySelectorAll('input[role="combobox"]').length ?? 0;
+    const options = dialog ? [...dialog.querySelectorAll('[role="option"]')] : [];
+    return {
+      paletteCount: dialogs.length,
+      inputCount,
+      options: options.map((option, index) => {
+        const canonicalTitle = (${canonicalPaletteTitleFromOption.toString()})(option);
+        const aggregate = option.innerText ?? option.textContent ?? '';
+        const style = getComputedStyle(option);
+        const rect = option.getBoundingClientRect();
+        const list = option.closest('.palette-results');
+        const listRect = list?.getBoundingClientRect();
+        const visible = style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0
+          && rect.width > 0 && rect.height > 0
+          && (!listRect || (rect.bottom > listRect.top && rect.top < listRect.bottom));
+        return {
+          reference: option,
+          index,
+          dataIndex: option.getAttribute('data-index'),
+          canonicalTitle,
+          canonicalTitleCodePoints: canonicalTitle === null ? [] : [...canonicalTitle].map((character) => character.codePointAt(0)),
+          domAggregate: aggregate.trim(),
+          visible,
+          getAggregate: null,
+          getAggregateType: null,
+        };
+      }),
+    };`), 'Read public command palette option DOM inventory');
+  const observations = Array.isArray(dom?.options) ? dom.options : [];
+  const references = observations.map((item) => item.reference);
+  const inventory = observations.map((item) => {
+    const metadata = { ...item };
+    delete metadata.reference;
+    return metadata;
+  });
+  return {
+    paletteCount: dom?.paletteCount ?? 0,
+    inputCount: dom?.inputCount ?? 0,
+    referenceCount: references.length,
+    references,
+    inventory,
+    // Each reference and its DOM facts are returned together by this single execute call.
+    observations,
+    aligned: references.length === inventory.length
+      && observations.every((item, index) => item.index === index && Boolean(elementIdentifier(item.reference))),
+  };
+}
+
+async function readPaletteOptionGetAggregate(driver, reference, deadlineAt) {
   const identifier = elementIdentifier(reference);
-  if (!identifier) fail(`WebDriver returned no element handle for ${description}.`);
-  return bounded(driver.request('GET', driver.path(`/element/${identifier}/text`)), `Read ${description} text`);
+  if (!identifier) throw new Error('WebDriver returned no element handle for a command palette option.');
+  return boundedByDeadline(
+    () => driver.request('GET', driver.path(`/element/${identifier}/text`)),
+    deadlineAt,
+    'Read WebDriver aggregate text for command palette option',
+  );
+}
+
+async function addPaletteGetAggregates(driver, references, inventory, deadlineAt) {
+  for (const [index, reference] of references.entries()) {
+    if (!inventory[index] || performance.now() >= deadlineAt) break;
+    try {
+      const aggregate = await readPaletteOptionGetAggregate(driver, reference, deadlineAt);
+      inventory[index].getAggregate = aggregate;
+      inventory[index].getAggregateType = typeof aggregate;
+    } catch (error) {
+      inventory[index].getAggregateError = error instanceof Error ? error.message : String(error);
+      if (error?.watchdogExpired || performance.now() >= deadlineAt) break;
+    }
+  }
+  return inventory;
+}
+
+async function recordPaletteFailureDiagnostic(driver, references, inventory, recordStep, eventName, details) {
+  const deadlineAt = performance.now() + CLEANUP_TIMEOUT_MS;
+  try {
+    await addPaletteGetAggregates(driver, references, inventory, deadlineAt);
+    if (performance.now() < deadlineAt) {
+      await boundedByDeadline(
+        () => recordStep(eventName, { ...details, options: inventory }),
+        deadlineAt,
+        `Record ${eventName}`,
+      );
+    }
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 function locateWorkspacePageIds(workspace) {
@@ -770,6 +916,7 @@ async function writeIndependentEvidence(candidate, evidence) {
 export async function runIndependentNativeExportScenario(context) {
   assertSerializedFinalizer();
   await assertCapturePollingDeadline();
+  assertPaletteSelectionUnitCases();
   const { candidate, prepared, recordStep } = context;
   const driver = context.driver;
   requireThat(driver && candidate?.vault && candidate?.databaseId && candidate?.evidence,
@@ -895,24 +1042,121 @@ export async function runIndependentNativeExportScenario(context) {
     const paletteInput = '.palette[role="dialog"] input[role="combobox"]';
     await bounded(driver.clear(paletteInput), 'Clear command palette input');
     await bounded(driver.sendKeys(paletteInput, EXPECTED_COMMAND), 'Type exact Publish command');
-    const optionHandles = await waitForCondition(async () => {
-      const options = await driver.elements('.palette[role="dialog"] [role="option"]');
-      const labels = [];
-      const matches = [];
-      for (const option of options) {
-        const label = await textOfReference(driver, option, 'command palette option');
-        labels.push(label.trim());
-        if (label.trim() === EXPECTED_COMMAND) matches.push(option);
+    let lastOptionsInventory = [];
+    let lastOptionReferences = [];
+    let lastPaletteStructure = null;
+    let optionSelection;
+    const optionWaitDescription = `one visible command palette option with canonical title ${JSON.stringify(EXPECTED_COMMAND)}`;
+    try {
+      optionSelection = await waitForCondition(async () => {
+        const snapshot = await readPaletteOptionInventory(driver);
+        lastOptionsInventory = snapshot.inventory;
+        lastOptionReferences = snapshot.references;
+        lastPaletteStructure = {
+          paletteCount: snapshot.paletteCount,
+          inputCount: snapshot.inputCount,
+          referenceCount: snapshot.referenceCount,
+          aligned: snapshot.aligned,
+        };
+        if (snapshot.paletteCount !== 1 || snapshot.inputCount !== 1 || !snapshot.aligned) return false;
+
+        const match = selectUniqueCanonicalPaletteOption(snapshot.observations);
+        if (match.status === 'missing') return false;
+        if (match.status === 'ambiguous') return { status: 'ambiguous', snapshot, match };
+
+        const reference = match.reference;
+        try {
+          const getAggregate = await readPaletteOptionGetAggregate(
+            driver,
+            reference,
+            performance.now() + CLEANUP_TIMEOUT_MS,
+          );
+          snapshot.inventory[match.index].getAggregate = getAggregate;
+          snapshot.inventory[match.index].getAggregateType = typeof getAggregate;
+          lastOptionsInventory = snapshot.inventory;
+          return { status: 'selected', snapshot, match, reference };
+        } catch (error) {
+          snapshot.inventory[match.index].getAggregateError = error instanceof Error ? error.message : String(error);
+          lastOptionsInventory = snapshot.inventory;
+          return { status: 'get-error', snapshot, match, error };
+        }
+      }, optionWaitDescription);
+    } catch (error) {
+      // Keep the original wait error; bounded GET observations and step recording
+      // add evidence without changing the failure that ended the wait.
+      const diagnosticError = await recordPaletteFailureDiagnostic(
+        driver,
+        lastOptionReferences,
+        lastOptionsInventory,
+        recordStep,
+        'independent-182-publish-palette-timeout-options',
+        {
+          error: error instanceof Error ? error.message : String(error),
+          palette: paletteReady,
+          observedPalette: lastPaletteStructure,
+          optionCount: lastOptionReferences.length,
+        },
+      );
+      if (error && typeof error === 'object') {
+        error.lastOptionsInventory = { ...lastPaletteStructure, options: lastOptionsInventory };
+        if (diagnosticError) error.optionsInventoryDiagnosticError = diagnosticError;
       }
-      return matches.length === 1 ? { options, labels, selected: matches[0] } : false;
-    }, `one exact command palette entry ${JSON.stringify(EXPECTED_COMMAND)}`);
+      throw error;
+    }
+
+    if (optionSelection.status !== 'selected') {
+      const message = optionSelection.status === 'ambiguous'
+        ? `Expected one visible canonical title ${JSON.stringify(EXPECTED_COMMAND)}, found ${optionSelection.match.indexes.length}.`
+        : `Could not read the WebDriver text for the exact canonical title ${JSON.stringify(EXPECTED_COMMAND)}.`;
+      const error = new Error(message);
+      lastOptionsInventory = optionSelection.snapshot.inventory;
+      lastPaletteStructure = {
+        paletteCount: optionSelection.snapshot.paletteCount,
+        inputCount: optionSelection.snapshot.inputCount,
+        referenceCount: optionSelection.snapshot.referenceCount,
+        aligned: optionSelection.snapshot.aligned,
+      };
+      error.lastOptionsInventory = { ...lastPaletteStructure, options: lastOptionsInventory };
+      const diagnosticError = await recordPaletteFailureDiagnostic(
+        driver,
+        optionSelection.snapshot.references,
+        lastOptionsInventory,
+        recordStep,
+        'independent-182-publish-palette-selection-diagnostic',
+        {
+          error: message,
+          palette: paletteReady,
+          observedPalette: lastPaletteStructure,
+          optionCount: optionSelection.snapshot.references.length,
+        },
+      );
+      if (diagnosticError) error.optionsInventoryDiagnosticError = diagnosticError;
+      throw error;
+    }
+    const optionHandles = {
+      selected: optionSelection.reference,
+      options: optionSelection.snapshot.references,
+      inventory: optionSelection.snapshot.inventory,
+    };
     const paletteEvidencePath = await bounded(() => evidencePath(candidate, 'native-export-independent-command-palette.png'), 'Resolve command palette evidence path');
     await bounded(() => driver.screenshot(paletteEvidencePath), 'Capture command palette screenshot');
-    evidence.commandPalette = { ...paletteReady, exactCommand: EXPECTED_COMMAND, visibleOptionLabels: optionHandles.labels };
+    evidence.commandPalette = {
+      ...paletteReady,
+      exactCommand: EXPECTED_COMMAND,
+      paletteCount: optionSelection.snapshot.paletteCount,
+      inputCount: optionSelection.snapshot.inputCount,
+      referencesAligned: optionSelection.snapshot.aligned,
+      optionCount: optionHandles.options.length,
+      options: optionHandles.inventory,
+    };
     await recordBounded(recordStep, 'independent-182-exact-publish-command-ready', {
       command: EXPECTED_COMMAND,
       matchingOptionCount: 1,
+      paletteCount: optionSelection.snapshot.paletteCount,
+      inputCount: optionSelection.snapshot.inputCount,
+      referencesAligned: optionSelection.snapshot.aligned,
       optionCount: optionHandles.options.length,
+      options: optionHandles.inventory,
       screenshot: paletteEvidencePath,
     });
 
@@ -999,7 +1243,11 @@ export async function runIndependentNativeExportScenario(context) {
     evidence.result = 'passed';
   } catch (error) {
     failure = error;
-    evidence.failure = { message: error instanceof Error ? error.message : String(error) };
+    evidence.failure = {
+      message: error instanceof Error ? error.message : String(error),
+      ...(error?.lastOptionsInventory ? { lastOptionsInventory: error.lastOptionsInventory } : {}),
+      ...(error?.optionsInventoryDiagnosticError ? { optionsInventoryDiagnosticError: error.optionsInventoryDiagnosticError } : {}),
+    };
     if (captureInstalled && !captureStateBeforeFinalize) {
       try {
         captureStateBeforeFinalize = await readCapture(driver, false);
