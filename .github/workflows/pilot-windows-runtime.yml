@@ -43,6 +43,28 @@ jobs:
         shell: pwsh
         run: pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-preflight.test.ps1
 
+      - name: Run issue 180 synthetic process and ownership tests
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $inputs = Get-FileHash -Algorithm SHA256 scripts/pilot/windows-process.ps1,scripts/pilot/windows-process.test.ps1,scripts/pilot/windows-process.independent.test.ps1 | Select-Object Path,Hash
+          [IO.File]::WriteAllText((Join-Path $control 'issue-180-inputs.json'), ($inputs | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.test.ps1 2>&1 | Tee-Object -FilePath (Join-Path $control 'issue-180-own.log')
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'issue-180-own.exit'), [string]$code)
+          exit $code
+
+      - name: Run independent issue 180 adapter probes
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $control = Join-Path $env:RUNNER_TEMP "issue-179-control-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          & pwsh -NoLogo -NoProfile -NonInteractive -File scripts/pilot/windows-process.independent.test.ps1 -AdapterPath scripts/pilot/windows-process.ps1 2>&1 | Tee-Object -FilePath (Join-Path $control 'issue-180-independent.log')
+          $code = $LASTEXITCODE
+          [IO.File]::WriteAllText((Join-Path $control 'issue-180-independent.exit'), [string]$code)
+          exit $code
+
       - name: Set up Rust for the pinned tauri-driver install
         uses: dtolnay/rust-toolchain@stable
 
