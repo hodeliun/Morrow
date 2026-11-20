@@ -18,7 +18,7 @@ $script:Metadata = [ordered]@{}
 $script:EvidenceRootFull = $null
 $script:RunnerTempFull = $null
 $script:AdapterPath = $null
-$script:PSHome = $null
+$script:PwshInstallDirectory = $null
 $script:PwshPath = $null
 $script:FixturePath = $null
 $script:FixtureSha256 = $null
@@ -207,15 +207,15 @@ function New-ExplicitEnvironment {
     SystemRoot = $systemRoot
     windir = $systemRoot
     SystemDrive = [IO.Path]::GetPathRoot($systemRoot).TrimEnd([char]'\')
-    PATH = (Join-Path $systemRoot 'System32') + ';' + $script:PSHome
+    PATH = (Join-Path $systemRoot 'System32') + ';' + $script:PwshInstallDirectory
     TEMP = (Join-Path $CaseRoot 'temp')
     TMP = (Join-Path $CaseRoot 'temp')
     USERPROFILE = (Join-Path $CaseRoot 'profile')
     HOME = (Join-Path $CaseRoot 'profile')
     APPDATA = (Join-Path (Join-Path $CaseRoot 'profile') 'appdata')
     LOCALAPPDATA = (Join-Path (Join-Path $CaseRoot 'profile') 'local')
-    PSHOME = $script:PSHome
-    PSModulePath = (Join-Path $script:PSHome 'Modules')
+    PSHOME = $script:PwshInstallDirectory
+    PSModulePath = (Join-Path $script:PwshInstallDirectory 'Modules')
     ComSpec = (Join-Path $systemRoot 'System32\cmd.exe')
     RUNNER_TEMP = $script:RunnerTempFull
     MORROW_188_PWSH_PATH = $script:PwshPath
@@ -1146,7 +1146,7 @@ try {
   $script:AdapterSha256 = (Get-FileHash -LiteralPath $script:AdapterPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $script:TestSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  $script:PSHome = $PSHOME
+  $script:PwshInstallDirectory = $PSHOME
   $script:PwshPath = [IO.Path]::GetFullPath((Join-Path $PSHOME 'pwsh.exe'))
   if (-not [IO.File]::Exists($script:PwshPath)) {
     throw 'The running PowerShell installation did not contain pwsh.exe in PSHOME.'

@@ -32,6 +32,8 @@ $ownedProcesses = [Collections.Generic.List[object]]::new()
 $helperOutput = [Collections.Generic.List[object]]::new()
 $cleanupErrors = [Collections.Generic.List[string]]::new()
 $failure = $null
+$failureDiagnostic = $null
+$diagnosticPhase = 'platform-preflight'
 $runnerTemp = [Environment]::GetEnvironmentVariable('RUNNER_TEMP', [EnvironmentVariableTarget]::Process)
 $evidenceFullPath = $null
 $scratch = $null
@@ -68,6 +70,87 @@ function ConvertTo-SafeErrorMessage {
   $message = $message.Trim()
   if ($message.Length -gt 240) { $message = $message.Substring(0, 240) }
   return $message
+}
+
+function New-SafeFailureDiagnostic {
+  param(
+    [Parameter(Mandatory)][Exception] $Exception,
+    [Parameter(Mandatory)][string] $Phase
+  )
+
+  $phaseAllowlist = @(
+    'platform-preflight', 'evidence-setup', 'adapter-setup', 'outsider-start',
+    'root-resume-create', 'root-resume-observe', 'root-resume-membership',
+    'root-resume-command', 'root-resume-stop', 'root-descendant-probe',
+    'dispose-probe', 'creation-error-probe', 'consumer-death-probe', 'final-checks'
+  )
+  $exceptionTypeAllowlist = @(
+    'System.Exception', 'System.ArgumentException', 'System.ArgumentNullException',
+    'System.ArgumentOutOfRangeException', 'System.ComponentModel.Win32Exception',
+    'System.IO.DirectoryNotFoundException', 'System.IO.FileNotFoundException',
+    'System.IO.IOException', 'System.InvalidOperationException',
+    'System.Management.Automation.ActionPreferenceStopException',
+    'System.Management.Automation.MethodInvocationException',
+    'System.Management.Automation.ParameterBindingException',
+    'System.Management.Automation.PSInvalidOperationException',
+    'System.Management.Automation.RuntimeException',
+    'System.ObjectDisposedException', 'System.Security.SecurityException',
+    'System.TimeoutException', 'System.UnauthorizedAccessException'
+  )
+  $apiAllowlist = @(
+    'CreateJobObjectW', 'SetInformationJobObject', 'GetHandleInformation',
+    'InitializeProcThreadAttributeList', 'UpdateProcThreadAttribute',
+    'DeleteProcThreadAttributeList', 'CreateProcessW', 'ResumeThread',
+    'TerminateJobObject', 'TerminateProcess', 'IsProcessInJob',
+    'QueryInformationJobObject', 'QueryFullProcessImageNameW', 'GetProcessTimes',
+    'GetExitCodeProcess', 'WaitForSingleObject', 'GetCurrentProcessId', 'CloseHandle',
+    'CreateAtomicSuspendedRoot', 'ObserveRoot', 'ListMemberIds', 'Resume',
+    'StopAndWait', 'Dispose', 'GetProcessById', 'Start', 'WaitForExit', 'Kill'
+  )
+
+  $safePhase = 'unknown'
+  if ($phaseAllowlist -ccontains $Phase) { $safePhase = $Phase }
+
+  $chain = [Collections.Generic.List[object]]::new()
+  $current = $Exception
+  $depth = 0
+  while ($null -ne $current -and $depth -lt 8) {
+    $actualTypeName = $current.GetType().FullName
+    $safeTypeName = 'other'
+    if ($exceptionTypeAllowlist -ccontains $actualTypeName) { $safeTypeName = $actualTypeName }
+
+    $safeApi = $null
+    $message = [string]$current.Message
+    foreach ($candidateApi in $apiAllowlist) {
+      $doubleQuotedInvocation = 'Exception calling "' + $candidateApi + '"'
+      $singleQuotedInvocation = "Exception calling '$candidateApi'"
+      if ($message.StartsWith($candidateApi, [StringComparison]::Ordinal) -or
+          $message.StartsWith($doubleQuotedInvocation, [StringComparison]::Ordinal) -or
+          $message.StartsWith($singleQuotedInvocation, [StringComparison]::Ordinal)) {
+        $safeApi = $candidateApi
+        break
+      }
+    }
+
+    $nativeErrorCode = $null
+    if ($current -is [System.ComponentModel.Win32Exception]) {
+      $nativeErrorCode = [int]$current.NativeErrorCode
+    }
+    [void]$chain.Add([pscustomobject][ordered]@{
+      depth = $depth
+      type = $safeTypeName
+      hresult = [int64]$current.HResult
+      nativeErrorCode = $nativeErrorCode
+      api = $safeApi
+    })
+    $current = $current.InnerException
+    $depth++
+  }
+
+  return [pscustomobject][ordered]@{
+    phase = $safePhase
+    exceptionChain = @($chain.ToArray())
+  }
 }
 
 function ConvertTo-SafeLogText {
@@ -335,6 +418,7 @@ try {
   [Environment]::SetEnvironmentVariable($parentSentinelName, 'must-not-inherit', [EnvironmentVariableTarget]::Process)
   $parentSentinelChanged = $true
 
+  $diagnosticPhase = 'evidence-setup'
   $runnerTempFull = [IO.Path]::GetFullPath([string]$runnerTemp).TrimEnd([IO.Path]::DirectorySeparatorChar)
   $evidenceFullPath = [IO.Path]::GetFullPath($EvidenceRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
   $relativeEvidence = [IO.Path]::GetRelativePath($runnerTempFull, $evidenceFullPath)
@@ -369,6 +453,7 @@ try {
   [void][IO.Directory]::CreateDirectory($scratch)
   $checks.evidenceRootCreatedAndOwned = $true
 
+  $diagnosticPhase = 'adapter-setup'
   if (-not [IO.File]::Exists($adapterPath)) { throw 'The native Job adapter file was not found beside this test.' }
   $interopLoadedBeforeDotSource = $null -ne ('Morrow.Pilot.WindowsNativeJobInterop' -as [type])
   . $adapterPath
@@ -378,6 +463,7 @@ try {
   if (-not [IO.File]::Exists($pwshPath)) { throw 'The current PowerShell host executable was not found.' }
   $explicitEnvironment = Get-ExplicitTestEnvironment
 
+  $diagnosticPhase = 'outsider-start'
   $outsiderScript = New-TestScript -Name 'outsider.ps1' -Content @'
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'outsider-ready.txt'), [string]$PID)
 Start-Sleep -Seconds 120
@@ -393,6 +479,7 @@ Start-Sleep -Seconds 120
   })
   $checks.syntheticOutsiderStarted = $true
 
+  $diagnosticPhase = 'root-resume-create'
   $resumeMarker = Join-Path $scratch 'resumed-marker.txt'
   $resumeRootScript = New-TestScript -Name 'resume-root.ps1' -Content (
     'if ($args.Count -ne 1 -or $args[0] -cne ' + (ConvertTo-PowerShellLiteral $argvSentinel) + ' -or $env:MORROW_188_UNICODE_SENTINEL -cne ''explicit-λ-東京'' -or $null -ne $env:MORROW_188_PARENT_SENTINEL) { exit 73 }' + [Environment]::NewLine +
@@ -400,11 +487,14 @@ Start-Sleep -Seconds 120
     'Start-Sleep -Seconds 120'
   )
   $resumeSession = Start-RootSession -ScriptPath $resumeRootScript
+  $diagnosticPhase = 'root-resume-observe'
   $resumeObservation = $resumeSession.ObserveRoot()
   Assert-InitialSuspendedObservation -Observation $resumeObservation
   $resumeRootProcess = Open-ObservedProcess -Observation $resumeObservation
+  $diagnosticPhase = 'root-resume-membership'
   $resumeMembers = @($resumeSession.ListMemberIds())
   Assert-Check -Name 'createObserveResumeStop' -Condition ($resumeMembers -contains [uint32]$resumeObservation.processId) -Message 'The root PID must appear in the Job membership query before Resume.'
+  $diagnosticPhase = 'root-resume-command'
   $resumeResult = $resumeSession.Resume()
   Assert-Check -Name 'createObserveResumeStop' -Condition ([bool]$resumeResult.resumed -and [int]$resumeResult.previousSuspendCount -eq 1 -and $resumeResult.state -ceq 'resume-requested') -Message 'Resume must consume exactly the initial suspend count and report only a resume request.'
   Wait-ForCondition -Condition { [IO.File]::Exists($resumeMarker) } -TimeoutMs 10000 -Label 'resumed synthetic root marker'
@@ -412,6 +502,7 @@ Start-Sleep -Seconds 120
   Assert-Check -Name 'createObserveResumeStop' -Condition (-not $resumeRootProcess.HasExited) -Message 'The synthetic root should remain alive before StopAndWait.'
   Assert-OutsiderAlive
   Close-ObservedProcess -Process $resumeRootProcess
+  $diagnosticPhase = 'root-resume-stop'
   $stopResult = $resumeSession.StopAndWait(10000)
   Assert-Check -Name 'createObserveResumeStop' -Condition ([bool]$stopResult.jobEmpty -and @($stopResult.remainingMemberIds).Count -eq 0 -and [bool]$stopResult.rootExited -and $null -ne $stopResult.rootExitCode) -Message 'StopAndWait must report a numerically observed root exit and an empty private Job.'
   $afterStopObservation = $resumeSession.ObserveRoot()
@@ -428,6 +519,7 @@ Start-Sleep -Seconds 120
   [void]$disposedSessions.Add($resumeSession)
   $checks.outsiderPreserved = $true
 
+  $diagnosticPhase = 'root-descendant-probe'
   $grandchildReadyPath = Join-Path $scratch 'grandchild-ready.json'
   $grandchildBody = @'
 $identity = [ordered]@{ processId = $PID; creationTimeUtc = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToString('o') }
@@ -512,6 +604,7 @@ $child.Dispose()
   $spawnSession.Dispose()
   [void]$disposedSessions.Add($spawnSession)
 
+  $diagnosticPhase = 'dispose-probe'
   $disposeMarker = Join-Path $scratch 'disposed-marker.txt'
   $disposeScript = New-TestScript -Name 'dispose-root.ps1' -Content (
     'if ($args.Count -ne 1 -or $args[0] -cne ' + (ConvertTo-PowerShellLiteral $argvSentinel) + ' -or $env:MORROW_188_UNICODE_SENTINEL -cne ''explicit-λ-東京'' -or $null -ne $env:MORROW_188_PARENT_SENTINEL) { exit 73 }' + [Environment]::NewLine +
@@ -537,6 +630,7 @@ $child.Dispose()
   Assert-Throws -Name 'disposed session refuses later observation' -Action { $disposeSession.ObserveRoot() }
   Assert-OutsiderAlive
 
+  $diagnosticPhase = 'creation-error-probe'
   $neverRunMarker = Join-Path $scratch 'invalid-executable-marker.txt'
   $missingExecutable = Join-Path $scratch 'missing-synthetic-pwsh.exe'
   Assert-Throws -Name 'invalid executable path' -Action {
@@ -549,6 +643,7 @@ $child.Dispose()
   Assert-Check -Name 'creationErrorFailsClosed' -Condition (-not [IO.File]::Exists($neverRunMarker)) -Message 'A failed CreateProcessW must not leave a synthetic child able to write its marker.'
   Assert-OutsiderAlive
 
+  $diagnosticPhase = 'consumer-death-probe'
   $crashMarker = Join-Path $scratch 'consumer-crash-marker.txt'
   $handshakePath = Join-Path $scratch 'consumer-handshake.json'
   $releasePath = Join-Path $scratch 'consumer-release.signal'
@@ -609,6 +704,7 @@ $session.Dispose()
   Assert-Check -Name 'consumerDeathAfterReturnBeforeResume' -Condition (-not [IO.File]::Exists($crashMarker)) -Message 'The suspended child must exit without executing its marker after its consumer dies.'
   Assert-OutsiderAlive
 
+  $diagnosticPhase = 'final-checks'
   $incompleteChecks = @($checks.Keys | Where-Object { -not [bool]$checks[$_] })
   if ($incompleteChecks.Count -gt 0) {
     throw ('Required own probes did not complete: ' + [string]::Join(', ', $incompleteChecks))
@@ -617,6 +713,14 @@ $session.Dispose()
 
 } catch {
   $failure = ConvertTo-SafeErrorMessage -Exception $_.Exception
+  try {
+    $failureDiagnostic = New-SafeFailureDiagnostic -Exception $_.Exception -Phase $diagnosticPhase
+  } catch {
+    $failureDiagnostic = [pscustomobject][ordered]@{
+      phase = 'unknown'
+      exceptionChain = @()
+    }
+  }
 } finally {
   foreach ($session in $sessions) {
     if (-not $disposedSessions.Contains($session)) {
@@ -761,6 +865,7 @@ $session.Dispose()
     webViewLaunched = $false
     guiOpened = $false
     failure = $failure
+    failureDiagnostic = $failureDiagnostic
     cleanupErrors = @($cleanupErrors)
   }
 
