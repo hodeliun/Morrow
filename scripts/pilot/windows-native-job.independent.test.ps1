@@ -1135,7 +1135,7 @@ function Write-FinalReceipt {
     return
   }
 
-  $failed = ($script:Failures.Count -gt 0) -or ((Get-CheckFailures).Count -gt 0)
+  $failed = ($script:Failures.Count -gt 0) -or (@(Get-CheckFailures).Count -gt 0)
   $status = if ($failed) { 'failed' } else { 'passed' }
   $receipt = [ordered]@{
     schemaVersion = 1
@@ -1267,7 +1267,7 @@ try {
   Write-FinalReceipt
 }
 
-if ($runFailed -or $script:Failures.Count -gt 0 -or (Get-CheckFailures).Count -gt 0) {
+if ($runFailed -or $script:Failures.Count -gt 0 -or @(Get-CheckFailures).Count -gt 0) {
   exit 1
 }
 

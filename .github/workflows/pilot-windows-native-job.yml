@@ -86,7 +86,12 @@ jobs:
           foreach ($kind in @('own', 'independent')) {
             $test = if ($kind -eq 'own') { 'scripts/pilot/windows-process.test.ps1' } else { 'scripts/pilot/windows-process.independent.test.ps1' }
             $log = Join-Path $control "regression-180-$kind.log"
-            & $engine -NoLogo -NoProfile -NonInteractive -File $test *> $log
+            if ($kind -eq 'independent') {
+              $adapterPath = Join-Path $env:GITHUB_WORKSPACE 'scripts/pilot/windows-process.ps1'
+              & $engine -NoLogo -NoProfile -NonInteractive -File $test -AdapterPath $adapterPath *> $log
+            } else {
+              & $engine -NoLogo -NoProfile -NonInteractive -File $test *> $log
+            }
             $code = $LASTEXITCODE
             if ($null -eq $code) { throw 'Regression process did not expose an exit code.' }
             [IO.File]::WriteAllText((Join-Path $control "regression-180-$kind.exit"), [string]$code)
