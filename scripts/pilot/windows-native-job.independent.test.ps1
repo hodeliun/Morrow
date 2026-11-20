@@ -36,6 +36,7 @@ $script:Outsider = $null
 $script:OutsiderReadyPath = $null
 $script:OutsiderReleasePath = $null
 $script:ReceiptPath = $null
+$script:ProcessImageQueryMethod = $null
 
 function Get-SafeMessage {
   param([Parameter(Mandatory)][Exception] $Exception)
@@ -251,26 +252,95 @@ function New-TrackedProcessInfo {
   return $startInfo
 }
 
+function Initialize-ProcessImageQuery {
+  if ($null -ne $script:ProcessImageQueryMethod) { return }
+
+  $typeName = 'MorrowIssue188IndependentProcessImageNative'
+  $apiType = $typeName -as [type]
+  if ($null -eq $apiType) {
+    $source = @'
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class MorrowIssue188IndependentProcessImageNative
+{
+  public static string GetFullImagePath(SafeHandle processHandle)
+  {
+    if (processHandle == null)
+      throw new System.ArgumentNullException(nameof(processHandle));
+
+    var path = new StringBuilder(32768);
+    uint charactersWritten = (uint)path.Capacity;
+    if (!QueryFullProcessImageNameW(processHandle, 0, path, ref charactersWritten))
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryFullProcessImageNameW failed for the retained process handle.");
+    if (charactersWritten == 0 || charactersWritten > (uint)path.Capacity)
+      throw new System.InvalidOperationException("QueryFullProcessImageNameW returned an invalid path length.");
+
+    return path.ToString(0, (int)charactersWritten);
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, EntryPoint = "QueryFullProcessImageNameW")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  private static extern bool QueryFullProcessImageNameW(
+    SafeHandle hProcess,
+    uint dwFlags,
+    StringBuilder lpExeName,
+    ref uint lpdwSize);
+}
+'@
+    $apiType = Add-Type -TypeDefinition $source -Language CSharp -PassThru -ErrorAction Stop
+  }
+
+  $script:ProcessImageQueryMethod = $apiType.GetMethod(
+    'GetFullImagePath',
+    [Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static
+  )
+  if ($null -eq $script:ProcessImageQueryMethod) {
+    throw 'The independent process-image helper did not expose its query method.'
+  }
+}
+
+function Get-TrackedProcessImagePath {
+  param([Parameter(Mandatory)][object] $ProcessHandle)
+
+  if (-not ($ProcessHandle -is [Runtime.InteropServices.SafeHandle])) {
+    throw 'The retained Diagnostics.Process.SafeHandle is not valid for image-path verification.'
+  }
+  if ($ProcessHandle.IsClosed -or $ProcessHandle.IsInvalid) {
+    throw 'The retained Diagnostics.Process.SafeHandle is not valid for image-path verification.'
+  }
+
+  $imagePath = [string]$script:ProcessImageQueryMethod.Invoke($null, [object[]]@($ProcessHandle))
+  if ([string]::IsNullOrWhiteSpace($imagePath)) {
+    throw 'QueryFullProcessImageNameW returned an empty image path for a retained process handle.'
+  }
+  return [IO.Path]::GetFullPath($imagePath)
+}
+
 function Add-TrackedProcess {
   param(
     [Parameter(Mandatory)][Diagnostics.Process] $Process,
     [Parameter(Mandatory)][string] $Role
   )
 
-  $null = $Process.Handle
-  $Process.Refresh()
-  $imagePath = $null
-  try { $imagePath = [string]$Process.MainModule.FileName } catch { }
   $record = [pscustomobject]@{
     role = $Role
     process = $Process
-    processId = [uint32]$Process.Id
-    creationTimeUtc = $Process.StartTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
-    imagePath = $imagePath
+    processHandle = $null
+    processId = $null
+    creationTimeUtc = $null
+    imagePath = $null
     exitCode = $null
     emergencyCleanup = $false
   }
   $script:TrackedProcesses.Add($record)
+
+  $Process.Refresh()
+  $record.processId = [uint32]$Process.Id
+  $record.creationTimeUtc = $Process.StartTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+  $record.processHandle = $Process.SafeHandle
+  $record.imagePath = Get-TrackedProcessImagePath -ProcessHandle $record.processHandle
   return $record
 }
 
@@ -1115,6 +1185,7 @@ try {
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'This independent native Job probe must run on Windows CI.'
   }
+  Initialize-ProcessImageQuery
   if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     throw 'RUNNER_TEMP is required for independent evidence.'
   }

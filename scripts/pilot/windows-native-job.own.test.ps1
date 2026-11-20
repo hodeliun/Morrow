@@ -301,12 +301,71 @@ function Wait-ForCondition {
   throw "Timed out waiting for $Label."
 }
 
+function Get-ObservedProcessImagePath {
+  param([Parameter(Mandatory)][Diagnostics.Process] $Process)
+
+  $typeName = 'Morrow.Issue188OwnTest.ProcessImageQuery'
+  if ($null -eq ($typeName -as [type])) {
+    $source = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace Morrow.Issue188OwnTest
+{
+  public static class ProcessImageQuery
+  {
+    private const uint Win32PathFormat = 0;
+    private const int MaximumPathCharacters = 32768;
+
+    public static string GetImagePath(SafeProcessHandle processHandle)
+    {
+      if (processHandle == null)
+        throw new ArgumentNullException("processHandle");
+      if (processHandle.IsInvalid || processHandle.IsClosed)
+        throw new InvalidOperationException("The retained observed-process handle is not usable.");
+
+      StringBuilder path = new StringBuilder(MaximumPathCharacters);
+      uint charactersWritten = (uint)path.Capacity;
+      if (!QueryFullProcessImageNameW(processHandle, Win32PathFormat, path, ref charactersWritten))
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryFullProcessImageNameW failed for the retained observed-process handle.");
+      if (charactersWritten == 0 || charactersWritten > (uint)path.Capacity)
+        throw new InvalidOperationException("QueryFullProcessImageNameW returned an invalid path length.");
+
+      return path.ToString(0, checked((int)charactersWritten));
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "QueryFullProcessImageNameW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageNameW(
+      SafeProcessHandle hProcess,
+      uint dwFlags,
+      StringBuilder lpExeName,
+      ref uint lpdwSize);
+  }
+}
+'@
+    Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop
+  }
+  if ($null -eq ($typeName -as [type])) {
+    throw 'The test-only process image query type did not load.'
+  }
+
+  $safeHandle = $Process.SafeHandle
+  if ($null -eq $safeHandle) {
+    throw 'The retained observed-process handle is unavailable.'
+  }
+  return [Morrow.Issue188OwnTest.ProcessImageQuery]::GetImagePath($safeHandle)
+}
+
 function Open-ObservedProcess {
   param([Parameter(Mandatory)][psobject] $Observation)
 
   $process = [Diagnostics.Process]::GetProcessById([int]$Observation.processId)
   try {
-    $actualPath = [string]$process.MainModule.FileName
+    $actualPath = Get-ObservedProcessImagePath -Process $process
     $expectedPath = [string]$Observation.executablePath
     $actualCreation = $process.StartTime.ToUniversalTime()
     $expectedCreation = [DateTime]::Parse(
@@ -345,7 +404,7 @@ function Test-ObservedIdentityAlive {
     return $false
   }
   try {
-    $actualPath = [string]$process.MainModule.FileName
+    $actualPath = Get-ObservedProcessImagePath -Process $process
     $actualCreation = $process.StartTime.ToUniversalTime()
     $expectedCreation = [DateTime]::Parse(
       $CreationTimeUtc,
@@ -560,7 +619,7 @@ $child.Dispose()
   $grandchildIdentity = Get-Content -LiteralPath $grandchildReadyPath -Raw | ConvertFrom-Json
   $grandchildProcess = [Diagnostics.Process]::GetProcessById([int]$grandchildIdentity.processId)
   [void]$observedProcesses.Add($grandchildProcess)
-  $actualGrandchildPath = [string]$grandchildProcess.MainModule.FileName
+  $actualGrandchildPath = Get-ObservedProcessImagePath -Process $grandchildProcess
   $grandchildCreation = $grandchildProcess.StartTime.ToUniversalTime()
   $expectedGrandchildCreation = [DateTime]::Parse(
     [string]$grandchildIdentity.creationTimeUtc,
