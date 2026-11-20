@@ -1,0 +1,141 @@
+name: Pilot Windows native process policy probes
+on:
+  push:
+    branches:
+      - codex/e003-g07-windows-runtime
+    paths:
+      - .github/workflows/pilot-windows-native-policy.yml
+      - scripts/pilot/windows-native-process-policy*.ps1
+      - scripts/pilot/windows-native-job.ps1
+      - scripts/pilot/windows-process.ps1
+permissions:
+  contents: read
+jobs:
+  probes:
+    name: Synthetic process policy ${{ matrix.suite }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - own
+          - independent
+    env:
+      POLARIS_SUITE: ${{ matrix.suite }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Policy probes and applicable regressions
+        shell: pwsh
+        run: |-
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $suite = $env:POLARIS_SUITE
+          $runRoot = Join-Path $env:RUNNER_TEMP ("issue-225-{0}-{1}-{2}-{3}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT, $env:GITHUB_SHA, $suite)
+          $evidence = Join-Path $runRoot 'evidence'
+          if (Test-Path -LiteralPath $runRoot) { throw 'The evidence root already exists.' }
+          New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+          $receiptPath = Join-Path $evidence 'workflow-receipt.json'
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          $receipt = [ordered]@{
+            schemaVersion = 1
+            scope = 'E003 issue225 synthetic process policy probes only'
+            runId = $env:GITHUB_RUN_ID
+            attempt = $env:GITHUB_RUN_ATTEMPT
+            sha = $env:GITHUB_SHA
+            suite = $suite
+            status = 'initializing'
+            policyExitCode = $null
+            exitCode = 1
+            appLaunched = $false
+            driverServiceStarted = $false
+            guiTested = $false
+            os = [Environment]::OSVersion.VersionString
+            powershell = $PSVersionTable.PSVersion.ToString()
+            sources = @()
+            regressions = @()
+            failure = $null
+          }
+          [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 8), $utf8)
+          $exitCode = 1
+          try {
+            if ($suite -notin @('own', 'independent')) { throw 'Unknown suite.' }
+            $sourceFiles = @(
+              '.github/workflows/pilot-windows-native-policy.yml',
+              'scripts/pilot/windows-native-process-policy.ps1',
+              'scripts/pilot/windows-native-process-policy.own.test.ps1',
+              'scripts/pilot/windows-native-process-policy.independent.test.ps1',
+              'scripts/pilot/windows-native-job.ps1',
+              'scripts/pilot/windows-native-job.own.test.ps1',
+              'scripts/pilot/windows-native-job.independent.test.ps1',
+              'scripts/pilot/windows-process.ps1',
+              'scripts/pilot/windows-process.test.ps1',
+              'scripts/pilot/windows-process.independent.test.ps1'
+            )
+            $receipt.sources = @(
+              foreach ($relative in $sourceFiles) {
+                $full = Join-Path $env:GITHUB_WORKSPACE $relative
+                $item = Get-Item -LiteralPath $full -ErrorAction Stop
+                [ordered]@{ path = $relative; bytes = $item.Length; sha256 = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash.ToLowerInvariant() }
+              }
+            )
+            $engine = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            $testName = if ($suite -eq 'own') { 'windows-native-process-policy.own.test.ps1' } else { 'windows-native-process-policy.independent.test.ps1' }
+            $testPath = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/" + $testName)
+            $testEvidence = Join-Path $evidence 'policy'
+            $testLog = Join-Path $evidence 'policy-suite.log'
+            if ($suite -eq 'independent') {
+              $policyPath = Join-Path $env:GITHUB_WORKSPACE 'scripts/pilot/windows-native-process-policy.ps1'
+              & $engine -NoProfile -NonInteractive -File $testPath -PolicyPath $policyPath -EvidenceRoot $testEvidence *> $testLog
+            } else {
+              & $engine -NoProfile -NonInteractive -File $testPath -EvidenceRoot $testEvidence *> $testLog
+            }
+            $policyExit = $LASTEXITCODE
+            $receipt.policyExitCode = $policyExit
+            $exitCode = if ($policyExit -eq 0) { 0 } else { 1 }
+            $regressionReceipts = [Collections.Generic.List[object]]::new()
+            if ($suite -eq 'own') {
+              foreach ($kind in @('own', 'independent')) {
+                $nativeTest = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/windows-native-job.{0}.test.ps1" -f $kind)
+                $nativeEvidence = Join-Path $evidence ("regression-188-" + $kind)
+                $nativeLog = Join-Path $evidence ("regression-188-{0}.log" -f $kind)
+                & $engine -NoProfile -NonInteractive -File $nativeTest -EvidenceRoot $nativeEvidence *> $nativeLog
+                $nativeExit = $LASTEXITCODE
+                $regressionReceipts.Add([ordered]@{ issue = 188; suite = $kind; exitCode = $nativeExit; logSha256 = (Get-FileHash -LiteralPath $nativeLog -Algorithm SHA256).Hash.ToLowerInvariant() })
+                if ($nativeExit -ne 0) { $exitCode = 1 }
+              }
+              foreach ($kind in @('own', 'independent')) {
+                $legacyName = if ($kind -eq 'own') { 'windows-process.test.ps1' } else { 'windows-process.independent.test.ps1' }
+                $legacyTest = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/" + $legacyName)
+                $legacyLog = Join-Path $evidence ("regression-180-{0}.log" -f $kind)
+                if ($kind -eq 'independent') {
+                  $adapter = Join-Path $env:GITHUB_WORKSPACE 'scripts/pilot/windows-process.ps1'
+                  & $engine -NoProfile -NonInteractive -File $legacyTest -AdapterPath $adapter *> $legacyLog
+                } else {
+                  & $engine -NoProfile -NonInteractive -File $legacyTest *> $legacyLog
+                }
+                $legacyExit = $LASTEXITCODE
+                $regressionReceipts.Add([ordered]@{ issue = 180; suite = $kind; exitCode = $legacyExit; logSha256 = (Get-FileHash -LiteralPath $legacyLog -Algorithm SHA256).Hash.ToLowerInvariant() })
+                if ($legacyExit -ne 0) { $exitCode = 1 }
+              }
+            }
+            $receipt.regressions = @($regressionReceipts.ToArray())
+            $receipt.status = if ($exitCode -eq 0) { 'synthetic-probes-passed' } else { 'synthetic-probes-failed' }
+          } catch {
+            $exitCode = 1
+            $receipt.status = 'workflow-failed'
+            $receipt.failure = [ordered]@{ errorType = $_.Exception.GetType().FullName; fullyQualifiedErrorId = $_.FullyQualifiedErrorId }
+          } finally {
+            $receipt.exitCode = $exitCode
+            [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 10), $utf8)
+          }
+          exit $exitCode
+      - name: Upload policy evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-225-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/issue-225-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ matrix.suite }}/evidence/
+          if-no-files-found: error
+          retention-days: 30
