@@ -451,7 +451,7 @@ namespace Morrow.Pilot
   public static class WindowsNativeJobInterop
   {
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
-    private const uint ProcThreadAttributeJobList = 0x0006000D;
+    private const uint ProcThreadAttributeJobList = 0x0002000D;
     private const uint ExtendedStartupInfoPresent = 0x00080000;
     private const uint CreateSuspended = 0x00000004;
     private const uint CreateUnicodeEnvironment = 0x00000400;
