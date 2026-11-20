@@ -563,7 +563,28 @@ Start-Sleep -Seconds 120
   Close-ObservedProcess -Process $resumeRootProcess
   $diagnosticPhase = 'root-resume-stop'
   $stopResult = $resumeSession.StopAndWait(10000)
-  Assert-Check -Name 'createObserveResumeStop' -Condition ([bool]$stopResult.jobEmpty -and @($stopResult.remainingMemberIds).Count -eq 0 -and [bool]$stopResult.rootExited -and $null -ne $stopResult.rootExitCode) -Message 'StopAndWait must report a numerically observed root exit and an empty private Job.'
+  $sanitizedStopDto = [pscustomobject][ordered]@{
+    jobEmpty = [bool]$stopResult.jobEmpty
+    remainingPidNumbers = @($stopResult.remainingMemberIds | ForEach-Object { [uint32]$_ })
+    rootExited = [bool]$stopResult.rootExited
+    rootExitCode = if ($null -eq $stopResult.rootExitCode) { $null } else { [uint32]$stopResult.rootExitCode }
+    timedOut = [bool]$stopResult.timedOut
+  }
+  $observations.Add([pscustomobject]@{
+    role = 'root-stop-result'
+    jobEmpty = $sanitizedStopDto.jobEmpty
+    remainingPidNumbers = @($sanitizedStopDto.remainingPidNumbers)
+    rootExited = $sanitizedStopDto.rootExited
+    rootExitCode = $sanitizedStopDto.rootExitCode
+    timedOut = $sanitizedStopDto.timedOut
+  })
+  Assert-Check -Name 'createObserveResumeStop' -Condition (
+    [bool]$sanitizedStopDto.jobEmpty -and
+    @($sanitizedStopDto.remainingPidNumbers).Count -eq 0 -and
+    [bool]$sanitizedStopDto.rootExited -and
+    $null -ne $sanitizedStopDto.rootExitCode -and
+    -not [bool]$sanitizedStopDto.timedOut
+  ) -Message 'StopAndWait must observe the root exit and empty private Job before its shared deadline.'
   $afterStopObservation = $resumeSession.ObserveRoot()
   Assert-Check -Name 'rootExitObserved' -Condition ($afterStopObservation.state -ceq 'exited' -and $null -ne $afterStopObservation.exitCode -and [uint32]$afterStopObservation.exitCode -eq [uint32]$stopResult.rootExitCode) -Message 'Exit code must come from the retained process handle only after it signals.'
   $observations.Add([pscustomobject]@{
@@ -650,10 +671,28 @@ $child.Dispose()
   Assert-OutsiderAlive
   Close-ObservedProcess -Process $grandchildProcess
   $spawnStopResult = $spawnSession.StopAndWait(10000)
+  $sanitizedSpawnStopDto = [pscustomobject][ordered]@{
+    jobEmpty = [bool]$spawnStopResult.jobEmpty
+    remainingPidNumbers = @($spawnStopResult.remainingMemberIds | ForEach-Object { [uint32]$_ })
+    rootExited = [bool]$spawnStopResult.rootExited
+    rootExitCode = if ($null -eq $spawnStopResult.rootExitCode) { $null } else { [uint32]$spawnStopResult.rootExitCode }
+    timedOut = [bool]$spawnStopResult.timedOut
+  }
+  $observations.Add([pscustomobject]@{
+    role = 'descendant-stop-result'
+    jobEmpty = $sanitizedSpawnStopDto.jobEmpty
+    remainingPidNumbers = @($sanitizedSpawnStopDto.remainingPidNumbers)
+    rootExited = $sanitizedSpawnStopDto.rootExited
+    rootExitCode = $sanitizedSpawnStopDto.rootExitCode
+    timedOut = $sanitizedSpawnStopDto.timedOut
+  })
   Assert-Check -Name 'descendantStoppedWithJob' -Condition (
-    [bool]$spawnStopResult.jobEmpty -and
-    @($spawnStopResult.remainingMemberIds).Count -eq 0
-  ) -Message 'Stopping the private Job must empty it and stop the exact observed synthetic grandchild.'
+    [bool]$sanitizedSpawnStopDto.jobEmpty -and
+    @($sanitizedSpawnStopDto.remainingPidNumbers).Count -eq 0 -and
+    [bool]$sanitizedSpawnStopDto.rootExited -and
+    $null -ne $sanitizedSpawnStopDto.rootExitCode -and
+    -not [bool]$sanitizedSpawnStopDto.timedOut
+  ) -Message 'Stopping the private Job must observe root exit and Job empty before the shared deadline.'
   Wait-ForCondition -Condition {
     -not (Test-ObservedIdentityAlive -ProcessId ([int]$grandchildIdentity.processId) -ExecutablePath $pwshPath -CreationTimeUtc ([string]$grandchildIdentity.creationTimeUtc))
   } -TimeoutMs 10000 -Label 'synthetic grandchild termination after Job cleanup'

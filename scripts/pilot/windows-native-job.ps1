@@ -194,10 +194,14 @@ namespace Morrow.Pilot
         DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (true)
         {
-          bool rootExited = CacheRootExitIfSignaled();
           uint[] remaining = QueryMemberIds(_job);
+          // Querying membership can observe an empty Job just before the retained
+          // root handle signals. Require both observations before reporting
+          // completion, using the same deadline for the Job and the original root.
+          bool rootExited = CacheRootExitIfSignaled();
           uint? rootExitCode = rootExited ? _rootExitCode : null;
-          if (remaining.Length == 0)
+          bool jobEmpty = remaining.Length == 0;
+          if (jobEmpty && rootExited)
           {
             return new NativeStopResult
             {
@@ -214,7 +218,7 @@ namespace Morrow.Pilot
           {
             return new NativeStopResult
             {
-              jobEmpty = false,
+              jobEmpty = jobEmpty,
               remainingMemberIds = remaining,
               rootExited = rootExited,
               rootExitCode = rootExitCode,

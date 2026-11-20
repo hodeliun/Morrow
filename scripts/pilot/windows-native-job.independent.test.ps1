@@ -868,11 +868,13 @@ function Test-InitialSessionAndStop {
 
   $rootEntryPath = Join-Path $caseRoot ('root-hold-' + $nonce + '.entry.json')
   $netoEntryPath = Join-Path $caseRoot ('neto-hold-' + $nonce + '.entry.json')
+  $netoProcessReceiptPath = Join-Path $caseRoot ('neto-process-' + $nonce + '.json')
   Wait-ForFile -Path $rootEntryPath -TimeoutMs 10000 -Description 'root execution after resume'
   Wait-ForFile -Path $netoEntryPath -TimeoutMs 10000 -Description 'the neto process'
+  Wait-ForFile -Path $netoProcessReceiptPath -TimeoutMs 10000 -Description 'the neto process receipt'
   $rootEntry = Read-JsonFile -Path $rootEntryPath
   $netoEntry = Read-JsonFile -Path $netoEntryPath
-  $netoProcessReceipt = Read-JsonFile -Path (Join-Path $caseRoot ('neto-process-' + $nonce + '.json'))
+  $netoProcessReceipt = Read-JsonFile -Path $netoProcessReceiptPath
   Assert-True -Condition ([bool]$rootEntry.expectedUnicodePresent -and [bool]$netoEntry.expectedUnicodePresent) -Message 'The complete Unicode environment block did not reach the synthetic tree.'
   Assert-True -Condition (-not [bool]$rootEntry.parentOnlyPresent -and -not [bool]$netoEntry.parentOnlyPresent) -Message 'A parent-only environment variable leaked into the synthetic tree.'
   Assert-Equal -Actual ([uint32]$netoEntry.processId) -Expected ([uint32]$netoProcessReceipt.processId) -Message 'The child fixture PID differed from the root-held process handle PID.'
@@ -929,9 +931,11 @@ function Test-RootExitsBeforeNeto {
   Assert-True -Condition ([bool]$resume.resumed) -Message 'Resume failed for the root-exit scenario.'
 
   $netoEntryPath = Join-Path $caseRoot ('neto-hold-' + $nonce + '.entry.json')
+  $netoProcessReceiptPath = Join-Path $caseRoot ('neto-process-' + $nonce + '.json')
   Wait-ForFile -Path $netoEntryPath -TimeoutMs 10000 -Description 'the neto before root exit'
+  Wait-ForFile -Path $netoProcessReceiptPath -TimeoutMs 10000 -Description 'the neto process receipt before root exit'
   $netoEntry = Read-JsonFile -Path $netoEntryPath
-  $netoProcessReceipt = Read-JsonFile -Path (Join-Path $caseRoot ('neto-process-' + $nonce + '.json'))
+  $netoProcessReceipt = Read-JsonFile -Path $netoProcessReceiptPath
   Assert-Equal -Actual ([uint32]$netoEntry.processId) -Expected ([uint32]$netoProcessReceipt.processId) -Message 'The child fixture PID differed from the root-held process handle PID.'
   Assert-CreationTimesMatch -ObservedUtc ([string]$netoEntry.creationTimeUtc) -HandleUtc ([string]$netoProcessReceipt.creationTimeUtc)
   $netoRecord = Open-TrackedProcessById -ProcessId ([uint32]$netoEntry.processId) -Role 'neto-after-root-exit'
