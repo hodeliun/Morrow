@@ -20,6 +20,7 @@ import type { MenuEntry } from '../components/Menu';
 import { dateLocale, t } from '../i18n';
 import { addReminder, remindersFor, removeReminders } from '../reminders';
 import { toast } from '../ui';
+import { viewName } from '../i18n/labels';
 import { Popover } from '../components/Popover';
 import { createPage, openToday } from '../operations';
 import { navigate, openPage } from '../router';
@@ -71,12 +72,23 @@ function mountEmbed(
   hostId: PageId,
   element: HTMLElement,
   editable: boolean,
+  anchor: string | null,
+  setAnchor: (anchor: string | null) => void,
 ): (() => void) | null {
   const state = getState();
   const page = state.pages[id];
   if (!page || id === hostId) return null;
+  if (anchor && Object.hasOwn(page.extra, 'polarisDados')) return null;
   const canvas = page.kind === 'canvas' && !page.encrypted && !isEffectivelyTrashed(state.pages, id);
   if (!page.database && !canvas) return null;
+  // after # a database names the view to show, anything else is a part of the page shown as text
+  const wanted = anchor?.toLowerCase();
+  const view = wanted
+    ? (page.database?.views.find((item) =>
+        [item.name, viewName(item)].some((name) => name.toLowerCase() === wanted),
+      ) ?? null)
+    : null;
+  if (anchor && !view) return null;
   // react gets a box of its own inside the embed, so when the embed is emptied before the deferred unmount
   // below runs, react still finds its nodes where it left them
   const host = document.createElement('div');
@@ -86,7 +98,7 @@ function mountEmbed(
   root.render(
     <Suspense fallback={null}>
       {page.database ? (
-        <EmbeddedDatabase pageId={id} editable={editable} />
+        <EmbeddedDatabase pageId={id} editable={editable} viewId={view?.id ?? null} onPickView={setAnchor} />
       ) : (
         <EmbeddedCanvas pageId={id} editable={editable} />
       )}
@@ -293,6 +305,17 @@ function ReminderTime({
 export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onDirty, onReady }: Props) {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [blockMenu, setBlockMenu] = useState<BlockMenuRequest | null>(null);
+  // the blocks a menu was opened for can be deleted from the keyboard while it is open, then it closes
+  useEffect(() => {
+    if (!editor || !blockMenu) return;
+    const close = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+      if (transaction.docChanged) setBlockMenu(null);
+    };
+    editor.on('transaction', close);
+    return () => {
+      editor.off('transaction', close);
+    };
+  }, [editor, blockMenu]);
   const [dateMenu, setDateMenu] = useState<{
     date: Date;
     anchor: HTMLElement;
@@ -409,7 +432,8 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           createFromTarget: (target) => createPage({ title: target.split('/').pop() || target, open: false }),
           openTag: (tag) => navigate({ name: 'tag', tag }),
           renderEmbed: (id, target) => embedHtml(id, pageId, target),
-          mountEmbed: (id, element, canEdit) => mountEmbed(id, pageId, element, canEdit),
+          mountEmbed: (id, element, canEdit, anchor, setAnchor) =>
+            mountEmbed(id, pageId, element, canEdit, anchor, setAnchor),
           createChild: (kind) => createPage({ parentId: pageId, kind, open: false }),
           openDate: (date) => openToday(date),
           dateMenu: (date, anchor, time) => setDateMenu({ date, anchor, time }),
@@ -541,15 +565,21 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
     navigate({ name: 'page', id: pageId, find: null }, { replace: true, pane });
   }, [editor, find, pageId, pane]);
 
-  // opens at the heading or block a link pointed at, briefly lit so the eye finds it
+  // opens at the heading or block a link pointed at, briefly lit so the eye finds it. file:id opens at the
+  // picture or file it names, from the pages listed under a file in Files
   useEffect(() => {
     if (!editor || !anchor) return;
     let target: number | null = null;
+    const fileId = anchor.startsWith('file:') ? anchor.slice(5) : null;
+    const usesFile = (node: ProseNode): boolean =>
+      ['image', 'fileAttachment'].includes(node.type.name) && node.attrs.fileId === fileId;
     editor.state.doc.descendants((node, pos) => {
       if (target !== null) return false;
-      const hit = isBlockAnchor(anchor)
-        ? node.attrs.blockId === anchor.slice(1)
-        : node.type.name === 'heading' && foldText(node.textContent.trim()) === foldText(anchor.trim());
+      const hit = fileId
+        ? usesFile(node)
+        : isBlockAnchor(anchor)
+          ? node.attrs.blockId === anchor.slice(1)
+          : node.type.name === 'heading' && foldText(node.textContent.trim()) === foldText(anchor.trim());
       if (hit) target = pos;
       return !hit;
     });

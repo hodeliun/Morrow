@@ -1,8 +1,24 @@
+import { stringify } from 'yaml';
 import { describe, expect, it } from 'vitest';
+import { applyCommand } from '../commands';
 import {
+  hasUnrepresentableDatabaseSchema,
   findUnrepresentablePageContent,
   findUnrepresentableVaultMetadata,
 } from './compatibility';
+import { markdownToDoc } from '../markdown/parse';
+import { docToMarkdown } from '../markdown/serialize';
+import { SCHEMA_VERSION, emptyWorkspace, newPageMeta } from '../model';
+import type { DatabaseDef, PropValue } from '../model';
+import { encodePolarisDadosViewMarker } from '../polarisDadosView';
+import {
+  composeFrontmatter,
+  managedFrontmatter,
+  readPageText,
+  renderPageText,
+  takeProperties,
+  writeProperty,
+} from './pageFile';
 
 const basicDatabase = `---
 kind: database
@@ -35,6 +51,57 @@ database:
 ---
 `;
 
+function databaseNote(database: unknown): string {
+  const yaml = stringify({
+    kind: 'database',
+    polarisDados: { version: 1, provider: 'polaris-dados' },
+    database,
+  });
+  return `---\n${yaml}---\nInventory body\n`;
+}
+
+function metadataDatabase(groupKeys: string[], widgetCount: number) {
+  const kinds = ['count', 'sum', 'average', 'min', 'max', 'bar', 'hbar', 'donut', 'line'];
+  const widgets = Array.from({ length: widgetCount }, (_, index) => {
+    const kind = kinds[index % kinds.length]!;
+    const prop =
+      kind === 'count' || kind === 'line'
+        ? null
+        : ['bar', 'hbar', 'donut'].includes(kind)
+          ? 'reviewed'
+          : 'amount';
+    return {
+      id: `widget-${index}`,
+      kind,
+      prop,
+      ...(index === 0 ? { title: 'W'.repeat(80) } : {}),
+      wide: index % 2 === 0,
+    };
+  });
+  return {
+    properties: [
+      { id: 'name', name: 'Name', type: 'text', wrap: true },
+      { id: 'amount', name: 'Amount', type: 'number' },
+      { id: 'reviewed', name: 'Reviewed', type: 'checkbox' },
+    ],
+    views: [
+      {
+        id: 'table',
+        name: 'Table',
+        type: 'table',
+        groupBy: 'reviewed',
+        groupOrder: groupKeys,
+        hiddenGroups: groupKeys,
+        collapsedGroups: groupKeys,
+        hideEmptyGroups: true,
+        limit: 0,
+      },
+      { id: 'dashboard', name: 'Dashboard', type: 'dashboard', widgets },
+      { id: 'default', name: 'Default', type: 'table' },
+    ],
+  };
+}
+
 describe('vault representability guard', () => {
   it('allows upstream database fields and the reserved Polaris Dados v1 envelope', () => {
     expect(findUnrepresentablePageContent(basicDatabase)).toBeNull();
@@ -64,6 +131,301 @@ database:
     expect(findUnrepresentablePageContent(unsupported)).toMatch(/database property/i);
   });
 
+  it('preserves representable Morrow 2.2 fields through an explicit frontmatter edit', () => {
+    expect(SCHEMA_VERSION).toBe(3);
+    const groupKeys = Array.from({ length: 200 }, (_, index) =>
+      index === 0 ? 'g'.repeat(64) : `group-${index}`,
+    );
+    const source = databaseNote(metadataDatabase(groupKeys, 40));
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.properties[0]?.wrap).toBe(true);
+    expect(loaded.database?.views[0]?.limit).toBe(0);
+    expect(loaded.database?.views[2]?.limit).toBeUndefined();
+    expect(loaded.database?.views[0]?.groupOrder).toEqual(groupKeys);
+    expect(loaded.database?.views[0]?.hiddenGroups).toEqual(groupKeys);
+    expect(loaded.database?.views[0]?.collapsedGroups).toEqual(groupKeys);
+    expect(loaded.database?.views[1]?.widgets).toHaveLength(40);
+    expect(loaded.database?.views[1]?.widgets?.[0]?.title).toBe('W'.repeat(80));
+
+    const page = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: loaded.database,
+      extra: loaded.extra,
+    });
+    const frontmatter = composeFrontmatter(
+      managedFrontmatter(page, 'Inventory', null),
+      loaded.extra,
+      loaded.source,
+    );
+    const saved = renderPageText(frontmatter, loaded.source, 'Edited explicitly\n');
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+
+    const reopened = readPageText(saved);
+    expect(reopened.error).toBeNull();
+    expect(reopened.database).toEqual(loaded.database);
+    expect(reopened.database?.views[0]?.limit).toBe(0);
+    expect(reopened.database?.views[2]?.limit).toBeUndefined();
+  });
+
+  it('keeps a sum widget writable when its property changes from number to checkbox', () => {
+    const source = databaseNote({
+      properties: [{ id: 'amount', name: 'Amount', type: 'number' }],
+      views: [
+        {
+          id: 'dashboard',
+          name: 'Dashboard',
+          type: 'dashboard',
+          widgets: [{ id: 'sum-amount', kind: 'sum', prop: 'amount' }],
+        },
+      ],
+    });
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.views[0]?.widgets?.[0]).toEqual({
+      id: 'sum-amount',
+      kind: 'sum',
+      prop: 'amount',
+    });
+    const created = applyCommand(emptyWorkspace(), {
+      type: 'page.create',
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: loaded.database!,
+      now: 1,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+
+    const database = created.value.state.pages.inventory!.database!;
+    const changed = applyCommand(created.value.state, {
+      type: 'database.set',
+      id: 'inventory',
+      now: 2,
+      database: {
+        ...database,
+        properties: database.properties.map((property) =>
+          property.id === 'amount' ? { ...property, type: 'checkbox', options: [] } : property,
+        ),
+      },
+    });
+    expect(changed.ok).toBe(true);
+    if (!changed.ok) throw new Error(changed.error);
+
+    const page = changed.value.state.pages.inventory!;
+    const frontmatter = composeFrontmatter(
+      managedFrontmatter(page, 'Inventory', null),
+      loaded.extra,
+      loaded.source,
+    );
+    const saved = renderPageText(frontmatter, loaded.source, loaded.body);
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+
+    const reopened = readPageText(saved);
+    expect(reopened.error).toBeNull();
+    expect(reopened.database?.properties[0]?.type).toBe('checkbox');
+    expect(reopened.database?.views[0]?.widgets?.[0]).toEqual({
+      id: 'sum-amount',
+      kind: 'sum',
+      prop: 'amount',
+    });
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+  });
+
+  it('accepts widget prop values the 2.2 codec preserves or defaults', () => {
+    const source = databaseNote({
+      properties: [{ id: 'amount', name: 'Amount', type: 'number' }],
+      views: [
+        {
+          id: 'dashboard',
+          name: 'Dashboard',
+          type: 'dashboard',
+          widgets: [
+            { id: 'count-linked', kind: 'count', prop: 'amount' },
+            { id: 'sum-empty', kind: 'sum', prop: '' },
+            { id: 'line-default', kind: 'line' },
+          ],
+        },
+      ],
+    });
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.views[0]?.widgets?.map((widget) => widget.prop)).toEqual(['amount', '', null]);
+    const page = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: loaded.database,
+      extra: loaded.extra,
+    });
+    const frontmatter = composeFrontmatter(
+      managedFrontmatter(page, 'Inventory', null),
+      loaded.extra,
+      loaded.source,
+    );
+    const saved = renderPageText(frontmatter, loaded.source, loaded.body);
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+    expect(readPageText(saved).database?.views[0]?.widgets?.map((widget) => widget.prop)).toEqual([
+      'amount',
+      '',
+      null,
+    ]);
+  });
+
+  it('accepts false only for 2.2 options whose actual default is false', () => {
+    const source = databaseNote({
+      properties: [{ id: 'name', name: 'Name', type: 'text', wrap: false }],
+      views: [
+        { id: 'table', name: 'Table', type: 'table', hideEmptyGroups: false },
+        {
+          id: 'dashboard',
+          name: 'Dashboard',
+          type: 'dashboard',
+          widgets: [{ id: 'count', kind: 'count', prop: null, wide: false }],
+        },
+      ],
+    });
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    const database = readPageText(source).database!;
+    expect(database.properties[0]?.wrap).toBeUndefined();
+    expect(database.views[0]?.hideEmptyGroups).toBeUndefined();
+    expect(database.views[1]?.widgets?.[0]?.wide).toBeUndefined();
+    expect(database.views[0]?.limit).toBeUndefined();
+  });
+
+  it('rejects one-over limits and unsupported nested 2.2 shapes before normalization', () => {
+    const view = (fields: Record<string, unknown>) => ({
+      properties: [],
+      views: [{ id: 'table', name: 'Table', type: 'table', ...fields }],
+    });
+    const widget = { id: 'count', kind: 'count', prop: null };
+    const cases = [
+      { database: { properties: [{ id: 'n', name: 'Number', type: 'number', wrap: false }], views: [] } },
+      { database: view({ groupOrder: Array.from({ length: 201 }, (_, index) => `g-${index}`) }) },
+      { database: view({ hiddenGroups: ['g'.repeat(65)] }) },
+      { database: view({ collapsedGroups: [''] }) },
+      { database: view({ hideEmptyGroups: 'false' }) },
+      { database: view({ limit: 10_001 }) },
+      { database: view({ limit: 1.5 }) },
+      { database: view({ limit: false }) },
+      {
+        database: {
+          properties: [],
+          views: [
+            {
+              id: 'dashboard',
+              name: 'Dashboard',
+              type: 'dashboard',
+              widgets: Array.from({ length: 41 }, (_, index) => ({ ...widget, id: `w-${index}` })),
+            },
+          ],
+        },
+      },
+      {
+        database: {
+          properties: [],
+          views: [
+            { id: 'dashboard', name: 'Dashboard', type: 'dashboard', widgets: [{ ...widget, future: true }] },
+          ],
+        },
+      },
+      {
+        database: {
+          properties: [],
+          views: [
+            {
+              id: 'dashboard',
+              name: 'Dashboard',
+              type: 'dashboard',
+              widgets: [{ ...widget, title: 'x'.repeat(81) }],
+            },
+          ],
+        },
+      },
+      {
+        database: {
+          properties: [],
+          views: [
+            {
+              id: 'dashboard',
+              name: 'Dashboard',
+              type: 'dashboard',
+              widgets: [{ ...widget, kind: 'future' }],
+            },
+          ],
+        },
+      },
+      {
+        database: {
+          properties: [],
+          views: [
+            {
+              id: 'dashboard',
+              name: 'Dashboard',
+              type: 'dashboard',
+              widgets: [{ ...widget, prop: 17 }],
+            },
+          ],
+        },
+      },
+      {
+        database: {
+          properties: [],
+          views: [
+            {
+              id: 'dashboard',
+              name: 'Dashboard',
+              type: 'dashboard',
+              widgets: [{ ...widget, prop: 'p'.repeat(65) }],
+            },
+          ],
+        },
+      },
+    ];
+
+    for (const { database } of cases) {
+      const source = databaseNote(database);
+      expect(findUnrepresentablePageContent(source)).not.toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(source)).toBe(true);
+    }
+  });
+
+  it('keeps published format 13 database metadata protected rather than treating it as schema 3', () => {
+    const publishedFormat13 = `---
+kind: database
+database:
+  titleAlias: Record
+  displayPropertyId: title
+  properties:
+    - id: title
+      name: Name
+      type: text
+      textFormat: plain
+  views: []
+---
+`;
+
+    expect(findUnrepresentablePageContent(publishedFormat13)).toMatch(
+      /database schema has unsupported fields/i,
+    );
+    expect(hasUnrepresentableDatabaseSchema(publishedFormat13)).toBe(true);
+  });
+
   it('rejects fork Markdown markers, custom data attributes, and unrepresentable extras', () => {
     for (const body of [
       '<!-- morrow:image align="right" width="35%" -->',
@@ -77,8 +439,81 @@ database:
       expect(findUnrepresentablePageContent(body)).not.toBeNull();
     }
     expect(findUnrepresentablePageContent('<!-- morrow:header-column -->\n| Name | Value |')).toBeNull();
-    const oversizedExtras = Array.from({ length: 201 }, (_, index) => `extra${index}: value${index}`).join('\n');
-    expect(findUnrepresentablePageContent(`---\n${oversizedExtras}\n---\nBody\n`)).toMatch(/frontmatter values/);
+    const oversizedExtras = Array.from({ length: 201 }, (_, index) => `extra${index}: value${index}`).join(
+      '\n',
+    );
+    expect(findUnrepresentablePageContent(`---\n${oversizedExtras}\n---\nBody\n`)).toMatch(
+      /frontmatter values/,
+    );
+  });
+
+  it('round-trips linked views beside official 2.2 markers and protects mixed future raw notes', () => {
+    const viewMarker = encodePolarisDadosViewMarker({
+      version: 1,
+      viewId: 'linked-view',
+      sourceDatabaseId: 'source-db',
+      title: 'Linked view',
+      columnOrder: ['name'],
+      filter: null,
+    });
+    const future = '<!-- morrow:future-layout:v1:opaque -->';
+    const source = [
+      '<!-- embed: no title -->',
+      '![[Notes]]',
+      '',
+      '<!-- align: right -->',
+      '![Sketch](https://example.org/sketch.png)',
+      '',
+      '<!-- preview -->',
+      '```html',
+      '<p>Preview</p>',
+      '```',
+      '',
+      '- One <!-- background: blue -->',
+      '- [ ] Two <!-- background: green -->',
+      '',
+      viewMarker,
+      '',
+      '```markdown',
+      future,
+      '```',
+      '',
+      `Literal \`${future}\` marker.`,
+      '',
+    ].join('\n');
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    const parsed = markdownToDoc(source);
+    const roundTrip = docToMarkdown(parsed);
+    expect(findUnrepresentablePageContent(roundTrip)).toBeNull();
+    expect(markdownToDoc(roundTrip)).toEqual(parsed);
+    expect(roundTrip).toContain('<!-- embed: no title -->');
+    expect(roundTrip).toContain('<!-- align: right -->');
+    expect(roundTrip).toContain('<!-- preview -->');
+    expect(roundTrip).toContain('<!-- background: blue -->');
+    expect(roundTrip).toContain('<!-- background: green -->');
+    expect(roundTrip).toContain(viewMarker);
+
+    expect(findUnrepresentablePageContent(source + `\n${future}\n`)).not.toBeNull();
+  });
+
+  it('keeps checkbox false, null, and absence distinct while carrying 2.2 text metadata', () => {
+    const database: DatabaseDef = {
+      properties: [
+        { id: 'reviewed', name: 'Reviewed', type: 'checkbox', options: [] },
+        { id: 'cleared', name: 'Cleared', type: 'checkbox', options: [] },
+        { id: 'missing', name: 'Missing', type: 'checkbox', options: [] },
+      ],
+      views: [],
+    };
+    const extra: Record<string, unknown> = { Reviewed: false, Cleared: null };
+    const values: Record<string, PropValue> = {};
+    takeProperties(database, extra, values, () => 'option', true);
+
+    expect(values).toEqual({ reviewed: false, cleared: null });
+    expect(writeProperty(database.properties[0]!, values.reviewed, true)).toBe(false);
+    expect(writeProperty(database.properties[1]!, values.cleared, true)).toBeNull();
+    expect(writeProperty(database.properties[2]!, values.missing, true)).toBeUndefined();
   });
 
   it('allows known Morrow workspace and recent metadata, rejects fields their readers discard', () => {
@@ -100,9 +535,9 @@ database:
         'workspace',
       ),
     ).toMatch(/registry/);
-    expect(findUnrepresentableVaultMetadata({ opened: {}, futureRecent: { id: 'opaque' } }, 'recent')).toMatch(
-      /recent-items/,
-    );
+    expect(
+      findUnrepresentableVaultMetadata({ opened: {}, futureRecent: { id: 'opaque' } }, 'recent'),
+    ).toMatch(/recent-items/);
     expect(findUnrepresentableVaultMetadata(null, 'workspace')).toBeNull();
   });
 });

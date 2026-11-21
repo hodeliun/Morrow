@@ -158,7 +158,11 @@ pub fn forget(dir: &str) -> Result<()> {
 }
 
 pub fn create_default() -> Result<String> {
-    let documents = paths::documents_dir();
+    create_default_in(&paths::documents_dir())
+}
+
+// a new vault named Morrow, or Morrow 2 and so on when that is taken, in the given folder
+pub fn create_default_in(documents: &Path) -> Result<String> {
     let mut candidate = documents.join("Morrow");
     let mut n = 2;
     while exists(&candidate) {
@@ -677,7 +681,8 @@ pub fn is_synced_path(relative: &str) -> bool {
         return false;
     }
     // what the vault keeps about itself goes to the other computers too: page order, flashcard progress,
-    // the types picked for properties, tag colours and the sidebar's own sections
+    // the types picked for properties, tag colours, the sidebar's own sections and the calendars shown with
+    // the tasks
     if matches!(
         relative,
         ".morrow/workspace.json"
@@ -685,7 +690,9 @@ pub fn is_synced_path(relative: &str) -> bool {
             | ".morrow/property-types.json"
             | ".morrow/tag-colors.json"
             | ".morrow/sidebar-sections.json"
-    ) {
+            | ".morrow/calendars.json"
+    ) || relative.starts_with(".morrow/emoji/")
+    {
         return true;
     }
     !is_hidden(relative)
@@ -1103,6 +1110,8 @@ mod tests {
         assert!(!is_synced_path(".morrow/recent.json"));
         assert!(is_synced_path(".morrow/tag-colors.json"));
         assert!(is_synced_path(".morrow/sidebar-sections.json"));
+        assert!(is_synced_path(".morrow/calendars.json"));
+        assert!(is_synced_path(".morrow/emoji/party_cat.png"));
         assert!(is_synced_path("Notes/Page.md"));
     }
 

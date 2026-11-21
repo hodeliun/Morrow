@@ -206,8 +206,16 @@ export interface DesktopBridge {
   // pictures, sound and video copied in the file manager, which the web view only names
   clipboardFiles?(): Promise<File[]>;
   // a link or words another app shared with morrow on a phone, once
-  takeShared?(): Promise<string | null>;
+  takeShared?(): Promise<{ text: string | null; files: File[] }>;
   setSpellcheck?(enabled: boolean): void;
+  // an .ics calendar by its address, https or webcal
+  fetchCalendar?(url: string): Promise<string>;
+  // a picture file another app put among the words it copied, by its file:// address
+  readPastedPicture?(src: string): Promise<Uint8Array | null>;
+  // the languages spelling is checked in: the ones picked, and the system's own for when none are
+  spellLanguages?(): Promise<{ chosen: string[]; system: string[]; automatic: boolean }>;
+  // true when they only apply once morrow opens again
+  setSpellLanguages?(languages: string[]): Promise<boolean>;
   fetchImage?(url: string): Promise<{ type: string; data: ArrayBuffer } | null>;
   // a file made in the app, saved where the person picks. the webview has no downloads of its own
   saveFile?(

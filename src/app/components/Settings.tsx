@@ -6,6 +6,7 @@ import {
   Puzzle,
   RefreshCw,
   SlidersHorizontal,
+  Languages,
   X,
   GripVertical,
   Trash2,
@@ -18,8 +19,9 @@ import { formatShortcut } from '../actions';
 import { AssistantSettings } from '../assistant/AssistantSettings';
 import { previewCustomCss, saveCustomCss, useCustomCss } from '../customCss';
 import { openHref } from '../editor/EditorMenus';
-import { dateLocale, SUPPORTED_LOCALES, useTranslation } from '../i18n';
-import type { SupportedLocale, TranslationKey } from '../i18n';
+import { commitEditors } from '../editor/commits';
+import { useTranslation } from '../i18n';
+import type { TranslationKey } from '../i18n';
 import { copyLegacyInto, legacyPageCount } from '../legacy';
 import {
   deleteUnusedFiles,
@@ -47,7 +49,7 @@ import type {
   SidebarItem,
   SidebarModule,
   TextScale,
-  WeekStart,
+  FooterSection,
 } from '../platform/preferences';
 import type { PageWidth, StartPage, ThemePreference, TrashDays, WritingFont } from '../platform/preferences';
 import { closeDialog, confirmAction, openDialog, toast } from '../ui';
@@ -63,9 +65,10 @@ import {
 import { checkForUpdate, installUpdate, useUpdateState } from '../updates';
 import { getSession } from '../workspace';
 import { Dialog, Logo, Switch } from './primitives';
-import { Select } from './Select';
 import { PluginSettings } from './PluginSettings';
-import { SettingRow, SettingsGroup } from './SettingsRows';
+import { Select } from './Select';
+import { Segmented, SettingRow, SettingsGroup } from './SettingsRows';
+import { LanguageSettings } from './LanguageSettings';
 import { CloudSettings, NetworkSettings } from './SyncSettings';
 import { t } from '../i18n';
 
@@ -77,6 +80,7 @@ interface SectionDef {
 
 const SECTIONS: SectionDef[] = [
   { id: 'general', key: 'settings.sections.general', icon: SlidersHorizontal },
+  { id: 'language', key: 'settings.sections.language', icon: Languages },
   { id: 'appearance', key: 'settings.sections.appearance', icon: Palette },
   { id: 'assistant', key: 'settings.sections.assistant', icon: MessageSquareText },
   { id: 'sync', key: 'settings.sections.sync', icon: RefreshCw },
@@ -84,35 +88,6 @@ const SECTIONS: SectionDef[] = [
   { id: 'plugins', key: 'settings.sections.plugins', icon: Puzzle },
   { id: 'about', key: 'settings.sections.about', icon: Info },
 ];
-
-function Segmented<T extends string | number>({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: T;
-  options: Array<[T, string]>;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
-      {options.map(([option, text]) => (
-        <button
-          key={option}
-          type="button"
-          role="radio"
-          aria-checked={value === option}
-          className={value === option ? 'is-active' : ''}
-          onClick={() => onChange(option)}
-        >
-          {text}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export function SettingsDialog({ section }: { section?: SettingsSection }) {
   const { t } = useTranslation();
@@ -157,6 +132,7 @@ export function SettingsDialog({ section }: { section?: SettingsSection }) {
           </button>
         </header>
         {current === 'general' && <GeneralSettings />}
+        {current === 'language' && <LanguageSettings />}
         {current === 'appearance' && <AppearanceSettings />}
         {current === 'assistant' && <AssistantSettings />}
         {current === 'sync' && (
@@ -178,17 +154,6 @@ function GeneralSettings() {
   const prefs = usePreferences();
   return (
     <SettingsGroup>
-      <SettingRow label={t('settings.general.language')} help={t('settings.general.languageHelp')}>
-        <Select<SupportedLocale>
-          label={t('settings.general.language')}
-          value={prefs.locale}
-          options={SUPPORTED_LOCALES.map((locale) => ({
-            value: locale.id,
-            label: locale.label,
-          }))}
-          onChange={(locale) => setPreferences({ locale })}
-        />
-      </SettingRow>
       <SettingRow label={t('settings.general.yourName')} help={t('settings.general.yourNameHelp')}>
         <input
           className="text-input small settings-input"
@@ -231,25 +196,6 @@ function GeneralSettings() {
           />
         </SettingRow>
       )}
-      <SettingRow label={t('settings.general.weekStart')}>
-        <Segmented<WeekStart>
-          label={t('settings.general.weekStart')}
-          value={prefs.weekStart}
-          options={([1, 0, 6] as const).map((day) => [
-            day,
-            // 2023-12-31 was a sunday
-            new Date(2023, 11, 31 + day).toLocaleDateString(dateLocale(), { weekday: 'long' }),
-          ])}
-          onChange={(weekStart) => setPreferences({ weekStart })}
-        />
-      </SettingRow>
-      <SettingRow label={t('settings.general.spellcheck')} help={t('settings.general.spellcheckHelp')}>
-        <Switch
-          label={t('settings.general.spellcheck')}
-          checked={prefs.spellcheck}
-          onChange={(spellcheck) => setPreferences({ spellcheck })}
-        />
-      </SettingRow>
     </SettingsGroup>
   );
 }
@@ -398,9 +344,89 @@ function AppearanceSettings() {
           />
         </SettingRow>
       </SettingsGroup>
+      <PageParts />
       <SidebarSettings />
       <CustomCss />
     </>
+  );
+}
+
+// the open vault copied into a folder picked on the phone, which then opens. the old copy is left as it was
+async function moveVaultOnPhone(): Promise<void> {
+  const vault = desktop?.vault;
+  const dir = await vault?.choose().catch(() => null);
+  if (!vault || !dir) return;
+  confirmAction({
+    title: t('settings.sync.moveConfirmTitle', { where: t('settings.sync.thatFolder') }),
+    body: t('settings.sync.moveConfirmBody', { dir }),
+    confirmLabel: t('settings.sync.copyAndOpenButton'),
+    onConfirm: () =>
+      void (async () => {
+        commitEditors();
+        await getSession().flush();
+        const result = await vault.copyInto(dir);
+        if (result.ok && result.path) await switchVault(result.path);
+        else toast(result.error ?? t('settings.sync.vaultCopyFailed'), { tone: 'error' });
+      })(),
+  });
+}
+
+// the outline beside a page and the lists at its bottom, for every page
+function PageParts() {
+  const { t } = useTranslation();
+  const prefs = usePreferences();
+  const sections: Array<[FooterSection, string]> = [
+    ['open', t('settings.pageParts.open')],
+    ['folded', t('settings.pageParts.folded')],
+    ['hidden', t('settings.pageParts.hidden')],
+  ];
+  return (
+    <SettingsGroup title={t('settings.pageParts.title')} help={t('settings.pageParts.help')}>
+      <SettingRow label={t('settings.pageParts.outline')} help={t('settings.pageParts.outlineHelp')}>
+        <Switch
+          label={t('settings.pageParts.outline')}
+          checked={prefs.outlines}
+          onChange={(outlines) => setPreferences({ outlines })}
+        />
+      </SettingRow>
+      <SettingRow label={t('page.subpages')}>
+        <Segmented<FooterSection>
+          label={t('page.subpages')}
+          value={prefs.subpagesSection}
+          options={sections}
+          onChange={(subpagesSection) => setPreferences({ subpagesSection })}
+        />
+      </SettingRow>
+      <SettingRow label={t('settings.pageParts.backlinks')}>
+        <Segmented<FooterSection>
+          label={t('settings.pageParts.backlinks')}
+          value={prefs.backlinksSection}
+          options={sections}
+          onChange={(backlinksSection) => setPreferences({ backlinksSection })}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.pageParts.databaseLimit')}
+        help={t('settings.pageParts.databaseLimitHelp')}
+      >
+        <Select<string>
+          label={t('settings.pageParts.databaseLimit')}
+          value={String(prefs.databaseLimit)}
+          options={[25, 50, 100, 200, 500, 0].map((count) => ({
+            value: String(count),
+            label: count ? t('database.limitRows', { count }) : t('database.limitAll'),
+          }))}
+          onChange={(value) => setPreferences({ databaseLimit: Number(value) })}
+        />
+      </SettingRow>
+      <SettingRow label={t('settings.pageParts.mentions')} help={t('settings.pageParts.mentionsHelp')}>
+        <Switch
+          label={t('settings.pageParts.mentions')}
+          checked={prefs.mentionsButton}
+          onChange={(mentionsButton) => setPreferences({ mentionsButton })}
+        />
+      </SettingRow>
+    </SettingsGroup>
   );
 }
 
@@ -426,7 +452,7 @@ function SidebarSettings() {
       case 'home':
         return t('settings.general.startPages.home');
       case 'daily':
-        return t('sidebar.today');
+        return t('journal.title');
       case 'templates':
         return t('dialogs.templates');
       case 'files':
@@ -813,6 +839,14 @@ function VaultSettings() {
             </button>
           )}
         </SettingRow>
+        {/* a vault made on a phone used to go in morrow's own storage, out of reach of its file manager */}
+        {desktop?.platform === 'android' && (
+          <SettingRow label={t('settings.vault.moveOnPhone')} help={t('settings.vault.moveOnPhoneHelp')}>
+            <button type="button" className="button small" onClick={() => void moveVaultOnPhone()}>
+              {t('settings.sync.chooseFolder')}
+            </button>
+          </SettingRow>
+        )}
         {legacy > 0 && (
           <SettingRow
             label={t('settings.vault.copyLegacy')}

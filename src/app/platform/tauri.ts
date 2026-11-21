@@ -184,7 +184,18 @@ export function tauriBridge(): DesktopBridge | null {
       : {}),
     copyText: (text) => invoke<boolean>('copy_text', { text }),
     copyRich: (text, html) => invoke<boolean>('copy_rich', { text, html }),
-    takeShared: () => invoke<string | null>('take_shared').catch(() => null),
+    // a pdf, picture or other file shared from another app comes with the words, read once from the cache
+    async takeShared() {
+      const shared = await invoke<{ text: string | null; files: string[] }>('take_shared').catch(() => null);
+      const files: File[] = [];
+      for (const path of shared?.files ?? []) {
+        const data = await bytesOrNull('read_shared_file', { path });
+        const name = path.split(/[\\/]/).pop() || 'file';
+        if (data)
+          files.push(new File([data.slice().buffer as ArrayBuffer], name, { type: mimeOfName(name) }));
+      }
+      return { text: shared?.text ?? null, files };
+    },
     async clipboardFiles() {
       const paths = await invoke<string[]>('clipboard_files').catch(() => []);
       const files: File[] = [];
@@ -198,6 +209,10 @@ export function tauriBridge(): DesktopBridge | null {
     },
     // the webview checks spelling itself, a page without spellcheck turns it off
     setSpellcheck: () => undefined,
+    readPastedPicture: (src) => bytesOrNull('read_pasted_picture', { src }),
+    fetchCalendar: (url) => invoke<string>('fetch_calendar', { url }),
+    spellLanguages: () => invoke('spell_languages'),
+    setSpellLanguages: (languages) => invoke<boolean>('set_spell_languages', { languages }),
     async fetchImage(url) {
       const bytes = await bytesOrNull('fetch_image', { url });
       if (!bytes) return null;
@@ -254,7 +269,12 @@ export function tauriBridge(): DesktopBridge | null {
       createFile: (path, data) => invoke('vault_create_file', new Uint8Array(data), pathHeader(path)),
       exists: (path) => invoke('vault_exists', { path }),
       list: (path) => invoke('vault_list', { path }),
-      reveal: (path) => invoke('vault_reveal', { path: path ?? null }),
+      // a folder that can't be shown, such as a phone's own storage, says why rather than doing nothing
+      reveal: (path) =>
+        invoke<void>('vault_reveal', { path: path ?? null }).catch(async (error: unknown) => {
+          const { toast } = await import('../ui');
+          toast(String(error), { tone: 'error' });
+        }),
       openFile: (path) => invoke('vault_open_file', { path }),
       openLink: (href, pagePath) => invoke('vault_open_link', { href, pagePath }),
       copyImage: (path) => invoke('vault_copy_image', { path }),

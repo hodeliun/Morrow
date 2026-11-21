@@ -308,8 +308,9 @@ describe('recovering rows after a database schema becomes representable', () => 
     session.onExternal((_patch, accepted) => acceptances.push([...accepted]));
 
     try {
-      expect(session.execute({ type: 'page.markOpened', id: databaseId, now: 123 }).ok).toBe(true);
+      expect(session.execute({ type: 'page.setIcon', id: databaseId, icon: '📊', now: 123 }).ok).toBe(true);
       expect(session.queue.isDirty(databaseId)).toBe(true);
+      expect(session.getState().pages[databaseId]?.icon).toBe('📊');
 
       vault.external({ [DATABASE_PATH]: unsupportedSchema(initial[DATABASE_PATH]!) });
 
@@ -319,6 +320,7 @@ describe('recovering rows after a database schema becomes representable', () => 
       expect(session.unreadable.has(rowId)).toBe(false);
       expect(session.protectedReasons.has(rowId)).toBe(false);
       expect(api.snapshot(databaseId).status).toBe('ready');
+      expect(session.getState().pages[databaseId]?.icon).toBe('📊');
 
       vault.external({ [DATABASE_PATH]: initial[DATABASE_PATH]! });
 
@@ -326,6 +328,7 @@ describe('recovering rows after a database schema becomes representable', () => 
       expect(acceptances.at(-1)).not.toContain(rowId);
       expect(session.unreadable.has(rowId)).toBe(false);
       expect(api.snapshot(databaseId).status).toBe('ready');
+      expect(session.getState().pages[databaseId]?.icon).toBe('📊');
     } finally {
       cleanup();
       session.queue.dispose();

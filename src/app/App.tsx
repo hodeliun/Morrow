@@ -13,9 +13,11 @@ import { SearchView } from './components/SearchView';
 import { Sidebar } from './components/Sidebar';
 import { HomeView } from './components/Home';
 import { ArchiveView, TasksView, TrashView } from './components/Views';
+import { TemplatesView } from './components/TemplatesView';
+import { JournalView } from './components/JournalView';
 import { FilesView } from './components/FilesView';
 import { commitEditors, ownsUndo, undoRedo } from './editor/commits';
-import { captureToToday, ensureToday, writeAutoBackup } from './operations';
+import { captureFilesToToday, captureToToday, ensureToday, writeAutoBackup } from './operations';
 import { dateKey, findDailyNote } from '../core/daily';
 import { startAutoSync, syncWith } from './sync';
 import { startUpdateChecks } from './updates';
@@ -159,8 +161,10 @@ function useSharedText() {
     if (!desktop?.takeShared) return;
     const take = () => {
       if (document.visibilityState !== 'visible') return;
-      void desktop?.takeShared?.().then((text) => {
-        if (text && captureToToday(text)) toast(t('toasts.sharedSaved'), { durationMs: 3000 });
+      void desktop?.takeShared?.().then(async ({ text, files }) => {
+        const words = text ? captureToToday(text) : false;
+        const kept = files.length ? await captureFilesToToday(files) : 0;
+        if (words || kept) toast(t('toasts.sharedSaved'), { durationMs: 3000 });
       });
     };
     take();
@@ -269,6 +273,10 @@ function viewFor(route: Route) {
       return <PageView key={route.id} id={route.id} find={route.find} anchor={route.anchor ?? null} />;
     case 'tasks':
       return <TasksView />;
+    case 'templates':
+      return <TemplatesView />;
+    case 'journal':
+      return <JournalView />;
     case 'trash':
       return <TrashView />;
     case 'archive':

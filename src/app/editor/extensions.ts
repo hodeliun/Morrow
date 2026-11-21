@@ -17,7 +17,10 @@ import { EmojiSuggest } from './EmojiSuggest';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
 import type { BlockMenuRequest } from './BlockHandle';
-import { MarkdownPaste, PasteOnEmptyLine } from './MarkdownPaste';
+import { CopyFromInside, MarkdownPaste, PasteOnEmptyLine } from './MarkdownPaste';
+import { MultiSelect } from './MultiSelect';
+import { ColumnGrip } from './ColumnGrip';
+import { CustomEmojiText } from './CustomEmojiText';
 import { PageLink } from './PageLink';
 import type { PageLinkOptions } from './PageLink';
 import { PolarisDadosView } from './PolarisDadosView';
@@ -90,13 +93,63 @@ const BlockIds = Extension.create({
   },
 });
 
+// a line with another page shown in it can leave out that page's title, just its words show
+const EmbedTitle = Extension.create({
+  name: 'embedTitle',
+  addGlobalAttributes() {
+    return [
+      {
+        types: ['paragraph'],
+        attributes: {
+          embedTitle: {
+            default: null,
+            keepOnSplit: false,
+            parseHTML: (element) => (element.getAttribute('data-embed-title') === 'hidden' ? false : null),
+            renderHTML: (attrs) => (attrs.embedTitle === false ? { 'data-embed-title': 'hidden' } : {}),
+          },
+        },
+      },
+    ];
+  },
+});
+
+// an html code block can be drawn as a page beside its code, see the code block in Extras.ts
+const CodePreview = Extension.create({
+  name: 'codePreview',
+  addGlobalAttributes() {
+    return [
+      {
+        types: ['codeBlock'],
+        attributes: {
+          preview: {
+            default: null,
+            keepOnSplit: false,
+            parseHTML: (element) => (element.getAttribute('data-preview') === 'true' ? true : null),
+            renderHTML: (attrs) => (attrs.preview === true ? { 'data-preview': 'true' } : {}),
+          },
+        },
+      },
+    ];
+  },
+});
+
 // a block's own background colour, from the colour in its Turn into menu
 const BlockBackground = Extension.create({
   name: 'blockBackground',
   addGlobalAttributes() {
     return [
       {
-        types: ['paragraph', 'heading', 'blockquote', 'bulletList', 'orderedList', 'taskList', 'details'],
+        types: [
+          'paragraph',
+          'heading',
+          'blockquote',
+          'bulletList',
+          'orderedList',
+          'taskList',
+          'listItem',
+          'taskItem',
+          'details',
+        ],
         attributes: {
           backgroundColor: {
             default: null,
@@ -211,6 +264,8 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
   return [
     BlockIds,
     BlockBackground,
+    EmbedTitle,
+    CodePreview,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       link: {
@@ -277,12 +332,14 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     }),
     SlashCommand.configure({ createChild: options.createChild }),
     EmojiSuggest,
+    CustomEmojiText,
     Image,
     FileAttachment,
     FileDrop,
     Callout,
     Columns,
     Column,
+    ColumnGrip,
     TableOfContents,
     DateMention.configure({
       openDate: options.openDate,
@@ -293,11 +350,13 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     ToggleSummary,
     DetailsContent,
     FindReplace,
+    CopyFromInside,
     PasteOnEmptyLine,
     PasteMenu,
     ClickBelow,
     BlockHandle.configure({ onMenu: options.onBlockMenu }),
     BlockSelect,
+    MultiSelect,
     MarkdownPaste.configure({ resolvePage: options.resolvePage }),
   ];
 }

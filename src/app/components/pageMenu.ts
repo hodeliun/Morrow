@@ -46,7 +46,13 @@ import {
   turnIntoPage,
 } from '../operations';
 import { desktop } from '../platform/desktop';
-import { getPreferences, PAGE_WIDTHS, setPreferences } from '../platform/preferences';
+import {
+  getPreferences,
+  outlineShown,
+  PAGE_WIDTHS,
+  setPreferences,
+  toggleOutline,
+} from '../platform/preferences';
 import { navigate } from '../router';
 import { getUi, openDialog, setUi } from '../ui';
 import { childrenOf } from '../../core/tree';
@@ -214,15 +220,8 @@ export function pageMenuEntries(
           {
             label: t('pageMenu.showOutline'),
             icon: ListTree,
-            checked: !getPreferences().hiddenOutlines.includes(pageId),
-            onSelect: () => {
-              const hidden = getPreferences().hiddenOutlines;
-              setPreferences({
-                hiddenOutlines: hidden.includes(pageId)
-                  ? hidden.filter((id) => id !== pageId)
-                  : [...hidden, pageId],
-              });
-            },
+            checked: outlineShown(getPreferences(), pageId),
+            onSelect: () => toggleOutline(pageId),
           },
           { heading: t('pageMenu.width') },
           ...PAGE_WIDTHS.map((next) => ({

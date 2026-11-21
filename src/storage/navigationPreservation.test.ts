@@ -14,11 +14,14 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { canvasDoc, canvasFromDoc } from '../core/canvas';
+import type { DocNode } from '../core/model';
 import type { VaultScan } from '../core/vault/load';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import { createDataApi } from '../app/plugins/dataApi';
 import type { DataApiSnapshot } from '../app/plugins/dataApi';
+import type { SaveQueueOptions } from './saveQueue';
 import type { VaultBridge, VaultChange, VaultFileInfo } from './vaultBridge';
 import { WorkspaceSession } from './session';
 import { VaultRepository } from './vaultRepository';
@@ -30,6 +33,7 @@ const ORIGINAL_FIXTURE = {
 
 class NodeFileVaultBridge implements VaultBridge {
   private readonly listeners = new Set<(changes: VaultChange[]) => void>();
+  failNextApply = false;
 
   constructor(readonly root: string) {}
 
@@ -83,6 +87,10 @@ class NodeFileVaultBridge implements VaultBridge {
   }
 
   async apply(ops: VaultOp[]): Promise<VaultOpResult[]> {
+    if (this.failNextApply) {
+      this.failNextApply = false;
+      return [{ ok: false, code: 'error', message: 'temporary disk failure' }];
+    }
     const results: VaultOpResult[] = [];
     for (const op of ops) {
       try {
@@ -219,6 +227,37 @@ async function makeVault(): Promise<NodeFileVaultBridge> {
   return new NodeFileVaultBridge(root);
 }
 
+async function makeQuietVault(): Promise<NodeFileVaultBridge> {
+  const root = await mkdtemp(join(tmpdir(), 'morrow-e003-quiet-navigation-'));
+  await mkdir(join(root, '.morrow'), { recursive: true });
+  await Promise.all([
+    writeFile(join(root, 'Note.md'), '---\r\ncustom: retained\r\n---\r\n# Ordinary note\r\n\r\nBody.\r\n'),
+    writeFile(
+      join(root, 'Canvas.canvas'),
+      '{"nodes":[{"id":"text1","type":"text","x":0,"y":0,"width":200,"height":80,"text":"Canvas text"}],"edges":[]}',
+    ),
+    writeFile(
+      join(root, '.morrow/workspace.json'),
+      `${JSON.stringify(
+        {
+          version: 1,
+          pages: {
+            'Canvas.canvas': { id: 'quiet-canvas', created: 2, order: 1 },
+            'Note.md': { id: 'quiet-note', created: 1, order: 0 },
+          },
+        },
+        null,
+        1,
+      )}\n`,
+    ),
+    writeFile(
+      join(root, '.morrow/recent.json'),
+      `${JSON.stringify({ version: 1, opened: {}, activity: {} }, null, 1)}\n`,
+    ),
+  ]);
+  return new NodeFileVaultBridge(root);
+}
+
 async function fingerprint(bridge: NodeFileVaultBridge, path: string) {
   const absolute = join(bridge.root, ...path.split('/'));
   const [content, info] = await Promise.all([readFile(absolute), stat(absolute, { bigint: true })]);
@@ -228,10 +267,11 @@ async function fingerprint(bridge: NodeFileVaultBridge, path: string) {
   };
 }
 
-async function open(bridge: NodeFileVaultBridge): Promise<WorkspaceSession> {
+async function open(bridge: NodeFileVaultBridge, options: SaveQueueOptions = {}): Promise<WorkspaceSession> {
   let nextId = 0;
   const result = await WorkspaceSession.open(new VaultRepository(bridge, () => `navigation-${++nextId}`), {
     delayMs: 60_000,
+    ...options,
   });
   if (!result.ok) throw new Error(result.error);
   return result.value;
@@ -261,6 +301,207 @@ function dataApi(session: WorkspaceSession) {
   });
   return { api, cleanup };
 }
+
+describe('quiet navigation saves', () => {
+  it('waits 20 seconds and preserves Markdown and Canvas bytes/mtime while writing recent metadata', async () => {
+    vi.useFakeTimers();
+    const bridge = await makeQuietVault();
+    const paths = ['Note.md', 'Canvas.canvas'];
+    const before = await Promise.all(paths.map((path) => fingerprint(bridge, path)));
+    const recentBefore = await bridge.readText('.morrow/recent.json');
+    const workspaceBefore = await bridge.readText('.morrow/workspace.json');
+    let session: WorkspaceSession | null = null;
+    try {
+      session = await open(bridge, { delayMs: 1_500, quietDelayMs: 20_000 });
+      const noteId = idAt(session, 'Note.md');
+      const canvasId = idAt(session, 'Canvas.canvas');
+      expect(session.execute({ type: 'page.markOpened', id: noteId, now: 123 }).ok).toBe(true);
+      expect(session.execute({ type: 'page.markOpened', id: canvasId, now: 124 }).ok).toBe(true);
+      expect(session.saveStatus).toMatchObject({ state: 'saved', lastSavedAt: null });
+      expect(session.queue.isDirty(noteId)).toBe(false);
+      expect(session.queue.isDirty(canvasId)).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(19_999);
+      expect(session.saveStatus).toMatchObject({ state: 'saved', lastSavedAt: null });
+      expect(await bridge.readText('.morrow/recent.json')).toBe(recentBefore);
+      expect(await Promise.all(paths.map((path) => fingerprint(bridge, path)))).toEqual(before);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await session.flush()).toBe(true);
+      const recent = JSON.parse((await bridge.readText('.morrow/recent.json')) ?? 'null') as {
+        opened: Record<string, number>;
+      };
+      expect(recent.opened).toMatchObject({ [noteId]: 123, [canvasId]: 124 });
+      expect(await bridge.readText('.morrow/workspace.json')).toBe(workspaceBefore);
+      expect(await Promise.all(paths.map((path) => fingerprint(bridge, path)))).toEqual(before);
+      expect(session.saveStatus).toMatchObject({ state: 'saved', lastSavedAt: null });
+    } finally {
+      await session?.close();
+      vi.useRealTimers();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps compact Canvas bytes across a failed mixed edit retry while saving its recent entry', async () => {
+    vi.useFakeTimers();
+    const bridge = await makeQuietVault();
+    const canvasBefore = await fingerprint(bridge, 'Canvas.canvas');
+    const noteBefore = await bridge.readText('Note.md');
+    const recentBefore = await bridge.readText('.morrow/recent.json');
+    let session: WorkspaceSession | null = null;
+    try {
+      session = await open(bridge, { delayMs: 1_500, quietDelayMs: 20_000 });
+      const canvasId = idAt(session, 'Canvas.canvas');
+      const noteId = idAt(session, 'Note.md');
+      const editedNote: DocNode = {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Real edit persisted.' }] }],
+      };
+      expect(session.execute({ type: 'page.markOpened', id: canvasId, now: 222 }).ok).toBe(true);
+      expect(session.execute({ type: 'page.setDoc', id: noteId, doc: editedNote, now: 333 }).ok).toBe(true);
+      bridge.failNextApply = true;
+
+      expect(await session.flush()).toBe(false);
+      expect(session.saveStatus).toMatchObject({ state: 'error', error: 'temporary disk failure' });
+      expect(await fingerprint(bridge, 'Canvas.canvas')).toEqual(canvasBefore);
+      expect(await bridge.readText('Note.md')).toBe(noteBefore);
+      expect(await bridge.readText('.morrow/recent.json')).toBe(recentBefore);
+
+      expect(await session.flush()).toBe(true);
+      expect(session.saveStatus.state).toBe('saved');
+      expect(await fingerprint(bridge, 'Canvas.canvas')).toEqual(canvasBefore);
+      expect(await bridge.readText('Note.md')).toContain('Real edit persisted.');
+      const recent = JSON.parse((await bridge.readText('.morrow/recent.json')) ?? 'null') as {
+        opened: Record<string, number>;
+      };
+      expect(recent.opened[canvasId]).toBe(222);
+    } finally {
+      await session?.close();
+      vi.useRealTimers();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a queued navigation timestamp when the watcher accepts an external note edit', async () => {
+    const bridge = await makeQuietVault();
+    let session: WorkspaceSession | null = null;
+    try {
+      session = await open(bridge, { delayMs: 1_500, quietDelayMs: 20_000 });
+      const noteId = idAt(session, 'Note.md');
+      const externalText = '# Ordinary note\n\nChanged elsewhere.\n';
+      expect(session.execute({ type: 'page.markOpened', id: noteId, now: 456 }).ok).toBe(true);
+
+      await bridge.external('Note.md', externalText);
+
+      expect(session.queue.isQuietPending(noteId)).toBe(true);
+      expect(session.queue.isDirty(noteId)).toBe(false);
+      expect(session.getState().pages[noteId]?.lastOpenedAt).toBe(456);
+      expect(JSON.stringify(session.getState().docs[noteId])).toContain('Changed elsewhere.');
+      expect(await session.flush()).toBe(true);
+      expect(await bridge.readText('Note.md')).toBe(externalText);
+      const recent = JSON.parse((await bridge.readText('.morrow/recent.json')) ?? 'null') as {
+        opened: Record<string, number>;
+      };
+      expect(recent.opened[noteId]).toBe(456);
+    } finally {
+      await session?.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('reopens a Canvas edit coalesced with a pending quiet navigation update', async () => {
+    vi.useFakeTimers();
+    const bridge = await makeQuietVault();
+    let session: WorkspaceSession | null = null;
+    try {
+      session = await open(bridge, { delayMs: 1_500, quietDelayMs: 20_000 });
+      const canvasId = idAt(session, 'Canvas.canvas');
+      expect(session.execute({ type: 'page.markOpened', id: canvasId, now: 321 }).ok).toBe(true);
+
+      const canvas = canvasFromDoc(session.getState().docs[canvasId]);
+      const edited = {
+        ...canvas,
+        nodes: canvas.nodes.map((node) =>
+          node.type === 'text' ? { ...node, text: 'Edited after navigation' } : node,
+        ),
+      };
+      expect(
+        session.execute({ type: 'page.setDoc', id: canvasId, doc: canvasDoc(edited), now: 654 }).ok,
+      ).toBe(true);
+      expect(session.queue.isQuietPending(canvasId)).toBe(false);
+      expect(session.queue.isDirty(canvasId)).toBe(true);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(await session.flush()).toBe(true);
+      await session.close();
+      session = null;
+
+      const reopened = await open(bridge);
+      try {
+        const reopenedCanvasId = idAt(reopened, 'Canvas.canvas');
+        expect(canvasFromDoc(reopened.getState().docs[reopenedCanvasId]).nodes).toContainEqual(
+          expect.objectContaining({ type: 'text', text: 'Edited after navigation' }),
+        );
+        expect(reopened.getState().pages[reopenedCanvasId]?.lastOpenedAt).toBe(321);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await session?.close();
+      vi.useRealTimers();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('retargets a quiet Canvas when its linked page is renamed in the same batch', async () => {
+    vi.useFakeTimers();
+    const bridge = await makeQuietVault();
+    let session: WorkspaceSession | null = null;
+    try {
+      await bridge.external('Target.md', '# Target\n');
+      await bridge.external(
+        'Canvas.canvas',
+        '{"nodes":[{"id":"target","type":"file","file":"Target.md","x":0,"y":0,"width":200,"height":80}],"edges":[]}',
+      );
+      session = await open(bridge, { delayMs: 1_500, quietDelayMs: 20_000 });
+      const canvasId = idAt(session, 'Canvas.canvas');
+      const targetId = idAt(session, 'Target.md');
+      expect(session.execute({ type: 'page.markOpened', id: canvasId, now: 987 }).ok).toBe(true);
+      expect(
+        session.execute({ type: 'page.rename', id: targetId, title: 'Renamed target', now: 988 }).ok,
+      ).toBe(true);
+
+      expect(await session.flush()).toBe(true);
+      const written = JSON.parse((await bridge.readText('Canvas.canvas')) ?? 'null') as {
+        nodes: Array<{ type: string; pageId?: string; file?: string }>;
+      };
+      expect(written.nodes[0]).toMatchObject({ type: 'file', file: 'Renamed target.md' });
+      const recent = JSON.parse((await bridge.readText('.morrow/recent.json')) ?? 'null') as {
+        opened: Record<string, number>;
+      };
+      expect(recent.opened[canvasId]).toBe(987);
+    } finally {
+      await session?.close();
+      vi.useRealTimers();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('flushes a queued navigation update when the session closes before its timer', async () => {
+    const bridge = await makeQuietVault();
+    const session = await open(bridge, { delayMs: 1_500, quietDelayMs: 20_000 });
+    const noteId = idAt(session, 'Note.md');
+    expect(session.execute({ type: 'page.markOpened', id: noteId, now: 789 }).ok).toBe(true);
+
+    await session.close();
+
+    const recent = JSON.parse((await bridge.readText('.morrow/recent.json')) ?? 'null') as {
+      opened: Record<string, number>;
+    };
+    expect(recent.opened[noteId]).toBe(789);
+    expect(session.saveStatus).toMatchObject({ state: 'saved', lastSavedAt: null });
+    await rm(bridge.root, { recursive: true, force: true });
+  });
+});
 
 describe('Polaris Dados source preservation during navigation', () => {
   it('preserves original opted-in database and row bytes/mtime when markOpened updates recent metadata', async () => {
@@ -325,6 +566,26 @@ describe('Polaris Dados source preservation during navigation', () => {
     }
   });
 
+  it('keeps a protected row source check active when its row changes before quiet navigation flush', async () => {
+    const bridge = await makeVault();
+    try {
+      const session = await open(bridge);
+      const rowPath = 'Inventory/Widget.md';
+      const rowId = idAt(session, rowPath);
+      const externalText = `${await bridge.readText(rowPath)}\nExternal row edit.\n`;
+      await writeFile(join(bridge.root, rowPath), externalText, 'utf8');
+
+      expect(session.execute({ type: 'page.markOpened', id: rowId, now: 654 }).ok).toBe(true);
+      expect(await session.flush()).toBe(false);
+      expect(session.saveStatus).toMatchObject({ state: 'error', errorCode: 'save-conflict' });
+      expect(await bridge.readText(rowPath)).toBe(externalText);
+      expect(await bridge.readText('.morrow/recent.json')).toBeNull();
+      await session.close();
+    } finally {
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
   it('does not mistake a reentrant dirty patch for the external file state accepted by the watcher', async () => {
     const bridge = await makeVault();
     try {
@@ -353,7 +614,10 @@ describe('Polaris Dados source preservation during navigation', () => {
         ).toMatchObject({ status: 'staged' });
       });
 
-      const externalText = (await bridge.readText('Inventory/Widget.md'))!.replace('Quantity: 2', 'Quantity: 4');
+      const externalText = (await bridge.readText('Inventory/Widget.md'))!.replace(
+        'Quantity: 2',
+        'Quantity: 4',
+      );
       await bridge.external('Inventory/Widget.md', externalText);
       expect(staged).toBe(true);
       expect(session.queue.isDirty(rowId)).toBe(true);
@@ -365,7 +629,10 @@ describe('Polaris Dados source preservation during navigation', () => {
       await session.close();
       const reopened = await open(bridge);
       const reopenedApi = dataApi(reopened);
-      expect(ready(reopenedApi.api.snapshot(idAt(reopened, 'Inventory.md'))).rows.find((row) => row.id === rowId)?.properties.quantity).toBe(3);
+      expect(
+        ready(reopenedApi.api.snapshot(idAt(reopened, 'Inventory.md'))).rows.find((row) => row.id === rowId)
+          ?.properties.quantity,
+      ).toBe(3);
       reopenedApi.cleanup();
       await reopened.close();
     } finally {
@@ -395,7 +662,7 @@ describe('Polaris Dados source preservation during navigation', () => {
       ).toMatchObject({ status: 'staged' });
       expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
       expect(await fingerprint(bridge, 'Inventory.md')).toEqual(databaseBefore);
-      expect((await bridge.readText('Inventory/Widget.md'))).toContain('Quantity: 3');
+      expect(await bridge.readText('Inventory/Widget.md')).toContain('Quantity: 3');
 
       cleanup();
       await session.close();

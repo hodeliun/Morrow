@@ -344,6 +344,7 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
       ...(prop.display === 'bar' ? { display: 'bar' } : {}),
       ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
+      ...(prop.type === 'text' && prop.wrap ? { wrap: true } : {}),
     })),
     views: database.views.map((view) => ({
       id: view.id,
@@ -356,6 +357,12 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(view.hidden.length ? { hidden: [...view.hidden] } : {}),
       ...(view.widths && Object.keys(view.widths).length ? { widths: { ...view.widths } } : {}),
       ...(view.columns?.length ? { columns: [...view.columns] } : {}),
+      ...(view.groupOrder?.length ? { groupOrder: [...view.groupOrder] } : {}),
+      ...(view.hiddenGroups?.length ? { hiddenGroups: [...view.hiddenGroups] } : {}),
+      ...(view.collapsedGroups?.length ? { collapsedGroups: [...view.collapsedGroups] } : {}),
+      ...(view.hideEmptyGroups ? { hideEmptyGroups: true } : {}),
+      ...(view.limit !== undefined ? { limit: view.limit } : {}),
+      ...(view.widgets ? { widgets: view.widgets.map((widget) => ({ ...widget })) } : {}),
     })),
   };
 }

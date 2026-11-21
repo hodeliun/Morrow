@@ -441,6 +441,64 @@ describe('colours', () => {
     expect(markdownToDoc(out)).toEqual(doc);
   });
 
+  it('round trips a background on one item of a list at the end of its line', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            { type: 'listItem', attrs: { backgroundColor: 'red' }, content: [p(text('One'))] },
+            { type: 'listItem', content: [p(text('Two'))] },
+          ],
+        },
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: false, backgroundColor: 'blue' },
+              content: [p(text('Do'))],
+            },
+          ],
+        },
+      ],
+    };
+    const out = docToMarkdown(doc);
+    expect(out).toBe('- One <!-- background: red -->\n- Two\n\n- [ ] Do <!-- background: blue -->\n');
+    expect(markdownToDoc(out)).toEqual(doc);
+  });
+
+  it('round trips a picture set to one side as a comment above it', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'image',
+          attrs: { fileId: null, src: 'https://example.org/a.png', alt: 'a', width: 300, align: 'right' },
+        },
+      ],
+    };
+    const out = docToMarkdown(doc);
+    expect(out).toBe('<!-- align: right -->\n![a|300](https://example.org/a.png)\n');
+    expect(markdownToDoc(out).content![0]!.attrs?.align).toBe('right');
+  });
+
+  it('keeps a page shown without its title as a comment above the line', () => {
+    const out = '<!-- embed: no title -->\n![[Notes]]\n';
+    const doc = markdownToDoc(out);
+    expect(doc.content![0]!.attrs?.embedTitle).toBe(false);
+    expect(docToMarkdown(doc)).toBe(out);
+  });
+
+  it('keeps an html block drawn as a preview as a comment above it', () => {
+    const out = '<!-- preview -->\n```html\n<p>Hi</p>\n```\n';
+    const doc = markdownToDoc(out);
+    expect(doc.content![0]!.type).toBe('codeBlock');
+    expect(doc.content![0]!.attrs?.preview).toBe(true);
+    expect(docToMarkdown(doc)).toBe(out);
+  });
+
   it('keeps a list counted in letters, numbered in the file', () => {
     const item = (words: string) => ({ type: 'listItem', content: [p(text(words))] });
     const doc: DocNode = {

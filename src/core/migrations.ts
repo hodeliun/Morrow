@@ -9,6 +9,7 @@ import {
   SCHEMA_VERSION,
   validCover,
   VIEW_TYPES,
+  WIDGET_KINDS,
 } from './model';
 import type {
   ColorName,
@@ -23,6 +24,8 @@ import type {
   PropValue,
   ViewDef,
   ViewType,
+  Widget,
+  WidgetKind,
 } from './model';
 import { fail, ok } from './result';
 import type { Result } from './result';
@@ -162,6 +165,7 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
       ? { formula: raw.formula.slice(0, 2000) }
       : {}),
     ...(raw.display === 'bar' ? { display: 'bar' as const } : {}),
+    ...(raw.wrap === true && raw.type === 'text' ? { wrap: true } : {}),
     ...(typeof raw.max === 'number' && Number.isFinite(raw.max) && raw.max > 0 ? { max: raw.max } : {}),
   };
 }
@@ -188,6 +192,11 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     dateProp: propRef(raw.dateProp),
     hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((id): id is string => propRef(id) !== null) : [],
     ...(isRecord(raw.widths) ? { widths: normalizeWidths(raw.widths) } : {}),
+    ...groupSettings(raw),
+    ...(Array.isArray(raw.widgets) ? { widgets: normalizeWidgets(raw.widgets) } : {}),
+    ...(typeof raw.limit === 'number' && Number.isInteger(raw.limit) && raw.limit >= 0 && raw.limit <= 10_000
+      ? { limit: raw.limit }
+      : {}),
     ...(Array.isArray(raw.columns)
       ? {
           columns: raw.columns
@@ -196,6 +205,36 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
         }
       : {}),
   };
+}
+
+function normalizeWidgets(raw: unknown[]): Widget[] {
+  return raw.slice(0, 40).flatMap((item) => {
+    if (!isRecord(item) || !validId(item.id) || !WIDGET_KINDS.includes(item.kind as WidgetKind)) return [];
+    return [
+      {
+        id: item.id,
+        kind: item.kind as WidgetKind,
+        prop: typeof item.prop === 'string' && item.prop.length <= 64 ? item.prop : null,
+        ...(typeof item.title === 'string' && item.title.trim() ? { title: item.title.slice(0, 80) } : {}),
+        ...(item.wide === true ? { wide: true } : {}),
+      },
+    ];
+  });
+}
+
+function groupSettings(raw: Record<string, unknown>): Partial<ViewDef> {
+  const keys = (value: unknown) =>
+    Array.isArray(value)
+      ? value
+          .filter((key): key is string => typeof key === 'string' && key.length > 0 && key.length <= 64)
+          .slice(0, 200)
+      : [];
+  const out: Partial<ViewDef> = {};
+  if (keys(raw.groupOrder).length) out.groupOrder = keys(raw.groupOrder);
+  if (keys(raw.hiddenGroups).length) out.hiddenGroups = keys(raw.hiddenGroups);
+  if (keys(raw.collapsedGroups).length) out.collapsedGroups = keys(raw.collapsedGroups);
+  if (raw.hideEmptyGroups === true) out.hideEmptyGroups = true;
+  return out;
 }
 
 export const MIN_COLUMN_WIDTH = 80;

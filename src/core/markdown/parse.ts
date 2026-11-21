@@ -5,7 +5,10 @@ import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import {
+  ALIGN_PATTERN,
   BACKGROUND_PATTERN,
+  EMBED_TITLE_COMMENT,
+  PREVIEW_COMMENT,
   calloutIcon,
   LETTERS_COMMENT,
   HEADER_COLUMN,
@@ -287,6 +290,19 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         break;
       case 'inline': {
         const cell = stack[stack.length - 2];
+        // a list item with a background of its own ends its first line with the comment for it
+        if (cell?.type === 'listItem' && (cell.content ?? []).length === 1) {
+          const children = token.children ?? [];
+          const last = children[children.length - 1];
+          const color =
+            last?.type === 'html_inline' ? BACKGROUND_PATTERN.exec(last.content.trim())?.[1] : null;
+          if (color && (COLORS as readonly string[]).includes(color)) {
+            cell.attrs = { ...cell.attrs, backgroundColor: color };
+            children.pop();
+            const before = children[children.length - 1];
+            if (before?.type === 'text') before.content = before.content.replace(/\s+$/, '');
+          }
+        }
         if (cell && (cell.type === 'tableCell' || cell.type === 'tableHeader'))
           cellInline(token.children ?? [], options, cell, top());
         else (top().content ??= []).push(...inlineNodes(token.children ?? [], options));
@@ -334,6 +350,19 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
             const color = BACKGROUND_PATTERN.exec(token.content.trim())?.[1];
             if (color && (COLORS as readonly string[]).includes(color)) {
               note({ backgroundColor: color });
+              break;
+            }
+            const side = ALIGN_PATTERN.exec(token.content.trim())?.[1];
+            if (side) {
+              note({ align: side });
+              break;
+            }
+            if (token.content.trim() === EMBED_TITLE_COMMENT) {
+              note({ embedTitle: false });
+              break;
+            }
+            if (token.content.trim() === PREVIEW_COMMENT) {
+              note({ preview: true });
               break;
             }
             if (token.content.trim() === LETTERS_COMMENT) {
@@ -838,11 +867,13 @@ function liftMedia(node: DocNode): DocNode[] {
     }
     run = [];
   };
+  // a picture set to one side keeps that side once it leaves its paragraph
+  const align = node.attrs?.align;
   for (const child of children) {
     const embed = fileRefOf(child);
     if (child.type === 'image') {
       flush();
-      out.push(child);
+      out.push(align ? { ...child, attrs: { ...child.attrs, align } } : child);
     } else if (embed?.embed) {
       flush();
       out.push(mediaBlock(embed));
@@ -935,7 +966,10 @@ function toTaskItem(item: DocNode): DocNode | null {
   const inline = [...(rest ? [{ ...lead, text: rest }] : []), ...(first.content ?? []).slice(1)];
   return {
     type: 'taskItem',
-    attrs: { checked: /x/i.test(match[1]!) },
+    attrs: {
+      checked: /x/i.test(match[1]!),
+      ...(item.attrs?.backgroundColor ? { backgroundColor: item.attrs.backgroundColor } : {}),
+    },
     content: [{ ...first, content: inline }, ...(item.content ?? []).slice(1)],
   };
 }

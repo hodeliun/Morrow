@@ -999,3 +999,137 @@
   align-items: center;
   gap: 6px;
 }
+
+/* a block dragged by its handle: a light copy under the pointer, the blocks faded where they were, and a line
+   where they will land. both are moved with transforms, once a frame */
+.block-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 200;
+  max-width: 320px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--popover);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  font: var(--text-sm) / 1.4 var(--font-ui);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+  pointer-events: none;
+  will-change: transform;
+}
+.block-drag-ghost[data-count]::after {
+  content: attr(data-count);
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: var(--text-xs);
+}
+.block-drop-line {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 199;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  will-change: transform;
+}
+.is-drag-source {
+  opacity: 0.4;
+}
+html.is-dragging-blocks,
+html.is-dragging-blocks * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* replacing only some of the matches, from one number to another */
+.find-range-label {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.find-input.find-number {
+  flex: 0 0 56px;
+  width: 56px;
+}
+
+/* words kept picked while more are picked elsewhere with ctrl held, shown like the selection */
+.prose .is-extra-selection {
+  background: var(--selection);
+  border-radius: 2px;
+}
+
+/* the grip on top of a column, dragged left or right to put the column in another place */
+.column-grip {
+  position: absolute;
+  z-index: 5;
+  width: 22px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  opacity: 0;
+  pointer-events: none;
+  cursor: grab;
+  transition: opacity 120ms var(--ease);
+}
+.column-grip.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.column-grip:hover {
+  background: var(--hover);
+  color: var(--text-muted);
+}
+.prose .column.is-column-drop-before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.prose .column.is-column-drop-after {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+@media (pointer: coarse) {
+  .column-grip {
+    display: none;
+  }
+}
+
+/* a picture set to one side of the page */
+.prose .image-block.is-align-left {
+  text-align: left;
+}
+.prose .image-block.is-align-right {
+  text-align: right;
+}
+.prose .image-block.is-align-left img,
+.prose .image-block.is-align-right img {
+  margin: 0;
+}
+
+/* :name: for a picture of your own, drawn as the picture in place of its letters */
+.prose .custom-emoji {
+  display: inline-block;
+  width: 1.3em;
+  height: 1.3em;
+  vertical-align: -0.28em;
+  overflow: hidden;
+  color: transparent;
+  font-size: inherit;
+  letter-spacing: -1em;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  white-space: nowrap;
+}
+.custom-emoji-img {
+  object-fit: contain;
+}

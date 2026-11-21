@@ -2,11 +2,17 @@ import type { Editor } from '@tiptap/core';
 import { findParentNode, getMarkRange } from '@tiptap/core';
 import type { Node as PmNode } from '@tiptap/pm/model';
 import { NodeSelection, TextSelection } from '@tiptap/pm/state';
+import type { Transaction } from '@tiptap/pm/state';
 import { useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import type { BubbleMenuProps } from '@tiptap/react/menus';
 import {
   ArrowDown,
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  ArrowLeft,
+  ArrowRight,
   ArrowUp,
   Bold,
   ChevronRight,
@@ -50,6 +56,8 @@ import {
   CaseUpper,
   Sparkles,
 } from 'lucide-react';
+import { ListLettered } from './icons';
+import { columnAt, moveColumn } from './ColumnGrip';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { pageIdFromHref } from '../../core/links';
@@ -214,8 +222,8 @@ function dismissLink(editor: Editor): void {
   const start = linkStart(editor);
   if (start === null) return;
   dismissedLinks.set(editor, start);
-  // an empty step makes the menu look again, and hide
-  editor.view.dispatch(editor.state.tr.setMeta('addToHistory', false));
+  // the menu only looks again when the page or the cursor changed, so it is told to hide
+  editor.view.dispatch(editor.state.tr.setMeta('addToHistory', false).setMeta('linkMenu', 'hide'));
 }
 const showLink: BubbleMenuProps['shouldShow'] = ({ editor, view, from, to }) => {
   const start = from === to && editor.isActive('link') ? linkStart(editor) : null;
@@ -237,8 +245,11 @@ function useMarks(editor: Editor) {
       strike: current.isActive('strike'),
       code: current.isActive('code'),
       highlight: current.isActive('highlight'),
+      colour: current.isActive('textColor') || current.isActive('highlight'),
       link: current.isActive('link'),
       heading: headingLevel(current) !== null,
+      // words in a list's items, a heading there would take the line out of its list
+      inList: current.isActive('listItem') || current.isActive('taskItem'),
       href: String(current.getAttributes('link').href ?? ''),
     }),
   });
@@ -372,6 +383,7 @@ export function FormattingMenu({
   const [headings, setHeadings] = useState(false);
   const marks = useMarks(editor);
   const { assistant } = usePreferences();
+  const shown = useRef(false);
   const [options] = useState(
     () =>
       ({
@@ -379,13 +391,32 @@ export function FormattingMenu({
         offset: 8,
         flip: true,
         shift: { padding: 8 },
+        onShow: () => {
+          shown.current = true;
+        },
         onHide: () => {
+          shown.current = false;
           setEditingLink(false);
           setColoring(false);
           setHeadings(false);
         },
       }) as const,
   );
+
+  // words picked and then deleted or typed over leave nothing to format. the bar waits a moment before it
+  // looks again after a change, and could stay over the empty space, so it is told to hide right away
+  useEffect(() => {
+    const hide = ({ transaction }: { transaction: Transaction }) => {
+      if (!shown.current || !transaction.docChanged || !editor.state.selection.empty) return;
+      queueMicrotask(() => {
+        if (!editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta('formattingMenu', 'hide'));
+      });
+    };
+    editor.on('transaction', hide);
+    return () => {
+      editor.off('transaction', hide);
+    };
+  }, [editor]);
 
   useEffect(() => {
     // capture the node now, the editor can be destroyed before this cleanup runs
@@ -414,7 +445,12 @@ export function FormattingMenu({
           <HeadingPanel editor={editor} onDone={() => setHeadings(false)} />
         ) : (
           <>
-            <ToolButton label={t('editor.colour')} icon={Palette} onClick={() => setColoring(true)} />
+            <ToolButton
+              label={t('editor.colour')}
+              icon={Palette}
+              active={marks.colour}
+              onClick={() => setColoring(true)}
+            />
             <span className="toolbar-divider" />
             <ToolButton
               label={t('editor.bold')}
@@ -470,7 +506,7 @@ export function FormattingMenu({
               onClick={() => editor.chain().focus().toggleCode().run()}
             />
             <ToolButton label={t('editor.equation')} icon={Sigma} onClick={() => toEquation(editor)} />
-            {!inTable && (
+            {!inTable && !marks.inList && (
               <ToolButton
                 label={t('editor.heading')}
                 icon={Heading}
@@ -483,6 +519,10 @@ export function FormattingMenu({
               icon={RemoveFormatting}
               onClick={() => editor.chain().focus().unsetAllMarks().run()}
             />
+            {/* the assistant and more options sit together at the end, past one divider */}
+            {((assistant && desktop?.assistant && pageId) || onBlockMenu) && (
+              <span className="toolbar-divider" />
+            )}
             {/* only while the assistant is turned on, a workspace without it shows no trace of it */}
             {assistant && desktop?.assistant && pageId && (
               <ToolButton
@@ -495,18 +535,17 @@ export function FormattingMenu({
               />
             )}
             {onBlockMenu && (
-              <>
-                <span className="toolbar-divider" />
-                <ToolButton
-                  label={t('editor.moreOptions')}
-                  icon={Ellipsis}
-                  onClick={(event) => {
-                    const request = selectionBlocks(editor);
-                    if (request)
-                      onBlockMenu({ ...request, rect: event.currentTarget.getBoundingClientRect() });
-                  }}
-                />
-              </>
+              <ToolButton
+                label={t('editor.moreOptions')}
+                icon={Ellipsis}
+                onClick={(event) => {
+                  const request = selectionBlocks(editor);
+                  if (!request) return;
+                  onBlockMenu({ ...request, rect: event.currentTarget.getBoundingClientRect() });
+                  // the turn into menu takes the bar's place rather than opening on top of it
+                  editor.view.dispatch(editor.state.tr.setMeta('formattingMenu', 'hide'));
+                }}
+              />
             )}
           </>
         )}
@@ -898,17 +937,14 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
           return true;
         })
         .run();
-      foldSectionInto(
-        editor,
-        target.level ?? (node.type.name === 'heading' ? Number(node.attrs.level) : null),
-      );
+      foldSectionInto(editor);
       return;
   }
 }
 
-// a line turned into a toggle takes in the blocks under it, up to the next heading of the same level or
-// higher, a plain toggle up to the next heading of any level, and folds them away
-function foldSectionInto(editor: Editor, level: number | null): void {
+// a line turned into a toggle takes in the blocks under it, up to the next heading of any level or toggle
+// heading, and folds them away. a smaller heading under a toggle heading starts its own part and stays out
+function foldSectionInto(editor: Editor): void {
   const { state } = editor;
   const { $from } = state.selection;
   let depth = $from.depth;
@@ -918,16 +954,12 @@ function foldSectionInto(editor: Editor, level: number | null): void {
   const togglePos = $from.before(depth);
   const parent = $from.node(depth - 1);
   const index = $from.index(depth - 1);
-  const headingLevel = (node: PmNode): number | null => {
-    if (node.type.name === 'heading') return Number(node.attrs.level) || 1;
-    if (node.type.name === 'details') return Number(node.firstChild?.attrs.level) || null;
-    return null;
-  };
+  const isHeading = (node: PmNode): boolean =>
+    node.type.name === 'heading' || (node.type.name === 'details' && !!node.firstChild?.attrs.level);
   const taken: PmNode[] = [];
   for (let next = index + 1; next < parent.childCount; next++) {
     const block = parent.child(next);
-    const stop = headingLevel(block);
-    if (stop !== null && (level === null || stop <= level)) break;
+    if (isHeading(block)) break;
     taken.push(block);
   }
   // nothing under it but empty lines leaves the toggle as it was made
@@ -965,21 +997,21 @@ function intoColumns(editor: Editor, from: number, to: number, count: number): v
   editor.view.focus();
 }
 
-// a background on the whole block, not only its words. an item of a list colours its list
+// a background on the whole block, not only its words. an item of a list gets one of its own, the list
+// around it keeps what it had. a whole list coloured takes the colour off its items so it shows evenly
 export function setBlockBackground(editor: Editor, positions: number[], color: ColorName | null): void {
   const { tr, doc } = editor.state;
   const done = new Set<number>();
-  for (const at of positions) {
-    let pos = at;
-    let node = doc.nodeAt(pos);
-    if (node && ['listItem', 'taskItem'].includes(node.type.name)) {
-      const $pos = doc.resolve(pos);
-      pos = $pos.before();
-      node = $pos.parent;
-    }
+  for (const pos of positions) {
+    const node = doc.nodeAt(pos);
     if (!node || done.has(pos) || !('backgroundColor' in node.attrs)) continue;
     done.add(pos);
     tr.setNodeMarkup(pos, undefined, { ...node.attrs, backgroundColor: color });
+    if (['bulletList', 'orderedList', 'taskList'].includes(node.type.name))
+      node.forEach((item, offset) => {
+        if (item.attrs.backgroundColor)
+          tr.setNodeMarkup(pos + 1 + offset, undefined, { ...item.attrs, backgroundColor: null });
+      });
   }
   if (tr.docChanged) editor.view.dispatch(tr);
   clearBlockSelection(editor);
@@ -1087,23 +1119,20 @@ export function BlockMenu({
   const colourable = range !== null || (block !== null && block.textContent.trim() !== '');
   const blockPositions = () => {
     if (!range) return [request.pos];
+    // the picked blocks side by side, items of a list when only some of its items were picked
     const positions: number[] = [];
-    editor.state.doc.nodesBetween(range.from, range.to, (_node, pos) => {
+    const $start = editor.state.doc.resolve(range.from);
+    const parent = $start.parent;
+    let pos = range.from;
+    for (let index = $start.index(); index < parent.childCount && pos < range.to; index++) {
       positions.push(pos);
-      return false;
-    });
+      pos += parent.child(index).nodeSize;
+    }
     return positions;
   };
   const background = range
     ? null
-    : (() => {
-        const node = editor.state.doc.nodeAt(request.pos);
-        const owner =
-          node && ['listItem', 'taskItem'].includes(node.type.name)
-            ? editor.state.doc.resolve(request.pos).parent
-            : node;
-        return (owner?.attrs.backgroundColor as ColorName | null | undefined) ?? null;
-      })();
+    : ((editor.state.doc.nodeAt(request.pos)?.attrs.backgroundColor as ColorName | null | undefined) ?? null);
   const entries: MenuEntry[] = [
     { heading: t('editor.turnInto') },
     {
@@ -1135,7 +1164,7 @@ export function BlockMenu({
     },
     {
       label: t('slash.items.lettered.title'),
-      icon: ListOrdered,
+      icon: ListLettered,
       checked: is('letteredList'),
       onSelect: turn({ kind: 'letteredList' }),
     },
@@ -1219,6 +1248,31 @@ export function BlockMenu({
           { separator: true as const },
         ]
       : []),
+    // a block inside columns can move its whole column left or right among the others
+    ...(() => {
+      const column = range ? null : columnAt(editor.state, request.pos);
+      if (!column) return [];
+      return [
+        ...(column.index > 0
+          ? [
+              {
+                label: t('editor.moveColumnLeft'),
+                icon: ArrowLeft,
+                onSelect: () => moveColumn(editor.state, editor.view.dispatch, request.pos, column.index - 1),
+              },
+            ]
+          : []),
+        ...(column.index < column.columns.childCount - 1
+          ? [
+              {
+                label: t('editor.moveColumnRight'),
+                icon: ArrowRight,
+                onSelect: () => moveColumn(editor.state, editor.view.dispatch, request.pos, column.index + 1),
+              },
+            ]
+          : []),
+      ];
+    })(),
     {
       label: t('editor.moveUp'),
       icon: ArrowUp,
@@ -1285,6 +1339,71 @@ export function BlockMenu({
   const blockType = editor.state.doc.nodeAt(request.pos)?.type.name;
   const fileId = editor.state.doc.nodeAt(request.pos)?.attrs.fileId as string | null | undefined;
   const vault = desktop?.vault;
+  // a line showing another page can leave out that page's title
+  const line = editor.state.doc.nodeAt(request.pos);
+  let embedsPage = false;
+  if (line?.type.name === 'paragraph')
+    line.forEach((child) => {
+      if (child.type.name === 'pageLink' && child.attrs.embed === true) embedsPage = true;
+    });
+  if (line && embedsPage) {
+    entries.unshift(
+      {
+        label: t('editor.showEmbedTitle'),
+        icon: Heading,
+        checked: line.attrs.embedTitle !== false,
+        onSelect: () =>
+          editor.view.dispatch(
+            editor.state.tr.setNodeMarkup(request.pos, undefined, {
+              ...line.attrs,
+              embedTitle: line.attrs.embedTitle === false ? null : false,
+            }),
+          ),
+      },
+      { separator: true },
+    );
+  }
+  // an html block can draw what it makes, beside or in place of its code
+  if (line?.type.name === 'codeBlock' && line.attrs.language === 'html') {
+    entries.unshift(
+      {
+        label: t('editor.showPreview'),
+        icon: Eye,
+        checked: line.attrs.preview === true,
+        onSelect: () =>
+          editor.view.dispatch(
+            editor.state.tr.setNodeMarkup(request.pos, undefined, {
+              ...line.attrs,
+              preview: line.attrs.preview === true ? null : true,
+            }),
+          ),
+      },
+      { separator: true },
+    );
+  }
+  if (blockType === 'image') {
+    // a picture narrower than the page can sit at either side or in the middle
+    const current = editor.state.doc.nodeAt(request.pos)?.attrs.align ?? null;
+    const align = (value: 'left' | 'right' | null, label: string, icon: LucideIcon): MenuEntry => ({
+      label,
+      icon,
+      checked: current === value,
+      onSelect: () => {
+        const node = editor.state.doc.nodeAt(request.pos);
+        if (node)
+          editor.view.dispatch(
+            editor.state.tr.setNodeMarkup(request.pos, undefined, { ...node.attrs, align: value }),
+          );
+      },
+    });
+    entries.unshift(
+      { heading: t('editor.alignPicture') },
+      align('left', t('editor.alignLeft'), AlignLeft),
+      align(null, t('editor.alignCentre'), AlignCenter),
+      align('right', t('editor.alignRight'), AlignRight),
+      { separator: true },
+    );
+  }
   if (blockType === 'image' && fileId) {
     entries.unshift(
       { heading: t('slash.items.image.title') },

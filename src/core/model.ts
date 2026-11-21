@@ -58,6 +58,8 @@ export interface PropDef {
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;
+  // a text property shown in full over as many lines as it takes, rather than cut off at the cell's edge
+  wrap?: boolean;
 }
 
 export type FilterOp =
@@ -77,8 +79,31 @@ export interface SortRule {
   dir: 'asc' | 'desc';
 }
 
-export type ViewType = 'table' | 'board' | 'calendar' | 'list' | 'gallery';
-export const VIEW_TYPES: readonly ViewType[] = ['table', 'board', 'calendar', 'list', 'gallery'];
+export type ViewType = 'table' | 'board' | 'calendar' | 'list' | 'gallery' | 'dashboard';
+
+// a tile of a dashboard view: a number worked out from the rows, or a chart of them by a property
+export type WidgetKind = 'count' | 'sum' | 'average' | 'min' | 'max' | 'bar' | 'hbar' | 'donut' | 'line';
+export interface Widget {
+  id: string;
+  kind: WidgetKind;
+  // the number property summed or averaged, the select a chart counts by, the date a line follows
+  prop: string | null;
+  title?: string;
+  // across two of the grid's columns rather than one
+  wide?: boolean;
+}
+export const VIEW_TYPES: readonly ViewType[] = ['table', 'board', 'calendar', 'list', 'gallery', 'dashboard'];
+export const WIDGET_KINDS: readonly WidgetKind[] = [
+  'count',
+  'sum',
+  'average',
+  'min',
+  'max',
+  'bar',
+  'hbar',
+  'donut',
+  'line',
+];
 
 export interface ViewDef {
   id: string;
@@ -93,6 +118,16 @@ export interface ViewDef {
   widths?: Record<string, number>;
   // the order of the table's columns by property id, title among them, missing keeps the database's order
   columns?: string[];
+  // the groups rows are split into by groupBy: their order, the ones left out and the ones folded, by key,
+  // and whether groups with no rows show
+  groupOrder?: string[];
+  hiddenGroups?: string[];
+  collapsedGroups?: string[];
+  hideEmptyGroups?: boolean;
+  // how many rows the view shows before more are asked for, 0 for all, missing for the default
+  limit?: number;
+  // the tiles of a dashboard view, in order
+  widgets?: Widget[];
 }
 
 export interface DatabaseDef {

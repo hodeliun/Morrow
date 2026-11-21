@@ -1,5 +1,5 @@
 import { InputRule, mergeAttributes, Node } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state';
 import Suggestion from '@tiptap/suggestion';
 import { FilePlus2, FileText } from 'lucide-react';
 import { parseWikiLink } from '../../core/markdown/parse';
@@ -27,7 +27,15 @@ export interface PageLinkOptions {
   // an embedded page shows the other page's content as html, read only
   renderEmbed: (id: PageId, anchor: string | null) => string | null;
   // some pages, like databases, embed as a live view instead, the result removes it again
-  mountEmbed?: (id: PageId, element: HTMLElement, editable: boolean) => (() => void) | null;
+  // a database or canvas shown live, a database with #view after its name shows only that view. setAnchor
+  // changes which view the embed shows
+  mountEmbed?: (
+    id: PageId,
+    element: HTMLElement,
+    editable: boolean,
+    anchor: string | null,
+    setAnchor: (anchor: string | null) => void,
+  ) => (() => void) | null;
 }
 
 const CREATE_PREFIX = 'create:';
@@ -111,6 +119,22 @@ export const PageLink = Node.create<PageLinkOptions>({
     return String(node.attrs.alias ?? node.attrs.label ?? '');
   },
 
+  // a database or canvas shown in the page is picked by the first backspace or delete beside it and only
+  // goes with the second, so a key pressed on the line it sits in never takes it away unseen
+  addKeyboardShortcuts() {
+    const pick = (forward: boolean) => () => {
+      const { state, view } = this.editor;
+      const { $from, empty } = state.selection;
+      if (!empty) return false;
+      const node = forward ? $from.nodeAfter : $from.nodeBefore;
+      if (node?.type.name !== this.name || node.attrs.embed !== true) return false;
+      const pos = forward ? $from.pos : $from.pos - node.nodeSize;
+      view.dispatch(state.tr.setSelection(NodeSelection.create(state.doc, pos)));
+      return true;
+    };
+    return { Backspace: pick(false), Delete: pick(true) };
+  },
+
   addNodeView() {
     return ({ node, getPos, editor }) => {
       let current = node;
@@ -122,7 +146,7 @@ export const PageLink = Node.create<PageLinkOptions>({
       const wrapper = embedded ? document.createElement('span') : null;
       const body = embedded ? document.createElement('span') : null;
       let lastHtml: string | null = null;
-      let mounted: { id: PageId; unmount: () => void } | null = null;
+      let mounted: { id: PageId; anchor: string | null; unmount: () => void } | null = null;
       if (wrapper && body) {
         wrapper.className = 'page-embed';
         wrapper.contentEditable = 'false';
@@ -159,16 +183,26 @@ export const PageLink = Node.create<PageLinkOptions>({
           : title === null
             ? t('editor.linkTrashed')
             : t('database.openTitle', { title });
-        if (body && mounted && mounted.id !== id) {
+        if (body && mounted && (mounted.id !== id || mounted.anchor !== anchor)) {
           mounted.unmount();
           mounted = null;
           body.replaceChildren();
         }
-        // a part of a page embeds as that part only, a whole database or canvas as the live thing
-        if (body && id && !mounted && !anchor && this.options.mountEmbed) {
-          const unmount = this.options.mountEmbed(id, body, editor.isEditable);
+        // a part of a page embeds as that part only, a whole database or canvas as the live thing, and a
+        // database with one of its views after # as that view alone
+        if (body && id && !mounted && this.options.mountEmbed) {
+          const setAnchor = (next: string | null) => {
+            const pos = typeof getPos === 'function' ? getPos() : undefined;
+            if (pos === undefined || !editor.isEditable) return;
+            const live = editor.state.doc.nodeAt(pos);
+            if (live?.type !== current.type) return;
+            editor.view.dispatch(
+              editor.state.tr.setNodeMarkup(pos, undefined, { ...live.attrs, anchor: next }),
+            );
+          };
+          const unmount = this.options.mountEmbed(id, body, editor.isEditable, anchor, setAnchor);
           if (unmount) {
-            mounted = { id, unmount };
+            mounted = { id, anchor, unmount };
             lastHtml = null;
             body.hidden = false;
             wrapper?.classList.add('is-live');

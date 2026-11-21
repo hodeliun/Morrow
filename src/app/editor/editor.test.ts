@@ -1,13 +1,19 @@
 // @vitest-environment happy-dom
 import { Editor } from '@tiptap/core';
 import { CellSelection } from '@tiptap/pm/tables';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DocNode } from '../../core/model';
 import { selectBlockRange } from './BlockSelect';
 import { changeCase, setBlockBackground, setHeading, turnInto } from './EditorMenus';
 import { createExtensions } from './extensions';
 import { tagDecorations } from './Extras';
 import type { DecorationSet } from '@tiptap/pm/view';
+
+// code blocks watch the vault's pages for bases, there is no vault open here
+vi.mock('./bases', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  onPagesChange: () => () => {},
+}));
 
 const json = (target: Editor) => target.getJSON() as DocNode;
 
@@ -239,6 +245,19 @@ describe('turn into', () => {
     expect(json(target).content![0]!.attrs?.backgroundColor ?? null).toBeNull();
   });
 
+  it('colours one item of a list on its own', () => {
+    const item = (text: string) => ({ type: 'listItem', content: [p(text)] });
+    const target = make({
+      type: 'doc',
+      content: [{ type: 'bulletList', content: [item('One'), item('Two')] }],
+    });
+    setBlockBackground(target, [1], 'red');
+    const list = json(target).content![0]!;
+    expect(list.attrs?.backgroundColor ?? null).toBeNull();
+    expect(list.content![0]!.attrs?.backgroundColor).toBe('red');
+    expect(list.content![1]!.attrs?.backgroundColor ?? null).toBeNull();
+  });
+
   it('starts a lettered list from a. and a space', () => {
     const target = make({ type: 'doc', content: [p('')] });
     target.commands.setTextSelection(1);
@@ -302,9 +321,7 @@ describe('home and end', () => {
     const target = make({ type: 'doc', content: [p('Hello world'), p('Next')] });
     target.commands.setTextSelection(4);
     const press = (key: string, shiftKey = false, ctrlKey = false) =>
-      target.view.someProp('handleKeyDown', (handler) =>
-        handler(target.view, new KeyboardEvent('keydown', { key, shiftKey, ctrlKey })),
-      );
+      target.view.dom.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, ctrlKey, bubbles: true }));
     press('End');
     expect(target.state.selection.head).toBe(12);
     press('Home', true);
@@ -402,8 +419,38 @@ describe('pasting a list', () => {
   });
 });
 
+describe('copying from inside a toggle', () => {
+  it('pastes the copied line, not a new toggle around it', async () => {
+    const { unwrapHolders } = await import('./MarkdownPaste');
+    const target = make({
+      type: 'doc',
+      content: [
+        p('Above'),
+        {
+          type: 'details',
+          content: [
+            { type: 'detailsSummary', content: [{ type: 'text', text: 'Title' }] },
+            { type: 'detailsContent', content: [p('Inside one'), p('Inside two')] },
+          ],
+        },
+      ],
+    });
+    let from = 0;
+    let to = 0;
+    target.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === 'Inside one') from = pos;
+      if (node.isText && node.text === 'Inside two') to = pos + node.nodeSize;
+    });
+    const slice = unwrapHolders(target.state.doc.slice(from, to));
+    expect(slice.content.firstChild!.type.name).toBe('paragraph');
+    target.commands.setTextSelection(3);
+    target.view.dispatch(target.state.tr.replaceSelection(slice));
+    expect(json(target).content!.filter((node) => node.type === 'details')).toHaveLength(1);
+  });
+});
+
 describe('turning a line into a toggle', () => {
-  it('folds the section under it into the toggle, up to the next heading', () => {
+  it('folds the blocks under it into the toggle, stopping at the next heading of any level', () => {
     const heading = (level: number, text: string) => ({
       type: 'heading',
       attrs: { level },
@@ -422,9 +469,15 @@ describe('turning a line into a toggle', () => {
     });
     turnInto(target, 0, { kind: 'toggle', level: 2 });
     const doc = json(target);
-    expect(doc.content!.map((node) => node.type)).toEqual(['details', 'heading', 'paragraph']);
+    expect(doc.content!.map((node) => node.type)).toEqual([
+      'details',
+      'heading',
+      'paragraph',
+      'heading',
+      'paragraph',
+    ]);
     const inside = doc.content![0]!.content![1]!.content!.map((node) => node.type);
-    expect(inside).toEqual(['paragraph', 'heading', 'paragraph']);
+    expect(inside).toEqual(['paragraph']);
     expect(doc.content![0]!.attrs?.open).toBe(false);
   });
 });
@@ -499,5 +552,123 @@ describe('blocks inside columns', () => {
     const toggle = json(target).content![0]!.content![0]!.content![0]!;
     expect(toggle.type).toBe('details');
     expect(toggle.content![1]!.content![0]!.type).toBe('taskList');
+  });
+});
+
+describe('dragging a block by its handle', () => {
+  it('moves the block to where the pointer lets go', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const target = new Editor({
+      element: host,
+      extensions: createExtensions({
+        onBlockMenu: () => {},
+        resolvePage: () => null,
+        openTag: () => {},
+        createChild: () => null,
+        openDate: () => {},
+        pages: () => [],
+        findPages: () => [],
+        createPage: () => null,
+        renderEmbed: () => {},
+      } as never),
+      content: { type: 'doc', content: [p('One'), p('Two'), p('Three')] } as never,
+    });
+    editor = target;
+    // the page has no layout here, every block sits at the top, so the pointer is over the first
+    target.view.dom.parentElement!.dispatchEvent(
+      new MouseEvent('mousemove', { clientX: 0, clientY: 0, bubbles: true }),
+    );
+    const end = target.state.doc.content.size;
+    target.view.posAtCoords = () => ({ pos: end, inside: -1 });
+    const handle = host.querySelector<HTMLElement>('.block-handle')!;
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { button: 0, clientX: 0, clientY: 0, bubbles: true }),
+    );
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 40, clientY: 40, bubbles: true }));
+    expect(document.querySelector('.block-drag-ghost')?.textContent).toBe('One');
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: 40, clientY: 40, bubbles: true }));
+    expect(json(target).content!.map((node) => node.content![0]!.text)).toEqual(['Two', 'Three', 'One']);
+    expect(document.querySelector('.block-drag-ghost')).toBeNull();
+    host.remove();
+  });
+});
+
+describe('pasting words and pictures from another app', () => {
+  it('keeps a picture word or libreoffice put on the clipboard as a file', async () => {
+    const { DOMParser: PmParser } = await import('@tiptap/pm/model');
+    const target = make({ type: 'doc', content: [p('')] });
+    const html = new window.DOMParser().parseFromString(
+      '<p>Before</p><img src="file:///C:/Users/me/AppData/Local/Temp/msohtmlclip1/01/clip_image001.png"><p>After</p>',
+      'text/html',
+    );
+    const doc = PmParser.fromSchema(target.schema).parse(html.body);
+    const types: string[] = [];
+    doc.forEach((node) => types.push(node.type.name));
+    expect(types).toEqual(['paragraph', 'image', 'paragraph']);
+    expect(String(doc.child(1).attrs.src)).toMatch(/^file:\/\/\//);
+  });
+});
+
+describe('picking words in several places', () => {
+  it('copies every piece kept with ctrl, in page order', async () => {
+    const { allPieces, keepPiece, piecesForClipboard } = await import('./MultiSelect');
+    const target = make({ type: 'doc', content: [p('Alpha beta'), p('Gamma delta'), p('Epsilon')] });
+    // "beta" picked first, then "Epsilon" with ctrl held
+    target.view.dispatch(keepPiece(target.state.tr, { from: 7, to: 11 }, target.state));
+    const end = target.state.doc.content.size - 1;
+    target.commands.setTextSelection({ from: end - 7, to: end });
+    const pieces = allPieces(target.state);
+    expect(pieces).toHaveLength(2);
+    expect(piecesForClipboard(target.view, pieces).text).toBe('beta\nEpsilon');
+    // an edit lets the kept pieces go
+    target.commands.insertContent('!');
+    expect(allPieces(target.state)).toHaveLength(0);
+  });
+});
+
+describe('columns', () => {
+  it('move a column to another place among the others', async () => {
+    const { moveColumn } = await import('./ColumnGrip');
+    const column = (text: string) => ({ type: 'column', content: [p(text)] });
+    const target = make({
+      type: 'doc',
+      content: [{ type: 'columns', content: [column('A'), column('B'), column('C')] }],
+    });
+    // a position inside the first column
+    moveColumn(target.state, target.view.dispatch, 2, 2);
+    const texts = json(target).content![0]!.content!.map((item) => item.content![0]!.content![0]!.text);
+    expect(texts).toEqual(['B', 'C', 'A']);
+  });
+});
+
+describe('html blocks', () => {
+  it('draw their page in a frame that runs no scripts once the preview is on', async () => {
+    const code = (preview: boolean | null) => ({
+      type: 'doc',
+      content: [
+        {
+          type: 'codeBlock',
+          attrs: { language: 'html', preview },
+          content: [{ type: 'text', text: '<b>Hi</b><script>parent.hacked = 1</script>' }],
+        },
+      ],
+    });
+    const plain = make(code(null));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(plain.view.dom.querySelector('iframe')).toBeNull();
+    plain.destroy();
+    const target = make(code(true));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const frame = target.view.dom.querySelector('iframe')!;
+    expect(frame).not.toBeNull();
+    expect(frame.getAttribute('sandbox')).toBe('allow-same-origin');
+    expect(frame.srcdoc).toContain('<b>Hi</b>');
+    expect(target.view.dom.querySelector('.code-block')!.classList.contains('hide-code')).toBe(true);
+    // turning it off brings the code back and takes the frame away
+    target.view.dispatch(target.state.tr.setNodeMarkup(0, undefined, { language: 'html', preview: null }));
+    expect(target.view.dom.querySelector('.code-block')!.classList.contains('hide-code')).toBe(false);
+    expect(target.view.dom.querySelector('iframe')).toBeNull();
   });
 });

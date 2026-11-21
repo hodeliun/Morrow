@@ -416,7 +416,8 @@ describe('database navigation preserves source files on real temporary filesyste
       const resolvedDatabaseId = idAt(session, DATABASE_PATH);
       const resolvedRowId = idAt(session, ROW_PATH);
       expect(session.execute({ type: 'page.markOpened', id: resolvedRowId, now: 234 }).ok).toBe(true);
-      expect(session.queue.isDirty(resolvedRowId)).toBe(true);
+      expect(session.queue.isQuietPending(resolvedRowId)).toBe(true);
+      expect(session.queue.isDirty(resolvedRowId)).toBe(false);
       expect(session.queue.isDirty(resolvedDatabaseId)).toBe(false);
 
       const externalSource = DATABASE_MARKDOWN.replace(

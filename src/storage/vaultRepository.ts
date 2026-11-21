@@ -83,10 +83,7 @@ type FolderOwnerIndex = ReadonlyMap<
 >;
 
 function indexFolderOwners(layout: Map<PageId, Placement>): FolderOwnerIndex {
-  const owners = new Map<
-    string,
-    { count: number; first: PageId; second?: PageId }
-  >();
+  const owners = new Map<string, { count: number; first: PageId; second?: PageId }>();
   for (const [id, placement] of layout) {
     const folder = placement.folder.toLowerCase();
     const current = owners.get(folder);
@@ -110,8 +107,7 @@ function sourceParentId(
   if (!parentFolder) return null;
   const folderOwners = owners.get(parentFolder.toLowerCase());
   if (!folderOwners) return undefined;
-  if (folderOwners.first !== id)
-    return folderOwners.count === 1 ? folderOwners.first : undefined;
+  if (folderOwners.first !== id) return folderOwners.count === 1 ? folderOwners.first : undefined;
   return folderOwners.count === 2 ? folderOwners.second : undefined;
 }
 
@@ -199,12 +195,16 @@ export class VaultRepository implements WorkspaceRepository {
         scanned: unknown,
         kind: 'workspace' | 'recent',
       ): { value: unknown; problem: string | null } => {
-        if (text === null) return { value: scanned, problem: findUnrepresentableVaultMetadata(scanned, kind) };
+        if (text === null)
+          return { value: scanned, problem: findUnrepresentableVaultMetadata(scanned, kind) };
         let value: unknown;
         try {
           value = JSON.parse(text) as unknown;
         } catch {
-          return { value: null, problem: `The Morrow ${kind} metadata could not be read and was left untouched.` };
+          return {
+            value: null,
+            problem: `The Morrow ${kind} metadata could not be read and was left untouched.`,
+          };
         }
         if (value === null) {
           return { value, problem: `The Morrow ${kind} metadata is not a supported object.` };
@@ -214,14 +214,15 @@ export class VaultRepository implements WorkspaceRepository {
       const registry = parseMetadata(registryText, scan.registry, 'workspace');
       const recent = parseMetadata(recentText, scan.recent, 'recent');
       if (registry.problem || recent.problem) {
-        return fail(`${registry.problem ?? recent.problem} Opening this vault was stopped before any file could be changed.`);
+        return fail(
+          `${registry.problem ?? recent.problem} Opening this vault was stopped before any file could be changed.`,
+        );
       }
       const guardedScan = { ...scan, registry: registry.value, recent: recent.value };
       const loaded = loadVault(guardedScan, this.newId);
       this.adopt(loaded);
       this.others = new Set(scan.others);
-      this.registryText =
-        registryText ?? (registry.value === null ? null : JSON.stringify(registry.value));
+      this.registryText = registryText ?? (registry.value === null ? null : JSON.stringify(registry.value));
       this.recentText = recentText ?? (recent.value === null ? null : JSON.stringify(recent.value));
       const activity = (recent.value as { activity?: unknown } | null)?.activity;
       if (activity && typeof activity === 'object') {
@@ -327,10 +328,12 @@ export class VaultRepository implements WorkspaceRepository {
     if (metadataRefusal) throw new Error(metadataRefusal);
     const docChanged = new Set(batch.docs.map((record) => record.id));
     const metaChanged = new Set(batch.pages.map((page) => page.id));
+    const quietPageIds = new Set(batch.quietPageIds ?? []);
+    const nonQuietMetaChanged = new Set([...metaChanged].filter((id) => !quietPageIds.has(id)));
     const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
 
     // a folder that gains content or properties gets a note of its own
-    for (const id of [...docChanged, ...metaChanged]) {
+    for (const id of [...docChanged, ...nonQuietMetaChanged]) {
       if (this.folderOnly.has(id) && this.wantsFile(state, id)) this.folderOnly.delete(id);
     }
 
@@ -358,18 +361,39 @@ export class VaultRepository implements WorkspaceRepository {
     }
 
     const candidates = new Set<PageId>([...docChanged, ...metaChanged]);
+    const structuralCandidates = new Set<PageId>(docChanged);
     for (const [id, placement] of next)
-      if (!previous.has(id) || movedPages.has(id) || (placement.file && !this.texts.has(id)))
+      if (!previous.has(id) || movedPages.has(id) || (placement.file && !this.texts.has(id))) {
         candidates.add(id);
+        structuralCandidates.add(id);
+      }
     if (retargeted.size > 0 || movedPages.size > 0) {
       for (const [id, doc] of Object.entries(state.docs)) {
-        if (linksTo(doc, retargeted) || (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages)))
+        if (linksTo(doc, retargeted) || (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages))) {
           candidates.add(id);
+          structuralCandidates.add(id);
+        }
       }
     }
+    const quietSchemaDependents = new Set<PageId>();
+    const nonQuietSchemaDependents = new Set<PageId>();
     for (const id of metaChanged) {
-      if (state.pages[id]?.kind === 'database')
-        for (const child of childrenOf(state.pages, id, true)) candidates.add(child.id);
+      if (state.pages[id]?.kind === 'database') {
+        for (const child of childrenOf(state.pages, id, true)) {
+          candidates.add(child.id);
+          if (
+            quietPageIds.has(id) &&
+            !nonQuietMetaChanged.has(id) &&
+            !docChanged.has(id) &&
+            !movedPages.has(id) &&
+            !retargeted.has(id)
+          ) {
+            quietSchemaDependents.add(child.id);
+          } else {
+            nonQuietSchemaDependents.add(child.id);
+          }
+        }
+      }
     }
 
     const preservedSources = new Set<PageId>();
@@ -434,10 +458,30 @@ export class VaultRepository implements WorkspaceRepository {
     ops.push(...planMoves(previous, next));
 
     const resolveOld = retargeted.size > 0 ? makeResolver(state, previous, this.sources) : null;
+    const skippedQuietSerialization = new Set<PageId>();
     for (const id of candidates) {
       if (preservedSources.has(id)) continue;
       const placement = next.get(id);
       if (!state.pages[id] || !placement?.file || this.locked.has(id)) continue;
+      const doc = state.docs[id];
+      const structurallyAffectedCanvas =
+        state.pages[id]?.kind === 'canvas' && doc !== undefined && linksTo(doc, movedPages);
+      const retargetedLink = retargeted.size > 0 && doc !== undefined && linksTo(doc, retargeted);
+      const enteredThroughQuiet =
+        (quietPageIds.has(id) && metaChanged.has(id)) || quietSchemaDependents.has(id);
+      const quietOnlyCandidate =
+        enteredThroughQuiet &&
+        !nonQuietMetaChanged.has(id) &&
+        !nonQuietSchemaDependents.has(id) &&
+        !structuralCandidates.has(id) &&
+        !movedPages.has(id) &&
+        !retargeted.has(id) &&
+        !retargetedLink &&
+        !structurallyAffectedCanvas;
+      if (quietOnlyCandidate) {
+        skippedQuietSerialization.add(id);
+        continue;
+      }
       const text = this.render(
         state,
         next,
@@ -470,6 +514,7 @@ export class VaultRepository implements WorkspaceRepository {
     // turning encryption on removes the plain versions kept in page history
     for (const id of metaChanged) {
       if (
+        !quietPageIds.has(id) &&
         state.pages[id]?.encrypted &&
         this.layout.has(id) &&
         !this.history.get(id)?.length &&
@@ -499,6 +544,7 @@ export class VaultRepository implements WorkspaceRepository {
 
     const guardedLinkedViewPages = new Set<PageId>();
     for (const id of candidates) {
+      if (skippedQuietSerialization.has(id)) continue;
       const placement = next.get(id);
       if (!placement?.file || extension(placement.file) !== 'md') continue;
       const stagedHasLinkedView = hasLinkedViewNode(state.docs[id]);
@@ -663,12 +709,11 @@ export class VaultRepository implements WorkspaceRepository {
         },
         getNavigationReadContext(),
       );
-      matchesSource = (
+      matchesSource =
         parsed.ok &&
         parsed.database === undefined &&
         samePersistiblePageContent(page, parsed.page) &&
-        sameValue(state.docs[id], parsed.doc)
-      );
+        sameValue(state.docs[id], parsed.doc);
     } catch {
       matchesSource = false;
     }
@@ -811,7 +856,10 @@ export class VaultRepository implements WorkspaceRepository {
         if (property.type !== 'checkbox') continue;
         const wasPresent = Object.hasOwn(previousProperties, property.id);
         const isPresent = Object.hasOwn(page.properties, property.id);
-        if (wasPresent === isPresent && sameValue(previousProperties[property.id], page.properties[property.id]))
+        if (
+          wasPresent === isPresent &&
+          sameValue(previousProperties[property.id], page.properties[property.id])
+        )
           continue;
         changedCheckboxKeys.add(
           findKey(frontmatter, property.name) ??
@@ -1303,7 +1351,9 @@ export class VaultRepository implements WorkspaceRepository {
   async deleteFiles(ids: FileId[]): Promise<void> {
     if (ids.length > 0 && this.locked.size > 0) {
       const id = this.locked.values().next().value as PageId;
-      throw new Error(`Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`);
+      throw new Error(
+        `Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`,
+      );
     }
     const results = await this.bridge.apply(ids.map((path) => ({ op: 'remove', path })));
     for (const id of ids) this.others.delete(id);
@@ -1500,7 +1550,9 @@ export class VaultRepository implements WorkspaceRepository {
     }
 
     if (protectedDatabases.size > 0) {
-      const allPages = new Map([...Object.values(state.pages), ...pages.values()].map((page) => [page.id, page]));
+      const allPages = new Map(
+        [...Object.values(state.pages), ...pages.values()].map((page) => [page.id, page]),
+      );
       for (const databaseId of protectedDatabases) {
         const reason = `The parent database is protected: ${protectedPages.get(databaseId)}`;
         for (const row of allPages.values()) {
@@ -1511,7 +1563,8 @@ export class VaultRepository implements WorkspaceRepository {
           readable.delete(row.id);
           pages.set(row.id, row);
           const raw = texts.get(row.id) ?? this.texts.get(row.id);
-          if (raw !== undefined) docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text: raw } }] };
+          if (raw !== undefined)
+            docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text: raw } }] };
         }
       }
     }

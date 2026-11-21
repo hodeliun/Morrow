@@ -873,7 +873,12 @@ describe('independent PageEditor coordination gates', () => {
         }),
         expect.objectContaining({
           type: 'taskList',
-          content: [expect.objectContaining({ type: 'taskItem', attrs: { checked: true } })],
+          content: [
+            expect.objectContaining({
+              type: 'taskItem',
+              attrs: expect.objectContaining({ checked: true }),
+            }),
+          ],
         }),
       ]),
     });
@@ -891,7 +896,12 @@ describe('independent PageEditor coordination gates', () => {
         }),
         expect.objectContaining({
           type: 'taskList',
-          content: [expect.objectContaining({ type: 'taskItem', attrs: { checked: true } })],
+          content: [
+            expect.objectContaining({
+              type: 'taskItem',
+              attrs: expect.objectContaining({ checked: true }),
+            }),
+          ],
         }),
       ]),
     });

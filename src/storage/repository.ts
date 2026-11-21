@@ -12,6 +12,8 @@ export interface WriteBatch {
   pages: PageMeta[];
   docs: Array<{ id: PageId; doc: DocNode }>;
   removed: PageId[];
+  /** Pages whose only queued change is navigation metadata such as lastOpenedAt. */
+  quietPageIds?: PageId[];
   /** Read-only source records that must still match before dependent pilot data is written. */
   checkPages?: PageId[];
   snapshots?: Snapshot[];

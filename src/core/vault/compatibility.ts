@@ -11,6 +11,7 @@ import {
   PROP_TYPES,
   validCover,
   VIEW_TYPES,
+  WIDGET_KINDS,
 } from '../model';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import { MANAGED_KEYS, normalizeExtra, readTags, splitFrontmatter } from './frontmatter';
@@ -31,7 +32,7 @@ const FILTER_OPS = new Set([
   'unchecked',
 ]);
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
-const PROPERTY_KEYS = new Set(['id', 'name', 'type', 'options', 'formula', 'display', 'max']);
+const PROPERTY_KEYS = new Set(['id', 'name', 'type', 'options', 'formula', 'display', 'max', 'wrap']);
 const OPTION_KEYS = new Set(['id', 'name', 'color']);
 const VIEW_KEYS = new Set([
   'id',
@@ -44,7 +45,14 @@ const VIEW_KEYS = new Set([
   'hidden',
   'widths',
   'columns',
+  'groupOrder',
+  'hiddenGroups',
+  'collapsedGroups',
+  'hideEmptyGroups',
+  'limit',
+  'widgets',
 ]);
+const WIDGET_KEYS = new Set(['id', 'kind', 'prop', 'title', 'wide']);
 const FILTER_KEYS = new Set(['id', 'prop', 'op', 'value']);
 const SORT_KEYS = new Set(['prop', 'dir']);
 const REGISTRY_ENTRY_KEYS = new Set([
@@ -100,10 +108,7 @@ export function hasUnrepresentableDatabaseSchema(text: string): boolean {
 }
 
 /** The readers for these files keep only the fields listed below. */
-export function findUnrepresentableVaultMetadata(
-  raw: unknown,
-  kind: 'workspace' | 'recent',
-): string | null {
+export function findUnrepresentableVaultMetadata(raw: unknown, kind: 'workspace' | 'recent'): string | null {
   if (raw === null || raw === undefined) return null;
   if (!isRecord(raw)) return `The Morrow ${kind} metadata is not a supported object.`;
 
@@ -125,7 +130,10 @@ export function findUnrepresentableVaultMetadata(
       }
       seen.add(entry.id);
       for (const field of ['created', 'order', 'archived', 'trashed'] as const) {
-        if (entry[field] !== undefined && (typeof entry[field] !== 'number' || !Number.isFinite(entry[field]))) {
+        if (
+          entry[field] !== undefined &&
+          (typeof entry[field] !== 'number' || !Number.isFinite(entry[field]))
+        ) {
           return 'The Morrow workspace registry contains a number this version cannot preserve.';
         }
       }
@@ -166,7 +174,12 @@ export function findUnrepresentableVaultMetadata(
       return 'The Morrow activity history is not supported.';
     }
     for (const [day, count] of Object.entries(raw.activity)) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || typeof count !== 'number' || !Number.isFinite(count) || count <= 0) {
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(day) ||
+        typeof count !== 'number' ||
+        !Number.isFinite(count) ||
+        count <= 0
+      ) {
         return 'The Morrow activity history contains a value this version cannot preserve.';
       }
     }
@@ -180,8 +193,7 @@ function pageMetadataIssue(data: Record<string, unknown>): string | null {
     if (
       title !== null &&
       title !== '' &&
-      (typeof title !== 'string' ||
-        title !== title.replace(/[\r\n\t]+/g, ' ').slice(0, MAX_TITLE_LENGTH))
+      (typeof title !== 'string' || title !== title.replace(/[\r\n\t]+/g, ' ').slice(0, MAX_TITLE_LENGTH))
     ) {
       return 'The title uses a value this version cannot preserve.';
     }
@@ -301,7 +313,8 @@ function propertyIssue(raw: unknown): string | null {
   if (typeof raw.id !== 'string' || !ID.test(raw.id) || typeof raw.name !== 'string') {
     return 'A database property has an unsupported identifier or name.';
   }
-  if (!PROP_TYPES.includes(raw.type as never)) return 'A database property type is not supported by this version.';
+  if (!PROP_TYPES.includes(raw.type as never))
+    return 'A database property type is not supported by this version.';
   if (raw.name.length > 200) return 'A database property name is too long to preserve.';
 
   if (raw.options !== undefined) {
@@ -340,6 +353,9 @@ function propertyIssue(raw: unknown): string | null {
     ) {
       return 'A database property maximum uses a format this version cannot preserve.';
     }
+  }
+  if (Object.hasOwn(raw, 'wrap') && (raw.type !== 'text' || typeof raw.wrap !== 'boolean')) {
+    return 'A database text wrapping setting uses a format this version cannot preserve.';
   }
   return null;
 }
@@ -435,6 +451,59 @@ function viewIssue(raw: unknown): string | null {
       }
     }
   }
+
+  for (const field of ['groupOrder', 'hiddenGroups', 'collapsedGroups'] as const) {
+    const value = raw[field];
+    if (
+      Object.hasOwn(raw, field) &&
+      (!Array.isArray(value) ||
+        value.length > 200 ||
+        value.some((key) => typeof key !== 'string' || key.length === 0 || key.length > 64))
+    ) {
+      return `A database view ${field} list contains values this version cannot preserve.`;
+    }
+  }
+  if (Object.hasOwn(raw, 'hideEmptyGroups') && typeof raw.hideEmptyGroups !== 'boolean') {
+    return 'A database view empty-group setting is not supported.';
+  }
+  if (
+    Object.hasOwn(raw, 'limit') &&
+    (typeof raw.limit !== 'number' || !Number.isInteger(raw.limit) || raw.limit < 0 || raw.limit > 10_000)
+  ) {
+    return 'A database view row limit is not supported.';
+  }
+  if (Object.hasOwn(raw, 'widgets')) {
+    if (!Array.isArray(raw.widgets) || raw.widgets.length > 40) {
+      return 'A database view widget list is not supported.';
+    }
+    const ids = new Set<string>();
+    for (const widget of raw.widgets) {
+      if (!isRecord(widget) || unknownKey(widget, WIDGET_KEYS)) {
+        return 'A dashboard widget has fields this version cannot preserve.';
+      }
+      if (
+        typeof widget.id !== 'string' ||
+        !ID.test(widget.id) ||
+        ids.has(widget.id) ||
+        !WIDGET_KINDS.includes(widget.kind as never) ||
+        (widget.prop !== undefined &&
+          widget.prop !== null &&
+          (typeof widget.prop !== 'string' || widget.prop.length > 64))
+      ) {
+        return 'A dashboard widget uses a shape this version cannot preserve.';
+      }
+      ids.add(widget.id);
+      if (
+        Object.hasOwn(widget, 'title') &&
+        (typeof widget.title !== 'string' || widget.title.trim().length === 0 || widget.title.length > 80)
+      ) {
+        return 'A dashboard widget title uses a format this version cannot preserve.';
+      }
+      if (Object.hasOwn(widget, 'wide') && typeof widget.wide !== 'boolean') {
+        return 'A dashboard widget width setting is not supported.';
+      }
+    }
+  }
   return null;
 }
 
@@ -509,10 +578,7 @@ function unsupportedMarkerIssue(body: string): string | null {
         parsedViewIds.push(node.attrs.viewId);
       }
     });
-    if (
-      parsedViewIds.length !== viewIds.size ||
-      parsedViewIds.some((viewId) => !viewIds.has(viewId))
-    ) {
+    if (parsedViewIds.length !== viewIds.size || parsedViewIds.some((viewId) => !viewIds.has(viewId))) {
       return 'The page contains a Polaris Dados view this version cannot safely represent.';
     }
   }
@@ -527,7 +593,8 @@ function unsupportedMarkerIssue(body: string): string | null {
 
 function hasOverdeepPolarisDadosView(body: string): boolean {
   const source = markdownOutsideFences(body);
-  const structure = /<\/?(?:details|aside)\b[^>]*>|<div\b[^>]*data-(?:columns|column)\b[^>]*>|<\/div\s*>|<!--[ \t\r\n]*morrow:polaris-dados-view\s*:/gi;
+  const structure =
+    /<\/?(?:details|aside)\b[^>]*>|<div\b[^>]*data-(?:columns|column)\b[^>]*>|<\/div\s*>|<!--[ \t\r\n]*morrow:polaris-dados-view\s*:/gi;
   let depth = 0;
   let match: RegExpExecArray | null;
   while ((match = structure.exec(source))) {
@@ -567,12 +634,7 @@ function markdownOutsideFences(markdown: string): string {
     const content = stripContainerMarkers(line);
     const run = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
     if (fence) {
-      if (
-        run &&
-        run[1]![0] === fence.character &&
-        run[1]!.length >= fence.length &&
-        run[2]!.trim() === ''
-      ) {
+      if (run && run[1]![0] === fence.character && run[1]!.length >= fence.length && run[2]!.trim() === '') {
         fence = null;
       }
       output.push('');
@@ -612,7 +674,7 @@ function stripContainerMarkers(line: string): string {
 
 function withoutInlineCode(line: string): string {
   let output = '';
-  for (let index = 0; index < line.length; ) {
+  for (let index = 0; index < line.length;) {
     if (line[index] !== '`') {
       output += line[index]!;
       index++;
@@ -729,9 +791,7 @@ function nestedHtmlMarkdown(source: string): { body: string; outside: string } |
   const summary = details ? /<summary[^>]*>[\s\S]*?<\/summary>/i.exec(html) : null;
   if (summary) bodyStart = summary.index + summary[0].length;
   const after = html.slice(bodyStart);
-  const inner = details
-    ? after.replace(/<\/details>\s*$/i, '')
-    : after.replace(/<\/aside>\s*$/i, '');
+  const inner = details ? after.replace(/<\/details>\s*$/i, '') : after.replace(/<\/aside>\s*$/i, '');
   const body = inner.trim();
   if (!body || !/<!--[ \t\r\n]*morrow:/i.test(body)) return null;
 

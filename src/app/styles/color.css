@@ -323,43 +323,54 @@
   background: var(--c-red);
 }
 
-/* a whole block's background, from the colour in its Turn into menu */
+/* a whole block's background, from the colour in its Turn into menu. it reaches a little past the block
+   with a shadow of the same colour rather than padding, so colouring a line never moves the lines around it */
 .prose .block-bg {
   border-radius: 4px;
-  padding: 2px 6px;
+  padding-left: 6px;
+  padding-right: 6px;
   margin-left: -6px;
   margin-right: -6px;
+  background: var(--block-bg);
+  box-shadow: 0 0 0 2px var(--block-bg);
 }
 .prose ul.block-bg,
 .prose ol.block-bg {
   padding-left: calc(1.45em + 6px);
 }
+/* an item of a list on its own is coloured where its text is, its bullet and its words stay put */
+.prose li.block-bg {
+  padding-left: 0;
+  padding-right: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
 .prose .block-bg-gray {
-  background: var(--c-gray);
+  --block-bg: var(--c-gray);
 }
 .prose .block-bg-brown {
-  background: var(--c-brown);
+  --block-bg: var(--c-brown);
 }
 .prose .block-bg-orange {
-  background: var(--c-orange);
+  --block-bg: var(--c-orange);
 }
 .prose .block-bg-yellow {
-  background: var(--c-yellow);
+  --block-bg: var(--c-yellow);
 }
 .prose .block-bg-green {
-  background: var(--c-green);
+  --block-bg: var(--c-green);
 }
 .prose .block-bg-blue {
-  background: var(--c-blue);
+  --block-bg: var(--c-blue);
 }
 .prose .block-bg-purple {
-  background: var(--c-purple);
+  --block-bg: var(--c-purple);
 }
 .prose .block-bg-pink {
-  background: var(--c-pink);
+  --block-bg: var(--c-pink);
 }
 .prose .block-bg-red {
-  background: var(--c-red);
+  --block-bg: var(--c-red);
 }
 .color-dot.text-gray {
   color: var(--c-gray-text);
@@ -494,6 +505,44 @@
 :root[data-colorful='true'] .tag-chip.tag-red {
   background: var(--solid-red);
   color: #fff;
+}
+
+/* a colour picked for a tag shows without colourful too, softly like a select option */
+.tag-chip.tag-picked.tag-gray {
+  background: var(--c-gray);
+  color: var(--c-gray-text);
+}
+.tag-chip.tag-picked.tag-brown {
+  background: var(--c-brown);
+  color: var(--c-brown-text);
+}
+.tag-chip.tag-picked.tag-orange {
+  background: var(--c-orange);
+  color: var(--c-orange-text);
+}
+.tag-chip.tag-picked.tag-yellow {
+  background: var(--c-yellow);
+  color: var(--c-yellow-text);
+}
+.tag-chip.tag-picked.tag-green {
+  background: var(--c-green);
+  color: var(--c-green-text);
+}
+.tag-chip.tag-picked.tag-blue {
+  background: var(--c-blue);
+  color: var(--c-blue-text);
+}
+.tag-chip.tag-picked.tag-purple {
+  background: var(--c-purple);
+  color: var(--c-purple-text);
+}
+.tag-chip.tag-picked.tag-pink {
+  background: var(--c-pink);
+  color: var(--c-pink-text);
+}
+.tag-chip.tag-picked.tag-red {
+  background: var(--c-red);
+  color: var(--c-red-text);
 }
 
 /* page covers, gradients drawn in css so they weigh nothing */
@@ -1530,4 +1579,105 @@ button.home-stat:hover {
 }
 .palette-swatch[aria-checked='true'] {
   color: var(--text);
+}
+
+/* a flat page icon in a colour of its own, picked with the icon */
+.flat-icon.has-colour.flat-icon-gray,
+.icon-colour-dot.flat-icon-gray {
+  color: var(--c-gray-text);
+}
+.flat-icon.has-colour.flat-icon-brown,
+.icon-colour-dot.flat-icon-brown {
+  color: var(--c-brown-text);
+}
+.flat-icon.has-colour.flat-icon-orange,
+.icon-colour-dot.flat-icon-orange {
+  color: var(--c-orange-text);
+}
+.flat-icon.has-colour.flat-icon-yellow,
+.icon-colour-dot.flat-icon-yellow {
+  color: var(--c-yellow-text);
+}
+.flat-icon.has-colour.flat-icon-green,
+.icon-colour-dot.flat-icon-green {
+  color: var(--c-green-text);
+}
+.flat-icon.has-colour.flat-icon-blue,
+.icon-colour-dot.flat-icon-blue {
+  color: var(--c-blue-text);
+}
+.flat-icon.has-colour.flat-icon-purple,
+.icon-colour-dot.flat-icon-purple {
+  color: var(--c-purple-text);
+}
+.flat-icon.has-colour.flat-icon-pink,
+.icon-colour-dot.flat-icon-pink {
+  color: var(--c-pink-text);
+}
+.flat-icon.has-colour.flat-icon-red,
+.icon-colour-dot.flat-icon-red {
+  color: var(--c-red-text);
+}
+.icon-colours {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 0 8px;
+}
+.icon-colour {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+}
+.icon-colour:hover {
+  background: var(--hover);
+}
+.icon-colour.is-active {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.icon-colour-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: currentColor;
+}
+
+/* a picture of your own in the picker, with a small button to take it out of the vault */
+.emoji-mine {
+  position: relative;
+  display: inline-flex;
+}
+.emoji-mine .custom-emoji-img {
+  width: 24px;
+  height: 24px;
+}
+.emoji-mine-remove {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  display: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.emoji-mine:hover .emoji-mine-remove {
+  display: grid;
+}
+.emoji-mine-help {
+  margin: 4px 0 0;
+}
+
+/* a page shown in another without its title, only its words */
+.prose p[data-embed-title='hidden'] .page-embed:not(.is-live) > .page-link {
+  display: none;
+}
+.prose p[data-embed-title='hidden'] .page-embed:not(.is-live) {
+  padding-top: 6px;
 }

@@ -213,18 +213,22 @@ export class WorkspaceSession {
     const pendingPages = patch.pages.filter((page) => !this.queue.isDirty(page.id));
     while (pendingPages.length > 0) {
       let acceptedInPass = false;
-      for (let index = 0; index < pendingPages.length; ) {
+      for (let index = 0; index < pendingPages.length;) {
         const page = pendingPages[index]!;
         const dependencies = patch.requiresAccepted?.[page.id] ?? [];
         if (
-          dependencies.some(
-            (dependency) => !patchPageIds.has(dependency) || !acceptedSet.has(dependency),
-          )
+          dependencies.some((dependency) => !patchPageIds.has(dependency) || !acceptedSet.has(dependency))
         ) {
           index += 1;
           continue;
         }
-        pages[page.id] = page;
+        const currentPage = this.state.pages[page.id];
+        // The watcher may read the old recent.json value while a quiet page-open is queued.
+        // Accept its content update, but keep that navigation timestamp for the pending sidecar write.
+        pages[page.id] =
+          currentPage && this.queue.isQuietPending(page.id)
+            ? { ...page, lastOpenedAt: currentPage.lastOpenedAt }
+            : page;
         if (patch.docs[page.id]) docs[page.id] = patch.docs[page.id]!;
         accepted.push(page.id);
         acceptedSet.add(page.id);
@@ -759,7 +763,11 @@ export class WorkspaceSession {
     this.state = state;
     this.refreshPilotDataRevisions(this.state);
     beforeQueue?.();
-    this.queue.enqueue(changes, allowedPilotDataDatabaseId ? [allowedPilotDataDatabaseId] : []);
+    this.queue.enqueue(
+      changes,
+      allowedPilotDataDatabaseId ? [allowedPilotDataDatabaseId] : [],
+      command.type === 'page.markOpened',
+    );
     for (const listener of this.listeners) listener();
     return ok(state);
   }
