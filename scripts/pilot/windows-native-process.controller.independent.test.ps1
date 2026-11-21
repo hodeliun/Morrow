@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:CaseResults = [Collections.Generic.List[object]]::new()
 $script:CaseFailures = [Collections.Generic.List[string]]::new()
+$script:CleanupFailures = [Collections.Generic.List[string]]::new()
 $script:CurrentCaseOutcome = $null
 $script:FixtureHandles = [Collections.Generic.List[System.Diagnostics.Process]]::new()
 $script:Sessions = [Collections.Generic.List[object]]::new()
@@ -16,11 +17,15 @@ $script:EvidenceCreated = $false
 $script:RunnerTempPath = $null
 $script:ScratchFullPath = $null
 $script:ScratchCreated = $false
+$script:ScratchIdentityPath = $null
+$script:ScratchIdentityToken = $null
+$script:TrackedProcessesExited = $false
 $script:ControllerFullPath = $null
 $script:ControllerSha256 = $null
 $script:RuntimeDirectory = $null
 $script:RuntimeExePath = $null
 $script:RuntimeSha256 = $null
+$script:WideUtf8FixturePathVerified = $false
 $script:FixtureScriptPath = $null
 $script:Outsider = $null
 $script:StartedUtc = [DateTime]::UtcNow
@@ -40,6 +45,44 @@ function Get-AssertionCode {
   param([AllowNull()][object]$Record)
   if ($null -ne $Record -and [string]$Record.Exception.Message -match '\AAssertion:([A-Za-z0-9_.-]{1,80})\z') { return $Matches[1] }
   return 'HarnessFailure'
+}
+
+function Get-FixtureFailureTag {
+  param([AllowNull()][object]$Record)
+  $assertion=Get-AssertionCode $Record
+  if ($assertion -in @('FixtureManifestIdentity','FixtureManifestPid','FixtureHandleIdentity','FixtureManifestImagePathMismatch','FixtureManifestImagePathUnicodeMissing','FixtureImagePathMismatch','FixtureImagePathUnicodeMissing','FixtureStartTimeMismatch')) {
+    if ($assertion.Length -le 32) { return $assertion }
+    return 'AssertionFailed'
+  }
+  if ($null -ne $Record -and $null -ne $Record.Exception -and $Record.Exception.GetType().Name -match '\A[A-Za-z][A-Za-z0-9]{0,39}\z') {
+    $typeName=$Record.Exception.GetType().Name
+    if ($typeName.Length -le 32) { return $typeName }
+    return $typeName.Substring(0,32)
+  }
+  return 'FixtureException'
+}
+
+function New-FixtureHandshakeFailure {
+  param(
+    [Parameter(Mandatory)][ValidateSet('root','descendant','outsider')][string]$Role,
+    [Parameter(Mandatory)][ValidatePattern('\A[A-Za-z0-9-]{1,24}\z')][string]$Phase,
+    [Parameter(Mandatory)][ValidatePattern('\A[A-Za-z0-9_.-]{1,32}\z')][string]$Reason
+  )
+  return [InvalidOperationException]::new("Assertion:FixtureHandshake.$Role.$Phase.$Reason")
+}
+
+function Add-CleanupFailure {
+  param(
+    [Parameter(Mandatory)][ValidatePattern('\A[A-Za-z0-9-]{1,24}\z')][string]$Phase,
+    [Parameter(Mandatory)][ValidatePattern('\A[A-Za-z0-9-]{1,32}\z')][string]$Code
+  )
+  $entry=$Phase+'.'+$Code
+  if (-not $script:CleanupFailures.Contains($entry)) { [void]$script:CleanupFailures.Add($entry) }
+  $caseName='cleanup-'+$entry
+  if (-not $script:CaseFailures.Contains($caseName)) { [void]$script:CaseFailures.Add($caseName) }
+  $alreadyRecorded=$false
+  foreach ($result in $script:CaseResults) { if ([string]$result['name'] -ceq $caseName) { $alreadyRecorded=$true; break } }
+  if (-not $alreadyRecorded) { [void]$script:CaseResults.Add([ordered]@{ name=$caseName; status='failed'; code=$Code }) }
 }
 
 function Invoke-TestCase {
@@ -242,13 +285,28 @@ function Initialize-EvidenceRoot {
 }
 
 function Initialize-ScratchRoot {
-  $runTemp = [IO.Path]::GetFullPath([Environment]::GetEnvironmentVariable('RUNNER_TEMP',[EnvironmentVariableTarget]::Process))
-  $path = Join-Path $runTemp ('m247-i-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
+  $runTemp=$script:RunnerTempPath
+  if ([string]::IsNullOrWhiteSpace($runTemp) -or -not [IO.Directory]::Exists($runTemp)) { throw [InvalidOperationException]::new('Harness:ScratchRunnerTempUnavailable') }
+  $nonce=[Guid]::NewGuid().ToString('N')
+  $path=[IO.Path]::GetFullPath((Join-Path $runTemp ('m247-i-'+$nonce)))
+  $parent=[IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($path)).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+  if (-not [string]::Equals($parent,$runTemp,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($path) -notmatch '\Am247-i-[0-9a-f]{32}\z') {
+    throw [InvalidOperationException]::new('Harness:ScratchRootOutsideRunnerTemp')
+  }
   if ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) { throw [InvalidOperationException]::new('Harness:ScratchRootNotFresh') }
   [void][IO.Directory]::CreateDirectory($path)
   if (-not [IO.Directory]::Exists($path)) { throw [InvalidOperationException]::new('Harness:ScratchRootCreateFailed') }
   $script:ScratchFullPath = $path
   $script:ScratchCreated = $true
+  $rootAttributes=[IO.File]::GetAttributes($path)
+  if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw [InvalidOperationException]::new('Harness:ScratchRootIsReparsePoint') }
+  $script:ScratchIdentityPath=Join-Path $path '.morrow-owner'
+  $script:ScratchIdentityToken=[Guid]::NewGuid().ToString('N')
+  $identityBytes=$script:Utf8NoBom.GetBytes($script:ScratchIdentityToken)
+  $identityStream=[IO.File]::Open($script:ScratchIdentityPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  try { $identityStream.Write($identityBytes,0,$identityBytes.Length); $identityStream.Flush($true) } finally { $identityStream.Dispose() }
+  $identityCheck=$script:Utf8NoBom.GetString([IO.File]::ReadAllBytes($script:ScratchIdentityPath))
+  if ($identityCheck -cne $script:ScratchIdentityToken) { throw [InvalidOperationException]::new('Harness:ScratchIdentityNotConfirmed') }
 }
 
 function Copy-DirectoryWithoutReparsePoints {
@@ -332,7 +390,7 @@ function New-ProcessStartInfo {
 function New-FixtureArguments {
   param([Parameter(Mandatory)][string]$Role,[Parameter(Mandatory)][string]$Mode,[Parameter(Mandatory)][object]$Case)
   return [string[]]@(
-    '-NoLogo','-NoProfile','-NonInteractive','-File',$script:FixtureScriptPath,
+    '-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$script:FixtureScriptPath,
     '-Role',$Role,'-Mode',$Mode,'-ObserverDirectory',$Case.Observer,'-Nonce',$Case.Nonce,
     '-AckPath',(Join-Path $Case.Observer ($Role + '.ack')),'-ActionPath',$Case.RootAction,
     '-ReadyPath',$Case.DescendantReady,'-RuntimeExePath',$script:RuntimeExePath,
@@ -380,7 +438,7 @@ if ($Role -eq 'descendant') {
 if ($Mode -eq 'root-exits-first') {
   while (-not [IO.File]::Exists($ActionPath)) { Start-Sleep -Milliseconds 10 }
   $arguments=@(
-    '-NoLogo','-NoProfile','-NonInteractive','-File',$FixtureScriptPath,
+    '-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$FixtureScriptPath,
     '-Role','descendant','-Mode','wait','-ObserverDirectory',$ObserverDirectory,
     '-Nonce',$Nonce,'-AckPath',$DescendantAckPath,'-ActionPath',$ActionPath,
     '-ReadyPath',$ReadyPath,'-RuntimeExePath',$RuntimeExePath,
@@ -444,7 +502,7 @@ function New-Descriptor {
     TEMP=$profileTemp; TMP=$profileTemp
   }
   $arguments=[string[]]@(
-    '-NoLogo','-NoProfile','-NonInteractive','-File',$script:FixtureScriptPath,
+    '-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$script:FixtureScriptPath,
     '-Role','root','-Mode',$Mode,'-ObserverDirectory',$Case.Observer,'-Nonce',$Case.Nonce,
     '-AckPath',$Case.RootAck,'-ActionPath',$Case.RootAction,'-ReadyPath',$Case.DescendantReady,
     '-RuntimeExePath',$script:RuntimeExePath,'-FixtureScriptPath',$script:FixtureScriptPath,
@@ -656,29 +714,70 @@ function Send-And-ReadError {
 function Wait-ForFixtureHandle {
   param(
     [Parameter(Mandatory)][object]$Case,[Parameter(Mandatory)][ValidateSet('root','descendant','outsider')][string]$Role,
-    [int]$TimeoutMilliseconds=15000,[AllowNull()][System.Diagnostics.Process]$AlreadyOwnedProcess
+    [int]$TimeoutMilliseconds=15000,[AllowNull()][System.Diagnostics.Process]$AlreadyOwnedProcess,[AllowNull()][object]$OwnerSession
   )
   $clock=[Diagnostics.Stopwatch]::StartNew()
+  $lastPhase='manifest-discovery'
+  $lastReason='no-manifest'
+  $process=$AlreadyOwnedProcess
   while ($clock.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
-    $files=@(Get-ChildItem -LiteralPath $Case.Observer -Filter ($Role+'-*-'+$Case.Nonce+'.json') -File -ErrorAction SilentlyContinue)
+    $phase='manifest-discovery'
+    $files=@()
+    try {
+      $files=@(Get-ChildItem -LiteralPath $Case.Observer -Filter ($Role+'-*-'+$Case.Nonce+'.json') -File -ErrorAction Stop)
+    } catch {
+      $lastPhase=$phase
+      $lastReason=Get-FixtureFailureTag $_
+    }
     if ($files.Count -gt 0) {
+      $provisionalProcess=$null
       try {
+        $phase='manifest-parse'
         $manifest=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($files[0].FullName,$script:Utf8NoBom)) -AsHashtable -DateKind String -ErrorAction Stop
+        $phase='manifest-identity'
         Assert-Condition -Condition ([string]$manifest['role'] -ceq $Role -and [string]$manifest['nonce'] -ceq $Case.Nonce) -Name 'FixtureManifestIdentity'
         Assert-IntegerValue -Value $manifest['processId'] -Minimum 1 -Maximum [long]::MaxValue -Name 'FixtureManifestPid'
-        $process=$AlreadyOwnedProcess
+        $phase='process-handle'
         if ($null -eq $process) {
-          # This PID comes only from a nonce-bound fixture manifest and is used only to retain the observer's proof handle.
-          $process=[Diagnostics.Process]::GetProcessById([int]$manifest['processId'])
-          [void]$script:FixtureHandles.Add($process)
+          # Hold a manifest-selected observer handle provisionally until its full OS identity is verified.
+          $provisionalProcess=[Diagnostics.Process]::GetProcessById([int]$manifest['processId'])
+          $process=$provisionalProcess
         }
+        $phase='process-identity'
         $null=$process.Handle
         Assert-Condition -Condition (-not $process.HasExited -and [long]$process.Id -eq [long]$manifest['processId']) -Name 'FixtureHandleIdentity'
+        $phase='image-path'
         $imagePath=$process.MainModule.FileName
         Assert-Condition -Condition ([string]::Equals([IO.Path]::GetFullPath($imagePath),$script:RuntimeExePath,[StringComparison]::OrdinalIgnoreCase)) -Name 'FixtureImagePathMismatch'
+        $manifestImagePath=[string]$manifest['imagePath']
+        Assert-Condition -Condition ([string]::Equals([IO.Path]::GetFullPath($manifestImagePath),$script:RuntimeExePath,[StringComparison]::OrdinalIgnoreCase)) -Name 'FixtureManifestImagePathMismatch'
+        Assert-Condition -Condition ($imagePath.Contains('☃') -and $manifestImagePath.Contains('☃')) -Name 'FixtureImagePathUnicodeMissing'
+        $phase='creation-time'
         $manifestStart=[DateTimeOffset]::Parse([string]$manifest['createdUtc'],[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
         $handleStart=[DateTimeOffset]$process.StartTime.ToUniversalTime()
         Assert-Condition -Condition ([Math]::Abs(($handleStart-$manifestStart).TotalSeconds) -lt 5) -Name 'FixtureStartTimeMismatch'
+        if ($null -ne $provisionalProcess) {
+          $existingTrackedProcess=$null
+          foreach ($trackedProcess in $script:FixtureHandles) {
+            try {
+              if ([long]$trackedProcess.Id -eq [long]$process.Id -and $trackedProcess.StartTime.ToUniversalTime().Ticks -eq $handleStart.UtcDateTime.Ticks) {
+                $existingTrackedProcess=$trackedProcess
+                break
+              }
+            } catch { }
+          }
+          if ($null -ne $existingTrackedProcess) {
+            $duplicateProcess=$provisionalProcess
+            $provisionalProcess=$null
+            $process=$existingTrackedProcess
+            try { $duplicateProcess.Dispose() } catch { }
+          } else {
+            [void]$script:FixtureHandles.Add($provisionalProcess)
+            $provisionalProcess=$null
+          }
+        }
+        $script:WideUtf8FixturePathVerified=$true
+        $phase='acknowledgment'
         $ackPath=switch ($Role) {
           'root' { $Case.RootAck }
           'descendant' { $Case.DescendantAck }
@@ -690,12 +789,38 @@ function Wait-ForFixtureHandle {
         }
         return [pscustomobject]@{ Process=$process; Manifest=$manifest; Path=$files[0].FullName }
       } catch {
-        if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { throw }
+        $lastPhase=$phase
+        $lastReason=Get-FixtureFailureTag $_
+        if ($null -ne $provisionalProcess) {
+          $process=$null
+        }
+        if ($phase -eq 'process-handle' -and $null -eq $AlreadyOwnedProcess) {
+          throw (New-FixtureHandshakeFailure -Role $Role -Phase 'process-handle' -Reason $lastReason)
+        }
+      } finally {
+        if ($null -ne $provisionalProcess) {
+          try { $provisionalProcess.Dispose() } catch { }
+          $provisionalProcess=$null
+        }
+      }
+    }
+    $hasExited=$false
+    if ($null -ne $process) {
+      try { $hasExited=$process.HasExited } catch { }
+    }
+    if ($hasExited) {
+      throw (New-FixtureHandshakeFailure -Role $Role -Phase 'process-exit' -Reason 'exited-before-handshake')
+    }
+    if ($null -ne $OwnerSession) {
+      $controllerExited=$false
+      try { $controllerExited=$OwnerSession.Process.HasExited } catch { }
+      if ($controllerExited) {
+        throw (New-FixtureHandshakeFailure -Role $Role -Phase 'controller-exit' -Reason 'exited-before-fixture')
       }
     }
     Start-Sleep -Milliseconds 15
   }
-  throw [TimeoutException]::new('Assertion:FixtureHandshakeDeadline')
+  throw [TimeoutException]::new("Assertion:FixtureHandshake.$Role.$lastPhase.$lastReason")
 }
 
 function Start-Outsider {
@@ -706,9 +831,10 @@ function Start-Outsider {
   $process=[System.Diagnostics.Process]::new()
   $process.StartInfo=$info
   if (-not $process.Start()) { throw [InvalidOperationException]::new('Harness:OutsiderStartFailed') }
+  $script:Outsider=[pscustomobject]@{ Case=$case; Process=$process; HandshakeComplete=$false }
   [void]$script:FixtureHandles.Add($process)
-  $script:Outsider=[pscustomobject]@{ Case=$case; Process=$process }
   $null=Wait-ForFixtureHandle -Case $case -Role outsider -AlreadyOwnedProcess $process
+  $script:Outsider.HandshakeComplete=$true
 }
 
 function Assert-FixtureAlive {
@@ -743,7 +869,7 @@ function Send-StartAndCapture {
     Send-RawBytes -Session $Session -Bytes $combined
   } else { Send-Request -Session $Session -Json $json }
 
-  $fixture=Wait-ForFixtureHandle -Case $Case -Role root
+  $fixture=Wait-ForFixtureHandle -Case $Case -Role root -OwnerSession $Session
   $response=Read-Response -Session $Session
   $envelope=Assert-Envelope -Response $response -ExpectedOk $true -ExpectedRequestId $RequestId -CleanupState not-required -ExpectedCode $null
   $capsuleId=[string]$envelope['result']['capsuleId']
@@ -852,7 +978,7 @@ function Invoke-RootExitsFirst {
     $case=New-CaseDirectory -ShortName 'r1a'
     $started=Send-StartAndCapture -Session $session -Case $case -RequestId (New-RequestId) -Mode root-exits-first
     Write-ActionFile -Path $case.RootAction
-    $descendant=Wait-ForFixtureHandle -Case $case -Role descendant
+    $descendant=Wait-ForFixtureHandle -Case $case -Role descendant -OwnerSession $session
     Assert-FixtureAlive -Process $descendant.Process -Name 'descendant-after-root-start'
     Wait-FixtureExit -Process $started.Fixture.Process -Name 'root-exited-first'
 
@@ -1055,53 +1181,179 @@ function Invoke-ControllerCases {
 }
 
 function Stop-TrackedTestProcesses {
+  $allExited=$true
   foreach ($session in $script:Sessions) {
     if ($session.Disposed) { continue }
     try {
       if (-not $session.Process.HasExited) {
         try { $session.Process.StandardInput.Close() } catch { }
-        if (-not $session.Process.HasExited) { $session.Process.Kill() }
-        $null=$session.Process.WaitForExit(5000)
+        if (-not $session.Process.HasExited) { $session.Process.Kill(); $null=$session.Process.WaitForExit(10000) }
       }
-    } catch { }
+      if (-not $session.Process.HasExited) {
+        $allExited=$false
+        Add-CleanupFailure -Phase 'controller-process' -Code 'exit-not-confirmed'
+        continue
+      }
+    } catch {
+      $allExited=$false
+      Add-CleanupFailure -Phase 'controller-process' -Code 'control-failed'
+      continue
+    }
     try {
-      if ($session.Stdout.WaitForEnd(1000)) { $null=$session.Stdout.TakeRemainingBytes() }
-      if ($session.Stderr.WaitForEnd(1000)) { $null=$session.Stderr.TakeRemainingBytes() }
+      if (-not $session.Stdout.WaitForEnd(5000) -or -not $session.Stderr.WaitForEnd(5000)) {
+        $allExited=$false
+        Add-CleanupFailure -Phase 'controller-pipes' -Code 'close-not-confirmed'
+        continue
+      }
+      $null=$session.Stdout.TakeRemainingBytes()
+      $null=$session.Stderr.TakeRemainingBytes()
       $session.Stdout.Dispose()
       $session.Stderr.Dispose()
       $session.Process.Dispose()
       $session.Disposed=$true
-    } catch { }
+    } catch {
+      $allExited=$false
+      Add-CleanupFailure -Phase 'controller-pipes' -Code 'drain-failed'
+    }
   }
 
   if ($null -ne $script:Outsider) {
+    $outsiderProcess=$script:Outsider.Process
     try {
-      if (-not $script:Outsider.Process.HasExited) {
+      if (-not $outsiderProcess.HasExited -and $script:Outsider.HandshakeComplete) {
         Write-ActionFile -Path $script:Outsider.Case.OutsiderStop
-        $null=$script:Outsider.Process.WaitForExit(5000)
-        if (-not $script:Outsider.Process.HasExited) { $script:Outsider.Process.Kill() }
+        $null=$outsiderProcess.WaitForExit(5000)
       }
     } catch { }
+    try {
+      if (-not $outsiderProcess.HasExited) {
+        $outsiderProcess.Kill()
+        $null=$outsiderProcess.WaitForExit(10000)
+      }
+      if (-not $outsiderProcess.HasExited) {
+        $allExited=$false
+        Add-CleanupFailure -Phase 'outsider-process' -Code 'exit-not-confirmed'
+      }
+    } catch {
+      $allExited=$false
+      Add-CleanupFailure -Phase 'outsider-process' -Code 'control-failed'
+    }
   }
 
   foreach ($process in $script:FixtureHandles) {
+    $isOutsider=$null -ne $script:Outsider -and [object]::ReferenceEquals($process,$script:Outsider.Process)
     try {
-      if (-not $process.HasExited) {
+      if (-not $isOutsider -and -not $process.HasExited) {
         $process.Kill()
-        $null=$process.WaitForExit(5000)
+        $null=$process.WaitForExit(10000)
       }
-    } catch { }
-    try { $process.Dispose() } catch { }
+      if (-not $process.HasExited) {
+        $allExited=$false
+        Add-CleanupFailure -Phase 'fixture-process' -Code 'exit-not-confirmed'
+        continue
+      }
+    } catch {
+      $allExited=$false
+      Add-CleanupFailure -Phase 'fixture-process' -Code 'control-failed'
+      continue
+    }
+    try { $process.Dispose() } catch { $allExited=$false; Add-CleanupFailure -Phase 'fixture-process' -Code 'dispose-failed' }
   }
+  $script:TrackedProcessesExited=$allExited
+}
+
+function Get-ScratchTreePaths {
+  param([Parameter(Mandatory)][string]$Root)
+  $paths=[Collections.Generic.List[string]]::new()
+  $pending=[Collections.Generic.Stack[string]]::new()
+  $paths.Add($Root)
+  $pending.Push($Root)
+  while ($pending.Count -gt 0) {
+    $directory=$pending.Pop()
+    foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+      $attributes=[IO.File]::GetAttributes($entry)
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw [InvalidOperationException]::new('ScratchTreeReparsePoint') }
+      $paths.Add($entry)
+      if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { $pending.Push($entry) }
+    }
+  }
+  return ,([string[]]$paths.ToArray())
 }
 
 function Remove-ScratchRoot {
   if (-not $script:ScratchCreated -or $null -eq $script:ScratchFullPath) { return }
+  $phase='scratch-containment'
   try {
-    if ([IO.Directory]::Exists($script:ScratchFullPath)) { [IO.Directory]::Delete($script:ScratchFullPath,$true) }
+    $full=[IO.Path]::GetFullPath($script:ScratchFullPath).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    $parent=[IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($full)).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    if (-not [string]::Equals($parent,$script:RunnerTempPath,[StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($full) -notmatch '\Am247-i-[0-9a-f]{32}\z' -or
+        -not [string]::Equals($full,$script:ScratchFullPath,[StringComparison]::OrdinalIgnoreCase)) {
+      Add-CleanupFailure -Phase 'scratch-containment' -Code 'path-not-owned-child'
+      return
+    }
+    if (-not [IO.Directory]::Exists($full)) {
+      Add-CleanupFailure -Phase 'scratch-identity' -Code 'root-missing'
+      return
+    }
+    $rootAttributes=[IO.File]::GetAttributes($full)
+    if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      Add-CleanupFailure -Phase 'scratch-identity' -Code 'root-is-reparse-point'
+      return
+    }
+    $expectedIdentityPath=Join-Path $full '.morrow-owner'
+    if (-not [string]::Equals($expectedIdentityPath,$script:ScratchIdentityPath,[StringComparison]::OrdinalIgnoreCase) -or
+        -not [IO.File]::Exists($expectedIdentityPath)) {
+      Add-CleanupFailure -Phase 'scratch-identity' -Code 'owner-marker-missing'
+      return
+    }
+    $identityAttributes=[IO.File]::GetAttributes($expectedIdentityPath)
+    if (($identityAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $script:Utf8NoBom.GetString([IO.File]::ReadAllBytes($expectedIdentityPath)) -cne $script:ScratchIdentityToken) {
+      Add-CleanupFailure -Phase 'scratch-identity' -Code 'owner-marker-mismatch'
+      return
+    }
   } catch {
-    [void]$script:CaseFailures.Add('scratch-cleanup')
-    [void]$script:CaseResults.Add([ordered]@{ name='scratch-cleanup'; status='failed'; code='ScratchCleanupFailed' })
+    Add-CleanupFailure -Phase $phase -Code 'identity-check-failed'
+    return
+  }
+  if (-not $script:TrackedProcessesExited) {
+    Add-CleanupFailure -Phase 'scratch-processes' -Code 'exit-not-confirmed'
+    return
+  }
+  $phase='scratch-tree'
+  try {
+    $paths=[string[]](Get-ScratchTreePaths -Root $full)
+  } catch {
+    $code=if ($_.Exception.Message -ceq 'ScratchTreeReparsePoint') { 'reparse-point-found' } else { 'inspection-failed' }
+    Add-CleanupFailure -Phase $phase -Code $code
+    return
+  }
+  $phase='scratch-attributes'
+  try {
+    foreach ($entry in $paths) {
+      $attributes=[IO.File]::GetAttributes($entry)
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw [InvalidOperationException]::new('ScratchTreeReparsePoint') }
+      if (($attributes -band [IO.FileAttributes]::ReadOnly) -ne 0) {
+        $writableAttributes=$attributes -band (-bnot [IO.FileAttributes]::ReadOnly)
+        [IO.File]::SetAttributes($entry,$writableAttributes)
+      }
+    }
+  } catch {
+    $code=if ($_.Exception.Message -ceq 'ScratchTreeReparsePoint') { 'reparse-point-found' } else { 'readonly-clear-failed' }
+    Add-CleanupFailure -Phase $phase -Code $code
+    return
+  }
+  $phase='scratch-delete'
+  try {
+    [IO.Directory]::Delete($full,$true)
+    if ([IO.Directory]::Exists($full) -or [IO.File]::Exists($full)) { Add-CleanupFailure -Phase $phase -Code 'delete-not-confirmed'; return }
+    $script:ScratchCreated=$false
+    $script:ScratchFullPath=$null
+    $script:ScratchIdentityPath=$null
+    $script:ScratchIdentityToken=$null
+  } catch {
+    Add-CleanupFailure -Phase $phase -Code 'delete-failed'
   }
 }
 
@@ -1149,9 +1401,9 @@ try {
   [void]$script:CaseFailures.Add('harness')
   [void]$script:CaseResults.Add([ordered]@{ name='harness'; status='failed'; code=(Get-AssertionCode $_) })
 } finally {
-  Stop-TrackedTestProcesses
+  try { Stop-TrackedTestProcesses } catch { Add-CleanupFailure -Phase 'process-finalization' -Code 'control-failed' }
   $script:Clock.Stop()
-  Remove-ScratchRoot
+  try { Remove-ScratchRoot } catch { Add-CleanupFailure -Phase 'scratch-finalization' -Code 'cleanup-failed' }
 }
 
 $overallStatus=if ($script:CaseFailures.Count -eq 0 -and $script:CaseResults.Count -gt 0) { 'passed' } else { 'failed' }
@@ -1166,6 +1418,7 @@ $receipt=[ordered]@{
   powershellVersion=[string]$PSVersionTable.PSVersion
   osPlatform=[string][Environment]::OSVersion.Platform
   cases=@($script:CaseResults.ToArray())
+  cleanupFailures=@($script:CleanupFailures.ToArray())
   syntheticProcessesOnly=$true
   applicationLaunched=$false
   driverStarted=$false
@@ -1175,6 +1428,7 @@ $receipt=[ordered]@{
   observedResponseLinesWithinLimit=$true
   oversizePath='executor-structural-or-injected-proof'
   externalObserverHeldOnlyFixtureHandles=$true
+  wideUtf8FixturePathVerified=$script:WideUtf8FixturePathVerified
 }
 if ($script:EvidenceCreated -and $null -ne $script:EvidenceFullPath) {
   try { Write-Receipt -Receipt $receipt } catch { $overallStatus='failed' }
