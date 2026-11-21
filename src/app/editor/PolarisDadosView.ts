@@ -16,6 +16,7 @@ import { getPreferences, subscribePreferences } from '../platform/preferences';
 import { createLinkedViewApi } from '../plugins/linkedViewApi';
 import type { LinkedViewApi } from '../plugins/linkedViewApi';
 import { createProviderDataScope } from '../plugins/providerDataScope';
+import { createProviderMountState } from '../plugins/providerMountState';
 import {
   getDatabaseProvider,
   registerMountedDatabaseProvider,
@@ -23,6 +24,7 @@ import {
 } from '../plugins/providerRegistry';
 import type { RegisteredDatabaseProvider } from '../plugins/providerRegistry';
 import { selectedProviderMarker } from '../plugins/providerMarker';
+import { getSession, getWorkspaceSessionGeneration, subscribeWorkspaceSession } from '../workspace';
 
 export interface PolarisDadosViewMountContext {
   readonly session: WorkspaceSession;
@@ -122,6 +124,10 @@ function mountLinkedViewProvider(
   let removeProviderListener = () => {};
   let removeEditorContextListener = () => {};
   let removeCloseListener = () => {};
+  let removeWorkspaceSessionListener = () => {};
+  let sessionGeneration = getWorkspaceSessionGeneration();
+  const transientState = createProviderMountState();
+  let hostSessionChanged = sessionGeneration !== 0 && getSession() !== context.session;
 
   const renderFallback = (message?: string) => {
     dom.replaceChildren(fallbackElement(document, data.title, data.sourceDatabaseId, message));
@@ -160,6 +166,12 @@ function mountLinkedViewProvider(
 
   const reconcile = () => {
     if (disposed) return;
+    if (hostSessionChanged || getWorkspaceSessionGeneration() !== sessionGeneration) {
+      transientState.reconcile(null);
+      if (activeMount) stopMount(activeMount);
+      else renderFallback();
+      return;
+    }
     const state = context.session.getState();
     const owner = state.pages[context.pageId];
     if (
@@ -173,6 +185,7 @@ function mountLinkedViewProvider(
       polarisDadosViewDocIssue(state.docs[context.pageId]!) !== null ||
       !hasBoundView(state.docs[context.pageId], data.viewId, data.sourceDatabaseId)
     ) {
+      transientState.reconcile(null);
       if (activeMount) stopMount(activeMount);
       failed = null;
       renderFallback('The linked view is no longer available in this note.');
@@ -180,6 +193,7 @@ function mountLinkedViewProvider(
     }
     const source = state.pages[data.sourceDatabaseId];
     if (!source || isEffectivelyTrashed(state.pages, source.id)) {
+      transientState.reconcile(null);
       if (activeMount) stopMount(activeMount);
       failed = null;
       renderFallback(source ? 'The source database is in the trash.' : 'The source database is unavailable.');
@@ -188,11 +202,18 @@ function mountLinkedViewProvider(
 
     const marker = selectedProviderMarker(source.extra.polarisDados);
     if (!marker) {
+      transientState.reconcile(null);
       if (activeMount) stopMount(activeMount);
       failed = null;
       renderFallback('The source database has no supported provider.');
       return;
     }
+    transientState.reconcile({
+      session: context.session,
+      sessionGeneration,
+      providerId: marker.provider,
+      surface: [context.pageId, data.viewId, source.id],
+    });
     const provider = getDatabaseProvider(marker.provider);
     if (!provider) {
       if (activeMount) stopMount(activeMount);
@@ -267,6 +288,8 @@ function mountLinkedViewProvider(
       const currentOwner = currentState.pages[context.pageId];
       const ownerDoc = currentState.docs[context.pageId];
       return (
+        !hostSessionChanged &&
+        getWorkspaceSessionGeneration() === sessionGeneration &&
         !context.session.isClosed &&
         Boolean(currentOwner && ownerDoc) &&
         !isEffectivelyTrashed(currentState.pages, context.pageId) &&
@@ -391,6 +414,17 @@ function mountLinkedViewProvider(
     mount.unregisterRoot = unregisterRoot;
 
     try {
+      const mountTransientState = transientState.bind(
+        {
+          session: context.session,
+          sessionGeneration,
+          owner: provider.owner,
+          providerId: provider.id,
+          surface: [context.pageId, data.viewId, source.id],
+        },
+        controller.signal,
+        isActive,
+      );
       const cleanup = provider.mount({
         element,
         databaseId: source.id,
@@ -398,6 +432,7 @@ function mountLinkedViewProvider(
         locale: preferences.locale,
         editable,
         signal: controller.signal,
+        transientState: mountTransientState,
         view,
       });
       if (cleanup !== undefined && typeof cleanup !== 'function') {
@@ -432,6 +467,31 @@ function mountLinkedViewProvider(
   removeSessionListener = context.session.subscribe(reconcile);
   removePreferenceListener = subscribePreferences(reconcile);
   removeProviderListener = subscribeDatabaseProviders(reconcile);
+  removeWorkspaceSessionListener = subscribeWorkspaceSession(() => {
+    const nextGeneration = getWorkspaceSessionGeneration();
+    if (disposed || nextGeneration === sessionGeneration) return;
+    transientState.reconcile(null);
+    if (activeMount) stopMount(activeMount, false);
+    // Provider cleanup can synchronously replace the host session again. A nested
+    // notification owns that newer generation and may already have mounted it.
+    if (disposed || getWorkspaceSessionGeneration() !== nextGeneration) return;
+    let currentSession: WorkspaceSession | null = null;
+    try {
+      currentSession = getSession();
+    } catch {
+      // Explicit editor contexts remain usable before the workspace is installed globally.
+    }
+    if (currentSession === context.session && !context.session.isClosed) {
+      sessionGeneration = nextGeneration;
+      hostSessionChanged = false;
+      failed = null;
+      reconcile();
+      return;
+    }
+    hostSessionChanged = true;
+    failed = null;
+    renderFallback();
+  });
   removeCloseListener = context.session.onClose(() => destroy());
   renderFallback();
   reconcile();
@@ -444,6 +504,8 @@ function mountLinkedViewProvider(
     removePreferenceListener();
     removeProviderListener();
     removeCloseListener();
+    removeWorkspaceSessionListener();
+    transientState.dispose();
     if (activeMount) stopMount(activeMount, false);
   }
 
