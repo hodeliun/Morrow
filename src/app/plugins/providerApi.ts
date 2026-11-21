@@ -3,6 +3,12 @@ import type { SupportedLocale } from '../i18n';
 import type { DataApi } from './dataApi';
 import type { LinkedViewApi } from './linkedViewApi';
 
+/** Opaque, per-surface state retained only in host memory between provider mount generations. */
+export interface ProviderTransientState {
+  read(): string | undefined;
+  write(value: string | undefined): boolean;
+}
+
 /** Public inputs supplied by the host when an opted-in database is mounted. */
 export interface DatabaseProviderContext {
   readonly element: HTMLElement;
@@ -12,6 +18,8 @@ export interface DatabaseProviderContext {
   readonly editable: boolean;
   /** Aborted when this database root is unmounted, replaced, or its provider is unloaded. */
   readonly signal: AbortSignal;
+  /** Optional host-memory slot for volatile drafts; unavailable to old mounts after their signal aborts. */
+  readonly transientState?: ProviderTransientState;
   /** Present only for a linked view; bound to that note, view, source, and mount generation. */
   readonly view?: LinkedViewApi;
 }

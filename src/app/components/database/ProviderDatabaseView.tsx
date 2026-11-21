@@ -1,11 +1,18 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { PageMeta } from '../../../core/model';
 import { createPilotDataBackend } from '../../../storage/pilotData';
+import type { WorkspaceSession } from '../../../storage/session';
 import { t } from '../../i18n';
 import { usePreferences } from '../../platform/preferences';
 import { openPage } from '../../router';
-import { getSession, useWorkspace } from '../../workspace';
+import {
+  getSession,
+  getWorkspaceSessionGeneration,
+  subscribeWorkspaceSession,
+  useWorkspace,
+} from '../../workspace';
 import { createProviderDataScope } from '../../plugins/providerDataScope';
+import { createProviderMountState } from '../../plugins/providerMountState';
 import {
   databaseProvidersVersion,
   getDatabaseProvider,
@@ -17,6 +24,8 @@ import { selectedProviderMarker } from '../../plugins/providerMarker';
 
 interface MountStatus {
   readonly provider: RegisteredDatabaseProvider;
+  readonly session: WorkspaceSession;
+  readonly sessionGeneration: number;
   readonly databaseId: string;
   readonly locale: string;
   readonly editable: boolean;
@@ -26,37 +35,82 @@ interface MountStatus {
 
 export function ProviderDatabaseView({ page, editable }: { page: PageMeta; editable: boolean }) {
   useSyncExternalStore(subscribeDatabaseProviders, databaseProvidersVersion, databaseProvidersVersion);
+  const sessionGeneration = useSyncExternalStore(
+    subscribeWorkspaceSession,
+    getWorkspaceSessionGeneration,
+    getWorkspaceSessionGeneration,
+  );
+  const session = getSession();
   const prefs = usePreferences();
   const locale = prefs.locale;
   const effectiveEditable = editable && !prefs.readingMode;
   const selection = selectedProviderMarker(page.extra.polarisDados);
+  const selectedProviderId = selection?.provider ?? null;
   const provider = selection ? getDatabaseProvider(selection.provider) : null;
   const elementRef = useRef<HTMLDivElement>(null);
+  const mountStateRef = useRef<ReturnType<typeof createProviderMountState> | null>(null);
   const [mountStatus, setMountStatus] = useState<MountStatus | null>(null);
   const statusMatches = Boolean(
     provider &&
       mountStatus?.provider === provider &&
+      mountStatus.session === session &&
+      mountStatus.sessionGeneration === sessionGeneration &&
       mountStatus.databaseId === page.id &&
       mountStatus.locale === locale &&
       mountStatus.editable === effectiveEditable,
   );
 
   useEffect(() => {
+    const mountState = createProviderMountState();
+    mountStateRef.current = mountState;
+    return () => {
+      mountState.dispose();
+      if (mountStateRef.current === mountState) mountStateRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const mountState = mountStateRef.current;
+    if (!mountState) return;
+    mountState.reconcile(
+      selectedProviderId === null
+        ? null
+        : { session, sessionGeneration, providerId: selectedProviderId, surface: [page.id] },
+    );
+  }, [session, sessionGeneration, page.id, selectedProviderId]);
+
+  useEffect(() => {
     if (!provider) return;
     const element = elementRef.current;
     if (!element) return;
+    const mountState = mountStateRef.current;
+    if (!mountState) return;
+    if (session.isClosed || sessionGeneration !== getWorkspaceSessionGeneration() || getSession() !== session)
+      return;
 
     let active = true;
     let unmountProvider: (() => void) | undefined;
     const controller = new AbortController();
     const isCurrent = () =>
-      active && provider.ownerIsActive() && getDatabaseProvider(provider.id) === provider;
+      active &&
+      !session.isClosed &&
+      sessionGeneration === getWorkspaceSessionGeneration() &&
+      getSession() === session &&
+      provider.ownerIsActive() &&
+      getDatabaseProvider(provider.id) === provider;
+    const transientState = mountState.bind(
+      { session, sessionGeneration, owner: provider.owner, providerId: provider.id, surface: [page.id] },
+      controller.signal,
+      isCurrent,
+    );
     const scope = createProviderDataScope(provider.data, page.id, {
       isActive: isCurrent,
       editable: effectiveEditable,
     });
     const status = (failed: boolean, diagnostic: string | null = null): MountStatus => ({
       provider,
+      session,
+      sessionGeneration,
       databaseId: page.id,
       locale,
       editable: effectiveEditable,
@@ -106,6 +160,7 @@ export function ProviderDatabaseView({ page, editable }: { page: PageMeta; edita
         locale,
         editable: effectiveEditable,
         signal: controller.signal,
+        transientState,
       });
       if (cleanup !== undefined && typeof cleanup !== 'function')
         throw new Error('A provider mount must return a cleanup function or nothing.');
@@ -122,7 +177,7 @@ export function ProviderDatabaseView({ page, editable }: { page: PageMeta; edita
     }
 
     return () => deactivate();
-  }, [provider, page.id, locale, effectiveEditable]);
+  }, [provider, page.id, locale, effectiveEditable, session, sessionGeneration]);
 
   if (
     !selection ||
