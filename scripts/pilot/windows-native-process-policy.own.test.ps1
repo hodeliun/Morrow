@@ -11,6 +11,13 @@ Set-StrictMode -Version Latest
 $runId = [Guid]::NewGuid().ToString('N')
 $checks = [ordered]@{
   dotSourceHasNoInteropSideEffects = $false
+  identityAssertionOmittedNullAndEmptySkipComparison = $false
+  identityAssertionAcceptsGenericDictionary = $false
+  identityAssertionMatchesAllSixFields = $false
+  identityAssertionMismatchesAreRecognized = $false
+  identityAssertionRejectsMalformedClosedShape = $false
+  identityAssertionAllowsMissingPathWithoutIo = $false
+  identityAssertionRequiresObservedIdentityWhenPresent = $false
   descriptorIsClosedAndStrict = $false
   emptyArgvIsAccepted = $false
   invalidDescriptorsLaunchNothing = $false
@@ -49,6 +56,25 @@ $checks = [ordered]@{
   disposeConfirmsEmptyJobAndExitedRoot = $false
   disposeIsIdempotent = $false
   outsiderSurvivesOwnedCleanup = $false
+  observeRejectsInvalidCapsule = $false
+  observeRejectsMalformedAssertion = $false
+  observeRejectsMalformedRawAssertionBeforeCapsuleProbe = $false
+  observeReturnsFreshFullIdentity = $false
+  observeAcceptsMatchingSixFieldAssertion = $false
+  observeRejectsDivergentIdentityField = $false
+  observeMismatchPreservesCapsule = $false
+  observeInventoryReportsOwnedRoot = $false
+  observeInventoryClassifiesTransitionsWithoutInventingRows = $false
+  observeInventoryUnavailableIsNotEmpty = $false
+  observeInventoryEmptyRequiresTwoEmptySnapshots = $false
+  observeInventoryEmptyArraysBind = $false
+  observeFinalMembershipUnavailableIsNotDisappearance = $false
+  observeInvalidCapsuleHasPublicErrorRecordId = $false
+  observeReturnsExitedRootSnapshot = $false
+  observeKeepsDescendantVisibleAfterRootExit = $false
+  observeCleanupKillsOnlyOwnedJob = $false
+  outsiderSurvivesObserveCleanup = $false
+  observeCleanupPreservesOtherCapsule = $false
   noProductOrGuiLaunched = $true
 }
 $observations = [Collections.Generic.List[object]]::new()
@@ -64,6 +90,10 @@ $privateRootCreated = $false
 $evidenceRootCreated = $false
 $junctionPath = $null
 $capsule = $null
+$observeCapsule = $null
+$observeCapsuleCleanup = $null
+$observeCapsuleCleanupConfirmed = $true
+$observeCapsuleCreated = $false
 $outsider = $null
 $outsiderAliveAtEnd = $false
 $outsiderAliveAfterParentMismatch = $false
@@ -128,6 +158,48 @@ function Get-PolicyErrorId {
   return $null
 }
 
+function Test-PolicyIdentityAssertionError {
+  param(
+    [Parameter(Mandatory)][scriptblock] $Action,
+    [Parameter(Mandatory)][string] $ExpectedErrorId,
+    [string[]] $ExpectedFields = @(),
+    [string[]] $ForbiddenText = @(),
+    [string] $ExpectedStage
+  )
+
+  $errorRecord = $null
+  try { $null = & $Action } catch { $errorRecord = $_ }
+  if ($null -eq $errorRecord) { return $false }
+
+  $actualErrorId = Get-PolicyErrorId -Exception $errorRecord.Exception
+  $diagnostics = Get-PolicyDiagnostics -Exception $errorRecord.Exception
+  if ($actualErrorId -cne $ExpectedErrorId -or $diagnostics -isnot [System.Collections.IDictionary] -or
+      [string]$diagnostics['cause'] -cne $ExpectedErrorId -or
+      (-not [string]::IsNullOrEmpty($ExpectedStage) -and [string]$diagnostics['stage'] -cne $ExpectedStage)) {
+    return $false
+  }
+
+  $allowedFields = @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')
+  $reportedFields = @($diagnostics['fields'])
+  foreach ($field in $reportedFields) {
+    if ($field -isnot [string] -or $field -cnotin $allowedFields) { return $false }
+  }
+  foreach ($field in $ExpectedFields) {
+    if ($reportedFields -cnotcontains $field) { return $false }
+  }
+  if ($reportedFields.Count -ne $ExpectedFields.Count) { return $false }
+
+  $safeDiagnosticJson = ConvertTo-Json -InputObject $diagnostics -Depth 8 -Compress
+  $safeErrorText = [string]$errorRecord.Exception.Message
+  foreach ($forbidden in $ForbiddenText) {
+    if ($safeErrorText.IndexOf($forbidden, [StringComparison]::Ordinal) -ge 0 -or
+        $safeDiagnosticJson.IndexOf($forbidden, [StringComparison]::Ordinal) -ge 0) {
+      return $false
+    }
+  }
+  return $true
+}
+
 function Test-PolicyIdentityFailure {
   param(
     [Parameter(Mandatory)][scriptblock] $Action,
@@ -156,7 +228,10 @@ function New-SanitizedPolicyFailureObservation {
 
   $knownErrorIds = @(
     'Morrow.WindowsNativeProcess.InvalidDescriptor',
+    'Morrow.WindowsNativeProcess.InvalidCapsule',
+    'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
     'Morrow.WindowsNativeProcess.IdentityMismatch',
+    'Morrow.WindowsNativeProcess.IdentityUnavailable',
     'Morrow.WindowsNativeProcess.StartFailed',
     'Morrow.WindowsNativeProcess.CleanupIncomplete'
   )
@@ -165,7 +240,8 @@ function New-SanitizedPolicyFailureObservation {
     'dependency-preflight', 'system-path-resolution', 'environment-validation',
     'environment-path-validation', 'environment-path-containment', 'executable-hash-validation',
     'identity-dependency', 'suspended-create', 'native-observation', 'cim-observation', 'job-membership',
-    'identity-comparison', 'capsule-create', 'resume', 'cleanup'
+    'identity-comparison', 'identity-assertion-validation', 'identity-assertion-comparison',
+    'capsule-create', 'resume', 'cleanup', 'observe-capsule-validation', 'observe-identity', 'observe-native-read'
   )
   $knownFields = @(
     'executablePath', 'executableSha256', 'argumentList', 'workingDirectory', 'profilePath',
@@ -287,7 +363,8 @@ function Invoke-ExpectedPolicyFailure {
   if ($null -eq $errorRecord) { throw "Expected error was not raised: $ExpectedErrorId" }
   $fullyQualifiedErrorId = [string]$errorRecord.FullyQualifiedErrorId
   if ($fullyQualifiedErrorId -cne $ExpectedErrorId -and
-      $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Start-WindowsNativeProcess')) {
+      $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Start-WindowsNativeProcess') -and
+      $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Observe-WindowsNativeProcess')) {
     throw "Unexpected policy error category for expected $ExpectedErrorId."
   }
 
@@ -428,6 +505,301 @@ try {
     $null -eq ('Morrow.Pilot.WindowsNativeJobInterop' -as [type])
   )
   Assert-PolicyCheck -Condition $checks.dotSourceHasNoInteropSideEffects -Name 'dotSourceHasNoInteropSideEffects'
+
+  $syntheticObserveRows = [Collections.Generic.Dictionary[int, object]]::new()
+  $syntheticObserveRowCounts = [Collections.Generic.Dictionary[int, int]]::new()
+  $syntheticObserveRows.Add(401, [pscustomobject]@{
+    ProcessId = 401
+    ParentProcessId = 400
+    Name = 'synthetic-root.exe'
+    CreationDate = [DateTime]::UtcNow
+  })
+  $syntheticObserveRowCounts.Add(401, 1)
+  $emptyArrayMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@()) `
+    -AfterProcessIds ([int[]]@()) `
+    -QueriedProcessIds ([int[]]@()) `
+    -RowsById $syntheticObserveRows `
+    -RowCounts $syntheticObserveRowCounts `
+    -CimSucceeded $true `
+    -BeforeReadSucceeded $true `
+    -AfterReadSucceeded $true)
+  $checks.observeInventoryEmptyArraysBind = $emptyArrayMembers.Count -eq 0
+  Assert-PolicyCheck -Condition $checks.observeInventoryEmptyArraysBind -Name 'observeInventoryEmptyArraysBind'
+  $syntheticTransitionMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(401, 402)) `
+    -AfterProcessIds ([int[]]@(401, 403)) `
+    -QueriedProcessIds ([int[]]@(401, 402)) `
+    -RowsById $syntheticObserveRows `
+    -RowCounts $syntheticObserveRowCounts `
+    -CimSucceeded $true `
+    -BeforeReadSucceeded $true `
+    -AfterReadSucceeded $true)
+  $syntheticMemberStates = @{}
+  foreach ($member in $syntheticTransitionMembers) { $syntheticMemberStates[[int]$member.processId] = [string]$member.state }
+  $transitionInventoryStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $true -CimRowsAvailable $true -MemberCountBefore 2 -MemberCountAfter 2 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $false `
+    -HasTransitions $true -IdentityUnavailable $false -IsConfirmedEmpty $false
+  $checks.observeInventoryClassifiesTransitionsWithoutInventingRows = (
+    $syntheticMemberStates[401] -ceq 'observed' -and
+    $syntheticMemberStates[402] -ceq 'disappeared' -and
+    $syntheticMemberStates[403] -ceq 'arrived' -and
+    $transitionInventoryStatus -ceq 'partial' -and
+    $null -eq ($syntheticTransitionMembers | Where-Object { $_.processId -eq 403 }).metadata
+  )
+  Assert-PolicyCheck -Condition $checks.observeInventoryClassifiesTransitionsWithoutInventingRows -Name 'observeInventoryClassifiesTransitionsWithoutInventingRows'
+  $unknownAfterMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(401)) `
+    -AfterProcessIds ([int[]]@()) `
+    -QueriedProcessIds ([int[]]@(401)) `
+    -RowsById $syntheticObserveRows `
+    -RowCounts $syntheticObserveRowCounts `
+    -CimSucceeded $true `
+    -BeforeReadSucceeded $true `
+    -AfterReadSucceeded $false)
+  $inaccessibleMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(401)) `
+    -AfterProcessIds ([int[]]@(401)) `
+    -QueriedProcessIds ([int[]]@(401)) `
+    -RowsById ([Collections.Generic.Dictionary[int, object]]::new()) `
+    -RowCounts ([Collections.Generic.Dictionary[int, int]]::new()) `
+    -CimSucceeded $false `
+    -BeforeReadSucceeded $true `
+    -AfterReadSucceeded $true)
+  $unavailableInventoryStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $false -CimRowsAvailable $false -MemberCountBefore 1 -MemberCountAfter 0 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $true `
+    -HasTransitions $false -IdentityUnavailable $true -IsConfirmedEmpty $false
+  $inaccessibleInventoryStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $true -CimRowsAvailable $false -MemberCountBefore 1 -MemberCountAfter 1 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $true `
+    -HasTransitions $false -IdentityUnavailable $true -IsConfirmedEmpty $false
+  $checks.observeInventoryUnavailableIsNotEmpty = (
+    $unknownAfterMembers.Count -eq 1 -and $unknownAfterMembers[0].state -ceq 'unobservable' -and
+    $inaccessibleMembers.Count -eq 1 -and $inaccessibleMembers[0].state -ceq 'unobservable' -and
+    $unavailableInventoryStatus -ceq 'unavailable' -and
+    $inaccessibleInventoryStatus -ceq 'unavailable'
+  )
+  Assert-PolicyCheck -Condition $checks.observeInventoryUnavailableIsNotEmpty -Name 'observeInventoryUnavailableIsNotEmpty'
+  $finalGenerationUnavailableMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(401)) `
+    -AfterProcessIds ([int[]]@()) `
+    -QueriedProcessIds ([int[]]@(401)) `
+    -RowsById $syntheticObserveRows `
+    -RowCounts $syntheticObserveRowCounts `
+    -CimSucceeded $true `
+    -BeforeReadSucceeded $true `
+    -AfterReadSucceeded $false)
+  $finalGenerationUnavailableStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $false -CimRowsAvailable $true -MemberCountBefore 1 -MemberCountAfter 0 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $true `
+    -HasTransitions $false -IdentityUnavailable $true -IsConfirmedEmpty $false
+  $checks.observeFinalMembershipUnavailableIsNotDisappearance = (
+    $finalGenerationUnavailableMembers.Count -eq 1 -and
+    $finalGenerationUnavailableMembers[0].state -ceq 'unobservable' -and
+    $finalGenerationUnavailableStatus -ceq 'unavailable'
+  )
+  Assert-PolicyCheck -Condition $checks.observeFinalMembershipUnavailableIsNotDisappearance -Name 'observeFinalMembershipUnavailableIsNotDisappearance'
+  $emptyInventoryStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $true -CimRowsAvailable $true -MemberCountBefore 0 -MemberCountAfter 0 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $false `
+    -HasTransitions $false -IdentityUnavailable $true -IsConfirmedEmpty $true
+  $checks.observeInventoryEmptyRequiresTwoEmptySnapshots = $emptyInventoryStatus -ceq 'empty'
+  Assert-PolicyCheck -Condition $checks.observeInventoryEmptyRequiresTwoEmptySnapshots -Name 'observeInventoryEmptyRequiresTwoEmptySnapshots'
+
+  $identityPathThatDoesNotExist = 'C:\Morrow-identity-assertion-' + $runId + '\missing.exe'
+  $identityHash = 'a' * 64
+  $observedIdentityFixture = [pscustomobject][ordered]@{
+    processId = 101
+    parentProcessId = 77
+    executablePath = $identityPathThatDoesNotExist
+    executableSha256 = $identityHash
+    creationTimeUtc = '2026-11-21T12:34:56.1234567Z'
+    ownerSid = 'S-1-5-18'
+  }
+
+  $omittedAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion
+  $nullAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $null
+  $emptyAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion ([ordered]@{})
+  $deliberatelyDifferentIdentity = [pscustomobject][ordered]@{
+    processId = 999
+    parentProcessId = 998
+    executablePath = 'C:\Elsewhere\different.exe'
+    executableSha256 = ('b' * 64)
+    creationTimeUtc = '2026-11-21T12:34:57.1234567Z'
+    ownerSid = 'S-1-1-0'
+  }
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $omittedAssertion -ObservedIdentity $deliberatelyDifferentIdentity
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $nullAssertion -ObservedIdentity $deliberatelyDifferentIdentity
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $emptyAssertion -ObservedIdentity $deliberatelyDifferentIdentity
+  $checks.identityAssertionOmittedNullAndEmptySkipComparison = (
+    $omittedAssertion.Count -eq 0 -and $nullAssertion.Count -eq 0 -and $emptyAssertion.Count -eq 0
+  )
+  Assert-PolicyCheck -Condition $checks.identityAssertionOmittedNullAndEmptySkipComparison -Name 'identityAssertionOmittedNullAndEmptySkipComparison'
+
+  $genericIdentityAssertion = [Collections.Generic.Dictionary[string, object]]::new()
+  $genericIdentityAssertion.Add('processId', 101)
+  $normalizedGenericIdentityAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $genericIdentityAssertion
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalizedGenericIdentityAssertion -ObservedIdentity $observedIdentityFixture
+  $checks.identityAssertionAcceptsGenericDictionary = (
+    $normalizedGenericIdentityAssertion.Count -eq 1 -and
+    $normalizedGenericIdentityAssertion.processId -eq 101
+  )
+  Assert-PolicyCheck -Condition $checks.identityAssertionAcceptsGenericDictionary -Name 'identityAssertionAcceptsGenericDictionary'
+
+  $matchingAssertion = [ordered]@{
+    processId = [long]101
+    parentProcessId = [uint32]77
+    executablePath = $identityPathThatDoesNotExist.ToUpperInvariant()
+    executableSha256 = $identityHash.ToUpperInvariant()
+    creationTimeUtc = '2026-11-21T14:34:56.1234567+02:00'
+    ownerSid = 'S-1-5-18'
+  }
+  $normalizedMatchingAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $matchingAssertion
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion `
+    -NormalizedAssertion $normalizedMatchingAssertion `
+    -ObservedIdentity $observedIdentityFixture
+  $checks.identityAssertionMatchesAllSixFields = (
+    $normalizedMatchingAssertion.Count -eq 6 -and
+    $normalizedMatchingAssertion.executableSha256 -ceq $identityHash -and
+    $normalizedMatchingAssertion.creationTimeUtc -eq [DateTimeOffset]::Parse(
+      $observedIdentityFixture.creationTimeUtc,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None
+    ).UtcDateTime.Ticks
+  )
+  Assert-PolicyCheck -Condition $checks.identityAssertionMatchesAllSixFields -Name 'identityAssertionMatchesAllSixFields'
+  $checks.identityAssertionAllowsMissingPathWithoutIo = $normalizedMatchingAssertion.executablePath -ceq $identityPathThatDoesNotExist.ToUpperInvariant()
+  Assert-PolicyCheck -Condition $checks.identityAssertionAllowsMissingPathWithoutIo -Name 'identityAssertionAllowsMissingPathWithoutIo'
+
+  $identityMismatchCases = @(
+    [pscustomobject]@{ field = 'processId'; value = 102 },
+    [pscustomobject]@{ field = 'parentProcessId'; value = 78 },
+    [pscustomobject]@{ field = 'executablePath'; value = 'C:\Elsewhere\different.exe' },
+    [pscustomobject]@{ field = 'executableSha256'; value = ('b' * 64) },
+    [pscustomobject]@{ field = 'creationTimeUtc'; value = '2026-11-21T12:34:56.1234568Z' },
+    [pscustomobject]@{ field = 'ownerSid'; value = 'S-1-1-0' }
+  )
+  $allIdentityFieldsMismatchIndividually = $true
+  foreach ($case in $identityMismatchCases) {
+    $oneFieldAssertion = [ordered]@{}
+    $oneFieldAssertion.Add([string]$case.field, $case.value)
+    $normalizedOneFieldAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $oneFieldAssertion
+    if (-not (Test-PolicyIdentityAssertionError `
+        -Action { Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalizedOneFieldAssertion -ObservedIdentity $observedIdentityFixture } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+        -ExpectedFields @([string]$case.field) `
+        -ForbiddenText @([string]$case.value) `
+        -ExpectedStage 'identity-assertion-comparison')) {
+      $allIdentityFieldsMismatchIndividually = $false
+      break
+    }
+  }
+
+  $multipleMismatchAssertion = [ordered]@{
+    ownerSid = 'S-1-1-0'
+    parentProcessId = 78
+    processId = 102
+  }
+  $normalizedMultipleMismatch = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $multipleMismatchAssertion
+  $multipleMismatchErrorRecord = $null
+  try {
+    $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalizedMultipleMismatch -ObservedIdentity $observedIdentityFixture
+  } catch {
+    $multipleMismatchErrorRecord = $_
+  }
+  $multipleMismatchDiagnostics = if ($null -ne $multipleMismatchErrorRecord) { Get-PolicyDiagnostics -Exception $multipleMismatchErrorRecord.Exception } else { $null }
+  $multipleMismatchErrorId = if ($null -ne $multipleMismatchErrorRecord) { Get-PolicyErrorId -Exception $multipleMismatchErrorRecord.Exception } else { $null }
+  $multipleMismatchFieldList = if ($null -ne $multipleMismatchDiagnostics) { (@($multipleMismatchDiagnostics['fields']) -join ',') } else { '' }
+  $multipleMismatchSafeText = if ($null -ne $multipleMismatchErrorRecord) { [string]$multipleMismatchErrorRecord.Exception.Message } else { '' }
+  $multipleMismatchSafeJson = if ($null -ne $multipleMismatchDiagnostics) { ConvertTo-Json -InputObject $multipleMismatchDiagnostics -Depth 8 -Compress } else { '' }
+  $multipleMismatchValuesNotLeaked = $true
+  foreach ($value in @('102', '78', 'S-1-1-0')) {
+    if ($multipleMismatchSafeText.IndexOf($value, [StringComparison]::Ordinal) -ge 0 -or
+        $multipleMismatchSafeJson.IndexOf($value, [StringComparison]::Ordinal) -ge 0) {
+      $multipleMismatchValuesNotLeaked = $false
+    }
+  }
+  $checks.identityAssertionMismatchesAreRecognized = (
+    $allIdentityFieldsMismatchIndividually -and
+    $multipleMismatchValuesNotLeaked -and
+    $multipleMismatchErrorId -ceq 'Morrow.WindowsNativeProcess.IdentityMismatch' -and
+    $multipleMismatchFieldList -ceq 'processId,parentProcessId,ownerSid' -and
+    [string]$multipleMismatchDiagnostics.cause -ceq 'Morrow.WindowsNativeProcess.IdentityMismatch' -and
+    [string]$multipleMismatchDiagnostics.stage -ceq 'identity-assertion-comparison'
+  )
+  Assert-PolicyCheck -Condition $checks.identityAssertionMismatchesAreRecognized -Name 'identityAssertionMismatchesAreRecognized'
+
+  $duplicateAssertion = [Collections.Hashtable]::new([StringComparer]::Ordinal)
+  $duplicateAssertion.Add('processId', 101)
+  $duplicateAssertion.Add('ProcessId', 101)
+  $nonStringKeyAssertion = [Collections.Hashtable]::new()
+  $nonStringKeyAssertion.Add(42, 'untrusted-nonstring-key-value')
+  $shadowedCountAssertion = [ordered]@{ Count = 0; processId = 101 }
+  $shadowedKeysAssertion = [ordered]@{ Keys = @('processId'); processId = 101 }
+  $unknownAssertionKey = 'untrusted-identity-key-' + $runId
+  $unknownAssertionValue = 'untrusted-identity-value-' + $runId
+  $assertionPathWithControl = 'C:\Morrow-identity-assertion-' + [char]1 + 'missing.exe'
+  $invalidAssertionCases = @(
+    [pscustomobject]@{ value = 'scalar assertion'; field = $null; forbidden = 'scalar assertion' },
+    [pscustomobject]@{ value = $duplicateAssertion; field = $null; forbidden = $null },
+    [pscustomobject]@{ value = $nonStringKeyAssertion; field = $null; forbidden = 'untrusted-nonstring-key-value' },
+    [pscustomobject]@{ value = $shadowedCountAssertion; field = $null; forbidden = $null },
+    [pscustomobject]@{ value = $shadowedKeysAssertion; field = $null; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ $unknownAssertionKey = $unknownAssertionValue }); field = $null; forbidden = @($unknownAssertionKey, $unknownAssertionValue) },
+    [pscustomobject]@{ value = ([ordered]@{ processId = $null }); field = 'processId'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ processId = '101' }); field = 'processId'; forbidden = '101' },
+    [pscustomobject]@{ value = ([ordered]@{ processId = $true }); field = 'processId'; forbidden = 'True' },
+    [pscustomobject]@{ value = ([ordered]@{ parentProcessId = [decimal]101.5 }); field = 'parentProcessId'; forbidden = '101.5' },
+    [pscustomobject]@{ value = ([ordered]@{ parentProcessId = 0 }); field = 'parentProcessId'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ executablePath = 'relative\missing.exe' }); field = 'executablePath'; forbidden = 'relative\missing.exe' },
+    [pscustomobject]@{ value = ([ordered]@{ executablePath = 42 }); field = 'executablePath'; forbidden = '42' },
+    [pscustomobject]@{ value = ([ordered]@{ executablePath = 'C:\folder\..\missing.exe' }); field = 'executablePath'; forbidden = 'C:\folder\..\missing.exe' },
+    [pscustomobject]@{ value = ([ordered]@{ executablePath = $assertionPathWithControl }); field = 'executablePath'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ executableSha256 = 'not-a-sha256' }); field = 'executableSha256'; forbidden = 'not-a-sha256' },
+    [pscustomobject]@{ value = ([ordered]@{ executableSha256 = 42 }); field = 'executableSha256'; forbidden = '42' },
+    [pscustomobject]@{ value = ([ordered]@{ executableSha256 = ('a' * 64) + [char]10 }); field = 'executableSha256'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ executableSha256 = ('a' * 64) + [char]13 }); field = 'executableSha256'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = '2026-11-21T12:34:56.1234567' }); field = 'creationTimeUtc'; forbidden = '2026-11-21T12:34:56.1234567' },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = '2026-11-21T12:34:56Z' + [char]10 }); field = 'creationTimeUtc'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = '2026-11-21T12:34:56Z' + [char]13 }); field = 'creationTimeUtc'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = '2026-11-21T12:34:56+25:00' }); field = 'creationTimeUtc'; forbidden = '2026-11-21T12:34:56+25:00' },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = [DateTimeOffset]::UtcNow }); field = 'creationTimeUtc'; forbidden = $null },
+    [pscustomobject]@{ value = ([ordered]@{ ownerSid = 's-1-5-18' }); field = 'ownerSid'; forbidden = 's-1-5-18' },
+    [pscustomobject]@{ value = ([ordered]@{ ownerSid = 42 }); field = 'ownerSid'; forbidden = '42' }
+  )
+  $allMalformedAssertionsRejectedSafely = $true
+  foreach ($case in $invalidAssertionCases) {
+    $expectedInvalidFields = if ($null -eq $case.field) { @() } else { @([string]$case.field) }
+    $forbiddenStrings = if ($null -eq $case.forbidden) { @() } else { @($case.forbidden | ForEach-Object { [string]$_ }) }
+    if (-not (Test-PolicyIdentityAssertionError `
+        -Action { ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $case.value } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+        -ExpectedFields $expectedInvalidFields `
+        -ForbiddenText $forbiddenStrings `
+        -ExpectedStage 'identity-assertion-validation')) {
+      $allMalformedAssertionsRejectedSafely = $false
+      break
+    }
+  }
+  $checks.identityAssertionRejectsMalformedClosedShape = $allMalformedAssertionsRejectedSafely
+  Assert-PolicyCheck -Condition $checks.identityAssertionRejectsMalformedClosedShape -Name 'identityAssertionRejectsMalformedClosedShape'
+
+  $validAssertionForUnavailableIdentity = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion ([ordered]@{ processId = 101 })
+  $unavailableIdentityWasRejected = $false
+  try {
+    $null = Compare-PilotWindowsNativeProcessIdentityAssertion `
+      -NormalizedAssertion $validAssertionForUnavailableIdentity `
+      -ObservedIdentity $null
+  } catch {
+    $unavailableIdentityWasRejected = (
+      $_.Exception -is [InvalidOperationException] -and
+      [string]$_.Exception.Message -ceq 'An observed process identity is required for assertion comparison.'
+    )
+  }
+  $checks.identityAssertionRequiresObservedIdentityWhenPresent = $unavailableIdentityWasRejected
+  Assert-PolicyCheck -Condition $checks.identityAssertionRequiresObservedIdentityWhenPresent -Name 'identityAssertionRequiresObservedIdentityWhenPresent'
 
   . $processHelperPath
   . $nativeJobHelperPath
@@ -1242,6 +1614,218 @@ $reportLines = @(
   $checks.childDoesNotInheritPersonalCanary = $childReport['personalCanaryAbsent'] -eq 'true'
   Assert-PolicyCheck -Condition $checks.childDoesNotInheritPersonalCanary -Name 'childDoesNotInheritPersonalCanary'
 
+  $failurePhase = 'observe-invalid-input'
+  $null = Invoke-ExpectedPolicyFailure `
+    -Action { Observe-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'not-a-capsule' }) } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule'
+  $checks.observeRejectsInvalidCapsule = $true
+  Assert-PolicyCheck -Condition $checks.observeRejectsInvalidCapsule -Name 'observeRejectsInvalidCapsule'
+  $publicObserveError = $null
+  try {
+    $null = Observe-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'not-a-capsule' })
+  } catch {
+    $publicObserveError = $_
+  }
+  $checks.observeInvalidCapsuleHasPublicErrorRecordId = (
+    $null -ne $publicObserveError -and
+    [string]$publicObserveError.FullyQualifiedErrorId -ceq 'Morrow.WindowsNativeProcess.InvalidCapsule,Observe-WindowsNativeProcess' -and
+    (Get-PolicyErrorId -Exception $publicObserveError.Exception) -ceq 'Morrow.WindowsNativeProcess.InvalidCapsule' -and
+    $null -ne (Get-PolicyDiagnostics -Exception $publicObserveError.Exception)
+  )
+  Assert-PolicyCheck -Condition $checks.observeInvalidCapsuleHasPublicErrorRecordId -Name 'observeInvalidCapsuleHasPublicErrorRecordId'
+  $null = Invoke-ExpectedPolicyFailure `
+    -Action { Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion ([ordered]@{ unknownField = 17 }) } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion'
+  $checks.observeRejectsMalformedAssertion = $true
+  Assert-PolicyCheck -Condition $checks.observeRejectsMalformedAssertion -Name 'observeRejectsMalformedAssertion'
+  $null = Invoke-ExpectedPolicyFailure `
+    -Action { Observe-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'invalid' }) -IdentityAssertion ([ordered]@{ creationTimeUtc = 638994260961234567L }) } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+    -ExpectedFields @('creationTimeUtc')
+  $checks.observeRejectsMalformedRawAssertionBeforeCapsuleProbe = $true
+  Assert-PolicyCheck -Condition $checks.observeRejectsMalformedRawAssertionBeforeCapsuleProbe -Name 'observeRejectsMalformedRawAssertionBeforeCapsuleProbe'
+
+  $failurePhase = 'observe-live-root'
+  $liveObservation = Observe-WindowsNativeProcess -Capsule $capsule
+  $liveIdentity = $liveObservation.root.identity
+  $fullIdentityAssertion = [ordered]@{
+    processId = [int]$liveIdentity.processId
+    parentProcessId = [int]$liveIdentity.parentProcessId
+    executablePath = [string]$liveIdentity.executablePath
+    executableSha256 = [string]$liveIdentity.executableSha256
+    creationTimeUtc = [string]$liveIdentity.creationTimeUtc
+    ownerSid = [string]$liveIdentity.ownerSid
+  }
+  $checks.observeReturnsFreshFullIdentity = (
+    $liveObservation.root.state -ceq 'alive' -and
+    $liveObservation.root.identityStatus -ceq 'fresh' -and [bool]$liveObservation.root.identityFresh -and
+    $fullIdentityAssertion.Count -eq 6 -and
+    -not [string]::IsNullOrWhiteSpace([string]$fullIdentityAssertion.executablePath) -and
+    [string]$fullIdentityAssertion.executableSha256 -match '\A[A-Fa-f0-9]{64}\z' -and
+    [string]$fullIdentityAssertion.creationTimeUtc -match '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?(?:Z|[+-][0-9]{2}:[0-9]{2})\z' -and
+    -not [string]::IsNullOrWhiteSpace([string]$fullIdentityAssertion.ownerSid)
+  )
+  Assert-PolicyCheck -Condition $checks.observeReturnsFreshFullIdentity -Name 'observeReturnsFreshFullIdentity'
+  $matchingObservation = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $checks.observeAcceptsMatchingSixFieldAssertion = (
+    $matchingObservation.root.identityStatus -ceq 'fresh' -and
+    $matchingObservation.root.identity.processId -eq $fullIdentityAssertion.processId -and
+    $matchingObservation.root.identity.parentProcessId -eq $fullIdentityAssertion.parentProcessId -and
+    [string]::Equals([string]$matchingObservation.root.identity.executablePath, [string]$fullIdentityAssertion.executablePath, [StringComparison]::OrdinalIgnoreCase) -and
+    [string]::Equals([string]$matchingObservation.root.identity.executableSha256, [string]$fullIdentityAssertion.executableSha256, [StringComparison]::OrdinalIgnoreCase) -and
+    [string]::Equals([string]$matchingObservation.root.identity.creationTimeUtc, [string]$fullIdentityAssertion.creationTimeUtc, [StringComparison]::Ordinal) -and
+    [string]::Equals([string]$matchingObservation.root.identity.ownerSid, [string]$fullIdentityAssertion.ownerSid, [StringComparison]::Ordinal)
+  )
+  Assert-PolicyCheck -Condition $checks.observeAcceptsMatchingSixFieldAssertion -Name 'observeAcceptsMatchingSixFieldAssertion'
+
+  $badObserveAssertion = [ordered]@{ processId = [int]$fullIdentityAssertion.processId + 1 }
+  $null = Invoke-ExpectedPolicyFailure `
+    -Action { Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $badObserveAssertion } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+    -ExpectedFields @('processId')
+  $checks.observeRejectsDivergentIdentityField = $true
+  Assert-PolicyCheck -Condition $checks.observeRejectsDivergentIdentityField -Name 'observeRejectsDivergentIdentityField'
+  $stillLiveObservation = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $checks.observeMismatchPreservesCapsule = $stillLiveObservation.root.identityStatus -ceq 'fresh'
+  Assert-PolicyCheck -Condition $checks.observeMismatchPreservesCapsule -Name 'observeMismatchPreservesCapsule'
+  $checks.observeInventoryReportsOwnedRoot = (
+    $liveObservation.inventory.status -ceq 'available' -and
+    -not [bool]$liveObservation.inventory.isEmpty -and
+    [int]$liveObservation.inventory.memberCountBefore -gt 0 -and
+    [int]$liveObservation.inventory.memberCountAfter -gt 0 -and
+    @($liveObservation.inventory.members | Where-Object { $_.state -ceq 'observed' -and $_.processId -eq $fullIdentityAssertion.processId }).Count -eq 1
+  )
+  Assert-PolicyCheck -Condition $checks.observeInventoryReportsOwnedRoot -Name 'observeInventoryReportsOwnedRoot'
+  [void]$observations.Add([pscustomobject][ordered]@{
+    scenario = 'observe-live-root-assertion'
+    rootAlive = $true
+    identityFresh = $true
+    sixFieldAssertionMatched = $true
+    divergentProcessIdRejectedWithoutCleanup = $true
+    inventoryStatus = [string]$liveObservation.inventory.status
+    inventoryEmpty = [bool]$liveObservation.inventory.isEmpty
+  })
+
+  $failurePhase = 'observe-root-exits-descendant-remains'
+  $observeDescendantMarker = Join-Path $privateRoot 'observe-descendant.marker'
+  $observeDescendantPidPath = Join-Path $privateRoot 'observe-descendant.pid'
+  $observeRootPidPath = Join-Path $privateRoot 'observe-root.pid'
+  $observeDescendantScriptPath = Join-Path $privateRoot 'observe-descendant.ps1'
+  $observeRootScriptPath = Join-Path $privateRoot 'observe-root.ps1'
+  $observeDescendantSource = @'
+param([Parameter(Mandatory)][string] $MarkerPath)
+[IO.File]::WriteAllText($MarkerPath, 'alive', [Text.UTF8Encoding]::new($false))
+[Threading.Thread]::Sleep(120000)
+'@
+  $observeRootSource = @'
+param(
+  [Parameter(Mandatory)][string] $PowerShellPath,
+  [Parameter(Mandatory)][string] $DescendantScriptPath,
+  [Parameter(Mandatory)][string] $DescendantMarkerPath,
+  [Parameter(Mandatory)][string] $DescendantPidPath,
+  [Parameter(Mandatory)][string] $RootPidPath
+)
+[IO.File]::WriteAllText($RootPidPath, [string][Diagnostics.Process]::GetCurrentProcess().Id, [Text.UTF8Encoding]::new($false))
+$info = [Diagnostics.ProcessStartInfo]::new()
+$info.FileName = $PowerShellPath
+$info.UseShellExecute = $false
+$info.CreateNoWindow = $true
+foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $DescendantScriptPath, $DescendantMarkerPath)) {
+  [void]$info.ArgumentList.Add([string]$argument)
+}
+$descendant = [Diagnostics.Process]::Start($info)
+if ($null -eq $descendant) { exit 93 }
+[IO.File]::WriteAllText($DescendantPidPath, [string]$descendant.Id, [Text.UTF8Encoding]::new($false))
+$deadline = [DateTime]::UtcNow.AddSeconds(15)
+while (-not [IO.File]::Exists($DescendantMarkerPath) -and [DateTime]::UtcNow -lt $deadline) {
+  [Threading.Thread]::Sleep(50)
+}
+if (-not [IO.File]::Exists($DescendantMarkerPath)) { exit 94 }
+exit 0
+'@
+  [IO.File]::WriteAllText($observeDescendantScriptPath, $observeDescendantSource, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($observeRootScriptPath, $observeRootSource, [Text.UTF8Encoding]::new($false))
+  $observeDescriptor = Copy-PolicyDescriptor -Descriptor $baseDescriptor
+  $observeDescriptor.argumentList = [object[]]@(
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+    $observeRootScriptPath, $pwshPath, $observeDescendantScriptPath,
+    $observeDescendantMarker, $observeDescendantPidPath, $observeRootPidPath
+  )
+  $allNativeJobsCleaned = $false
+  $observeCapsuleCleanupConfirmed = $false
+  $observeStartOutput = @(& { Start-WindowsNativeProcess -Descriptor $observeDescriptor -Verbose 4>&1 })
+  $observeCapsuleType = 'Morrow.Pilot.WindowsNativeProcessCapsule' -as [type]
+  $observeCapsuleCandidates = @($observeStartOutput | Where-Object { $null -ne $observeCapsuleType -and $observeCapsuleType.IsInstanceOfType($_) })
+  if ($observeCapsuleCandidates.Count -ne 1) { throw 'The synthetic root-with-descendant start did not return one capsule.' }
+  $observeCapsule = $observeCapsuleCandidates[0]
+  $observeCapsuleCreated = $true
+  if (-not (Wait-PolicyFile -Path $observeDescendantMarker -TimeoutSeconds 15) -or
+      -not (Wait-PolicyFile -Path $observeDescendantPidPath -TimeoutSeconds 15) -or
+      -not (Wait-PolicyFile -Path $observeRootPidPath -TimeoutSeconds 15)) {
+    throw 'The synthetic descendant did not start inside the owned Job.'
+  }
+  $observeRootPid = 0
+  try { $observeRootPid = [int][IO.File]::ReadAllText($observeRootPidPath) } catch { $observeRootPid = 0 }
+  if ($observeRootPid -le 0) { throw 'The synthetic root PID fixture was invalid.' }
+  $rootWaitProcess = $null
+  try {
+    try { $rootWaitProcess = [Diagnostics.Process]::GetProcessById($observeRootPid) } catch [ArgumentException] { $rootWaitProcess = $null }
+    if ($null -ne $rootWaitProcess -and -not $rootWaitProcess.WaitForExit(15000)) {
+      throw 'The synthetic root did not exit within the bounded wait.'
+    }
+  } finally {
+    if ($null -ne $rootWaitProcess) { $rootWaitProcess.Dispose() }
+  }
+  $observeTree = Observe-WindowsNativeProcess -Capsule $observeCapsule
+  $descendantPid = 0
+  if ([IO.File]::Exists($observeDescendantPidPath)) {
+    try { $descendantPid = [int][IO.File]::ReadAllText($observeDescendantPidPath) } catch { $descendantPid = 0 }
+  }
+  $descendantEntry = @($observeTree.inventory.members | Where-Object { $_.processId -eq $descendantPid })
+  $checks.observeReturnsExitedRootSnapshot = (
+    $observeTree.root.state -ceq 'exited' -and
+    $observeTree.root.identityStatus -ceq 'snapshot' -and
+    -not [bool]$observeTree.root.identityFresh -and
+    $null -ne $observeTree.root.exitCode -and
+    $observeTree.root.identity.processId -gt 0
+  )
+  Assert-PolicyCheck -Condition $checks.observeReturnsExitedRootSnapshot -Name 'observeReturnsExitedRootSnapshot'
+  $checks.observeKeepsDescendantVisibleAfterRootExit = (
+    $descendantPid -gt 0 -and $descendantEntry.Count -eq 1 -and
+    $descendantEntry[0].state -ceq 'observed' -and
+    $descendantEntry[0].metadata.processId -eq $descendantPid -and
+    -not [bool]$observeTree.inventory.isEmpty
+  )
+  Assert-PolicyCheck -Condition $checks.observeKeepsDescendantVisibleAfterRootExit -Name 'observeKeepsDescendantVisibleAfterRootExit'
+  $outsider.Refresh()
+  $outsiderAliveBeforeObserveCleanup = -not $outsider.HasExited
+  $observeTreeCleanup = $observeCapsule.Dispose()
+  $observeCapsuleCleanup = [ordered]@{
+    jobEmpty = [bool]$observeTreeCleanup.jobEmpty
+    rootExited = [bool]$observeTreeCleanup.rootExited
+    exitCode = if ($null -eq $observeTreeCleanup.exitCode) { $null } else { [uint32]$observeTreeCleanup.exitCode }
+  }
+  $observeCapsuleCleanupConfirmed = [bool]$observeTreeCleanup.jobEmpty -and [bool]$observeTreeCleanup.rootExited
+  $checks.observeCleanupKillsOnlyOwnedJob = $observeCapsuleCleanupConfirmed
+  Assert-PolicyCheck -Condition $checks.observeCleanupKillsOnlyOwnedJob -Name 'observeCleanupKillsOnlyOwnedJob'
+  $outsider.Refresh()
+  $checks.outsiderSurvivesObserveCleanup = $outsiderAliveBeforeObserveCleanup -and -not $outsider.HasExited
+  Assert-PolicyCheck -Condition $checks.outsiderSurvivesObserveCleanup -Name 'outsiderSurvivesObserveCleanup'
+  $mainAfterTreeCleanup = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $checks.observeCleanupPreservesOtherCapsule = $mainAfterTreeCleanup.root.identityStatus -ceq 'fresh'
+  Assert-PolicyCheck -Condition $checks.observeCleanupPreservesOtherCapsule -Name 'observeCleanupPreservesOtherCapsule'
+  $allNativeJobsCleaned = $false
+  $observeCapsule = $null
+  [void]$observations.Add([pscustomobject][ordered]@{
+    scenario = 'observe-exited-root-with-live-descendant'
+    rootSnapshotMarkedStale = $true
+    rootExitCodeObserved = $null -ne $observeTree.root.exitCode
+    descendantMemberObserved = $checks.observeKeepsDescendantVisibleAfterRootExit
+    ownedJobCleanupConfirmed = $observeCapsuleCleanupConfirmed
+    outsiderAliveAfterCleanup = $checks.outsiderSurvivesObserveCleanup
+    otherCapsuleAliveAfterCleanup = $checks.observeCleanupPreservesOtherCapsule
+  })
+
   $failurePhase = 'capsule-cleanup'
   $firstCleanup = $capsule.Dispose()
   $capsuleCleanup = [ordered]@{
@@ -1281,7 +1865,7 @@ $reportLines = @(
     $failureErrorId = Get-PolicyErrorId -Exception $exception
   }
   if ($null -eq $failureErrorId -and $_.FullyQualifiedErrorId) {
-    $allowedPrefixes = @('Morrow.WindowsNativeProcess.InvalidDescriptor', 'Morrow.WindowsNativeProcess.IdentityMismatch', 'Morrow.WindowsNativeProcess.StartFailed', 'Morrow.WindowsNativeProcess.CleanupIncomplete')
+    $allowedPrefixes = @('Morrow.WindowsNativeProcess.InvalidDescriptor', 'Morrow.WindowsNativeProcess.InvalidCapsule', 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion', 'Morrow.WindowsNativeProcess.IdentityMismatch', 'Morrow.WindowsNativeProcess.IdentityUnavailable', 'Morrow.WindowsNativeProcess.StartFailed', 'Morrow.WindowsNativeProcess.CleanupIncomplete')
     $caughtFullyQualifiedErrorId = [string]$_.FullyQualifiedErrorId
     foreach ($prefix in $allowedPrefixes) {
       if ($caughtFullyQualifiedErrorId -ceq $prefix -or
@@ -1339,6 +1923,27 @@ $reportLines = @(
       [void]$cleanupErrors.Add('The synthetic parent environment canary could not be restored.')
     }
   }
+  if ($null -ne $observeCapsule) {
+    try {
+      $finalObserveCleanup = $observeCapsule.Dispose()
+      if (-not [bool]$finalObserveCleanup.jobEmpty -or -not [bool]$finalObserveCleanup.rootExited) {
+        $observeCapsuleCleanupConfirmed = $false
+        [void]$cleanupErrors.Add('Observe capsule cleanup did not confirm Job empty and root exited.')
+      } else {
+        $observeCapsuleCleanupConfirmed = $true
+        if ($null -eq $observeCapsuleCleanup) {
+          $observeCapsuleCleanup = [ordered]@{
+            jobEmpty = [bool]$finalObserveCleanup.jobEmpty
+            rootExited = [bool]$finalObserveCleanup.rootExited
+            exitCode = if ($null -eq $finalObserveCleanup.exitCode) { $null } else { [uint32]$finalObserveCleanup.exitCode }
+          }
+        }
+      }
+    } catch {
+      $observeCapsuleCleanupConfirmed = $false
+      [void]$cleanupErrors.Add('Observe capsule cleanup raised a sanitized failure.')
+    }
+  }
   if ($null -ne $capsule) {
     try {
       $finalCleanup = $capsule.Dispose()
@@ -1370,7 +1975,7 @@ $reportLines = @(
     try { [IO.Directory]::Delete($junctionPath, $false) } catch { [void]$cleanupErrors.Add('The test-owned junction could not be removed.') }
   }
   if ($privateRootCreated -and [IO.Directory]::Exists($privateRoot) -and
-      (-not $allNativeJobsCleaned -or -not $outsiderExited -or $cimDiagnosticCleanupUnconfirmed)) {
+      (-not $allNativeJobsCleaned -or -not $outsiderExited -or $cimDiagnosticCleanupUnconfirmed -or ($observeCapsuleCreated -and -not $observeCapsuleCleanupConfirmed))) {
     $privateRuntimeRetained = $true
     [void]$cleanupErrors.Add('Private staging was retained because process cleanup was not fully confirmed.')
   } elseif ($privateRootCreated -and [IO.Directory]::Exists($privateRoot)) {
@@ -1398,7 +2003,7 @@ $reportLines = @(
   try { $testHash = (Get-FileHash -LiteralPath $MyInvocation.MyCommand.Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch { }
   $receipt = [ordered]@{
     schemaVersion = 1
-    scope = 'issue-225 Windows native process policy own suite'
+    scope = 'issues-225-236 Windows native process policy own suite'
     status = if ($null -eq $failure) { 'passed' } else { 'failed' }
     runId = $runId
     os = [Environment]::OSVersion.VersionString
@@ -1415,6 +2020,7 @@ $reportLines = @(
     observations = @($observations)
     childEnvironmentReport = $childReport
     capsuleCleanup = $capsuleCleanup
+    observeCapsuleCleanup = $observeCapsuleCleanup
     outsiderAliveAfterOwnedCleanup = $outsiderAliveAtEnd
     privateRuntimeRetained = $privateRuntimeRetained
     retainedRuntimePath = if ($privateRuntimeRetained) { $privateRoot } else { $null }

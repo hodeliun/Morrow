@@ -27,6 +27,22 @@ namespace Morrow.Pilot
 
   public sealed class WindowsNativeProcessCapsule
   {
+    private sealed class ObservationToken
+    {
+      internal readonly WindowsNativeProcessCapsule owner;
+      internal readonly object session;
+      internal readonly long generation;
+      internal readonly object[] identitySnapshot;
+
+      internal ObservationToken(WindowsNativeProcessCapsule owner, object session, long generation, object[] identitySnapshot)
+      {
+        this.owner = owner;
+        this.session = session;
+        this.generation = generation;
+        this.identitySnapshot = (object[])identitySnapshot.Clone();
+      }
+    }
+
     private sealed class IdentitySnapshot
     {
       internal readonly int processId;
@@ -61,6 +77,7 @@ namespace Morrow.Pilot
     private bool _lastJobEmpty;
     private bool _lastRootExited;
     private uint? _lastExitCode;
+    private long _generation = 1;
 
     private WindowsNativeProcessCapsule(object session, object[] identitySnapshot)
     {
@@ -79,6 +96,54 @@ namespace Morrow.Pilot
         throw new ArgumentException("Only the native Job session type can be captured.", "session");
       _identitySnapshot = new IdentitySnapshot(identitySnapshot);
       _session = session;
+    }
+
+    private object CaptureObservationToken()
+    {
+      lock (_sync)
+      {
+        if (_finished || _completed || _session == null)
+          throw new InvalidOperationException("The process capsule is no longer active.");
+        return new ObservationToken(this, _session, _generation, new object[]
+        {
+          _identitySnapshot.processId,
+          _identitySnapshot.parentProcessId,
+          _identitySnapshot.executablePath,
+          _identitySnapshot.executableSha256,
+          _identitySnapshot.creationTimeUtc,
+          _identitySnapshot.ownerSid
+        });
+      }
+    }
+
+    private object ReadObservationState(object value)
+    {
+      lock (_sync)
+      {
+        ObservationToken token = value as ObservationToken;
+        if (token == null || !Object.ReferenceEquals(token.owner, this) ||
+            _finished || _completed || _session == null ||
+            token.generation != _generation || !Object.ReferenceEquals(token.session, _session))
+          throw new InvalidOperationException("The process capsule observation is no longer current.");
+
+        Type sessionType = _session.GetType();
+        MethodInfo observeRoot = sessionType.GetMethod("ObserveRoot", Type.EmptyTypes);
+        MethodInfo listMembers = sessionType.GetMethod("ListMemberIds", Type.EmptyTypes);
+        if (observeRoot == null || listMembers == null)
+          throw new InvalidOperationException("The owned session does not expose read-only observation.");
+
+        object root = observeRoot.Invoke(_session, null);
+        object rawMembers = listMembers.Invoke(_session, null);
+        uint[] memberIds = rawMembers as uint[];
+        if (root == null || memberIds == null)
+          throw new InvalidOperationException("The owned session returned an incomplete observation.");
+        var state = new System.Collections.Hashtable();
+        state["root"] = root;
+        state["memberIds"] = (uint[])memberIds.Clone();
+        state["identitySnapshot"] = (object[])token.identitySnapshot.Clone();
+        state["generation"] = token.generation;
+        return state;
+      }
     }
 
     public WindowsNativeProcessCleanupSnapshot Dispose()
@@ -138,6 +203,7 @@ namespace Morrow.Pilot
           }
           _session = null;
           _finished = true;
+          _generation++;
         }
 
         if (failure != null || !_completed)
@@ -227,6 +293,416 @@ function Get-PilotWindowsNativeProcessDiagnostics {
     $current = $current.InnerException
   }
   return $null
+}
+
+# Internal helpers keep assertion normalization and comparison available to
+# Observe and Stop without adding a process-control command surface.
+function ConvertTo-PilotWindowsNativeProcessAssertionPath {
+  param([Parameter(Mandatory)][string] $Path)
+
+  # Assertion paths are normalized lexically only. In particular, do not test
+  # whether the asserted image exists or inspect any filesystem attributes.
+  if ([string]::IsNullOrWhiteSpace($Path) -or $Path -notmatch '\A[A-Za-z]:\\') {
+    throw [FormatException]::new('The assertion path is not a local absolute Windows path.')
+  }
+  # The colon in the validated drive prefix is required. Apply Windows-invalid
+  # filename characters and ASCII controls only to the path remainder.
+  $pathRemainder = $Path.Substring(3)
+  $forbiddenPathCharacters = [char[]]@('<', '>', ':', '"', '|', '?', '*', '/') +
+    [char[]](0..31 | ForEach-Object { [char]$_ })
+  if ($pathRemainder.IndexOfAny([char[]]$forbiddenPathCharacters) -ge 0) {
+    throw [FormatException]::new('The assertion path contains a noncanonical Windows path character.')
+  }
+
+  $segments = $pathRemainder.Split([char[]]@('\'))
+  if ($segments.Count -eq 0) {
+    throw [FormatException]::new('The assertion path has no path component.')
+  }
+  foreach ($segment in $segments) {
+    if ([string]::IsNullOrEmpty($segment) -or $segment -eq '.' -or $segment -eq '..' -or
+        $segment.Contains(':') -or $segment.EndsWith('.') -or $segment.EndsWith(' ')) {
+      throw [FormatException]::new('The assertion path contains a noncanonical path component.')
+    }
+  }
+
+  try {
+    $fullPath = [IO.Path]::GetFullPath($Path)
+  } catch {
+    throw [FormatException]::new('The assertion path cannot be normalized lexically.')
+  }
+  if (-not [string]::Equals($fullPath, $Path, [StringComparison]::OrdinalIgnoreCase)) {
+    throw [FormatException]::new('The assertion path is not in canonical form.')
+  }
+  return $fullPath
+}
+
+function ConvertTo-PilotWindowsNativeProcessAssertionUtcTicks {
+  param([Parameter(Mandatory)][string] $Value)
+
+  $iso8601WithZone = '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?(?:Z|[+-][0-9]{2}:[0-9]{2})\z'
+  if ($Value -notmatch $iso8601WithZone) {
+    throw [FormatException]::new('The assertion timestamp must be ISO 8601 with an explicit time zone.')
+  }
+  try {
+    $timestamp = [DateTimeOffset]::Parse(
+      $Value,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None
+    )
+  } catch {
+    throw [FormatException]::new('The assertion timestamp is not a valid ISO 8601 instant.')
+  }
+  return [long]$timestamp.UtcDateTime.Ticks
+}
+
+function ConvertTo-PilotWindowsNativeProcessIdentityAssertion {
+  [CmdletBinding()]
+  param([AllowNull()][object] $IdentityAssertion)
+
+  $normalized = [ordered]@{}
+  if ($null -eq $IdentityAssertion) { return ,$normalized }
+  if ($IdentityAssertion -isnot [System.Collections.IDictionary]) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+      -Stage 'identity-assertion-validation')
+  }
+
+  $canonicalNames = @(
+    'processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid'
+  )
+  $canonicalByName = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($name in $canonicalNames) { $canonicalByName.Add($name, $name) }
+  $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+  # Read the real dictionary Keys property through PSBase so entries named
+  # Count or Keys cannot shadow PowerShell's adapted members.
+  $assertionKeys = [Collections.Generic.List[object]]::new()
+  try {
+    foreach ($key in $IdentityAssertion.PSBase.Keys) { $assertionKeys.Add($key) }
+  } catch {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' -Stage 'identity-assertion-validation')
+  }
+  if ($assertionKeys.Count -eq 0) { return ,$normalized }
+
+  $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+  foreach ($key in $assertionKeys) {
+    if ($key -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$key) -or
+        -not $canonicalByName.ContainsKey([string]$key) -or -not $seen.Add([string]$key)) {
+      throw (New-PilotWindowsNativeProcessException `
+        -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+        -Stage 'identity-assertion-validation')
+    }
+
+    $name = $canonicalByName[[string]$key]
+    try {
+      $value = $IdentityAssertion[$key]
+    } catch {
+      throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' -Stage 'identity-assertion-validation' -Fields @($name))
+    }
+    if ($null -eq $value) {
+      throw (New-PilotWindowsNativeProcessException `
+        -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+        -Stage 'identity-assertion-validation' `
+        -Fields @($name))
+    }
+
+    switch ($name) {
+      'processId' {
+        try {
+          if ($value.GetType() -notin $integralTypes) { throw 'invalid' }
+          $number = [decimal]$value
+          if ($number -lt 1 -or $number -gt [int]::MaxValue) { throw 'invalid' }
+          $normalized[$name] = [int]$number
+        } catch {
+          throw (New-PilotWindowsNativeProcessException `
+            -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+            -Stage 'identity-assertion-validation' `
+            -Fields @($name))
+        }
+      }
+      'parentProcessId' {
+        try {
+          if ($value.GetType() -notin $integralTypes) { throw 'invalid' }
+          $number = [decimal]$value
+          if ($number -lt 1 -or $number -gt [int]::MaxValue) { throw 'invalid' }
+          $normalized[$name] = [int]$number
+        } catch {
+          throw (New-PilotWindowsNativeProcessException `
+            -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+            -Stage 'identity-assertion-validation' `
+            -Fields @($name))
+        }
+      }
+      'executablePath' {
+        try {
+          if ($value -isnot [string]) { throw 'invalid' }
+          $normalized[$name] = ConvertTo-PilotWindowsNativeProcessAssertionPath -Path $value
+        } catch {
+          throw (New-PilotWindowsNativeProcessException `
+            -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+            -Stage 'identity-assertion-validation' `
+            -Fields @($name))
+        }
+      }
+      'executableSha256' {
+        if ($value -isnot [string] -or $value -notmatch '\A[A-Fa-f0-9]{64}\z') {
+          throw (New-PilotWindowsNativeProcessException `
+            -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+            -Stage 'identity-assertion-validation' `
+            -Fields @($name))
+        }
+        $normalized[$name] = $value.ToLowerInvariant()
+      }
+      'creationTimeUtc' {
+        try {
+          if ($value -isnot [string]) { throw 'invalid' }
+          $normalized[$name] = ConvertTo-PilotWindowsNativeProcessAssertionUtcTicks -Value $value
+        } catch {
+          throw (New-PilotWindowsNativeProcessException `
+            -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+            -Stage 'identity-assertion-validation' `
+            -Fields @($name))
+        }
+      }
+      'ownerSid' {
+        try {
+          if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) { throw 'invalid' }
+          $sid = [Security.Principal.SecurityIdentifier]::new($value)
+          if ($sid.Value -cne $value) { throw 'noncanonical' }
+          $normalized[$name] = $sid.Value
+        } catch {
+          throw (New-PilotWindowsNativeProcessException `
+            -ErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+            -Stage 'identity-assertion-validation' `
+            -Fields @($name))
+        }
+      }
+    }
+  }
+
+  return ,$normalized
+}
+
+function Compare-PilotWindowsNativeProcessIdentityAssertion {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][System.Collections.IDictionary] $NormalizedAssertion,
+    [AllowNull()][object] $ObservedIdentity
+  )
+
+  if ($NormalizedAssertion.Count -eq 0) { return }
+  if ($null -eq $ObservedIdentity) {
+    # The caller classifies an unavailable observation; do not silently pass a
+    # nonempty assertion or turn it into an identity mismatch here.
+    throw [InvalidOperationException]::new('An observed process identity is required for assertion comparison.')
+  }
+
+  $mismatches = [Collections.Generic.List[string]]::new()
+  foreach ($name in @(
+      'processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid'
+    )) {
+    if (-not $NormalizedAssertion.Contains($name)) { continue }
+    $property = $ObservedIdentity.PSObject.Properties[$name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+      [void]$mismatches.Add($name)
+      continue
+    }
+
+    $matches = $false
+    try {
+      switch ($name) {
+        { $_ -in @('processId', 'parentProcessId') } {
+          $actual = $property.Value
+          $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+          if ($actual.GetType() -in $integralTypes) {
+            $actualNumber = [decimal]$actual
+            $matches = ($actualNumber -ge 1 -and $actualNumber -le [int]::MaxValue -and
+              [int]$actualNumber -eq [int]$NormalizedAssertion[$name])
+          }
+          break
+        }
+        'executablePath' {
+          if ($property.Value -is [string]) {
+            $actualPath = ConvertTo-PilotWindowsNativeProcessAssertionPath -Path $property.Value
+            $matches = [string]::Equals(
+              [string]$NormalizedAssertion[$name],
+              $actualPath,
+              [StringComparison]::OrdinalIgnoreCase
+            )
+          }
+          break
+        }
+        'executableSha256' {
+          if ($property.Value -is [string] -and $property.Value -match '\A[A-Fa-f0-9]{64}\z') {
+            $matches = [string]::Equals(
+              [string]$NormalizedAssertion[$name],
+              $property.Value,
+              [StringComparison]::OrdinalIgnoreCase
+            )
+          }
+          break
+        }
+        'creationTimeUtc' {
+          if ($property.Value -is [string]) {
+            $actualTicks = ConvertTo-PilotWindowsNativeProcessAssertionUtcTicks -Value $property.Value
+            $matches = [long]$NormalizedAssertion[$name] -eq [long]$actualTicks
+          }
+          break
+        }
+        'ownerSid' {
+          if ($property.Value -is [string]) {
+            $actualSid = [Security.Principal.SecurityIdentifier]::new($property.Value)
+            $matches = ($actualSid.Value -ceq $property.Value -and
+              [string]::Equals([string]$NormalizedAssertion[$name], $actualSid.Value, [StringComparison]::Ordinal))
+          }
+          break
+        }
+      }
+    } catch {
+      $matches = $false
+    }
+    if (-not $matches) { [void]$mismatches.Add($name) }
+  }
+
+  if ($mismatches.Count -gt 0) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+      -Stage 'identity-assertion-comparison' `
+      -Fields $mismatches.ToArray())
+  }
+}
+
+function ConvertFrom-PilotWindowsNativeProcessObservationMembers {
+  param([AllowNull()][object] $MemberIds)
+
+  $ids = [Collections.Generic.List[int]]::new()
+  $seen = [Collections.Generic.HashSet[int]]::new()
+  $invalidCount = 0
+  if ($MemberIds -isnot [Array]) {
+    $invalidCount++
+  } else {
+    $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+    foreach ($value in $MemberIds) {
+      try {
+        if ($null -eq $value -or $value.GetType() -notin $integralTypes) { throw 'invalid' }
+        $number = [decimal]$value
+        if ($number -lt 1 -or $number -gt [int]::MaxValue) { throw 'invalid' }
+        $processId = [int]$number
+        if ($seen.Add($processId)) { [void]$ids.Add($processId) }
+      } catch {
+        $invalidCount++
+      }
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    ids = $ids.ToArray()
+    invalidCount = $invalidCount
+  }
+}
+
+function Get-PilotWindowsNativeProcessObservationCimTimeoutSeconds {
+  param(
+    [Parameter(Mandatory)][Diagnostics.Stopwatch] $Clock,
+    [Parameter(Mandatory)][ValidateRange(1, 120000)][int] $DeadlineMilliseconds,
+    [ValidateRange(1, 5)][int] $MaximumSeconds = 5
+  )
+
+  $remainingMilliseconds = [Math]::Floor($DeadlineMilliseconds - $Clock.Elapsed.TotalMilliseconds)
+  if ($remainingMilliseconds -lt 1000) { return 0 }
+  return [int][Math]::Min($MaximumSeconds, [Math]::Floor($remainingMilliseconds / 1000.0))
+}
+
+function Get-PilotWindowsNativeProcessObservationCimBatch {
+  param(
+    [AllowEmptyCollection()][Parameter(Mandatory)][int[]] $OwnedProcessIds,
+    [Parameter(Mandatory)][Diagnostics.Stopwatch] $Clock,
+    [Parameter(Mandatory)][ValidateRange(1, 120000)][int] $DeadlineMilliseconds
+  )
+
+  $queryIds = [Collections.Generic.List[int]]::new()
+  $seen = [Collections.Generic.HashSet[int]]::new()
+  foreach ($processId in $OwnedProcessIds) {
+    if ($processId -gt 0 -and $seen.Add($processId)) { [void]$queryIds.Add($processId) }
+  }
+  $truncated = $queryIds.Count -gt 64
+  if ($truncated) {
+    $limitedIds = [Collections.Generic.List[int]]::new()
+    for ($index = 0; $index -lt 64; $index++) { [void]$limitedIds.Add($queryIds[$index]) }
+    $queryIds = $limitedIds
+  }
+  if ($queryIds.Count -eq 0) {
+    return [pscustomobject][ordered]@{ succeeded = $true; rows = @(); queriedIds = @(); truncated = $truncated; failure = $null }
+  }
+
+  $timeoutSeconds = Get-PilotWindowsNativeProcessObservationCimTimeoutSeconds `
+    -Clock $Clock -DeadlineMilliseconds $DeadlineMilliseconds
+  if ($timeoutSeconds -le 0 -or -not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
+    return [pscustomobject][ordered]@{ succeeded = $false; rows = @(); queriedIds = $queryIds.ToArray(); truncated = $truncated; failure = 'deadline-or-command-unavailable' }
+  }
+
+  $filter = (@($queryIds | ForEach-Object { 'ProcessId = ' + [string][int]$_ }) -join ' OR ')
+  try {
+    $rows = @(Get-CimInstance -ClassName Win32_Process -Filter $filter -OperationTimeoutSec $timeoutSeconds -ErrorAction Stop)
+    if ($Clock.Elapsed.TotalMilliseconds -ge $DeadlineMilliseconds) {
+      return [pscustomobject][ordered]@{ succeeded = $false; rows = @(); queriedIds = $queryIds.ToArray(); truncated = $truncated; failure = 'deadline-exceeded' }
+    }
+    return [pscustomobject][ordered]@{ succeeded = $true; rows = $rows; queriedIds = $queryIds.ToArray(); truncated = $truncated; failure = $null }
+  } catch {
+    return [pscustomobject][ordered]@{ succeeded = $false; rows = @(); queriedIds = $queryIds.ToArray(); truncated = $truncated; failure = 'cim-query-failed' }
+  }
+}
+
+function Get-PilotWindowsNativeProcessObservationCimMetadata {
+  param(
+    [Parameter(Mandatory)][object] $ProcessRow,
+    [Parameter(Mandatory)][int] $ExpectedProcessId
+  )
+
+  try {
+    $processIdProperty = $ProcessRow.PSObject.Properties['ProcessId']
+    if ($null -eq $processIdProperty -or $null -eq $processIdProperty.Value) { return $null }
+    $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+    if ($processIdProperty.Value.GetType() -notin $integralTypes) { return $null }
+    $processIdNumber = [decimal]$processIdProperty.Value
+    if ($processIdNumber -lt 1 -or $processIdNumber -gt [int]::MaxValue -or [int]$processIdNumber -ne $ExpectedProcessId) { return $null }
+
+    $parentProcessId = $null
+    $parentProperty = $ProcessRow.PSObject.Properties['ParentProcessId']
+    if ($null -ne $parentProperty -and $null -ne $parentProperty.Value -and
+        $parentProperty.Value.GetType() -in $integralTypes) {
+      $parentNumber = [decimal]$parentProperty.Value
+      if ($parentNumber -ge 1 -and $parentNumber -le [int]::MaxValue) { $parentProcessId = [int]$parentNumber }
+    }
+
+    $creationTimeUtc = $null
+    $creationProperty = $ProcessRow.PSObject.Properties['CreationDate']
+    if ($null -ne $creationProperty -and $null -ne $creationProperty.Value) {
+      try {
+        if ($creationProperty.Value -is [datetime]) {
+          $creationTimeUtc = $creationProperty.Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        } elseif ($creationProperty.Value -is [string]) {
+          $creationTimeUtc = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$creationProperty.Value).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        }
+      } catch { $creationTimeUtc = $null }
+    }
+
+    $name = $null
+    $nameProperty = $ProcessRow.PSObject.Properties['Name']
+    if ($null -ne $nameProperty -and $nameProperty.Value -is [string] -and
+        -not [string]::IsNullOrWhiteSpace([string]$nameProperty.Value)) {
+      $name = [string]$nameProperty.Value
+    }
+
+    return [pscustomobject][ordered]@{
+      processId = [int]$processIdNumber
+      parentProcessId = $parentProcessId
+      name = $name
+      creationTimeUtc = $creationTimeUtc
+    }
+  } catch {
+    return $null
+  }
 }
 
 function Get-PilotWindowsNativeProcessDescriptor {
@@ -820,6 +1296,400 @@ function Start-WindowsNativeProcess {
       [System.Management.Automation.ErrorCategory]::InvalidOperation,
       $null
     )
+    $errorRecord.Exception.Data['Morrow.WindowsNativeProcess.Diagnostics'] = $diagnostics
+    $PSCmdlet.ThrowTerminatingError($errorRecord)
+  }
+}
+
+function Get-PilotWindowsNativeProcessObservationMembers {
+  param(
+    [AllowEmptyCollection()][Parameter(Mandatory)][int[]] $BeforeProcessIds,
+    [AllowEmptyCollection()][Parameter(Mandatory)][int[]] $AfterProcessIds,
+    [AllowEmptyCollection()][Parameter(Mandatory)][int[]] $QueriedProcessIds,
+    [Parameter(Mandatory)][object] $RowsById,
+    [Parameter(Mandatory)][object] $RowCounts,
+    [Parameter(Mandatory)][bool] $CimSucceeded,
+    [Parameter(Mandatory)][bool] $BeforeReadSucceeded,
+    [Parameter(Mandatory)][bool] $AfterReadSucceeded
+  )
+
+  $members = [Collections.Generic.List[object]]::new()
+  $beforeSet = [Collections.Generic.HashSet[int]]::new()
+  $afterSet = [Collections.Generic.HashSet[int]]::new()
+  $querySet = [Collections.Generic.HashSet[int]]::new()
+  foreach ($processId in $BeforeProcessIds) { [void]$beforeSet.Add([int]$processId) }
+  foreach ($processId in $AfterProcessIds) { [void]$afterSet.Add([int]$processId) }
+  foreach ($processId in $QueriedProcessIds) { [void]$querySet.Add([int]$processId) }
+
+  if ($BeforeReadSucceeded -and $AfterReadSucceeded) {
+    foreach ($processId in $BeforeProcessIds) {
+      if (-not $afterSet.Contains([int]$processId)) {
+        [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'disappeared'; metadata = $null })
+        continue
+      }
+      if (-not $CimSucceeded -or -not $querySet.Contains([int]$processId) -or
+          -not $RowCounts.ContainsKey([int]$processId) -or $RowCounts[[int]$processId] -ne 1 -or
+          -not $RowsById.ContainsKey([int]$processId)) {
+        [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'unobservable'; metadata = $null })
+        continue
+      }
+      $metadata = Get-PilotWindowsNativeProcessObservationCimMetadata `
+        -ProcessRow $RowsById[[int]$processId] -ExpectedProcessId ([int]$processId)
+      if ($null -eq $metadata) {
+        [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'unobservable'; metadata = $null })
+      } else {
+        [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'observed'; metadata = $metadata })
+      }
+    }
+    foreach ($processId in $AfterProcessIds) {
+      if (-not $beforeSet.Contains([int]$processId)) {
+        [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'arrived'; metadata = $null })
+      }
+    }
+  } elseif ($BeforeReadSucceeded) {
+    foreach ($processId in $BeforeProcessIds) {
+      [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'unobservable'; metadata = $null })
+    }
+  } elseif ($AfterReadSucceeded) {
+    foreach ($processId in $AfterProcessIds) {
+      [void]$members.Add([pscustomobject][ordered]@{ processId = [int]$processId; state = 'unobservable'; metadata = $null })
+    }
+  }
+  return $members.ToArray()
+}
+
+function Get-PilotWindowsNativeProcessObservationInventoryStatus {
+  param(
+    [Parameter(Mandatory)][bool] $SnapshotsAvailable,
+    [Parameter(Mandatory)][bool] $CimRowsAvailable,
+    [Parameter(Mandatory)][int] $MemberCountBefore,
+    [Parameter(Mandatory)][int] $MemberCountAfter,
+    [Parameter(Mandatory)][bool] $HasInvalidMembers,
+    [Parameter(Mandatory)][bool] $IsTruncated,
+    [Parameter(Mandatory)][bool] $HasUnobservableMembers,
+    [Parameter(Mandatory)][bool] $HasTransitions,
+    [Parameter(Mandatory)][bool] $IdentityUnavailable,
+    [Parameter(Mandatory)][bool] $IsConfirmedEmpty
+  )
+
+  if (-not $SnapshotsAvailable -or (-not $CimRowsAvailable -and $MemberCountBefore -gt 0)) { return 'unavailable' }
+  if ($IsConfirmedEmpty) { return 'empty' }
+  if ($HasInvalidMembers -or $IsTruncated -or $HasUnobservableMembers -or $HasTransitions -or $IdentityUnavailable) { return 'partial' }
+  return 'available'
+}
+
+function Invoke-PilotWindowsNativeProcessObservation {
+  param(
+    [AllowNull()][object] $Capsule,
+    [AllowNull()][object] $IdentityAssertion
+  )
+
+  # Validate caller-controlled data before touching the retained session or CIM.
+  $normalizedAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $IdentityAssertion
+  $capsuleType = 'Morrow.Pilot.WindowsNativeProcessCapsule' -as [type]
+  if ($null -eq $Capsule -or $null -eq $capsuleType -or $Capsule.GetType() -ne $capsuleType) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+      -Stage 'observe-capsule-validation')
+  }
+
+  $privateInstance = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+  $captureMethod = $capsuleType.GetMethod('CaptureObservationToken', $privateInstance)
+  $readStateMethod = $capsuleType.GetMethod('ReadObservationState', $privateInstance)
+  if ($null -eq $captureMethod -or $null -eq $readStateMethod) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+      -Stage 'observe-capsule-validation')
+  }
+
+  $token = $null
+  try {
+    $token = $captureMethod.Invoke($Capsule, [object[]]@())
+  } catch {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+      -Stage 'observe-capsule-validation')
+  }
+
+  $beforeState = $null
+  $afterState = $null
+  $finalState = $null
+  $beforeMembers = [pscustomobject]@{ ids = @(); invalidCount = 1 }
+  $afterMembers = [pscustomobject]@{ ids = @(); invalidCount = 1 }
+  $snapshotIdentity = $null
+  $beforeReadSucceeded = $false
+  $afterReadSucceeded = $false
+  $finalReadSucceeded = $false
+  try {
+    $beforeState = [pscustomobject]$readStateMethod.Invoke($Capsule, [object[]]@($token))
+    $beforeMembers = ConvertFrom-PilotWindowsNativeProcessObservationMembers -MemberIds $beforeState.memberIds
+    $snapshot = [object[]]$beforeState.identitySnapshot
+    if ($snapshot.Count -eq 6) {
+      $snapshotIdentity = [pscustomobject][ordered]@{
+        processId = [int]$snapshot[0]
+        parentProcessId = [int]$snapshot[1]
+        executablePath = [string]$snapshot[2]
+        executableSha256 = [string]$snapshot[3]
+        creationTimeUtc = [string]$snapshot[4]
+        ownerSid = [string]$snapshot[5]
+      }
+      $beforeReadSucceeded = $true
+    }
+  } catch {
+    $beforeReadSucceeded = $false
+  }
+
+  $identityFields = @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')
+  $rootPid = if ($null -ne $snapshotIdentity) { [int]$snapshotIdentity.processId } else { 0 }
+  $rootBefore = if ($null -ne $beforeState) { $beforeState.root } else { $null }
+  $rootBeforeAlive = $null -ne $rootBefore -and [string]$rootBefore.state -ceq 'resume-requested' -and
+    [uint32]$rootBefore.processId -eq [uint32]$rootPid -and [bool]$rootBefore.isMember -and
+    @($beforeMembers.ids) -contains $rootPid
+
+  # One batched Win32_Process query covers only the pre-proved Job members. The
+  # root is first so the hard cap never omits the identity needed for Observe.
+  $orderedOwnedIds = [Collections.Generic.List[int]]::new()
+  if ($rootPid -gt 0 -and @($beforeMembers.ids) -contains $rootPid) { [void]$orderedOwnedIds.Add($rootPid) }
+  foreach ($memberId in $beforeMembers.ids) {
+    if ($memberId -ne $rootPid) { [void]$orderedOwnedIds.Add([int]$memberId) }
+  }
+  $cimClock = [Diagnostics.Stopwatch]::StartNew()
+  $cimDeadlineMilliseconds = 8000
+  $cimBatch = Get-PilotWindowsNativeProcessObservationCimBatch `
+    -OwnedProcessIds $orderedOwnedIds.ToArray() `
+    -Clock $cimClock `
+    -DeadlineMilliseconds $cimDeadlineMilliseconds
+
+  $rowCounts = [Collections.Generic.Dictionary[int, int]]::new()
+  $rowsById = [Collections.Generic.Dictionary[int, object]]::new()
+  $querySet = [Collections.Generic.HashSet[int]]::new()
+  foreach ($queriedId in $cimBatch.queriedIds) { [void]$querySet.Add([int]$queriedId) }
+  if ([bool]$cimBatch.succeeded) {
+    foreach ($row in @($cimBatch.rows)) {
+      try {
+        $pidProperty = $row.PSObject.Properties['ProcessId']
+        $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+        if ($null -eq $pidProperty -or $null -eq $pidProperty.Value -or $pidProperty.Value.GetType() -notin $integralTypes) { continue }
+        $pidNumber = [decimal]$pidProperty.Value
+        if ($pidNumber -lt 1 -or $pidNumber -gt [int]::MaxValue) { continue }
+        $rowPid = [int]$pidNumber
+        if (-not $querySet.Contains($rowPid)) { continue }
+        if (-not $rowCounts.ContainsKey($rowPid)) { $rowCounts.Add($rowPid, 0) }
+        $rowCounts[$rowPid]++
+        if ($rowCounts[$rowPid] -eq 1) { $rowsById[$rowPid] = $row }
+      } catch { }
+    }
+  }
+
+  $rootRow = $null
+  $ownerResult = $null
+  $ownerLookupSucceeded = $false
+  $ownerLookupFailed = $false
+  $rootRowLookupFailed = $false
+  if ($rootBeforeAlive -and [bool]$cimBatch.succeeded -and $querySet.Contains($rootPid) -and
+      $rowCounts.ContainsKey($rootPid) -and $rowCounts[$rootPid] -eq 1) {
+    $rootRows = [object[]]@($rowsById[$rootPid])
+    try {
+      $rootRow = Get-PilotWindowsNativeProcessCimRow -ProcessRows $rootRows -ProcessId $rootPid
+    } catch {
+      $rootRowLookupFailed = $true
+      $rootRow = $null
+    }
+    if ($null -ne $rootRow) {
+      try {
+        $ownerTimeoutSeconds = Get-PilotWindowsNativeProcessObservationCimTimeoutSeconds `
+          -Clock $cimClock -DeadlineMilliseconds $cimDeadlineMilliseconds
+        if ($ownerTimeoutSeconds -gt 0 -and (Get-Command Invoke-CimMethod -ErrorAction SilentlyContinue)) {
+          $ownerResult = Invoke-CimMethod -InputObject $rootRow -MethodName GetOwnerSid `
+            -OperationTimeoutSec $ownerTimeoutSeconds -ErrorAction Stop
+          $ownerLookupSucceeded = $cimClock.Elapsed.TotalMilliseconds -lt $cimDeadlineMilliseconds
+          if (-not $ownerLookupSucceeded) { $ownerResult = $null }
+        } else {
+          $ownerLookupFailed = $true
+        }
+      } catch {
+        $ownerLookupFailed = $true
+        $ownerResult = $null
+      }
+    }
+  }
+
+  try {
+    $afterState = [pscustomobject]$readStateMethod.Invoke($Capsule, [object[]]@($token))
+    $afterMembers = ConvertFrom-PilotWindowsNativeProcessObservationMembers -MemberIds $afterState.memberIds
+    $afterReadSucceeded = $true
+  } catch {
+    $afterReadSucceeded = $false
+  }
+
+  $identityFromCim = $null
+  if ($null -ne $afterState -and $rootBeforeAlive -and [string]$afterState.root.state -ceq 'resume-requested' -and
+      [uint32]$afterState.root.processId -eq [uint32]$rootPid -and [bool]$afterState.root.isMember -and
+      @($afterMembers.ids) -contains $rootPid -and [bool]$cimBatch.succeeded -and
+      $null -ne $rootRow -and $ownerLookupSucceeded) {
+    try {
+      $imageProof = Get-PilotWindowsNativeProcessImageProof `
+        -NativeObservation $afterState.root `
+        -ExpectedExecutablePath ([string]$snapshotIdentity.executablePath) `
+        -ExpectedHash ([string]$snapshotIdentity.executableSha256)
+      $identityFromCim = New-PilotWindowsNativeProcessIdentityFromCim `
+        -ProcessRow $rootRow `
+        -OwnerResult $ownerResult `
+        -NativeObservation $afterState.root `
+        -ImageProof $imageProof
+      $snapshotAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion ([ordered]@{
+        processId = [int]$snapshotIdentity.processId
+        parentProcessId = [int]$snapshotIdentity.parentProcessId
+        executablePath = [string]$snapshotIdentity.executablePath
+        executableSha256 = [string]$snapshotIdentity.executableSha256
+        creationTimeUtc = [string]$snapshotIdentity.creationTimeUtc
+        ownerSid = [string]$snapshotIdentity.ownerSid
+      })
+      $null = Compare-PilotWindowsNativeProcessIdentityAssertion `
+        -NormalizedAssertion $snapshotAssertion -ObservedIdentity $identityFromCim
+    } catch {
+      $identityFromCim = $null
+      # A mismatch between the retained snapshot and fresh native/CIM proof is
+      # an unavailable live proof. Caller assertions are compared only after a
+      # complete fresh identity has passed this internal consistency check.
+    }
+  }
+
+  # The final synchronized read closes the race with Dispose and confirms that
+  # the same retained root remains alive in its owned Job before it is fresh.
+  try {
+    $finalState = [pscustomobject]$readStateMethod.Invoke($Capsule, [object[]]@($token))
+    $finalMembers = ConvertFrom-PilotWindowsNativeProcessObservationMembers -MemberIds $finalState.memberIds
+    $finalReadSucceeded = $true
+  } catch {
+    $finalMembers = [pscustomobject]@{ ids = @(); invalidCount = 1 }
+    $finalReadSucceeded = $false
+  }
+
+  $rootState = 'unavailable'
+  $identityStatus = 'unavailable'
+  $rootIdentity = $null
+  $rootExitCode = $null
+  $confirmedExitRoot = $null
+  if ($finalReadSucceeded -and $null -ne $finalState -and [string]$finalState.root.state -ceq 'exited' -and
+      [uint32]$finalState.root.processId -eq [uint32]$rootPid) { $confirmedExitRoot = $finalState.root }
+
+  $finalRootAliveAndMember = $finalReadSucceeded -and $null -ne $finalState -and
+    [string]$finalState.root.state -ceq 'resume-requested' -and
+    [uint32]$finalState.root.processId -eq [uint32]$rootPid -and [bool]$finalState.root.isMember -and
+    $finalMembers.invalidCount -eq 0 -and @($finalMembers.ids) -contains $rootPid
+  $afterRootConsistent = $finalReadSucceeded -and $afterReadSucceeded -and $null -ne $afterState -and
+    [string]$afterState.root.state -ceq 'resume-requested' -and
+    [uint32]$afterState.root.processId -eq [uint32]$rootPid -and [bool]$afterState.root.isMember -and
+    @($afterMembers.ids) -contains $rootPid -and
+    [string]::Equals([string]$afterState.root.creationTimeUtc, [string]$finalState.root.creationTimeUtc, [StringComparison]::Ordinal)
+
+  if ($finalRootAliveAndMember -and $afterRootConsistent -and $null -ne $identityFromCim) {
+    $rootState = 'alive'
+    $identityStatus = 'fresh'
+    $rootIdentity = $identityFromCim
+  } elseif ($null -ne $confirmedExitRoot -and $null -ne $snapshotIdentity) {
+    $rootState = 'exited'
+    $identityStatus = 'snapshot'
+    $rootIdentity = $snapshotIdentity
+    $rootExitCode = if ($null -eq $confirmedExitRoot.exitCode) { $null } else { [uint32]$confirmedExitRoot.exitCode }
+  }
+
+  if ($normalizedAssertion.Count -gt 0) {
+    if ($identityStatus -eq 'fresh' -or $identityStatus -eq 'snapshot') {
+      $null = Compare-PilotWindowsNativeProcessIdentityAssertion `
+        -NormalizedAssertion $normalizedAssertion -ObservedIdentity $rootIdentity
+    } else {
+      $fields = if ($ownerLookupFailed) { @('ownerSid') } elseif ($null -eq $rootRow -or $rootRowLookupFailed) { @('processId') } else { $identityFields }
+      throw (New-PilotWindowsNativeProcessException `
+        -ErrorId 'Morrow.WindowsNativeProcess.IdentityUnavailable' `
+        -Stage 'observe-identity' `
+        -Fields $fields)
+    }
+  }
+
+  $inventoryRowsAvailable = [bool]$cimBatch.succeeded
+  $inventoryAfterMembers = if ($finalReadSucceeded) { $finalMembers } else { [pscustomobject]@{ ids = @(); invalidCount = 1 } }
+  $inventoryMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]$beforeMembers.ids) `
+    -AfterProcessIds ([int[]]$inventoryAfterMembers.ids) `
+    -QueriedProcessIds ([int[]]$cimBatch.queriedIds) `
+    -RowsById $rowsById `
+    -RowCounts $rowCounts `
+    -CimSucceeded ([bool]$cimBatch.succeeded) `
+    -BeforeReadSucceeded $beforeReadSucceeded `
+    -AfterReadSucceeded $finalReadSucceeded)
+  $inventoryHasUnobservable = @($inventoryMembers | Where-Object { $_.state -eq 'unobservable' }).Count -gt 0
+  $inventoryHasTransitions = @($inventoryMembers | Where-Object { $_.state -in @('disappeared', 'arrived') }).Count -gt 0
+  $inventoryIsEmpty = $beforeReadSucceeded -and $finalReadSucceeded -and $beforeMembers.invalidCount -eq 0 -and $inventoryAfterMembers.invalidCount -eq 0 -and
+    $beforeMembers.ids.Count -eq 0 -and $inventoryAfterMembers.ids.Count -eq 0
+  $inventoryStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable ($beforeReadSucceeded -and $finalReadSucceeded) `
+    -CimRowsAvailable $inventoryRowsAvailable `
+    -MemberCountBefore ([int]$beforeMembers.ids.Count) `
+    -MemberCountAfter ([int]$inventoryAfterMembers.ids.Count) `
+    -HasInvalidMembers ($beforeMembers.invalidCount -gt 0 -or $inventoryAfterMembers.invalidCount -gt 0) `
+    -IsTruncated ([bool]$cimBatch.truncated) `
+    -HasUnobservableMembers $inventoryHasUnobservable `
+    -HasTransitions $inventoryHasTransitions `
+    -IdentityUnavailable ($identityStatus -eq 'unavailable') `
+    -IsConfirmedEmpty $inventoryIsEmpty
+
+  return [pscustomobject][ordered]@{
+    root = [pscustomobject][ordered]@{
+      state = $rootState
+      identityStatus = $identityStatus
+      identityFresh = ($identityStatus -eq 'fresh')
+      identity = $rootIdentity
+      exitCode = $rootExitCode
+    }
+    inventory = [pscustomobject][ordered]@{
+      status = $inventoryStatus
+      isEmpty = $inventoryIsEmpty
+      memberCountBefore = if ($beforeReadSucceeded) { $beforeMembers.ids.Count } else { $null }
+      memberCountAfter = if ($finalReadSucceeded) { $finalMembers.ids.Count } else { $null }
+      members = $inventoryMembers
+    }
+  }
+}
+
+function Observe-WindowsNativeProcess {
+  [CmdletBinding()]
+  param(
+    [AllowNull()][object] $Capsule,
+    [AllowNull()][object] $IdentityAssertion
+  )
+
+  try {
+    # The worker normalizes caller data before touching the retained session or CIM.
+    $result = Invoke-PilotWindowsNativeProcessObservation -Capsule $Capsule -IdentityAssertion $IdentityAssertion
+    return ,$result
+  } catch {
+    $caught = $_.Exception
+    $errorId = Get-PilotWindowsNativeProcessErrorId -Exception $caught
+    $allowedErrorIds = @(
+      'Morrow.WindowsNativeProcess.InvalidCapsule',
+      'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
+      'Morrow.WindowsNativeProcess.IdentityMismatch',
+      'Morrow.WindowsNativeProcess.IdentityUnavailable'
+    )
+    if ($errorId -notin $allowedErrorIds) { $errorId = 'Morrow.WindowsNativeProcess.IdentityUnavailable' }
+    $diagnostics = Get-PilotWindowsNativeProcessDiagnostics -Exception $caught
+    if ($null -eq $diagnostics -or $diagnostics -isnot [System.Collections.IDictionary]) {
+      $diagnostics = [ordered]@{ stage = 'observe-native-read'; cause = $errorId; fields = @() }
+    }
+    $category = if ($errorId -eq 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion') {
+      [System.Management.Automation.ErrorCategory]::InvalidArgument
+    } else {
+      [System.Management.Automation.ErrorCategory]::InvalidOperation
+    }
+    $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+      [InvalidOperationException]::new('The Windows native process policy operation failed.'),
+      $errorId,
+      $category,
+      $null
+    )
+    $errorRecord.Exception.Data['Morrow.WindowsNativeProcess.ErrorId'] = $errorId
     $errorRecord.Exception.Data['Morrow.WindowsNativeProcess.Diagnostics'] = $diagnostics
     $PSCmdlet.ThrowTerminatingError($errorRecord)
   }

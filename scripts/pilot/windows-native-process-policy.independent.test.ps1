@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$script:Issue = 225
+$script:Issue = 236
 $script:RunStartedUtc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
 $script:Checks = [ordered]@{}
 $script:Failures = [Collections.Generic.List[string]]::new()
@@ -41,7 +41,7 @@ $script:SourcePwshSha256 = $null
 $script:StagedPwshSha256 = $null
 $script:RuntimeOwnerMarker = [Guid]::NewGuid().ToString('N')
 $script:CaseCounter = 0
-$script:EnvironmentCanaryName = 'MORROW_225_PARENT_ONLY_' + [Guid]::NewGuid().ToString('N').ToUpperInvariant()
+$script:EnvironmentCanaryName = 'MORROW_236_PARENT_ONLY_' + [Guid]::NewGuid().ToString('N').ToUpperInvariant()
 $script:EnvironmentCanaryValue = [Guid]::NewGuid().ToString('N')
 $script:OriginalCanaryValue = $null
 $script:OriginalCanaryExisted = $false
@@ -196,6 +196,13 @@ function Add-Check {
 
 function Get-PolicyErrorId {
   param([Parameter(Mandatory)][System.Management.Automation.ErrorRecord] $ErrorRecord)
+  $current = $ErrorRecord.Exception
+  for ($depth = 0; $null -ne $current -and $depth -lt 8; $depth++) {
+    if ($current.Data.Contains('Morrow.WindowsNativeProcess.ErrorId')) {
+      return [string]$current.Data['Morrow.WindowsNativeProcess.ErrorId']
+    }
+    $current = $current.InnerException
+  }
   $raw = [string]$ErrorRecord.FullyQualifiedErrorId
   if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
   return ($raw -split ',', 2)[0]
@@ -236,7 +243,10 @@ function New-SafeFailureSummary {
 
   $knownErrorIds = @(
     'Morrow.WindowsNativeProcess.InvalidDescriptor',
+    'Morrow.WindowsNativeProcess.InvalidCapsule',
+    'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
     'Morrow.WindowsNativeProcess.IdentityMismatch',
+    'Morrow.WindowsNativeProcess.IdentityUnavailable',
     'Morrow.WindowsNativeProcess.StartFailed',
     'Morrow.WindowsNativeProcess.CleanupIncomplete'
   )
@@ -257,7 +267,8 @@ function New-SafeFailureSummary {
     'descriptor-validation', 'path-validation', 'platform-preflight', 'dependency-preflight',
     'path-containment', 'environment-validation', 'environment-path-validation', 'environment-path-containment',
     'executable-hash-validation', 'system-path-resolution', 'identity-dependency', 'cim-observation',
-    'suspended-create', 'native-observation', 'job-membership', 'identity-comparison', 'capsule-create', 'resume', 'cleanup'
+    'suspended-create', 'native-observation', 'job-membership', 'identity-comparison', 'capsule-create', 'resume', 'cleanup',
+    'identity-assertion-validation', 'identity-assertion-comparison', 'observe-capsule-validation', 'observe-identity'
   )
   $diagnostics = Get-PolicyDiagnostics -ErrorRecord $diagnosticSource
   $rawStage = Get-DiagnosticValue -Object $diagnostics -Name 'stage'
@@ -267,7 +278,8 @@ function New-SafeFailureSummary {
     'executablePath', 'executableSha256', 'argumentList', 'workingDirectory', 'profilePath', 'environment',
     'expectedParentProcessId', 'expectedOwnerSid', 'processId', 'parentProcessId', 'ownerSid',
     'creationTimeUtc', 'state', 'membership', 'jobPolicy', 'resumeResult', 'RUNNER_TEMP',
-    'SYSTEMROOT', 'WINDIR', 'PATH', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'
+    'SYSTEMROOT', 'WINDIR', 'PATH', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP',
+    'inventory', 'identity', 'capsule'
   )
   $safeFields = [Collections.Generic.List[string]]::new()
   $rawFields = Get-DiagnosticValue -Object $diagnostics -Name 'fields'
@@ -297,6 +309,297 @@ function New-SafeFailureSummary {
     stage = $safeStage
     fields = @($safeFields)
     cleanup = $cleanup
+  }
+}
+
+function Test-ExpectedPolicyError {
+  param(
+    [Parameter(Mandatory)][scriptblock] $Action,
+    [Parameter(Mandatory)][string] $ExpectedErrorId,
+    [string[]] $ExpectedFields = @(),
+    [string[]] $ForbiddenText = @(),
+    [string] $ExpectedStage,
+    [string] $ExpectedCommand,
+    [string] $ExpectedCategory
+  )
+
+  $errorRecord = $null
+  try { $null = & $Action } catch { $errorRecord = $_ }
+  if ($null -eq $errorRecord) { return $false }
+  $actualId = Get-PolicyErrorId -ErrorRecord $errorRecord
+  $diagnostics = Get-PolicyDiagnostics -ErrorRecord $errorRecord
+  if ($actualId -cne $ExpectedErrorId -or $diagnostics -isnot [System.Collections.IDictionary] -or
+      [string]$diagnostics['cause'] -cne $ExpectedErrorId -or
+      (-not [string]::IsNullOrEmpty($ExpectedStage) -and [string]$diagnostics['stage'] -cne $ExpectedStage)) {
+    return $false
+  }
+  if (-not [string]::IsNullOrEmpty($ExpectedCommand)) {
+    $expectedFqId = $ExpectedErrorId + ',' + $ExpectedCommand
+    if ([string]$errorRecord.FullyQualifiedErrorId -cne $expectedFqId) { return $false }
+  }
+  if (-not [string]::IsNullOrEmpty($ExpectedCategory) -and
+      [string]$errorRecord.CategoryInfo.Category -cne $ExpectedCategory) { return $false }
+
+  $allowedFields = @(
+    'processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid',
+    'state', 'membership', 'jobPolicy', 'identity', 'inventory', 'capsule'
+  )
+  $reportedFields = @($diagnostics['fields'])
+  foreach ($field in $reportedFields) {
+    if ($field -isnot [string] -or $field -cnotin $allowedFields) { return $false }
+  }
+  foreach ($field in $ExpectedFields) {
+    if ($reportedFields -cnotcontains $field) { return $false }
+  }
+  if ($reportedFields.Count -ne $ExpectedFields.Count) { return $false }
+
+  $diagnosticJson = ConvertTo-Json -InputObject $diagnostics -Depth 8 -Compress
+  $safeText = [string]$errorRecord.Exception.Message
+  foreach ($forbidden in $ForbiddenText) {
+    if ([string]::IsNullOrEmpty($forbidden)) { continue }
+    if ($safeText.IndexOf($forbidden, [StringComparison]::Ordinal) -ge 0 -or
+        $diagnosticJson.IndexOf($forbidden, [StringComparison]::Ordinal) -ge 0) { return $false }
+  }
+  return $true
+}
+
+function Test-IndependentIdentityAssertionHelpers {
+  $script:CurrentSubstep = 'assertion-helper:fixtures'
+  $runId = [Guid]::NewGuid().ToString('N')
+  $missingImagePath = Join-Path $script:EvidenceRootFull ('independent-missing-image-' + $runId + '.exe')
+  if (Test-PathExists -Path $missingImagePath) { throw 'The syntactic assertion image unexpectedly exists.' }
+  $expectedHash = 'a' * 64
+  $observed = [pscustomobject][ordered]@{
+    processId = 651234
+    parentProcessId = 651111
+    executablePath = $missingImagePath
+    executableSha256 = $expectedHash
+    creationTimeUtc = '2042-02-03T04:05:06.1234567Z'
+    ownerSid = 'S-1-5-18'
+  }
+
+  $script:CurrentSubstep = 'assertion-helper:empty-inputs'
+  $omitted = ConvertTo-PilotWindowsNativeProcessIdentityAssertion
+  $nullInput = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $null
+  $emptyInput = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion ([ordered]@{})
+  $different = [pscustomobject][ordered]@{
+    processId = 650001
+    parentProcessId = 650002
+    executablePath = Join-Path $script:EvidenceRootFull ('other-image-' + $runId + '.exe')
+    executableSha256 = 'b' * 64
+    creationTimeUtc = '2042-02-03T04:05:07.1234567Z'
+    ownerSid = 'S-1-1-0'
+  }
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $omitted -ObservedIdentity $different
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $nullInput -ObservedIdentity $different
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $emptyInput -ObservedIdentity $different
+  if ($omitted.Count -ne 0 -or $nullInput.Count -ne 0 -or $emptyInput.Count -ne 0) {
+    throw 'Omitted, null, or empty assertions did not normalize to no comparison.'
+  }
+
+  $script:CurrentSubstep = 'assertion-helper:positive-normalization'
+  $matching = [ordered]@{
+    processId = [long]$observed.processId
+    parentProcessId = [uint32]$observed.parentProcessId
+    executablePath = ([string]$observed.executablePath).ToUpperInvariant()
+    executableSha256 = $expectedHash.ToUpperInvariant()
+    creationTimeUtc = '2042-02-03T07:05:06.1234567+03:00'
+    ownerSid = [string]$observed.ownerSid
+  }
+  $normalizedMatching = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $matching
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion `
+    -NormalizedAssertion $normalizedMatching `
+    -ObservedIdentity $observed
+  if ($normalizedMatching.Count -ne 6 -or
+      [string]$normalizedMatching.executableSha256 -cne $expectedHash -or
+      [long]$normalizedMatching.creationTimeUtc -ne [long](ConvertTo-PilotWindowsNativeProcessAssertionUtcTicks -Value $observed.creationTimeUtc) -or
+      [string]$normalizedMatching.ownerSid -cne [string]$observed.ownerSid -or
+      (Test-PathExists -Path $missingImagePath)) {
+    throw 'The six-field helper match, path/hash normalization, exact UTC conversion, or no-IO path allowance failed.'
+  }
+  foreach ($field in @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')) {
+    $oneFieldAssertion = [ordered]@{}
+    $oneFieldAssertion.Add($field, $observed.PSObject.Properties[$field].Value)
+    $normalizedOneField = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $oneFieldAssertion
+    $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalizedOneField -ObservedIdentity $observed
+  }
+
+  $script:CurrentSubstep = 'assertion-helper:each-field-divergence'
+  $mismatchCases = @(
+    [pscustomobject]@{ field = 'processId'; value = 651235 },
+    [pscustomobject]@{ field = 'parentProcessId'; value = 651112 },
+    [pscustomobject]@{ field = 'executablePath'; value = (Join-Path $script:EvidenceRootFull ('mismatch-image-' + $runId + '.exe')) },
+    [pscustomobject]@{ field = 'executableSha256'; value = ('b' * 64) },
+    [pscustomobject]@{ field = 'creationTimeUtc'; value = '2042-02-03T04:05:06.1234568Z' },
+    [pscustomobject]@{ field = 'ownerSid'; value = 'S-1-1-0' }
+  )
+  foreach ($case in $mismatchCases) {
+    $assertion = [ordered]@{}
+    $assertion.Add([string]$case.field, $case.value)
+    $normalized = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $assertion
+    $forbidden = [string]$case.value
+    if (-not (Test-ExpectedPolicyError `
+        -Action { Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalized -ObservedIdentity $observed } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+        -ExpectedFields @([string]$case.field) `
+        -ForbiddenText @($forbidden) `
+        -ExpectedStage 'identity-assertion-comparison')) {
+      throw 'A one-field mismatch was not recognized and sanitized.'
+    }
+  }
+
+  $script:CurrentSubstep = 'assertion-helper:multiple-divergence'
+  $multiple = [ordered]@{
+    ownerSid = 'S-1-1-0'
+    parentProcessId = 651112
+    processId = 651235
+  }
+  $normalizedMultiple = ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $multiple
+  if (-not (Test-ExpectedPolicyError `
+      -Action { Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalizedMultiple -ObservedIdentity $observed } `
+      -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+      -ExpectedFields @('processId', 'parentProcessId', 'ownerSid') `
+      -ForbiddenText @('651235', '651112', 'S-1-1-0') `
+      -ExpectedStage 'identity-assertion-comparison')) {
+    throw 'Multiple well-formed identity divergences were not returned as field names only.'
+  }
+
+  $script:CurrentSubstep = 'assertion-helper:invalid-shapes'
+  $duplicateKeys = New-OrderedMap
+  $duplicateKeys.Add('processId', 651234)
+  $duplicateKeys.Add('PROCESSID', 651234)
+  $nonStringKey = [Collections.Hashtable]::new()
+  $nonStringKey.Add(42, 'private-nonstring-key-value-' + $runId)
+  $unknownKey = 'private-assertion-key-' + $runId
+  $unknownValue = 'private-assertion-value-' + $runId
+  $badCases = @(
+    [pscustomobject]@{ value = 'scalar assertion'; fields = @(); forbidden = @('scalar assertion') },
+    [pscustomobject]@{ value = $duplicateKeys; fields = @(); forbidden = @() },
+    [pscustomobject]@{ value = $nonStringKey; fields = @(); forbidden = @('private-nonstring-key-value-' + $runId) },
+    [pscustomobject]@{ value = ([ordered]@{ $unknownKey = $unknownValue }); fields = @(); forbidden = @($unknownKey, $unknownValue) },
+    [pscustomobject]@{ value = ([ordered]@{ processId = $null }); fields = @('processId'); forbidden = @() },
+    [pscustomobject]@{ value = ([ordered]@{ processId = '651234' }); fields = @('processId'); forbidden = @('651234') },
+    [pscustomobject]@{ value = ([ordered]@{ parentProcessId = 0 }); fields = @('parentProcessId'); forbidden = @() },
+    [pscustomobject]@{ value = ([ordered]@{ executablePath = 'relative\missing.exe' }); fields = @('executablePath'); forbidden = @('relative\missing.exe') },
+    [pscustomobject]@{ value = ([ordered]@{ executablePath = (Join-Path $script:EvidenceRootFull 'folder\..\missing.exe') }); fields = @('executablePath'); forbidden = @() },
+    [pscustomobject]@{ value = ([ordered]@{ executableSha256 = ('a' * 63) }); fields = @('executableSha256'); forbidden = @() },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = '2042-02-03T04:05:06.1234567' }); fields = @('creationTimeUtc'); forbidden = @() },
+    [pscustomobject]@{ value = ([ordered]@{ creationTimeUtc = '2042-02-03T04:05:06+25:00' }); fields = @('creationTimeUtc'); forbidden = @() },
+    [pscustomobject]@{ value = ([ordered]@{ ownerSid = 's-1-5-18' }); fields = @('ownerSid'); forbidden = @('s-1-5-18') },
+    [pscustomobject]@{ value = ([ordered]@{ ownerSid = 'not-a-sid' }); fields = @('ownerSid'); forbidden = @('not-a-sid') }
+  )
+  foreach ($case in $badCases) {
+    if (-not (Test-ExpectedPolicyError `
+        -Action { ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $case.value } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+        -ExpectedFields ([string[]]$case.fields) `
+        -ForbiddenText ([string[]]$case.forbidden) `
+        -ExpectedStage 'identity-assertion-validation')) {
+      throw 'An invalid assertion shape/value was not rejected with sanitized diagnostics.'
+    }
+  }
+  $missingObservationError = $null
+  try {
+    $null = Compare-PilotWindowsNativeProcessIdentityAssertion -NormalizedAssertion $normalizedMatching -ObservedIdentity $null
+  } catch { $missingObservationError = $_ }
+  if ($null -eq $missingObservationError -or
+      ([string]$missingObservationError.Exception.Message).Contains([string]$observed.executablePath) -or
+      ([string]$missingObservationError.Exception.Message).Contains([string]$observed.executableSha256) -or
+      ([string]$missingObservationError.Exception.Message).Contains([string]$observed.ownerSid)) {
+    throw 'A nonempty assertion silently passed an unavailable identity or leaked values.'
+  }
+
+  return [ordered]@{
+    matchingFields = 6
+    individuallyMatchingFields = 6
+    individuallyRejectedFields = 6
+    malformedInputsRejected = $badCases.Count
+    matchingUsedNonexistentSyntacticPath = $true
+    diagnosticsContainValues = $false
+  }
+}
+
+function Test-IndependentInventoryProjection {
+  $script:CurrentSubstep = 'inventory-projection:fixtures'
+  $now = [DateTime]::SpecifyKind([DateTime]::Parse('2042-02-03T04:05:06.1234567Z'), [DateTimeKind]::Utc)
+  $rows = [Collections.Generic.Dictionary[int, object]]::new()
+  $counts = [Collections.Generic.Dictionary[int, int]]::new()
+  $rows.Add(651234, [pscustomobject]@{ ProcessId = 651234; ParentProcessId = 651111; Name = 'pwsh.exe'; CreationDate = $now })
+  $rows.Add(651235, [pscustomobject]@{ ProcessId = 651235; ParentProcessId = 651234; Name = 'pwsh.exe'; CreationDate = $now.AddSeconds(1) })
+  $counts.Add(651234, 1)
+  $counts.Add(651235, 1)
+
+  $script:CurrentSubstep = 'inventory-projection:stable-members'
+  $stable = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(651234, 651235)) `
+    -AfterProcessIds ([int[]]@(651234, 651235)) `
+    -QueriedProcessIds ([int[]]@(651234, 651235)) `
+    -RowsById $rows -RowCounts $counts -CimSucceeded $true -BeforeReadSucceeded $true -AfterReadSucceeded $true)
+  $stableMetadata = $stable[0].metadata
+  $stableNames = @($stableMetadata.PSObject.Properties.Name | Sort-Object)
+  if ($stable.Count -ne 2 -or @($stable | Where-Object { $_.state -ceq 'observed' }).Count -ne 2 -or
+      ([string]::Join('|', $stableNames) -cne 'creationTimeUtc|name|parentProcessId|processId')) {
+    throw 'Stable inventory projection did not return only limited process metadata.'
+  }
+  if ($stableMetadata.PSObject.Properties['CommandLine'] -or $stableMetadata.PSObject.Properties['ExecutablePath'] -or
+      $stableMetadata.PSObject.Properties['OwnerSid'] -or $stableMetadata.PSObject.Properties['executableSha256']) {
+    throw 'Descendant inventory exposed unapproved process metadata.'
+  }
+
+  $script:CurrentSubstep = 'inventory-projection:arrived-and-disappeared'
+  $transitions = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(651234, 651236)) `
+    -AfterProcessIds ([int[]]@(651234, 651235)) `
+    -QueriedProcessIds ([int[]]@(651234, 651236)) `
+    -RowsById $rows -RowCounts $counts -CimSucceeded $true -BeforeReadSucceeded $true -AfterReadSucceeded $true)
+  $disappeared = @($transitions | Where-Object { $_.processId -eq 651236 })
+  $arrived = @($transitions | Where-Object { $_.processId -eq 651235 })
+  if ($disappeared.Count -ne 1 -or $disappeared[0].state -cne 'disappeared' -or $null -ne $disappeared[0].metadata -or
+      $arrived.Count -ne 1 -or $arrived[0].state -cne 'arrived' -or $null -ne $arrived[0].metadata) {
+    throw 'Inventory membership changes were not represented explicitly without invented metadata.'
+  }
+
+  $script:CurrentSubstep = 'inventory-projection:unavailable-is-not-empty'
+  $unavailableMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(651234)) `
+    -AfterProcessIds ([int[]]@(651234)) `
+    -QueriedProcessIds ([int[]]@(651234)) `
+    -RowsById ([Collections.Generic.Dictionary[int, object]]::new()) `
+    -RowCounts ([Collections.Generic.Dictionary[int, int]]::new()) `
+    -CimSucceeded $false -BeforeReadSucceeded $true -AfterReadSucceeded $true)
+  $unavailableStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $true -CimRowsAvailable $false -MemberCountBefore 1 -MemberCountAfter 1 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $true `
+    -HasTransitions $false -IdentityUnavailable $false -IsConfirmedEmpty $false
+  $emptyStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $true -CimRowsAvailable $true -MemberCountBefore 0 -MemberCountAfter 0 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $false `
+    -HasTransitions $false -IdentityUnavailable $false -IsConfirmedEmpty $true
+  if ($unavailableMembers.Count -ne 1 -or $unavailableMembers[0].state -cne 'unobservable' -or
+      $unavailableStatus -cne 'unavailable' -or $emptyStatus -cne 'empty') {
+    throw 'Unavailable CIM data was confused with an empty Job inventory.'
+  }
+
+  $script:CurrentSubstep = 'inventory-projection:final-snapshot-generation'
+  $finalSnapshotMembers = @(Get-PilotWindowsNativeProcessObservationMembers `
+    -BeforeProcessIds ([int[]]@(651234)) -AfterProcessIds ([int[]]@()) `
+    -QueriedProcessIds ([int[]]@(651234)) -RowsById $rows -RowCounts $counts `
+    -CimSucceeded $true -BeforeReadSucceeded $true -AfterReadSucceeded $false)
+  $finalSnapshotStatus = Get-PilotWindowsNativeProcessObservationInventoryStatus `
+    -SnapshotsAvailable $false -CimRowsAvailable $true -MemberCountBefore 1 -MemberCountAfter 0 `
+    -HasInvalidMembers $false -IsTruncated $false -HasUnobservableMembers $true `
+    -HasTransitions $false -IdentityUnavailable $true -IsConfirmedEmpty $false
+  if ($finalSnapshotMembers.Count -ne 1 -or $finalSnapshotMembers[0].state -cne 'unobservable' -or
+      $finalSnapshotStatus -cne 'unavailable') {
+    throw 'A missing final synchronized snapshot was incorrectly reported as a disappeared member.'
+  }
+
+  return [ordered]@{
+    stableRowsProjected = $stable.Count
+    membershipTransitionsExplicit = $true
+    unavailableDistinctFromEmpty = $true
+    missingFinalSnapshotIsUnavailable = $true
+    descendantMetadataLimited = $true
   }
 }
 
@@ -359,7 +662,7 @@ function New-CaseRoot {
   $path = Join-Path $script:EvidenceRootFull (Join-Path 'cases' $leaf)
   [void](Assert-StrictChildPath -Path $path -Root $script:RunnerTempFull -Message 'A case directory escaped RUNNER_TEMP.')
   [void][IO.Directory]::CreateDirectory($path)
-  [IO.File]::WriteAllText((Join-Path $path '.issue-225-independent-owner'), [Guid]::NewGuid().ToString('N'), $script:Utf8NoBom)
+  [IO.File]::WriteAllText((Join-Path $path '.issue-236-independent-owner'), [Guid]::NewGuid().ToString('N'), $script:Utf8NoBom)
   return $path
 }
 
@@ -693,13 +996,8 @@ function Assert-CimIdentityMatchesDescriptor {
     }
     $identityRecord = [ordered]@{
       role = 'start-positive-root'
-      processId = [int]$Identity.processId
-      parentProcessId = [int]$Identity.parentProcessId
-      creationTimeUtc = $cimTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
-      executableName = [IO.Path]::GetFileName([string]$Identity.executablePath)
-      executableSha256 = [string]$Identity.executableSha256
-      ownerSid = [string]$Identity.ownerSid
-      handleTimeDeltaTicks = [Math]::Abs(($cimTime - $handleTime).Ticks)
+      sixFieldIdentityMatched = $true
+      retainedProcessHandleTimeMatched = ([Math]::Abs(($cimTime - $handleTime).Ticks) -le 20)
     }
     [void]$script:IdentityReceipts.Add($identityRecord)
   } finally {
@@ -758,11 +1056,11 @@ function New-StagedRuntime {
   $sourceReparse = @($sourceItems | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })
   if ($sourceReparse.Count -gt 0) { throw 'The PowerShell distribution contains reparse points and cannot be staged safely.' }
 
-  $script:RuntimeRoot = Join-Path $script:RunnerTempFull ('issue-225-independent-runtime-' + $script:RuntimeOwnerMarker)
+  $script:RuntimeRoot = Join-Path $script:RunnerTempFull ('issue-236-independent-runtime-' + $script:RuntimeOwnerMarker)
   [void](Assert-StrictChildPath -Path $script:RuntimeRoot -Root $script:RunnerTempFull -Message 'The private PowerShell runtime staging path escaped RUNNER_TEMP.')
   if (Test-PathExists -Path $script:RuntimeRoot) { throw 'The private PowerShell runtime staging path already exists.' }
   [void][IO.Directory]::CreateDirectory($script:RuntimeRoot)
-  [IO.File]::WriteAllText((Join-Path $script:RuntimeRoot '.issue-225-independent-owner'), $script:RuntimeOwnerMarker, $script:Utf8NoBom)
+  [IO.File]::WriteAllText((Join-Path $script:RuntimeRoot '.issue-236-independent-owner'), $script:RuntimeOwnerMarker, $script:Utf8NoBom)
   $script:RuntimePath = Join-Path $script:RuntimeRoot 'pwsh'
   [void][IO.Directory]::CreateDirectory($script:RuntimePath)
   Get-ChildItem -LiteralPath $sourcePath -Force | Copy-Item -Destination $script:RuntimePath -Recurse -Force -ErrorAction Stop
@@ -859,7 +1157,7 @@ function Start-DotSourcePurityProbe {
   $probeSha = Get-Sha256 -Path $probePath
   $environment = New-ExplicitEnvironment -ProfilePath ([string]$profile.USERPROFILE) -ProfileEnvironment $profile
   $environment.Add('RUNNER_TEMP', $script:RunnerTempFull)
-  $environment.Add('MORROW_225_DOT_SOURCE_PROBE', [Guid]::NewGuid().ToString('N'))
+  $environment.Add('MORROW_236_DOT_SOURCE_PROBE', [Guid]::NewGuid().ToString('N'))
   $arguments = @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath,
     '-PolicyPath', $script:PolicyFullPath,
@@ -913,9 +1211,8 @@ function New-Outsider {
   Wait-ForFile -Path $fixtureArgs.markerPath -TimeoutMs 10000 -Description 'the uncontained outsider marker'
   if ($script:Outsider.process.HasExited) { throw 'The outsider exited before containment checks began.' }
   return [ordered]@{
-    processId = [int]$script:Outsider.processId
-    image = [IO.Path]::GetFileName([string]$script:Outsider.imagePath)
-    creationTimeUtc = [string]$script:Outsider.creationTimeUtc
+    started = $true
+    retainedImageIdentityMatched = $true
   }
 }
 
@@ -934,12 +1231,9 @@ function Assert-OutsiderStillAlive {
   if ([Math]::Abs(($cimCreation - $retainedCreation).Ticks) -gt 20) { throw 'CIM no longer identified the retained outsider process creation time.' }
   [void]$script:IdentityReceipts.Add([ordered]@{
     role = 'outsider-preserved'
-    processId = [int]$identity.processId
-    parentProcessId = [int]$identity.parentProcessId
-    creationTimeUtc = $cimCreation.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
-    executableName = [IO.Path]::GetFileName([string]$identity.executablePath)
-    executableSha256 = [string]$identity.executableSha256
-    ownerSid = [string]$identity.ownerSid
+    identityRevalidated = $true
+    retainedProcessStayedAlive = $true
+    retainedImageIdentityMatched = $true
   })
   $image = Get-TestProcessImagePath -SafeProcessHandle $script:Outsider.safeProcessHandle
   Assert-Equal -Actual $image -Expected ([IO.Path]::GetFullPath($script:Outsider.imagePath)) -IgnoreCase -Message 'The retained outsider handle changed its image path.'
@@ -1013,16 +1307,11 @@ function Test-PositiveStartAndDispose {
   $script:CurrentSubstep = 'positive:cim-identity'
   $identity = Get-ProcessIdentityRecord -ProcessId ([int]$fixtureReceipt.processId)
   Assert-CimIdentityMatchesDescriptor -Identity $identity -Descriptor $descriptor -ReceiptProcessId ([int]$fixtureReceipt.processId)
-  $rootIdentityReceipt = $script:IdentityReceipts[$script:IdentityReceipts.Count - 1]
   [void]$script:CaseOutcomes.Add([ordered]@{
     name = 'positive-start'
     status = 'passed'
-    processId = [int]$identity.processId
-    parentProcessId = [int]$identity.parentProcessId
-    executableName = [IO.Path]::GetFileName([string]$identity.executablePath)
-    executableSha256 = [string]$identity.executableSha256
-    ownerSid = [string]$identity.ownerSid
-    creationTimeUtc = [string]$identity.creationTimeUtc
+    sixFieldIdentityMatched = $true
+    parentAndOwnerMatched = $true
     markerObservedAfterStart = [IO.File]::Exists($fixtureArgs.markerPath)
     identityProofPrecededInternalResume = $true
   })
@@ -1043,14 +1332,430 @@ function Test-PositiveStartAndDispose {
   Assert-OutsiderStillAlive
   $script:CleanupNotes.Add('positive capsule Dispose verified empty Job and exited root; outsider retained and alive')
   return [ordered]@{
-    capsuleType = [string]$capsule.GetType().FullName
-    fixtureReceipt = $fixtureReceipt
-    identity = $rootIdentityReceipt
+    capsuleTypeOpaque = $true
+    fixtureEnvironmentMatched = $true
+    fixtureCredentialNamesAbsent = [bool]$fixtureReceipt.githubVariableNamesAbsent -and [bool]$fixtureReceipt.actionsVariableNamesAbsent -and [bool]$fixtureReceipt.githubTokenAbsent
+    identityRevalidatedIndependently = $true
     verboseEvidence = [ordered]@{ identityProofPrecededResume = $true; messageCount = $verboseMessages.Count }
-    cleanup = [ordered]@{ jobEmpty = [bool]$cleanup.jobEmpty; rootExited = [bool]$cleanup.rootExited; exitCode = $cleanup.exitCode }
+    cleanup = [ordered]@{ jobEmpty = [bool]$cleanup.jobEmpty; rootExited = [bool]$cleanup.rootExited }
     disposeElapsedMs = $watch.ElapsedMilliseconds
     repeatDisposeElapsedMs = $secondWatch.ElapsedMilliseconds
     outsiderAlive = $true
+  }
+}
+
+function Get-IndependentCimIdentitySnapshot {
+  param([Parameter(Mandatory)][int] $ProcessId)
+  if ($ProcessId -lt 1) { throw 'Independent CIM requires a positive synthetic-process identity.' }
+
+  $rows = @(Get-CimInstance -ClassName Win32_Process `
+    -Filter ('ProcessId = ' + [string]$ProcessId) `
+    -OperationTimeoutSec 5 -ErrorAction Stop)
+  if ($rows.Count -ne 1 -or $null -eq $rows[0]) { throw 'Independent CIM did not return exactly one row for the synthetic process.' }
+  $row = $rows[0]
+  if ([int]$row.ProcessId -ne $ProcessId -or [int]$row.ParentProcessId -lt 1) {
+    throw 'Independent CIM returned invalid synthetic process identity fields.'
+  }
+  if ($row.CreationDate -is [datetime]) {
+    $creation = $row.CreationDate.ToUniversalTime()
+  } elseif ($row.CreationDate -is [string] -and -not [string]::IsNullOrEmpty([string]$row.CreationDate)) {
+    $creation = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$row.CreationDate).ToUniversalTime()
+  } else {
+    throw 'Independent CIM returned an unsupported synthetic creation-time value.'
+  }
+  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+  if ($null -eq $owner -or [int]$owner.ReturnValue -ne 0 -or [string]::IsNullOrWhiteSpace([string]$owner.Sid)) {
+    throw 'Independent CIM did not return a successful owner SID for the synthetic process.'
+  }
+  $sid = [Security.Principal.SecurityIdentifier]::new([string]$owner.Sid)
+  if ($sid.Value -cne [string]$owner.Sid) { throw 'Independent CIM returned a noncanonical owner SID.' }
+  return [pscustomobject][ordered]@{
+    processId = [int]$row.ProcessId
+    parentProcessId = [int]$row.ParentProcessId
+    creationTimeUtc = $creation.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    ownerSid = $sid.Value
+    row = $row
+  }
+}
+
+function Test-IndependentObserveAndRootExitInventory {
+  $script:CurrentSubstep = 'observe-independent:prepare'
+  $caseRoot = New-CaseRoot -Name 'observe-root-descendant'
+  $descendantReadyPath = Join-Path $caseRoot 'descendant-ready.marker'
+  $descendantPidPath = Join-Path $caseRoot 'descendant.pid'
+  $rootReadyPath = Join-Path $caseRoot 'root-ready.marker'
+  $rootPidPath = Join-Path $caseRoot 'root.pid'
+  $releasePath = Join-Path $caseRoot 'root-release.signal'
+  $descendantScriptPath = Join-Path $caseRoot 'descendant.ps1'
+  $rootScriptPath = Join-Path $caseRoot 'root.ps1'
+  [void](Assert-StrictChildPath -Path $descendantScriptPath -Root $caseRoot -Message 'The synthetic descendant script escaped its private fixture directory.')
+  [void](Assert-StrictChildPath -Path $rootScriptPath -Root $caseRoot -Message 'The synthetic root script escaped its private fixture directory.')
+
+  $descendantSource = @'
+[CmdletBinding()]
+param([Parameter(Mandatory)][string] $ReadyPath)
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText($ReadyPath, 'ready', [Text.UTF8Encoding]::new($false))
+$deadline = [DateTime]::UtcNow.AddSeconds(180)
+while ([DateTime]::UtcNow -lt $deadline) { [Threading.Thread]::Sleep(50) }
+'@
+  $rootSource = @'
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory)][string] $PowerShellPath,
+  [Parameter(Mandatory)][string] $DescendantScriptPath,
+  [Parameter(Mandatory)][string] $DescendantReadyPath,
+  [Parameter(Mandatory)][string] $DescendantPidPath,
+  [Parameter(Mandatory)][string] $RootReadyPath,
+  [Parameter(Mandatory)][string] $RootPidPath,
+  [Parameter(Mandatory)][string] $ReleasePath
+)
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText($RootPidPath, [string]$PID, [Text.UTF8Encoding]::new($false))
+$info = [Diagnostics.ProcessStartInfo]::new()
+$info.FileName = $PowerShellPath
+$info.UseShellExecute = $false
+$info.CreateNoWindow = $true
+foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $DescendantScriptPath, $DescendantReadyPath)) {
+  [void]$info.ArgumentList.Add([string]$argument)
+}
+$descendant = [Diagnostics.Process]::Start($info)
+if ($null -eq $descendant) { exit 93 }
+[IO.File]::WriteAllText($DescendantPidPath, [string]$descendant.Id, [Text.UTF8Encoding]::new($false))
+$descendant.Dispose()
+$readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+while (-not [IO.File]::Exists($DescendantReadyPath) -and [DateTime]::UtcNow -lt $readyDeadline) {
+  [Threading.Thread]::Sleep(50)
+}
+if (-not [IO.File]::Exists($DescendantReadyPath)) { exit 94 }
+[IO.File]::WriteAllText($RootReadyPath, 'ready', [Text.UTF8Encoding]::new($false))
+$releaseDeadline = [DateTime]::UtcNow.AddSeconds(90)
+while (-not [IO.File]::Exists($ReleasePath) -and [DateTime]::UtcNow -lt $releaseDeadline) {
+  [Threading.Thread]::Sleep(50)
+}
+if (-not [IO.File]::Exists($ReleasePath)) { exit 95 }
+exit 0
+'@
+  [IO.File]::WriteAllText($descendantScriptPath, $descendantSource, $script:Utf8NoBom)
+  [IO.File]::WriteAllText($rootScriptPath, $rootSource, $script:Utf8NoBom)
+
+  $observeCapsule = $null
+  $rootWaitProcess = $null
+  $descendantWaitProcess = $null
+  $cleanupConfirmed = $false
+  $descendantProcessId = 0
+  $rootProcessId = 0
+  $cleanupElapsedMs = $null
+  try {
+    $script:CurrentSubstep = 'observe-independent:start-synthetic-tree'
+    $arguments = [string[]]@(
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $rootScriptPath,
+      $script:PwshPath, $descendantScriptPath, $descendantReadyPath, $descendantPidPath,
+      $rootReadyPath, $rootPidPath, $releasePath
+    )
+    $descriptor = New-ValidDescriptor `
+      -CaseRoot $caseRoot `
+      -ArgumentList $arguments `
+      -ExpectedParentProcessId ([int]$PID) `
+      -ExpectedOwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    $startOutput = @(Start-WindowsNativeProcess -Descriptor $descriptor -Verbose 4>&1)
+    $capsuleType = 'Morrow.Pilot.WindowsNativeProcessCapsule' -as [type]
+    $capsules = @($startOutput | Where-Object { $null -ne $capsuleType -and $capsuleType.IsInstanceOfType($_) })
+    if ($capsules.Count -ne 1) { throw 'The synthetic tree start did not return exactly one opaque capsule.' }
+    $observeCapsule = $capsules[0]
+    [void]$script:Capsules.Add($observeCapsule)
+    Assert-StartResultOpaque -Capsule $observeCapsule
+
+    foreach ($wait in @(
+        @{ path = $descendantReadyPath; description = 'synthetic descendant readiness' },
+        @{ path = $descendantPidPath; description = 'synthetic descendant identity receipt' },
+        @{ path = $rootReadyPath; description = 'synthetic root readiness' },
+        @{ path = $rootPidPath; description = 'synthetic root identity receipt' }
+      )) {
+      Wait-ForFile -Path $wait.path -TimeoutMs 15000 -Description $wait.description
+    }
+    try { $rootProcessId = [int][IO.File]::ReadAllText($rootPidPath) } catch { $rootProcessId = 0 }
+    try { $descendantProcessId = [int][IO.File]::ReadAllText($descendantPidPath) } catch { $descendantProcessId = 0 }
+    if ($rootProcessId -lt 1 -or $descendantProcessId -lt 1 -or $rootProcessId -eq $descendantProcessId) {
+      throw 'The synthetic root or descendant identity receipt was invalid.'
+    }
+
+    # Retain test-only wait handles while both synthetic processes are known live.
+    # These handles are never passed to the policy or used to terminate a process.
+    $rootWaitProcess = [Diagnostics.Process]::GetProcessById($rootProcessId)
+    $descendantWaitProcess = [Diagnostics.Process]::GetProcessById($descendantProcessId)
+    $null = $rootWaitProcess.Handle
+    $null = $descendantWaitProcess.Handle
+    Assert-True -Condition (-not $rootWaitProcess.HasExited -and -not $descendantWaitProcess.HasExited) -Message 'A synthetic process exited before the Observe checks began.'
+
+    $script:CurrentSubstep = 'observe-independent:live-root-proof'
+    $observeClock = [Diagnostics.Stopwatch]::StartNew()
+    $liveObservation = Observe-WindowsNativeProcess -Capsule $observeCapsule
+    $observeClock.Stop()
+    Assert-True -Condition ($observeClock.ElapsedMilliseconds -le 12000) -Message 'A live Observe exceeded the inventory and identity time budget.'
+    Assert-Equal -Actual ([string]$liveObservation.root.state) -Expected 'alive' -Message 'Observe did not report the live synthetic root.'
+    Assert-Equal -Actual ([string]$liveObservation.root.identityStatus) -Expected 'fresh' -Message 'Observe did not report a fresh live-root identity.'
+    Assert-True -Condition ([bool]$liveObservation.root.identityFresh) -Message 'Observe marked the live root identity as stale.'
+    if ($null -ne $liveObservation.root.exitCode) { throw 'Observe reported an exit code for the live root.' }
+
+    $rootCim = Get-IndependentCimIdentitySnapshot -ProcessId $rootProcessId
+    $descendantCim = Get-IndependentCimIdentitySnapshot -ProcessId $descendantProcessId
+    $liveIdentity = $liveObservation.root.identity
+    $identityNames = @($liveIdentity.PSObject.Properties.Name | Sort-Object)
+    $expectedIdentityNames = @('creationTimeUtc', 'executablePath', 'executableSha256', 'ownerSid', 'parentProcessId', 'processId')
+    if ([string]::Join('|', $identityNames) -cne [string]::Join('|', $expectedIdentityNames)) {
+      throw 'The live Observe identity did not contain exactly the six contract fields.'
+    }
+    $knownImagePath = Get-CanonicalFullPath -Path $script:PwshPath
+    $knownImageHash = Get-Sha256 -Path $knownImagePath
+    $independentNativeImagePath = Get-TestProcessImagePath -SafeProcessHandle $rootWaitProcess.SafeHandle
+    Assert-Equal -Actual $independentNativeImagePath -Expected $knownImagePath -IgnoreCase -Message 'The independent retained root handle did not identify the staged executable.'
+    Assert-Equal -Actual ([int]$liveIdentity.processId) -Expected $rootProcessId -Message 'Fresh root PID differed from the independent fixture and CIM.'
+    Assert-Equal -Actual ([int]$liveIdentity.parentProcessId) -Expected ([int]$rootCim.parentProcessId) -Message 'Fresh root parent differed from independent CIM.'
+    Assert-Equal -Actual ([int]$rootCim.parentProcessId) -Expected ([int]$PID) -Message 'Independent CIM parent differed from the test process.'
+    Assert-Equal -Actual ([string]$liveIdentity.executablePath) -Expected $knownImagePath -IgnoreCase -Message 'Fresh root image differed from the staged executable.'
+    Assert-Equal -Actual ([string]$liveIdentity.executableSha256).ToLowerInvariant() -Expected $knownImageHash -Message 'Fresh root digest differed from the independent known-file digest.'
+    Assert-Equal -Actual ([string]$liveIdentity.ownerSid) -Expected ([string]$rootCim.ownerSid) -Message 'Fresh root SID differed from independent CIM.'
+    $observedRootTime = [DateTimeOffset]::Parse([string]$liveIdentity.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None)
+    $independentRootTime = [DateTimeOffset]::Parse([string]$rootCim.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None)
+    if ($observedRootTime.UtcDateTime.Ticks -ne $independentRootTime.UtcDateTime.Ticks) { throw 'Fresh root creation time differed from independent CIM.' }
+    $retainedRootTime = $rootWaitProcess.StartTime.ToUniversalTime()
+    if ([Math]::Abs(($retainedRootTime - $independentRootTime.UtcDateTime).Ticks) -gt 20) {
+      throw 'Independent root CIM time differed from the test-retained process handle.'
+    }
+
+    $expectedAssertion = [ordered]@{
+      processId = $rootProcessId
+      parentProcessId = [int]$rootCim.parentProcessId
+      executablePath = $knownImagePath
+      executableSha256 = $knownImageHash
+      creationTimeUtc = $rootCim.creationTimeUtc
+      ownerSid = [string]$rootCim.ownerSid
+    }
+    $alternateTimestamp = $independentRootTime.ToOffset([TimeSpan]::FromHours(3)).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffzzz", [Globalization.CultureInfo]::InvariantCulture)
+    $alternateCaseAssertion = [ordered]@{
+      processId = [long]$expectedAssertion.processId
+      parentProcessId = [uint32]$expectedAssertion.parentProcessId
+      executablePath = ([string]$expectedAssertion.executablePath).ToUpperInvariant()
+      executableSha256 = ([string]$expectedAssertion.executableSha256).ToUpperInvariant()
+      creationTimeUtc = $alternateTimestamp
+      ownerSid = [string]$expectedAssertion.ownerSid
+    }
+    $script:CurrentSubstep = 'observe-independent:matching-six-field-assertion'
+    $matchingObservation = Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $alternateCaseAssertion
+    Assert-Equal -Actual ([string]$matchingObservation.root.identityStatus) -Expected 'fresh' -Message 'A matching six-field assertion did not return a fresh identity.'
+
+    $script:CurrentSubstep = 'observe-independent:malformed-assertions'
+    if (-not (Test-ExpectedPolicyError `
+        -Action { Observe-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'private-fake-capsule' }) } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+        -ExpectedStage 'observe-capsule-validation' `
+        -ExpectedCommand 'Observe-WindowsNativeProcess' `
+        -ExpectedCategory 'InvalidOperation')) {
+      throw 'Observe did not reject a caller-shaped fake capsule with its public safe error identity.'
+    }
+    $duplicatePublicKeys = New-OrderedMap
+    $duplicatePublicKeys.Add('processId', $rootProcessId)
+    $duplicatePublicKeys.Add('PROCESSID', $rootProcessId)
+    $unknownField = 'private-observe-field-' + [Guid]::NewGuid().ToString('N')
+    $unknownValue = 'private-observe-value-' + [Guid]::NewGuid().ToString('N')
+    $malformedCases = @(
+      [pscustomobject]@{ value = 'private-scalar-assertion'; fields = @(); forbidden = @('private-scalar-assertion') },
+      [pscustomobject]@{ value = $duplicatePublicKeys; fields = @(); forbidden = @() },
+      [pscustomobject]@{ value = ([ordered]@{ $unknownField = $unknownValue }); fields = @(); forbidden = @($unknownField, $unknownValue) },
+      [pscustomobject]@{ value = ([ordered]@{ ownerSid = $null }); fields = @('ownerSid'); forbidden = @() },
+      [pscustomobject]@{ value = ([ordered]@{ processId = 'private-not-an-integer' }); fields = @('processId'); forbidden = @('private-not-an-integer') }
+    )
+    foreach ($case in $malformedCases) {
+      if (-not (Test-ExpectedPolicyError `
+          -Action { Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $case.value } `
+          -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+          -ExpectedFields ([string[]]$case.fields) `
+          -ForbiddenText ([string[]]$case.forbidden) `
+          -ExpectedStage 'identity-assertion-validation' `
+          -ExpectedCommand 'Observe-WindowsNativeProcess' `
+          -ExpectedCategory 'InvalidArgument')) {
+        throw 'Observe did not reject a malformed assertion with its public safe error identity.'
+      }
+    }
+
+    $script:CurrentSubstep = 'observe-independent:all-six-divergences'
+    $wrongPath = Join-Path $caseRoot 'syntactically-valid-but-absent.exe'
+    $wrongHash = if ([string]$expectedAssertion.executableSha256 -match '\Aa') {
+      'b' + ([string]$expectedAssertion.executableSha256).Substring(1)
+    } else {
+      'a' + ([string]$expectedAssertion.executableSha256).Substring(1)
+    }
+    $wrongTime = $independentRootTime.AddTicks(1).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffzzz", [Globalization.CultureInfo]::InvariantCulture)
+    $wrongSid = if ([string]$expectedAssertion.ownerSid -ceq 'S-1-1-0') { 'S-1-5-18' } else { 'S-1-1-0' }
+    $divergences = @(
+      [pscustomobject]@{ field = 'processId'; value = [int]$rootProcessId + 1 },
+      [pscustomobject]@{ field = 'parentProcessId'; value = [int]$expectedAssertion.parentProcessId + 1 },
+      [pscustomobject]@{ field = 'executablePath'; value = $wrongPath },
+      [pscustomobject]@{ field = 'executableSha256'; value = $wrongHash },
+      [pscustomobject]@{ field = 'creationTimeUtc'; value = $wrongTime },
+      [pscustomobject]@{ field = 'ownerSid'; value = $wrongSid }
+    )
+    foreach ($case in $divergences) {
+      $oneField = [ordered]@{}
+      $oneField.Add([string]$case.field, $case.value)
+      if (-not (Test-ExpectedPolicyError `
+          -Action { Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $oneField } `
+          -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+          -ExpectedFields @([string]$case.field) `
+          -ForbiddenText @([string]$case.value) `
+          -ExpectedStage 'identity-assertion-comparison' `
+          -ExpectedCommand 'Observe-WindowsNativeProcess')) {
+        throw 'Observe did not reject an individual well-formed identity divergence with sanitized diagnostics.'
+      }
+    }
+    $afterDivergences = Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $expectedAssertion
+    Assert-Equal -Actual ([string]$afterDivergences.root.identityStatus) -Expected 'fresh' -Message 'A failed assertion destroyed or invalidated the live capsule.'
+    $rootWaitProcess.Refresh()
+    $descendantWaitProcess.Refresh()
+    Assert-True -Condition (-not $rootWaitProcess.HasExited -and -not $descendantWaitProcess.HasExited) -Message 'An assertion failure terminated a synthetic Job member.'
+    $script:Outsider.process.Refresh()
+    Assert-True -Condition (-not $script:Outsider.process.HasExited) -Message 'An assertion failure terminated the outsider.'
+
+    $script:CurrentSubstep = 'observe-independent:limited-live-inventory'
+    $observationNames = @($liveObservation.PSObject.Properties.Name | Sort-Object)
+    if ([string]::Join('|', $observationNames) -cne 'inventory|root') { throw 'Observe exposed unexpected top-level fields.' }
+    $rootResultNames = @($liveObservation.root.PSObject.Properties.Name | Sort-Object)
+    if ([string]::Join('|', $rootResultNames) -cne 'exitCode|identity|identityFresh|identityStatus|state') {
+      throw 'Observe exposed unexpected root-result fields.'
+    }
+    $inventoryResultNames = @($liveObservation.inventory.PSObject.Properties.Name | Sort-Object)
+    if ([string]::Join('|', $inventoryResultNames) -cne 'isEmpty|memberCountAfter|memberCountBefore|members|status') {
+      throw 'Observe exposed unexpected inventory-result fields.'
+    }
+    Assert-True -Condition ($liveObservation.inventory.status -ceq 'available' -and -not [bool]$liveObservation.inventory.isEmpty) -Message 'The stable private Job inventory was not reported as available and nonempty.'
+    Assert-True -Condition ([int]$liveObservation.inventory.memberCountBefore -le 64 -and [int]$liveObservation.inventory.memberCountAfter -le 64 -and @($liveObservation.inventory.members).Count -le 128) -Message 'Observe exceeded its bounded inventory projection.'
+    $rootEntries = @($liveObservation.inventory.members | Where-Object { [int]$_.processId -eq $rootProcessId -and $_.state -ceq 'observed' })
+    $descendantEntries = @($liveObservation.inventory.members | Where-Object { [int]$_.processId -eq $descendantProcessId -and $_.state -ceq 'observed' })
+    $outsiderEntries = @($liveObservation.inventory.members | Where-Object { [int]$_.processId -eq [int]$script:Outsider.processId })
+    if ($rootEntries.Count -ne 1 -or $descendantEntries.Count -ne 1 -or $outsiderEntries.Count -ne 0) {
+      throw 'The live inventory did not contain exactly the observed synthetic Job members while excluding the outsider.'
+    }
+    foreach ($entry in @($rootEntries[0], $descendantEntries[0])) {
+      $memberNames = @($entry.PSObject.Properties.Name | Sort-Object)
+      if ([string]::Join('|', $memberNames) -cne 'metadata|processId|state') {
+        throw 'A Job member entry exposed fields outside the limited projection.'
+      }
+      $metadataNames = @($entry.metadata.PSObject.Properties.Name | Sort-Object)
+      if ([string]::Join('|', $metadataNames) -cne 'creationTimeUtc|name|parentProcessId|processId' -or
+          $entry.metadata.PSObject.Properties['CommandLine'] -or $entry.metadata.PSObject.Properties['ExecutablePath'] -or
+          $entry.metadata.PSObject.Properties['OwnerSid'] -or $entry.metadata.PSObject.Properties['executableSha256']) {
+        throw 'A Job member metadata projection exposed a path, command line, digest, owner, or extra field.'
+      }
+    }
+    Assert-Equal -Actual ([int]$descendantEntries[0].metadata.parentProcessId) -Expected $rootProcessId -Message 'The descendant parent came from something other than independent CIM.'
+    Assert-Equal -Actual ([int]$descendantCim.parentProcessId) -Expected $rootProcessId -Message 'Independent CIM did not identify the synthetic root as the descendant parent.'
+
+    $script:CurrentSubstep = 'observe-independent:root-exits-with-job-child'
+    [IO.File]::WriteAllText($releasePath, 'release', $script:Utf8NoBom)
+    if (-not $rootWaitProcess.WaitForExit(15000)) { throw 'The synthetic root did not exit within its bounded wait.' }
+    Assert-Equal -Actual ([int]$rootWaitProcess.ExitCode) -Expected 0 -Message 'The synthetic root returned a fixture failure code.'
+    $descendantWaitProcess.Refresh()
+    Assert-True -Condition (-not $descendantWaitProcess.HasExited) -Message 'The synthetic descendant did not remain alive after its root exited.'
+
+    $exitedObservation = Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $expectedAssertion
+    Assert-Equal -Actual ([string]$exitedObservation.root.state) -Expected 'exited' -Message 'Observe did not report the exited synthetic root.'
+    Assert-Equal -Actual ([string]$exitedObservation.root.identityStatus) -Expected 'snapshot' -Message 'Observe did not mark the exited root identity as a snapshot.'
+    Assert-True -Condition (-not [bool]$exitedObservation.root.identityFresh) -Message 'The exited root identity was mislabeled fresh.'
+    Assert-Equal -Actual ([uint32]$exitedObservation.root.exitCode) -Expected ([uint32]$rootWaitProcess.ExitCode) -Message 'Observe returned an incorrect cached root exit code.'
+    foreach ($field in @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')) {
+      $expectedValue = $liveIdentity.PSObject.Properties[$field].Value
+      $snapshotValue = $exitedObservation.root.identity.PSObject.Properties[$field].Value
+      if ($field -in @('executablePath', 'executableSha256')) {
+        Assert-Equal -Actual ([string]$snapshotValue) -Expected ([string]$expectedValue) -IgnoreCase -Message 'The exited root snapshot differed from its last proved identity.'
+      } else {
+        Assert-Equal -Actual $snapshotValue -Expected $expectedValue -Message 'The exited root snapshot differed from its last proved identity.'
+      }
+    }
+    Assert-Equal -Actual ([string]$exitedObservation.inventory.status) -Expected 'available' -Message 'The remaining Job inventory was not available after root exit.'
+    Assert-True -Condition (-not [bool]$exitedObservation.inventory.isEmpty -and [int]$exitedObservation.inventory.memberCountBefore -eq 1 -and [int]$exitedObservation.inventory.memberCountAfter -eq 1) -Message 'The exited-root inventory did not show exactly one live Job descendant.'
+    $remainingEntries = @($exitedObservation.inventory.members | Where-Object { $_.state -ceq 'observed' })
+    if ($remainingEntries.Count -ne 1 -or [int]$remainingEntries[0].processId -ne $descendantProcessId -or
+        [int]$remainingEntries[0].metadata.parentProcessId -ne $rootProcessId) {
+      throw 'The exited-root inventory did not preserve the live child and CIM parent without fabricating a root member.'
+    }
+    if (@($exitedObservation.inventory.members | Where-Object { [int]$_.processId -eq $rootProcessId }).Count -ne 0) {
+      throw 'The exited root was fabricated as a current Job member.'
+    }
+
+    $script:CurrentSubstep = 'observe-independent:stale-assertion-is-nondestructive'
+    $staleMismatch = [ordered]@{ parentProcessId = [int]$expectedAssertion.parentProcessId + 1 }
+    if (-not (Test-ExpectedPolicyError `
+        -Action { Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $staleMismatch } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+        -ExpectedFields @('parentProcessId') `
+        -ForbiddenText @([string]$staleMismatch.parentProcessId) `
+        -ExpectedStage 'identity-assertion-comparison' `
+        -ExpectedCommand 'Observe-WindowsNativeProcess')) {
+      throw 'A divergent assertion against the exited-root snapshot was not sanitized.'
+    }
+    $descendantWaitProcess.Refresh()
+    Assert-True -Condition (-not $descendantWaitProcess.HasExited) -Message 'A stale-snapshot assertion mismatch terminated the surviving Job descendant.'
+    $script:Outsider.process.Refresh()
+    Assert-True -Condition (-not $script:Outsider.process.HasExited) -Message 'Observe or its assertion checks terminated the outsider.'
+
+    $script:CurrentSubstep = 'observe-independent:owned-job-dispose'
+    $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
+    $cleanup = $observeCapsule.Dispose()
+    $cleanupWatch.Stop()
+    $cleanupElapsedMs = $cleanupWatch.ElapsedMilliseconds
+    Assert-True -Condition ([bool]$cleanup.jobEmpty -and [bool]$cleanup.rootExited) -Message 'Capsule disposal did not confirm an empty Job and exited root.'
+    Assert-True -Condition ($cleanupElapsedMs -le 11000) -Message 'Capsule disposal exceeded its owned-Job cleanup bound.'
+    $cleanupConfirmed = $true
+    if (-not $descendantWaitProcess.WaitForExit(5000)) { throw 'Owned-Job disposal did not terminate its retained synthetic descendant handle.' }
+    $script:Outsider.process.Refresh()
+    Assert-True -Condition (-not $script:Outsider.process.HasExited) -Message 'Owned-Job disposal terminated the outsider.'
+    $script:CleanupNotes.Add('Observe returned fresh and exited-snapshot identities, bounded member projections, and preserved an outsider; only capsule Dispose cleaned the owned Job')
+
+    [void]$script:CaseOutcomes.Add([ordered]@{
+      name = 'observe-live-root-exited-snapshot-and-job-inventory'
+      status = 'passed'
+      identityFreshWhileLive = $true
+      identitySnapshotAfterExit = $true
+      matchingSixFieldAssertion = $true
+      individualDivergencesRejected = 6
+      malformedAssertionsRejected = $malformedCases.Count
+      assertionsWereNonDestructive = $true
+      descendantRemainedAfterRootExit = $true
+      inventoryProjectionLimited = $true
+      outsiderExcludedAndPreserved = $true
+      cleanupJobEmpty = [bool]$cleanup.jobEmpty
+      cleanupRootExited = [bool]$cleanup.rootExited
+      observeElapsedMs = $observeClock.ElapsedMilliseconds
+      cleanupElapsedMs = $cleanupElapsedMs
+    })
+    return [ordered]@{
+      identityFreshWhileLive = $true
+      identitySnapshotAfterExit = $true
+      matchingSixFieldAssertion = $true
+      individualDivergencesRejected = 6
+      malformedAssertionsRejected = $malformedCases.Count
+      assertionsWereNonDestructive = $true
+      descendantRemainedAfterRootExit = $true
+      inventoryProjectionLimited = $true
+      outsiderExcludedAndPreserved = $true
+      inventoryStatusWhileLive = [string]$liveObservation.inventory.status
+      inventoryStatusAfterRootExit = [string]$exitedObservation.inventory.status
+      cleanupElapsedMs = $cleanupElapsedMs
+    }
+  } finally {
+    if ($null -ne $observeCapsule -and -not $cleanupConfirmed) {
+      try {
+        $fallbackCleanup = $observeCapsule.Dispose()
+        $cleanupConfirmed = [bool]$fallbackCleanup.jobEmpty -and [bool]$fallbackCleanup.rootExited
+      } catch { $cleanupConfirmed = $false }
+      if (-not $cleanupConfirmed) {
+        [void]$script:CleanupNotes.Add('Observe fixture cleanup was not confirmed; its RUNNER_TEMP evidence was retained for inspection')
+        [void]$script:Failures.Add('observe-owned-job-cleanup-unconfirmed')
+      }
+    }
+    if ($null -ne $rootWaitProcess) { try { $rootWaitProcess.Dispose() } catch { } }
+    if ($null -ne $descendantWaitProcess) { try { $descendantWaitProcess.Dispose() } catch { } }
   }
 }
 
@@ -1516,7 +2221,7 @@ function Close-AllTrackedProcesses {
 
 function Remove-OwnedRuntimeStage {
   if ([string]::IsNullOrWhiteSpace($script:RuntimeRoot) -or -not [IO.Directory]::Exists($script:RuntimeRoot)) { return }
-  $markerPath = Join-Path $script:RuntimeRoot '.issue-225-independent-owner'
+  $markerPath = Join-Path $script:RuntimeRoot '.issue-236-independent-owner'
   if (-not [IO.File]::Exists($markerPath)) {
     $script:Failures.Add('runtime-stage-owner-marker-missing')
     $script:CleanupNotes.Add('private runtime stage retained because its ownership marker was missing')
@@ -1560,12 +2265,13 @@ function Get-ReceiptStatus {
 
 function Write-FinalReceipt {
   if ([string]::IsNullOrWhiteSpace($script:EvidenceRootFull)) {
-    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":225,"status":"failed","evidenceAvailable":false}')
+    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":236,"status":"failed","evidenceAvailable":false}')
     return
   }
   $receipt = [ordered]@{
     schemaVersion = 1
     issue = $script:Issue
+    coverageIssues = @(225, 235, 236)
     status = Get-ReceiptStatus
     startedAtUtc = $script:RunStartedUtc
     completedAtUtc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
@@ -1591,9 +2297,7 @@ function Write-FinalReceipt {
     trackedProcesses = @($script:TrackedProcesses | ForEach-Object {
       [ordered]@{
         role = $_.role
-        processId = $_.processId
         image = [IO.Path]::GetFileName([string]$_.imagePath)
-        creationTimeUtc = $_.creationTimeUtc
         exitCode = $_.exitCode
         emergencyCleanup = $_.emergencyCleanup
         safeProcessHandleCaptured = ($null -ne $_.safeProcessHandle)
@@ -1602,7 +2306,7 @@ function Write-FinalReceipt {
     })
     cleanup = [ordered]@{
       notes = @($script:CleanupNotes)
-      outstandingProcessIds = @(@($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited -and $null -ne $_.processId } | ForEach-Object { [int]$_.processId }))
+      outstandingProcessCount = @($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited }).Count
       outstandingProcessHandleCount = @($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited }).Count
       outstandingProcessIdUnknownCount = @($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited -and $null -eq $_.processId }).Count
       runtimeStageRetained = if ($script:RuntimeRoot) { [IO.Directory]::Exists($script:RuntimeRoot) } else { $false }
@@ -1617,7 +2321,7 @@ function Write-FinalReceipt {
     }
   } catch {
     [Console]::Error.WriteLine('FAIL receipt: unable to write the sanitized independent receipt.')
-    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":225,"status":"failed","receiptWriteFailed":true}')
+    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":236,"status":"failed","receiptWriteFailed":true}')
     $script:Failures.Add('receipt-write-failed')
   }
 }
@@ -1640,7 +2344,7 @@ try {
   [void][IO.Directory]::CreateDirectory($script:EvidenceRootFull)
   $script:EvidencePath = $script:EvidenceRootFull
   $script:ReceiptPath = Join-Path $script:EvidenceRootFull 'windows-native-process-policy.independent.receipt.json'
-  [IO.File]::WriteAllText((Join-Path $script:EvidenceRootFull '.issue-225-independent-owner'), [Guid]::NewGuid().ToString('N'), $script:Utf8NoBom)
+  [IO.File]::WriteAllText((Join-Path $script:EvidenceRootFull '.issue-236-independent-owner'), [Guid]::NewGuid().ToString('N'), $script:Utf8NoBom)
 
   $script:PolicyFullPath = [IO.Path]::GetFullPath($PolicyPath)
   if (-not [IO.File]::Exists($script:PolicyFullPath)) { throw 'The explicit PolicyPath does not exist.' }
@@ -1678,12 +2382,15 @@ try {
   . $script:ProcessAdapterPath
   . $script:JobAdapterPath
   . $script:PolicyFullPath
+  Add-Check -Name 'identity-assertion-six-field-validation' -Action { Test-IndependentIdentityAssertionHelpers }
+  Add-Check -Name 'inventory-projection-transition-and-availability-contract' -Action { Test-IndependentInventoryProjection }
   $script:CurrentSubstep = 'outsider:setup'
   $outsiderDetails = New-Outsider
   $script:Checks['outsider-setup'] = [ordered]@{ status = 'passed'; detail = $outsiderDetails }
   [Console]::Out.WriteLine('PASS outsider-setup')
 
   Add-Check -Name 'positive-start-identity-environment-and-capsule-dispose' -Action { Test-PositiveStartAndDispose }
+  Add-Check -Name 'observe-fresh-snapshot-assertions-and-owned-job-inventory' -Action { Test-IndependentObserveAndRootExitInventory }
   Add-Check -Name 'direct-suspended-retained-image-fresh-digest-and-cim-proof' -Action { Test-DirectSuspendedIdentityProof }
   Add-Check -Name 'closed-descriptor-and-precreate-refusals' -Action { New-InvalidDescriptorCases -CaseRoot (New-CaseRoot -Name 'invalid-descriptors') }
   Add-Check -Name 'post-create-owner-sid-mismatch-cleans-only-owned-job' -Action { Test-PostCreateMismatch -MismatchName 'mismatch-owner-sid' -MismatchKind ownerSid }
@@ -1703,7 +2410,7 @@ try {
   try { Write-FinalReceipt } catch {
     $script:Failures.Add('final-receipt-finalization-unhandled')
     [Console]::Error.WriteLine('FAIL receipt: finalization failed before the sanitized receipt could be completed.')
-    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":225,"status":"failed","receiptWriteFailed":true}')
+    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":236,"status":"failed","receiptWriteFailed":true}')
   }
 }
 
