@@ -19,9 +19,11 @@ export interface ProviderMessages {
   readonly readonly: string;
   readonly saving: string;
   readonly saved: string;
+  readonly pendingFlushRetry: string;
   readonly saveError: (detail: string) => string;
   readonly staleDraft: string;
   readonly invalidNumber: string;
+  readonly invalidTextLength: string;
   readonly details: string;
   readonly nothingToUndo: string;
   readonly nothingToRedo: string;
@@ -99,9 +101,12 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     readonly: 'Somente leitura.',
     saving: 'Salvando alterações…',
     saved: 'Alterações salvas.',
+    pendingFlushRetry:
+      'Uma alteração já aplicada em memória ainda precisa ser gravada. Tente novamente para concluir.',
     saveError: () => 'Não foi possível salvar as alterações.',
     staleDraft: 'Os dados mudaram. Cancele e abra a célula novamente para editar a versão atual.',
     invalidNumber: 'Informe um número finito antes de salvar. Use Cancelar para descartar o rascunho.',
+    invalidTextLength: 'O texto deve ter no máximo 10.000 caracteres. O rascunho foi mantido.',
     details: 'Detalhes',
     nothingToUndo: 'Não há alteração para desfazer.',
     nothingToRedo: 'Não há alteração para refazer.',
@@ -179,9 +184,11 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     readonly: 'Read only.',
     saving: 'Saving changes…',
     saved: 'Changes saved.',
+    pendingFlushRetry: 'A change is staged in memory and still needs saving. Retry to finish.',
     saveError: () => 'Could not save changes.',
     staleDraft: 'The data changed. Cancel and reopen the cell to edit the current version.',
     invalidNumber: 'Enter a finite number before saving. Use Cancel to discard the draft.',
+    invalidTextLength: 'Text must be 10,000 characters or fewer. The draft was kept.',
     details: 'Details',
     nothingToUndo: 'There is no change to undo.',
     nothingToRedo: 'There is no change to redo.',
@@ -259,9 +266,12 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     readonly: 'Solo lectura.',
     saving: 'Guardando cambios…',
     saved: 'Cambios guardados.',
+    pendingFlushRetry:
+      'Hay un cambio aplicado en memoria que aún debe guardarse. Vuelve a intentarlo para terminar.',
     saveError: () => 'No se pudieron guardar los cambios.',
     staleDraft: 'Los datos cambiaron. Cancela y vuelve a abrir la celda para editar la versión actual.',
     invalidNumber: 'Introduce un número finito antes de guardar. Usa Cancelar para descartar el borrador.',
+    invalidTextLength: 'El texto debe tener como máximo 10.000 caracteres. Se conservó el borrador.',
     details: 'Detalles',
     nothingToUndo: 'No hay cambios para deshacer.',
     nothingToRedo: 'No hay cambios para rehacer.',

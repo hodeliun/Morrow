@@ -1,6 +1,6 @@
 # Testar o piloto Polaris Dados no Windows
 
-Este candidato usa a base oficial Morrow 2.1.0 e permite testar o fluxo P1 do plugin Polaris Dados. O ZIP inclui um executável compilado nativamente no Windows. O artefato só é publicado quando passam os checks automáticos do build Windows, do ZIP, dos hashes e dos guards do launcher em PowerShell 5.1 e 7. Esses checks não abrem a interface: o aplicativo ainda não foi aberto nem testado em Windows. Esta entrega não é uma release do Morrow nem confirma compatibilidade completa com o fork.
+Este candidato experimental usa Morrow 2.1.0 e inclui o piloto Polaris Dados com edição de números e texto. O ZIP inclui um executável compilado nativamente no Windows. O build verifica o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste.
 
 ## Requisitos
 
@@ -18,7 +18,7 @@ O Tauri e o plugin de estado da janela ainda podem gravar pastas ou metadados co
 2. Extraia o ZIP interno diretamente para uma pasta nova e curta, por exemplo `Downloads\MorrowPiloto`. O executável, `windows-launch.cmd` e `DemoVault` devem ficar juntos na raiz dessa pasta. Não execute o aplicativo de dentro de nenhum ZIP.
 3. Não extraia para dentro de um cofre pessoal nem abra um cofre pessoal neste teste.
 4. Salve e feche qualquer outro Morrow aberto. O launcher recusa iniciar se encontrar outro processo `morrow.exe`.
-5. Clique duas vezes em `windows-launch.cmd` e aguarde a tela Welcome.
+5. Clique duas vezes em `windows-launch.cmd` e aguarde o seletor de cofres ou a tela Welcome.
 6. Pela interface do Morrow, abra a pasta `PilotState\DemoVault`, dentro da pasta onde você extraiu o pacote. Essa é a cópia de teste editável. A pasta `DemoVault` no nível superior do pacote é o modelo original; deixe-a intacta.
 7. Em Settings/Configurações, habilite plugins locais e o plugin Polaris Dados. Se necessário, recarregue a nota.
 
@@ -32,8 +32,15 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 4. Abra a nota `Views` (com o cabeçalho `Origin Views`) e confira as duas visualizações vinculadas (`Origin primary stock` e `Origin low stock`). Ambas usam os dados de `Inventory.md` e mantêm título, filtro e ordem de colunas próprios.
 5. Feche o Morrow normalmente e clique em `windows-launch.cmd` outra vez. Reabra `PilotState\DemoVault` pela interface e confira que `Quantity` continua 3, `Total` continua 30 e as duas visualizações permanecem.
 
+## Edição de texto
+
+1. Em `Inventory`, edite a célula `Name` e digite duas linhas. Use **Enter** para inserir a quebra de linha e **Escape** para cancelar. Verifique que a célula continua com o valor anterior.
+2. Abra outro rascunho em `Name`. Alterne o modo de leitura e volte ao modo de edição. O texto digitado deve continuar no rascunho.
+3. Confirme em **Save** ou **Salvar**. Confira em `Views` que as duas visualizações exibem o novo texto. Se a view `Origin low stock` estiver vazia, ajuste `Quantity` para pelo menos 3 no exercício anterior.
+4. Feche o Morrow normalmente, abra o mesmo cofre de demonstração pelo launcher e confira o texto nas duas visualizações.
+
 ## Limites deste candidato
 
-- O piloto cobre apenas o fluxo P1 de Polaris Dados. Os demais recursos do fork permanecem na versão estável; este pacote não é port completo nem release.
+- Este pacote experimental cobre o piloto de tabelas e fórmulas do Polaris Dados. A migração dos demais recursos do fork está em andamento.
 - Build e checks automáticos não equivalem a abrir o aplicativo. O teste da interface no Windows ainda depende da observação de Carlos; o restante do port permanece pendente.
 - `BUILD-INFO.json` registra `appLaunched: false` e `windowsRuntimeTested: false`. O hash do executável pode variar entre builds nativos; compare o recibo e o artefato do mesmo run.

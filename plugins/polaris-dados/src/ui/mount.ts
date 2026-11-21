@@ -1,4 +1,5 @@
 import type {
+  DataApi,
   DataApiDiagnostic,
   DataApiErrorCode,
   DataApiRow,
@@ -17,21 +18,124 @@ import { providerMessages } from './locale';
 
 const PROVIDER_ID = 'polaris-dados';
 
-interface Draft {
+interface DraftBase {
   readonly rowId: string;
   readonly propertyId: string;
   readonly expectedRevision: string;
-  rawValue: string;
+  blocked: 'stale' | 'readonly' | 'disabled' | null;
   errorCode: DataApiErrorCode | null;
   errorDetail: string | null;
 }
 
+interface NumberDraft extends DraftBase {
+  readonly kind: 'number';
+  rawValue: string;
+}
+
+interface TextDraft extends DraftBase {
+  readonly kind: 'text';
+  /** The exact host value captured when the editor opened, including original CRLFs. */
+  readonly initialRawValue: string;
+  rawValue: string;
+  /** The normalized value the textarea can display. */
+  readonly initialVisibleValue: string;
+  readonly schemaSignature: string;
+  focused: boolean;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
+
+type Draft = NumberDraft | TextDraft;
+
 interface PendingFlush {
   readonly kind: 'cell' | 'history';
-  readonly rowId?: string;
-  readonly propertyId?: string;
-  readonly value?: number;
   errorDetail: string | null;
+  retryAvailable: boolean;
+}
+
+interface StoredTextDraft {
+  readonly version: 1;
+  readonly phase: 'editing' | 'patching' | 'pending-flush';
+  readonly databaseId: string;
+  readonly rowId: string;
+  readonly propertyId: string;
+  readonly expectedRevision: string;
+  readonly schemaSignature: string;
+  readonly initialRawValue: string;
+  readonly initialVisibleValue: string;
+  readonly rawValue: string;
+  readonly blocked: DraftBase['blocked'];
+  readonly errorDetail: string | null;
+  readonly focused: boolean;
+  readonly selectionStart: number | null;
+  readonly selectionEnd: number | null;
+  readonly pendingFlushErrorDetail: string | null;
+}
+
+interface RestoredTextDraft {
+  readonly draft: TextDraft;
+  readonly patchIntent: boolean;
+  readonly pendingFlush: boolean;
+  readonly pendingFlushErrorDetail: string | null;
+}
+
+function restoreTextDraft(serialized: string, databaseId: string): RestoredTextDraft | null {
+  try {
+    const value: unknown = JSON.parse(serialized);
+    if (typeof value !== 'object' || value === null) return null;
+    const stored = value as Record<string, unknown>;
+    if (
+      stored.version !== 1 ||
+      stored.databaseId !== databaseId ||
+      (stored.phase !== 'editing' && stored.phase !== 'patching' && stored.phase !== 'pending-flush') ||
+      typeof stored.rowId !== 'string' ||
+      typeof stored.propertyId !== 'string' ||
+      typeof stored.expectedRevision !== 'string' ||
+      typeof stored.schemaSignature !== 'string' ||
+      typeof stored.initialRawValue !== 'string' ||
+      typeof stored.initialVisibleValue !== 'string' ||
+      typeof stored.rawValue !== 'string' ||
+      (stored.blocked !== null &&
+        stored.blocked !== 'stale' &&
+        stored.blocked !== 'readonly' &&
+        stored.blocked !== 'disabled') ||
+      (stored.errorDetail !== null && typeof stored.errorDetail !== 'string') ||
+      typeof stored.focused !== 'boolean' ||
+      (stored.selectionStart !== null &&
+        (typeof stored.selectionStart !== 'number' || !Number.isInteger(stored.selectionStart))) ||
+      (stored.selectionEnd !== null &&
+        (typeof stored.selectionEnd !== 'number' || !Number.isInteger(stored.selectionEnd))) ||
+      (stored.pendingFlushErrorDetail !== null && typeof stored.pendingFlushErrorDetail !== 'string')
+    ) {
+      return null;
+    }
+    const selectionStart = stored.selectionStart as number | null;
+    const selectionEnd = stored.selectionEnd as number | null;
+    const blocked = stored.blocked as DraftBase['blocked'];
+    return {
+      draft: {
+        kind: 'text',
+        rowId: stored.rowId,
+        propertyId: stored.propertyId,
+        expectedRevision: stored.expectedRevision,
+        schemaSignature: stored.schemaSignature,
+        initialRawValue: stored.initialRawValue,
+        initialVisibleValue: stored.initialVisibleValue,
+        rawValue: stored.rawValue,
+        blocked,
+        errorCode: blocked === 'stale' ? 'stale-revision' : blocked === 'readonly' ? 'host-readonly' : null,
+        errorDetail: stored.errorDetail,
+        focused: stored.focused,
+        selectionStart,
+        selectionEnd,
+      },
+      patchIntent: stored.phase === 'patching',
+      pendingFlush: stored.phase === 'pending-flush',
+      pendingFlushErrorDetail: stored.pendingFlushErrorDetail,
+    };
+  } catch {
+    return null;
+  }
 }
 
 interface Notice {
@@ -72,6 +176,7 @@ let nextViewFormId = 0;
 /** Mount the Polaris Dados grid into the host-owned root. */
 export function mountPolarisDados(context: DatabaseProviderContext): () => void {
   const { element, databaseId, data, locale, editable, signal } = context;
+  const transientState = context.transientState;
   const contextView: unknown = context.view;
   let viewVersionSupported = contextView === null || contextView === undefined;
   try {
@@ -118,6 +223,144 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   let disposed = false;
   let unsubscribeData = () => {};
   let unsubscribeView = () => {};
+  let restoreDraftFocusPending = false;
+  let patchIntentPending = false;
+  let restoreFocusScheduled = false;
+  const restoreFocusGeneration = Symbol('restore-text-focus');
+
+  try {
+    const serialized = transientState?.read();
+    if (typeof serialized === 'string') {
+      const restored = restoreTextDraft(serialized, databaseId);
+      if (restored) {
+        draft = restored.draft;
+        patchIntentPending = restored.patchIntent;
+        restoreDraftFocusPending = restored.draft.focused && !restored.pendingFlush;
+        if (restored.pendingFlush) {
+          pendingFlush = {
+            kind: 'cell',
+            errorDetail: restored.pendingFlushErrorDetail,
+            retryAvailable: true,
+          };
+          notice = {
+            kind: 'status',
+            message: messages.pendingFlushRetry,
+            detail: restored.pendingFlushErrorDetail ?? undefined,
+          };
+        } else if (restored.draft.blocked === 'stale') {
+          notice = {
+            kind: 'error',
+            message: messages.staleDraft,
+            detail: restored.draft.errorDetail ?? undefined,
+          };
+        }
+      }
+    }
+  } catch {
+    // The optional volatile slot may be absent or already revoked by the host.
+  }
+
+  const textSchemaSignature = (snapshot: ReadySnapshot): string => JSON.stringify(snapshot.schema.properties);
+
+  const checkpointTextDraft = () => {
+    if (draft?.kind !== 'text') return;
+    const stored: StoredTextDraft = {
+      version: 1,
+      phase: pendingFlush?.kind === 'cell' ? 'pending-flush' : patchIntentPending ? 'patching' : 'editing',
+      databaseId,
+      rowId: draft.rowId,
+      propertyId: draft.propertyId,
+      expectedRevision: draft.expectedRevision,
+      schemaSignature: draft.schemaSignature,
+      initialRawValue: draft.initialRawValue,
+      initialVisibleValue: draft.initialVisibleValue,
+      rawValue: draft.rawValue,
+      blocked: draft.blocked,
+      errorDetail: draft.errorDetail,
+      focused: draft.focused,
+      selectionStart: draft.selectionStart,
+      selectionEnd: draft.selectionEnd,
+      pendingFlushErrorDetail: pendingFlush?.kind === 'cell' ? pendingFlush.errorDetail : null,
+    };
+    try {
+      transientState?.write(JSON.stringify(stored));
+    } catch {
+      // A revoked generation cannot update the host's retained slot.
+    }
+  };
+
+  const clearTextDraft = () => {
+    try {
+      transientState?.write(undefined);
+    } catch {
+      // A revoked generation cannot update the host's retained slot.
+    }
+  };
+
+  const restoreTextDraftFocus = () => {
+    if (disposed || signal.aborted || !restoreDraftFocusPending || draft?.kind !== 'text' || pendingFlush)
+      return;
+    const restoredDraft = draft;
+    const target = [...container.querySelectorAll<HTMLElement>('[data-focus-key]')].find(
+      (candidate) =>
+        candidate.getAttribute('data-focus-key') ===
+        focusKey('input', restoredDraft.rowId, restoredDraft.propertyId),
+    );
+    if (!target || !element.isConnected) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement && active !== target) {
+      restoreDraftFocusPending = false;
+      return;
+    }
+
+    const selectionStart = restoredDraft.selectionStart;
+    const selectionEnd = restoredDraft.selectionEnd;
+    restoreDraftFocusPending = false;
+    target.focus({ preventScroll: true });
+    if (target.tagName !== 'TEXTAREA') return;
+    const textarea = target as HTMLTextAreaElement;
+    if (selectionStart === null || selectionEnd === null) return;
+    const start = Math.max(0, Math.min(selectionStart, textarea.value.length));
+    const end = Math.max(start, Math.min(selectionEnd, textarea.value.length));
+    try {
+      textarea.setSelectionRange(start, end);
+    } catch {
+      // The host may use a textarea implementation without selection support.
+    }
+  };
+
+  const scheduleTextDraftFocusRestore = () => {
+    if (restoreFocusScheduled || !restoreDraftFocusPending) return;
+    restoreFocusScheduled = true;
+    const generationSignal = signal;
+    const generation = restoreFocusGeneration;
+    queueMicrotask(() => {
+      restoreFocusScheduled = false;
+      if (generationSignal !== signal || generation !== restoreFocusGeneration || generationSignal.aborted)
+        return;
+      restoreTextDraftFocus();
+    });
+  };
+
+  const draftWriteBlocked = () =>
+    !draft ||
+    draft.blocked === 'stale' ||
+    draft.blocked === 'disabled' ||
+    !editable ||
+    busy ||
+    !!pendingFlush ||
+    currentSnapshot?.status !== 'ready';
+
+  const textDraftReadonly = () =>
+    draft?.kind !== 'text' ||
+    draft.blocked === 'stale' ||
+    draft.blocked === 'readonly' ||
+    draft.blocked === 'disabled' ||
+    !editable ||
+    busy ||
+    pendingFlush?.kind === 'cell' ||
+    currentSnapshot?.status !== 'ready' ||
+    currentSnapshot.readonly;
 
   const captureFocus = (): FocusSnapshot => {
     const active = document.activeElement;
@@ -126,11 +369,11 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     }
     let selectionStart: number | null = null;
     let selectionEnd: number | null = null;
-    if (active.tagName === 'INPUT') {
+    if (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') {
       try {
-        const input = active as HTMLInputElement;
-        selectionStart = input.selectionStart;
-        selectionEnd = input.selectionEnd;
+        const control = active as HTMLInputElement | HTMLTextAreaElement;
+        selectionStart = control.selectionStart;
+        selectionEnd = control.selectionEnd;
       } catch {
         // Number inputs do not expose selection ranges in every WebView.
       }
@@ -146,6 +389,8 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   const render = (focusRoot = false, focusOverride: string | null = null) => {
     if (disposed) return;
     const focus = captureFocus();
+    const restoreTextFocus =
+      restoreDraftFocusPending && draft?.kind === 'text' && !pendingFlush && !focusOverride;
     const fragment = document.createDocumentFragment();
 
     if (unsupportedViewApi) {
@@ -201,12 +446,18 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       fragment.append(renderGrid(currentSnapshot));
     }
     if (!view) appendSnapshotNotice(fragment, currentSnapshot);
-    if (draft && !draftIsVisible(currentSnapshot)) fragment.append(renderDetachedDraftNotice());
+    if (draft && !pendingFlush && !draftIsVisible(currentSnapshot))
+      fragment.append(renderDetachedDraftNotice());
     appendCurrentNotice(fragment);
     container.replaceChildren(fragment);
 
     if (focusRoot) {
       element.focus({ preventScroll: true });
+      return;
+    }
+    if (restoreTextFocus) {
+      if (element.isConnected) restoreTextDraftFocus();
+      else scheduleTextDraftFocusRestore();
       return;
     }
     if (!focus.inside && !focusOverride) return;
@@ -217,9 +468,18 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       );
       if (!target) return;
       target.focus({ preventScroll: true });
-      if (target.tagName === 'INPUT' && focus.selectionStart !== null && focus.selectionEnd !== null) {
+      if (
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') &&
+        focus.selectionStart !== null &&
+        focus.selectionEnd !== null
+      ) {
         try {
-          (target as HTMLInputElement).setSelectionRange(focus.selectionStart, focus.selectionEnd);
+          const control = target as HTMLInputElement | HTMLTextAreaElement;
+          const selectionStart = focus.selectionStart;
+          const selectionEnd = focus.selectionEnd;
+          const start = Math.max(0, Math.min(selectionStart, control.value.length));
+          const end = Math.max(start, Math.min(selectionEnd, control.value.length));
+          control.setSelectionRange(start, end);
         } catch {
           // Number inputs do not expose selection ranges in every WebView.
         }
@@ -1058,15 +1318,14 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     const editor = [...container.querySelectorAll<HTMLElement>('[data-editor]')].find(
       (candidate) => candidate.dataset.editor === draft?.propertyId,
     );
+    const textarea = editor?.querySelector<HTMLTextAreaElement>('textarea[data-field]');
     const save = editor?.querySelector<HTMLButtonElement>('[data-action="save"]');
     const cancel = editor?.querySelector<HTMLButtonElement>('[data-action="cancel"]');
-    if (save)
-      save.disabled =
-        busy ||
-        draft.errorCode === 'stale-revision' ||
-        currentSnapshot?.status !== 'ready' ||
-        currentSnapshot.readonly ||
-        !editable;
+    if (textarea) {
+      const readonly = textDraftReadonly();
+      if (textarea.readOnly !== readonly) textarea.readOnly = readonly;
+    }
+    if (save) save.disabled = draftWriteBlocked();
     if (cancel) cancel.disabled = busy;
   };
 
@@ -1186,12 +1445,19 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     cell.style.padding = '0.45rem 0.65rem';
     cell.style.borderBottom = '1px solid currentColor';
 
-    if (draft?.rowId === row.id && draft.propertyId === property.id) {
+    if (draft?.rowId === row.id && draft.propertyId === property.id && pendingFlush?.kind !== 'cell') {
       cell.append(renderEditor(row, property));
     } else {
       const value = displayCell(row, snapshot.schema.properties, property);
       const canEdit =
-        editable && !snapshot.readonly && property.type === 'number' && !busy && !pendingFlush && !viewDraft;
+        editable &&
+        !snapshot.readonly &&
+        !draft &&
+        (property.type === 'number' ||
+          (property.type === 'text' && typeof data.patchTextCell === 'function')) &&
+        !busy &&
+        !pendingFlush &&
+        !viewDraft;
       if (canEdit) cell.append(renderEditButton(row, property, value, snapshot.revision));
       else cell.append(renderCellValue(property, value));
     }
@@ -1229,9 +1495,13 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         const property = snapshot.schema.properties[column]!;
         const cell = cells[column]!;
         if (draft?.rowId === row.id && draft.propertyId === property.id) {
+          const textarea = cell.querySelector<HTMLTextAreaElement>('textarea[data-field]');
           const save = cell.querySelector<HTMLButtonElement>('button[data-action="save"]');
-          if (save)
-            save.disabled = busy || draft.errorCode === 'stale-revision' || snapshot.readonly || !editable;
+          if (textarea) {
+            const readonly = textDraftReadonly();
+            if (textarea.readOnly !== readonly) textarea.readOnly = readonly;
+          }
+          if (save) save.disabled = draftWriteBlocked();
           continue;
         }
         cell.replaceWith(renderCell(snapshot, row, property));
@@ -1285,10 +1555,13 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         const column = projection.properties[columnIndex]!;
         const cell = cells[columnIndex]!;
         if (column.kind === 'property' && draft?.rowId === row.id && draft.propertyId === column.id) {
+          const textarea = cell.querySelector<HTMLTextAreaElement>('textarea[data-field]');
           const save = cell.querySelector<HTMLButtonElement>('button[data-action="save"]');
-          if (save)
-            save.disabled =
-              busy || draft.errorCode === 'stale-revision' || snapshot.readonly || !editable || !!viewDraft;
+          if (textarea) {
+            const readonly = textDraftReadonly();
+            if (textarea.readOnly !== readonly) textarea.readOnly = readonly;
+          }
+          if (save) save.disabled = draftWriteBlocked() || !!viewDraft;
           continue;
         }
         cell.replaceWith(renderLinkedCell(snapshot, row, column));
@@ -1335,17 +1608,54 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     button.style.cursor = 'pointer';
     button.append(renderCellValue(property, value));
     button.addEventListener('click', () => {
-      if (busy || pendingFlush || disposed || signal.aborted || !editable || viewDraft) return;
-      const latest = currentSnapshot;
-      if (!latest || latest.status !== 'ready' || latest.readonly) return;
-      draft = {
+      if (busy || pendingFlush || draft || disposed || signal.aborted || !editable || viewDraft) return;
+      let latest: DataApiSnapshot;
+      try {
+        latest = data.snapshot(databaseId);
+      } catch {
+        return;
+      }
+      if (latest.status !== 'ready' || latest.readonly || latest.revision !== revision) {
+        snapshotUpdated(latest);
+        return;
+      }
+      const latestRow = latest.rows.find((candidate) => candidate.id === row.id);
+      const latestProperty = latest.schema.properties.find((candidate) => candidate.id === property.id);
+      if (!latestRow || latestProperty?.type !== property.type) {
+        snapshotUpdated(latest);
+        return;
+      }
+      const latestValue = latestRow.properties[property.id];
+      const base = {
         rowId: row.id,
         propertyId: property.id,
-        expectedRevision: revision,
-        rawValue: value.kind === 'number' ? String(value.value) : '',
+        expectedRevision: latest.revision,
+        blocked: null,
         errorCode: null,
         errorDetail: null,
-      };
+      } as const;
+      if (property.type === 'text') {
+        if (typeof data.patchTextCell !== 'function') return;
+        const rawValue = typeof latestValue === 'string' ? latestValue : '';
+        draft = {
+          ...base,
+          kind: 'text',
+          initialRawValue: rawValue,
+          rawValue,
+          initialVisibleValue: normalizeTextAreaValue(rawValue),
+          schemaSignature: textSchemaSignature(latest),
+          focused: false,
+          selectionStart: 0,
+          selectionEnd: 0,
+        };
+        checkpointTextDraft();
+      } else if (property.type === 'number') {
+        draft = {
+          ...base,
+          kind: 'number',
+          rawValue: value.kind === 'number' ? String(value.value) : '',
+        };
+      } else return;
       notice = null;
       render(false, focusKey('input', row.id, property.id));
     });
@@ -1353,19 +1663,20 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   };
 
   const renderEditor = (row: DataApiRow, property: ProviderProperty): HTMLElement => {
+    if (draft?.kind === 'text') return renderTextEditor(row, property, draft);
     const editor = document.createElement('div');
     editor.dataset.editor = property.id;
     const input = document.createElement('input');
     input.type = 'number';
     input.step = 'any';
     input.autocomplete = 'off';
-    input.value = draft?.rawValue ?? '';
+    input.value = draft?.kind === 'number' ? draft.rawValue : '';
     input.dataset.field = property.id;
     input.dataset.rowId = row.id;
     input.dataset.focusKey = focusKey('input', row.id, property.id);
     input.setAttribute('aria-label', messages.editorCell(property.name, row.title));
     input.addEventListener('input', () => {
-      if (!draft || draft.rowId !== row.id || draft.propertyId !== property.id) return;
+      if (draft?.kind !== 'number' || draft.rowId !== row.id || draft.propertyId !== property.id) return;
       draft.rawValue = input.value;
       if (draft.errorCode === 'stale-revision') return;
       draft.errorCode = null;
@@ -1404,12 +1715,116 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     save.dataset.action = 'save';
     save.dataset.focusKey = focusKey('save', row.id, property.id);
     save.textContent = messages.save;
-    save.disabled =
+    save.disabled = draftWriteBlocked();
+    save.addEventListener('click', () => void saveDraft());
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.dataset.action = 'cancel';
+    cancel.dataset.focusKey = focusKey('cancel', row.id, property.id);
+    cancel.textContent = messages.cancel;
+    cancel.disabled = busy;
+    cancel.addEventListener('click', cancelDraft);
+    actions.append(save, cancel);
+    editor.append(actions);
+    return editor;
+  };
+
+  const renderTextEditor = (row: DataApiRow, property: ProviderProperty, activeDraft: TextDraft) => {
+    const editor = document.createElement('div');
+    editor.dataset.editor = property.id;
+    const textarea = document.createElement('textarea');
+    textarea.rows = 3;
+    textarea.autocomplete = 'off';
+    textarea.value = normalizeTextAreaValue(activeDraft.rawValue);
+    textarea.readOnly =
+      activeDraft.blocked === 'stale' ||
+      activeDraft.blocked === 'readonly' ||
+      activeDraft.blocked === 'disabled' ||
+      !editable ||
       busy ||
-      draft?.errorCode === 'stale-revision' ||
+      pendingFlush?.kind === 'cell' ||
       currentSnapshot?.status !== 'ready' ||
-      currentSnapshot.readonly ||
-      !editable;
+      currentSnapshot.readonly;
+    textarea.dataset.field = property.id;
+    textarea.dataset.rowId = row.id;
+    textarea.dataset.focusKey = focusKey('input', row.id, property.id);
+    textarea.setAttribute('aria-label', messages.editorCell(property.name, row.title));
+    textarea.addEventListener('input', () => {
+      if (draft?.kind !== 'text' || draft.rowId !== row.id || draft.propertyId !== property.id) return;
+      const activeDraft = draft;
+      if (
+        activeDraft.blocked === 'stale' ||
+        activeDraft.blocked === 'readonly' ||
+        activeDraft.blocked === 'disabled' ||
+        pendingFlush?.kind === 'cell' ||
+        !editable ||
+        currentSnapshot?.status !== 'ready' ||
+        currentSnapshot.readonly
+      ) {
+        textarea.value = normalizeTextAreaValue(activeDraft.rawValue);
+        return;
+      }
+      const visibleValue = normalizeTextAreaValue(textarea.value);
+      // Keep the exact original host string when edits return to the opening value, including CRLFs.
+      activeDraft.rawValue =
+        visibleValue === activeDraft.initialVisibleValue ? activeDraft.initialRawValue : visibleValue;
+      activeDraft.focused = true;
+      activeDraft.selectionStart = textarea.selectionStart;
+      activeDraft.selectionEnd = textarea.selectionEnd;
+      activeDraft.errorCode = null;
+      activeDraft.errorDetail = null;
+      notice = null;
+      checkpointTextDraft();
+      if (currentSnapshot?.status === 'ready') updateGridInPlace(currentSnapshot);
+    });
+    const checkpointTextSelection = () => {
+      if (
+        disposed ||
+        signal.aborted ||
+        draft?.kind !== 'text' ||
+        draft.rowId !== row.id ||
+        draft.propertyId !== property.id
+      ) {
+        return;
+      }
+      draft.focused = document.activeElement === textarea;
+      draft.selectionStart = textarea.selectionStart;
+      draft.selectionEnd = textarea.selectionEnd;
+      checkpointTextDraft();
+    };
+    textarea.addEventListener('focus', checkpointTextSelection);
+    textarea.addEventListener('blur', checkpointTextSelection);
+    textarea.addEventListener('select', checkpointTextSelection);
+    textarea.addEventListener('keyup', checkpointTextSelection);
+    textarea.addEventListener('click', checkpointTextSelection);
+    textarea.addEventListener('keydown', (event) => {
+      if (event.isComposing) {
+        event.stopPropagation();
+        return;
+      }
+      if (event.key === 'Enter') {
+        // Enter and Shift+Enter insert a newline; saving is always explicit.
+        event.stopPropagation();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelDraft();
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        // Keep text undo local to the textarea and away from contextual host history.
+        event.stopPropagation();
+      }
+    });
+    editor.append(textarea);
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '0.35rem';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.dataset.action = 'save';
+    save.dataset.focusKey = focusKey('save', row.id, property.id);
+    save.textContent = messages.save;
+    save.disabled = draftWriteBlocked();
     save.addEventListener('click', () => void saveDraft());
     const cancel = document.createElement('button');
     cancel.type = 'button';
@@ -1533,7 +1948,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     const viewRetry = !!viewPendingFlush?.errorDetail;
     const action = viewRetry
       ? () => void retryViewFlush()
-      : pendingFlush?.errorDetail
+      : pendingFlush?.retryAvailable
         ? () => void retryFlush()
         : undefined;
     const current = statusNode(
@@ -1570,7 +1985,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         }
       }
     }
-    if (draft && !draftIsVisible(snapshot)) notices.append(renderDetachedDraftNotice());
+    if (draft && !pendingFlush && !draftIsVisible(snapshot)) notices.append(renderDetachedDraftNotice());
     appendCurrentNotice(notices);
     container.append(notices);
   };
@@ -1585,14 +2000,110 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       : snapshot.rows.some((row) => row.id === draft?.rowId)) &&
     snapshot.schema.properties.some((property) => property.id === draft?.propertyId);
 
+  const textDraftStaleReason = (textDraft: TextDraft, snapshot: DataApiSnapshot): string | null => {
+    if (snapshot.status !== 'ready') {
+      return snapshot.status === 'unsupported'
+        ? snapshot.diagnostic.message
+        : 'The database is no longer available.';
+    }
+    if (snapshot.revision !== textDraft.expectedRevision)
+      return 'The data changed after this draft was opened.';
+    if (textSchemaSignature(snapshot) !== textDraft.schemaSignature)
+      return 'The database schema changed after this draft was opened.';
+    if (!snapshot.rows.some((row) => row.id === textDraft.rowId))
+      return 'The row for this text draft is no longer available.';
+    const property = snapshot.schema.properties.find((candidate) => candidate.id === textDraft.propertyId);
+    if (!property || property.type !== 'text')
+      return 'The text property for this draft is no longer available.';
+    return null;
+  };
+
+  const resolveRestoredPatchIntent = (snapshot: DataApiSnapshot): void => {
+    if (!patchIntentPending || draft?.kind !== 'text') return;
+    const activeDraft = draft;
+    patchIntentPending = false;
+
+    let staleReason: string | null = null;
+    if (snapshot.status !== 'ready') {
+      staleReason = textDraftStaleReason(activeDraft, snapshot);
+    } else {
+      const row = snapshot.rows.find((candidate) => candidate.id === activeDraft.rowId);
+      const property = snapshot.schema.properties.find(
+        (candidate) => candidate.id === activeDraft.propertyId,
+      );
+      if (textSchemaSignature(snapshot) !== activeDraft.schemaSignature) {
+        staleReason = 'The database schema changed while this text edit was being saved.';
+      } else if (!row) {
+        staleReason = 'The row for this text draft is no longer available.';
+      } else if (!property || property.type !== 'text') {
+        staleReason = 'The text property for this draft is no longer available.';
+      } else if (snapshot.revision !== activeDraft.expectedRevision) {
+        if (row.properties[activeDraft.propertyId] === activeDraft.rawValue) {
+          // The value and revision prove that the in-memory patch was accepted. Retry only its flush.
+          pendingFlush = { kind: 'cell', errorDetail: null, retryAvailable: true };
+          activeDraft.focused = false;
+          restoreDraftFocusPending = false;
+          notice = { kind: 'status', message: messages.pendingFlushRetry };
+        } else {
+          staleReason = 'The data changed while this text edit was being saved; the draft was preserved.';
+        }
+      } else {
+        const value = row.properties[activeDraft.propertyId];
+        const visibleValue = typeof value === 'string' ? normalizeTextAreaValue(value) : '';
+        if (visibleValue !== activeDraft.initialVisibleValue) {
+          staleReason = 'The cell changed without a matching revision while this text edit was being saved.';
+        } else if (!editable) {
+          activeDraft.blocked = 'disabled';
+          activeDraft.errorCode = null;
+          activeDraft.errorDetail = null;
+          notice = { kind: 'status', message: messages.readonly };
+        } else if (snapshot.readonly) {
+          activeDraft.blocked = 'readonly';
+          activeDraft.errorCode = 'host-readonly';
+          activeDraft.errorDetail = snapshot.diagnostic?.message ?? null;
+          notice = {
+            kind: 'status',
+            message: messages.readonly,
+            detail: activeDraft.errorDetail ?? undefined,
+          };
+        } else {
+          activeDraft.blocked = null;
+          activeDraft.errorCode = null;
+          activeDraft.errorDetail = null;
+          notice = null;
+        }
+      }
+    }
+
+    if (staleReason) {
+      activeDraft.blocked = 'stale';
+      activeDraft.errorCode = 'stale-revision';
+      activeDraft.errorDetail = staleReason;
+      notice = { kind: 'error', message: messages.staleDraft, detail: staleReason };
+    }
+    checkpointTextDraft();
+  };
+
   const renderDetachedDraftNotice = (): HTMLElement => {
     const wrapper = statusNode('error', messages.staleDraft, draft?.errorDetail);
+    if (draft?.kind === 'text') {
+      const copyableDraft = document.createElement('textarea');
+      copyableDraft.rows = 3;
+      copyableDraft.readOnly = true;
+      copyableDraft.value = normalizeTextAreaValue(draft.rawValue);
+      copyableDraft.dataset.draftValue = draft.propertyId;
+      copyableDraft.dataset.focusKey = focusKey('input', draft.rowId, draft.propertyId);
+      copyableDraft.setAttribute('aria-label', messages.staleDraft);
+      copyableDraft.style.display = 'block';
+      copyableDraft.style.width = '100%';
+      wrapper.append(copyableDraft);
+    }
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.dataset.action = 'cancel';
     cancel.dataset.focusKey = 'cancel-detached-draft';
     cancel.textContent = messages.cancel;
-    cancel.disabled = busy;
+    cancel.disabled = busy || pendingFlush?.kind === 'cell';
     cancel.addEventListener('click', cancelDraft);
     wrapper.append(cancel);
     return wrapper;
@@ -1601,23 +2112,66 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   function snapshotUpdated(snapshot: DataApiSnapshot): void {
     if (disposed) return;
     currentSnapshot = snapshot;
+    if (patchIntentPending && !busy) resolveRestoredPatchIntent(snapshot);
     if (draft) {
-      if (!busy && (snapshot.status !== 'ready' || snapshot.revision !== draft.expectedRevision)) {
-        draft.errorCode = 'stale-revision';
-        draft.errorDetail =
-          snapshot.status === 'ready'
-            ? 'This draft was opened from an older data revision.'
-            : snapshot.status === 'unsupported'
-              ? snapshot.diagnostic.message
-              : 'The database is no longer available.';
-        notice = { kind: 'error', message: messages.staleDraft, detail: draft.errorDetail };
+      if (!busy && pendingFlush?.kind !== 'cell') {
+        const staleReason =
+          draft.kind === 'text'
+            ? draft.blocked === 'stale'
+              ? (draft.errorDetail ?? 'The data changed after this draft was opened.')
+              : textDraftStaleReason(draft, snapshot)
+            : snapshot.status !== 'ready' || snapshot.revision !== draft.expectedRevision
+              ? snapshot.status === 'ready'
+                ? 'This draft was opened from an older data revision.'
+                : snapshot.status === 'unsupported'
+                  ? snapshot.diagnostic.message
+                  : 'The database is no longer available.'
+              : null;
+        if (staleReason) {
+          draft.blocked = 'stale';
+          draft.errorCode = 'stale-revision';
+          draft.errorDetail = staleReason;
+          notice = { kind: 'error', message: messages.staleDraft, detail: draft.errorDetail };
+        } else if (!editable) {
+          draft.blocked = 'disabled';
+          draft.errorDetail = null;
+          notice = { kind: 'status', message: messages.readonly };
+        } else if (snapshot.status === 'ready' && snapshot.readonly) {
+          draft.blocked = 'readonly';
+          draft.errorDetail = snapshot.diagnostic?.message ?? null;
+          notice = { kind: 'status', message: messages.readonly, detail: draft.errorDetail ?? undefined };
+        } else if (draft.blocked === 'readonly' || draft.blocked === 'disabled') {
+          draft.blocked = null;
+          if (
+            draft.errorCode === 'host-readonly' ||
+            draft.errorCode === 'provider-inactive' ||
+            draft.errorCode === 'read-only' ||
+            draft.errorCode === 'save-conflict' ||
+            draft.errorCode === 'owner-inactive' ||
+            draft.errorCode === 'session-closed'
+          ) {
+            draft.errorCode = null;
+          }
+          draft.errorDetail = null;
+          notice = null;
+        }
+        checkpointTextDraft();
       }
       if (view) {
+        if (!container.querySelector('table')) {
+          render();
+          return;
+        }
+        // Keep the linked table's shared projection stable while a cell draft is open.
+        // In particular, a view configuration update must not reorder/remove the row
+        // underneath an active number editor. The next cancel/save render applies it.
         refreshCellDraftControls();
         refreshNotices(snapshot);
         return;
       }
       if (snapshot.status === 'ready' && updateGridInPlace(snapshot)) return;
+      render();
+      return;
     }
     if (viewDraft && view) {
       if (snapshot.status === 'ready' && !updateLinkedGridInPlace(snapshot)) refreshLinkedTable();
@@ -1641,7 +2195,19 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       viewDraft.stale = true;
       notice = { kind: 'error', message: messages.viewDraftStale };
     }
-    if (viewDraft || draft) {
+    if (draft) {
+      if (!container.querySelector('table')) {
+        render();
+        return;
+      }
+      // Linked view settings are shared by every mount; defer their projection while
+      // a cell draft is open so its DOM/input/history remain stable until resolution.
+      if (currentSnapshot) refreshNotices(currentSnapshot);
+      refreshCurrentNotice();
+      refreshViewFormState();
+      return;
+    }
+    if (viewDraft) {
       if (!draft && currentSnapshot?.status === 'ready' && !updateLinkedGridInPlace(currentSnapshot))
         refreshLinkedTable();
       if (currentSnapshot) refreshNotices(currentSnapshot);
@@ -1654,20 +2220,20 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   }
 
   function cancelDraft(): void {
-    if (!draft || busy || disposed) return;
+    if (!draft || busy || pendingFlush?.kind === 'cell' || disposed) return;
+    const wasTextDraft = draft.kind === 'text';
     draft = null;
+    patchIntentPending = false;
+    restoreDraftFocusPending = false;
+    if (wasTextDraft) clearTextDraft();
     notice = null;
     render(true);
   }
 
   async function saveDraft(): Promise<void> {
-    if (!draft || draft.errorCode === 'stale-revision' || busy || disposed || signal.aborted) return;
+    if (!draft || draft.blocked === 'stale' || busy || pendingFlush || disposed || signal.aborted) return;
     const activeDraft = draft;
-    const parsed = parseFiniteNumber(activeDraft.rawValue);
-    if (!parsed.ok) {
-      activeDraft.errorCode = 'invalid-value';
-      activeDraft.errorDetail = null;
-      notice = { kind: 'error', message: messages.invalidNumber };
+    const refreshDraftUi = () => {
       if (view) {
         refreshCurrentNotice();
         refreshCellDraftControls();
@@ -1675,26 +2241,89 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         !currentSnapshot ||
         currentSnapshot.status !== 'ready' ||
         !updateGridInPlace(currentSnapshot)
-      )
+      ) {
         render();
+      }
+    };
+
+    let latest: DataApiSnapshot;
+    try {
+      latest = data.snapshot(databaseId);
+    } catch (error) {
+      activeDraft.blocked = 'readonly';
+      activeDraft.errorDetail = error instanceof Error ? error.message : String(error);
+      notice = { kind: 'status', message: messages.readonly, detail: activeDraft.errorDetail };
+      checkpointTextDraft();
+      refreshDraftUi();
+      return;
+    }
+    snapshotUpdated(latest);
+    if (draft !== activeDraft || activeDraft.blocked !== null) return;
+    if (
+      latest.status !== 'ready' ||
+      latest.readonly ||
+      !editable ||
+      latest.revision !== activeDraft.expectedRevision
+    ) {
+      // snapshotUpdated has retained and fenced the draft; never stage from a stale UI snapshot.
+      refreshDraftUi();
+      return;
+    }
+
+    if (activeDraft.kind === 'text' && typeof data.patchTextCell !== 'function') {
+      activeDraft.blocked = 'readonly';
+      activeDraft.errorDetail = 'Text editing is not available in this host.';
+      notice = { kind: 'status', message: messages.readonly, detail: activeDraft.errorDetail };
+      refreshDraftUi();
+      return;
+    }
+
+    let numberValue: number | null = null;
+    if (activeDraft.kind === 'number') {
+      const parsed = parseFiniteNumber(activeDraft.rawValue);
+      if (!parsed.ok) {
+        activeDraft.errorCode = 'invalid-value';
+        activeDraft.errorDetail = null;
+        notice = { kind: 'error', message: messages.invalidNumber };
+        refreshDraftUi();
+        return;
+      }
+      numberValue = parsed.value;
+    } else if (activeDraft.rawValue.length > 10_000) {
+      activeDraft.errorCode = 'invalid-value';
+      activeDraft.errorDetail = null;
+      notice = { kind: 'error', message: messages.invalidTextLength };
+      checkpointTextDraft();
+      refreshDraftUi();
       return;
     }
 
     busy = true;
     notice = { kind: 'status', message: messages.saving };
-    if (view) {
-      refreshCurrentNotice();
-      refreshCellDraftControls();
-    } else render();
-    let result;
+    if (activeDraft.kind === 'text') {
+      activeDraft.focused = false;
+      patchIntentPending = true;
+      checkpointTextDraft();
+    }
+    refreshDraftUi();
+    let result: ReturnType<DataApi['patchCell']>;
     try {
-      result = data.patchCell({
-        databaseId,
-        rowId: activeDraft.rowId,
-        propertyId: activeDraft.propertyId,
-        value: parsed.value,
-        expectedRevision: activeDraft.expectedRevision,
-      });
+      result =
+        activeDraft.kind === 'number'
+          ? data.patchCell({
+              databaseId,
+              rowId: activeDraft.rowId,
+              propertyId: activeDraft.propertyId,
+              value: numberValue!,
+              expectedRevision: activeDraft.expectedRevision,
+            })
+          : data.patchTextCell!({
+              databaseId,
+              rowId: activeDraft.rowId,
+              propertyId: activeDraft.propertyId,
+              value: activeDraft.rawValue,
+              expectedRevision: activeDraft.expectedRevision,
+            });
     } catch (error) {
       result = {
         status: 'error' as const,
@@ -1706,34 +2335,39 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
 
     if (result.status === 'error') {
       busy = false;
+      patchIntentPending = false;
       if (draft) {
         draft.errorCode = result.code;
         draft.errorDetail = result.message;
+        if (result.code === 'stale-revision') draft.blocked = 'stale';
+        else if (
+          result.code === 'host-readonly' ||
+          result.code === 'provider-inactive' ||
+          result.code === 'read-only' ||
+          result.code === 'save-conflict' ||
+          result.code === 'owner-inactive' ||
+          result.code === 'session-closed'
+        ) {
+          draft.blocked = 'readonly';
+        }
       }
       notice =
         result.code === 'stale-revision'
           ? { kind: 'error', message: messages.staleDraft, detail: result.message }
           : { kind: 'error', message: messages.saveError(result.message), detail: result.message };
-      if (view) {
-        refreshCurrentNotice();
-        refreshCellDraftControls();
-      } else if (
-        !currentSnapshot ||
-        currentSnapshot.status !== 'ready' ||
-        !updateGridInPlace(currentSnapshot)
-      )
-        render();
+      checkpointTextDraft();
+      refreshDraftUi();
       return;
     }
 
-    draft = null;
-    pendingFlush = {
-      kind: 'cell',
-      rowId: activeDraft.rowId,
-      propertyId: activeDraft.propertyId,
-      value: parsed.value,
-      errorDetail: null,
-    };
+    patchIntentPending = false;
+    pendingFlush = { kind: 'cell', errorDetail: null, retryAvailable: false };
+    if (activeDraft.kind === 'text') {
+      draft = activeDraft;
+      checkpointTextDraft();
+    } else {
+      draft = null;
+    }
     notice = { kind: 'status', message: messages.saving };
     render(true);
     await flushPending();
@@ -1741,6 +2375,11 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
 
   async function applyHistory(direction: 'undo' | 'redo'): Promise<void> {
     if (busy || disposed || signal.aborted) return;
+    if (pendingFlush) {
+      notice = { kind: 'status', message: messages.pendingFlushRetry };
+      refreshCurrentNotice();
+      return;
+    }
     if (view && (viewDraft || viewBusy || viewPendingFlush || draft)) {
       notice = { kind: 'status', message: messages.viewResolveDraft };
       refreshCurrentNotice();
@@ -1789,7 +2428,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       render(true);
       return;
     }
-    pendingFlush = { kind: 'history', errorDetail: null };
+    pendingFlush = { kind: 'history', errorDetail: null, retryAvailable: false };
     await flushPending();
   }
 
@@ -1797,6 +2436,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     if (!pendingFlush || disposed || signal.aborted) return;
     busy = true;
     pendingFlush.errorDetail = null;
+    pendingFlush.retryAvailable = false;
     notice = { kind: 'status', message: messages.saving };
     render(true);
     let result;
@@ -1813,12 +2453,19 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     busy = false;
     if (result.status === 'error') {
       pendingFlush.errorDetail = result.message;
+      pendingFlush.retryAvailable = true;
       notice = { kind: 'error', message: messages.saveError(result.message), detail: result.message };
+      checkpointTextDraft();
       render();
       return;
     }
 
+    const completed = pendingFlush;
     pendingFlush = null;
+    if (completed.kind === 'cell' && draft?.kind === 'text') {
+      draft = null;
+      clearTextDraft();
+    }
     notice = { kind: 'status', message: messages.saved };
     try {
       currentSnapshot = data.snapshot(databaseId);
@@ -1853,6 +2500,10 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     else void applyHistory(event.shiftKey ? 'redo' : 'undo');
   };
 
+  const onUserInteraction = () => {
+    restoreDraftFocusPending = false;
+  };
+
   const onAbort = () => cleanup();
   const cleanup = () => {
     if (disposed) return;
@@ -1860,6 +2511,9 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     unsubscribeData();
     unsubscribeView();
     element.removeEventListener('keydown', onRootKeyDown);
+    element.removeEventListener('pointerdown', onUserInteraction, true);
+    element.removeEventListener('focusin', onUserInteraction, true);
+    element.removeEventListener('keydown', onUserInteraction, true);
     signal.removeEventListener('abort', onAbort);
     container.replaceChildren();
     element.replaceChildren();
@@ -1870,6 +2524,9 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   };
 
   element.addEventListener('keydown', onRootKeyDown);
+  element.addEventListener('pointerdown', onUserInteraction, true);
+  element.addEventListener('focusin', onUserInteraction, true);
+  element.addEventListener('keydown', onUserInteraction, true);
   signal.addEventListener('abort', onAbort, { once: true });
   if (unsupportedViewApi) render();
   else {
@@ -1914,6 +2571,10 @@ export function parseFiniteNumber(
 
 function focusKey(action: string, rowId: string, propertyId: string): string {
   return `${action}:${rowId}:${propertyId}`;
+}
+
+function normalizeTextAreaValue(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
 }
 
 function isTextEditingTarget(target: EventTarget | null, document: Document): boolean {
