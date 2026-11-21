@@ -138,6 +138,8 @@ namespace Morrow.Pilot
     private bool _lastRootExited;
     private uint? _lastExitCode;
     private bool _lastTimedOut;
+    private object _lastTimedOutSession;
+    private long _lastTimedOutGeneration;
     private bool _lastDisposeFailed;
     private long _generation = 1;
 
@@ -249,6 +251,12 @@ namespace Morrow.Pilot
           return StopFailure("Morrow.WindowsNativeProcess.CleanupIncomplete", "stop-cleanup", new string[0], true, _lastJobEmpty, _lastRootExited, _lastExitCode, _lastDisposeFailed);
         if (_session == null || !Object.ReferenceEquals(token.session, _session))
           return StopFailure("Morrow.WindowsNativeProcess.CapsuleBusy", "stop-lock-acquisition", new string[0], false, null, null, null, false);
+        bool priorTimeoutForSameSession = HasPriorNativeStopTimeoutForCurrentSession(
+          _lastTimedOut,
+          _lastTimedOutSession,
+          _lastTimedOutGeneration,
+          _session,
+          _generation);
 
         object root = null;
         uint[] memberIds = null;
@@ -292,24 +300,19 @@ namespace Morrow.Pilot
 
           bool rootAlive = String.Equals(state, "resume-requested", StringComparison.Ordinal);
           bool rootExited = String.Equals(state, "exited", StringComparison.Ordinal);
-          if (rootAlive)
+          if (!rootAlive && !rootExited)
+          {
+            revalidationFields.Add("state");
+          }
+          else
           {
             bool rootInMemberList = false;
             foreach (uint memberId in memberIds)
             {
               if (memberId == processId) { rootInMemberList = true; break; }
             }
-            if (!isMember || !rootInMemberList)
+            if (!IsStopMembershipValid(rootAlive, isMember, rootInMemberList, priorTimeoutForSameSession))
               revalidationFields.Add("membership");
-          }
-          else if (rootExited)
-          {
-            if (isMember)
-              revalidationFields.Add("membership");
-          }
-          else
-          {
-            revalidationFields.Add("state");
           }
         }
         catch
@@ -355,6 +358,8 @@ namespace Morrow.Pilot
         _lastRootExited = observedRootExited.Value;
         _lastExitCode = observedExitCode;
         _lastTimedOut = observedTimeout;
+        _lastTimedOutSession = observedTimeout ? _session : null;
+        _lastTimedOutGeneration = observedTimeout ? _generation : 0;
         _lastDisposeFailed = false;
 
         if (observedTimeout)
@@ -383,6 +388,8 @@ namespace Morrow.Pilot
         _finished = true;
         _completed = true;
         _lastTimedOut = false;
+        _lastTimedOutSession = null;
+        _lastTimedOutGeneration = 0;
         _generation++;
         return StopCompleted(observedJobEmpty, observedRootExited, observedExitCode);
       }
@@ -401,6 +408,27 @@ namespace Morrow.Pilot
         Object.Equals(values[3], _identitySnapshot.executableSha256) &&
         Object.Equals(values[4], _identitySnapshot.creationTimeUtc) &&
         Object.Equals(values[5], _identitySnapshot.ownerSid);
+    }
+
+    private static bool HasPriorNativeStopTimeoutForCurrentSession(
+      bool timedOut,
+      object timeoutSession,
+      long timeoutGeneration,
+      object currentSession,
+      long currentGeneration)
+    {
+      return timedOut && timeoutSession != null &&
+        Object.ReferenceEquals(timeoutSession, currentSession) &&
+        timeoutGeneration == currentGeneration;
+    }
+
+    private static bool IsStopMembershipValid(bool rootAlive, bool isMember, bool rootInMemberList, bool priorTimeoutForSameSession)
+    {
+      if (!rootAlive)
+        return !isMember;
+      if (isMember && rootInMemberList)
+        return true;
+      return priorTimeoutForSameSession;
     }
 
     private static object ReadProperty(object value, string name)
@@ -487,6 +515,8 @@ namespace Morrow.Pilot
         _lastRootExited = false;
         _lastExitCode = null;
         _lastTimedOut = false;
+        _lastTimedOutSession = null;
+        _lastTimedOutGeneration = 0;
         _lastDisposeFailed = false;
         Exception failure = null;
         object rawResult = null;
@@ -512,6 +542,8 @@ namespace Morrow.Pilot
           _lastExitCode = exitValue == null ? (uint?)null : Convert.ToUInt32(exitValue);
           PropertyInfo timedOut = resultType.GetProperty("timedOut");
           _lastTimedOut = timedOut != null && (bool)timedOut.GetValue(rawResult, null);
+          _lastTimedOutSession = _lastTimedOut ? _session : null;
+          _lastTimedOutGeneration = _lastTimedOut ? _generation : 0;
           _completed = !_lastTimedOut && _lastJobEmpty && _lastRootExited;
           if (!_completed)
             failure = new InvalidOperationException("The owned Job cleanup did not reach its verified terminal state.");

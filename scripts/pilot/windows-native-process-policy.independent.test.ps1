@@ -1787,7 +1787,7 @@ exit 0
     Assert-Equal -Actual ([string]$exitedObservation.root.state) -Expected 'exited' -Message 'Observe did not report the exited synthetic root.'
     Assert-Equal -Actual ([string]$exitedObservation.root.identityStatus) -Expected 'snapshot' -Message 'Observe did not mark the exited root identity as a snapshot.'
     Assert-True -Condition (-not [bool]$exitedObservation.root.identityFresh) -Message 'The exited root identity was mislabeled fresh.'
-    Assert-Equal -Actual ([uint32]$exitedObservation.root.exitCode) -Expected ([uint32]$rootWaitProcess.ExitCode) -Message 'Observe returned an incorrect cached root exit code.'
+    Assert-Equal -Actual ([uint32]$exitedObservation.root.exitCode) -Expected (Get-IndependentUnsignedProcessExitCode -Process $rootWaitProcess) -Message 'Observe returned an incorrect cached root exit code.'
     $script:CurrentSubstep = 'observe-independent:exited-root-snapshot-fields'
     foreach ($field in @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')) {
       $expectedValue = $liveIdentity.PSObject.Properties[$field].Value
@@ -2019,6 +2019,13 @@ exit 0
     if ($null -ne $rootWaitProcess) { try { $rootWaitProcess.Dispose() } catch { } }
     if ($null -ne $descendantWaitProcess) { try { $descendantWaitProcess.Dispose() } catch { } }
   }
+}
+
+function Get-IndependentUnsignedProcessExitCode {
+  param([Parameter(Mandatory)][System.Diagnostics.Process] $Process)
+
+  $Process.Refresh()
+  return [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$Process.ExitCode), 0)
 }
 
 function Get-IndependentStopResultValues {
@@ -2318,7 +2325,7 @@ function Assert-IndependentStopResultTruthful {
   }
   if ($null -ne $Values.exitCode) {
     if (-not $Fixture.rootWaitProcess.HasExited) { throw 'Stop reported an exit code before the retained root handle signaled.' }
-    if ([uint32]$Values.exitCode -ne [uint32]$Fixture.rootWaitProcess.ExitCode) {
+    if ([uint32]$Values.exitCode -ne (Get-IndependentUnsignedProcessExitCode -Process $Fixture.rootWaitProcess)) {
       throw 'Stop reported an exit code that differed from the retained root handle.'
     }
   }
@@ -2572,7 +2579,7 @@ function Test-IndependentStopRootExitsFirst {
         [bool]$observation.inventory.isEmpty) {
       throw 'The root-exits-first fixture did not show a stale root snapshot and a live Job inventory.'
     }
-    if ($null -eq $observation.root.exitCode -or [uint32]$observation.root.exitCode -ne [uint32]$fixture.rootWaitProcess.ExitCode) {
+    if ($null -eq $observation.root.exitCode -or [uint32]$observation.root.exitCode -ne (Get-IndependentUnsignedProcessExitCode -Process $fixture.rootWaitProcess)) {
       throw 'The root-exits-first snapshot did not preserve the retained root exit code.'
     }
     $members = @($observation.inventory.members)
@@ -2605,7 +2612,7 @@ function Test-IndependentStopRootExitsFirst {
     if ($initialOutput.Count -ne 1) { throw 'Root-exits-first Stop did not return exactly one public result.' }
     $initialValues = Get-IndependentStopResultValues -Result $initialOutput[0]
     $completedStop = Complete-IndependentStopWithRetry -Fixture $fixture -InitialValues $initialValues
-    if ($null -ne $completedStop.values.exitCode -and [uint32]$completedStop.values.exitCode -ne [uint32]$fixture.rootWaitProcess.ExitCode) {
+    if ($null -ne $completedStop.values.exitCode -and [uint32]$completedStop.values.exitCode -ne (Get-IndependentUnsignedProcessExitCode -Process $fixture.rootWaitProcess)) {
       throw 'Stop reported an exit code different from the already-exited synthetic root.'
     }
     Assert-IndependentStopTerminalIdempotence -Fixture $fixture -FinalValues $completedStop.values

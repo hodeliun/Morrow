@@ -78,6 +78,7 @@ $checks = [ordered]@{
   stopRejectsInvalidCapsule = $false
   stopRejectsMalformedAssertionBeforeCapsuleProbe = $false
   stopRejectsInvalidTimeoutValues = $false
+  stopMembershipTimeoutRetryGate = $false
   stopLockConflictDoesNotAct = $false
   stopMismatchPreservesCapsule = $false
   stopReturnsOnlySanitizedStatus = $false
@@ -1759,6 +1760,53 @@ $reportLines = @(
   }
   $checks.stopRejectsInvalidTimeoutValues = $allInvalidTimeoutsRejected
   Assert-PolicyCheck -Condition $checks.stopRejectsInvalidTimeoutValues -Name 'stopRejectsInvalidTimeoutValues'
+
+  $failurePhase = 'stop-membership-timeout-retry-gate'
+  $stopMethodFlags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::Static -bor [Reflection.BindingFlags]::NonPublic
+  $priorTimeoutMethod = $capsule.GetType().GetMethod('HasPriorNativeStopTimeoutForCurrentSession', $stopMethodFlags)
+  $membershipMethod = $capsule.GetType().GetMethod('IsStopMembershipValid', $stopMethodFlags)
+  $nativeSessionField = $capsule.GetType().GetField('_session', [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic)
+  $generationField = $capsule.GetType().GetField('_generation', [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic)
+  if ($null -eq $priorTimeoutMethod -or $null -eq $membershipMethod -or $null -eq $nativeSessionField -or $null -eq $generationField) {
+    throw 'The private native timeout retry gate could not be inspected by its synthetic proof.'
+  }
+  $retryProofSession = $nativeSessionField.GetValue($capsule)
+  $retryProofGeneration = [long]$generationField.GetValue($capsule)
+  $matchingTimeoutProof = [bool]$priorTimeoutMethod.Invoke($null, [object[]]@(
+      $true, $retryProofSession, $retryProofGeneration, $retryProofSession, $retryProofGeneration
+    ))
+  $noReturnedTimeoutProof = [bool]$priorTimeoutMethod.Invoke($null, [object[]]@(
+      $false, $retryProofSession, $retryProofGeneration, $retryProofSession, $retryProofGeneration
+    ))
+  $wrongGenerationTimeoutProof = [bool]$priorTimeoutMethod.Invoke($null, [object[]]@(
+      $true, $retryProofSession, ($retryProofGeneration + 1), $retryProofSession, $retryProofGeneration
+    ))
+  $wrongSessionTimeoutProof = [bool]$priorTimeoutMethod.Invoke($null, [object[]]@(
+      $true, [object]::new(), $retryProofGeneration, $retryProofSession, $retryProofGeneration
+    ))
+  $firstAttemptRejectsSplitMembership = -not [bool]$membershipMethod.Invoke($null, [object[]]@($true, $true, $false, $false))
+  $retryAcceptsSplitMembership = [bool]$membershipMethod.Invoke($null, [object[]]@($true, $true, $false, $matchingTimeoutProof))
+  $retryAcceptsMissingMembershipAfterTimeout = [bool]$membershipMethod.Invoke($null, [object[]]@($true, $false, $false, $matchingTimeoutProof))
+  $normalMembershipNeedsNoRetry = [bool]$membershipMethod.Invoke($null, [object[]]@($true, $true, $true, $false))
+  $exitedRootStillRequiresNoMembership = -not [bool]$membershipMethod.Invoke($null, [object[]]@($false, $true, $false, $matchingTimeoutProof))
+  $retryRequiresSameSessionAndGeneration = (
+    -not $noReturnedTimeoutProof -and -not $wrongGenerationTimeoutProof -and -not $wrongSessionTimeoutProof
+  )
+  $checks.stopMembershipTimeoutRetryGate = (
+    $firstAttemptRejectsSplitMembership -and $retryAcceptsSplitMembership -and
+    $retryAcceptsMissingMembershipAfterTimeout -and $normalMembershipNeedsNoRetry -and
+    $exitedRootStillRequiresNoMembership -and $retryRequiresSameSessionAndGeneration
+  )
+  Assert-PolicyCheck -Condition $checks.stopMembershipTimeoutRetryGate -Name 'stopMembershipTimeoutRetryGate'
+  [void]$observations.Add([pscustomobject][ordered]@{
+    scenario = 'stop-membership-timeout-retry-gate'
+    splitSnapshotRejectedWithoutReturnedTimeout = $firstAttemptRejectsSplitMembership
+    splitSnapshotAcceptedAfterSameSessionTimeout = $retryAcceptsSplitMembership
+    missingMembershipAcceptedOnlyAfterSameSessionTimeout = $retryAcceptsMissingMembershipAfterTimeout
+    normalMembershipAcceptedWithoutRetry = $normalMembershipNeedsNoRetry
+    exitedRootMembershipRequirementPreserved = $exitedRootStillRequiresNoMembership
+    timeoutProofBoundToSameSessionAndGeneration = $retryRequiresSameSessionAndGeneration
+  })
 
   $failurePhase = 'stop-busy-lock-refusal'
   $lockHolderSource = @'
