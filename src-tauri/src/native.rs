@@ -1,5 +1,7 @@
 // what each system's webview does its own way: printing a page to pdf, a picture of the window, spelling
 use std::path::Path;
+#[cfg(any(windows, test))]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Runtime, WebviewWindow};
 use tokio::sync::oneshot;
@@ -10,6 +12,36 @@ pub type Res<T> = Result<T, String>;
 pub const PRINTS_TO_FILE: bool = cfg!(any(target_os = "linux", windows));
 // and those two can take a picture of the window
 pub const CAPTURES: bool = cfg!(any(target_os = "linux", windows));
+
+#[cfg(any(windows, test))]
+pub(crate) const POLARIS_DADOS_PILOT_IDENTIFIER: &str = "app.morrow.polaris-dados-pilot";
+
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WebviewProfile {
+    Isolated(PathBuf),
+    AppLocal(PathBuf),
+    Skip,
+}
+
+// The launcher owns and validates the isolated pilot directory. Do not fall back to app-local data
+// for the debug pilot when its optional preseed path is missing or unusable.
+#[cfg(any(windows, test))]
+pub(crate) fn select_webview_profile(
+    identifier: &str,
+    debug_build: bool,
+    app_local_profile: Option<PathBuf>,
+    pilot_profile: Option<PathBuf>,
+) -> WebviewProfile {
+    if debug_build && identifier == POLARIS_DADOS_PILOT_IDENTIFIER {
+        return match pilot_profile {
+            Some(path) if path.is_absolute() && path.is_dir() => WebviewProfile::Isolated(path),
+            _ => WebviewProfile::Skip,
+        };
+    }
+
+    app_local_profile.map_or(WebviewProfile::Skip, WebviewProfile::AppLocal)
+}
 
 // 2026-11-10T08-41-00-123Z, the moment as a backup's name, sorting in time order
 pub fn iso_stamp() -> String {
@@ -195,6 +227,17 @@ pub fn prepare_spelling(profile_dir: &Path) {
     if languages.is_empty() {
         return;
     }
+
+    // Spelling is optional; a profile write must never prevent the window from opening.
+    let _ = write_spelling_preferences(profile_dir, &languages);
+}
+
+#[cfg(any(windows, test))]
+fn write_spelling_preferences(profile_dir: &Path, languages: &[String]) -> std::io::Result<()> {
+    if languages.is_empty() {
+        return Ok(());
+    }
+
     let file = profile_dir
         .join("EBWebView")
         .join("Default")
@@ -232,11 +275,11 @@ pub fn prepare_spelling(profile_dir: &Path) {
     );
     root.insert("intl".into(), serde_json::Value::Object(intl));
     if let Some(parent) = file.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-    if let Ok(text) = serde_json::to_string(&preferences) {
-        let _ = std::fs::write(&file, text);
-    }
+    let text = serde_json::to_string(&preferences)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    std::fs::write(&file, text)
 }
 
 #[cfg(target_os = "linux")]
@@ -575,10 +618,203 @@ pub fn clipboard_files() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        select_webview_profile, write_spelling_preferences, WebviewProfile,
+        POLARIS_DADOS_PILOT_IDENTIFIER,
+    };
+    use serde_json::Value;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TemporaryProfile(PathBuf);
+
+    impl TemporaryProfile {
+        fn new() -> Self {
+            static NEXT_PROFILE: AtomicU64 = AtomicU64::new(0);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "Morrow spelling profile {} — espaço {} {}",
+                std::process::id(),
+                nonce,
+                NEXT_PROFILE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).expect("temporary profile should be created");
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TemporaryProfile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn preferences_path(profile: &std::path::Path) -> PathBuf {
+        profile
+            .join("EBWebView")
+            .join("Default")
+            .join("Preferences")
+    }
+
     #[test]
     fn stamps_sort_in_time_order() {
         let stamp = super::iso_stamp();
         assert_eq!(stamp.len(), "2026-11-10T08-41-00-123Z".len());
         assert!(stamp.starts_with("20"));
+    }
+
+    #[test]
+    fn pilot_debug_uses_existing_isolated_profile_and_preserves_unrelated_preferences() {
+        let temporary = TemporaryProfile::new();
+        let pilot_profile = temporary
+            .path()
+            .join("PilotState/WebView2 UserData – teste");
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        fs::create_dir_all(&pilot_profile).unwrap();
+        fs::create_dir_all(&app_local).unwrap();
+        let sentinel = app_local.join("sentinel.txt");
+        fs::write(&sentinel, "app-local stays untouched").unwrap();
+
+        let file = preferences_path(&pilot_profile);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            r#"{"other":{"keep":true},"spellcheck":{"otherSpellSetting":7},"browser":{"otherBrowserSetting":8},"intl":{"otherIntlSetting":9}}"#,
+        )
+        .unwrap();
+
+        let selection = select_webview_profile(
+            POLARIS_DADOS_PILOT_IDENTIFIER,
+            true,
+            Some(app_local.clone()),
+            Some(pilot_profile.clone()),
+        );
+        assert_eq!(selection, WebviewProfile::Isolated(pilot_profile.clone()));
+
+        let WebviewProfile::Isolated(selected_profile) = selection else {
+            unreachable!("the valid pilot path should be selected");
+        };
+        write_spelling_preferences(&selected_profile, &["pt-BR".into(), "en-US".into()]).unwrap();
+
+        let preferences: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert!(preferences["other"]["keep"].as_bool().unwrap());
+        assert_eq!(preferences["spellcheck"]["otherSpellSetting"], 7);
+        assert_eq!(preferences["browser"]["otherBrowserSetting"], 8);
+        assert_eq!(preferences["intl"]["otherIntlSetting"], 9);
+        assert_eq!(
+            preferences["spellcheck"]["dictionaries"],
+            serde_json::json!(["pt-BR", "en-US"])
+        );
+        assert_eq!(preferences["spellcheck"]["dictionary"], "");
+        assert!(preferences["browser"]["enable_spellchecking"]
+            .as_bool()
+            .unwrap());
+        assert_eq!(preferences["intl"]["accept_languages"], "pt-BR,en-US");
+        assert_eq!(preferences["intl"]["selected_languages"], "pt-BR,en-US");
+        assert!(!preferences_path(&app_local).exists());
+        assert_eq!(
+            fs::read_to_string(sentinel).unwrap(),
+            "app-local stays untouched"
+        );
+    }
+
+    #[test]
+    fn published_identifier_keeps_app_local_profile_even_when_pilot_override_is_present() {
+        let temporary = TemporaryProfile::new();
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        let pilot_profile = temporary.path().join("PilotState/WebView2UserData");
+        fs::create_dir_all(&app_local).unwrap();
+        fs::create_dir_all(&pilot_profile).unwrap();
+        let file = preferences_path(&app_local);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            r#"{"custom":{"keep":"yes"},"spellcheck":{"custom":true}}"#,
+        )
+        .unwrap();
+
+        let selection = select_webview_profile(
+            "app.morrow.desktop",
+            true,
+            Some(app_local.clone()),
+            Some(pilot_profile.clone()),
+        );
+        assert_eq!(selection, WebviewProfile::AppLocal(app_local.clone()));
+
+        let WebviewProfile::AppLocal(selected_profile) = selection else {
+            unreachable!("the published identifier should keep its default profile");
+        };
+        write_spelling_preferences(&selected_profile, &["en-US".into()]).unwrap();
+
+        let preferences: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(preferences["custom"]["keep"], "yes");
+        assert!(preferences["spellcheck"]["custom"].as_bool().unwrap());
+        assert_eq!(
+            preferences["spellcheck"]["dictionaries"],
+            serde_json::json!(["en-US"])
+        );
+        assert!(!preferences_path(&pilot_profile).exists());
+    }
+
+    #[test]
+    fn pilot_debug_skips_preseed_for_missing_relative_or_file_overrides() {
+        let temporary = TemporaryProfile::new();
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        fs::create_dir_all(&app_local).unwrap();
+        let sentinel = app_local.join("sentinel.txt");
+        fs::write(&sentinel, "leave default profile unchanged").unwrap();
+        let missing = temporary.path().join("missing WebView2 profile");
+        let not_a_directory = temporary.path().join("WebView2 profile.txt");
+        fs::write(&not_a_directory, "file").unwrap();
+
+        for override_path in [
+            None,
+            Some(PathBuf::from("relative/WebView2 UserData")),
+            Some(missing),
+            Some(not_a_directory),
+        ] {
+            assert_eq!(
+                select_webview_profile(
+                    POLARIS_DADOS_PILOT_IDENTIFIER,
+                    true,
+                    Some(app_local.clone()),
+                    override_path,
+                ),
+                WebviewProfile::Skip
+            );
+        }
+
+        assert!(!preferences_path(&app_local).exists());
+        assert_eq!(
+            fs::read_to_string(sentinel).unwrap(),
+            "leave default profile unchanged"
+        );
+    }
+
+    #[test]
+    fn release_build_uses_default_profile_for_pilot_identifier() {
+        let temporary = TemporaryProfile::new();
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        let pilot_profile = temporary.path().join("PilotState/WebView2UserData");
+        fs::create_dir_all(&app_local).unwrap();
+        fs::create_dir_all(&pilot_profile).unwrap();
+
+        assert_eq!(
+            select_webview_profile(
+                POLARIS_DADOS_PILOT_IDENTIFIER,
+                false,
+                Some(app_local.clone()),
+                Some(pilot_profile),
+            ),
+            WebviewProfile::AppLocal(app_local)
+        );
     }
 }

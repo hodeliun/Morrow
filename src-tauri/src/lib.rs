@@ -1130,8 +1130,36 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     #[cfg(windows)]
     let builder = builder.additional_browser_args(&native::browser_args());
     #[cfg(windows)]
-    if let Ok(profile) = app.path().app_local_data_dir() {
-        native::prepare_spelling(&profile);
+    let (builder, spelling_profile) = {
+        let pilot_debug = cfg!(debug_assertions)
+            && app.config().identifier == native::POLARIS_DADOS_PILOT_IDENTIFIER;
+        // The launcher sets this only for its isolated Windows pilot. Read it once, then use the
+        // selected PathBuf for both Tauri's WebView2 data directory and spelling preferences.
+        let pilot_profile = pilot_debug
+            .then(|| std::env::var_os("WEBVIEW2_USER_DATA_FOLDER"))
+            .flatten()
+            .map(PathBuf::from);
+        let app_local_profile = if pilot_debug {
+            None
+        } else {
+            app.path().app_local_data_dir().ok()
+        };
+        match native::select_webview_profile(
+            &app.config().identifier,
+            cfg!(debug_assertions),
+            app_local_profile,
+            pilot_profile,
+        ) {
+            native::WebviewProfile::Isolated(profile) => {
+                (builder.data_directory(profile.clone()), Some(profile))
+            }
+            native::WebviewProfile::AppLocal(profile) => (builder, Some(profile)),
+            native::WebviewProfile::Skip => (builder, None),
+        }
+    };
+    #[cfg(windows)]
+    if let Some(profile) = spelling_profile.as_deref() {
+        native::prepare_spelling(profile);
     }
     #[cfg(target_os = "macos")]
     let builder = builder

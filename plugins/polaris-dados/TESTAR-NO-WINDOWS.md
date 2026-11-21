@@ -1,6 +1,6 @@
 # Testar o piloto Polaris Dados no Windows
 
-Este candidato experimental usa Morrow 2.1.0 e inclui o piloto Polaris Dados com edição de números, texto e caixas de seleção. O ZIP inclui um executável compilado nativamente no Windows. O build verifica o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste.
+Este candidato experimental usa Morrow 2.2.0 e inclui o piloto Polaris Dados com edição de números, texto e caixas de seleção. O pacote Windows é compilado nativamente. Seus checks verificam o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste e aceite.
 
 ## Requisitos
 
@@ -8,9 +8,9 @@ Este candidato experimental usa Morrow 2.1.0 e inclui o piloto Polaris Dados com
 - Microsoft Edge WebView2 Runtime instalado.
 - Espaço livre para extrair o ZIP e guardar o estado do teste.
 
-O launcher configura `WEBVIEW2_USER_DATA_FOLDER` para uma pasta dentro de `PilotState`. A [documentação Microsoft sobre a variável de dados do WebView2](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.3967.48) explica essa substituição. O backend do Morrow, os dados WebView2 e o cofre de teste ficam no `PilotState` ao lado do launcher.
+O launcher passa o armazenamento do backend do Morrow para `PilotState\MorrowUserData` e o perfil WebView2 para `PilotState\WebView2UserData`. O build de piloto usa o identificador isolado `app.morrow.polaris-dados-pilot`. Nesse build, o Tauri e a preparação opcional de ortografia usam o mesmo diretório WebView2. A [documentação Microsoft sobre a variável de dados do WebView2](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.3967.48) explica como ela substitui o diretório informado à API.
 
-O Tauri e o plugin de estado da janela ainda podem gravar pastas ou metadados com o identificador do piloto no perfil Windows, como em `AppData\Roaming`. Por isso, o pacote não afirma isolamento total do perfil Windows.
+Esses caminhos descrevem a configuração do piloto. Somente uma execução nativa no Windows confirma o comportamento efetivo do WebView2. O Tauri e o plugin de estado da janela ainda podem gravar outros metadados do identificador do piloto no perfil Windows, como em `AppData\Roaming`. Por isso, o pacote não afirma isolamento total do perfil Windows.
 
 ## Preparar e abrir
 
@@ -46,8 +46,14 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 3. Nas linhas `Null` e `Missing`, abra a edição e pressione **Escape** ou **Cancelar**. Os valores devem continuar como **Vazio** (**Blank**) e **Ausente** (**Missing**), respectivamente.
 4. Feche o aplicativo normalmente, abra `PilotState\DemoVault` pelo launcher e confira que `Unchecked` continua desmarcada nas duas views.
 
+## Verificações opcionais da base 2.2
+
+Use somente conteúdo sintético. O modo de leitura é uma preferência global. Para conferir a restauração de rolagem em divisão, ative **Reading mode / Modo de leitura**, abra a mesma nota longa nos dois painéis e defina posições de rolagem diferentes. Navegue para fora da nota e reabra-a em cada painel. Confirme que cada painel restaura sua própria posição.
+
+Em outra nota sintética, teste o embed `![[Banco de exemplo#Nome da visualização]]` somente se já existir um banco nativo com essa visualização. Confira que o embed mostra a visualização indicada. Essas verificações complementam o fluxo Polaris Dados e podem exigir conteúdo sintético adicional.
+
 ## Limites deste candidato
 
 - Este pacote experimental cobre o piloto de tabelas e fórmulas do Polaris Dados. A migração dos demais recursos do fork está em andamento.
-- Build e checks automáticos não equivalem a abrir o aplicativo. O teste da interface no Windows ainda depende da observação de Carlos; o restante do port permanece pendente.
+- Build e checks automáticos não equivalem a abrir o aplicativo. O teste da interface no Windows ainda depende da observação de Carlos; o restante da paridade permanece pendente.
 - `BUILD-INFO.json` registra `appLaunched: false` e `windowsRuntimeTested: false`. O hash do executável pode variar entre builds nativos; compare o recibo e o artefato do mesmo run.

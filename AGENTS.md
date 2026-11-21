@@ -1,7 +1,7 @@
 # Morrow — isolated Polaris Dados pilot
 
-This branch is an experimental candidate based on upstream Morrow v2.1.0 at
-95b120f72cdf49aa34e7c64944ceade7b2a35daa. The published fork is preserved
+This branch is an experimental candidate integrating upstream Morrow v2.2.0 at
+068bbdb846bc2806bcf8e43349dcb82fcbc42757. The published fork is preserved
 on main at 778c6b6ef7d30aad8678dbbbcb50fdcab6bc1106 (base 1.3 / fork 1.2).
 This candidate is NOT a complete migration or replacement for that fork.
 Preserve Apache-2.0 attribution and public history; never publish private source history.
@@ -21,8 +21,10 @@ published-fork feature parity on Tauri, using four plugins plus necessary host c
 Canonical full-parity spec: https://github.com/hodeliun/Morrow/issues/191.
 Preserve the P1 evidence and stable main/release; do not force-push, retag, merge
 main, replace personal apps or deploy a stable release before human acceptance.
-Upstream 2.2 reconciliation is tracked separately in issue195; the current candidate
-remains based on 2.1 until that integration is verified. G16 begins with issue192.
+Upstream 2.2 reconciliation and platform verification are tracked in issue195 and
+issue224. This staging candidate includes the upstream 2.2.0 parent; it does not
+replace the stable fork or establish Windows runtime or human acceptance. G16 begins
+with issue192.
 
 ## Implementation and verification
 
