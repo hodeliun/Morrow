@@ -16,8 +16,13 @@ Policies in Projetos/Polaris/Agentes/Políticas: Orquestração e subagentes.md,
 Estrutura e documentação de projetos.md, Ambientes de desenvolvimento e encerramento de escopos.md,
 Commits e releases.md; scope template in Projetos/Polaris/Agentes/Templates/Template de escopo.md.
 GitHub Issues https://github.com/hodeliun/Morrow/issues is the canonical tracker.
-Only the P1 pilot is authorized now. Preserve all other capabilities in main;
-do not port or remove the full fork, force-push, retag or deploy a release.
+On 2026-11-20 Carlos authorized specification, tickets and implementation of full
+published-fork feature parity on Tauri, using four plugins plus necessary host changes.
+Canonical full-parity spec: https://github.com/hodeliun/Morrow/issues/191.
+Preserve the P1 evidence and stable main/release; do not force-push, retag, merge
+main, replace personal apps or deploy a stable release before human acceptance.
+Upstream 2.2 reconciliation is tracked separately in issue195; the current candidate
+remains based on 2.1 until that integration is verified. G16 begins with issue192.
 
 ## Implementation and verification
 
