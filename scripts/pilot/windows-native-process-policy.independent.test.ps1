@@ -1054,6 +1054,217 @@ function Test-PositiveStartAndDispose {
   }
 }
 
+function Test-DirectSuspendedIdentityProof {
+  $script:CurrentSubstep = 'direct-suspended:prepare'
+  $caseRoot = New-CaseRoot -Name 'direct-suspended-identity'
+  $fixtureArgs = Get-NewFixtureArguments -CaseRoot $caseRoot -Role 'direct-suspended'
+  $expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $descriptor = New-ValidDescriptor -CaseRoot $caseRoot -ArgumentList $fixtureArgs.arguments -ExpectedParentProcessId ([int]$PID) -ExpectedOwnerSid $expectedSid
+  $nativeEnvironment = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($name in $descriptor.environment.Keys) {
+    $nativeEnvironment.Add([string]$name, [string]$descriptor.environment[$name])
+  }
+
+  $session = $null
+  $proofError = $null
+  $cleanupError = $false
+  $cleanupResult = $null
+  $cleanupElapsedMs = $null
+  $proofWatch = [Diagnostics.Stopwatch]::StartNew()
+  $cimPathDisposition = 'absent-or-empty'
+  $hashMismatchRejected = $false
+  try {
+    $script:CurrentSubstep = 'direct-suspended:create'
+    $session = CreateAtomicSuspendedRoot `
+      -ExecutablePath ([string]$descriptor.executablePath) `
+      -ArgumentList ([string[]]$descriptor.argumentList) `
+      -Environment $nativeEnvironment `
+      -WorkingDirectory ([string]$descriptor.workingDirectory)
+
+    $script:CurrentSubstep = 'direct-suspended:native-observation'
+    $nativeObservation = $session.ObserveRoot()
+    Assert-True -Condition ($null -ne $nativeObservation) -Message 'The suspended root handle returned no observation.'
+    Assert-Equal -Actual ([string]$nativeObservation.state) -Expected 'suspended' -Message 'The synthetic root was not still suspended.'
+    Assert-True -Condition ([bool]$nativeObservation.isMember -and [bool]$nativeObservation.wasAssociatedAtCreation) -Message 'The retained root was not confirmed in its private Job from atomic creation.'
+    Assert-Equal -Actual ([uint32]$nativeObservation.jobLimitFlags) -Expected ([uint32]8192) -Message 'The retained root Job lacked the required kill-on-close policy.'
+    Assert-True -Condition (-not [bool]$nativeObservation.jobHandleInheritable) -Message 'The retained root Job handle was inheritable.'
+    $memberIds = @($session.ListMemberIds())
+    Assert-True -Condition ($memberIds.Count -eq 1 -and [uint32]$memberIds[0] -eq [uint32]$nativeObservation.processId) -Message 'The private Job did not contain exactly the one suspended synthetic root.'
+
+    $knownImagePath = Get-CanonicalFullPath -Path ([string]$descriptor.executablePath)
+    $retainedImagePath = Get-CanonicalFullPath -Path ([string]$nativeObservation.executablePath)
+    Assert-Equal -Actual $retainedImagePath -Expected $knownImagePath -IgnoreCase -Message 'The retained native image did not match the known staged PowerShell executable.'
+
+    $script:CurrentSubstep = 'direct-suspended:fresh-known-file-digest'
+    $freshKnownFileHash = Get-Sha256 -Path $knownImagePath
+    Assert-Equal -Actual $freshKnownFileHash -Expected ([string]$descriptor.executableSha256).ToLowerInvariant() -Message 'The fresh post-create digest of the known staged executable differed from the descriptor digest.'
+    Assert-Equal -Actual $freshKnownFileHash -Expected $script:StagedPwshSha256 -Message 'The fresh post-create digest differed from the independently staged executable digest.'
+
+    $script:CurrentSubstep = 'direct-suspended:cim-identity'
+    $processRows = @(
+      Get-CimInstance -ClassName Win32_Process `
+        -Filter ('ProcessId = ' + [string][uint32]$nativeObservation.processId) `
+        -OperationTimeoutSec 5 `
+        -ErrorAction Stop
+    )
+    Assert-True -Condition ($processRows.Count -eq 1 -and $null -ne $processRows[0]) -Message 'CIM did not return exactly one row for the retained suspended root.'
+    $processRow = $processRows[0]
+    $cimPidProperty = $processRow.PSObject.Properties['ProcessId']
+    if ($null -eq $cimPidProperty -or $null -eq $cimPidProperty.Value) { throw 'The suspended-root CIM row lacked its PID.' }
+    Assert-Equal -Actual ([uint32]$cimPidProperty.Value) -Expected ([uint32]$nativeObservation.processId) -Message 'CIM PID differed from the retained native root PID.'
+
+    $parentProperty = $processRow.PSObject.Properties['ParentProcessId']
+    if ($null -eq $parentProperty -or $null -eq $parentProperty.Value) { throw 'The suspended-root CIM row lacked its parent PID.' }
+    Assert-Equal -Actual ([uint32]$parentProperty.Value) -Expected ([uint32]$PID) -Message 'CIM parent PID differed from the test process that created the synthetic root.'
+
+    $creationProperty = $processRow.PSObject.Properties['CreationDate']
+    if ($null -eq $creationProperty -or $null -eq $creationProperty.Value) { throw 'The suspended-root CIM row lacked its creation time.' }
+    if ($creationProperty.Value -is [datetime]) {
+      $cimCreationUtc = $creationProperty.Value.ToUniversalTime()
+    } elseif ($creationProperty.Value -is [string] -and -not [string]::IsNullOrEmpty([string]$creationProperty.Value)) {
+      $cimCreationUtc = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$creationProperty.Value).ToUniversalTime()
+    } else {
+      throw 'The suspended-root CIM creation time had an unsupported shape.'
+    }
+    $nativeCreationUtc = [DateTime]::Parse(
+      [string]$nativeObservation.creationTimeUtc,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind
+    ).ToUniversalTime()
+    $creationDeltaTicks = [Math]::Abs(($nativeCreationUtc - $cimCreationUtc).Ticks)
+    Assert-True -Condition ($creationDeltaTicks -le 20) -Message 'CIM creation time differed from the retained native handle by more than 20 ticks.'
+
+    $script:CurrentSubstep = 'direct-suspended:cim-owner'
+    $ownerResult = Invoke-CimMethod -InputObject $processRow -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+    $returnValueProperty = $ownerResult.PSObject.Properties['ReturnValue']
+    $sidProperty = $ownerResult.PSObject.Properties['Sid']
+    $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+    if ($null -eq $returnValueProperty -or $null -eq $returnValueProperty.Value -or
+        $returnValueProperty.Value.GetType() -notin $integralTypes -or [decimal]$returnValueProperty.Value -ne 0 -or
+        $null -eq $sidProperty -or $sidProperty.Value -isnot [string]) {
+      throw 'CIM GetOwnerSid did not return a successful typed SID result.'
+    }
+    $cimOwnerSid = [Security.Principal.SecurityIdentifier]::new([string]$sidProperty.Value).Value
+    Assert-Equal -Actual $cimOwnerSid -Expected $expectedSid -Message 'CIM owner SID differed from the test process owner SID.'
+
+    $pathProperty = $processRow.PSObject.Properties['ExecutablePath']
+    if ($null -ne $pathProperty -and $null -ne $pathProperty.Value) {
+      if ($pathProperty.Value -isnot [string]) { throw 'A present CIM executable path was not a string.' }
+      $cimPath = [string]$pathProperty.Value
+      if (-not [string]::IsNullOrEmpty($cimPath)) {
+        if ([string]::IsNullOrWhiteSpace($cimPath)) { throw 'A present CIM executable path was whitespace.' }
+        $canonicalCimPath = Get-CanonicalFullPath -Path $cimPath
+        Assert-Equal -Actual $canonicalCimPath -Expected $knownImagePath -IgnoreCase -Message 'The optional CIM executable path differed from the known staged executable.'
+        Assert-Equal -Actual $canonicalCimPath -Expected $retainedImagePath -IgnoreCase -Message 'The optional CIM executable path differed from the retained native image.'
+        $cimPathDisposition = 'corroborated'
+      }
+    }
+
+    $script:CurrentSubstep = 'direct-suspended:production-identity-helper'
+    $productionIdentity = Get-PilotWindowsNativeProcessObservedIdentity `
+      -NativeObservation $nativeObservation `
+      -Descriptor $descriptor `
+      -ExpectedExecutablePath $knownImagePath `
+      -ExpectedHash $freshKnownFileHash
+    $actualIdentityFields = @($productionIdentity.PSObject.Properties.Name | Sort-Object)
+    $expectedIdentityFields = @('creationTimeUtc', 'executablePath', 'executableSha256', 'ownerSid', 'parentProcessId', 'processId')
+    Assert-Equal -Actual ([string]::Join('|', $actualIdentityFields)) -Expected ([string]::Join('|', $expectedIdentityFields)) -Message 'The production suspended identity result did not contain exactly the six contract fields.'
+    Assert-Equal -Actual ([uint32]$productionIdentity.processId) -Expected ([uint32]$nativeObservation.processId) -Message 'The production identity PID differed from the retained handle.'
+    Assert-Equal -Actual ([uint32]$productionIdentity.parentProcessId) -Expected ([uint32]$PID) -Message 'The production identity parent differed from the independent CIM parent.'
+    Assert-Equal -Actual ([string]$productionIdentity.ownerSid) -Expected $expectedSid -Message 'The production identity SID differed from the independent CIM owner.'
+    Assert-Equal -Actual ([string]$productionIdentity.executablePath) -Expected $retainedImagePath -IgnoreCase -Message 'The production identity image path differed from the retained handle.'
+    Assert-Equal -Actual ([string]$productionIdentity.executableSha256).ToLowerInvariant() -Expected $freshKnownFileHash -Message 'The production identity digest differed from the independently measured post-create digest.'
+    $productionCreationUtc = [DateTime]::Parse([string]$productionIdentity.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    Assert-True -Condition ([Math]::Abs(($productionCreationUtc - $cimCreationUtc).Ticks) -le 20) -Message 'The production identity creation time differed from the independent CIM time.'
+
+    $script:CurrentSubstep = 'direct-suspended:production-post-create-hash-mismatch'
+    $wrongExpectedHash = if ($freshKnownFileHash.StartsWith('0', [StringComparison]::Ordinal)) { '1' + $freshKnownFileHash.Substring(1) } else { '0' + $freshKnownFileHash.Substring(1) }
+    $hashMismatchError = $null
+    try {
+      $null = Get-PilotWindowsNativeProcessImageProof `
+        -NativeObservation $nativeObservation `
+        -ExpectedExecutablePath $knownImagePath `
+        -ExpectedHash $wrongExpectedHash
+    } catch {
+      $hashMismatchError = $_
+    }
+    if ($null -eq $hashMismatchError) { throw 'The production image proof accepted a valid retained image with a known wrong expected digest.' }
+    $hashMismatchErrorId = $null
+    $hashMismatchException = $hashMismatchError.Exception
+    for ($depth = 0; $null -ne $hashMismatchException -and $depth -lt 8; $depth++) {
+      if ($hashMismatchException.Data.Contains('Morrow.WindowsNativeProcess.ErrorId')) {
+        $hashMismatchErrorId = [string]$hashMismatchException.Data['Morrow.WindowsNativeProcess.ErrorId']
+        break
+      }
+      $hashMismatchException = $hashMismatchException.InnerException
+    }
+    $hashMismatchDiagnostics = Get-PolicyDiagnostics -ErrorRecord $hashMismatchError
+    $hashMismatchFields = @(Get-DiagnosticValue -Object $hashMismatchDiagnostics -Name 'fields')
+    Assert-Equal -Actual $hashMismatchErrorId -Expected 'Morrow.WindowsNativeProcess.StartFailed' -Message 'The production image proof returned an unexpected error for a digest mismatch.'
+    Assert-Equal -Actual ([string](Get-DiagnosticValue -Object $hashMismatchDiagnostics -Name 'stage')) -Expected 'identity-comparison' -Message 'The production image proof reported the wrong digest-mismatch stage.'
+    Assert-True -Condition ($hashMismatchFields -ccontains 'executableSha256') -Message 'The production image proof omitted the digest field from its sanitized mismatch.'
+    $hashMismatchRejected = $true
+
+    $script:CurrentSubstep = 'direct-suspended:no-resume-or-marker'
+    $afterProofObservation = $session.ObserveRoot()
+    Assert-Equal -Actual ([string]$afterProofObservation.state) -Expected 'suspended' -Message 'The retained synthetic process left suspended state during identity proof.'
+    Assert-True -Condition (-not [IO.File]::Exists($fixtureArgs.markerPath) -and -not [IO.File]::Exists($fixtureArgs.receiptPath)) -Message 'The synthetic fixture ran before authorization or wrote a marker/receipt.'
+    Assert-OutsiderStillAlive
+    $proofWatch.Stop()
+    Assert-True -Condition ($proofWatch.ElapsedMilliseconds -le 25000) -Message 'The direct suspended identity proof exceeded its bounded observation window.'
+  } catch {
+    $proofError = $_
+  } finally {
+    if ($null -ne $session) {
+      $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
+      try {
+        $script:CurrentSubstep = 'direct-suspended:job-cleanup'
+        $cleanupResult = $session.StopAndWait(10000)
+      } catch {
+        $cleanupError = $true
+      }
+      try {
+        $session.Dispose()
+      } catch {
+        $cleanupError = $true
+      }
+      $cleanupWatch.Stop()
+      $cleanupElapsedMs = $cleanupWatch.ElapsedMilliseconds
+    }
+  }
+
+  if ($null -ne $proofError) {
+    if ($cleanupError -or $null -eq $cleanupResult -or -not [bool]$cleanupResult.jobEmpty -or -not [bool]$cleanupResult.rootExited) {
+      $script:CleanupNotes.Add('direct synthetic suspended proof failed and private Job cleanup could not be fully verified')
+    }
+    throw $proofError
+  }
+  Assert-True -Condition (-not $cleanupError -and $null -ne $cleanupResult) -Message 'The direct synthetic root Job cleanup did not return a confirmed result.'
+  Assert-True -Condition ([bool]$cleanupResult.jobEmpty -and [bool]$cleanupResult.rootExited -and -not [bool]$cleanupResult.timedOut) -Message 'The direct synthetic root cleanup did not confirm Job empty and root exited.'
+  Assert-True -Condition ($cleanupElapsedMs -le 11000) -Message 'The direct synthetic root cleanup exceeded its bound.'
+  Assert-True -Condition (-not [IO.File]::Exists($fixtureArgs.markerPath) -and -not [IO.File]::Exists($fixtureArgs.receiptPath)) -Message 'The synthetic fixture wrote a marker or receipt before cleanup.'
+  Assert-OutsiderStillAlive
+  $script:CleanupNotes.Add('direct suspended synthetic root proved retained image, fresh known-file digest and CIM identity; private Job cleanup verified without Resume')
+  $outcome = [ordered]@{
+    name = 'direct-suspended-retained-image-fresh-digest-and-cim-proof'
+    status = 'passed'
+    retainedNativeImageMatchesKnownFile = $true
+    freshKnownFileDigestMatchesDescriptor = $true
+    cimPidParentCreationAndOwnerMatch = $true
+    cimPathDisposition = $cimPathDisposition
+    productionIdentityContainsSixFields = $true
+    productionPostCreateWrongDigestRejected = $hashMismatchRejected
+    resumeNotRequested = $true
+    fixtureMarkerAndReceiptAbsent = $true
+    jobEmpty = [bool]$cleanupResult.jobEmpty
+    rootExited = [bool]$cleanupResult.rootExited
+    cleanupElapsedMs = $cleanupElapsedMs
+    outsiderAlive = $true
+  }
+  [void]$script:CaseOutcomes.Add($outcome)
+  return $outcome
+}
+
 function New-InvalidDescriptorCases {
   param([Parameter(Mandatory)][string] $CaseRoot)
   $fixtureArgs = Get-NewFixtureArguments -CaseRoot $CaseRoot -Role 'invalid'
@@ -1473,6 +1684,7 @@ try {
   [Console]::Out.WriteLine('PASS outsider-setup')
 
   Add-Check -Name 'positive-start-identity-environment-and-capsule-dispose' -Action { Test-PositiveStartAndDispose }
+  Add-Check -Name 'direct-suspended-retained-image-fresh-digest-and-cim-proof' -Action { Test-DirectSuspendedIdentityProof }
   Add-Check -Name 'closed-descriptor-and-precreate-refusals' -Action { New-InvalidDescriptorCases -CaseRoot (New-CaseRoot -Name 'invalid-descriptors') }
   Add-Check -Name 'post-create-owner-sid-mismatch-cleans-only-owned-job' -Action { Test-PostCreateMismatch -MismatchName 'mismatch-owner-sid' -MismatchKind ownerSid }
   Add-Check -Name 'post-create-parent-process-mismatch-cleans-only-owned-job' -Action { Test-PostCreateMismatch -MismatchName 'mismatch-parent-process' -MismatchKind parentProcessId }

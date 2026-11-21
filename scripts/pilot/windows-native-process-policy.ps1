@@ -456,50 +456,204 @@ function Get-PilotWindowsNativeProcessValidatedPaths {
   }
 }
 
+function Get-PilotWindowsNativeProcessImageProof {
+  param(
+    [Parameter(Mandatory)][object] $NativeObservation,
+    [Parameter(Mandatory)][string] $ExpectedExecutablePath,
+    [Parameter(Mandatory)][string] $ExpectedHash
+  )
+
+  try {
+    $expectedPath = ConvertTo-PilotCanonicalPath -Path $ExpectedExecutablePath
+    $nativePath = ConvertTo-PilotCanonicalPath -Path ([string]$NativeObservation.executablePath)
+    if (-not [string]::Equals($expectedPath, $nativePath, [StringComparison]::OrdinalIgnoreCase)) { throw 'image mismatch' }
+  } catch {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'identity-comparison' -Fields @('executablePath'))
+  }
+  # Hash only the known validated executable after the suspended process has been created.
+  try {
+    $freshHash = (Get-FileHash -LiteralPath $expectedPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+  } catch {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'identity-comparison' -Fields @('executableSha256'))
+  }
+  $freshHash = Confirm-PilotWindowsNativeProcessHash -ExpectedHash $ExpectedHash -ObservedHash $freshHash
+  return [pscustomobject][ordered]@{ executablePath = $nativePath; executableSha256 = $freshHash }
+}
+
+function Confirm-PilotWindowsNativeProcessHash {
+  param(
+    [Parameter(Mandatory)][string] $ExpectedHash,
+    [Parameter(Mandatory)][string] $ObservedHash
+  )
+
+  if ($ExpectedHash -notmatch '^[A-Fa-f0-9]{64}$' -or
+      $ObservedHash -notmatch '^[A-Fa-f0-9]{64}$' -or
+      -not [string]::Equals($ObservedHash, $ExpectedHash, [StringComparison]::OrdinalIgnoreCase)) {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'identity-comparison' -Fields @('executableSha256'))
+  }
+  return $ObservedHash.ToLowerInvariant()
+}
+
+function Get-PilotWindowsNativeProcessCimRow {
+  param(
+    [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $ProcessRows,
+    [Parameter(Mandatory)][int] $ProcessId
+  )
+
+  if ($ProcessRows.Count -ne 1 -or $null -eq $ProcessRows[0]) {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'cim-observation' -Fields @('processId'))
+  }
+  $process = $ProcessRows[0]
+  try {
+    $processIdProperty = $process.PSObject.Properties['ProcessId']
+    if ($null -eq $processIdProperty -or $null -eq $processIdProperty.Value) { throw 'missing' }
+    if ([int]$processIdProperty.Value -ne $ProcessId) { throw 'mismatch' }
+  } catch {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'cim-observation' -Fields @('processId'))
+  }
+  return $process
+}
+
+function New-PilotWindowsNativeProcessIdentityFromCim {
+  param(
+    [Parameter(Mandatory)][object] $ProcessRow,
+    [AllowNull()][object] $OwnerResult,
+    [Parameter(Mandatory)][object] $NativeObservation,
+    [Parameter(Mandatory)][object] $ImageProof
+  )
+
+  $invalidFields = [Collections.Generic.List[string]]::new()
+  $processId = [int]$ProcessRow.ProcessId
+  $parentProcessId = $null
+  try {
+    $parentProperty = $ProcessRow.PSObject.Properties['ParentProcessId']
+    if ($null -eq $parentProperty -or $null -eq $parentProperty.Value) { throw 'missing' }
+    $parentProcessId = [int]$parentProperty.Value
+    if ($parentProcessId -lt 1) { throw 'invalid' }
+  } catch {
+    [void]$invalidFields.Add('parentProcessId')
+  }
+
+  $creationTimeUtc = $null
+  try {
+    $creationProperty = $ProcessRow.PSObject.Properties['CreationDate']
+    if ($null -eq $creationProperty -or $null -eq $creationProperty.Value) { throw 'missing' }
+    $creationValue = $creationProperty.Value
+    if ($creationValue -is [datetime]) {
+      $cimTime = $creationValue.ToUniversalTime()
+    } elseif ($creationValue -is [string] -and -not [string]::IsNullOrEmpty($creationValue)) {
+      $cimTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($creationValue).ToUniversalTime()
+    } else {
+      throw 'invalid'
+    }
+    $nativeTime = [DateTime]::Parse(
+      [string]$NativeObservation.creationTimeUtc,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind
+    ).ToUniversalTime()
+    if ([Math]::Abs(($nativeTime - $cimTime).Ticks) -gt 20) { throw 'mismatch' }
+    $creationTimeUtc = $cimTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+  } catch {
+    [void]$invalidFields.Add('creationTimeUtc')
+  }
+
+  $ownerSid = $null
+  try {
+    if ($null -eq $OwnerResult) { throw 'missing' }
+    $returnValueProperty = $OwnerResult.PSObject.Properties['ReturnValue']
+    $sidProperty = $OwnerResult.PSObject.Properties['Sid']
+    if ($null -eq $returnValueProperty -or $null -eq $returnValueProperty.Value -or
+        $null -eq $sidProperty -or $null -eq $sidProperty.Value) { throw 'missing' }
+    $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+    if ($returnValueProperty.Value.GetType() -notin $integralTypes -or [decimal]$returnValueProperty.Value -ne 0) { throw 'invalid' }
+    if ($sidProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$sidProperty.Value)) { throw 'invalid' }
+    $ownerSid = [string]$sidProperty.Value
+    $sid = [Security.Principal.SecurityIdentifier]::new($ownerSid)
+    if ($sid.Value -cne $ownerSid) { throw 'noncanonical' }
+  } catch {
+    [void]$invalidFields.Add('ownerSid')
+  }
+
+  $imagePathProperty = $ImageProof.PSObject.Properties['executablePath']
+  $imageHashProperty = $ImageProof.PSObject.Properties['executableSha256']
+  if ($null -eq $imagePathProperty -or $null -eq $imageHashProperty -or
+      [string]::IsNullOrWhiteSpace([string]$imagePathProperty.Value) -or
+      [string]$imageHashProperty.Value -notmatch '^[A-Fa-f0-9]{64}$') {
+    [void]$invalidFields.Add('executableSha256')
+  }
+
+  # ImageProof already ties the native image to the validated staged path.
+  $pathProperty = $ProcessRow.PSObject.Properties['ExecutablePath']
+  $cimPath = $null
+  if ($null -ne $pathProperty -and $null -ne $pathProperty.Value) {
+    if ($pathProperty.Value -isnot [string]) {
+      [void]$invalidFields.Add('executablePath')
+    } else {
+      $cimPath = [string]$pathProperty.Value
+    }
+  }
+  if (-not [string]::IsNullOrEmpty($cimPath)) {
+    try {
+      $canonicalCimPath = ConvertTo-PilotCanonicalPath -Path $cimPath
+      if (-not [string]::Equals($canonicalCimPath, [string]$imagePathProperty.Value, [StringComparison]::OrdinalIgnoreCase)) {
+        [void]$invalidFields.Add('executablePath')
+      }
+    } catch {
+      [void]$invalidFields.Add('executablePath')
+    }
+  }
+
+  if ($invalidFields.Count -gt 0) {
+    $uniqueFields = @($invalidFields | Select-Object -Unique)
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'identity-comparison' -Fields $uniqueFields)
+  }
+  return [pscustomobject][ordered]@{
+    processId = $processId
+    parentProcessId = $parentProcessId
+    executablePath = [string]$imagePathProperty.Value
+    executableSha256 = ([string]$imageHashProperty.Value).ToLowerInvariant()
+    creationTimeUtc = $creationTimeUtc
+    ownerSid = $ownerSid
+  }
+}
+
 function Get-PilotWindowsNativeProcessObservedIdentity {
   param(
     [Parameter(Mandatory)][object] $NativeObservation,
     [Parameter(Mandatory)][System.Collections.IDictionary] $Descriptor,
+    [Parameter(Mandatory)][string] $ExpectedExecutablePath,
     [Parameter(Mandatory)][string] $ExpectedHash
   )
 
-  if (-not (Get-Command Get-WindowsProcessOwnershipIdentity -ErrorAction SilentlyContinue)) {
-    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'identity-dependency')
-  }
+  $imageProof = Get-PilotWindowsNativeProcessImageProof `
+    -NativeObservation $NativeObservation `
+    -ExpectedExecutablePath $ExpectedExecutablePath `
+    -ExpectedHash $ExpectedHash
   try {
-    $identity = Get-WindowsProcessOwnershipIdentity -ProcessId ([int]$NativeObservation.processId)
+    $processRows = @(Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = ' + [string][int]$NativeObservation.processId) -OperationTimeoutSec 5 -ErrorAction Stop)
   } catch {
-    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'cim-observation')
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'cim-observation' -Fields @('processId'))
   }
-
+  # Resolve exactly one row for the retained PID before invoking its owner method.
+  $process = Get-PilotWindowsNativeProcessCimRow -ProcessRows $processRows -ProcessId ([int]$NativeObservation.processId)
+  try {
+    $ownerResult = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+  } catch {
+    throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'cim-observation' -Fields @('ownerSid'))
+  }
+  $identity = New-PilotWindowsNativeProcessIdentityFromCim `
+    -ProcessRow $process `
+    -OwnerResult $ownerResult `
+    -NativeObservation $NativeObservation `
+    -ImageProof $imageProof
   $mismatches = [Collections.Generic.List[string]]::new()
-  if ([int]$identity.processId -ne [int]$NativeObservation.processId) { [void]$mismatches.Add('processId') }
-  try {
-    $expectedPath = ConvertTo-PilotCanonicalPath -Path ([string]$Descriptor.executablePath)
-    $nativePath = ConvertTo-PilotCanonicalPath -Path ([string]$NativeObservation.executablePath)
-    $cimPath = ConvertTo-PilotCanonicalPath -Path ([string]$identity.executablePath)
-    if (-not [string]::Equals($expectedPath, $nativePath, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($expectedPath, $cimPath, [StringComparison]::OrdinalIgnoreCase)) {
-      [void]$mismatches.Add('executablePath')
-    }
-  } catch { [void]$mismatches.Add('executablePath') }
-  try {
-    $nativeTime = [DateTime]::Parse([string]$NativeObservation.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-    $cimTime = [DateTime]::Parse([string]$identity.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-    if ([Math]::Abs(($nativeTime - $cimTime).Ticks) -gt 20) { [void]$mismatches.Add('creationTimeUtc') }
-  } catch { [void]$mismatches.Add('creationTimeUtc') }
-  if (-not [string]::Equals([string]$identity.executableSha256, $ExpectedHash, [StringComparison]::OrdinalIgnoreCase)) {
-    [void]$mismatches.Add('executableSha256')
-  }
   if ([int]$identity.parentProcessId -ne [int]$Descriptor.expectedParentProcessId) { [void]$mismatches.Add('parentProcessId') }
   if ([string]$identity.ownerSid -cne [string]$Descriptor.expectedOwnerSid) { [void]$mismatches.Add('ownerSid') }
   if ($mismatches.Count -gt 0) {
-    $errorId = if ($mismatches.Contains('ownerSid') -or $mismatches.Contains('parentProcessId')) {
-      'Morrow.WindowsNativeProcess.IdentityMismatch'
-    } else {
-      'Morrow.WindowsNativeProcess.StartFailed'
-    }
-    throw (New-PilotWindowsNativeProcessException -ErrorId $errorId -Stage 'identity-comparison' -Fields $mismatches.ToArray())
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+      -Stage 'identity-comparison' `
+      -Fields $mismatches.ToArray())
   }
   return $identity
 }
@@ -519,7 +673,8 @@ function Start-WindowsNativeProcess {
     $validatedPaths = Get-PilotWindowsNativeProcessValidatedPaths -Descriptor $descriptorMap
 
     if (-not (Get-Command CreateAtomicSuspendedRoot -ErrorAction SilentlyContinue) -or
-        -not (Get-Command Get-WindowsProcessOwnershipIdentity -ErrorAction SilentlyContinue)) {
+        -not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Invoke-CimMethod -ErrorAction SilentlyContinue)) {
       throw (New-PilotWindowsNativeProcessException -ErrorId 'Morrow.WindowsNativeProcess.StartFailed' -Stage 'dependency-preflight')
     }
     $stage = 'suspended-create'
@@ -555,6 +710,7 @@ function Start-WindowsNativeProcess {
     $observedIdentity = Get-PilotWindowsNativeProcessObservedIdentity `
       -NativeObservation $nativeObservation `
       -Descriptor $descriptorMap `
+      -ExpectedExecutablePath $validatedPaths.executablePath `
       -ExpectedHash $validatedPaths.executableSha256
     Initialize-PilotWindowsNativeProcessCapsuleInterop
     $nativeSessionType = 'Morrow.Pilot.WindowsNativeJobSession' -as [type]
@@ -583,7 +739,7 @@ function Start-WindowsNativeProcess {
     $constructorArguments[0] = $session
     $constructorArguments[1] = $identitySnapshot
     $capsule = $constructor.Invoke($constructorArguments)
-    Write-Verbose 'Morrow.WindowsNativeProcess.IdentityProof: native and CIM identity tuple, descriptor owner and parent, suspended state, Job membership, and Job policy matched.'
+    Write-Verbose 'Morrow.WindowsNativeProcess.IdentityProof: retained native image, post-create hash, CIM PID/parent/creation/owner, descriptor owner/parent, suspended state, Job membership, and Job policy matched.'
 
     $stage = 'resume'
     $resume = $session.Resume()

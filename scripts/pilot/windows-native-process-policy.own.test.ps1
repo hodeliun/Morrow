@@ -17,6 +17,25 @@ $checks = [ordered]@{
   rejectsReparseAndOutsidePaths = $false
   stagedRuntimeOutsideEvidenceRoot = $false
   rejectsSemicolonInStagedExeDirectory = $false
+  cimPathNullAndEmptyAccepted = $false
+  cimPathPresentCorroborated = $false
+  cimPathMalformedRejected = $false
+  cimPathWhitespaceRejected = $false
+  cimPathMismatchRejected = $false
+  nativeImageMismatchRejected = $false
+  cimRowMissingRejected = $false
+  cimRowsAmbiguousRejected = $false
+  cimPidMismatchRejected = $false
+  cimParentMissingRejected = $false
+  cimCreationDateMissingRejected = $false
+  cimCreationDateInvalidRejected = $false
+  cimCreationTimeMismatchRejected = $false
+  cimOwnerMissingRejected = $false
+  cimOwnerReturnValueMissingRejected = $false
+  cimOwnerReturnValueNonIntegralRejected = $false
+  cimOwnerReturnValueNonzeroRejected = $false
+  cimOwnerSidMalformedRejected = $false
+  postCreateHashMismatchRejected = $false
   mismatchedParentFailsBeforeResume = $false
   outsiderSurvivesParentMismatchCleanup = $false
   mismatchedOwnerFailsBeforeResume = $false
@@ -107,6 +126,25 @@ function Get-PolicyErrorId {
     $current = $current.InnerException
   }
   return $null
+}
+
+function Test-PolicyIdentityFailure {
+  param(
+    [Parameter(Mandatory)][scriptblock] $Action,
+    [Parameter(Mandatory)][string] $ExpectedField
+  )
+
+  try {
+    $null = & $Action
+    return $false
+  } catch {
+    $diagnostics = Get-PolicyDiagnostics -Exception $_.Exception
+    return (
+      (Get-PolicyErrorId -Exception $_.Exception) -ceq 'Morrow.WindowsNativeProcess.StartFailed' -and
+      $diagnostics -is [System.Collections.IDictionary] -and
+      @($diagnostics['fields']) -ccontains $ExpectedField
+    )
+  }
 }
 
 function New-SanitizedPolicyFailureObservation {
@@ -543,6 +581,162 @@ $reportLines = @(
     -UnicodeArgument 'ação com espaço 雪' `
     -PersonalCanaryName $personalCanaryName
 
+  $syntheticIdentityTime = [DateTime]::UtcNow
+  $syntheticIdentityNative = [pscustomobject]@{
+    processId = [int]$PID
+    executablePath = $pwshPath
+    creationTimeUtc = $syntheticIdentityTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+  }
+  $syntheticIdentityOwner = [pscustomobject]@{ ReturnValue = [uint32]0; Sid = $identitySid }
+  $syntheticImageProof = Get-PilotWindowsNativeProcessImageProof `
+    -NativeObservation $syntheticIdentityNative -ExpectedExecutablePath $pwshPath -ExpectedHash $pwshHash
+  $syntheticIdentityRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    CreationDate = $syntheticIdentityTime
+    ExecutablePath = $null
+  }
+  $identityTestArguments = @{
+    ProcessRow = $syntheticIdentityRow
+    OwnerResult = $syntheticIdentityOwner
+    NativeObservation = $syntheticIdentityNative
+    ImageProof = $syntheticImageProof
+  }
+  $identityFields = @('processId', 'parentProcessId', 'creationTimeUtc', 'executablePath', 'executableSha256', 'ownerSid')
+  $syntheticNullPathIdentity = New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    CreationDate = $syntheticIdentityTime
+    ExecutablePath = ''
+  }
+  $syntheticEmptyPathIdentity = New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments
+  $syntheticNullPathFields = @($syntheticNullPathIdentity.PSObject.Properties.Name | Sort-Object)
+  $syntheticEmptyPathFields = @($syntheticEmptyPathIdentity.PSObject.Properties.Name | Sort-Object)
+  $expectedIdentityFields = @($identityFields | Sort-Object)
+  $checks.cimPathNullAndEmptyAccepted = (
+    [string]::Equals([string]$syntheticNullPathIdentity.executablePath, $pwshPath, [StringComparison]::OrdinalIgnoreCase) -and
+    [string]::Equals([string]$syntheticEmptyPathIdentity.executablePath, $pwshPath, [StringComparison]::OrdinalIgnoreCase) -and
+    [string]::Join('|', $syntheticNullPathFields) -ceq [string]::Join('|', $expectedIdentityFields) -and
+    [string]::Join('|', $syntheticEmptyPathFields) -ceq [string]::Join('|', $expectedIdentityFields)
+  )
+  Assert-PolicyCheck -Condition $checks.cimPathNullAndEmptyAccepted -Name 'cimPathNullAndEmptyAccepted'
+
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    CreationDate = $syntheticIdentityTime.AddTicks(20)
+    ExecutablePath = $pwshPath
+  }
+  $syntheticPresentPathIdentity = New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments
+  $checks.cimPathPresentCorroborated = [string]::Equals([string]$syntheticPresentPathIdentity.executablePath, $pwshPath, [StringComparison]::OrdinalIgnoreCase)
+  Assert-PolicyCheck -Condition $checks.cimPathPresentCorroborated -Name 'cimPathPresentCorroborated'
+
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    CreationDate = $syntheticIdentityTime
+    ExecutablePath = '\\invalid-host\not-read.exe'
+  }
+  $checks.cimPathMalformedRejected = Test-PolicyIdentityFailure -ExpectedField 'executablePath' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimPathMalformedRejected -Name 'cimPathMalformedRejected'
+
+  $identityTestArguments.ProcessRow.ExecutablePath = ' '
+  $checks.cimPathWhitespaceRejected = Test-PolicyIdentityFailure -ExpectedField 'executablePath' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimPathWhitespaceRejected -Name 'cimPathWhitespaceRejected'
+
+  $identityTestArguments.ProcessRow.ExecutablePath = $childScriptPath
+  $checks.cimPathMismatchRejected = Test-PolicyIdentityFailure -ExpectedField 'executablePath' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimPathMismatchRejected -Name 'cimPathMismatchRejected'
+
+  $mismatchedNativeImage = [pscustomobject]@{
+    processId = [int]$PID
+    executablePath = $childScriptPath
+    creationTimeUtc = $syntheticIdentityNative.creationTimeUtc
+  }
+  $checks.nativeImageMismatchRejected = Test-PolicyIdentityFailure -ExpectedField 'executablePath' -Action {
+    Get-PilotWindowsNativeProcessImageProof -NativeObservation $mismatchedNativeImage -ExpectedExecutablePath $pwshPath -ExpectedHash $pwshHash
+  }
+  Assert-PolicyCheck -Condition $checks.nativeImageMismatchRejected -Name 'nativeImageMismatchRejected'
+
+  $checks.cimRowMissingRejected = Test-PolicyIdentityFailure -ExpectedField 'processId' -Action {
+    Get-PilotWindowsNativeProcessCimRow -ProcessRows ([object[]]@()) -ProcessId ([int]$PID)
+  }
+  Assert-PolicyCheck -Condition $checks.cimRowMissingRejected -Name 'cimRowMissingRejected'
+  $checks.cimRowsAmbiguousRejected = Test-PolicyIdentityFailure -ExpectedField 'processId' -Action {
+    Get-PilotWindowsNativeProcessCimRow -ProcessRows ([object[]]@($syntheticIdentityRow, $syntheticIdentityRow)) -ProcessId ([int]$PID)
+  }
+  Assert-PolicyCheck -Condition $checks.cimRowsAmbiguousRejected -Name 'cimRowsAmbiguousRejected'
+
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    CreationDate = $syntheticIdentityTime
+    ExecutablePath = $null
+  }
+  $checks.cimPidMismatchRejected = Test-PolicyIdentityFailure -ExpectedField 'processId' -Action {
+    Get-PilotWindowsNativeProcessCimRow -ProcessRows ([object[]]@([pscustomobject]@{ ProcessId = [int]$PID + 1 })) -ProcessId ([int]$PID)
+  }
+  Assert-PolicyCheck -Condition $checks.cimPidMismatchRejected -Name 'cimPidMismatchRejected'
+
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    CreationDate = $syntheticIdentityTime
+    ExecutablePath = $null
+  }
+  $checks.cimParentMissingRejected = Test-PolicyIdentityFailure -ExpectedField 'parentProcessId' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimParentMissingRejected -Name 'cimParentMissingRejected'
+
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    ExecutablePath = $null
+  }
+  $checks.cimCreationDateMissingRejected = Test-PolicyIdentityFailure -ExpectedField 'creationTimeUtc' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimCreationDateMissingRejected -Name 'cimCreationDateMissingRejected'
+
+  $identityTestArguments.ProcessRow = [pscustomobject]@{
+    ProcessId = [int]$PID
+    ParentProcessId = [int]$PID
+    CreationDate = 'not-a-dmtf-date'
+    ExecutablePath = $null
+  }
+  $checks.cimCreationDateInvalidRejected = Test-PolicyIdentityFailure -ExpectedField 'creationTimeUtc' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimCreationDateInvalidRejected -Name 'cimCreationDateInvalidRejected'
+
+  $identityTestArguments.ProcessRow.CreationDate = $syntheticIdentityTime.AddTicks(21)
+  $checks.cimCreationTimeMismatchRejected = Test-PolicyIdentityFailure -ExpectedField 'creationTimeUtc' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimCreationTimeMismatchRejected -Name 'cimCreationTimeMismatchRejected'
+
+  $identityTestArguments.ProcessRow = $syntheticIdentityRow
+  $identityTestArguments.OwnerResult = $null
+  $checks.cimOwnerMissingRejected = Test-PolicyIdentityFailure -ExpectedField 'ownerSid' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimOwnerMissingRejected -Name 'cimOwnerMissingRejected'
+
+  $identityTestArguments.OwnerResult = [pscustomobject]@{ ReturnValue = $null; Sid = $identitySid }
+  $checks.cimOwnerReturnValueMissingRejected = Test-PolicyIdentityFailure -ExpectedField 'ownerSid' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimOwnerReturnValueMissingRejected -Name 'cimOwnerReturnValueMissingRejected'
+
+  $identityTestArguments.OwnerResult = [pscustomobject]@{ ReturnValue = '0'; Sid = $identitySid }
+  $checks.cimOwnerReturnValueNonIntegralRejected = Test-PolicyIdentityFailure -ExpectedField 'ownerSid' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimOwnerReturnValueNonIntegralRejected -Name 'cimOwnerReturnValueNonIntegralRejected'
+
+  $identityTestArguments.OwnerResult = [pscustomobject]@{ ReturnValue = [uint32]5; Sid = $identitySid }
+  $checks.cimOwnerReturnValueNonzeroRejected = Test-PolicyIdentityFailure -ExpectedField 'ownerSid' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimOwnerReturnValueNonzeroRejected -Name 'cimOwnerReturnValueNonzeroRejected'
+
+  $identityTestArguments.OwnerResult = [pscustomobject]@{ ReturnValue = [uint32]0; Sid = 'not-a-sid' }
+  $checks.cimOwnerSidMalformedRejected = Test-PolicyIdentityFailure -ExpectedField 'ownerSid' -Action { New-PilotWindowsNativeProcessIdentityFromCim @identityTestArguments }
+  Assert-PolicyCheck -Condition $checks.cimOwnerSidMalformedRejected -Name 'cimOwnerSidMalformedRejected'
+
+  $identityTestArguments.OwnerResult = $syntheticIdentityOwner
+  $mismatchedImageHash = '0' * 64
+  if ($mismatchedImageHash -ceq $pwshHash) { $mismatchedImageHash = '1' * 64 }
+  $checks.postCreateHashMismatchRejected = Test-PolicyIdentityFailure -ExpectedField 'executableSha256' -Action {
+    Confirm-PilotWindowsNativeProcessHash -ExpectedHash $pwshHash -ObservedHash $mismatchedImageHash
+  }
+  Assert-PolicyCheck -Condition $checks.postCreateHashMismatchRejected -Name 'postCreateHashMismatchRejected'
+
   $failurePhase = 'descriptor-calibration'
   $normalizedEmptyArgv = Get-PilotWindowsNativeProcessDescriptor -Descriptor ([ordered]@{
     executablePath = $baseDescriptor.executablePath
@@ -682,6 +876,7 @@ $reportLines = @(
     cimProcessIdMatches = $null
     cimParentMatchesTestProcess = $null
     cimExecutablePathPresent = $null
+    cimExecutablePathDisposition = 'not-observed'
     cimExecutablePathMatchesNative = $null
     cimExecutablePathMatchesStaged = $null
     cimCreationDateKind = 'not-observed'
@@ -765,9 +960,9 @@ $reportLines = @(
       if ($cimProcessIdMatchesRetainedRoot) {
         try {
           $cimDiagnosticObservation.cimParentMatchesTestProcess = [int]$process.ParentProcessId -eq [int]$PID
-          $cimDiagnosticObservation.cimExecutablePathPresent = -not [string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)
+          $cimDiagnosticObservation.cimExecutablePathPresent = -not [string]::IsNullOrEmpty([string]$process.ExecutablePath)
           if (-not $cimDiagnosticObservation.cimExecutablePathPresent) {
-            Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-executable-path' -Category 'missing'
+            $cimDiagnosticObservation.cimExecutablePathDisposition = 'absent-or-empty'
           }
         } catch {
           Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-process-fields' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
@@ -834,8 +1029,10 @@ $reportLines = @(
             $cimDiagnosticObservation.cimExecutablePathMatchesStaged = [string]::Equals($cimPath, $pwshPath, [StringComparison]::OrdinalIgnoreCase)
             if (-not $cimDiagnosticObservation.cimExecutablePathMatchesNative -or
                 -not $cimDiagnosticObservation.cimExecutablePathMatchesStaged) {
+              $cimDiagnosticObservation.cimExecutablePathDisposition = 'mismatch'
               Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-path' -Category 'mismatch'
             } else {
+              $cimDiagnosticObservation.cimExecutablePathDisposition = 'corroborated'
               try {
                 $hash = (Get-FileHash -LiteralPath $pwshPath -Algorithm SHA256 -ErrorAction Stop).Hash
                 $cimDiagnosticObservation.cimHashMatchesExpected = [string]::Equals([string]$hash, [string]$pwshHash, [StringComparison]::OrdinalIgnoreCase)
@@ -850,6 +1047,7 @@ $reportLines = @(
             $nativePath = $null
             $hash = $null
           } catch {
+            $cimDiagnosticObservation.cimExecutablePathDisposition = 'invalid'
             $cimDiagnosticObservation.cimExecutablePathMatchesNative = $false
             Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-path' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
           }
@@ -1008,7 +1206,13 @@ $reportLines = @(
       $verboseSuccess[$resumeIndex] -notmatch 'previous suspend count one') {
     throw 'The verbose receipt did not show identity proof before the internal Resume result.'
   }
-  [void]$observations.Add([pscustomobject]@{ scenario = 'success-proof-order'; identityProofBeforeResume = $true; previousSuspendCountOne = $true; noPidOrHandleLogged = $true })
+  [void]$observations.Add([pscustomobject]@{
+    scenario = 'success-proof-order'
+    identityProofBeforeResume = $true
+    previousSuspendCountOne = $true
+    noPidOrHandleLogged = $true
+    cimExecutablePathDisposition = [string]$cimDiagnosticObservation.cimExecutablePathDisposition
+  })
 
   $happyMarker = Join-Path $privateRoot 'happy.marker'
   $happyReceiptPath = Join-Path $privateRoot 'happy.receipt'
