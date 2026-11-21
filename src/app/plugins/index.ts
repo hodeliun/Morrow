@@ -2,6 +2,7 @@
 // main.js. they run inside morrow with the same reach into your notes it has, so they stay off on each
 // computer until turned on there, and each one is turned on by name
 import { Puzzle } from 'lucide-react';
+import type { Editor, Range } from '@tiptap/core';
 import { markdownToDoc } from '../../core/markdown/parse';
 import { docToMarkdown } from '../../core/markdown/serialize';
 import { displayTitle } from '../../core/model';
@@ -16,7 +17,7 @@ import { getLocale } from '../i18n';
 import { activeRoute, openPage } from '../router';
 import { toast } from '../ui';
 import { getSession, getState, run } from '../workspace';
-import { addPluginAction, addPluginBlock } from './registry';
+import { addPluginAction, addPluginBlock, pluginActions, pluginBlocks } from './registry';
 import { createDataApi } from './dataApi';
 import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
 import type { DatabaseProviderRegistration } from './providerApi';
@@ -48,14 +49,38 @@ export interface PluginInfo extends PluginManifest {
 interface Running {
   generation: number;
   active: boolean;
+  activated: boolean;
   cleanups: Array<() => void>;
+  cleanupWrappers: WeakMap<() => void, () => void>;
+}
+
+interface LoadAttempt {
+  generation: number;
+  promise: Promise<void>;
+}
+
+interface StartOperation {
+  promise: Promise<void>;
+  invalidatedIds: Set<string>;
+  pendingAtStart: Set<string>;
+}
+
+interface PendingPluginSetting {
+  generation: number;
+  enabled: boolean;
 }
 
 const running = new Map<string, Running>();
+const loading = new Map<string, LoadAttempt>();
 const ownerGenerations = new Map<string, number>();
+const pluginActionGenerations = new Map<string, number>();
+const pendingPluginSettings = new Map<string, PendingPluginSetting>();
 const errors = new Map<string, string>();
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((listener) => listener());
+let startOperation: StartOperation | null = null;
+let pluginLifecycleGeneration = 0;
+let lastStartedLifecycleGeneration: number | null = null;
 
 export function subscribePluginList(listener: () => void): () => void {
   listeners.add(listener);
@@ -126,14 +151,77 @@ export async function listPlugins(): Promise<PluginInfo[]> {
   return plugins;
 }
 
+function isCurrentLoad(id: string, attempt: LoadAttempt): boolean {
+  return loading.get(id) === attempt && ownerGenerations.get(id) === attempt.generation;
+}
+
+function registerCleanup(id: string, state: Running, cleanup: () => void): () => void {
+  const existing = state.cleanupWrappers.get(cleanup);
+  if (existing) return existing;
+
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    cleanup();
+  };
+  state.cleanupWrappers.set(cleanup, dispose);
+  if (state.active && running.get(id) === state) state.cleanups.push(dispose);
+  else dispose();
+  return dispose;
+}
+
+function unloadState(id: string, state: Running): void {
+  if (running.get(id) === state) running.delete(id);
+  if (!state.active) return;
+  state.active = false;
+  for (const cleanup of state.cleanups.splice(0).reverse()) {
+    try {
+      cleanup();
+    } catch {
+      // a plugin that fails to tidy up is still turned off
+    }
+  }
+}
+
+function invalidatePlugin(id: string): number {
+  const generation = (ownerGenerations.get(id) ?? 0) + 1;
+  ownerGenerations.set(id, generation);
+  loading.delete(id);
+  errors.delete(id);
+  const state = running.get(id);
+  if (state) unloadState(id, state);
+  return generation;
+}
+
+function cancelPendingLoad(id: string): void {
+  const generation = (ownerGenerations.get(id) ?? 0) + 1;
+  ownerGenerations.set(id, generation);
+  loading.delete(id);
+  const state = running.get(id);
+  if (state && !state.activated) unloadState(id, state);
+}
+
+function nextPluginActionGeneration(id: string): number {
+  const generation = (pluginActionGenerations.get(id) ?? 0) + 1;
+  pluginActionGenerations.set(id, generation);
+  return generation;
+}
+
 // what a plugin is given to work with. everything it adds is taken away again when it is turned off
 function pluginApi(id: string, state: Running) {
-  const keep = (cleanup: () => void) => {
-    state.cleanups.push(cleanup);
-    return cleanup;
-  };
   const session = getSession();
-  const ownerIsActive = () => running.get(id) === state && state.active && !session.isClosed;
+  const ownerIsActive = () => {
+    try {
+      return running.get(id) === state && state.active && !session.isClosed && getSession() === session;
+    } catch {
+      return false;
+    }
+  };
+  const assertActive = () => {
+    if (!ownerIsActive()) throw new Error('The plugin instance is no longer active.');
+  };
+  const keep = (cleanup: () => void) => registerCleanup(id, state, cleanup);
   const editorOwnerIsActive = () => {
     try {
       return ownerIsActive() && getSession() === session;
@@ -148,28 +236,30 @@ function pluginApi(id: string, state: Running) {
       released = true;
       target.dispose();
     };
-    state.cleanups.push(release);
+    const dispose = registerCleanup(id, state, release);
     const forgetCleanup = () => {
-      const index = state.cleanups.indexOf(release);
+      const index = state.cleanups.indexOf(dispose);
       if (index >= 0) state.cleanups.splice(index, 1);
     };
     return Object.freeze({
       version: target.version,
       insert(markdown: string) {
+        assertActive();
         const result = target.insert(markdown);
-        release();
-        if (state.active) forgetCleanup();
+        dispose();
+        forgetCleanup();
         return result;
       },
       dispose() {
-        release();
-        if (state.active) forgetCleanup();
+        dispose();
+        if (ownerIsActive()) forgetCleanup();
       },
     });
   };
   const insertion = Object.freeze({
     version: 1 as const,
     capture() {
+      assertActive();
       const target = captureEditorInsertionTarget({
         generation: state.generation,
         isActive: editorOwnerIsActive,
@@ -207,36 +297,63 @@ function pluginApi(id: string, state: Running) {
       kind: page.kind,
     };
   };
-  return Object.freeze(definePluginLocaleApi({
+  const plugin = {
     version: desktop?.version ?? '',
     plugin: id,
     data,
     providers: Object.freeze({
       version: 1 as const,
       register: (registration: DatabaseProviderRegistration) => {
-        const unregister = registerDatabaseProvider(id, ownerIsActive, data, registration);
-        const unsubscribeClose = session.onClose(unregister);
-        return keep(() => {
-          unsubscribeClose();
+        assertActive();
+        if (!registration || typeof registration !== 'object')
+          throw new Error('A provider registration is required.');
+        if (typeof registration.mount !== 'function')
+          throw new Error('A provider must supply a mount function.');
+        const guardedRegistration: DatabaseProviderRegistration = {
+          get id() {
+            return registration.id;
+          },
+          get apiVersion() {
+            return registration.apiVersion;
+          },
+          mount: (context) => {
+            assertActive();
+            return registration.mount(context);
+          },
+        };
+        const unregister = registerDatabaseProvider(id, ownerIsActive, data, guardedRegistration);
+        try {
+          const unsubscribeClose = session.onClose(unregister);
+          return keep(() => {
+            unsubscribeClose();
+            unregister();
+          });
+        } catch (error) {
           unregister();
-        });
+          throw error;
+        }
       },
     }),
     commands: {
       add(command: { id: string; name: string; shortcut?: string; run: () => void }) {
+        assertActive();
         if (typeof command?.id !== 'string' || typeof command.run !== 'function')
           throw new Error('A command needs an id and run.');
-        return keep(
-          addPluginAction(id, {
-            id: `plugin:${id}:${command.id}`,
-            label: String(command.name ?? command.id),
-            group: 'General',
-            icon: Puzzle,
-            ...(typeof command.shortcut === 'string' ? { shortcut: command.shortcut } : {}),
-            keywords: `plugin ${id}`,
-            run: () => command.run(),
-          }),
-        );
+        const action = {
+          id: `plugin:${id}:${command.id}`,
+          label: String(command.name ?? command.id),
+          group: 'General' as const,
+          icon: Puzzle,
+          ...(typeof command.shortcut === 'string' ? { shortcut: command.shortcut } : {}),
+          keywords: `plugin ${id}`,
+          run: () => {
+            if (ownerIsActive()) command.run();
+          },
+        };
+        const unregister = addPluginAction(id, action);
+        return keep(() => {
+          if (pluginActions().includes(action)) unregister();
+        });
       },
     },
     slash: {
@@ -248,41 +365,57 @@ function pluginApi(id: string, state: Running) {
         markdown?: string;
         run?: () => void;
       }) {
+        assertActive();
         if (typeof item?.id !== 'string') throw new Error('A slash item needs an id.');
-        return keep(
-          addPluginBlock(id, {
-            id: `plugin:${id}:${item.id}`,
-            title: String(item.title ?? item.id),
-            ...(item.description ? { description: String(item.description) } : {}),
-            icon: Puzzle,
-            keywords: `${item.keywords ?? ''} plugin ${id}`,
-            run: (editor, range) => {
-              editor.chain().focus().deleteRange(range).run();
-              if (typeof item.markdown === 'string')
-                editor
-                  .chain()
-                  .focus()
-                  .insertContent(markdownToDoc(item.markdown).content ?? [])
-                  .run();
-              else item.run?.();
-            },
-          }),
-        );
+        const block = {
+          id: `plugin:${id}:${item.id}`,
+          title: String(item.title ?? item.id),
+          ...(item.description ? { description: String(item.description) } : {}),
+          icon: Puzzle,
+          keywords: `${item.keywords ?? ''} plugin ${id}`,
+          run: (editor: Editor, range: Range) => {
+            if (!ownerIsActive()) return;
+            editor.chain().focus().deleteRange(range).run();
+            if (typeof item.markdown === 'string')
+              editor
+                .chain()
+                .focus()
+                .insertContent(markdownToDoc(item.markdown).content ?? [])
+                .run();
+            else item.run?.();
+          },
+        };
+        const unregister = addPluginBlock(id, block);
+        return keep(() => {
+          if (pluginBlocks().includes(block)) unregister();
+        });
       },
     },
     pages: {
-      list: () => Object.keys(getState().pages).map(pageInfo).filter(Boolean),
-      get: (pageId: string) => pageInfo(pageId),
+      list: () => {
+        assertActive();
+        return Object.keys(getState().pages).map(pageInfo).filter(Boolean);
+      },
+      get: (pageId: string) => {
+        assertActive();
+        return pageInfo(pageId);
+      },
       read: (pageId: string) => {
+        assertActive();
         const doc = getState().docs[pageId];
         return doc ? docToMarkdown(doc) : null;
       },
       current: () => {
+        assertActive();
         const route = activeRoute();
         return route.name === 'page' ? pageInfo(route.id) : null;
       },
-      open: (pageId: string) => openPage(pageId),
+      open: (pageId: string) => {
+        assertActive();
+        return openPage(pageId);
+      },
       create(options: { title?: string; markdown?: string; parentId?: string | null }) {
+        assertActive();
         const pageId = createPage({
           title: options?.title ?? 'Untitled',
           parentId: options?.parentId ?? null,
@@ -293,6 +426,7 @@ function pluginApi(id: string, state: Running) {
         return pageId;
       },
       write(pageId: string, markdown: string) {
+        assertActive();
         const result = run({
           type: 'page.setDoc',
           id: pageId,
@@ -305,6 +439,7 @@ function pluginApi(id: string, state: Running) {
     editor: {
       insertion,
       insert(markdown: string) {
+        assertActive();
         const target = captureEditorInsertionTarget({
           generation: state.generation,
           isActive: editorOwnerIsActive,
@@ -317,6 +452,7 @@ function pluginApi(id: string, state: Running) {
         }
       },
       selectedText() {
+        assertActive();
         const editor = focusedEditor();
         if (!editor || editor.isDestroyed) return '';
         const { from, to } = editor.state.selection;
@@ -324,11 +460,20 @@ function pluginApi(id: string, state: Running) {
       },
     },
     onChange(listener: () => void) {
-      return keep(getSession().subscribe(listener));
+      assertActive();
+      return keep(
+        session.subscribe(() => {
+          if (ownerIsActive()) listener();
+        }),
+      );
     },
-    notice: (message: string) => toast(String(message)),
+    notice: (message: string) => {
+      assertActive();
+      toast(String(message));
+    },
     styles: {
       add(css: string) {
+        assertActive();
         const style = document.createElement('style');
         style.dataset.plugin = id;
         style.textContent = String(css);
@@ -337,88 +482,240 @@ function pluginApi(id: string, state: Running) {
       },
     },
     storage: {
-      get: () => readJson(`${PLUGINS_FOLDER}/${id}/data.json`),
-      set: (value: unknown) => writeText(`${PLUGINS_FOLDER}/${id}/data.json`, JSON.stringify(value, null, 2)),
+      async get() {
+        assertActive();
+        const value = await readJson(`${PLUGINS_FOLDER}/${id}/data.json`);
+        assertActive();
+        return value;
+      },
+      async set(value: unknown) {
+        assertActive();
+        await writeText(`${PLUGINS_FOLDER}/${id}/data.json`, JSON.stringify(value, null, 2));
+        assertActive();
+      },
     },
-    register: (cleanup: () => void) => keep(cleanup),
-  }, getLocale));
+    register: (cleanup: () => void) => {
+      assertActive();
+      return keep(cleanup);
+    },
+  };
+  return Object.freeze(
+    definePluginLocaleApi(plugin, () => {
+      assertActive();
+      return getLocale();
+    }),
+  );
 }
 
-async function load(id: string): Promise<void> {
-  if (running.has(id) || !ID.test(id)) return;
-  errors.delete(id);
-  const code = await vault()?.readText(`${PLUGINS_FOLDER}/${id}/main.js`);
-  if (!code) {
-    errors.set(id, 'main.js is missing.');
-    return;
+function load(id: string, expectedGeneration?: number): Promise<void> {
+  if (!ID.test(id)) return Promise.resolve();
+
+  let generation = expectedGeneration;
+  if (generation === undefined) {
+    const current = loading.get(id);
+    if (current && isCurrentLoad(id, current)) return current.promise;
+    const state = running.get(id);
+    if (state?.active && state.activated) return Promise.resolve();
+    generation = (ownerGenerations.get(id) ?? 0) + 1;
+    ownerGenerations.set(id, generation);
+  } else if (ownerGenerations.get(id) !== generation) {
+    return Promise.resolve();
   }
-  const generation = (ownerGenerations.get(id) ?? 0) + 1;
-  ownerGenerations.set(id, generation);
-  const state: Running = { generation, active: true, cleanups: [] };
-  running.set(id, state);
-  const url = URL.createObjectURL(
-    new Blob([`${code}\n//# sourceURL=morrow-plugin-${id}.js`], { type: 'text/javascript' }),
-  );
+
+  const current = loading.get(id);
+  if (current && current.generation === generation && isCurrentLoad(id, current)) return current.promise;
+  const currentState = running.get(id);
+  if (currentState?.active && currentState.activated) return Promise.resolve();
+  if (currentState) unloadState(id, currentState);
+
+  errors.delete(id);
+  const attempt: LoadAttempt = { generation, promise: Promise.resolve() };
+  const promise = Promise.resolve()
+    .then(() => loadAttempt(id, attempt))
+    .finally(() => {
+      if (loading.get(id) === attempt) loading.delete(id);
+    });
+  attempt.promise = promise;
+  loading.set(id, attempt);
+  return promise;
+}
+
+async function loadAttempt(id: string, attempt: LoadAttempt): Promise<void> {
+  let state: Running | undefined;
+  let url: string | undefined;
   try {
+    if (!isCurrentLoad(id, attempt)) return;
+    const code = await vault()?.readText(`${PLUGINS_FOLDER}/${id}/main.js`);
+    if (!isCurrentLoad(id, attempt)) return;
+    if (!code) {
+      errors.set(id, 'main.js is missing.');
+      return;
+    }
+
+    state = {
+      generation: attempt.generation,
+      active: true,
+      activated: false,
+      cleanups: [],
+      cleanupWrappers: new WeakMap(),
+    };
+    running.set(id, state);
+    url = URL.createObjectURL(
+      new Blob([`${code}\n//# sourceURL=morrow-plugin-${id}.js`], { type: 'text/javascript' }),
+    );
     const module = (await import(/* @vite-ignore */ url)) as {
       default?: (api: unknown) => unknown;
       activate?: (api: unknown) => unknown;
     };
+    if (!isCurrentLoad(id, attempt) || running.get(id) !== state || !state.active) return;
     const activate = module.default ?? module.activate;
     if (typeof activate !== 'function') throw new Error('main.js should export a function as its default.');
     const result = await activate(pluginApi(id, state));
-    if (typeof result === 'function') state.cleanups.push(result as () => void);
+    if (typeof result === 'function') registerCleanup(id, state, result as () => void);
+    if (isCurrentLoad(id, attempt) && running.get(id) === state && state.active) state.activated = true;
   } catch (error) {
-    unload(id);
+    if (!isCurrentLoad(id, attempt)) return;
+    if (state && running.get(id) === state) unloadState(id, state);
+    if (!isCurrentLoad(id, attempt)) return;
     errors.set(id, error instanceof Error ? error.message : String(error));
   } finally {
-    URL.revokeObjectURL(url);
+    if (url) URL.revokeObjectURL(url);
   }
-}
-
-function unload(id: string): void {
-  const state = running.get(id);
-  if (!state) return;
-  running.delete(id);
-  state.active = false;
-  for (const cleanup of state.cleanups.reverse()) {
-    try {
-      cleanup();
-    } catch {
-      // a plugin that fails to tidy up is still turned off
-    }
-  }
-  state.cleanups.length = 0;
 }
 
 // at start, and when plugins are allowed on this computer, the ones turned on in this vault load
-export async function startPlugins(): Promise<void> {
-  if (!getPreferences().plugins || !vault()) return;
-  for (const id of await enabledIds()) await load(id);
-  for (const id of errors.keys())
-    toast(`The plugin “${id}” could not start: ${errors.get(id)}`, { tone: 'error' });
-  notify();
+export function startPlugins(): Promise<void> {
+  if (!getPreferences().plugins || !vault()) {
+    startOperation = null;
+    return Promise.resolve();
+  }
+  if (startOperation) return startOperation.promise;
+
+  const operation: StartOperation = {
+    promise: Promise.resolve(),
+    invalidatedIds: new Set(),
+    pendingAtStart: new Set(pendingPluginSettings.keys()),
+  };
+  lastStartedLifecycleGeneration = pluginLifecycleGeneration;
+  startOperation = operation;
+  operation.promise = Promise.resolve()
+    .then(async () => {
+      const ids = await enabledIds();
+      if (startOperation !== operation || !getPreferences().plugins || !vault()) return;
+      for (const id of ids) {
+        if (startOperation !== operation || !getPreferences().plugins || !vault()) return;
+        if (
+          operation.invalidatedIds.has(id) ||
+          operation.pendingAtStart.has(id) ||
+          pendingPluginSettings.has(id)
+        )
+          continue;
+        await load(id);
+      }
+      if (startOperation !== operation || !getPreferences().plugins || !vault()) return;
+      for (const id of errors.keys())
+        toast(`The plugin “${id}” could not start: ${errors.get(id)}`, { tone: 'error' });
+      notify();
+    })
+    .finally(() => {
+      if (startOperation === operation) startOperation = null;
+    });
+  return operation.promise;
 }
 
 export function stopPlugins(): void {
-  for (const id of [...running.keys()]) unload(id);
+  pluginLifecycleGeneration += 1;
+  startOperation = null;
+  const ids = new Set([...ownerGenerations.keys(), ...loading.keys(), ...running.keys(), ...errors.keys()]);
+  for (const id of ids) invalidatePlugin(id);
   notify();
 }
 
 export async function setPluginEnabled(id: string, enabled: boolean): Promise<void> {
-  const ids = new Set(await enabledIds());
-  if (enabled) ids.add(id);
-  else ids.delete(id);
-  await writeText(SETTINGS_FILE, `${JSON.stringify({ enabled: [...ids].sort() }, null, 2)}\n`);
-  if (enabled && getPreferences().plugins) await load(id);
-  if (!enabled) unload(id);
-  notify();
+  startOperation?.invalidatedIds.add(id);
+  const actionGeneration = nextPluginActionGeneration(id);
+  const lifecycleGeneration = pluginLifecycleGeneration;
+  pendingPluginSettings.set(id, { generation: actionGeneration, enabled });
+  if (!enabled) cancelPendingLoad(id);
+  try {
+    const ids = new Set(await enabledIds());
+    if (enabled) ids.add(id);
+    else ids.delete(id);
+    await writeText(SETTINGS_FILE, `${JSON.stringify({ enabled: [...ids].sort() }, null, 2)}\n`);
+    if (pendingPluginSettings.get(id)?.generation === actionGeneration) pendingPluginSettings.delete(id);
+    if (pluginActionGenerations.get(id) === actionGeneration) {
+      const lifecycleIsCurrent = pluginLifecycleGeneration === lifecycleGeneration;
+      const currentLifecycleHasStarted = lastStartedLifecycleGeneration === pluginLifecycleGeneration;
+      if (
+        enabled &&
+        getPreferences().plugins &&
+        vault() &&
+        (lifecycleIsCurrent || currentLifecycleHasStarted)
+      )
+        await load(id);
+      else if (!enabled && lifecycleIsCurrent) invalidatePlugin(id);
+    }
+    notify();
+  } catch (error) {
+    if (pendingPluginSettings.get(id)?.generation === actionGeneration) pendingPluginSettings.delete(id);
+    const lifecycleIsCurrent = pluginLifecycleGeneration === lifecycleGeneration;
+    const currentLifecycleHasStarted = lastStartedLifecycleGeneration === pluginLifecycleGeneration;
+    if (
+      !enabled &&
+      pluginActionGenerations.get(id) === actionGeneration &&
+      (lifecycleIsCurrent || currentLifecycleHasStarted) &&
+      getPreferences().plugins &&
+      vault()
+    ) {
+      try {
+        const persistedIds = await enabledIds();
+        if (
+          pluginActionGenerations.get(id) === actionGeneration &&
+          (pluginLifecycleGeneration === lifecycleGeneration ||
+            lastStartedLifecycleGeneration === pluginLifecycleGeneration) &&
+          getPreferences().plugins &&
+          vault() &&
+          persistedIds.includes(id)
+        )
+          await load(id);
+      } catch {
+        // Preserve the settings write error after trying to restore the persisted state.
+      }
+    }
+    throw error;
+  } finally {
+    if (pendingPluginSettings.get(id)?.generation === actionGeneration) pendingPluginSettings.delete(id);
+  }
 }
 
 export async function reloadPlugin(id: string): Promise<void> {
-  unload(id);
-  await load(id);
-  notify();
+  if (pendingPluginSettings.has(id)) return;
+  startOperation?.invalidatedIds.add(id);
+  const actionGeneration = nextPluginActionGeneration(id);
+  const lifecycleGeneration = pluginLifecycleGeneration;
+  const generation = invalidatePlugin(id);
+  try {
+    if (!getPreferences().plugins || !vault()) return;
+    const ids = await enabledIds();
+    if (
+      pluginActionGenerations.get(id) !== actionGeneration ||
+      pluginLifecycleGeneration !== lifecycleGeneration ||
+      ownerGenerations.get(id) !== generation ||
+      pendingPluginSettings.has(id) ||
+      !getPreferences().plugins ||
+      !vault() ||
+      !ids.includes(id)
+    )
+      return;
+    await load(id, generation);
+  } finally {
+    if (
+      pluginActionGenerations.get(id) === actionGeneration &&
+      pluginLifecycleGeneration === lifecycleGeneration &&
+      ownerGenerations.get(id) === generation
+    )
+      notify();
+  }
 }
 
 const README = `# Morrow plugins
