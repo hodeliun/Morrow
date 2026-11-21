@@ -51,6 +51,7 @@ import {
   prepareNativeUi,
   runNativeReadinessScenario,
 } from './native-readiness.mjs';
+import { assertNativeAcceptanceReceipt, runNativeAcceptanceScenario } from './native-acceptance.mjs';
 import { WebDriver } from './webdriver-client.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -61,6 +62,7 @@ const BANK_FILES = ['Inventory.md', 'Inventory/Widget.md'];
 const TIMEOUT_MS = 25_000;
 const CLOSE_SCENARIOS = new Set(['close', 'close-independent']);
 const SWITCH_SCENARIOS = new Set(['switch', 'switch-independent']);
+const ACCEPTANCE_SCENARIOS = new Set(['acceptance', 'acceptance-independent']);
 const UI_PREPARATION_SCENARIOS = new Set([
   'readiness',
   'functional',
@@ -75,10 +77,12 @@ const UI_PREPARATION_SCENARIOS = new Set([
   'close-independent',
   'switch',
   'switch-independent',
+  'acceptance',
+  'acceptance-independent',
 ]);
 
 function help() {
-  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|close|close-independent|switch|switch-independent|app-identity-only|export-independent|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|close|close-independent|switch|switch-independent|app-identity-only|export-independent] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Readiness observes boot and real Settings UI before checking the fixed synthetic source Total=20. app-identity-only checks the private app runtime identity without changing Settings, routing, or synthetic data. Functional, lifecycle, picker, export, close, and switch scenarios use real WebDriver UI under the native isolation guards; lifecycle covers plugin disable/reload, synthetic activation failure, and unsupported/conflict fallback. Picker and export use Ctrl+K command-palette actions. Export captures only the existing public window.morrow.saveFile sink and retains its canceller until the isolated app is torn down. Close blocks writes on the synthetic Markdown parent directory, proves a denied Close remains open, then requires a retry receipt tied to the same app PID/starttime and persisted bytes before runner cleanup. Switch uses three real Sidebar selections, including a profile-directory permission failure and a held public select response. dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nNative runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
+  process.stdout.write(`Usage:\n  node scripts/pilot/native-bank-smoke.mjs --freeze-sources --source-manifest-output NEW_JSON --diff-output NEW_PATCH\n  node scripts/pilot/native-bank-smoke.mjs --record-artifacts --source-manifest FROZEN_JSON --artifact-manifest-output NEW_JSON <artifact args>\n  node scripts/pilot/native-bank-smoke.mjs --check-only [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|close|close-independent|switch|switch-independent|acceptance|acceptance-independent|app-identity-only|export-independent|dbus-isolation] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile [--scenario readiness|functional|functional-independent|lifecycle|lifecycle-independent|picker|picker-independent|export|close|close-independent|switch|switch-independent|acceptance|acceptance-independent|app-identity-only|export-independent] <candidate args>\n  node scripts/pilot/native-bank-smoke.mjs --run-native --confirm-synthetic-profile --confirm-private-dbus-probe --scenario dbus-isolation <candidate args>\n\nScenario defaults to the legacy bank smoke. Readiness observes boot and real Settings UI before checking the fixed synthetic source Total=20. app-identity-only checks the private app runtime identity without changing Settings, routing, or synthetic data. Functional, lifecycle, picker, export, close, switch, and acceptance scenarios use real WebDriver UI under the native isolation guards; acceptance captures representative localized/theme/zoom states, local Save/Cancel draft, and read-only fallback. Lifecycle covers plugin disable/reload, synthetic activation failure, and unsupported/conflict fallback. Picker and export use Ctrl+K command-palette actions. Export captures only the existing public window.morrow.saveFile sink and retains its canceller until the isolated app is torn down. Close blocks writes on the synthetic Markdown parent directory, proves a denied Close remains open, then requires a retry receipt tied to the same app PID/starttime and persisted bytes before runner cleanup. Switch uses three real Sidebar selections, including a profile-directory permission failure and a held public select response. dbus-isolation starts only the private D-Bus daemon and gdbus client, without Xvfb or Morrow.\nThe D-Bus probe requires both explicit confirmation flags and a separate root gate; never run it without that authorization.\nRequired candidate args:\n  --expected-commit SHA\n  --binary PATH --binary-sha256 SHA\n  --bundle PATH --bundle-sha256 SHA\n  --manifest PATH (plugins/polaris-dados/manifest.json; not a source hash manifest)\n  --source-manifest PATH --artifact-manifest PATH --tauri-config PATH\n  --vault NEW_PATH --destination-vault NEW_PATH --profile NEW_PATH --evidence NEW_PATH\n  --retained-evidence NEW_PATH --driver PATH --webkit-driver PATH\n\nThe synthetic vaults, profile, evidence, and retained evidence paths must be new and distinct.\nCheck-only verifies a frozen candidate and never creates those outputs or launches processes.\nNative runs own Xvfb, DBus, tauri-driver, the WebKit profile, and both synthetic vaults.\n`);
 }
 
 function parseArgs(argv) {
@@ -1838,6 +1842,20 @@ async function runNative(candidate, prepared, scenarioCallback = null, scenarioN
             retryClickResult: info.ownedNaturalCloseReceipt.retry.clickResult,
           });
           outcome = 'passed';
+        } else if (ACCEPTANCE_SCENARIOS.has(scenarioName)) {
+          const mode = scenarioName === 'acceptance-independent' ? 'independent' : 'own';
+          const summary = assertNativeAcceptanceReceipt(callbackResult, mode);
+          const receiptFile = `native-acceptance-${mode}-receipt.json`;
+          await writeFile(
+            path.join(candidate.evidence, receiptFile),
+            `${JSON.stringify(callbackResult, null, 2)}\n`,
+            { flag: 'wx', mode: 0o600 },
+          );
+          await recordStep(candidate, `native-acceptance-${mode}-receipt-retained`, { ...summary, receiptFile });
+          if (callbackResult.accepted !== true) {
+            throw new Error(`Native acceptance ${mode} is partial; zoom observations remain unverified.`);
+          }
+          outcome = 'passed';
         } else {
           const finalStatus = await webdriver.execute(`return [...document.querySelectorAll('[role="status"]')].map((node) => node.innerText).join(' | ')`);
           if (/pending|saving|error|failed/i.test(finalStatus)) throw new Error(`Refusing to close with pending/error status: ${finalStatus}`);
@@ -2542,10 +2560,11 @@ async function main() {
     'export-independent': runIndependentNativeExportScenario,
     close: runNativeCloseScenario,
     switch: runNativeSwitchScenario,
+    acceptance: runNativeAcceptanceScenario,
     'app-identity-only': runNativeAppIdentityOnlyScenario,
   };
-  if (scenarioName !== 'legacy' && scenarioName !== 'dbus-isolation' && !Object.hasOwn(scenarioCallbacks, scenarioName) && !CLOSE_SCENARIOS.has(scenarioName) && !SWITCH_SCENARIOS.has(scenarioName)) {
-    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, readiness, functional, functional-independent, lifecycle, lifecycle-independent, picker, picker-independent, export, close, close-independent, switch, switch-independent, app-identity-only, export-independent, or dbus-isolation`);
+  if (scenarioName !== 'legacy' && scenarioName !== 'dbus-isolation' && !Object.hasOwn(scenarioCallbacks, scenarioName) && !CLOSE_SCENARIOS.has(scenarioName) && !SWITCH_SCENARIOS.has(scenarioName) && !ACCEPTANCE_SCENARIOS.has(scenarioName)) {
+    throw new Error(`Unknown fixed scenario ${scenarioName}; expected legacy, readiness, functional, functional-independent, lifecycle, lifecycle-independent, picker, picker-independent, export, close, close-independent, switch, switch-independent, acceptance, acceptance-independent, app-identity-only, export-independent, or dbus-isolation`);
   }
   if (args.scenario && (args['freeze-sources'] || args['record-artifacts'])) {
     throw new Error('--scenario is valid only with --check-only or --run-native');
@@ -2606,6 +2625,13 @@ async function main() {
     scenarioCallback = independentModule.runIndependentNativeSwitchScenario;
     if (typeof scenarioCallback !== 'function') {
       throw new Error('Independent switch module does not export runIndependentNativeSwitchScenario.');
+    }
+  }
+  if (scenarioName === 'acceptance-independent') {
+    const independentModule = await import('./native-acceptance.independent.test.mjs');
+    scenarioCallback = independentModule.runIndependentNativeAcceptanceScenario;
+    if (typeof scenarioCallback !== 'function') {
+      throw new Error('Independent acceptance module does not export runIndependentNativeAcceptanceScenario.');
     }
   }
   if (CLOSE_SCENARIOS.has(scenarioName) && typeof scenarioCallback !== 'function') {
