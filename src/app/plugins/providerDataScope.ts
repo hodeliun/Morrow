@@ -1,5 +1,10 @@
 import type { PageId } from '../../core/model';
-import type { DataApi, DataApiSnapshot } from './dataApi';
+import {
+  captureCellPatchInput,
+  captureDataApiHistoryInput,
+  type DataApi,
+  type DataApiSnapshot,
+} from './dataApi';
 
 export interface ProviderDataScope {
   readonly api: DataApi;
@@ -64,15 +69,31 @@ export function createProviderDataScope(
     },
     patchCell(input) {
       if (!active()) return inactive();
-      if (input.databaseId !== databaseId) return outOfScope();
+      const captured = captureCellPatchInput(input, 'number', 'opaque');
+      if (captured.databaseId !== null && captured.databaseId !== databaseId) return outOfScope();
       if (!editable()) return readonly();
-      return source.patchCell(input);
+      if (!captured.patch) return invalidValue();
+      return source.patchCell(captured.patch);
     },
+    ...(source.patchTextCell
+      ? {
+          patchTextCell(input: Parameters<NonNullable<DataApi['patchTextCell']>>[0]) {
+            if (!active()) return inactive();
+            const captured = captureCellPatchInput(input, 'text', 'opaque');
+            if (captured.databaseId !== null && captured.databaseId !== databaseId) return outOfScope();
+            if (!editable()) return readonly();
+            if (!captured.patch) return invalidValue();
+            return source.patchTextCell!(captured.patch);
+          },
+        }
+      : {}),
     history(input) {
       if (!active()) return inactive();
-      if (input.databaseId !== databaseId) return outOfScope();
+      const captured = captureDataApiHistoryInput(input, 'opaque');
+      if (captured.databaseId !== null && captured.databaseId !== databaseId) return outOfScope();
       if (!editable()) return readonly();
-      return source.history(input);
+      if (!captured.input) return invalidValue();
+      return source.history(captured.input);
     },
     subscribe(id, listener) {
       if (!active()) throw new Error(inactive().message);
@@ -130,5 +151,13 @@ export function createProviderDataScope(
       }
       subscriptions.clear();
     },
+  };
+}
+
+function invalidValue() {
+  return {
+    status: 'error' as const,
+    code: 'invalid-value' as const,
+    message: 'The data operation contains an invalid identifier, revision, or value.',
   };
 }

@@ -156,8 +156,11 @@ export function renderPageText(
 
 export function writeProperty(prop: PropDef, value: PropValue | undefined, preserveNull = false): unknown {
   if (value === null && preserveNull) return null;
-  if (value === null || value === undefined || value === '') return undefined;
+  if (value === null || value === undefined || (value === '' && !(preserveNull && prop.type === 'text')))
+    return undefined;
   switch (prop.type) {
+    case 'text':
+      return typeof value === 'string' ? value : preserveNull ? undefined : String(value);
     case 'number':
       return typeof value === 'number' ? value : undefined;
     case 'checkbox':
@@ -190,6 +193,7 @@ export function readProperty(
   prop: PropDef,
   raw: unknown,
   newOptionId: () => string,
+  preserveOptedInValue = false,
 ): { value: PropValue; added: SelectOption[] } {
   const added: SelectOption[] = [];
   const optionFor = (name: string): string => {
@@ -205,7 +209,19 @@ export function readProperty(
     added.push(option);
     return option.id;
   };
+  if (preserveOptedInValue) {
+    if (prop.type === 'text') {
+      return {
+        value: typeof raw === 'string' && raw.length <= 10_000 ? raw : null,
+        added,
+      };
+    }
+  }
   switch (prop.type) {
+    case 'text': {
+      const text = scalarText(raw);
+      return { value: text || null, added };
+    }
     case 'number': {
       const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
       return { value: Number.isFinite(value) && raw !== '' ? value : null, added };
@@ -268,13 +284,28 @@ export function takeProperties(
     const key = findKey(extra, prop.name);
     if (key === undefined) continue;
     const raw = extra[key];
-    const read = readProperty(prop, raw, newOptionId);
+    const preserveExactText = preserveNull && prop.type === 'text';
+    if (preserveExactText && !isRepresentableOptedInTextRaw(raw)) continue;
+    const read = readProperty(prop, raw, newOptionId, preserveExactText);
     if (read.added.length) prop.options.push(...read.added);
-    if (preserveNull && raw === null) properties[prop.id] = null;
-    if (read.value !== null) properties[prop.id] = read.value;
+    if (preserveNull && raw === null) setOwnPropertyValue(properties, prop.id, null);
+    if (read.value !== null) setOwnPropertyValue(properties, prop.id, read.value);
     // a value the property can not hold, like a date written in words, stays so saving never drops it
     if (read.value !== null || raw === null || raw === '') delete extra[key];
   }
+}
+
+function setOwnPropertyValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+}
+
+function isRepresentableOptedInTextRaw(raw: unknown): boolean {
+  return raw === null || (typeof raw === 'string' && raw.length <= 10_000);
 }
 
 function scalarText(value: unknown): string | null {

@@ -115,6 +115,14 @@ export interface DataApi {
     value: number;
     expectedRevision: string;
   }): DataApiPatchResult;
+  /** Stages one exact text or null edit for an opted-in text property. */
+  patchTextCell?(input: {
+    databaseId: PageId;
+    rowId: PageId;
+    propertyId: string;
+    value: string | null;
+    expectedRevision: string;
+  }): DataApiPatchResult;
   /** Restores one contextual data-cell edit in memory; the caller must flush to persist it. */
   history(input: {
     databaseId: PageId;
@@ -172,6 +180,41 @@ export function createDataApi(options: {
     dispose();
   });
 
+  const patch = (input: unknown, expectedValueType: 'number' | 'text'): DataApiPatchResult => {
+    if (!isActive()) return apiError('owner-inactive', 'This plugin data API handle is no longer active.');
+    if (options.isHostReadonly()) return apiError('host-readonly', 'Morrow is in read-only mode.');
+    const captured = captureCellPatchInput(input, expectedValueType);
+    if (captured.databaseId !== null && !options.isProviderActive(captured.databaseId)) {
+      return apiError('provider-inactive', 'No active provider owns this database.');
+    }
+    const parsed = captured.patch;
+    if (!parsed)
+      return apiError(
+        'invalid-value',
+        'The cell patch contains an invalid identifier, revision, or scalar value.',
+      );
+    const snapshot = backend.snapshot(parsed.databaseId);
+    if (snapshot.status === 'missing') return apiError('not-opted-in', 'That database is not opted in.');
+    if (snapshot.status === 'unsupported') return apiError('unsupported', snapshot.diagnostic.message);
+    if (
+      expectedValueType === 'number' &&
+      snapshot.schema.properties.some(
+        (property) => property.id === parsed.propertyId && property.type !== 'number',
+      )
+    ) {
+      return apiError('read-only', 'Only manual number properties can be edited by this API method.');
+    }
+    const result = backend.patchCell(parsed);
+    if (!result.ok) return apiError(result.code as DataApiErrorCode, result.message);
+    return freeze({
+      status: 'staged' as const,
+      databaseId: parsed.databaseId,
+      rowId: parsed.rowId,
+      propertyId: parsed.propertyId,
+      revision: result.revision,
+    });
+  };
+
   return Object.freeze({
     version: 1 as const,
     snapshot: read,
@@ -182,23 +225,16 @@ export function createDataApi(options: {
       value: number;
       expectedRevision: string;
     }): DataApiPatchResult {
-      if (!isActive()) return apiError('owner-inactive', 'This plugin data API handle is no longer active.');
-      if (options.isHostReadonly()) return apiError('host-readonly', 'Morrow is in read-only mode.');
-      if (!options.isProviderActive(input.databaseId)) {
-        return apiError('provider-inactive', 'No active provider owns this database.');
-      }
-      const snapshot = backend.snapshot(input.databaseId);
-      if (snapshot.status === 'missing') return apiError('not-opted-in', 'That database is not opted in.');
-      if (snapshot.status === 'unsupported') return apiError('unsupported', snapshot.diagnostic.message);
-      const result = backend.patchCell(input);
-      if (!result.ok) return apiError(result.code as DataApiErrorCode, result.message);
-      return freeze({
-        status: 'staged' as const,
-        databaseId: input.databaseId,
-        rowId: input.rowId,
-        propertyId: input.propertyId,
-        revision: result.revision,
-      });
+      return patch(input, 'number');
+    },
+    patchTextCell(input: {
+      databaseId: PageId;
+      rowId: PageId;
+      propertyId: string;
+      value: string | null;
+      expectedRevision: string;
+    }): DataApiPatchResult {
+      return patch(input, 'text');
     },
     history(input: {
       databaseId: PageId;
@@ -206,37 +242,20 @@ export function createDataApi(options: {
       expectedRevision: string;
     }): DataApiHistoryResult {
       if (!isActive()) return apiError('owner-inactive', 'This plugin data API handle is no longer active.');
-      const runtimeInput = input as unknown as {
-        databaseId?: unknown;
-        direction?: unknown;
-        expectedRevision?: unknown;
-      } | null;
-      if (
-        !runtimeInput ||
-        typeof runtimeInput.databaseId !== 'string' ||
-        runtimeInput.databaseId.length === 0
-      ) {
-        return apiError('invalid-value', 'History requires a database identifier.');
-      }
-      if (runtimeInput.direction !== 'undo' && runtimeInput.direction !== 'redo') {
-        return apiError('invalid-value', 'History direction must be undo or redo.');
-      }
-      if (typeof runtimeInput.expectedRevision !== 'string') {
-        return apiError('invalid-value', 'History requires a snapshot revision.');
-      }
-      const databaseId = runtimeInput.databaseId as PageId;
-      const direction = runtimeInput.direction;
       if (options.isHostReadonly()) return apiError('host-readonly', 'Morrow is in read-only mode.');
-      if (!options.isProviderActive(databaseId)) {
+      const captured = captureDataApiHistoryInput(input);
+      if (captured.databaseId !== null && !options.isProviderActive(captured.databaseId)) {
         return apiError('provider-inactive', 'No active provider owns this database.');
       }
+      if (!captured.input) return apiError('invalid-value', 'History requires a valid database, direction, and revision.');
+      const { databaseId, direction } = captured.input;
       const snapshot = backend.snapshot(databaseId);
       if (snapshot.status === 'missing') return apiError('not-opted-in', 'That database is not opted in.');
       if (snapshot.status === 'unsupported') return apiError('unsupported', snapshot.diagnostic.message);
       const result = backend.history({
         databaseId,
         direction,
-        expectedRevision: runtimeInput.expectedRevision,
+        expectedRevision: captured.input.expectedRevision,
       });
       if (!result.ok) return apiError(result.code as DataApiErrorCode, result.message);
       return freeze({
@@ -307,6 +326,145 @@ export function createDataApi(options: {
 
 function apiError(code: DataApiErrorCode, message: string): DataApiPatchResult & DataApiFlushResult {
   return { status: 'error', code, message };
+}
+
+export interface DataApiCellPatch<Value extends number | string | null> {
+  databaseId: PageId;
+  rowId: PageId;
+  propertyId: string;
+  value: Value;
+  expectedRevision: string;
+}
+
+export interface CapturedDataApiCellPatch<Value extends number | string | null> {
+  /** A valid, own data property captured once, even when another field is invalid. */
+  databaseId: PageId | null;
+  /** A plain canonical DTO with every field validated for the selected method. */
+  patch: DataApiCellPatch<Value> | null;
+}
+
+export interface DataApiHistoryInput {
+  databaseId: PageId;
+  direction: 'undo' | 'redo';
+  expectedRevision: string;
+}
+
+export interface CapturedDataApiHistoryInput {
+  databaseId: PageId | null;
+  input: DataApiHistoryInput | null;
+}
+
+type RevisionValidation = 'native' | 'opaque';
+
+/** Captures own data fields once and rejects getters/setters before authorization or mutation. */
+export function captureCellPatchInput(
+  input: unknown,
+  expectedValueType: 'number',
+  revisionValidation?: RevisionValidation,
+): CapturedDataApiCellPatch<number>;
+export function captureCellPatchInput(
+  input: unknown,
+  expectedValueType: 'text',
+  revisionValidation?: RevisionValidation,
+): CapturedDataApiCellPatch<string | null>;
+export function captureCellPatchInput(
+  input: unknown,
+  expectedValueType: 'number' | 'text',
+  revisionValidation?: RevisionValidation,
+): CapturedDataApiCellPatch<number | string | null>;
+export function captureCellPatchInput(
+  input: unknown,
+  expectedValueType: 'number' | 'text',
+  revisionValidation: RevisionValidation = 'native',
+): CapturedDataApiCellPatch<number | string | null> {
+  const captured = ownDataFields(input, ['databaseId', 'rowId', 'propertyId', 'value', 'expectedRevision']);
+  const values = captured?.values;
+  const databaseId = values && isValidId(values.databaseId) ? values.databaseId : null;
+  if (!captured?.valid || !values) return { databaseId, patch: null };
+
+  const { rowId, propertyId, value, expectedRevision } = values;
+  if (
+    !databaseId ||
+    !isValidId(rowId) ||
+    !isValidId(propertyId) ||
+    !isRevision(expectedRevision, revisionValidation)
+  ) {
+    return { databaseId, patch: null };
+  }
+  if (
+    (expectedValueType === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) ||
+    (expectedValueType === 'text' && !(value === null || (typeof value === 'string' && value.length <= 10_000)))
+  ) {
+    return { databaseId, patch: null };
+  }
+  return {
+    databaseId,
+    patch: { databaseId, rowId, propertyId, value, expectedRevision } as DataApiCellPatch<number | string | null>,
+  };
+}
+
+/** Captures history fields once so provider authorization and mutation use the same values. */
+export function captureDataApiHistoryInput(
+  input: unknown,
+  revisionValidation: RevisionValidation = 'native',
+): CapturedDataApiHistoryInput {
+  const captured = ownDataFields(input, ['databaseId', 'direction', 'expectedRevision']);
+  const values = captured?.values;
+  const databaseId = values && isValidId(values.databaseId) ? values.databaseId : null;
+  if (
+    !captured?.valid ||
+    !values ||
+    databaseId === null ||
+    (values.direction !== 'undo' && values.direction !== 'redo') ||
+    !isRevision(values.expectedRevision, revisionValidation)
+  ) {
+    return { databaseId, input: null };
+  }
+  return {
+    databaseId,
+    input: {
+      databaseId,
+      direction: values.direction,
+      expectedRevision: values.expectedRevision,
+    },
+  };
+}
+
+function isRevision(value: unknown, validation: RevisionValidation): value is string {
+  return validation === 'opaque'
+    ? typeof value === 'string' && value.length > 0
+    : isValidRevision(value);
+}
+
+function ownDataFields(
+  input: unknown,
+  fields: readonly string[],
+): { values: Record<string, unknown>; valid: boolean } | null {
+  if (input === null || typeof input !== 'object') return null;
+  try {
+    if (Array.isArray(input)) return null;
+    const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    let valid = true;
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, field);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        valid = false;
+        continue;
+      }
+      values[field] = descriptor.value;
+    }
+    return { values, valid };
+  } catch {
+    return null;
+  }
+}
+
+function isValidId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+}
+
+function isValidRevision(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:r\d+$/i.test(value);
 }
 
 function safelyNotify(listener: (snapshot: DataApiSnapshot) => void, snapshot: DataApiSnapshot): void {

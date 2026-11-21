@@ -3,7 +3,16 @@ import type { Changes, Command } from '../core/commands';
 import { isDocEmpty } from '../core/doc';
 import { snapshotDue } from '../core/history';
 import { emptyWorkspace } from '../core/model';
-import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
+import type {
+  DocNode,
+  FileId,
+  FileMeta,
+  PageId,
+  PageMeta,
+  PropType,
+  Snapshot,
+  WorkspaceState,
+} from '../core/model';
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { isEffectivelyTrashed } from '../core/tree';
@@ -20,6 +29,8 @@ import type {
 } from './pilotDataHistory';
 
 const MUTATION_FENCE_MESSAGE = 'The workspace session is preparing to close.';
+const PILOT_DATA_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const PILOT_DATA_REVISION_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:r\d+$/i;
 
 // the single place where commands run, state lives and changes are queued for disk
 export class WorkspaceSession {
@@ -381,8 +392,34 @@ export class WorkspaceSession {
     if (this.isMutationFenced) {
       return { ok: false, code: 'read-only', message: MUTATION_FENCE_MESSAGE };
     }
+    const capturedInput = ownDataFields(input, [
+      'databaseId',
+      'rowId',
+      'propertyId',
+      'value',
+      'expectedRevision',
+    ]);
+    const rawInput = capturedInput?.values;
+    const databaseId = rawInput?.databaseId;
+    const rowId = rawInput?.rowId;
+    const propertyId = rawInput?.propertyId;
+    const candidateValue = rawInput?.value;
+    const expectedRevision = rawInput?.expectedRevision;
+    if (
+      !capturedInput?.valid ||
+      !isPilotDataId(databaseId) ||
+      !isPilotDataId(rowId) ||
+      !isPilotDataId(propertyId) ||
+      !isPilotDataRevision(expectedRevision)
+    ) {
+      return {
+        ok: false,
+        code: 'invalid-value',
+        message: 'The cell patch contains an invalid identifier or snapshot revision.',
+      };
+    }
     const state = this.state;
-    const database = state.pages[input.databaseId];
+    const database = ownPage(state.pages, databaseId);
     if (!database || !hasPilotDataMarker(database.extra)) {
       return { ok: false, code: 'not-opted-in', message: 'That database is not opted in to Polaris Dados.' };
     }
@@ -408,7 +445,7 @@ export class WorkspaceSession {
       };
     }
     const revision = this.pilotDataRevision(database.id);
-    if (input.expectedRevision !== revision) {
+    if (expectedRevision !== revision) {
       return {
         ok: false,
         code: 'stale-revision',
@@ -424,31 +461,59 @@ export class WorkspaceSession {
           'A prior Polaris Dados save conflicted; reopen the vault before editing again.',
       };
     }
-    const value = input.value;
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      return { ok: false, code: 'invalid-value', message: 'A cell value must be a finite number.' };
-    }
-    const row = state.pages[input.rowId];
+    const row = ownPage(state.pages, rowId);
     if (!row || row.parentId !== database.id || isEffectivelyTrashed(state.pages, row.id)) {
       return { ok: false, code: 'row-not-found', message: 'That row is not a live member of this database.' };
     }
     if (row.encrypted || this.unreadable.has(row.id) || this.protectedReasons.has(row.id)) {
       return { ok: false, code: 'read-only', message: 'That row is read only.' };
     }
-    const property = database.database.properties.find((candidate) => candidate.id === input.propertyId);
+    const matchingProperties = database.database.properties.filter(
+      (candidate) => candidate.id === propertyId,
+    );
+    const property = matchingProperties[0];
     if (!property) {
       return { ok: false, code: 'property-not-found', message: 'That database property no longer exists.' };
     }
-    if (property.type !== 'number') {
+    if (matchingProperties.length !== 1) {
+      return { ok: false, code: 'unsupported', message: 'That database property identifier is ambiguous.' };
+    }
+    if (property.type !== 'number' && property.type !== 'text') {
+      if (property.type === 'checkbox' && typeof candidateValue === 'string') {
+        return {
+          ok: false,
+          code: 'invalid-value',
+          message: 'Checkbox values must be booleans, not strings.',
+        };
+      }
       return {
         ok: false,
         code: 'read-only',
-        message: 'Only manual number properties can be edited by this API.',
+        message: 'Only manual number and text properties can be edited by this API.',
       };
     }
+    if (
+      (property.type === 'number' &&
+        (typeof candidateValue !== 'number' || !Number.isFinite(candidateValue))) ||
+      (property.type === 'text' &&
+        !(candidateValue === null || (typeof candidateValue === 'string' && candidateValue.length <= 10_000)))
+    ) {
+      return {
+        ok: false,
+        code: 'invalid-value',
+        message:
+          property.type === 'number'
+            ? 'Number cells require a finite number.'
+            : 'Text cells require an exact string of at most 10,000 units or null.',
+      };
+    }
+    const value = candidateValue as number | string | null;
     const before = pilotDataCellValue(row.properties, property.id);
     if (!before) {
-      return { ok: false, code: 'unsupported', message: 'That cell is not a representable numeric value.' };
+      return { ok: false, code: 'unsupported', message: 'That cell is not a representable scalar value.' };
+    }
+    if (!isPilotDataHistoryCellValueForType(before, property.type)) {
+      return { ok: false, code: 'unsupported', message: 'That cell value does not match its property type.' };
     }
     if (before.present && before.value === value) return { ok: true, revision };
     let stagedRevision = revision;
@@ -500,14 +565,22 @@ export class WorkspaceSession {
     if (this.isMutationFenced) {
       return { ok: false, code: 'read-only', message: MUTATION_FENCE_MESSAGE };
     }
-    if (input.direction !== 'undo' && input.direction !== 'redo') {
+    const capturedInput = ownDataFields(input, ['databaseId', 'direction', 'expectedRevision']);
+    const rawInput = capturedInput?.values;
+    const databaseId = rawInput?.databaseId;
+    const directionValue = rawInput?.direction;
+    const expectedRevision = rawInput?.expectedRevision;
+    if (!capturedInput?.valid || !isPilotDataId(databaseId)) {
+      return { ok: false, code: 'invalid-value', message: 'History requires a valid database identifier.' };
+    }
+    if (directionValue !== 'undo' && directionValue !== 'redo') {
       return { ok: false, code: 'invalid-value', message: 'History direction must be undo or redo.' };
     }
-    const direction = input.direction as PilotDataHistoryDirection;
-    if (typeof input.expectedRevision !== 'string') {
+    const direction = directionValue as PilotDataHistoryDirection;
+    if (!isPilotDataRevision(expectedRevision)) {
       return { ok: false, code: 'invalid-value', message: 'History requires a snapshot revision.' };
     }
-    const database = this.state.pages[input.databaseId];
+    const database = ownPage(this.state.pages, databaseId);
     if (!database || !hasPilotDataMarker(database.extra)) {
       return { ok: false, code: 'not-opted-in', message: 'That database is not opted in to Polaris Dados.' };
     }
@@ -533,7 +606,7 @@ export class WorkspaceSession {
       };
     }
     const revision = this.pilotDataRevision(database.id);
-    if (input.expectedRevision !== revision) {
+    if (expectedRevision !== revision) {
       return {
         ok: false,
         code: 'stale-revision',
@@ -559,7 +632,7 @@ export class WorkspaceSession {
       };
     }
 
-    const row = this.state.pages[entry.rowId];
+    const row = ownPage(this.state.pages, entry.rowId);
     if (!row || row.parentId !== database.id || isEffectivelyTrashed(this.state.pages, row.id)) {
       return {
         ok: false,
@@ -574,21 +647,27 @@ export class WorkspaceSession {
     if (properties.length === 0) {
       return { ok: false, code: 'property-not-found', message: 'That history property no longer exists.' };
     }
-    if (properties.length !== 1 || properties[0]!.type !== 'number') {
+    const property = properties[0]!;
+    if (properties.length !== 1 || (property.type !== 'number' && property.type !== 'text')) {
       return {
         ok: false,
         code: 'unsupported',
-        message: 'That history property is no longer a unique number property.',
+        message: 'That history property is no longer a unique number or text property.',
       };
     }
 
     const expectedCell = direction === 'undo' ? entry.after : entry.before;
     const targetCell = direction === 'undo' ? entry.before : entry.after;
-    if (!isValidPilotDataCellValue(expectedCell) || !isValidPilotDataCellValue(targetCell)) {
+    if (
+      !isValidPilotDataCellValue(expectedCell) ||
+      !isValidPilotDataCellValue(targetCell) ||
+      !isPilotDataHistoryCellValueForType(expectedCell, property.type) ||
+      !isPilotDataHistoryCellValueForType(targetCell, property.type)
+    ) {
       return {
         ok: false,
         code: 'unsupported',
-        message: 'That history entry is not a valid numeric cell value.',
+        message: 'That history entry is not valid for this property type.',
       };
     }
     const currentCell = pilotDataCellValue(row.properties, entry.propertyId);
@@ -597,7 +676,7 @@ export class WorkspaceSession {
     }
 
     const restoredProperties = { ...row.properties };
-    if (targetCell.present) restoredProperties[entry.propertyId] = targetCell.value;
+    if (targetCell.present) setOwnPropertyValue(restoredProperties, entry.propertyId, targetCell.value);
     else delete restoredProperties[entry.propertyId];
     const nextState: WorkspaceState = {
       ...this.state,
@@ -943,6 +1022,50 @@ function hasPilotDataMarker(extra: Record<string, unknown>): boolean {
   return Object.hasOwn(extra, 'polarisDados');
 }
 
+function ownPage(pages: Record<PageId, PageMeta>, id: PageId): PageMeta | undefined {
+  return Object.hasOwn(pages, id) ? pages[id] : undefined;
+}
+
+function setOwnPropertyValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+}
+
+function ownDataFields(
+  input: unknown,
+  fields: readonly string[],
+): { values: Record<string, unknown>; valid: boolean } | null {
+  if (input === null || typeof input !== 'object') return null;
+  try {
+    if (Array.isArray(input)) return null;
+    const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    let valid = true;
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, field);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        valid = false;
+        continue;
+      }
+      values[field] = descriptor.value;
+    }
+    return { values, valid };
+  } catch {
+    return null;
+  }
+}
+
+function isPilotDataId(value: unknown): value is string {
+  return typeof value === 'string' && PILOT_DATA_ID_PATTERN.test(value);
+}
+
+function isPilotDataRevision(value: unknown): value is string {
+  return typeof value === 'string' && PILOT_DATA_REVISION_PATTERN.test(value);
+}
+
 function hasLiveCanvasRow(pages: Record<PageId, PageMeta>, databaseId: PageId): boolean {
   return Object.values(pages).some(
     (page) => page.parentId === databaseId && page.kind === 'canvas' && !isEffectivelyTrashed(pages, page.id),
@@ -957,13 +1080,24 @@ function pilotDataCellValue(
   const value = properties[propertyId];
   if (value === null) return { present: true, value: null };
   if (typeof value === 'number' && Number.isFinite(value)) return { present: true, value };
+  if (typeof value === 'string' && value.length <= 10_000) return { present: true, value };
   return null;
 }
 
 function isValidPilotDataCellValue(value: PilotDataHistoryCellValue): boolean {
   return value.present === false
     ? value.value === null
-    : value.value === null || (typeof value.value === 'number' && Number.isFinite(value.value));
+    : value.value === null ||
+        (typeof value.value === 'number' && Number.isFinite(value.value)) ||
+        (typeof value.value === 'string' && value.value.length <= 10_000);
+}
+
+function isPilotDataHistoryCellValueForType(value: PilotDataHistoryCellValue, type: PropType): boolean {
+  if (value.present === false) return value.value === null;
+  if (value.value === null) return type === 'number' || type === 'text';
+  if (type === 'number') return typeof value.value === 'number' && Number.isFinite(value.value);
+  if (type === 'text') return typeof value.value === 'string' && value.value.length <= 10_000;
+  return false;
 }
 
 function samePilotDataCellValue(a: PilotDataHistoryCellValue, b: PilotDataHistoryCellValue): boolean {

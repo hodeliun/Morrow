@@ -237,6 +237,8 @@ export function parseFormula(source: string): Expr {
 
 export interface FormulaEvaluationContext {
   resolveIdentifier?: (name: string, span: FormulaSpan) => FormulaRuntimeValue;
+  /** Optional resolver used only by the built-in prop() call; omitted contexts keep the identifier fallback. */
+  resolveProperty?: (name: string, span: FormulaSpan) => FormulaRuntimeValue;
   resolveMember?: (receiver: FormulaRuntimeValue, name: string, span: FormulaSpan, receiverExpression?: Expr) => FormulaRuntimeValue;
   invokeMethod?: (
     receiver: FormulaRuntimeValue,
@@ -438,6 +440,7 @@ export function evaluateRuntimeFormula(
         if (name === 'prop') {
           if (node.args.length !== 1) throw new Error('prop() expects one property name');
           const property = toText(run(node.args[0]!, scope));
+          if (context.resolveProperty) return context.resolveProperty(property, node.args[0]!);
           if (!context.resolveIdentifier) throw new Error('prop() is only available in a database formula');
           return context.resolveIdentifier(property, node.args[0]!);
         }

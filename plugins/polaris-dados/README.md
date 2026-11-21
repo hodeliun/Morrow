@@ -69,10 +69,14 @@ Apache-2.0; the repository-root `LICENSE` applies to this derived source.
 `src/engine/dateValues.ts` contains only `isValidDateKey`, `isValidDateTime`, and the private
 `isValidTime` helper required by the latter. They derive from the same commit's
 `src/core/typedValues.ts` (blob `a071a4a8506e9f1680328901dace009b9ee6c6ab`). The original engine
-import from `./typedValues` was changed to the plugin-local `./dateValues` import. Parser,
-evaluator, error behavior, and length/depth/work limits remain copied from the pinned formula
-source. The tests adapt pertinent cases from `src/core/formula.test.ts` and add the P1 quantity ×
-price examples and explicit bounds checks.
+import from `./typedValues` was changed to the plugin-local `./dateValues` import. The parser and
+bounded evaluator core remain copied from the pinned formula source, with one project-local context
+hook: optional `resolveProperty(name, span)`, called only by `prop()`. When that hook is absent,
+`prop()` invokes the original `resolveIdentifier` callback directly, preserving existing contexts
+and method receiver behavior. The plugin uses the hook to distinguish explicit property lookup
+from the contextual `thisRow` identifier and `WithName` locals. This change adds no parser syntax,
+effects, or host capabilities. Tests adapt pertinent cases from `src/core/formula.test.ts` and add
+P1 quantity × price examples and explicit bounds checks.
 
 The repository-root Apache-2.0 license accompanies the plugin when the fixture is created.
 

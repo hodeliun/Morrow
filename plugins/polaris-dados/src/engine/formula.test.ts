@@ -48,6 +48,51 @@ describe('Polaris Dados formula engine extraction', () => {
     expect(run('contains(prop("Name"), "e")').value).toBe(true);
   });
 
+  it('uses an optional prop resolver and preserves the legacy identifier fallback', () => {
+    const calls: string[] = [];
+    const withHook = computeRuntimeFormula(
+      'Name + prop("Name")',
+      {
+        resolveIdentifier(name) {
+          calls.push(`identifier:${name}`);
+          return 1;
+        },
+        resolveProperty(name) {
+          calls.push(`property:${name}`);
+          return 2;
+        },
+      },
+      fixedNow,
+    );
+    expect(withHook).toEqual({ value: 3, error: null });
+    expect(calls).toEqual(['identifier:Name', 'property:Name']);
+
+    const fallbackContext = {
+      prefix: 'legacy',
+      resolveIdentifier(this: { readonly prefix: string }, name: string) {
+        return `${this.prefix}:${name}`;
+      },
+    };
+    expect(computeRuntimeFormula('prop("Name")', fallbackContext, fixedNow)).toEqual({
+      value: 'legacy:Name',
+      error: null,
+    });
+    expect(computeRuntimeFormula('prop("Name")', {}, fixedNow).error).toBe(
+      'prop() is only available in a database formula',
+    );
+
+    const hookError = computeRuntimeFormula(
+      'prop("Missing")',
+      {
+        resolveProperty(name) {
+          throw new Error(`Property ${name} is unavailable.`);
+        },
+      },
+      fixedNow,
+    );
+    expect(hookError).toEqual({ value: null, error: 'Property Missing is unavailable.' });
+  });
+
   it('keeps zero, false, blank, and evaluation errors distinct', () => {
     expect(run('List(0, false, null)')).toEqual({ value: [0, false, null], error: null });
     expect(run('null')).toEqual({ value: null, error: null });

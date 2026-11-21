@@ -1,6 +1,6 @@
 import type { DataApiRow, DataApiSnapshot } from '../../../../src/app/plugins/dataApi';
 import { computeRuntimeFormula } from '../engine/formula';
-import type { FormulaRuntimeValue } from '../engine/formula';
+import type { FormulaRowRef, FormulaRuntimeValue } from '../engine/formula';
 
 export type ReadySnapshot = Extract<DataApiSnapshot, { status: 'ready' }>;
 export type ProviderProperty = ReadySnapshot['schema']['properties'][number];
@@ -65,22 +65,35 @@ function evaluateFormulaProperty(
 
   budget.evaluated += 1;
   budget.visiting.add(property.id);
+  const currentRow: FormulaRowRef = { formulaKind: 'row', id: row.id, databaseId: '' };
+  const resolveDataProperty = (name: string): FormulaRuntimeValue => {
+    const referenced = properties.find(
+      (candidate) => candidate.name.trim().toLowerCase() === name.trim().toLowerCase(),
+    );
+    if (!referenced) throw new Error(`There is no property called “${name}”.`);
+    if (referenced.type === 'formula') {
+      const value = evaluateFormulaProperty(row, properties, referenced, budget, depth + 1);
+      if (value.kind === 'error') throw new Error(value.message);
+      if (value.kind === 'missing' || value.kind === 'null') return null;
+      if (value.kind === 'list') return [...value.value];
+      return value.value;
+    }
+    if (!Object.hasOwn(row.properties, referenced.id)) return null;
+    return toRuntimeValue(row.properties[referenced.id]);
+  };
   const result = computeRuntimeFormula(property.formula, {
     resolveIdentifier(name) {
-      const referenced = properties.find(
-        (candidate) => candidate.name.trim().toLowerCase() === name.trim().toLowerCase(),
-      );
-      if (!referenced) throw new Error(`There is no property called “${name}”.`);
-      if (referenced.type === 'formula') {
-        const value = evaluateFormulaProperty(row, properties, referenced, budget, depth + 1);
-        if (value.kind === 'error') throw new Error(value.message);
-        if (value.kind === 'missing') return null;
-        if (value.kind === 'null') return null;
-        if (value.kind === 'list') return [...value.value];
-        return value.value;
+      if (name.trim().toLowerCase() === 'thisrow') return currentRow;
+      return resolveDataProperty(name);
+    },
+    resolveProperty(name) {
+      return resolveDataProperty(name);
+    },
+    resolveMember(receiver, name) {
+      if (receiver !== currentRow) {
+        throw new Error('Only the current row supports property access in a database formula.');
       }
-      if (!Object.hasOwn(row.properties, referenced.id)) return null;
-      return toRuntimeValue(row.properties[referenced.id]);
+      return resolveDataProperty(name);
     },
   });
 
@@ -106,6 +119,15 @@ function normalizeValue(value: FormulaRuntimeValue): EvaluatedCell {
   }
   if (typeof value === 'boolean') return { kind: 'boolean', value };
   if (typeof value === 'string') return { kind: 'text', value };
-  if (Array.isArray(value)) return { kind: 'list', value };
+  if (Array.isArray(value)) {
+    return containsUnsupportedReference(value)
+      ? { kind: 'error', message: 'This table does not display row references or tables.' }
+      : { kind: 'list', value };
+  }
   return { kind: 'error', message: 'This table does not display row references or tables.' };
+}
+
+function containsUnsupportedReference(value: FormulaRuntimeValue): boolean {
+  if (Array.isArray(value)) return value.some(containsUnsupportedReference);
+  return typeof value === 'object' && value !== null;
 }

@@ -218,9 +218,14 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       const properties = { ...page.value.properties };
       for (const [key, value] of Object.entries(command.values ?? {})) {
         if (!ID_PATTERN.test(key)) return fail('Invalid property.');
-        if (value === null || value === '' || (Array.isArray(value) && value.length === 0))
+        const preserveExactText = isOptedInTextProperty(state, page.value, key);
+        if (
+          (value === null || value === '' || (Array.isArray(value) && value.length === 0)) &&
+          !preserveExactText
+        )
           delete properties[key];
-        else if (validValue(value)) properties[key] = value;
+        else if (value === null && preserveExactText) setOwnPropertyValue(properties, key, null);
+        else if (validValue(value)) setOwnPropertyValue(properties, key, value);
         else return fail('Invalid property value.');
       }
       return updatePage(state, { ...page.value, properties, updatedAt: command.now });
@@ -233,9 +238,18 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
         const properties: Record<string, PropValue> = {};
         for (const [key, value] of Object.entries(command.properties ?? {})) {
           if (!ID_PATTERN.test(key)) return fail('Invalid property.');
-          if (value === null || value === '' || (Array.isArray(value) && value.length === 0)) continue;
+          const preserveExactText = isOptedInTextProperty(state, page.value, key);
+          if (
+            (value === null || value === '' || (Array.isArray(value) && value.length === 0)) &&
+            !preserveExactText
+          )
+            continue;
+          if (value === null && preserveExactText) {
+            setOwnPropertyValue(properties, key, null);
+            continue;
+          }
           if (!validValue(value)) return fail('Invalid property value.');
-          properties[key] = value;
+          setOwnPropertyValue(properties, key, value);
         }
         next.properties = properties;
       }
@@ -453,6 +467,23 @@ function validValue(value: unknown): value is PropValue {
   if (typeof value === 'number') return Number.isFinite(value);
   if (typeof value === 'boolean') return true;
   return Array.isArray(value) && value.length <= 200 && value.every((item) => typeof item === 'string');
+}
+
+function setOwnPropertyValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+}
+
+function isOptedInTextProperty(state: WorkspaceState, page: PageMeta, propertyId: string): boolean {
+  const parent = page.parentId ? state.pages[page.parentId] : undefined;
+  if (parent?.kind !== 'database' || !parent.database || !Object.hasOwn(parent.extra, 'polarisDados'))
+    return false;
+  const matches = parent.database.properties.filter((property) => property.id === propertyId);
+  return matches.length === 1 && matches[0]!.type === 'text';
 }
 
 export function normalizeTitle(title: unknown): string {

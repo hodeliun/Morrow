@@ -36,7 +36,7 @@ export function createPilotDataBackend(session: WorkspaceSession): PilotDataBack
 function snapshot(session: WorkspaceSession, databaseId: PageId): DataApiSnapshot {
   const state = session.getState();
   const revision = session.pilotDataRevision(databaseId);
-  const database = state.pages[databaseId];
+  const database = ownPage(state.pages, databaseId);
   if (!database || !Object.hasOwn(database.extra, 'polarisDados')) {
     return freeze({ version: 1, status: 'missing', databaseId, revision });
   }
@@ -62,6 +62,10 @@ function snapshot(session: WorkspaceSession, databaseId: PageId): DataApiSnapsho
     readonly: false,
     diagnostic: null,
   });
+}
+
+function ownPage(pages: Record<PageId, PageMeta>, id: PageId): PageMeta | undefined {
+  return Object.hasOwn(pages, id) ? pages[id] : undefined;
 }
 
 function databaseDiagnostic(
@@ -147,7 +151,7 @@ function propertyValueRoundTrips(property: PropDef, value: unknown): boolean {
   if (property.type === 'formula') return false;
   const serialized = writeProperty(property, value as PropValue | undefined, true);
   if (serialized === undefined) return false;
-  const roundTrip = readProperty(property, serialized, () => '__polaris_unsupported_option__');
+  const roundTrip = readProperty(property, serialized, () => '__polaris_unsupported_option__', true);
   return roundTrip.added.length === 0 && sameValue(roundTrip.value, value);
 }
 
