@@ -51,6 +51,7 @@ $outsiderAliveAfterParentMismatch = $false
 $outsiderAliveAfterOwnerMismatch = $false
 $outsiderExited = $true
 $allNativeJobsCleaned = $true
+$cimDiagnosticCleanupUnconfirmed = $false
 $privateRuntimeRetained = $false
 $capsuleCleanup = $null
 $pwshPath = $null
@@ -341,6 +342,38 @@ function New-PolicyDescriptor {
     environment = $environment
     expectedParentProcessId = $ParentProcessId
     expectedOwnerSid = $OwnerSid
+  }
+}
+
+function Get-PolicyCimFailureCategory {
+  param([Parameter(Mandatory)][Exception] $Exception)
+
+  $current = $Exception
+  for ($depth = 0; $null -ne $current -and $depth -lt 8; $depth++) {
+    switch ($current.GetType().FullName) {
+      'Microsoft.Management.Infrastructure.CimException' { return 'cim' }
+      'System.UnauthorizedAccessException' { return 'access-denied' }
+      'System.InvalidOperationException' { return 'invalid-operation' }
+      'System.FormatException' { return 'format' }
+      'System.IO.IOException' { return 'io' }
+      'System.Management.Automation.ActionPreferenceStopException' { return 'action-preference-stop' }
+      'System.Management.Automation.RuntimeException' { return 'runtime' }
+    }
+    $current = $current.InnerException
+  }
+  return 'other'
+}
+
+function Set-PolicyCimProbeFailure {
+  param(
+    [Parameter(Mandatory)][System.Collections.IDictionary] $Observation,
+    [Parameter(Mandatory)][string] $Stage,
+    [Parameter(Mandatory)][string] $Category
+  )
+
+  if ($Observation['failureStage'] -ceq 'none') {
+    $Observation['failureStage'] = $Stage
+    $Observation['failureCategory'] = $Category
   }
 }
 
@@ -638,6 +671,249 @@ $reportLines = @(
     throw 'The synthetic outsider did not start.'
   }
 
+  $failurePhase = 'suspended-cim-diagnostic'
+  $cimDiagnosticMarkerPath = Join-Path $privateRoot 'cim-diagnostic.marker'
+  $cimDiagnosticObservation = [ordered]@{
+    scenario = 'suspended-cim-step-diagnostic'
+    probeState = 'probe-failed'
+    failureStage = 'none'
+    failureCategory = 'none'
+    cimRowState = 'not-observed'
+    cimProcessIdMatches = $null
+    cimParentMatchesTestProcess = $null
+    cimExecutablePathPresent = $null
+    cimExecutablePathMatchesNative = $null
+    cimExecutablePathMatchesStaged = $null
+    cimCreationDateKind = 'not-observed'
+    cimCreationTimeMatchesNativeWithin20Ticks = $null
+    cimHashMatchesExpected = $null
+    ownerMethodStatus = 'not-observed'
+    ownerReturnValue = $null
+    ownerMatchesCurrentUser = $null
+    rootCreationAttempted = $false
+    rootSessionRetained = $false
+    rootSuspendedBefore = $false
+    rootMemberBefore = $false
+    rootSuspendedAfter = $false
+    rootMemberAfter = $false
+    cleanupJobEmpty = $null
+    cleanupRootExited = $null
+    cleanupDisposeStatus = 'not-attempted'
+    cleanupConfirmed = $false
+    markerAbsent = $false
+    outsiderAliveAfterProbe = $false
+  }
+  $cimDiagnosticSession = $null
+  $cimDiagnosticCleanupConfirmed = $false
+  try {
+    $probeDescriptor = Copy-PolicyDescriptor -Descriptor $baseDescriptor
+    $probeArguments = [Collections.Generic.List[string]]::new()
+    foreach ($argument in [string[]]$baseDescriptor.argumentList) { $probeArguments.Add([string]$argument) }
+    $probeArguments[7] = Join-Path $privateRoot 'cim-diagnostic-child.receipt'
+    $probeArguments[8] = $cimDiagnosticMarkerPath
+    $probeDescriptor.argumentList = $probeArguments.ToArray()
+
+    $cimDiagnosticObservation.rootCreationAttempted = $true
+    $cimDiagnosticSession = CreateAtomicSuspendedRoot `
+      -ExecutablePath $pwshPath `
+      -ArgumentList ([string[]]$probeDescriptor.argumentList) `
+      -Environment $environment `
+      -WorkingDirectory $runtimeRoot
+    $cimDiagnosticObservation.rootSessionRetained = $null -ne $cimDiagnosticSession
+    $allNativeJobsCleaned = $false
+    $nativeBeforeProbe = $cimDiagnosticSession.ObserveRoot()
+    $membersBeforeProbe = @($cimDiagnosticSession.ListMemberIds())
+    $cimDiagnosticObservation.rootSuspendedBefore = [string]$nativeBeforeProbe.state -ceq 'suspended'
+    foreach ($memberId in $membersBeforeProbe) {
+      if ([uint32]$memberId -eq [uint32]$nativeBeforeProbe.processId) { $cimDiagnosticObservation.rootMemberBefore = $true; break }
+    }
+    if (-not $cimDiagnosticObservation.rootSuspendedBefore -or -not $cimDiagnosticObservation.rootMemberBefore) {
+      throw 'The diagnostic root did not remain suspended in its private Job.'
+    }
+
+    try {
+      $filter = 'ProcessId = ' + [string][int]$nativeBeforeProbe.processId
+      $processes = @(Get-CimInstance -ClassName Win32_Process -Filter $filter -OperationTimeoutSec 5 -ErrorAction Stop)
+      if ($processes.Count -eq 0) {
+        $cimDiagnosticObservation.cimRowState = 'zero'
+        Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-cardinality' -Category 'zero-rows'
+      } elseif ($processes.Count -eq 1) {
+        $cimDiagnosticObservation.cimRowState = 'one'
+      } else {
+        $cimDiagnosticObservation.cimRowState = 'multiple'
+        Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-cardinality' -Category 'multiple-rows'
+      }
+    } catch {
+      $processes = @()
+      $cimDiagnosticObservation.cimRowState = 'query-failed'
+      Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-query' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+    }
+
+    if ($processes.Count -eq 1) {
+      $process = $processes[0]
+      $cimProcessIdMatchesRetainedRoot = $false
+      try {
+        $cimDiagnosticObservation.cimProcessIdMatches = [int]$process.ProcessId -eq [int]$nativeBeforeProbe.processId
+        $cimProcessIdMatchesRetainedRoot = [bool]$cimDiagnosticObservation.cimProcessIdMatches
+        if (-not $cimDiagnosticObservation.cimProcessIdMatches) {
+          Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-process-id' -Category 'mismatch'
+        }
+      } catch {
+        Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-process-id' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+      }
+
+      if ($cimProcessIdMatchesRetainedRoot) {
+        try {
+          $cimDiagnosticObservation.cimParentMatchesTestProcess = [int]$process.ParentProcessId -eq [int]$PID
+          $cimDiagnosticObservation.cimExecutablePathPresent = -not [string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)
+          if (-not $cimDiagnosticObservation.cimExecutablePathPresent) {
+            Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-executable-path' -Category 'missing'
+          }
+        } catch {
+          Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-process-fields' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+        }
+
+        # Probe owner independently even if the process image path is absent.
+        try {
+          $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+          if ($null -eq $owner) {
+            $cimDiagnosticObservation.ownerMethodStatus = 'null-result'
+            Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-owner' -Category 'null-result'
+          } else {
+            $returnValue = [uint32]$owner.ReturnValue
+            $cimDiagnosticObservation.ownerReturnValue = $returnValue
+            if ($returnValue -ne 0) {
+              $cimDiagnosticObservation.ownerMethodStatus = 'nonzero-return'
+              Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-owner' -Category 'nonzero-return'
+            } elseif ([string]::IsNullOrWhiteSpace([string]$owner.Sid)) {
+              $cimDiagnosticObservation.ownerMethodStatus = 'empty-sid'
+              Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-owner' -Category 'empty-sid'
+            } else {
+              $cimDiagnosticObservation.ownerMethodStatus = 'success'
+              $cimDiagnosticObservation.ownerMatchesCurrentUser = [string]::Equals([string]$owner.Sid, [string]$identitySid, [StringComparison]::Ordinal)
+            }
+          }
+          $owner = $null
+        } catch {
+          $cimDiagnosticObservation.ownerMethodStatus = 'exception'
+          Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-owner' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+        }
+      } else {
+        $cimDiagnosticObservation.ownerMethodStatus = if ($null -eq $cimDiagnosticObservation.cimProcessIdMatches) {
+          'skipped-pid-unavailable'
+        } else {
+          'skipped-pid-mismatch'
+        }
+      }
+
+      if ($cimProcessIdMatchesRetainedRoot) {
+        try {
+          $creationValue = $process.CreationDate
+          if ($creationValue -is [datetime]) {
+            $cimDiagnosticObservation.cimCreationDateKind = 'datetime'
+            $creationTime = $creationValue.ToUniversalTime()
+          } elseif ($creationValue -is [string]) {
+            $cimDiagnosticObservation.cimCreationDateKind = 'dmtf-string'
+            $creationTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($creationValue).ToUniversalTime()
+          } else {
+            $cimDiagnosticObservation.cimCreationDateKind = 'other'
+            throw [InvalidOperationException]::new('Unsupported creation-date representation.')
+          }
+          $nativeTime = [DateTime]::Parse([string]$nativeBeforeProbe.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+          $cimDiagnosticObservation.cimCreationTimeMatchesNativeWithin20Ticks = [Math]::Abs(($nativeTime - $creationTime).Ticks) -le 20
+        } catch {
+          if ($cimDiagnosticObservation.cimCreationDateKind -eq 'not-observed') { $cimDiagnosticObservation.cimCreationDateKind = 'parse-failed' }
+          Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-creation-time' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+        }
+
+        if ($cimDiagnosticObservation.cimExecutablePathPresent) {
+          try {
+            $cimPath = ConvertTo-PilotCanonicalPath -Path ([string]$process.ExecutablePath)
+            $nativePath = ConvertTo-PilotCanonicalPath -Path ([string]$nativeBeforeProbe.executablePath)
+            $cimDiagnosticObservation.cimExecutablePathMatchesNative = [string]::Equals($cimPath, $nativePath, [StringComparison]::OrdinalIgnoreCase)
+            $cimDiagnosticObservation.cimExecutablePathMatchesStaged = [string]::Equals($cimPath, $pwshPath, [StringComparison]::OrdinalIgnoreCase)
+            if (-not $cimDiagnosticObservation.cimExecutablePathMatchesNative -or
+                -not $cimDiagnosticObservation.cimExecutablePathMatchesStaged) {
+              Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-path' -Category 'mismatch'
+            } else {
+              try {
+                $hash = (Get-FileHash -LiteralPath $pwshPath -Algorithm SHA256 -ErrorAction Stop).Hash
+                $cimDiagnosticObservation.cimHashMatchesExpected = [string]::Equals([string]$hash, [string]$pwshHash, [StringComparison]::OrdinalIgnoreCase)
+                if (-not $cimDiagnosticObservation.cimHashMatchesExpected) {
+                  Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-hash' -Category 'mismatch'
+                }
+              } catch {
+                Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-hash' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+              }
+            }
+            $cimPath = $null
+            $nativePath = $null
+            $hash = $null
+          } catch {
+            $cimDiagnosticObservation.cimExecutablePathMatchesNative = $false
+            Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cim-path' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+          }
+        }
+      }
+      $process = $null
+      $processes = @()
+    }
+    $cimDiagnosticObservation.probeState = 'completed'
+  } catch {
+    $cimDiagnosticObservation.probeState = 'probe-failed'
+    Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'root-creation-or-observation' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+  } finally {
+    if ($null -ne $cimDiagnosticSession) {
+      try {
+        $nativeAfterProbe = $cimDiagnosticSession.ObserveRoot()
+        $membersAfterProbe = @($cimDiagnosticSession.ListMemberIds())
+        $cimDiagnosticObservation.rootSuspendedAfter = [string]$nativeAfterProbe.state -ceq 'suspended'
+        foreach ($memberId in $membersAfterProbe) {
+          if ([uint32]$memberId -eq [uint32]$nativeAfterProbe.processId) { $cimDiagnosticObservation.rootMemberAfter = $true; break }
+        }
+      } catch {
+        Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cleanup-observe' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+      }
+      try {
+        $diagnosticStop = $cimDiagnosticSession.StopAndWait(10000)
+        $cimDiagnosticObservation.cleanupJobEmpty = [bool]$diagnosticStop.jobEmpty
+        $cimDiagnosticObservation.cleanupRootExited = [bool]$diagnosticStop.rootExited
+      } catch {
+        Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cleanup-stop-and-wait' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+      }
+      try {
+        $null = $cimDiagnosticSession.Dispose()
+        $cimDiagnosticObservation.cleanupDisposeStatus = 'succeeded'
+      } catch {
+        $cimDiagnosticObservation.cleanupDisposeStatus = 'failed'
+        Set-PolicyCimProbeFailure -Observation $cimDiagnosticObservation -Stage 'cleanup-dispose' -Category (Get-PolicyCimFailureCategory -Exception $_.Exception)
+      }
+      $cimDiagnosticSession = $null
+    }
+    $cimDiagnosticObservation.markerAbsent = -not [IO.File]::Exists($cimDiagnosticMarkerPath)
+    $cimDiagnosticCleanupConfirmed = (
+      [bool]$cimDiagnosticObservation.cleanupJobEmpty -and [bool]$cimDiagnosticObservation.cleanupRootExited -and
+      [bool]$cimDiagnosticObservation.markerAbsent -and
+      $cimDiagnosticObservation.cleanupDisposeStatus -ceq 'succeeded'
+    )
+    $cimDiagnosticCleanupUnconfirmed = ([bool]$cimDiagnosticObservation.rootCreationAttempted) -and (-not [bool]$cimDiagnosticCleanupConfirmed)
+    $cimDiagnosticObservation.cleanupConfirmed = $cimDiagnosticCleanupConfirmed
+    if ($null -ne $outsider) {
+      try {
+        $outsider.Refresh()
+        $cimDiagnosticObservation.outsiderAliveAfterProbe = -not $outsider.HasExited
+      } catch { $cimDiagnosticObservation.outsiderAliveAfterProbe = $false }
+    }
+    $allNativeJobsCleaned = $cimDiagnosticCleanupConfirmed
+    if ($cimDiagnosticCleanupUnconfirmed) { $allNativeJobsCleaned = $false }
+    if (-not $cimDiagnosticCleanupConfirmed) {
+      [void]$cleanupErrors.Add('The synthetic suspended CIM diagnostic cleanup was not fully confirmed.')
+    }
+  }
+
+  [void]$observations.Add([pscustomobject]$cimDiagnosticObservation)
+  if (-not $cimDiagnosticCleanupConfirmed) { throw 'The synthetic suspended CIM diagnostic cleanup was not fully confirmed.' }
+
   $failurePhase = 'parent-mismatch'
   $parentMismatch = [int]$PID + 1
   if ($parentMismatch -gt [int]::MaxValue) { $parentMismatch = [int]$PID - 1 }
@@ -889,7 +1165,8 @@ $reportLines = @(
   if (-not [string]::IsNullOrWhiteSpace($junctionPath) -and [IO.Directory]::Exists($junctionPath)) {
     try { [IO.Directory]::Delete($junctionPath, $false) } catch { [void]$cleanupErrors.Add('The test-owned junction could not be removed.') }
   }
-  if ($privateRootCreated -and [IO.Directory]::Exists($privateRoot) -and (-not $allNativeJobsCleaned -or -not $outsiderExited)) {
+  if ($privateRootCreated -and [IO.Directory]::Exists($privateRoot) -and
+      (-not $allNativeJobsCleaned -or -not $outsiderExited -or $cimDiagnosticCleanupUnconfirmed)) {
     $privateRuntimeRetained = $true
     [void]$cleanupErrors.Add('Private staging was retained because process cleanup was not fully confirmed.')
   } elseif ($privateRootCreated -and [IO.Directory]::Exists($privateRoot)) {
