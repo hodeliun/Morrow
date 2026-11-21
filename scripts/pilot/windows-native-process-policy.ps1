@@ -2,7 +2,10 @@ function Get-PilotWindowsNativeProcessCapsuleSource {
   @'
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
+using System.Threading;
 
 namespace Morrow.Pilot
 {
@@ -22,6 +25,47 @@ namespace Morrow.Pilot
     internal WindowsNativeProcessCleanupSnapshot Copy()
     {
       return new WindowsNativeProcessCleanupSnapshot(jobEmpty, rootExited, exitCode);
+    }
+  }
+
+  public sealed class WindowsNativeProcessStopAttempt
+  {
+    public string outcome { get; private set; }
+    public string errorId { get; private set; }
+    public string stage { get; private set; }
+    public string[] fields { get; private set; }
+    public bool completed { get; private set; }
+    public bool timedOut { get; private set; }
+    public bool? jobEmpty { get; private set; }
+    public bool? rootExited { get; private set; }
+    public uint? exitCode { get; private set; }
+    public bool attempted { get; private set; }
+    public bool disposeFailed { get; private set; }
+
+    internal WindowsNativeProcessStopAttempt(
+      string outcome,
+      string errorId,
+      string stage,
+      string[] fields,
+      bool completed,
+      bool timedOut,
+      bool? jobEmpty,
+      bool? rootExited,
+      uint? exitCode,
+      bool attempted,
+      bool disposeFailed)
+    {
+      this.outcome = outcome;
+      this.errorId = errorId;
+      this.stage = stage;
+      this.fields = fields == null ? new string[0] : (string[])fields.Clone();
+      this.completed = completed;
+      this.timedOut = timedOut;
+      this.jobEmpty = jobEmpty;
+      this.rootExited = rootExited;
+      this.exitCode = exitCode;
+      this.attempted = attempted;
+      this.disposeFailed = disposeFailed;
     }
   }
 
@@ -68,6 +112,22 @@ namespace Morrow.Pilot
       }
     }
 
+    private sealed class StopToken
+    {
+      internal readonly WindowsNativeProcessCapsule owner;
+      internal readonly object session;
+      internal readonly long generation;
+      internal readonly object[] identitySnapshot;
+
+      internal StopToken(WindowsNativeProcessCapsule owner, object session, long generation, object[] identitySnapshot)
+      {
+        this.owner = owner;
+        this.session = session;
+        this.generation = generation;
+        this.identitySnapshot = (object[])identitySnapshot.Clone();
+      }
+    }
+
     private const string DiagnosticsKey = "Morrow.WindowsNativeProcess.Diagnostics";
     private readonly object _sync = new object();
     private readonly IdentitySnapshot _identitySnapshot;
@@ -77,6 +137,8 @@ namespace Morrow.Pilot
     private bool _lastJobEmpty;
     private bool _lastRootExited;
     private uint? _lastExitCode;
+    private bool _lastTimedOut;
+    private bool _lastDisposeFailed;
     private long _generation = 1;
 
     private WindowsNativeProcessCapsule(object session, object[] identitySnapshot)
@@ -146,6 +208,272 @@ namespace Morrow.Pilot
       }
     }
 
+    private object CaptureStopToken()
+    {
+      if (!Monitor.TryEnter(_sync))
+        return null;
+      try
+      {
+        return new StopToken(this, _session, _generation, new object[]
+        {
+          _identitySnapshot.processId,
+          _identitySnapshot.parentProcessId,
+          _identitySnapshot.executablePath,
+          _identitySnapshot.executableSha256,
+          _identitySnapshot.creationTimeUtc,
+          _identitySnapshot.ownerSid
+        });
+      }
+      finally
+      {
+        Monitor.Exit(_sync);
+      }
+    }
+
+    private WindowsNativeProcessStopAttempt StopForPolicy(object value, int timeoutMs)
+    {
+      if (!Monitor.TryEnter(_sync))
+        return StopFailure("Morrow.WindowsNativeProcess.CapsuleBusy", "stop-lock-acquisition", new string[0], false, null, null, null, false);
+      try
+      {
+        StopToken token = value as StopToken;
+        if (token == null || !Object.ReferenceEquals(token.owner, this))
+          return StopFailure("Morrow.WindowsNativeProcess.InvalidCapsule", "stop-capsule-validation", new string[0], false, null, null, null, false);
+        if (timeoutMs < 0 || timeoutMs > 120000)
+          return StopFailure("Morrow.WindowsNativeProcess.InvalidStopTimeout", "stop-timeout-validation", new string[0], false, null, null, null, false);
+        if (token.generation != _generation || !IdentitySnapshotMatches(token.identitySnapshot))
+          return StopFailure("Morrow.WindowsNativeProcess.CapsuleBusy", "stop-lock-acquisition", new string[0], false, null, null, null, false);
+        if (_completed)
+          return StopCompleted(_lastJobEmpty, _lastRootExited, _lastExitCode);
+        if (_finished)
+          return StopFailure("Morrow.WindowsNativeProcess.CleanupIncomplete", "stop-cleanup", new string[0], true, _lastJobEmpty, _lastRootExited, _lastExitCode, _lastDisposeFailed);
+        if (_session == null || !Object.ReferenceEquals(token.session, _session))
+          return StopFailure("Morrow.WindowsNativeProcess.CapsuleBusy", "stop-lock-acquisition", new string[0], false, null, null, null, false);
+
+        object root = null;
+        uint[] memberIds = null;
+        try
+        {
+          Type sessionType = _session.GetType();
+          MethodInfo observeRoot = sessionType.GetMethod("ObserveRoot", Type.EmptyTypes);
+          MethodInfo listMembers = sessionType.GetMethod("ListMemberIds", Type.EmptyTypes);
+          if (observeRoot == null || listMembers == null)
+            throw new InvalidOperationException();
+          root = observeRoot.Invoke(_session, null);
+          memberIds = listMembers.Invoke(_session, null) as uint[];
+          if (root == null || memberIds == null)
+            throw new InvalidOperationException();
+        }
+        catch
+        {
+          return StopFailure("Morrow.WindowsNativeProcess.IdentityUnavailable", "stop-identity-revalidation", new string[] { "membership" }, false, null, null, null, false);
+        }
+
+        var revalidationFields = new List<string>();
+        try
+        {
+          uint processId = Convert.ToUInt32(ReadProperty(root, "processId"), CultureInfo.InvariantCulture);
+          string state = Convert.ToString(ReadProperty(root, "state"), CultureInfo.InvariantCulture);
+          bool isMember = Convert.ToBoolean(ReadProperty(root, "isMember"), CultureInfo.InvariantCulture);
+          bool associatedAtCreation = Convert.ToBoolean(ReadProperty(root, "wasAssociatedAtCreation"), CultureInfo.InvariantCulture);
+          uint jobLimitFlags = Convert.ToUInt32(ReadProperty(root, "jobLimitFlags"), CultureInfo.InvariantCulture);
+          bool jobHandleInheritable = Convert.ToBoolean(ReadProperty(root, "jobHandleInheritable"), CultureInfo.InvariantCulture);
+          string executablePath = Convert.ToString(ReadProperty(root, "executablePath"), CultureInfo.InvariantCulture);
+          string creationTimeUtc = Convert.ToString(ReadProperty(root, "creationTimeUtc"), CultureInfo.InvariantCulture);
+
+          if (processId != (uint)_identitySnapshot.processId)
+            revalidationFields.Add("processId");
+          if (!SameCanonicalLocalPath(executablePath, _identitySnapshot.executablePath))
+            revalidationFields.Add("executablePath");
+          if (!SameCreationTimeWithinTolerance(creationTimeUtc, _identitySnapshot.creationTimeUtc))
+            revalidationFields.Add("creationTimeUtc");
+          if (!associatedAtCreation || jobLimitFlags != 8192 || jobHandleInheritable)
+            revalidationFields.Add("jobPolicy");
+
+          bool rootAlive = String.Equals(state, "resume-requested", StringComparison.Ordinal);
+          bool rootExited = String.Equals(state, "exited", StringComparison.Ordinal);
+          if (rootAlive)
+          {
+            bool rootInMemberList = false;
+            foreach (uint memberId in memberIds)
+            {
+              if (memberId == processId) { rootInMemberList = true; break; }
+            }
+            if (!isMember || !rootInMemberList)
+              revalidationFields.Add("membership");
+          }
+          else if (rootExited)
+          {
+            if (isMember)
+              revalidationFields.Add("membership");
+          }
+          else
+          {
+            revalidationFields.Add("state");
+          }
+        }
+        catch
+        {
+          revalidationFields.Add("state");
+        }
+
+        if (revalidationFields.Count > 0)
+          return StopFailure("Morrow.WindowsNativeProcess.IdentityUnavailable", "stop-identity-revalidation", UniqueFields(revalidationFields), false, null, null, null, false);
+
+        object rawResult = null;
+        bool? observedJobEmpty = null;
+        bool? observedRootExited = null;
+        uint? observedExitCode = null;
+        bool observedTimeout = false;
+        try
+        {
+          MethodInfo stop = _session.GetType().GetMethod("StopAndWait", new Type[] { typeof(int) });
+          if (stop == null)
+            throw new InvalidOperationException();
+          rawResult = stop.Invoke(_session, new object[] { timeoutMs });
+          if (rawResult == null)
+            throw new InvalidOperationException();
+          Type resultType = rawResult.GetType();
+          PropertyInfo jobEmptyProperty = resultType.GetProperty("jobEmpty");
+          PropertyInfo rootExitedProperty = resultType.GetProperty("rootExited");
+          PropertyInfo exitCodeProperty = resultType.GetProperty("rootExitCode");
+          PropertyInfo timedOutProperty = resultType.GetProperty("timedOut");
+          if (jobEmptyProperty == null || rootExitedProperty == null || exitCodeProperty == null || timedOutProperty == null)
+            throw new InvalidOperationException();
+          observedJobEmpty = (bool)jobEmptyProperty.GetValue(rawResult, null);
+          observedRootExited = (bool)rootExitedProperty.GetValue(rawResult, null);
+          object exitValue = exitCodeProperty.GetValue(rawResult, null);
+          observedExitCode = exitValue == null ? (uint?)null : Convert.ToUInt32(exitValue, CultureInfo.InvariantCulture);
+          observedTimeout = (bool)timedOutProperty.GetValue(rawResult, null);
+        }
+        catch
+        {
+          return StopFailure("Morrow.WindowsNativeProcess.CleanupIncomplete", "stop-cleanup", new string[0], true, observedJobEmpty, observedRootExited, observedExitCode, false);
+        }
+
+        _lastJobEmpty = observedJobEmpty.Value;
+        _lastRootExited = observedRootExited.Value;
+        _lastExitCode = observedExitCode;
+        _lastTimedOut = observedTimeout;
+        _lastDisposeFailed = false;
+
+        if (observedTimeout)
+          return new WindowsNativeProcessStopAttempt("timedOut", null, null, new string[0], false, true, observedJobEmpty, observedRootExited, observedExitCode, true, false);
+        if (!observedJobEmpty.Value || !observedRootExited.Value)
+          return StopFailure("Morrow.WindowsNativeProcess.CleanupIncomplete", "stop-cleanup", new string[0], true, observedJobEmpty, observedRootExited, observedExitCode, false);
+
+        try
+        {
+          MethodInfo dispose = _session.GetType().GetMethod("Dispose", Type.EmptyTypes);
+          if (dispose == null)
+            throw new InvalidOperationException();
+          dispose.Invoke(_session, null);
+        }
+        catch
+        {
+          _lastDisposeFailed = true;
+          _session = null;
+          _finished = true;
+          _completed = false;
+          _generation++;
+          return StopFailure("Morrow.WindowsNativeProcess.CleanupIncomplete", "stop-cleanup", new string[0], true, observedJobEmpty, observedRootExited, observedExitCode, true);
+        }
+
+        _session = null;
+        _finished = true;
+        _completed = true;
+        _lastTimedOut = false;
+        _generation++;
+        return StopCompleted(observedJobEmpty, observedRootExited, observedExitCode);
+      }
+      finally
+      {
+        Monitor.Exit(_sync);
+      }
+    }
+
+    private bool IdentitySnapshotMatches(object[] values)
+    {
+      return values != null && values.Length == 6 &&
+        Object.Equals(values[0], _identitySnapshot.processId) &&
+        Object.Equals(values[1], _identitySnapshot.parentProcessId) &&
+        Object.Equals(values[2], _identitySnapshot.executablePath) &&
+        Object.Equals(values[3], _identitySnapshot.executableSha256) &&
+        Object.Equals(values[4], _identitySnapshot.creationTimeUtc) &&
+        Object.Equals(values[5], _identitySnapshot.ownerSid);
+    }
+
+    private static object ReadProperty(object value, string name)
+    {
+      PropertyInfo property = value.GetType().GetProperty(name);
+      if (property == null) throw new InvalidOperationException();
+      return property.GetValue(value, null);
+    }
+
+    private static bool SameCanonicalLocalPath(string actual, string expected)
+    {
+      return IsCanonicalLocalPath(actual) && IsCanonicalLocalPath(expected) &&
+        String.Equals(Path.GetFullPath(actual).TrimEnd('\\'), Path.GetFullPath(expected).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCanonicalLocalPath(string value)
+    {
+      if (String.IsNullOrWhiteSpace(value) || value.Length < 3 ||
+          !Char.IsLetter(value[0]) || value[1] != ':' || value[2] != '\\' ||
+          value.IndexOf('/') >= 0 || value.IndexOf('\0') >= 0 || value.StartsWith("\\\\", StringComparison.Ordinal))
+        return false;
+      string remainder = value.Substring(3);
+      char[] forbidden = new char[] { '<', '>', ':', '"', '|', '?', '*' };
+      foreach (char character in remainder)
+      {
+        if (Char.IsControl(character) || Array.IndexOf(forbidden, character) >= 0)
+          return false;
+      }
+      foreach (string segment in remainder.Split('\\'))
+      {
+        if (segment.Length == 0 || segment == "." || segment == ".." || segment.EndsWith(".", StringComparison.Ordinal) || segment.EndsWith(" ", StringComparison.Ordinal))
+          return false;
+      }
+      try
+      {
+        string full = Path.GetFullPath(value);
+        return String.Equals(full.TrimEnd('\\'), value.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+      }
+      catch { return false; }
+    }
+
+    private static bool SameCreationTimeWithinTolerance(string actual, string expected)
+    {
+      DateTime actualTime;
+      DateTime expectedTime;
+      if (!DateTime.TryParse(actual, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out actualTime) ||
+          !DateTime.TryParse(expected, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out expectedTime))
+        return false;
+      actualTime = actualTime.ToUniversalTime();
+      expectedTime = expectedTime.ToUniversalTime();
+      return Math.Abs((actualTime - expectedTime).Ticks) <= 20;
+    }
+
+    private static string[] UniqueFields(List<string> values)
+    {
+      var unique = new List<string>();
+      foreach (string value in values)
+      {
+        if (!unique.Contains(value)) unique.Add(value);
+      }
+      return unique.ToArray();
+    }
+
+    private static WindowsNativeProcessStopAttempt StopCompleted(bool? jobEmpty, bool? rootExited, uint? exitCode)
+    {
+      return new WindowsNativeProcessStopAttempt("completed", null, null, new string[0], true, false, jobEmpty, rootExited, exitCode, true, false);
+    }
+
+    private static WindowsNativeProcessStopAttempt StopFailure(string errorId, string stage, string[] fields, bool attempted, bool? jobEmpty, bool? rootExited, uint? exitCode, bool disposeFailed)
+    {
+      return new WindowsNativeProcessStopAttempt("failed", errorId, stage, fields, false, false, jobEmpty, rootExited, exitCode, attempted, disposeFailed);
+    }
+
     public WindowsNativeProcessCleanupSnapshot Dispose()
     {
       lock (_sync)
@@ -155,6 +483,11 @@ namespace Morrow.Pilot
         if (_finished)
           throw CleanupIncomplete();
 
+        _lastJobEmpty = false;
+        _lastRootExited = false;
+        _lastExitCode = null;
+        _lastTimedOut = false;
+        _lastDisposeFailed = false;
         Exception failure = null;
         object rawResult = null;
         try
@@ -177,7 +510,9 @@ namespace Morrow.Pilot
           _lastRootExited = (bool)rootExited.GetValue(rawResult, null);
           object exitValue = exitCode.GetValue(rawResult, null);
           _lastExitCode = exitValue == null ? (uint?)null : Convert.ToUInt32(exitValue);
-          _completed = _lastJobEmpty && _lastRootExited;
+          PropertyInfo timedOut = resultType.GetProperty("timedOut");
+          _lastTimedOut = timedOut != null && (bool)timedOut.GetValue(rawResult, null);
+          _completed = !_lastTimedOut && _lastJobEmpty && _lastRootExited;
           if (!_completed)
             failure = new InvalidOperationException("The owned Job cleanup did not reach its verified terminal state.");
         }
@@ -199,6 +534,7 @@ namespace Morrow.Pilot
           }
           catch (Exception exception)
           {
+            _lastDisposeFailed = true;
             if (failure == null) failure = exception;
           }
           _session = null;
@@ -226,9 +562,11 @@ namespace Morrow.Pilot
         { "attempted", true },
         { "jobEmpty", _lastJobEmpty },
         { "rootExited", _lastRootExited },
-        { "disposeFailed", true }
+        { "timedOut", _lastTimedOut },
+        { "disposeFailed", _lastDisposeFailed }
       };
       var exception = new InvalidOperationException("The owned process Job cleanup could not be confirmed.");
+      exception.Data["Morrow.WindowsNativeProcess.ErrorId"] = "Morrow.WindowsNativeProcess.CleanupIncomplete";
       exception.Data[DiagnosticsKey] = diagnostics;
       return exception;
     }
@@ -1679,6 +2017,243 @@ function Observe-WindowsNativeProcess {
       $diagnostics = [ordered]@{ stage = 'observe-native-read'; cause = $errorId; fields = @() }
     }
     $category = if ($errorId -eq 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion') {
+      [System.Management.Automation.ErrorCategory]::InvalidArgument
+    } else {
+      [System.Management.Automation.ErrorCategory]::InvalidOperation
+    }
+    $errorRecord = [System.Management.Automation.ErrorRecord]::new(
+      [InvalidOperationException]::new('The Windows native process policy operation failed.'),
+      $errorId,
+      $category,
+      $null
+    )
+    $errorRecord.Exception.Data['Morrow.WindowsNativeProcess.ErrorId'] = $errorId
+    $errorRecord.Exception.Data['Morrow.WindowsNativeProcess.Diagnostics'] = $diagnostics
+    $PSCmdlet.ThrowTerminatingError($errorRecord)
+  }
+}
+
+function ConvertTo-PilotWindowsNativeProcessStopTimeoutMilliseconds {
+  param(
+    [AllowNull()][object] $Value,
+    [Parameter(Mandatory)][bool] $WasSpecified
+  )
+
+  if (-not $WasSpecified) { return 10000 }
+  $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+  if ($null -eq $Value) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidStopTimeout' `
+      -Stage 'stop-timeout-validation')
+  }
+  if ($Value.GetType() -notin $integralTypes) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidStopTimeout' `
+      -Stage 'stop-timeout-validation')
+  }
+  try {
+    $milliseconds = [decimal]$Value
+    if ($milliseconds -lt 0 -or $milliseconds -gt 120000) { throw 'invalid' }
+    return [int]$milliseconds
+  } catch {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidStopTimeout' `
+      -Stage 'stop-timeout-validation')
+  }
+}
+
+function Get-PilotWindowsNativeProcessStopTokenIdentity {
+  param([Parameter(Mandatory)][object] $Token)
+
+  $flags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+  $identityField = $Token.GetType().GetField('identitySnapshot', $flags)
+  $values = if ($null -eq $identityField) { $null } else { $identityField.GetValue($Token) }
+  if ($values -isnot [object[]]) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.IdentityUnavailable' `
+      -Stage 'stop-identity-revalidation')
+  }
+  if ($values.Length -ne 6) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.IdentityUnavailable' `
+      -Stage 'stop-identity-revalidation')
+  }
+  try {
+    return [pscustomobject][ordered]@{
+      processId = [int]$values[0]
+      parentProcessId = [int]$values[1]
+      executablePath = [string]$values[2]
+      executableSha256 = [string]$values[3]
+      creationTimeUtc = [string]$values[4]
+      ownerSid = [string]$values[5]
+    }
+  } catch {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.IdentityUnavailable' `
+      -Stage 'stop-identity-revalidation')
+  }
+}
+
+function Invoke-PilotWindowsNativeProcessStop {
+  param(
+    [AllowNull()][object] $Capsule,
+    [AllowNull()][object] $IdentityAssertion,
+    [AllowNull()][object] $TimeoutMilliseconds,
+    [Parameter(Mandatory)][bool] $TimeoutWasSpecified
+  )
+
+  $timeoutMs = ConvertTo-PilotWindowsNativeProcessStopTimeoutMilliseconds `
+    -Value $TimeoutMilliseconds -WasSpecified $TimeoutWasSpecified
+  $normalizedAssertion = ConvertTo-PilotWindowsNativeProcessIdentityAssertion `
+    -IdentityAssertion $IdentityAssertion
+
+  $capsuleType = 'Morrow.Pilot.WindowsNativeProcessCapsule' -as [type]
+  if ($null -eq $Capsule -or $null -eq $capsuleType -or $Capsule.GetType() -ne $capsuleType) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+      -Stage 'stop-capsule-validation')
+  }
+
+  $privateInstance = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+  $captureMethod = $capsuleType.GetMethod('CaptureStopToken', $privateInstance)
+  $stopMethod = $capsuleType.GetMethod(
+    'StopForPolicy',
+    $privateInstance,
+    $null,
+    [type[]]@([object], [int]),
+    $null
+  )
+  if ($null -eq $captureMethod -or $null -eq $stopMethod) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+      -Stage 'stop-capsule-validation')
+  }
+
+  $token = $null
+  try {
+    $token = $captureMethod.Invoke($Capsule, [object[]]@())
+  } catch {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+      -Stage 'stop-capsule-validation')
+  }
+  if ($null -eq $token) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.CapsuleBusy' `
+      -Stage 'stop-lock-acquisition')
+  }
+
+  $snapshotIdentity = Get-PilotWindowsNativeProcessStopTokenIdentity -Token $token
+  $null = Compare-PilotWindowsNativeProcessIdentityAssertion `
+    -NormalizedAssertion $normalizedAssertion `
+    -ObservedIdentity $snapshotIdentity
+
+  $attempt = $null
+  try {
+    $attempt = $stopMethod.Invoke($Capsule, [object[]]@($token, [int]$timeoutMs))
+  } catch {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.CleanupIncomplete' `
+      -Stage 'stop-cleanup' `
+      -Cleanup ([ordered]@{ attempted = $false; jobEmpty = $null; rootExited = $null; disposeFailed = $false }))
+  }
+  if ($null -eq $attempt) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.CleanupIncomplete' `
+      -Stage 'stop-cleanup' `
+      -Cleanup ([ordered]@{ attempted = $false; jobEmpty = $null; rootExited = $null; disposeFailed = $false }))
+  }
+
+  if ([string]$attempt.outcome -ceq 'failed') {
+    $allowedErrorIds = @(
+      'Morrow.WindowsNativeProcess.InvalidCapsule',
+      'Morrow.WindowsNativeProcess.CapsuleBusy',
+      'Morrow.WindowsNativeProcess.InvalidStopTimeout',
+      'Morrow.WindowsNativeProcess.IdentityUnavailable',
+      'Morrow.WindowsNativeProcess.CleanupIncomplete'
+    )
+    $errorId = if ([string]$attempt.errorId -cin $allowedErrorIds) {
+      [string]$attempt.errorId
+    } else {
+      'Morrow.WindowsNativeProcess.CleanupIncomplete'
+    }
+    $stage = if ([string]::IsNullOrWhiteSpace([string]$attempt.stage)) { 'stop-cleanup' } else { [string]$attempt.stage }
+    $cleanup = $null
+    if ([bool]$attempt.attempted -or $null -ne $attempt.jobEmpty -or $null -ne $attempt.rootExited -or [bool]$attempt.disposeFailed) {
+      $cleanup = [ordered]@{
+        attempted = [bool]$attempt.attempted
+        jobEmpty = $attempt.jobEmpty
+        rootExited = $attempt.rootExited
+        disposeFailed = [bool]$attempt.disposeFailed
+      }
+    }
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId $errorId `
+      -Stage $stage `
+      -Fields ([string[]]$attempt.fields) `
+      -Cleanup $cleanup)
+  }
+
+  $completed = [string]$attempt.outcome -ceq 'completed' -and [bool]$attempt.completed -and
+    -not [bool]$attempt.timedOut -and [bool]$attempt.jobEmpty -and [bool]$attempt.rootExited
+  $timedOut = [string]$attempt.outcome -ceq 'timedOut' -and [bool]$attempt.timedOut -and -not [bool]$attempt.completed
+  if (-not $completed -and -not $timedOut) {
+    throw (New-PilotWindowsNativeProcessException `
+      -ErrorId 'Morrow.WindowsNativeProcess.CleanupIncomplete' `
+      -Stage 'stop-cleanup' `
+      -Cleanup ([ordered]@{
+        attempted = [bool]$attempt.attempted
+        jobEmpty = $attempt.jobEmpty
+        rootExited = $attempt.rootExited
+        disposeFailed = [bool]$attempt.disposeFailed
+      }))
+  }
+
+  return [pscustomobject][ordered]@{
+    completed = $completed
+    timedOut = $timedOut
+    jobEmpty = [bool]$attempt.jobEmpty
+    rootExited = [bool]$attempt.rootExited
+    exitCode = if ($null -eq $attempt.exitCode) { $null } else { [uint32]$attempt.exitCode }
+  }
+}
+
+function Stop-WindowsNativeProcess {
+  [CmdletBinding()]
+  param(
+    [AllowNull()][object] $Capsule,
+    [AllowNull()][object] $IdentityAssertion,
+    [AllowNull()][object] $TimeoutMilliseconds
+  )
+
+  try {
+    $result = Invoke-PilotWindowsNativeProcessStop `
+      -Capsule $Capsule `
+      -IdentityAssertion $IdentityAssertion `
+      -TimeoutMilliseconds $TimeoutMilliseconds `
+      -TimeoutWasSpecified ($PSBoundParameters.ContainsKey('TimeoutMilliseconds'))
+    return ,$result
+  } catch {
+    $caught = $_.Exception
+    $errorId = Get-PilotWindowsNativeProcessErrorId -Exception $caught
+    $allowedErrorIds = @(
+      'Morrow.WindowsNativeProcess.InvalidCapsule',
+      'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
+      'Morrow.WindowsNativeProcess.IdentityMismatch',
+      'Morrow.WindowsNativeProcess.IdentityUnavailable',
+      'Morrow.WindowsNativeProcess.InvalidStopTimeout',
+      'Morrow.WindowsNativeProcess.CapsuleBusy',
+      'Morrow.WindowsNativeProcess.CleanupIncomplete'
+    )
+    if ($errorId -notin $allowedErrorIds) { $errorId = 'Morrow.WindowsNativeProcess.CleanupIncomplete' }
+    $diagnostics = Get-PilotWindowsNativeProcessDiagnostics -Exception $caught
+    if ($null -eq $diagnostics -or $diagnostics -isnot [System.Collections.IDictionary]) {
+      $diagnostics = [ordered]@{ stage = 'stop-cleanup'; cause = $errorId; fields = @() }
+    }
+    $category = if ($errorId -in @(
+        'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
+        'Morrow.WindowsNativeProcess.InvalidStopTimeout'
+      )) {
       [System.Management.Automation.ErrorCategory]::InvalidArgument
     } else {
       [System.Management.Automation.ErrorCategory]::InvalidOperation

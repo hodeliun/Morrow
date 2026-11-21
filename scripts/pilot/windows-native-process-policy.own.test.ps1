@@ -75,6 +75,17 @@ $checks = [ordered]@{
   observeCleanupKillsOnlyOwnedJob = $false
   outsiderSurvivesObserveCleanup = $false
   observeCleanupPreservesOtherCapsule = $false
+  stopRejectsInvalidCapsule = $false
+  stopRejectsMalformedAssertionBeforeCapsuleProbe = $false
+  stopRejectsInvalidTimeoutValues = $false
+  stopLockConflictDoesNotAct = $false
+  stopMismatchPreservesCapsule = $false
+  stopReturnsOnlySanitizedStatus = $false
+  stopExitedRootAndDescendantCleanupConfirmed = $false
+  stopTimeoutIsExplicitAndRetryable = $false
+  stopTerminalMismatchStillRefused = $false
+  stopIsIdempotentAcrossStopAndDispose = $false
+  stopDefaultDeadlineCompletes = $false
   noProductOrGuiLaunched = $true
 }
 $observations = [Collections.Generic.List[object]]::new()
@@ -233,6 +244,8 @@ function New-SanitizedPolicyFailureObservation {
     'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
     'Morrow.WindowsNativeProcess.IdentityMismatch',
     'Morrow.WindowsNativeProcess.IdentityUnavailable',
+    'Morrow.WindowsNativeProcess.InvalidStopTimeout',
+    'Morrow.WindowsNativeProcess.CapsuleBusy',
     'Morrow.WindowsNativeProcess.StartFailed',
     'Morrow.WindowsNativeProcess.CleanupIncomplete'
   )
@@ -242,7 +255,9 @@ function New-SanitizedPolicyFailureObservation {
     'environment-path-validation', 'environment-path-containment', 'executable-hash-validation',
     'identity-dependency', 'suspended-create', 'native-observation', 'cim-observation', 'job-membership',
     'identity-comparison', 'identity-assertion-validation', 'identity-assertion-comparison',
-    'capsule-create', 'resume', 'cleanup', 'observe-capsule-validation', 'observe-identity', 'observe-native-read'
+    'capsule-create', 'resume', 'cleanup', 'observe-capsule-validation', 'observe-identity', 'observe-native-read',
+    'stop-timeout-validation', 'stop-capsule-validation', 'stop-lock-acquisition',
+    'stop-identity-revalidation', 'stop-cleanup'
   )
   $knownFields = @(
     'executablePath', 'executableSha256', 'argumentList', 'workingDirectory', 'profilePath',
@@ -303,7 +318,7 @@ function New-SanitizedPolicyFailureObservation {
     if ($Diagnostics.Contains('cleanup') -and $Diagnostics['cleanup'] -is [System.Collections.IDictionary]) {
       $rawCleanup = $Diagnostics['cleanup']
       $cleanup = [ordered]@{}
-      foreach ($name in @('attempted', 'jobEmpty', 'rootExited', 'disposeFailed')) {
+      foreach ($name in @('attempted', 'jobEmpty', 'rootExited', 'timedOut', 'disposeFailed')) {
         $cleanup[$name] = if ($rawCleanup.Contains($name) -and $rawCleanup[$name] -is [bool]) {
           [bool]$rawCleanup[$name]
         } else {
@@ -365,7 +380,8 @@ function Invoke-ExpectedPolicyFailure {
   $fullyQualifiedErrorId = [string]$errorRecord.FullyQualifiedErrorId
   if ($fullyQualifiedErrorId -cne $ExpectedErrorId -and
       $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Start-WindowsNativeProcess') -and
-      $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Observe-WindowsNativeProcess')) {
+      $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Observe-WindowsNativeProcess') -and
+      $fullyQualifiedErrorId -cne ($ExpectedErrorId + ',Stop-WindowsNativeProcess')) {
     throw "Unexpected policy error category for expected $ExpectedErrorId."
   }
 
@@ -1713,6 +1729,121 @@ $reportLines = @(
     @($liveObservation.inventory.members | Where-Object { $_.state -ceq 'observed' -and $_.processId -eq $fullIdentityAssertion.processId }).Count -eq 1
   )
   Assert-PolicyCheck -Condition $checks.observeInventoryReportsOwnedRoot -Name 'observeInventoryReportsOwnedRoot'
+
+  $failurePhase = 'stop-invalid-capsule-and-assertion'
+  $null = Invoke-ExpectedPolicyFailure `
+    -Action { Stop-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'not-a-capsule' }) -TimeoutMilliseconds 0 } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule'
+  $checks.stopRejectsInvalidCapsule = $true
+  Assert-PolicyCheck -Condition $checks.stopRejectsInvalidCapsule -Name 'stopRejectsInvalidCapsule'
+  $null = Invoke-ExpectedPolicyFailure `
+    -Action { Stop-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'invalid' }) -IdentityAssertion ([ordered]@{ unknownField = 17 }) -TimeoutMilliseconds 0 } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion'
+  $checks.stopRejectsMalformedAssertionBeforeCapsuleProbe = $true
+  Assert-PolicyCheck -Condition $checks.stopRejectsMalformedAssertionBeforeCapsuleProbe -Name 'stopRejectsMalformedAssertionBeforeCapsuleProbe'
+
+  $invalidTimeouts = [object[]]::new(7)
+  $invalidTimeouts[0] = $null
+  $invalidTimeouts[1] = [double]0.5
+  $invalidTimeouts[2] = [bool]$true
+  $invalidTimeouts[3] = '0'
+  $invalidTimeouts[4] = -1
+  $invalidTimeouts[5] = 120001
+  $invalidTimeouts[6] = [decimal]0
+  $allInvalidTimeoutsRejected = $true
+  foreach ($invalidTimeout in $invalidTimeouts) {
+    $timeoutFailure = Invoke-ExpectedPolicyFailure `
+      -Action { Stop-WindowsNativeProcess -Capsule $capsule -TimeoutMilliseconds $invalidTimeout } `
+      -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidStopTimeout'
+    if ($timeoutFailure.stage -cne 'stop-timeout-validation') { $allInvalidTimeoutsRejected = $false }
+  }
+  $checks.stopRejectsInvalidTimeoutValues = $allInvalidTimeoutsRejected
+  Assert-PolicyCheck -Condition $checks.stopRejectsInvalidTimeoutValues -Name 'stopRejectsInvalidTimeoutValues'
+
+  $failurePhase = 'stop-busy-lock-refusal'
+  $lockHolderSource = @'
+using System;
+using System.Threading;
+namespace Morrow.Pilot.Tests {
+  public sealed class CapsuleLockHold : IDisposable {
+    private readonly object _target;
+    private readonly ManualResetEventSlim _entered = new ManualResetEventSlim(false);
+    private readonly ManualResetEventSlim _release = new ManualResetEventSlim(false);
+    private readonly Thread _thread;
+    public CapsuleLockHold(object target) {
+      _target = target;
+      _thread = new Thread(Hold);
+      _thread.IsBackground = true;
+      _thread.Start();
+    }
+    private void Hold() {
+      Monitor.Enter(_target);
+      try { _entered.Set(); _release.Wait(5000); }
+      finally { Monitor.Exit(_target); }
+    }
+    public bool WaitUntilHeld(int timeoutMs) { return _entered.Wait(timeoutMs); }
+    public void Dispose() {
+      _release.Set();
+      if (!_thread.Join(5000)) throw new InvalidOperationException("The synthetic lock holder did not stop.");
+      _entered.Dispose();
+      _release.Dispose();
+    }
+  }
+}
+'@
+  Add-Type -TypeDefinition $lockHolderSource -Language CSharp -ErrorAction Stop
+  $privateFlags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+  $capsuleLockField = $capsule.GetType().GetField('_sync', $privateFlags)
+  if ($null -eq $capsuleLockField) { throw 'The opaque capsule lock could not be found for the bounded busy-path fixture.' }
+  $lockHolder = [Morrow.Pilot.Tests.CapsuleLockHold]::new($capsuleLockField.GetValue($capsule))
+  try {
+    if (-not $lockHolder.WaitUntilHeld(2000)) { throw 'The synthetic lock holder did not acquire the capsule lock.' }
+    $busyFailure = Invoke-ExpectedPolicyFailure `
+      -Action { Stop-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion -TimeoutMilliseconds 0 } `
+      -ExpectedErrorId 'Morrow.WindowsNativeProcess.CapsuleBusy'
+    $checks.stopLockConflictDoesNotAct = $busyFailure.stage -ceq 'stop-lock-acquisition'
+  } finally {
+    $lockHolder.Dispose()
+  }
+  Assert-PolicyCheck -Condition $checks.stopLockConflictDoesNotAct -Name 'stopLockConflictDoesNotAct'
+
+  $stopMismatchValues = [ordered]@{
+    processId = [int]$fullIdentityAssertion.processId + 1
+    parentProcessId = [int]$fullIdentityAssertion.parentProcessId + 1
+    executablePath = 'C:\Elsewhere\different-stop-image.exe'
+    executableSha256 = ('b' * 64)
+    creationTimeUtc = [DateTimeOffset]::Parse(
+      [string]$fullIdentityAssertion.creationTimeUtc,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None
+    ).AddTicks(1).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    ownerSid = 'S-1-1-0'
+  }
+  $allStopMismatchFieldsRejected = $true
+  foreach ($field in @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')) {
+    $oneFieldAssertion = [ordered]@{}
+    $oneFieldAssertion[$field] = $stopMismatchValues[$field]
+    $mismatchFailure = Invoke-ExpectedPolicyFailure `
+      -Action { Stop-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $oneFieldAssertion -TimeoutMilliseconds 0 } `
+      -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+      -ExpectedFields @($field)
+    if ($mismatchFailure.stage -cne 'identity-assertion-comparison') { $allStopMismatchFieldsRejected = $false }
+  }
+  $stillLiveAfterStopMismatch = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $checks.stopMismatchPreservesCapsule = (
+    $allStopMismatchFieldsRejected -and
+    $stillLiveAfterStopMismatch.root.state -ceq 'alive' -and
+    $stillLiveAfterStopMismatch.root.identityStatus -ceq 'fresh'
+  )
+  Assert-PolicyCheck -Condition $checks.stopMismatchPreservesCapsule -Name 'stopMismatchPreservesCapsule'
+  [void]$observations.Add([pscustomobject][ordered]@{
+    scenario = 'stop-assertion-refusals'
+    allSixFieldsMismatchRejected = $allStopMismatchFieldsRejected
+    capsuleStillLiveAfterRefusals = $checks.stopMismatchPreservesCapsule
+    busyLockRefusedWithoutWait = $checks.stopLockConflictDoesNotAct
+    invalidTimeoutsRejected = $checks.stopRejectsInvalidTimeoutValues
+  })
+
   [void]$observations.Add([pscustomobject][ordered]@{
     scenario = 'observe-live-root-assertion'
     rootAlive = $true
@@ -1817,19 +1948,114 @@ exit 0
     -not [bool]$observeTree.inventory.isEmpty
   )
   Assert-PolicyCheck -Condition $checks.observeKeepsDescendantVisibleAfterRootExit -Name 'observeKeepsDescendantVisibleAfterRootExit'
+
+  $observeIdentityAssertion = [ordered]@{
+    processId = [int]$observeTree.root.identity.processId
+    parentProcessId = [int]$observeTree.root.identity.parentProcessId
+    executablePath = [string]$observeTree.root.identity.executablePath
+    executableSha256 = [string]$observeTree.root.identity.executableSha256
+    creationTimeUtc = [string]$observeTree.root.identity.creationTimeUtc
+    ownerSid = [string]$observeTree.root.identity.ownerSid
+  }
+  $exitedRootMismatchValues = [ordered]@{
+    processId = [int]$observeIdentityAssertion.processId + 1
+    parentProcessId = [int]$observeIdentityAssertion.parentProcessId + 1
+    executablePath = 'C:\Elsewhere\different-exited-root.exe'
+    executableSha256 = ('c' * 64)
+    creationTimeUtc = [DateTimeOffset]::Parse(
+      [string]$observeIdentityAssertion.creationTimeUtc,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::None
+    ).AddTicks(1).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    ownerSid = 'S-1-1-0'
+  }
+  $allExitedRootMismatchesRejected = $true
+  foreach ($field in @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')) {
+    $oneFieldAssertion = [ordered]@{}
+    $oneFieldAssertion[$field] = $exitedRootMismatchValues[$field]
+    $mismatchFailure = Invoke-ExpectedPolicyFailure `
+      -Action { Stop-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $oneFieldAssertion -TimeoutMilliseconds 0 } `
+      -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+      -ExpectedFields @($field)
+    if ($mismatchFailure.stage -cne 'identity-assertion-comparison') { $allExitedRootMismatchesRejected = $false }
+  }
+  $observeAfterStopMismatch = Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $observeIdentityAssertion
+  $stillOwnedDescendantAfterMismatches = @($observeAfterStopMismatch.inventory.members | Where-Object {
+      $_.processId -eq $descendantPid -and $_.state -ceq 'observed'
+    }).Count -eq 1
+  if (-not $allExitedRootMismatchesRejected -or -not $stillOwnedDescendantAfterMismatches) {
+    throw 'A Stop assertion mismatch changed or invalidated the exited-root capsule.'
+  }
+
   $failurePhase = 'observe-exited-root-owned-job-cleanup'
   $outsider.Refresh()
   $outsiderAliveBeforeObserveCleanup = -not $outsider.HasExited
+  $firstStop = Stop-WindowsNativeProcess `
+    -Capsule $observeCapsule `
+    -IdentityAssertion $observeIdentityAssertion `
+    -TimeoutMilliseconds 0
+  $stopShape = @($firstStop.PSObject.Properties.Name) -join ','
+  $stopShapeValid = $stopShape -ceq 'completed,timedOut,jobEmpty,rootExited,exitCode' -and
+    $null -eq $firstStop.PSObject.Properties['processId'] -and
+    $null -eq $firstStop.PSObject.Properties['jobHandle']
+  $firstStopStateValid = (
+    ($firstStop.timedOut -and -not $firstStop.completed -and -not ($firstStop.jobEmpty -and $firstStop.rootExited)) -or
+    ($firstStop.completed -and -not $firstStop.timedOut -and $firstStop.jobEmpty -and $firstStop.rootExited)
+  )
+  $exitCodeShapeValid = $null -eq $firstStop.exitCode -or $firstStop.exitCode -is [uint32]
+  $checks.stopReturnsOnlySanitizedStatus = $stopShapeValid -and $firstStopStateValid -and $exitCodeShapeValid
+  Assert-PolicyCheck -Condition $checks.stopReturnsOnlySanitizedStatus -Name 'stopReturnsOnlySanitizedStatus'
+
+  $retryStop = $firstStop
+  if ($firstStop.timedOut) {
+    $retryStop = Stop-WindowsNativeProcess `
+      -Capsule $observeCapsule `
+      -IdentityAssertion $observeIdentityAssertion `
+      -TimeoutMilliseconds 10000
+  }
+  $checks.stopTimeoutIsExplicitAndRetryable = (
+    ($firstStop.timedOut -and -not $firstStop.completed -and $retryStop.completed) -or
+    ($firstStop.completed -and -not $firstStop.timedOut -and $retryStop.completed)
+  )
+  Assert-PolicyCheck -Condition $checks.stopTimeoutIsExplicitAndRetryable -Name 'stopTimeoutIsExplicitAndRetryable'
+  if (-not $retryStop.completed -or $retryStop.timedOut -or -not $retryStop.jobEmpty -or -not $retryStop.rootExited) {
+    throw 'Stop did not confirm the owned Job empty and retained root exited.'
+  }
+  $checks.stopExitedRootAndDescendantCleanupConfirmed = $true
+
   $observeTreeCleanup = $observeCapsule.Dispose()
   $observeCapsuleCleanup = [ordered]@{
-    jobEmpty = [bool]$observeTreeCleanup.jobEmpty
-    rootExited = [bool]$observeTreeCleanup.rootExited
-    exitCode = if ($null -eq $observeTreeCleanup.exitCode) { $null } else { [uint32]$observeTreeCleanup.exitCode }
+    jobEmpty = [bool]$retryStop.jobEmpty
+    rootExited = [bool]$retryStop.rootExited
+    exitCode = if ($null -eq $retryStop.exitCode) { $null } else { [uint32]$retryStop.exitCode }
   }
-  $observeCapsuleCleanupConfirmed = [bool]$observeTreeCleanup.jobEmpty -and [bool]$observeTreeCleanup.rootExited
+  $observeCapsuleCleanupConfirmed = [bool]$retryStop.completed -and [bool]$observeTreeCleanup.jobEmpty -and [bool]$observeTreeCleanup.rootExited
   $checks.observeCleanupKillsOnlyOwnedJob = $observeCapsuleCleanupConfirmed
   $failurePhase = 'observe-exited-root-cleanup-check'
+  Assert-PolicyCheck -Condition $checks.stopExitedRootAndDescendantCleanupConfirmed -Name 'stopExitedRootAndDescendantCleanupConfirmed'
   Assert-PolicyCheck -Condition $checks.observeCleanupKillsOnlyOwnedJob -Name 'observeCleanupKillsOnlyOwnedJob'
+
+  $terminalMismatch = [ordered]@{ ownerSid = 'S-1-1-0' }
+  $terminalMismatchFailure = Invoke-ExpectedPolicyFailure `
+    -Action { Stop-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $terminalMismatch -TimeoutMilliseconds 0 } `
+    -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+    -ExpectedFields @('ownerSid')
+  $terminalReceipt = Stop-WindowsNativeProcess `
+    -Capsule $observeCapsule `
+    -IdentityAssertion $observeIdentityAssertion `
+    -TimeoutMilliseconds 0
+  $checks.stopTerminalMismatchStillRefused = $terminalMismatchFailure.stage -ceq 'identity-assertion-comparison' -and $terminalReceipt.completed
+  Assert-PolicyCheck -Condition $checks.stopTerminalMismatchStillRefused -Name 'stopTerminalMismatchStillRefused'
+  $disposeReceiptAfterStop = $observeCapsule.Dispose()
+  $checks.stopIsIdempotentAcrossStopAndDispose = (
+    $terminalReceipt.completed -and $disposeReceiptAfterStop.jobEmpty -and $disposeReceiptAfterStop.rootExited -and
+    [bool]$disposeReceiptAfterStop.jobEmpty -eq [bool]$retryStop.jobEmpty -and
+    [bool]$disposeReceiptAfterStop.rootExited -eq [bool]$retryStop.rootExited -and
+    (($null -eq $disposeReceiptAfterStop.exitCode -and $null -eq $retryStop.exitCode) -or
+      ($null -ne $disposeReceiptAfterStop.exitCode -and [uint32]$disposeReceiptAfterStop.exitCode -eq [uint32]$retryStop.exitCode))
+  )
+  Assert-PolicyCheck -Condition $checks.stopIsIdempotentAcrossStopAndDispose -Name 'stopIsIdempotentAcrossStopAndDispose'
+
   $failurePhase = 'observe-exited-root-outsider-preserved'
   $outsider.Refresh()
   $checks.outsiderSurvivesObserveCleanup = $outsiderAliveBeforeObserveCleanup -and -not $outsider.HasExited
@@ -1846,26 +2072,45 @@ exit 0
     rootSnapshotMarkedStale = $true
     rootExitCodeObserved = $null -ne $observeTree.root.exitCode
     descendantMemberObserved = $checks.observeKeepsDescendantVisibleAfterRootExit
+    allSixStopMismatchesWereNonDestructive = $allExitedRootMismatchesRejected
+    firstStopTimedOutExplicitly = [bool]$firstStop.timedOut
+    stopCompleted = [bool]$retryStop.completed
     ownedJobCleanupConfirmed = $observeCapsuleCleanupConfirmed
     outsiderAliveAfterCleanup = $checks.outsiderSurvivesObserveCleanup
     otherCapsuleAliveAfterCleanup = $checks.observeCleanupPreservesOtherCapsule
   })
 
-  $failurePhase = 'capsule-cleanup'
+  $failurePhase = 'stop-default-deadline'
+  $mainStopResult = Stop-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $checks.stopDefaultDeadlineCompletes = (
+    $mainStopResult.completed -and -not $mainStopResult.timedOut -and
+    $mainStopResult.jobEmpty -and $mainStopResult.rootExited
+  )
+  Assert-PolicyCheck -Condition $checks.stopDefaultDeadlineCompletes -Name 'stopDefaultDeadlineCompletes'
+
+  $failurePhase = 'capsule-cleanup-after-stop'
   $firstCleanup = $capsule.Dispose()
   $capsuleCleanup = [ordered]@{
-    jobEmpty = [bool]$firstCleanup.jobEmpty
-    rootExited = [bool]$firstCleanup.rootExited
-    exitCode = if ($null -eq $firstCleanup.exitCode) { $null } else { [uint32]$firstCleanup.exitCode }
+    jobEmpty = [bool]$mainStopResult.jobEmpty
+    rootExited = [bool]$mainStopResult.rootExited
+    exitCode = if ($null -eq $mainStopResult.exitCode) { $null } else { [uint32]$mainStopResult.exitCode }
   }
-  $checks.disposeConfirmsEmptyJobAndExitedRoot = [bool]$firstCleanup.jobEmpty -and [bool]$firstCleanup.rootExited
+  $checks.disposeConfirmsEmptyJobAndExitedRoot = (
+    [bool]$mainStopResult.completed -and [bool]$firstCleanup.jobEmpty -and [bool]$firstCleanup.rootExited
+  )
   Assert-PolicyCheck -Condition $checks.disposeConfirmsEmptyJobAndExitedRoot -Name 'disposeConfirmsEmptyJobAndExitedRoot'
   $allNativeJobsCleaned = $checks.disposeConfirmsEmptyJobAndExitedRoot
+  $repeatStop = Stop-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion -TimeoutMilliseconds 0
   $secondCleanup = $capsule.Dispose()
   $checks.disposeIsIdempotent = (
+    $repeatStop.completed -and
+    [bool]$repeatStop.jobEmpty -eq [bool]$mainStopResult.jobEmpty -and
+    [bool]$repeatStop.rootExited -eq [bool]$mainStopResult.rootExited -and
     [bool]$secondCleanup.jobEmpty -eq [bool]$firstCleanup.jobEmpty -and
     [bool]$secondCleanup.rootExited -eq [bool]$firstCleanup.rootExited -and
-    $secondCleanup.GetType() -eq $firstCleanup.GetType()
+    $secondCleanup.GetType() -eq $firstCleanup.GetType() -and
+    (($null -eq $secondCleanup.exitCode -and $null -eq $mainStopResult.exitCode) -or
+      ($null -ne $secondCleanup.exitCode -and [uint32]$secondCleanup.exitCode -eq [uint32]$mainStopResult.exitCode))
   )
   Assert-PolicyCheck -Condition $checks.disposeIsIdempotent -Name 'disposeIsIdempotent'
   $outsider.Refresh()
@@ -1873,11 +2118,12 @@ exit 0
   $checks.outsiderSurvivesOwnedCleanup = $outsiderAliveAtEnd
   Assert-PolicyCheck -Condition $checks.outsiderSurvivesOwnedCleanup -Name 'outsiderSurvivesOwnedCleanup'
   [void]$observations.Add([pscustomobject]@{
-    scenario = 'happy-start-dispose'
+    scenario = 'happy-start-stop'
     childMarkerObserved = $true
     environmentAllowlistConfirmed = $checks.childEnvironmentDoesNotInheritCredentials
     jobEmpty = $checks.disposeConfirmsEmptyJobAndExitedRoot
     rootExited = $checks.disposeConfirmsEmptyJobAndExitedRoot
+    defaultDeadlineCompleted = $checks.stopDefaultDeadlineCompletes
     outsiderAliveAfterCleanup = $outsiderAliveAtEnd
   })
 } catch {
@@ -1890,7 +2136,7 @@ exit 0
     $failureErrorId = Get-PolicyErrorId -Exception $exception
   }
   if ($null -eq $failureErrorId -and $_.FullyQualifiedErrorId) {
-    $allowedPrefixes = @('Morrow.WindowsNativeProcess.InvalidDescriptor', 'Morrow.WindowsNativeProcess.InvalidCapsule', 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion', 'Morrow.WindowsNativeProcess.IdentityMismatch', 'Morrow.WindowsNativeProcess.IdentityUnavailable', 'Morrow.WindowsNativeProcess.StartFailed', 'Morrow.WindowsNativeProcess.CleanupIncomplete')
+    $allowedPrefixes = @('Morrow.WindowsNativeProcess.InvalidDescriptor', 'Morrow.WindowsNativeProcess.InvalidCapsule', 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion', 'Morrow.WindowsNativeProcess.IdentityMismatch', 'Morrow.WindowsNativeProcess.IdentityUnavailable', 'Morrow.WindowsNativeProcess.InvalidStopTimeout', 'Morrow.WindowsNativeProcess.CapsuleBusy', 'Morrow.WindowsNativeProcess.StartFailed', 'Morrow.WindowsNativeProcess.CleanupIncomplete')
     $caughtFullyQualifiedErrorId = [string]$_.FullyQualifiedErrorId
     foreach ($prefix in $allowedPrefixes) {
       if ($caughtFullyQualifiedErrorId -ceq $prefix -or
@@ -2028,7 +2274,8 @@ exit 0
   try { $testHash = (Get-FileHash -LiteralPath $MyInvocation.MyCommand.Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch { }
   $receipt = [ordered]@{
     schemaVersion = 1
-    scope = 'issues-225-236 Windows native process policy own suite'
+    scope = 'issue-227 Windows native process policy stop suite'
+    coverageIssues = @(225, 226, 227, 235, 236)
     status = if ($null -eq $failure) { 'passed' } else { 'failed' }
     runId = $runId
     os = [Environment]::OSVersion.VersionString

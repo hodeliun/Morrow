@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$script:Issue = 236
+$script:Issue = 227
 $script:RunStartedUtc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
 $script:Checks = [ordered]@{}
 $script:Failures = [Collections.Generic.List[string]]::new()
@@ -329,6 +329,8 @@ function New-SafeFailureSummary {
     'Morrow.WindowsNativeProcess.InvalidIdentityAssertion',
     'Morrow.WindowsNativeProcess.IdentityMismatch',
     'Morrow.WindowsNativeProcess.IdentityUnavailable',
+    'Morrow.WindowsNativeProcess.InvalidStopTimeout',
+    'Morrow.WindowsNativeProcess.CapsuleBusy',
     'Morrow.WindowsNativeProcess.StartFailed',
     'Morrow.WindowsNativeProcess.CleanupIncomplete'
   )
@@ -350,7 +352,9 @@ function New-SafeFailureSummary {
     'path-containment', 'environment-validation', 'environment-path-validation', 'environment-path-containment',
     'executable-hash-validation', 'system-path-resolution', 'identity-dependency', 'cim-observation',
     'suspended-create', 'native-observation', 'job-membership', 'identity-comparison', 'capsule-create', 'resume', 'cleanup',
-    'identity-assertion-validation', 'identity-assertion-comparison', 'observe-capsule-validation', 'observe-identity'
+    'identity-assertion-validation', 'identity-assertion-comparison', 'observe-capsule-validation', 'observe-identity',
+    'stop-timeout-validation', 'stop-capsule-validation', 'stop-lock-acquisition',
+    'stop-identity-revalidation', 'stop-cleanup'
   )
   $diagnostics = Get-PolicyDiagnostics -ErrorRecord $diagnosticSource
   $rawStage = Get-DiagnosticValue -Object $diagnostics -Name 'stage'
@@ -1579,6 +1583,7 @@ exit 0
     # These handles are never passed to the policy or used to terminate a process.
     $rootWaitProcess = [Diagnostics.Process]::GetProcessById($rootProcessId)
     $descendantWaitProcess = [Diagnostics.Process]::GetProcessById($descendantProcessId)
+    # Retain these handles only for independent state and exit observation; Stop receives only the opaque capsule.
     $null = $rootWaitProcess.Handle
     $null = $descendantWaitProcess.Handle
     Assert-True -Condition (-not $rootWaitProcess.HasExited -and -not $descendantWaitProcess.HasExited) -Message 'A synthetic process exited before the Observe checks began.'
@@ -2013,6 +2018,689 @@ exit 0
     }
     if ($null -ne $rootWaitProcess) { try { $rootWaitProcess.Dispose() } catch { } }
     if ($null -ne $descendantWaitProcess) { try { $descendantWaitProcess.Dispose() } catch { } }
+  }
+}
+
+function Get-IndependentStopResultValues {
+  param([Parameter(Mandatory)][object] $Result)
+
+  $propertyNames = if ($Result -is [System.Collections.IDictionary]) {
+    @($Result.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+  } else {
+    @($Result.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+  }
+  if ([string]::Join('|', $propertyNames) -cne 'completed|exitCode|jobEmpty|rootExited|timedOut') {
+    throw 'Stop did not return exactly the five public result fields.'
+  }
+
+  $values = [ordered]@{}
+  foreach ($name in @('completed', 'timedOut', 'jobEmpty', 'rootExited')) {
+    $value = Get-DiagnosticValue -Object $Result -Name $name
+    if ($value -isnot [bool]) { throw 'Stop returned a non-Boolean public state field.' }
+    $values[$name] = $value
+  }
+  $exitCode = Get-DiagnosticValue -Object $Result -Name 'exitCode'
+  if ($null -ne $exitCode) {
+    $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+    if ($exitCode.GetType() -notin $integralTypes) { throw 'Stop returned a non-integral exit code.' }
+    try { $exitNumber = [decimal]$exitCode } catch { throw 'Stop returned an invalid exit code.' }
+    if ($exitNumber -lt 0 -or $exitNumber -gt [uint32]::MaxValue) { throw 'Stop returned an exit code outside the Windows unsigned range.' }
+  }
+  $values['exitCode'] = if ($null -eq $exitCode) { $null } else { [uint32]$exitNumber }
+  return ,$values
+}
+
+function Get-IndependentCleanupSnapshotValues {
+  param([Parameter(Mandatory)][object] $Result)
+
+  $propertyNames = @($Result.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+  if ([string]::Join('|', $propertyNames) -cne 'exitCode|jobEmpty|rootExited') {
+    throw 'Capsule Dispose did not return exactly its three public cleanup fields.'
+  }
+  if ($Result.jobEmpty -isnot [bool] -or $Result.rootExited -isnot [bool]) {
+    throw 'Capsule Dispose returned a non-Boolean cleanup field.'
+  }
+  $exitCode = $Result.exitCode
+  if ($null -ne $exitCode) {
+    $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+    if ($exitCode.GetType() -notin $integralTypes) { throw 'Capsule Dispose returned a non-integral exit code.' }
+    try { $exitNumber = [decimal]$exitCode } catch { throw 'Capsule Dispose returned an invalid exit code.' }
+    if ($exitNumber -lt 0 -or $exitNumber -gt [uint32]::MaxValue) { throw 'Capsule Dispose returned an exit code outside the Windows unsigned range.' }
+  }
+  return [ordered]@{
+    jobEmpty = [bool]$Result.jobEmpty
+    rootExited = [bool]$Result.rootExited
+    exitCode = if ($null -eq $exitCode) { $null } else { [uint32]$exitNumber }
+  }
+}
+
+function Test-IndependentStopExpectedError {
+  param(
+    [Parameter(Mandatory)][scriptblock] $Action,
+    [Parameter(Mandatory)][string] $ExpectedErrorId,
+    [Parameter(Mandatory)][string] $ExpectedStage,
+    [string[]] $ExpectedFields = @(),
+    [string[]] $ForbiddenText = @()
+  )
+
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $matched = Test-ExpectedPolicyError -Action $Action -ExpectedErrorId $ExpectedErrorId `
+    -ExpectedFields $ExpectedFields -ForbiddenText $ForbiddenText -ExpectedStage $ExpectedStage `
+    -ExpectedCommand 'Stop-WindowsNativeProcess'
+  $watch.Stop()
+  if ($watch.ElapsedMilliseconds -gt 5000) { throw 'A rejected Stop request exceeded its bounded validation response.' }
+  return [bool]$matched
+}
+
+function Start-IndependentStopTree {
+  param([Parameter(Mandatory)][string] $CaseName)
+
+  $script:CurrentSubstep = $CaseName + ':prepare'
+  $caseRoot = New-CaseRoot -Name $CaseName
+  $descendantReadyPath = Join-Path $caseRoot 'descendant-ready.marker'
+  $descendantPidPath = Join-Path $caseRoot 'descendant.pid'
+  $rootReadyPath = Join-Path $caseRoot 'root-ready.marker'
+  $rootPidPath = Join-Path $caseRoot 'root.pid'
+  $releasePath = Join-Path $caseRoot 'root-release.signal'
+  $descendantScriptPath = Join-Path $caseRoot 'descendant.ps1'
+  $rootScriptPath = Join-Path $caseRoot 'root.ps1'
+  [void](Assert-StrictChildPath -Path $descendantScriptPath -Root $caseRoot -Message 'The synthetic Stop descendant script escaped its private fixture directory.')
+  [void](Assert-StrictChildPath -Path $rootScriptPath -Root $caseRoot -Message 'The synthetic Stop root script escaped its private fixture directory.')
+
+  $descendantSource = @'
+[CmdletBinding()]
+param([Parameter(Mandatory)][string] $ReadyPath)
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText($ReadyPath, 'ready', [Text.UTF8Encoding]::new($false))
+$deadline = [DateTime]::UtcNow.AddSeconds(180)
+while ([DateTime]::UtcNow -lt $deadline) { [Threading.Thread]::Sleep(50) }
+'@
+  $rootSource = @'
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory)][string] $PowerShellPath,
+  [Parameter(Mandatory)][string] $DescendantScriptPath,
+  [Parameter(Mandatory)][string] $DescendantReadyPath,
+  [Parameter(Mandatory)][string] $DescendantPidPath,
+  [Parameter(Mandatory)][string] $RootReadyPath,
+  [Parameter(Mandatory)][string] $RootPidPath,
+  [Parameter(Mandatory)][string] $ReleasePath
+)
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText($RootPidPath, [string]$PID, [Text.UTF8Encoding]::new($false))
+$info = [Diagnostics.ProcessStartInfo]::new()
+$info.FileName = $PowerShellPath
+$info.UseShellExecute = $false
+$info.CreateNoWindow = $true
+foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $DescendantScriptPath, $DescendantReadyPath)) {
+  [void]$info.ArgumentList.Add([string]$argument)
+}
+$descendant = [Diagnostics.Process]::Start($info)
+if ($null -eq $descendant) { exit 93 }
+[IO.File]::WriteAllText($DescendantPidPath, [string]$descendant.Id, [Text.UTF8Encoding]::new($false))
+$descendant.Dispose()
+$readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+while (-not [IO.File]::Exists($DescendantReadyPath) -and [DateTime]::UtcNow -lt $readyDeadline) {
+  [Threading.Thread]::Sleep(50)
+}
+if (-not [IO.File]::Exists($DescendantReadyPath)) { exit 94 }
+[IO.File]::WriteAllText($RootReadyPath, 'ready', [Text.UTF8Encoding]::new($false))
+$releaseDeadline = [DateTime]::UtcNow.AddSeconds(90)
+while (-not [IO.File]::Exists($ReleasePath) -and [DateTime]::UtcNow -lt $releaseDeadline) {
+  [Threading.Thread]::Sleep(50)
+}
+if (-not [IO.File]::Exists($ReleasePath)) { exit 95 }
+exit 0
+'@
+  [IO.File]::WriteAllText($descendantScriptPath, $descendantSource, $script:Utf8NoBom)
+  [IO.File]::WriteAllText($rootScriptPath, $rootSource, $script:Utf8NoBom)
+
+  $capsule = $null
+  $rootWaitProcess = $null
+  $descendantWaitProcess = $null
+  try {
+    $script:CurrentSubstep = $CaseName + ':start-synthetic-tree'
+    $arguments = [string[]]@(
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $rootScriptPath,
+      $script:PwshPath, $descendantScriptPath, $descendantReadyPath, $descendantPidPath,
+      $rootReadyPath, $rootPidPath, $releasePath
+    )
+    $descriptor = New-ValidDescriptor -CaseRoot $caseRoot -ArgumentList $arguments -ExpectedParentProcessId ([int]$PID) -ExpectedOwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    $startOutput = @(Start-WindowsNativeProcess -Descriptor $descriptor)
+    $capsuleType = 'Morrow.Pilot.WindowsNativeProcessCapsule' -as [type]
+    $capsules = @($startOutput | Where-Object { $null -ne $capsuleType -and $capsuleType.IsInstanceOfType($_) })
+    if ($capsules.Count -ne 1) { throw 'The Stop fixture did not return exactly one opaque capsule.' }
+    $capsule = $capsules[0]
+    [void]$script:Capsules.Add($capsule)
+    Assert-StartResultOpaque -Capsule $capsule
+
+    foreach ($wait in @(
+        @{ path = $descendantReadyPath; description = 'Stop fixture descendant readiness' },
+        @{ path = $descendantPidPath; description = 'Stop fixture descendant identity receipt' },
+        @{ path = $rootReadyPath; description = 'Stop fixture root readiness' },
+        @{ path = $rootPidPath; description = 'Stop fixture root identity receipt' }
+      )) {
+      Wait-ForFile -Path $wait.path -TimeoutMs 15000 -Description $wait.description
+    }
+    $rootProcessId = [int][IO.File]::ReadAllText($rootPidPath)
+    $descendantProcessId = [int][IO.File]::ReadAllText($descendantPidPath)
+    if ($rootProcessId -lt 1 -or $descendantProcessId -lt 1 -or $rootProcessId -eq $descendantProcessId) {
+      throw 'The Stop fixture returned an invalid synthetic process identity.'
+    }
+
+    $rootWaitProcess = [Diagnostics.Process]::GetProcessById($rootProcessId)
+    $descendantWaitProcess = [Diagnostics.Process]::GetProcessById($descendantProcessId)
+    $null = $rootWaitProcess.Handle
+    $null = $descendantWaitProcess.Handle
+    if ($rootWaitProcess.HasExited -or $descendantWaitProcess.HasExited) {
+      throw 'A Stop fixture process exited before its baseline proof.'
+    }
+
+    $script:CurrentSubstep = $CaseName + ':independent-identity-proof'
+    $observation = Observe-WindowsNativeProcess -Capsule $capsule
+    Assert-Equal -Actual ([string]$observation.root.state) -Expected 'alive' -Message 'Observe did not report the live Stop fixture root.'
+    Assert-Equal -Actual ([string]$observation.root.identityStatus) -Expected 'fresh' -Message 'Observe did not return a fresh Stop fixture identity.'
+    if ($null -ne $observation.root.exitCode) { throw 'Observe reported an exit code for the live Stop fixture root.' }
+    $identityNames = @($observation.root.identity.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+    if ([string]::Join('|', $identityNames) -cne 'creationTimeUtc|executablePath|executableSha256|ownerSid|parentProcessId|processId') {
+      throw 'The Stop fixture identity did not contain exactly the six public fields.'
+    }
+    $rootCim = Get-IndependentCimIdentitySnapshot -ProcessId $rootProcessId
+    $descendantCim = Get-IndependentCimIdentitySnapshot -ProcessId $descendantProcessId
+    $knownImagePath = Get-CanonicalFullPath -Path $script:PwshPath
+    $knownImageHash = Get-Sha256 -Path $knownImagePath
+    $nativeImagePath = Get-TestProcessImagePath -SafeProcessHandle $rootWaitProcess.SafeHandle
+    $identity = $observation.root.identity
+    Assert-Equal -Actual $nativeImagePath -Expected $knownImagePath -IgnoreCase -Message 'The retained synthetic root handle identified another image.'
+    Assert-Equal -Actual ([int]$identity.processId) -Expected $rootProcessId -Message 'Observe and the fixture disagreed on the synthetic root.'
+    Assert-Equal -Actual ([int]$identity.parentProcessId) -Expected ([int]$rootCim.parentProcessId) -Message 'The Stop fixture parent did not match independent CIM.'
+    Assert-Equal -Actual ([int]$rootCim.parentProcessId) -Expected ([int]$PID) -Message 'Independent CIM did not identify the test process as the root creator.'
+    Assert-Equal -Actual ([string]$identity.executablePath) -Expected $knownImagePath -IgnoreCase -Message 'The public root image differed from the known staged executable.'
+    Assert-Equal -Actual ([string]$identity.executableSha256).ToLowerInvariant() -Expected $knownImageHash -Message 'The public root digest differed from the independent known-file digest.'
+    Assert-Equal -Actual ([string]$identity.ownerSid) -Expected ([string]$rootCim.ownerSid) -Message 'The public root SID differed from independent CIM.'
+    Assert-Equal -Actual ([int]$descendantCim.parentProcessId) -Expected $rootProcessId -Message 'Independent CIM did not prove the synthetic descendant parent.'
+    $publicTime = [DateTimeOffset]::Parse([string]$identity.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None)
+    $cimTime = [DateTimeOffset]::Parse([string]$rootCim.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None)
+    if ($publicTime.UtcDateTime.Ticks -ne $cimTime.UtcDateTime.Ticks) { throw 'The Stop fixture creation time differed from independent CIM.' }
+
+    $members = @($observation.inventory.members)
+    $summary = Get-IndependentInventoryMemberSummary -Members $members
+    if ([string]$observation.inventory.status -cne 'available' -or [bool]$observation.inventory.isEmpty -or
+        -not $summary.validIds -or -not $summary.uniqueIds -or -not $summary.allStatesObserved -or
+        -not $summary.observedIds.Contains($rootProcessId) -or -not $summary.observedIds.Contains($descendantProcessId) -or
+        $summary.allIds.Contains([int]$script:Outsider.processId)) {
+      throw 'The Stop fixture baseline did not show its root and descendant in a stable private Job.'
+    }
+    $memberIds = @($summary.observedIds | ForEach-Object { [int]$_ } | Sort-Object)
+    $assertion = [ordered]@{
+      processId = [int]$rootProcessId
+      parentProcessId = [int]$rootCim.parentProcessId
+      executablePath = $knownImagePath
+      executableSha256 = $knownImageHash
+      creationTimeUtc = [string]$rootCim.creationTimeUtc
+      ownerSid = [string]$rootCim.ownerSid
+    }
+    $matching = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $assertion
+    Assert-Equal -Actual ([string]$matching.root.identityStatus) -Expected 'fresh' -Message 'The matching six-field Stop fixture assertion was not accepted.'
+    Assert-True -Condition (-not $rootWaitProcess.HasExited -and -not $descendantWaitProcess.HasExited) -Message 'The Stop fixture was not still live after its matching assertion.'
+    Assert-OutsiderStillAlive
+
+    return [pscustomobject]@{
+      caseRoot = $caseRoot
+      capsule = $capsule
+      rootProcessId = $rootProcessId
+      descendantProcessId = $descendantProcessId
+      rootWaitProcess = $rootWaitProcess
+      descendantWaitProcess = $descendantWaitProcess
+      releasePath = $releasePath
+      expectedAssertion = $assertion
+      baselineMemberIds = [int[]]$memberIds
+    }
+  } catch {
+    if ($null -ne $rootWaitProcess) { try { $rootWaitProcess.Dispose() } catch { } }
+    if ($null -ne $descendantWaitProcess) { try { $descendantWaitProcess.Dispose() } catch { } }
+    throw
+  }
+}
+
+function Assert-IndependentStopFixtureUnchanged {
+  param([Parameter(Mandatory)][psobject] $Fixture)
+
+  $Fixture.rootWaitProcess.Refresh()
+  $Fixture.descendantWaitProcess.Refresh()
+  if ($Fixture.rootWaitProcess.HasExited -or $Fixture.descendantWaitProcess.HasExited) {
+    throw 'A rejected Stop request terminated a known synthetic Job member.'
+  }
+  $script:Outsider.process.Refresh()
+  if ($script:Outsider.process.HasExited) { throw 'A rejected Stop request terminated the outsider.' }
+  $observation = Observe-WindowsNativeProcess -Capsule $Fixture.capsule -IdentityAssertion $Fixture.expectedAssertion
+  if ([string]$observation.root.state -cne 'alive' -or [string]$observation.root.identityStatus -cne 'fresh' -or
+      -not [bool]$observation.root.identityFresh -or [string]$observation.inventory.status -cne 'available' -or
+      [bool]$observation.inventory.isEmpty) {
+    throw 'A rejected Stop request changed the capsule root or Job state.'
+  }
+  if ($null -ne $observation.root.exitCode) { throw 'A rejected Stop request exposed a live-root exit code.' }
+  $members = @($observation.inventory.members)
+  $summary = Get-IndependentInventoryMemberSummary -Members $members
+  if (-not $summary.validIds -or -not $summary.uniqueIds -or -not $summary.allStatesObserved -or
+      -not $summary.observedIds.Contains([int]$Fixture.rootProcessId) -or
+      -not $summary.observedIds.Contains([int]$Fixture.descendantProcessId) -or
+      $summary.allIds.Contains([int]$script:Outsider.processId)) {
+    throw 'A rejected Stop request changed or misreported the stable private Job membership.'
+  }
+  foreach ($countName in @('memberCountBefore', 'memberCountAfter')) {
+    $count = Get-SafeBoundedCount -Value $observation.inventory.$countName -Maximum 64
+    if (-not $count.valid -or $count.capped -or $count.value -ne $summary.observedIds.Count) {
+      throw 'A rejected Stop request changed a bounded inventory count.'
+    }
+  }
+}
+
+function Assert-IndependentStopResultTruthful {
+  param(
+    [Parameter(Mandatory)][System.Collections.IDictionary] $Values,
+    [Parameter(Mandatory)][psobject] $Fixture
+  )
+
+  if ($Values.completed -and (-not $Values.jobEmpty -or -not $Values.rootExited -or $Values.timedOut)) {
+    throw 'Stop reported completion without both cleanup proofs or while timed out.'
+  }
+  if ($Values.timedOut -and ($Values.completed -or ($Values.jobEmpty -and $Values.rootExited))) {
+    throw 'Stop returned a contradictory timeout result.'
+  }
+  if (-not $Values.completed -and -not $Values.timedOut) {
+    throw 'Stop returned an incomplete result without reporting timeout.'
+  }
+  $Fixture.rootWaitProcess.Refresh()
+  $Fixture.descendantWaitProcess.Refresh()
+  if ($Values.rootExited -and -not $Fixture.rootWaitProcess.HasExited) {
+    throw 'Stop reported root exit before the retained synthetic root handle signaled.'
+  }
+  if ($null -ne $Values.exitCode) {
+    if (-not $Fixture.rootWaitProcess.HasExited) { throw 'Stop reported an exit code before the retained root handle signaled.' }
+    if ([uint32]$Values.exitCode -ne [uint32]$Fixture.rootWaitProcess.ExitCode) {
+      throw 'Stop reported an exit code that differed from the retained root handle.'
+    }
+  }
+}
+
+function Complete-IndependentStopWithRetry {
+  param(
+    [Parameter(Mandatory)][psobject] $Fixture,
+    [Parameter(Mandatory)][System.Collections.IDictionary] $InitialValues
+  )
+
+  Assert-IndependentStopResultTruthful -Values $InitialValues -Fixture $Fixture
+  $retryCount = 0
+  $finalValues = $InitialValues
+  if (-not $InitialValues.completed) {
+    $script:CurrentSubstep = 'stop-independent:retry-after-timeout'
+    $retryWatch = [Diagnostics.Stopwatch]::StartNew()
+    $retryOutput = @(Stop-WindowsNativeProcess -Capsule $Fixture.capsule -IdentityAssertion $Fixture.expectedAssertion -TimeoutMilliseconds 10000)
+    $retryWatch.Stop()
+    if ($retryWatch.ElapsedMilliseconds -gt 12000) { throw 'A bounded Stop retry exceeded its timeout plus scheduling allowance.' }
+    if ($retryOutput.Count -ne 1) { throw 'A Stop retry did not return exactly one public result.' }
+    $finalValues = Get-IndependentStopResultValues -Result $retryOutput[0]
+    Assert-IndependentStopResultTruthful -Values $finalValues -Fixture $Fixture
+    if (-not $finalValues.completed) { throw 'A valid bounded Stop retry did not confirm cleanup.' }
+    $retryCount = 1
+  }
+  if (-not $Fixture.rootWaitProcess.WaitForExit(5000)) { throw 'The retained synthetic root handle did not signal after completed Stop.' }
+  if (-not $Fixture.descendantWaitProcess.WaitForExit(5000)) { throw 'The retained synthetic descendant handle did not signal after completed Stop.' }
+  Assert-OutsiderStillAlive
+  return [pscustomobject]@{ values = $finalValues; retryCount = $retryCount; timedOutInitially = (-not $InitialValues.completed) }
+}
+
+function Assert-IndependentStopTerminalIdempotence {
+  param(
+    [Parameter(Mandatory)][psobject] $Fixture,
+    [Parameter(Mandatory)][System.Collections.IDictionary] $FinalValues
+  )
+
+  $script:CurrentSubstep = 'stop-independent:terminal-assertion-still-checked'
+  $wrongProcessId = [int]$Fixture.rootProcessId + 1
+  if (-not (Test-IndependentStopExpectedError `
+      -Action { Stop-WindowsNativeProcess -Capsule $Fixture.capsule -IdentityAssertion ([ordered]@{ processId = $wrongProcessId }) } `
+      -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+      -ExpectedFields @('processId') `
+      -ForbiddenText @([string]$wrongProcessId) `
+      -ExpectedStage 'identity-assertion-comparison')) {
+    throw 'A terminal capsule skipped the identity assertion or exposed its divergent value.'
+  }
+
+  $script:CurrentSubstep = 'stop-independent:terminal-stop-repeat'
+  $repeatWatch = [Diagnostics.Stopwatch]::StartNew()
+  $repeatOutput = @(Stop-WindowsNativeProcess -Capsule $Fixture.capsule -IdentityAssertion $Fixture.expectedAssertion -TimeoutMilliseconds 0)
+  $repeatWatch.Stop()
+  if ($repeatWatch.ElapsedMilliseconds -gt 5000) { throw 'A terminal Stop repeat exceeded its bounded response allowance.' }
+  if ($repeatOutput.Count -ne 1) { throw 'A terminal Stop repeat did not return exactly one public result.' }
+  $repeatValues = Get-IndependentStopResultValues -Result $repeatOutput[0]
+  foreach ($field in @('completed', 'timedOut', 'jobEmpty', 'rootExited', 'exitCode')) {
+    if ($repeatValues[$field] -ne $FinalValues[$field]) { throw 'A terminal Stop repeat differed from its cached result.' }
+  }
+  if (-not $repeatValues.completed -or $repeatValues.timedOut -or -not $repeatValues.jobEmpty -or -not $repeatValues.rootExited) {
+    throw 'A terminal Stop repeat did not return its verified completed snapshot.'
+  }
+
+  $maximumWatch = [Diagnostics.Stopwatch]::StartNew()
+  $maximumOutput = @(Stop-WindowsNativeProcess -Capsule $Fixture.capsule -IdentityAssertion $Fixture.expectedAssertion -TimeoutMilliseconds 120000)
+  $maximumWatch.Stop()
+  if ($maximumWatch.ElapsedMilliseconds -gt 5000 -or $maximumOutput.Count -ne 1) {
+    throw 'The valid maximum timeout did not return promptly from the terminal cache.'
+  }
+  $maximumValues = Get-IndependentStopResultValues -Result $maximumOutput[0]
+  foreach ($field in @('completed', 'timedOut', 'jobEmpty', 'rootExited', 'exitCode')) {
+    if ($maximumValues[$field] -ne $FinalValues[$field]) { throw 'The valid maximum timeout changed the terminal Stop result.' }
+  }
+
+  $script:CurrentSubstep = 'stop-independent:dispose-repeat'
+  $firstDispose = Get-IndependentCleanupSnapshotValues -Result ($Fixture.capsule.Dispose())
+  $secondDispose = Get-IndependentCleanupSnapshotValues -Result ($Fixture.capsule.Dispose())
+  if (-not $firstDispose.jobEmpty -or -not $firstDispose.rootExited -or
+      $firstDispose.jobEmpty -ne $secondDispose.jobEmpty -or $firstDispose.rootExited -ne $secondDispose.rootExited -or
+      $firstDispose.exitCode -ne $secondDispose.exitCode -or
+      $firstDispose.jobEmpty -ne $FinalValues.jobEmpty -or $firstDispose.rootExited -ne $FinalValues.rootExited -or
+      $firstDispose.exitCode -ne $FinalValues.exitCode) {
+    throw 'Repeated capsule Dispose did not preserve the completed Stop snapshot.'
+  }
+  Assert-OutsiderStillAlive
+}
+
+function Test-IndependentStopLiveMismatchesAndValidation {
+  $fixture = $null
+  $cleanupConfirmed = $false
+  $script:CurrentSubstep = 'stop-independent-live:prepare'
+  try {
+    $fixture = Start-IndependentStopTree -CaseName 'stop-live-root'
+    $script:CurrentSubstep = 'stop-independent-live:invalid-capsule'
+    if (-not (Test-IndependentStopExpectedError `
+        -Action { Stop-WindowsNativeProcess -Capsule ([pscustomobject]@{ session = 'private-fake-capsule' }) } `
+        -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidCapsule' `
+        -ExpectedStage 'stop-capsule-validation')) {
+      throw 'Stop did not reject a caller-shaped fake capsule with its public safe error identity.'
+    }
+    Assert-IndependentStopFixtureUnchanged -Fixture $fixture
+
+    $identity = $fixture.expectedAssertion
+    $wrongHash = if ([string]$identity.executableSha256 -match '\Aa') {
+      'b' + ([string]$identity.executableSha256).Substring(1)
+    } else {
+      'a' + ([string]$identity.executableSha256).Substring(1)
+    }
+    $wrongOwner = if ([string]$identity.ownerSid -ceq 'S-1-1-0') { 'S-1-5-18' } else { 'S-1-1-0' }
+    $wrongTime = ([DateTimeOffset]::Parse([string]$identity.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None)).AddTicks(1).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    $wrongPath = Join-Path $fixture.caseRoot ('absent-image-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    if (Test-PathExists -Path $wrongPath) { throw 'The syntactically valid divergent image unexpectedly exists.' }
+    $mismatches = @(
+      [pscustomobject]@{ field = 'processId'; value = ([int]$fixture.rootProcessId + 1) },
+      [pscustomobject]@{ field = 'parentProcessId'; value = ([int]$identity.parentProcessId + 1) },
+      [pscustomobject]@{ field = 'creationTimeUtc'; value = $wrongTime },
+      [pscustomobject]@{ field = 'ownerSid'; value = $wrongOwner },
+      [pscustomobject]@{ field = 'executablePath'; value = $wrongPath },
+      [pscustomobject]@{ field = 'executableSha256'; value = $wrongHash }
+    )
+    foreach ($case in $mismatches) {
+      $script:CurrentSubstep = 'stop-independent-live:mismatch-' + [string]$case.field
+      $assertion = [ordered]@{}
+      $assertion.Add([string]$case.field, $case.value)
+      if (-not (Test-IndependentStopExpectedError `
+          -Action { Stop-WindowsNativeProcess -Capsule $fixture.capsule -IdentityAssertion $assertion -TimeoutMilliseconds 10000 } `
+          -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
+          -ExpectedFields @([string]$case.field) `
+          -ForbiddenText @([string]$case.value) `
+          -ExpectedStage 'identity-assertion-comparison')) {
+        throw 'Stop did not reject an individual well-formed identity divergence without exposing its value.'
+      }
+      Assert-IndependentStopFixtureUnchanged -Fixture $fixture
+    }
+
+    $unknownField = 'private-stop-field-' + [Guid]::NewGuid().ToString('N')
+    $unknownValue = 'private-stop-value-' + [Guid]::NewGuid().ToString('N')
+    foreach ($malformed in @(
+        [pscustomobject]@{ value = 'private-stop-scalar'; forbidden = @('private-stop-scalar') },
+        [pscustomobject]@{ value = ([ordered]@{ $unknownField = $unknownValue }); forbidden = @($unknownField, $unknownValue) }
+      )) {
+      $script:CurrentSubstep = 'stop-independent-live:malformed-assertion'
+      if (-not (Test-IndependentStopExpectedError `
+          -Action { Stop-WindowsNativeProcess -Capsule $fixture.capsule -IdentityAssertion $malformed.value -TimeoutMilliseconds 10000 } `
+          -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
+          -ExpectedFields @() `
+          -ForbiddenText ([string[]]$malformed.forbidden) `
+          -ExpectedStage 'identity-assertion-validation')) {
+        throw 'Stop did not reject a malformed identity assertion before cleanup.'
+      }
+      Assert-IndependentStopFixtureUnchanged -Fixture $fixture
+    }
+
+    $invalidTimeouts = @(
+      [pscustomobject]@{ name = 'null'; value = $null; forbidden = @() },
+      [pscustomobject]@{ name = 'fraction'; value = [double]1.5; forbidden = @('1.5') },
+      [pscustomobject]@{ name = 'boolean'; value = [bool]$true; forbidden = @() },
+      [pscustomobject]@{ name = 'string'; value = '1000'; forbidden = @('1000') },
+      [pscustomobject]@{ name = 'negative'; value = [int]-1; forbidden = @('-1') },
+      [pscustomobject]@{ name = 'above-maximum'; value = [int]120001; forbidden = @('120001') }
+    )
+    foreach ($case in $invalidTimeouts) {
+      $script:CurrentSubstep = 'stop-independent-live:invalid-timeout-' + [string]$case.name
+      $parameters = @{
+        Capsule = $fixture.capsule
+        IdentityAssertion = $fixture.expectedAssertion
+        TimeoutMilliseconds = $case.value
+      }
+      if (-not (Test-IndependentStopExpectedError `
+          -Action { Stop-WindowsNativeProcess @parameters } `
+          -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidStopTimeout' `
+          -ExpectedFields @() `
+          -ForbiddenText ([string[]]$case.forbidden) `
+          -ExpectedStage 'stop-timeout-validation')) {
+        throw 'Stop did not reject a malformed or out-of-range timeout before cleanup.'
+      }
+      Assert-IndependentStopFixtureUnchanged -Fixture $fixture
+    }
+
+    $script:CurrentSubstep = 'stop-independent-live:matching-stop'
+    $stopWatch = [Diagnostics.Stopwatch]::StartNew()
+    $initialOutput = @(Stop-WindowsNativeProcess -Capsule $fixture.capsule -IdentityAssertion $fixture.expectedAssertion -TimeoutMilliseconds 10000)
+    $stopWatch.Stop()
+    if ($stopWatch.ElapsedMilliseconds -gt 12000) { throw 'Live-root Stop exceeded its timeout plus scheduling allowance.' }
+    if ($initialOutput.Count -ne 1) { throw 'A matching Stop did not return exactly one public result.' }
+    $initialValues = Get-IndependentStopResultValues -Result $initialOutput[0]
+    $completedStop = Complete-IndependentStopWithRetry -Fixture $fixture -InitialValues $initialValues
+    Assert-IndependentStopTerminalIdempotence -Fixture $fixture -FinalValues $completedStop.values
+    $cleanupConfirmed = $true
+    [void]$script:CleanupNotes.Add('Stop rejected six identity divergences and malformed inputs without effect, then proved bounded cleanup of only its synthetic Job')
+    [void]$script:CaseOutcomes.Add([ordered]@{
+      name = 'stop-live-identity-mismatch-validation-and-cleanup'
+      status = 'passed'
+      identityMismatchesRejected = $mismatches.Count
+      malformedAssertionsRejected = 2
+      invalidTimeoutsRejected = $invalidTimeouts.Count
+      allRejectedRequestsWereNonDestructive = $true
+      matchingStopCompleted = [bool]$completedStop.values.completed
+      retryAfterTimeout = [bool]$completedStop.timedOutInitially
+      terminalAssertionStillChecked = $true
+      stopAndDisposeIdempotent = $true
+      outsiderPreserved = $true
+    })
+    return [ordered]@{
+      identityMismatchesRejected = $mismatches.Count
+      malformedAssertionsRejected = 2
+      invalidTimeoutsRejected = $invalidTimeouts.Count
+      allRejectedRequestsWereNonDestructive = $true
+      matchingStopCompleted = [bool]$completedStop.values.completed
+      retryAfterTimeout = [bool]$completedStop.timedOutInitially
+      stopAndDisposeIdempotent = $true
+      outsiderPreserved = $true
+    }
+  } finally {
+    if ($null -ne $fixture -and -not $cleanupConfirmed) {
+      try {
+        $fallback = Get-IndependentCleanupSnapshotValues -Result ($fixture.capsule.Dispose())
+        $cleanupConfirmed = [bool]$fallback.jobEmpty -and [bool]$fallback.rootExited
+      } catch { $cleanupConfirmed = $false }
+      if (-not $cleanupConfirmed) {
+        [void]$script:CleanupNotes.Add('The live Stop fixture cleanup was not confirmed; its owned evidence was retained')
+        [void]$script:Failures.Add('stop-live-owned-job-cleanup-unconfirmed')
+      }
+    }
+    if ($null -ne $fixture) {
+      try { $fixture.rootWaitProcess.Dispose() } catch { }
+      try { $fixture.descendantWaitProcess.Dispose() } catch { }
+    }
+  }
+}
+
+function Test-IndependentStopRootExitsFirst {
+  $fixture = $null
+  $cleanupConfirmed = $false
+  $script:CurrentSubstep = 'stop-independent-exited-root:prepare'
+  try {
+    $fixture = Start-IndependentStopTree -CaseName 'stop-exited-root'
+    $script:CurrentSubstep = 'stop-independent-exited-root:release-root'
+    [IO.File]::WriteAllText($fixture.releasePath, 'release', $script:Utf8NoBom)
+    if (-not $fixture.rootWaitProcess.WaitForExit(15000)) { throw 'The synthetic Stop root did not exit within its bounded wait.' }
+    if ([int]$fixture.rootWaitProcess.ExitCode -ne 0) { throw 'The synthetic Stop root returned a fixture error code.' }
+    $fixture.descendantWaitProcess.Refresh()
+    if ($fixture.descendantWaitProcess.HasExited) { throw 'The synthetic descendant did not remain alive after root exit.' }
+    $script:Outsider.process.Refresh()
+    if ($script:Outsider.process.HasExited) { throw 'The outsider exited before root-exits-first Stop.' }
+
+    $script:CurrentSubstep = 'stop-independent-exited-root:pre-stop-snapshot'
+    $observation = Observe-WindowsNativeProcess -Capsule $fixture.capsule -IdentityAssertion $fixture.expectedAssertion
+    if ([string]$observation.root.state -cne 'exited' -or [string]$observation.root.identityStatus -cne 'snapshot' -or
+        [bool]$observation.root.identityFresh -or [string]$observation.inventory.status -cne 'available' -or
+        [bool]$observation.inventory.isEmpty) {
+      throw 'The root-exits-first fixture did not show a stale root snapshot and a live Job inventory.'
+    }
+    if ($null -eq $observation.root.exitCode -or [uint32]$observation.root.exitCode -ne [uint32]$fixture.rootWaitProcess.ExitCode) {
+      throw 'The root-exits-first snapshot did not preserve the retained root exit code.'
+    }
+    $members = @($observation.inventory.members)
+    $summary = Get-IndependentInventoryMemberSummary -Members $members
+    if (-not $summary.validIds -or -not $summary.uniqueIds -or -not $summary.allStatesObserved -or
+        $summary.allIds.Contains([int]$fixture.rootProcessId) -or
+        -not $summary.observedIds.Contains([int]$fixture.descendantProcessId) -or
+        $summary.allIds.Contains([int]$script:Outsider.processId)) {
+      throw 'The root-exits-first inventory did not retain the descendant while excluding the root and outsider.'
+    }
+    $descendantCim = Get-IndependentCimIdentitySnapshot -ProcessId ([int]$fixture.descendantProcessId)
+    Assert-Equal -Actual ([int]$descendantCim.parentProcessId) -Expected ([int]$fixture.rootProcessId) -Message 'Independent CIM did not prove the retained Job descendant parent after root exit.'
+    $remainingExpected = [Collections.Generic.HashSet[int]]::new()
+    foreach ($memberId in $fixture.baselineMemberIds) {
+      if ([int]$memberId -ne [int]$fixture.rootProcessId) { [void]$remainingExpected.Add([int]$memberId) }
+    }
+    if (-not $remainingExpected.SetEquals($summary.observedIds)) { throw 'The root-exits-first Job members differed from the known stable live set minus root.' }
+    foreach ($countName in @('memberCountBefore', 'memberCountAfter')) {
+      $count = Get-SafeBoundedCount -Value $observation.inventory.$countName -Maximum 64
+      if (-not $count.valid -or $count.capped -or $count.value -ne $summary.observedIds.Count) {
+        throw 'The root-exits-first bounded inventory count differed from its stable observed member set.'
+      }
+    }
+
+    $script:CurrentSubstep = 'stop-independent-exited-root:stop-default-deadline'
+    $stopWatch = [Diagnostics.Stopwatch]::StartNew()
+    $initialOutput = @(Stop-WindowsNativeProcess -Capsule $fixture.capsule -IdentityAssertion $fixture.expectedAssertion)
+    $stopWatch.Stop()
+    if ($stopWatch.ElapsedMilliseconds -gt 12000) { throw 'Default-deadline Stop exceeded its bounded response allowance.' }
+    if ($initialOutput.Count -ne 1) { throw 'Root-exits-first Stop did not return exactly one public result.' }
+    $initialValues = Get-IndependentStopResultValues -Result $initialOutput[0]
+    $completedStop = Complete-IndependentStopWithRetry -Fixture $fixture -InitialValues $initialValues
+    if ($null -ne $completedStop.values.exitCode -and [uint32]$completedStop.values.exitCode -ne [uint32]$fixture.rootWaitProcess.ExitCode) {
+      throw 'Stop reported an exit code different from the already-exited synthetic root.'
+    }
+    Assert-IndependentStopTerminalIdempotence -Fixture $fixture -FinalValues $completedStop.values
+    $cleanupConfirmed = $true
+    [void]$script:CleanupNotes.Add('Stop drained the synthetic descendant after its root exited first, preserving the outsider')
+    [void]$script:CaseOutcomes.Add([ordered]@{
+      name = 'stop-root-exits-first-drains-descendant'
+      status = 'passed'
+      rootWasExitedBeforeStop = $true
+      descendantWasAliveBeforeStop = $true
+      descendantParentIndependentlyProved = $true
+      stopCompleted = [bool]$completedStop.values.completed
+      retryAfterTimeout = [bool]$completedStop.timedOutInitially
+      repeatedStopAndDisposeConfirmed = $true
+      outsiderPreserved = $true
+    })
+    return [ordered]@{
+      rootWasExitedBeforeStop = $true
+      descendantWasAliveBeforeStop = $true
+      descendantParentIndependentlyProved = $true
+      stopCompleted = [bool]$completedStop.values.completed
+      retryAfterTimeout = [bool]$completedStop.timedOutInitially
+      repeatedStopAndDisposeConfirmed = $true
+      outsiderPreserved = $true
+    }
+  } finally {
+    if ($null -ne $fixture -and -not $cleanupConfirmed) {
+      try {
+        $fallback = Get-IndependentCleanupSnapshotValues -Result ($fixture.capsule.Dispose())
+        $cleanupConfirmed = [bool]$fallback.jobEmpty -and [bool]$fallback.rootExited
+      } catch { $cleanupConfirmed = $false }
+      if (-not $cleanupConfirmed) {
+        [void]$script:CleanupNotes.Add('The root-exits-first Stop fixture cleanup was not confirmed; its owned evidence was retained')
+        [void]$script:Failures.Add('stop-exited-root-owned-job-cleanup-unconfirmed')
+      }
+    }
+    if ($null -ne $fixture) {
+      try { $fixture.rootWaitProcess.Dispose() } catch { }
+      try { $fixture.descendantWaitProcess.Dispose() } catch { }
+    }
+  }
+}
+
+function Test-IndependentStopZeroDeadlineTruthfulness {
+  $fixture = $null
+  $cleanupConfirmed = $false
+  $script:CurrentSubstep = 'stop-independent-zero:prepare'
+  try {
+    $fixture = Start-IndependentStopTree -CaseName 'stop-zero-deadline'
+    $script:CurrentSubstep = 'stop-independent-zero:valid-zero-deadline'
+    $stopWatch = [Diagnostics.Stopwatch]::StartNew()
+    $initialOutput = @(Stop-WindowsNativeProcess -Capsule $fixture.capsule -IdentityAssertion $fixture.expectedAssertion -TimeoutMilliseconds 0)
+    $stopWatch.Stop()
+    if ($stopWatch.ElapsedMilliseconds -gt 5000) { throw 'Zero-timeout Stop exceeded its bounded response allowance.' }
+    if ($initialOutput.Count -ne 1) { throw 'A valid zero-timeout Stop did not return exactly one public result.' }
+    $initialValues = Get-IndependentStopResultValues -Result $initialOutput[0]
+    Assert-IndependentStopResultTruthful -Values $initialValues -Fixture $fixture
+    $initialTimedOut = [bool]$initialValues.timedOut
+    $completedStop = Complete-IndependentStopWithRetry -Fixture $fixture -InitialValues $initialValues
+    Assert-IndependentStopTerminalIdempotence -Fixture $fixture -FinalValues $completedStop.values
+    $cleanupConfirmed = $true
+    [void]$script:CleanupNotes.Add('A zero-timeout Stop accepted synchronous completion only with root-exit and empty-Job proof; incomplete results remained retryable')
+    [void]$script:CaseOutcomes.Add([ordered]@{
+      name = 'stop-zero-deadline-result-truthfulness'
+      status = 'passed'
+      zeroTimeoutAccepted = $true
+      initialResultTimedOut = $initialTimedOut
+      initialCompletionWasProofGated = $true
+      retryAfterTimeout = [bool]$completedStop.timedOutInitially
+      eventualCleanupConfirmed = [bool]$completedStop.values.completed
+      outsiderPreserved = $true
+    })
+    return [ordered]@{
+      zeroTimeoutAccepted = $true
+      initialResultTimedOut = $initialTimedOut
+      initialCompletionWasProofGated = $true
+      retryAfterTimeout = [bool]$completedStop.timedOutInitially
+      eventualCleanupConfirmed = [bool]$completedStop.values.completed
+      outsiderPreserved = $true
+    }
+  } finally {
+    if ($null -ne $fixture -and -not $cleanupConfirmed) {
+      try {
+        $fallback = Get-IndependentCleanupSnapshotValues -Result ($fixture.capsule.Dispose())
+        $cleanupConfirmed = [bool]$fallback.jobEmpty -and [bool]$fallback.rootExited
+      } catch { $cleanupConfirmed = $false }
+      if (-not $cleanupConfirmed) {
+        [void]$script:CleanupNotes.Add('The zero-deadline Stop fixture cleanup was not confirmed; its owned evidence was retained')
+        [void]$script:Failures.Add('stop-zero-deadline-owned-job-cleanup-unconfirmed')
+      }
+    }
+    if ($null -ne $fixture) {
+      try { $fixture.rootWaitProcess.Dispose() } catch { }
+      try { $fixture.descendantWaitProcess.Dispose() } catch { }
+    }
   }
 }
 
@@ -2522,13 +3210,13 @@ function Get-ReceiptStatus {
 
 function Write-FinalReceipt {
   if ([string]::IsNullOrWhiteSpace($script:EvidenceRootFull)) {
-    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":236,"status":"failed","evidenceAvailable":false}')
+    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":227,"status":"failed","evidenceAvailable":false}')
     return
   }
   $receipt = [ordered]@{
     schemaVersion = 1
     issue = $script:Issue
-    coverageIssues = @(225, 235, 236)
+    coverageIssues = @(225, 226, 227, 235, 236)
     status = Get-ReceiptStatus
     startedAtUtc = $script:RunStartedUtc
     completedAtUtc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
@@ -2578,7 +3266,7 @@ function Write-FinalReceipt {
     }
   } catch {
     [Console]::Error.WriteLine('FAIL receipt: unable to write the sanitized independent receipt.')
-    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":236,"status":"failed","receiptWriteFailed":true}')
+    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":227,"status":"failed","receiptWriteFailed":true}')
     $script:Failures.Add('receipt-write-failed')
   }
 }
@@ -2648,6 +3336,9 @@ try {
 
   Add-Check -Name 'positive-start-identity-environment-and-capsule-dispose' -Action { Test-PositiveStartAndDispose }
   Add-Check -Name 'observe-fresh-snapshot-assertions-and-owned-job-inventory' -Action { Test-IndependentObserveAndRootExitInventory }
+  Add-Check -Name 'stop-live-identity-mismatch-validation-and-cleanup' -Action { Test-IndependentStopLiveMismatchesAndValidation }
+  Add-Check -Name 'stop-root-exits-first-drains-descendant' -Action { Test-IndependentStopRootExitsFirst }
+  Add-Check -Name 'stop-zero-deadline-result-truthfulness' -Action { Test-IndependentStopZeroDeadlineTruthfulness }
   Add-Check -Name 'direct-suspended-retained-image-fresh-digest-and-cim-proof' -Action { Test-DirectSuspendedIdentityProof }
   Add-Check -Name 'closed-descriptor-and-precreate-refusals' -Action { New-InvalidDescriptorCases -CaseRoot (New-CaseRoot -Name 'invalid-descriptors') }
   Add-Check -Name 'post-create-owner-sid-mismatch-cleans-only-owned-job' -Action { Test-PostCreateMismatch -MismatchName 'mismatch-owner-sid' -MismatchKind ownerSid }
@@ -2667,7 +3358,7 @@ try {
   try { Write-FinalReceipt } catch {
     $script:Failures.Add('final-receipt-finalization-unhandled')
     [Console]::Error.WriteLine('FAIL receipt: finalization failed before the sanitized receipt could be completed.')
-    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":236,"status":"failed","receiptWriteFailed":true}')
+    [Console]::Out.WriteLine('{"schemaVersion":1,"issue":227,"status":"failed","receiptWriteFailed":true}')
   }
 }
 
