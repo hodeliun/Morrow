@@ -108,6 +108,112 @@ function Get-PolicyErrorId {
   return $null
 }
 
+function New-SanitizedPolicyFailureObservation {
+  param(
+    [AllowNull()][System.Management.Automation.ErrorRecord] $ErrorRecord,
+    [Parameter(Mandatory)][string] $ExpectedErrorId,
+    [AllowNull()][System.Collections.IDictionary] $Diagnostics
+  )
+
+  $knownErrorIds = @(
+    'Morrow.WindowsNativeProcess.InvalidDescriptor',
+    'Morrow.WindowsNativeProcess.IdentityMismatch',
+    'Morrow.WindowsNativeProcess.StartFailed',
+    'Morrow.WindowsNativeProcess.CleanupIncomplete'
+  )
+  $knownStages = @(
+    'descriptor-validation', 'path-validation', 'path-containment', 'platform-preflight',
+    'dependency-preflight', 'system-path-resolution', 'environment-validation',
+    'environment-path-validation', 'environment-path-containment', 'executable-hash-validation',
+    'identity-dependency', 'suspended-create', 'native-observation', 'cim-observation', 'job-membership',
+    'identity-comparison', 'capsule-create', 'resume', 'cleanup'
+  )
+  $knownFields = @(
+    'executablePath', 'executableSha256', 'argumentList', 'workingDirectory', 'profilePath',
+    'environment', 'expectedParentProcessId', 'expectedOwnerSid', 'SYSTEMROOT', 'WINDIR',
+    'PATH', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'processId',
+    'parentProcessId', 'creationTimeUtc', 'ownerSid', 'state', 'membership', 'jobPolicy',
+    'resumeResult', 'RUNNER_TEMP'
+  )
+  $exceptionType = $null
+  $exceptionHResult = $null
+  $errorCategoryCode = $null
+  $observedFqIdPrefix = 'no-error'
+  $observedErrorId = $null
+  $fullyQualifiedErrorId = ''
+  if ($null -ne $ErrorRecord) {
+    $exceptionType = $ErrorRecord.Exception.GetType().FullName
+    $exceptionHResult = [int64]$ErrorRecord.Exception.HResult
+    $errorCategoryCode = [int]$ErrorRecord.CategoryInfo.Category
+    $fullyQualifiedErrorId = [string]$ErrorRecord.FullyQualifiedErrorId
+    $fqIdSeparator = $fullyQualifiedErrorId.IndexOf(',')
+    $fqIdToken = if ($fqIdSeparator -ge 0) { $fullyQualifiedErrorId.Substring(0, $fqIdSeparator) } else { $fullyQualifiedErrorId }
+    if ($fqIdToken -in $knownErrorIds) {
+      $observedFqIdPrefix = $fqIdToken
+    } elseif ($fqIdToken -in @('RuntimeException', 'MethodInvocationException', 'InvalidOperation', 'ActionPreferenceStopException')) {
+      $observedFqIdPrefix = $fqIdToken
+    } else {
+      $observedFqIdPrefix = 'unclassified'
+    }
+    $dataErrorId = Get-PolicyErrorId -Exception $ErrorRecord.Exception
+    if ($dataErrorId -in $knownErrorIds) { $observedErrorId = $dataErrorId }
+  }
+
+  $diagnosticStage = $null
+  $diagnosticCause = $null
+  $diagnosticOriginalErrorId = $null
+  $diagnosticFields = [Collections.Generic.List[string]]::new()
+  $unrecognizedFieldCount = 0
+  $cleanup = $null
+  if ($Diagnostics -is [System.Collections.IDictionary]) {
+    if ($Diagnostics.Contains('stage') -and ([string]$Diagnostics['stage']) -in $knownStages) {
+      $diagnosticStage = [string]$Diagnostics['stage']
+    }
+    if ($Diagnostics.Contains('cause') -and ([string]$Diagnostics['cause']) -in $knownErrorIds) {
+      $diagnosticCause = [string]$Diagnostics['cause']
+    }
+    if ($Diagnostics.Contains('originalErrorId') -and ([string]$Diagnostics['originalErrorId']) -in $knownErrorIds) {
+      $diagnosticOriginalErrorId = [string]$Diagnostics['originalErrorId']
+    }
+    if ($Diagnostics.Contains('fields')) {
+      foreach ($field in @($Diagnostics['fields'])) {
+        if ($field -is [string] -and $field -in $knownFields) {
+          [void]$diagnosticFields.Add([string]$field)
+        } else {
+          $unrecognizedFieldCount++
+        }
+      }
+    }
+    if ($Diagnostics.Contains('cleanup') -and $Diagnostics['cleanup'] -is [System.Collections.IDictionary]) {
+      $rawCleanup = $Diagnostics['cleanup']
+      $cleanup = [ordered]@{}
+      foreach ($name in @('attempted', 'jobEmpty', 'rootExited', 'disposeFailed')) {
+        $cleanup[$name] = if ($rawCleanup.Contains($name) -and $rawCleanup[$name] -is [bool]) {
+          [bool]$rawCleanup[$name]
+        } else {
+          $null
+        }
+      }
+    }
+  }
+
+  return [pscustomobject][ordered]@{
+    scenario = 'expected-policy-failure-observed'
+    expectedErrorId = $ExpectedErrorId
+    observedFqIdPrefix = $observedFqIdPrefix
+    observedErrorId = $observedErrorId
+    exceptionType = $exceptionType
+    exceptionHResult = $exceptionHResult
+    errorCategoryCode = $errorCategoryCode
+    diagnosticStage = $diagnosticStage
+    diagnosticCause = $diagnosticCause
+    diagnosticOriginalErrorId = $diagnosticOriginalErrorId
+    diagnosticFields = @($diagnosticFields)
+    unrecognizedFieldCount = $unrecognizedFieldCount
+    cleanup = $cleanup
+  }
+}
+
 function Invoke-ExpectedPolicyFailure {
   param(
     [Parameter(Mandatory)][scriptblock] $Action,
@@ -136,6 +242,9 @@ function Invoke-ExpectedPolicyFailure {
   } catch {
     $errorRecord = $_
   }
+  $diagnostics = if ($null -ne $errorRecord) { Get-PolicyDiagnostics -Exception $errorRecord.Exception } else { $null }
+  [void]$script:observations.Add((New-SanitizedPolicyFailureObservation `
+    -ErrorRecord $errorRecord -ExpectedErrorId $ExpectedErrorId -Diagnostics $diagnostics))
   if ($null -eq $errorRecord) { throw "Expected error was not raised: $ExpectedErrorId" }
   $fullyQualifiedErrorId = [string]$errorRecord.FullyQualifiedErrorId
   if ($fullyQualifiedErrorId -cne $ExpectedErrorId -and
@@ -143,7 +252,6 @@ function Invoke-ExpectedPolicyFailure {
     throw "Unexpected policy error category for expected $ExpectedErrorId."
   }
 
-  $diagnostics = Get-PolicyDiagnostics -Exception $errorRecord.Exception
   if ($null -eq $diagnostics) { throw 'Policy error did not include its sanitized diagnostics DTO.' }
   foreach ($field in $ExpectedFields) {
     if (@($diagnostics['fields']) -cnotcontains $field) { throw "Policy diagnostics omitted expected field: $field" }
@@ -226,7 +334,7 @@ function New-PolicyDescriptor {
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
       $childScriptPath, $ReceiptPath, $MarkerPath, $profilePath,
       [string]$environment['APPDATA'], [string]$environment['LOCALAPPDATA'],
-      [string]$environment['TEMP'], $pathValue, $UnicodeArgument, $PersonalCanaryName
+      [string]$environment['TEMP'], $pathValue, $runtimeRoot, $UnicodeArgument, $PersonalCanaryName
     )
     workingDirectory = $runtimeRoot
     profilePath = $profilePath
@@ -358,6 +466,7 @@ param(
   [string] $ExpectedLocalAppData,
   [string] $ExpectedTemp,
   [string] $ExpectedPath,
+  [string] $ExpectedProcessDirectory,
   [string] $ExpectedUnicodeArgument,
   [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string] $PersonalCanaryName
 )
@@ -370,6 +479,10 @@ foreach ($key in $variables.Keys) {
   }
 }
 $personalCanary = [Environment]::GetEnvironmentVariable($PersonalCanaryName, [EnvironmentVariableTarget]::Process)
+$processPath = [Environment]::ProcessPath
+$processDirectory = if ([string]::IsNullOrWhiteSpace($processPath)) { '' } else { [IO.Path]::GetDirectoryName($processPath) }
+$effectiveExpectedPath = $processDirectory + [IO.Path]::PathSeparator + $ExpectedPath
+$stagedProcessDirectoryMatches = [string]::Equals($processDirectory, $ExpectedProcessDirectory, [StringComparison]::OrdinalIgnoreCase)
 $reportLines = @(
   ('unicodeArgumentMatches=' + ([bool]($ExpectedUnicodeArgument -ceq 'ação com espaço 雪')).ToString().ToLowerInvariant()),
   ('userProfileMatches=' + ([bool]($env:USERPROFILE -ceq $ExpectedProfile)).ToString().ToLowerInvariant()),
@@ -378,7 +491,8 @@ $reportLines = @(
   ('localAppDataMatches=' + ([bool]($env:LOCALAPPDATA -ceq $ExpectedLocalAppData)).ToString().ToLowerInvariant()),
   ('tempMatches=' + ([bool]($env:TEMP -ceq $ExpectedTemp)).ToString().ToLowerInvariant()),
   ('tmpMatches=' + ([bool]($env:TMP -ceq $ExpectedTemp)).ToString().ToLowerInvariant()),
-  ('pathMatches=' + ([bool]($env:PATH -ceq $ExpectedPath)).ToString().ToLowerInvariant()),
+  ('pathMatches=' + ([bool]($env:PATH -ceq $effectiveExpectedPath)).ToString().ToLowerInvariant()),
+  ('stagedProcessDirectoryMatches=' + ([bool]$stagedProcessDirectoryMatches).ToString().ToLowerInvariant()),
   ('personalCanaryAbsent=' + ([bool]($null -eq $personalCanary)).ToString().ToLowerInvariant()),
   ('credentialLikeEnvironmentAbsent=' + ([bool]($credentialLikeNames.Count -eq 0)).ToString().ToLowerInvariant())
 )
@@ -513,7 +627,7 @@ $reportLines = @(
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
       $childScriptPath, $outsiderReceipt, $outsiderMarker, $profilePath,
       [string]$environment['APPDATA'], [string]$environment['LOCALAPPDATA'],
-      [string]$environment['TEMP'], ($environment['SYSTEMROOT'] + '\System32;' + $runtimeRoot), 'outsider Unicode 雪', $personalCanaryName
+      [string]$environment['TEMP'], ($environment['SYSTEMROOT'] + '\System32;' + $runtimeRoot), $runtimeRoot, 'outsider Unicode 雪', $personalCanaryName
     )) { $outsiderInfo.ArgumentList.Add([string]$argument) }
   $outsider = [Diagnostics.Process]::Start($outsiderInfo)
   if ($null -eq $outsider) {
@@ -534,7 +648,7 @@ $reportLines = @(
     $childScriptPath, (Join-Path $privateRoot 'parent-mismatch.receipt'),
     (Join-Path $privateRoot 'parent-mismatch.marker'), $profilePath,
     [string]$environment['APPDATA'], [string]$environment['LOCALAPPDATA'],
-    [string]$environment['TEMP'], ($environment['SYSTEMROOT'] + '\System32;' + $runtimeRoot), 'parent mismatch', $personalCanaryName
+    [string]$environment['TEMP'], ($environment['SYSTEMROOT'] + '\System32;' + $runtimeRoot), $runtimeRoot, 'parent mismatch', $personalCanaryName
   )
   $allNativeJobsCleaned = $false
   $mismatchResult = Invoke-ExpectedPolicyFailure -Action { Start-WindowsNativeProcess -Descriptor $bad -Verbose } `
@@ -564,7 +678,7 @@ $reportLines = @(
     $childScriptPath, (Join-Path $privateRoot 'owner-mismatch.receipt'),
     (Join-Path $privateRoot 'owner-mismatch.marker'), $profilePath,
     [string]$environment['APPDATA'], [string]$environment['LOCALAPPDATA'],
-    [string]$environment['TEMP'], ($environment['SYSTEMROOT'] + '\System32;' + $runtimeRoot), 'owner mismatch', $personalCanaryName
+    [string]$environment['TEMP'], ($environment['SYSTEMROOT'] + '\System32;' + $runtimeRoot), $runtimeRoot, 'owner mismatch', $personalCanaryName
   )
   $allNativeJobsCleaned = $false
   $ownerMismatchResult = Invoke-ExpectedPolicyFailure -Action { Start-WindowsNativeProcess -Descriptor $bad -Verbose } `
@@ -639,7 +753,8 @@ $reportLines = @(
     $childReport['localAppDataMatches'] -eq 'true' -and
     $childReport['tempMatches'] -eq 'true' -and
     $childReport['tmpMatches'] -eq 'true' -and
-    $childReport['pathMatches'] -eq 'true'
+    $childReport['pathMatches'] -eq 'true' -and
+    $childReport['stagedProcessDirectoryMatches'] -eq 'true'
   )
   Assert-PolicyCheck -Condition $checks.unicodeArgvAndProfileReachOwnedChild -Name 'unicodeArgvAndProfileReachOwnedChild'
   $checks.childEnvironmentDoesNotInheritCredentials = $childReport['credentialLikeEnvironmentAbsent'] -eq 'true'
@@ -716,13 +831,26 @@ $reportLines = @(
 } finally {
   if ($personalCanarySetAttempted) {
     try {
-      $restoreValue = if ($personalCanaryOriginalPresent) { $personalCanaryOriginalValue } else { $null }
-      [Environment]::SetEnvironmentVariable($personalCanaryName, $restoreValue, [EnvironmentVariableTarget]::Process)
-      $restoredValue = [Environment]::GetEnvironmentVariable($personalCanaryName, [EnvironmentVariableTarget]::Process)
+      $canaryProviderPath = 'Env:' + $personalCanaryName
+      if ($personalCanaryOriginalPresent) {
+        Set-Item -LiteralPath $canaryProviderPath -Value $personalCanaryOriginalValue -ErrorAction Stop
+      } elseif (Test-Path -LiteralPath $canaryProviderPath) {
+        Remove-Item -LiteralPath $canaryProviderPath -ErrorAction Stop
+      }
+      $restoredPresent = $false
+      $restoredValue = $null
+      $restoredEnvironment = [Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process)
+      foreach ($entry in $restoredEnvironment.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $personalCanaryName, [StringComparison]::OrdinalIgnoreCase)) {
+          $restoredPresent = $true
+          $restoredValue = [string]$entry.Value
+          break
+        }
+      }
       $personalCanaryRestored = if ($personalCanaryOriginalPresent) {
-        [string]::Equals($restoredValue, $personalCanaryOriginalValue, [StringComparison]::Ordinal)
+        $restoredPresent -and [string]::Equals($restoredValue, $personalCanaryOriginalValue, [StringComparison]::Ordinal)
       } else {
-        $null -eq $restoredValue
+        -not $restoredPresent
       }
       $checks.parentCanaryRestored = $personalCanaryRestored
       if (-not $personalCanaryRestored) { [void]$cleanupErrors.Add('The synthetic parent environment canary could not be restored.') }

@@ -16,6 +16,8 @@ $script:Issue = 225
 $script:RunStartedUtc = [DateTime]::UtcNow.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
 $script:Checks = [ordered]@{}
 $script:Failures = [Collections.Generic.List[string]]::new()
+$script:CurrentSubstep = 'setup'
+$script:PolicyFailureCandidate = $null
 $script:TrackedProcesses = [Collections.Generic.List[object]]::new()
 $script:Capsules = [Collections.Generic.List[object]]::new()
 $script:CleanupNotes = [Collections.Generic.List[string]]::new()
@@ -42,6 +44,7 @@ $script:CaseCounter = 0
 $script:EnvironmentCanaryName = 'MORROW_225_PARENT_ONLY_' + [Guid]::NewGuid().ToString('N').ToUpperInvariant()
 $script:EnvironmentCanaryValue = [Guid]::NewGuid().ToString('N')
 $script:OriginalCanaryValue = $null
+$script:OriginalCanaryExisted = $false
 $script:CanaryWasSet = $false
 $script:Outsider = $null
 $script:CaseOutcomes = [Collections.Generic.List[object]]::new()
@@ -170,48 +173,24 @@ function Read-JsonFile {
   return ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Path)) -AsHashtable -Depth 20
 }
 
-function Get-SafeMessage {
-  param([Parameter(Mandatory)][Exception] $Exception)
-  $message = [string]$Exception.Message
-  foreach ($sensitivePath in @(
-      $script:EvidenceRootFull,
-      $script:RunnerTempFull,
-      $script:RuntimeRoot,
-      $script:RuntimePath,
-      $script:PwshPath,
-      $script:PolicyFullPath,
-      $PSHOME,
-      $env:USERPROFILE
-    )) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$sensitivePath)) {
-      $message = [regex]::Replace($message, [regex]::Escape([string]$sensitivePath), '<PRIVATE_PATH>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    }
-  }
-  $message = [regex]::Replace(
-    $message,
-    '(?i)\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|eyJ[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{12,})',
-    '<REDACTED_SECRET>'
-  )
-  $message = [regex]::Replace($message, '[\r\n\t]+', ' ')
-  $message = [regex]::Replace($message, '[^\x20-\x7E]', '?').Trim()
-  if ($message.Length -gt 240) { $message = $message.Substring(0, 240) }
-  return $message
-}
-
 function Add-Check {
   param(
     [Parameter(Mandatory)][string] $Name,
     [Parameter(Mandatory)][scriptblock] $Action
   )
+  $script:CurrentSubstep = $Name
+  $script:PolicyFailureCandidate = $null
   try {
     $detail = & $Action
     $script:Checks[$Name] = [ordered]@{ status = 'passed'; detail = $detail }
     [Console]::Out.WriteLine(('PASS {0}' -f $Name))
   } catch {
-    $safeMessage = Get-SafeMessage -Exception $_.Exception
-    $script:Checks[$Name] = [ordered]@{ status = 'failed'; message = $safeMessage }
+    $failure = New-SafeFailureSummary -ErrorRecord $_ -CheckName $Name -Substep $script:CurrentSubstep
+    $script:PolicyFailureCandidate = $null
+    $script:Checks[$Name] = [ordered]@{ status = 'failed'; diagnostic = $failure }
+    [void]$script:CaseOutcomes.Add($failure)
     $script:Failures.Add($Name)
-    [Console]::Error.WriteLine(('FAIL {0}: {1}' -f $Name, $safeMessage))
+    [Console]::Error.WriteLine(('FAIL {0} id={1} stage={2} substep={3}' -f $Name, $failure.errorId, $failure.stage, $failure.substep))
   }
 }
 
@@ -234,6 +213,93 @@ function Get-PolicyDiagnostics {
   return $null
 }
 
+function Get-DiagnosticValue {
+  param(
+    [AllowNull()][object] $Object,
+    [Parameter(Mandatory)][string] $Name
+  )
+  if ($null -eq $Object) { return $null }
+  if ($Object -is [System.Collections.IDictionary]) {
+    if ($Object.Contains($Name)) { return $Object[$Name] }
+    return $null
+  }
+  if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
+  return $null
+}
+
+function New-SafeFailureSummary {
+  param(
+    [Parameter(Mandatory)][System.Management.Automation.ErrorRecord] $ErrorRecord,
+    [Parameter(Mandatory)][string] $CheckName,
+    [Parameter(Mandatory)][string] $Substep
+  )
+
+  $knownErrorIds = @(
+    'Morrow.WindowsNativeProcess.InvalidDescriptor',
+    'Morrow.WindowsNativeProcess.IdentityMismatch',
+    'Morrow.WindowsNativeProcess.StartFailed',
+    'Morrow.WindowsNativeProcess.CleanupIncomplete'
+  )
+  $diagnosticSource = $ErrorRecord
+  if ($script:PolicyFailureCandidate -is [System.Management.Automation.ErrorRecord]) {
+    $diagnosticSource = $script:PolicyFailureCandidate
+  }
+  $rawErrorId = Get-PolicyErrorId -ErrorRecord $diagnosticSource
+  if ($rawErrorId -in $knownErrorIds) {
+    $safeErrorId = $rawErrorId
+  } elseif ($rawErrorId -match '^[A-Za-z][A-Za-z0-9_.]{0,79}$') {
+    $safeErrorId = 'Other.' + $rawErrorId
+  } else {
+    $safeErrorId = 'Other'
+  }
+
+  $knownStages = @(
+    'descriptor-validation', 'path-validation', 'platform-preflight', 'dependency-preflight',
+    'path-containment', 'environment-validation', 'environment-path-validation', 'environment-path-containment',
+    'executable-hash-validation', 'system-path-resolution', 'identity-dependency', 'cim-observation',
+    'suspended-create', 'native-observation', 'job-membership', 'identity-comparison', 'capsule-create', 'resume', 'cleanup'
+  )
+  $diagnostics = Get-PolicyDiagnostics -ErrorRecord $diagnosticSource
+  $rawStage = Get-DiagnosticValue -Object $diagnostics -Name 'stage'
+  $safeStage = if ($rawStage -is [string] -and $rawStage -in $knownStages) { $rawStage } else { 'unknown' }
+
+  $knownFields = @(
+    'executablePath', 'executableSha256', 'argumentList', 'workingDirectory', 'profilePath', 'environment',
+    'expectedParentProcessId', 'expectedOwnerSid', 'processId', 'parentProcessId', 'ownerSid',
+    'creationTimeUtc', 'state', 'membership', 'jobPolicy', 'resumeResult', 'RUNNER_TEMP',
+    'SYSTEMROOT', 'WINDIR', 'PATH', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'
+  )
+  $safeFields = [Collections.Generic.List[string]]::new()
+  $rawFields = Get-DiagnosticValue -Object $diagnostics -Name 'fields'
+  foreach ($field in @($rawFields)) {
+    if ($field -is [string] -and $field -in $knownFields -and -not $safeFields.Contains($field)) {
+      [void]$safeFields.Add($field)
+    }
+  }
+
+  $rawCleanup = Get-DiagnosticValue -Object $diagnostics -Name 'cleanup'
+  $cleanup = [ordered]@{
+    attempted = $null
+    jobEmpty = $null
+    rootExited = $null
+    disposeFailed = $null
+  }
+  foreach ($flag in @('attempted', 'jobEmpty', 'rootExited', 'disposeFailed')) {
+    $value = Get-DiagnosticValue -Object $rawCleanup -Name $flag
+    if ($value -is [bool]) { $cleanup[$flag] = $value }
+  }
+
+  $safeSubstep = if ($Substep -match '^[A-Za-z0-9:_-]{1,96}$' -and $Substep -notmatch '(?i)^S-\d+-') { $Substep } else { 'unknown' }
+  return [ordered]@{
+    check = $CheckName
+    substep = $safeSubstep
+    errorId = $safeErrorId
+    stage = $safeStage
+    fields = @($safeFields)
+    cleanup = $cleanup
+  }
+}
+
 function Invoke-ExpectedPolicyFailure {
   param(
     [Parameter(Mandatory)][AllowNull()][object] $Descriptor,
@@ -243,6 +309,7 @@ function Invoke-ExpectedPolicyFailure {
     [string] $ExpectedField
   )
 
+  $script:PolicyFailureCandidate = $null
   $caught = $null
   $result = $null
   try {
@@ -256,6 +323,7 @@ function Invoke-ExpectedPolicyFailure {
     }
     throw 'The policy unexpectedly returned a capsule.'
   }
+  $script:PolicyFailureCandidate = $caught
 
   $errorId = Get-PolicyErrorId -ErrorRecord $caught
   Assert-Equal -Actual $errorId -Expected $ExpectedErrorId -Message 'The policy returned an unexpected namespaced error ID.'
@@ -280,6 +348,7 @@ function Invoke-ExpectedPolicyFailure {
     Assert-True -Condition ([bool]$cleanupDiagnostic.jobEmpty) -Message 'A post-create failure did not prove the owned Job empty.'
     Assert-True -Condition ([bool]$cleanupDiagnostic.rootExited) -Message 'A post-create failure did not prove the root exited.'
   }
+  $script:PolicyFailureCandidate = $null
   return $diagnostics
 }
 
@@ -409,6 +478,12 @@ Set-StrictMode -Version Latest
 $names = @([Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process).Keys | ForEach-Object { [string]$_ })
 $githubNames = @($names | Where-Object { $_ -match '^(?i:GITHUB_)' })
 $actionsNames = @($names | Where-Object { $_ -match '^(?i:ACTIONS_)' })
+$processPath = [Environment]::ProcessPath
+if ([string]::IsNullOrWhiteSpace($processPath)) { throw 'The fixture could not identify its PowerShell process image.' }
+$processHome = [IO.Path]::GetDirectoryName($processPath)
+if ([string]::IsNullOrWhiteSpace($processHome)) { throw 'The fixture process image has no executable directory.' }
+$powerShellPathPrefix = $processHome + [IO.Path]::PathSeparator
+$expectedRuntimePath = if ($ExpectedPath.StartsWith($powerShellPathPrefix, [StringComparison]::Ordinal)) { $ExpectedPath } else { $powerShellPathPrefix + $ExpectedPath }
 $processRows = @(Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = {0}' -f $PID) -ErrorAction Stop)
 $commandLine = if ($processRows.Count -eq 1) { [string]$processRows[0].CommandLine } else { '' }
 $receipt = [ordered]@{
@@ -418,7 +493,7 @@ $receipt = [ordered]@{
   argumentUnicodePreserved = ($UnicodeValue -ceq 'issue225-á漢')
   systemRootMatches = ([string]$env:SYSTEMROOT -ceq $ExpectedSystemRoot)
   windirMatches = ([string]$env:WINDIR -ceq $ExpectedSystemRoot)
-  pathMatches = ([string]$env:PATH -ceq $ExpectedPath)
+  pathMatches = ([string]$env:PATH -ceq $expectedRuntimePath)
   userProfileMatches = ([string]$env:USERPROFILE -ceq $ExpectedUserProfile)
   homeMatches = ([string]$env:HOME -ceq $ExpectedHome)
   appDataMatches = ([string]$env:APPDATA -ceq $ExpectedAppData)
@@ -440,6 +515,62 @@ $deadline = [DateTime]::UtcNow.AddMinutes(2)
 while ([DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
 '@
   [IO.File]::WriteAllText($Path, $source, $script:Utf8NoBom)
+}
+
+function Initialize-TestProcessImageQuery {
+  $typeName = 'Morrow.Pilot.IndependentProcessImageQuery'
+  if ($null -eq ($typeName -as [type])) {
+    $source = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace Morrow.Pilot
+{
+    public static class IndependentProcessImageQuery
+    {
+        [DllImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryFullProcessImageNameW(
+            SafeProcessHandle processHandle,
+            uint flags,
+            StringBuilder imagePath,
+            ref uint imagePathLength);
+
+        public static string Read(SafeProcessHandle processHandle)
+        {
+            if (processHandle == null || processHandle.IsInvalid || processHandle.IsClosed)
+            {
+                throw new InvalidOperationException("The retained test process handle is unavailable.");
+            }
+
+            var imagePath = new StringBuilder(32768);
+            uint imagePathLength = (uint)imagePath.Capacity;
+            if (!QueryFullProcessImageNameW(processHandle, 0, imagePath, ref imagePathLength))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "QueryFullProcessImageNameW failed for the retained test process handle.");
+            }
+
+            return imagePath.ToString();
+        }
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -ErrorAction Stop | Out-Null
+  }
+  if ($null -eq ($typeName -as [type])) { throw 'The independent test process image query helper did not load.' }
+}
+
+function Get-TestProcessImagePath {
+  param([Parameter(Mandatory)][object] $SafeProcessHandle)
+  if ($SafeProcessHandle -isnot [Microsoft.Win32.SafeHandles.SafeProcessHandle]) {
+    throw 'The independent test process does not have its retained SafeProcessHandle.'
+  }
+  $imagePath = [Morrow.Pilot.IndependentProcessImageQuery]::Read($SafeProcessHandle)
+  if ([string]::IsNullOrWhiteSpace($imagePath)) { throw 'The retained process handle returned no executable image path.' }
+  return [IO.Path]::GetFullPath($imagePath)
 }
 
 function New-ProcessStartInfo {
@@ -470,26 +601,41 @@ function Start-ObservedTestProcess {
     [Parameter(Mandatory)][string] $WorkingDirectory,
     [Parameter(Mandatory)][System.Collections.IDictionary] $Environment
   )
+  $expectedImagePath = [IO.Path]::GetFullPath($ExecutablePath)
   $psi = New-ProcessStartInfo -ExecutablePath $ExecutablePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -Environment $Environment
+  $script:CurrentSubstep = $Role + ':process-start'
   $process = [Diagnostics.Process]::Start($psi)
   if ($null -eq $process) { throw 'The independent test process could not be started.' }
-  $image = [IO.Path]::GetFullPath($process.MainModule.FileName)
-  if (-not [string]::Equals($image, [IO.Path]::GetFullPath($ExecutablePath), [StringComparison]::OrdinalIgnoreCase)) {
-    try { $process.Kill(); [void]$process.WaitForExit(5000) } catch { }
-    $process.Dispose()
-    throw 'A test process image did not match the staged executable.'
-  }
   $record = [pscustomobject]@{
     role = $Role
     process = $process
-    processId = [int]$process.Id
-    imagePath = $image
-    creationTimeUtc = $process.StartTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    safeProcessHandle = $null
+    processId = $null
+    expectedImagePath = $expectedImagePath
+    imagePath = $null
+    creationTimeUtc = $null
     exitCode = $null
     hasExited = $false
     emergencyCleanup = $false
+    imageObservationFailed = $false
   }
   [void]$script:TrackedProcesses.Add($record)
+  try {
+    $script:CurrentSubstep = $Role + ':handle-capture'
+    $record.safeProcessHandle = $process.SafeHandle
+    $script:CurrentSubstep = $Role + ':pid-observation'
+    $record.processId = [int]$process.Id
+    $script:CurrentSubstep = $Role + ':image-observation'
+    $record.imagePath = Get-TestProcessImagePath -SafeProcessHandle $record.safeProcessHandle
+    if (-not [string]::Equals([string]$record.imagePath, [string]$record.expectedImagePath, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'A test process image did not match the staged executable.'
+    }
+    $script:CurrentSubstep = $Role + ':creation-time-observation'
+    $record.creationTimeUtc = $process.StartTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+  } catch {
+    $record.imageObservationFailed = $true
+    throw
+  }
   return $record
 }
 
@@ -702,6 +848,7 @@ exit 0
 }
 
 function Start-DotSourcePurityProbe {
+  $script:CurrentSubstep = 'dot-source:prepare'
   $caseRoot = New-CaseRoot -Name 'dot-source'
   $profile = New-PrivateProfile -CaseRoot $caseRoot
   $probePath = Join-Path $script:EvidenceRootFull 'dot-source-purity.probe.ps1'
@@ -722,7 +869,9 @@ function Start-DotSourcePurityProbe {
     '-MarkerPath', $markerPath,
     '-ExpectedExecutablePath', $script:PwshPath
   )
+  $script:CurrentSubstep = 'dot-source:process-start'
   $record = Start-ObservedTestProcess -Role 'dot-source-probe' -ExecutablePath $script:PwshPath -ArgumentList $arguments -WorkingDirectory $caseRoot -Environment $environment
+  $script:CurrentSubstep = 'dot-source:probe-result'
   if (-not $record.process.WaitForExit(15000)) {
     $record.emergencyCleanup = $true
     try { $record.process.Kill(); [void]$record.process.WaitForExit(5000) } catch { }
@@ -742,13 +891,16 @@ function Start-DotSourcePurityProbe {
 }
 
 function New-Outsider {
+  $script:CurrentSubstep = 'outsider:prepare'
   $caseRoot = New-CaseRoot -Name 'outsider'
   $descriptor = New-ValidDescriptor -CaseRoot $caseRoot -ArgumentList @('unused') -ExpectedParentProcessId ([int]$PID) -ExpectedOwnerSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
   $fixtureArgs = Get-NewFixtureArguments -CaseRoot $caseRoot -Role 'outsider'
   $environment = $descriptor.environment
+  $script:CurrentSubstep = 'outsider:process-start'
   $record = Start-ObservedTestProcess -Role 'outsider' -ExecutablePath $script:PwshPath -ArgumentList $fixtureArgs.arguments -WorkingDirectory $caseRoot -Environment $environment
   $script:Outsider = [pscustomobject]@{
     process = $record.process
+    safeProcessHandle = $record.safeProcessHandle
     processId = $record.processId
     imagePath = $record.imagePath
     creationTimeUtc = $record.creationTimeUtc
@@ -756,6 +908,7 @@ function New-Outsider {
     receiptPath = $fixtureArgs.receiptPath
     marker = $fixtureArgs.marker
   }
+  $script:CurrentSubstep = 'outsider:receipt-wait'
   Wait-ForFile -Path $fixtureArgs.receiptPath -TimeoutMs 10000 -Description 'the uncontained outsider receipt'
   Wait-ForFile -Path $fixtureArgs.markerPath -TimeoutMs 10000 -Description 'the uncontained outsider marker'
   if ($script:Outsider.process.HasExited) { throw 'The outsider exited before containment checks began.' }
@@ -788,7 +941,7 @@ function Assert-OutsiderStillAlive {
     executableSha256 = [string]$identity.executableSha256
     ownerSid = [string]$identity.ownerSid
   })
-  $image = [IO.Path]::GetFullPath($script:Outsider.process.MainModule.FileName)
+  $image = Get-TestProcessImagePath -SafeProcessHandle $script:Outsider.safeProcessHandle
   Assert-Equal -Actual $image -Expected ([IO.Path]::GetFullPath($script:Outsider.imagePath)) -IgnoreCase -Message 'The retained outsider handle changed its image path.'
   $now = $script:Outsider.process.StartTime.ToUniversalTime()
   $expected = [DateTime]::Parse([string]$script:Outsider.creationTimeUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
@@ -824,20 +977,26 @@ function Assert-StartResultOpaque {
 }
 
 function Test-PositiveStartAndDispose {
+  $script:CurrentSubstep = 'positive:prepare'
   $caseRoot = New-CaseRoot -Name 'positive-start'
   $fixtureArgs = Get-NewFixtureArguments -CaseRoot $caseRoot -Role 'positive'
   $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $descriptor = New-ValidDescriptor -CaseRoot $caseRoot -ArgumentList $fixtureArgs.arguments -ExpectedParentProcessId ([int]$PID) -ExpectedOwnerSid $ownerSid
   $descriptor['expectedParentProcessId'] = [long]$PID
-  $script:OriginalCanaryValue = [Environment]::GetEnvironmentVariable($script:EnvironmentCanaryName, [EnvironmentVariableTarget]::Process)
-  [Environment]::SetEnvironmentVariable($script:EnvironmentCanaryName, $script:EnvironmentCanaryValue, [EnvironmentVariableTarget]::Process)
+  $canaryPath = 'Env:\' + $script:EnvironmentCanaryName
+  $originalCanaryItem = Get-Item -LiteralPath $canaryPath -ErrorAction SilentlyContinue
+  $script:OriginalCanaryExisted = $null -ne $originalCanaryItem
+  $script:OriginalCanaryValue = if ($script:OriginalCanaryExisted) { [string]$originalCanaryItem.Value } else { $null }
   $script:CanaryWasSet = $true
+  [Environment]::SetEnvironmentVariable($script:EnvironmentCanaryName, $script:EnvironmentCanaryValue, [EnvironmentVariableTarget]::Process)
+  $script:CurrentSubstep = 'positive:start-policy'
   $startOutput = @(Start-WindowsNativeProcess -Descriptor $descriptor -Verbose 4>&1)
   $returnedCapsules = @($startOutput | Where-Object { $_ -is [Morrow.Pilot.WindowsNativeProcessCapsule] })
   $verboseMessages = @($startOutput | Where-Object { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object { [string]$_.Message })
   if ($returnedCapsules.Count -ne 1) { throw 'Start did not return exactly one opaque capsule.' }
   $capsule = $returnedCapsules[0]
   [void]$script:Capsules.Add($capsule)
+  $script:CurrentSubstep = 'positive:resume-order-proof'
   $identityProofIndex = -1
   $resumeIndex = -1
   for ($index = 0; $index -lt $verboseMessages.Count; $index++) {
@@ -848,8 +1007,10 @@ function Test-PositiveStartAndDispose {
     throw 'Verbose receipts did not prove identity validation before internal Resume.'
   }
   Assert-StartResultOpaque -Capsule $capsule
+  $script:CurrentSubstep = 'positive:fixture-receipt'
   $fixtureReceipt = Wait-ForFixtureReceipt -ReceiptPath $fixtureArgs.receiptPath -MarkerPath $fixtureArgs.markerPath -TimeoutMs 10000
   Assert-ReceiptBooleanFields -Receipt $fixtureReceipt
+  $script:CurrentSubstep = 'positive:cim-identity'
   $identity = Get-ProcessIdentityRecord -ProcessId ([int]$fixtureReceipt.processId)
   Assert-CimIdentityMatchesDescriptor -Identity $identity -Descriptor $descriptor -ReceiptProcessId ([int]$fixtureReceipt.processId)
   $rootIdentityReceipt = $script:IdentityReceipts[$script:IdentityReceipts.Count - 1]
@@ -866,6 +1027,7 @@ function Test-PositiveStartAndDispose {
     identityProofPrecededInternalResume = $true
   })
 
+  $script:CurrentSubstep = 'positive:capsule-dispose'
   $watch = [Diagnostics.Stopwatch]::StartNew()
   $cleanup = $capsule.Dispose()
   $watch.Stop()
@@ -877,6 +1039,7 @@ function Test-PositiveStartAndDispose {
   $secondWatch.Stop()
   Assert-True -Condition ([bool]$repeatCleanup.jobEmpty -and [bool]$repeatCleanup.rootExited) -Message 'Repeated capsule Dispose did not return the verified terminal state.'
   Assert-True -Condition ($secondWatch.ElapsedMilliseconds -le 1000) -Message 'Repeated capsule Dispose was not idempotent and prompt.'
+  $script:CurrentSubstep = 'positive:outsider-preserved'
   Assert-OutsiderStillAlive
   $script:CleanupNotes.Add('positive capsule Dispose verified empty Job and exited root; outsider retained and alive')
   return [ordered]@{
@@ -932,6 +1095,7 @@ function New-InvalidDescriptorCases {
   $cases.Add([pscustomobject]@{ name = 'executable-path-absent'; expectedField = 'executablePath'; descriptor = (Copy-DescriptorWithMutation -Descriptor $valid -Mutation { param($d) $d['executablePath'] = Join-Path $script:RuntimePath 'missing-pwsh.exe' }) })
 
   foreach ($testCase in $cases) {
+    $script:CurrentSubstep = 'invalid-descriptor:' + [string]$testCase.name
     $diagnostics = Invoke-ExpectedPolicyFailure -Descriptor $testCase.descriptor -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidDescriptor' -ExpectedField $testCase.expectedField
     if ([IO.File]::Exists($fixtureArgs.markerPath) -or [IO.File]::Exists($fixtureArgs.receiptPath)) { throw 'A rejected descriptor executed the synthetic fixture.' }
     Assert-NoLiveOwnedFixtureProcess -OwnershipMarker $fixtureArgs.marker
@@ -940,6 +1104,7 @@ function New-InvalidDescriptorCases {
 
   $junctionPaths = [Collections.Generic.List[string]]::new()
   try {
+    $script:CurrentSubstep = 'invalid-reparse:executable'
     $junctionPath = Join-Path $CaseRoot 'runtime-junction'
     New-Item -Path $junctionPath -ItemType Junction -Target $script:RuntimePath -ErrorAction Stop | Out-Null
     [void]$junctionPaths.Add($junctionPath)
@@ -954,6 +1119,7 @@ function New-InvalidDescriptorCases {
     $junctionDiagnostics = Invoke-ExpectedPolicyFailure -Descriptor $junctionDescriptor -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidDescriptor'
     $script:CaseOutcomes.Add([ordered]@{ name = 'executable-reparse-junction-refused'; status = 'passed'; stage = [string]$junctionDiagnostics.stage })
 
+    $script:CurrentSubstep = 'invalid-reparse:working-directory'
     $workingTarget = Join-Path $CaseRoot 'working-target'
     [void][IO.Directory]::CreateDirectory($workingTarget)
     $workingJunction = Join-Path $CaseRoot 'working-junction'
@@ -963,6 +1129,7 @@ function New-InvalidDescriptorCases {
     $workingDiagnostics = Invoke-ExpectedPolicyFailure -Descriptor $workingDescriptor -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidDescriptor'
     $script:CaseOutcomes.Add([ordered]@{ name = 'working-directory-reparse-junction-refused'; status = 'passed'; stage = [string]$workingDiagnostics.stage })
 
+    $script:CurrentSubstep = 'invalid-reparse:profile'
     $profileTarget = Join-Path $CaseRoot 'profile-target'
     foreach ($segment in @('', 'appdata', 'local', 'temp', 'tmp')) {
       $targetPath = if ($segment) { Join-Path $profileTarget $segment } else { $profileTarget }
@@ -984,6 +1151,7 @@ function New-InvalidDescriptorCases {
     $profileDiagnostics = Invoke-ExpectedPolicyFailure -Descriptor $profileDescriptor -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidDescriptor'
     $script:CaseOutcomes.Add([ordered]@{ name = 'profile-reparse-junction-refused'; status = 'passed'; stage = [string]$profileDiagnostics.stage })
 
+    $script:CurrentSubstep = 'invalid-reparse:environment-temp'
     $profilePath = [string]$valid.profilePath
     $tempTarget = Join-Path $profilePath 'temp-target'
     $tempJunction = Join-Path $profilePath 'temp-junction'
@@ -1006,6 +1174,7 @@ function Test-PostCreateMismatch {
     [Parameter(Mandatory)][string] $MismatchName,
     [Parameter(Mandatory)][ValidateSet('ownerSid', 'parentProcessId')][string] $MismatchKind
   )
+  $script:CurrentSubstep = 'post-create:' + $MismatchKind
   $caseRoot = New-CaseRoot -Name $MismatchName
   $fixtureArgs = Get-NewFixtureArguments -CaseRoot $caseRoot -Role $MismatchName
   $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -1045,15 +1214,39 @@ function Test-PostCreateMismatch {
 function Stop-TrackedTestProcess {
   param([Parameter(Mandatory)] $Record)
   try {
-    $Record.process.Refresh()
-    if (-not $Record.process.HasExited) {
-      $image = [IO.Path]::GetFullPath($Record.process.MainModule.FileName)
-      if (-not [string]::Equals($image, [string]$Record.imagePath, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'A retained test process handle no longer matched its owned executable.'
+    $hasExited = $false
+    $stateKnown = $false
+    try {
+      $hasExited = [bool]$Record.process.HasExited
+      $stateKnown = $true
+    } catch {
+      $script:Failures.Add('tracked-process-state-observation-failed')
+      $script:CleanupNotes.Add('owned test process state was uncertain; termination through its retained Process handle was still attempted')
+    }
+
+    if (-not $stateKnown -or -not $hasExited) {
+      try {
+        if ($null -eq $Record.safeProcessHandle) { throw 'The test process SafeProcessHandle was not captured.' }
+        $image = Get-TestProcessImagePath -SafeProcessHandle $Record.safeProcessHandle
+        if (-not [string]::Equals($image, [string]$Record.expectedImagePath, [StringComparison]::OrdinalIgnoreCase)) {
+          $script:Failures.Add('tracked-process-image-identity-mismatch')
+          $script:CleanupNotes.Add('owned test process image differed from its recorded start image; termination through its original Process handle was still attempted')
+        }
+      } catch {
+        $Record.imageObservationFailed = $true
+        $script:Failures.Add('tracked-process-image-observation-failed')
+        $script:CleanupNotes.Add('owned test process image could not be verified; termination through its original Process handle was still attempted')
       }
-      $Record.process.Kill()
-      if (-not $Record.process.WaitForExit(5000)) { throw 'A retained test process handle did not exit within five seconds.' }
-      $Record.emergencyCleanup = $true
+
+      try {
+        $Record.process.Kill()
+        if (-not $Record.process.WaitForExit(5000)) { throw 'The owned test process did not exit within five seconds.' }
+        $Record.emergencyCleanup = $true
+      } catch {
+        $exitedAfterAttempt = $false
+        try { $exitedAfterAttempt = [bool]$Record.process.HasExited } catch { }
+        if (-not $exitedAfterAttempt) { throw 'Termination through the owned Process handle did not complete.' }
+      }
     }
     if ($Record.process.HasExited) { $Record.exitCode = [int]$Record.process.ExitCode }
     $Record.hasExited = [bool]$Record.process.HasExited
@@ -1078,9 +1271,21 @@ function Close-AllOwnedCapsules {
 function Restore-TestEnvironment {
   if ($script:CanaryWasSet) {
     try {
-      [Environment]::SetEnvironmentVariable($script:EnvironmentCanaryName, $script:OriginalCanaryValue, [EnvironmentVariableTarget]::Process)
-      $restoredValue = [Environment]::GetEnvironmentVariable($script:EnvironmentCanaryName, [EnvironmentVariableTarget]::Process)
-      if ($restoredValue -cne $script:OriginalCanaryValue) { throw 'The parent-only environment canary value did not restore exactly.' }
+      $canaryPath = 'Env:\' + $script:EnvironmentCanaryName
+      if ($script:OriginalCanaryExisted) {
+        Set-Item -LiteralPath $canaryPath -Value ([string]$script:OriginalCanaryValue) -ErrorAction Stop
+      } else {
+        $currentItem = Get-Item -LiteralPath $canaryPath -ErrorAction SilentlyContinue
+        if ($null -ne $currentItem) { Remove-Item -LiteralPath $canaryPath -ErrorAction Stop }
+      }
+      $restoredItem = Get-Item -LiteralPath $canaryPath -ErrorAction SilentlyContinue
+      if ($script:OriginalCanaryExisted) {
+        if ($null -eq $restoredItem -or [string]$restoredItem.Value -cne [string]$script:OriginalCanaryValue) {
+          throw 'The parent-only environment canary value did not restore exactly.'
+        }
+      } elseif ($null -ne $restoredItem) {
+        throw 'The parent-only environment canary was not removed after restoration.'
+      }
       $script:CanaryWasSet = $false
       $script:CleanupNotes.Add('parent-only environment canary restored and verified')
     } catch {
@@ -1180,11 +1385,15 @@ function Write-FinalReceipt {
         creationTimeUtc = $_.creationTimeUtc
         exitCode = $_.exitCode
         emergencyCleanup = $_.emergencyCleanup
+        safeProcessHandleCaptured = ($null -ne $_.safeProcessHandle)
+        imageObservationFailed = [bool]$_.imageObservationFailed
       }
     })
     cleanup = [ordered]@{
       notes = @($script:CleanupNotes)
-      outstandingProcessIds = @(@($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited } | ForEach-Object { [int]$_.processId }))
+      outstandingProcessIds = @(@($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited -and $null -ne $_.processId } | ForEach-Object { [int]$_.processId }))
+      outstandingProcessHandleCount = @($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited }).Count
+      outstandingProcessIdUnknownCount = @($script:TrackedProcesses | Where-Object { -not [bool]$_.hasExited -and $null -eq $_.processId }).Count
       runtimeStageRetained = if ($script:RuntimeRoot) { [IO.Directory]::Exists($script:RuntimeRoot) } else { $false }
     }
     failures = @($script:Failures)
@@ -1204,9 +1413,11 @@ function Write-FinalReceipt {
 
 $runFailed = $false
 try {
+  $script:CurrentSubstep = 'setup:windows-platform'
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'This independent native process policy probe must run on a real Windows runner.'
   }
+  $script:CurrentSubstep = 'setup:runner-temp'
   if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     throw 'RUNNER_TEMP is required for the independent native process policy probe.'
   }
@@ -1233,12 +1444,17 @@ try {
   $script:JobAdapterSha256 = Get-Sha256 -Path $script:JobAdapterPath
   $script:IndependentSha256 = Get-Sha256 -Path $PSCommandPath
 
+  $script:CurrentSubstep = 'setup:runtime-stage'
   New-StagedRuntime
+  $script:CurrentSubstep = 'setup:write-fixture'
   $fixtureDirectory = Join-Path $script:EvidenceRootFull 'fixtures'
   [void][IO.Directory]::CreateDirectory($fixtureDirectory)
   $script:FixturePath = Join-Path $fixtureDirectory 'windows-native-process-policy.fixture.ps1'
   Write-FixtureScript -Path $script:FixturePath
   $script:FixtureSha256 = Get-Sha256 -Path $script:FixturePath
+  $script:CurrentSubstep = 'setup:process-image-query'
+  Initialize-TestProcessImageQuery
+  $script:CurrentSubstep = 'dot-source:process-probe'
   $probePlan = Start-DotSourcePurityProbe
   $script:Checks['dot-source-has-no-side-effects'] = [ordered]@{
     status = 'passed'
@@ -1247,9 +1463,11 @@ try {
   }
   [Console]::Out.WriteLine('PASS dot-source-has-no-side-effects')
 
+  $script:CurrentSubstep = 'setup:dot-source-policy'
   . $script:ProcessAdapterPath
   . $script:JobAdapterPath
   . $script:PolicyFullPath
+  $script:CurrentSubstep = 'outsider:setup'
   $outsiderDetails = New-Outsider
   $script:Checks['outsider-setup'] = [ordered]@{ status = 'passed'; detail = $outsiderDetails }
   [Console]::Out.WriteLine('PASS outsider-setup')
@@ -1260,9 +1478,11 @@ try {
   Add-Check -Name 'post-create-parent-process-mismatch-cleans-only-owned-job' -Action { Test-PostCreateMismatch -MismatchName 'mismatch-parent-process' -MismatchKind parentProcessId }
 } catch {
   $runFailed = $true
-  $safeMessage = Get-SafeMessage -Exception $_.Exception
+  $failure = New-SafeFailureSummary -ErrorRecord $_ -CheckName 'setup' -Substep $script:CurrentSubstep
+  $script:Checks['setup'] = [ordered]@{ status = 'failed'; diagnostic = $failure }
+  [void]$script:CaseOutcomes.Add($failure)
   $script:Failures.Add('setup-failed')
-  [Console]::Error.WriteLine(('FAIL setup: {0}' -f $safeMessage))
+  [Console]::Error.WriteLine(('FAIL setup id={0} stage={1} substep={2}' -f $failure.errorId, $failure.stage, $failure.substep))
 } finally {
   try { Close-AllOwnedCapsules } catch { $script:Failures.Add('capsule-finalization-unhandled') }
   try { Restore-TestEnvironment } catch { $script:Failures.Add('environment-finalization-unhandled') }
