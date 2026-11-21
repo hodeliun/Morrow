@@ -87,6 +87,18 @@ export function createProviderDataScope(
           },
         }
       : {}),
+    ...(source.patchCheckboxCell
+      ? {
+          patchCheckboxCell(input: Parameters<NonNullable<DataApi['patchCheckboxCell']>>[0]) {
+            if (!active()) return inactive();
+            const captured = captureCellPatchInput(input, 'checkbox', 'opaque');
+            if (captured.databaseId !== null && captured.databaseId !== databaseId) return outOfScope();
+            if (!editable()) return readonly();
+            if (!captured.patch) return invalidValue();
+            return source.patchCheckboxCell!(captured.patch);
+          },
+        }
+      : {}),
     history(input) {
       if (!active()) return inactive();
       const captured = captureDataApiHistoryInput(input, 'opaque');

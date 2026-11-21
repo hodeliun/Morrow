@@ -4,7 +4,7 @@ export type PilotDataHistoryDirection = 'undo' | 'redo';
 
 export type PilotDataHistoryCellValue =
   | { readonly present: false; readonly value: null }
-  | { readonly present: true; readonly value: number | string | null };
+  | { readonly present: true; readonly value: number | string | boolean | null };
 
 export interface PilotDataHistoryEntry {
   readonly rowId: PageId;

@@ -116,15 +116,20 @@ const views: readonly [PolarisDadosViewData, PolarisDadosViewData] = [
   },
 ];
 
-function markdownForViews(): string {
+type CheckboxFixtureValue = boolean | null | 'missing';
+
+function markdownForViews(includeCheckbox = false): string {
+  const [first, second] = views;
+  const firstView = includeCheckbox ? { ...first, columnOrder: ['message', 'flag'] } : first;
+  const secondView = includeCheckbox ? { ...second, columnOrder: ['quantity', 'flag'] } : second;
   return [
     '# Text linked views',
     '',
-    encodePolarisDadosViewMarker(views[0]),
+    encodePolarisDadosViewMarker(firstView),
     '',
     'Between linked views.',
     '',
-    encodePolarisDadosViewMarker(views[1]),
+    encodePolarisDadosViewMarker(secondView),
     '',
   ].join('\n');
 }
@@ -150,6 +155,7 @@ interface Fixture {
   data: DataApi;
   readonly cleanups: Set<() => void>;
   textPatchCalls: number;
+  checkboxPatchCalls: number;
   editable: boolean;
   databaseMissing: boolean;
   ownerActive: boolean;
@@ -188,11 +194,24 @@ let fixtureSequence = 0;
 let generatedPageSequence = 0;
 let preferencesBeforeTest = getPreferences();
 
-function fixtureFiles(): Record<string, string> {
+function fixtureFiles(
+  includeCheckbox = false,
+  checkboxValue: CheckboxFixtureValue = false,
+): Record<string, string> {
+  const database = includeCheckbox
+    ? DATABASE.replace(
+        '  views:',
+        ['    - id: flag', '      name: Flag', '      type: checkbox', '  views:'].join('\n'),
+      )
+    : DATABASE;
+  const row =
+    includeCheckbox && checkboxValue !== 'missing'
+      ? ROW.replace('Quantity: 2', `Flag: ${checkboxValue === null ? 'null' : checkboxValue}\nQuantity: 2`)
+      : ROW;
   return {
-    [DATABASE_PATH]: DATABASE,
-    [ROW_PATH]: ROW,
-    [NOTE_PATH]: markdownForViews(),
+    [DATABASE_PATH]: database,
+    [ROW_PATH]: row,
+    [NOTE_PATH]: markdownForViews(includeCheckbox),
     '.morrow/workspace.json': JSON.stringify({
       version: 1,
       pages: {
@@ -205,21 +224,23 @@ function fixtureFiles(): Record<string, string> {
   };
 }
 
-async function openFixture(vault = new CountingMemoryVault(fixtureFiles())): Promise<Fixture> {
+async function openFixture(vault?: CountingMemoryVault): Promise<Fixture> {
+  const fixtureVault = vault ?? new CountingMemoryVault(fixtureFiles());
   const id = ++fixtureSequence;
   const opened = await WorkspaceSession.open(
-    new VaultRepository(vault, () => 'unexpected-text-page-' + id + '-' + ++generatedPageSequence),
+    new VaultRepository(fixtureVault, () => 'unexpected-text-page-' + id + '-' + ++generatedPageSequence),
     { delayMs: 60_000 },
   );
   if (!opened.ok) throw new Error(opened.error);
   const session = opened.value;
   setSession(session);
   const fixture: Fixture = {
-    vault,
+    vault: fixtureVault,
     session,
     data: null as unknown as DataApi,
     cleanups: new Set(),
     textPatchCalls: 0,
+    checkboxPatchCalls: 0,
     editable: true,
     databaseMissing: false,
     ownerActive: true,
@@ -239,6 +260,10 @@ async function openFixture(vault = new CountingMemoryVault(fixtureFiles())): Pro
   });
   fixtures.add(fixture);
   return fixture;
+}
+
+async function openCheckboxFixture(initial: CheckboxFixtureValue): Promise<Fixture> {
+  return openFixture(new CountingMemoryVault(fixtureFiles(true, initial)));
 }
 
 function makeViewHandle(fixture: Fixture, viewId: string, active: () => boolean): ViewHandle {
@@ -302,6 +327,14 @@ function mountRoot(
           patchTextCell(input) {
             fixture.textPatchCalls += 1;
             return scope.api.patchTextCell!(input);
+          },
+        }
+      : {}),
+    ...(scope.api.patchCheckboxCell
+      ? {
+          patchCheckboxCell(input) {
+            fixture.checkboxPatchCalls += 1;
+            return scope.api.patchCheckboxCell!(input);
           },
         }
       : {}),
@@ -1437,7 +1470,364 @@ describe('Polaris Dados text-cell editor with real host APIs', () => {
     expect(fixture.vault.text(ROW_PATH)).toBe(ROW);
   });
 
-  it('leaves text cells readonly on an older host without patchTextCell while preserving number editing', () => {
+  it('edits a mixed checkbox through the registered React source and two TipTap views, with history and reopen', async () => {
+    let fixture = await openCheckboxFixture('missing');
+    let contexts: DatabaseProviderContext[] = [];
+    const unregister = registerLiveProvider(fixture, contexts);
+    let live = mountLiveReactPage(fixture);
+    await live.render();
+    let roots = await waitForLiveProviderRoots(contexts);
+    const patchSpy = vi.spyOn(fixture.session, 'patchPilotDataCell');
+    const originalBytes = fixture.vault.text(ROW_PATH);
+    const originalWrites = fixture.vault.applyCount;
+
+    expect(fieldValue(roots.source, 'flag')).toEqual({ kind: 'missing', text: 'Missing' });
+    expect(fieldValue(roots.firstView, 'flag')).toEqual({ kind: 'missing', text: 'Missing' });
+    expect(fieldValue(roots.secondView, 'flag')).toEqual({ kind: 'missing', text: 'Missing' });
+
+    editButton(roots.source, 'flag').click();
+    const checkbox = roots.source.querySelector<HTMLInputElement>(
+      'input[type="checkbox"][data-field="flag"]',
+    );
+    expect(checkbox).not.toBeNull();
+    if (!checkbox) throw new Error('The native checkbox editor was not mounted.');
+    expect(checkbox.type).toBe('checkbox');
+    expect(checkbox.indeterminate).toBe(true);
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.getAttribute('aria-label')).toContain('Flag');
+    expect(
+      roots.source.ownerDocument.getElementById(checkbox.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toContain('choose a value before saving');
+    const untouchedSave = saveButton(roots.source);
+    expect(untouchedSave.disabled).toBe(true);
+    // Simulate a click already queued before the disabled state reached the control.
+    untouchedSave.disabled = false;
+    untouchedSave.click();
+    expect(patchSpy).not.toHaveBeenCalled();
+    expect(fixture.vault.applyCount).toBe(originalWrites);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+    untouchedSave.disabled = true;
+    checkbox.focus();
+    expect(roots.source.ownerDocument.activeElement).toBe(checkbox);
+    const space = new roots.source.ownerDocument.defaultView!.KeyboardEvent('keydown', {
+      key: ' ',
+      bubbles: true,
+      cancelable: true,
+    });
+    checkbox.dispatchEvent(space as unknown as Event);
+    expect(space.defaultPrevented).toBe(false);
+    checkbox.click();
+    expect(checkbox.checked).toBe(true);
+    expect(saveButton(roots.source).disabled).toBe(false);
+    const checkboxStatus = roots.source.ownerDocument.getElementById(
+      checkbox.getAttribute('aria-describedby') ?? '',
+    );
+    expect(checkboxStatus?.textContent).toContain('True');
+    expect(patchSpy).not.toHaveBeenCalled();
+    checkbox.click();
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.indeterminate).toBe(false);
+    expect(patchSpy).not.toHaveBeenCalled();
+    expect(fixture.vault.applyCount).toBe(originalWrites);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+
+    saveButton(roots.source).click();
+    await waitForSaved(roots.source);
+    await until('the explicit false checkbox value to reach all provider mounts', () => {
+      const activeRoots = activeLiveProviderRoots(contexts);
+      return (
+        activeRoots !== null &&
+        [activeRoots.source, activeRoots.firstView, activeRoots.secondView].every(
+          (root) => fieldValue(root, 'flag').text === 'False',
+        )
+      );
+    });
+    expect(rowProperties(fixture).flag).toBe(false);
+    expect(patchSpy).toHaveBeenCalledOnce();
+    expect(fixture.vault.applyCount).toBe(originalWrites + 1);
+    expect(fixture.vault.text(ROW_PATH)).toContain('Flag: false');
+
+    const undo = new roots.source.ownerDocument.defaultView!.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    roots.source.dispatchEvent(undo as unknown as Event);
+    expect(undo.defaultPrevented).toBe(true);
+    await until('checkbox undo to restore absence in all provider mounts', () => {
+      const activeRoots = activeLiveProviderRoots(contexts);
+      return (
+        activeRoots !== null &&
+        [activeRoots.source, activeRoots.firstView, activeRoots.secondView].every(
+          (root) => fieldValue(root, 'flag').kind === 'missing',
+        )
+      );
+    });
+    await waitForSaved(roots.source);
+
+    const redo = new roots.source.ownerDocument.defaultView!.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    roots.source.dispatchEvent(redo as unknown as Event);
+    expect(redo.defaultPrevented).toBe(true);
+    await until('checkbox redo to restore false in all provider mounts', () => {
+      const activeRoots = activeLiveProviderRoots(contexts);
+      return (
+        activeRoots !== null &&
+        [activeRoots.source, activeRoots.firstView, activeRoots.secondView].every(
+          (root) => fieldValue(root, 'flag').text === 'False',
+        )
+      );
+    });
+    await waitForSaved(roots.source);
+    expect(rowProperties(fixture).flag).toBe(false);
+    expect(patchSpy).toHaveBeenCalledOnce();
+    expect(fixture.vault.text(ROW_PATH)).toContain('Flag: false');
+
+    const vault = fixture.vault;
+    patchSpy.mockRestore();
+    await live.unmount();
+    unregister();
+    await fixture.close();
+    fixtures.delete(fixture);
+
+    fixture = await openFixture(vault);
+    contexts = [];
+    registerLiveProvider(fixture, contexts);
+    live = mountLiveReactPage(fixture);
+    await live.render();
+    roots = await waitForLiveProviderRoots(contexts);
+    expect(rowProperties(fixture).flag).toBe(false);
+    expect(fieldValue(roots.source, 'flag')).toEqual({ kind: 'boolean', text: 'False' });
+    expect(fieldValue(roots.firstView, 'flag')).toEqual({ kind: 'boolean', text: 'False' });
+    expect(fieldValue(roots.secondView, 'flag')).toEqual({ kind: 'boolean', text: 'False' });
+  });
+
+  it('keeps missing and null checkbox values unchanged on Cancel or Escape, including after owner reload', async () => {
+    for (const initial of ['missing', null] as const) {
+      const fixture = await openCheckboxFixture(initial);
+      const mountState = createProviderMountState();
+      transientMountStates.add(mountState);
+      const locale = initial === 'missing' ? 'pt' : 'es';
+      let root = mountRoot(fixture, { locale, mountState });
+      const originalBytes = fixture.vault.text(ROW_PATH);
+      const originalWrites = fixture.vault.applyCount;
+      const checkbox = openEditor(root.element, 'flag') as HTMLInputElement;
+      expect(checkbox.type).toBe('checkbox');
+      expect(checkbox.indeterminate).toBe(true);
+      expect(checkbox.getAttribute('aria-describedby')).not.toBeNull();
+      const statusId = checkbox.getAttribute('aria-describedby');
+      const status = statusId ? root.window.document.getElementById(statusId)?.textContent : '';
+      expect(status).toContain(initial === 'missing' ? 'ausente' : 'nulo');
+      const serialized = JSON.parse(root.transientState?.read() ?? 'null') as {
+        version?: number;
+        kind?: string;
+        initialValue?: { kind?: string };
+      } | null;
+      expect(serialized).toMatchObject({
+        version: 2,
+        kind: 'checkbox',
+        initialValue: { kind: initial === 'missing' ? 'missing' : 'null' },
+      });
+
+      if (initial === 'missing') {
+        const escape = new root.window.KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        });
+        checkbox.dispatchEvent(escape as unknown as Event);
+        expect(escape.defaultPrevented).toBe(true);
+      } else {
+        cancelButton(root.element).click();
+      }
+      expect(root.element.querySelector('input[type="checkbox"][data-field="flag"]')).toBeNull();
+      expect(root.transientState?.read()).toBeUndefined();
+      expect(fixture.checkboxPatchCalls).toBe(0);
+      expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+      expect(fixture.vault.applyCount).toBe(originalWrites);
+      const value = rowProperties(fixture);
+      expect(Object.hasOwn(value, 'flag')).toBe(initial !== 'missing');
+      expect(value.flag).toBe(initial === 'missing' ? undefined : null);
+
+      root.unmount();
+      root = mountRoot(fixture, { locale, mountState });
+      expect(root.element.querySelector('input[type="checkbox"][data-field="flag"]')).toBeNull();
+      expect(root.element.querySelector('button[data-action="edit"][data-field="flag"]')).not.toBeNull();
+      expect(root.transientState?.read()).toBeUndefined();
+      expect(fixture.checkboxPatchCalls).toBe(0);
+      root.unmount();
+      await fixture.close();
+      fixtures.delete(fixture);
+    }
+  });
+
+  it('restores distinct checkbox drafts per source/view slot and keeps stale choices readable and cancelable', async () => {
+    const fixture = await openCheckboxFixture(false);
+    const states = [createProviderMountState(), createProviderMountState(), createProviderMountState()];
+    for (const state of states) transientMountStates.add(state);
+    const [sourceState, firstState, secondState] = states;
+    if (!sourceState || !firstState || !secondState) throw new Error('The mount states were not created.');
+    const createRoots = (): MountedRoot[] => [
+      mountRoot(fixture, { mountState: sourceState }),
+      mountRoot(fixture, { viewId: VIEW_ONE, mountState: firstState }),
+      mountRoot(fixture, { viewId: VIEW_TWO, mountState: secondState }),
+    ];
+    let roots = createRoots();
+    const originalBytes = fixture.vault.text(ROW_PATH);
+    const targetChoices = [true, false, true];
+    roots.forEach((root, index) => {
+      const checkbox = openEditor(root.element, 'flag') as HTMLInputElement;
+      checkbox.focus();
+      if (targetChoices[index]) checkbox.click();
+    });
+    const stored = roots.map(
+      (root) =>
+        JSON.parse(root.transientState?.read() ?? 'null') as {
+          version?: number;
+          kind?: string;
+          checked?: boolean;
+          phase?: string;
+        } | null,
+    );
+    expect(stored).toEqual([
+      expect.objectContaining({ version: 2, kind: 'checkbox', checked: true, phase: 'editing' }),
+      expect.objectContaining({ version: 2, kind: 'checkbox', checked: false, phase: 'editing' }),
+      expect.objectContaining({ version: 2, kind: 'checkbox', checked: true, phase: 'editing' }),
+    ]);
+    expect(fixture.checkboxPatchCalls).toBe(0);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+    roots.forEach((root) => root.unmount());
+
+    roots = createRoots();
+    roots.forEach((root, index) => {
+      const checkbox = root.element.querySelector<HTMLInputElement>(
+        'input[type="checkbox"][data-field="flag"]',
+      );
+      expect(checkbox?.checked).toBe(targetChoices[index]);
+      expect(checkbox?.disabled).toBe(false);
+      expect(root.window.document.activeElement).toBe(checkbox);
+      expect(saveButton(root.element).disabled).toBe(false);
+      expect(cancelButton(root.element).disabled).toBe(false);
+    });
+
+    const beforeExternalPatch = fixture.data.snapshot(DATABASE_ID as PageId);
+    if (beforeExternalPatch.status !== 'ready') throw new Error('The checkbox database was not ready.');
+    expect(
+      fixture.data.patchCheckboxCell?.({
+        databaseId: DATABASE_ID as PageId,
+        rowId: ROW_ID as PageId,
+        propertyId: 'flag',
+        value: true,
+        expectedRevision: beforeExternalPatch.revision,
+      }),
+    ).toMatchObject({ status: 'staged' });
+    await fixture.data.flush(DATABASE_ID as PageId);
+    for (const root of roots) {
+      const checkbox = root.element.querySelector<HTMLInputElement>(
+        'input[type="checkbox"][data-field="flag"]',
+      );
+      expect(checkbox?.disabled).toBe(true);
+      expect(checkbox?.checked).toBe(targetChoices[roots.indexOf(root)]);
+      const statusId = checkbox?.getAttribute('aria-describedby');
+      expect(statusId ? root.window.document.getElementById(statusId)?.textContent : '').toContain('Draft:');
+      expect(saveButton(root.element).disabled).toBe(true);
+      expect(cancelButton(root.element).disabled).toBe(false);
+    }
+    expect(rowProperties(fixture).flag).toBe(true);
+    expect(fixture.checkboxPatchCalls).toBe(0);
+    for (const root of roots) {
+      cancelButton(root.element).click();
+      expect(root.element.querySelector('input[type="checkbox"][data-field="flag"]')).toBeNull();
+      expect(root.transientState?.read()).toBeUndefined();
+    }
+    expect(rowProperties(fixture).flag).toBe(true);
+    expect(fixture.checkboxPatchCalls).toBe(0);
+  });
+
+  it('retries only the flush when a real session observer aborts after accepting the checkbox patch', async () => {
+    const fixture = await openCheckboxFixture(false);
+    const mountState = createProviderMountState();
+    transientMountStates.add(mountState);
+    let root = mountRoot(fixture, { mountState });
+    const initialBytes = fixture.vault.text(ROW_PATH);
+    const initialApplyCount = fixture.vault.applyCount;
+    const patchSpy = vi.spyOn(fixture.session, 'patchPilotDataCell');
+    const flushSpy = vi.spyOn(fixture.session, 'flush');
+    let didUnmount = false;
+    const unsubscribe = fixture.session.subscribe(() => {
+      if (didUnmount || rowProperties(fixture).flag !== true) return;
+      didUnmount = true;
+      root.unmount();
+    });
+
+    try {
+      const checkbox = openEditor(root.element, 'flag') as HTMLInputElement;
+      checkbox.click();
+      expect(fixture.checkboxPatchCalls).toBe(0);
+      expect(fixture.vault.text(ROW_PATH)).toBe(initialBytes);
+      saveButton(root.element).click();
+      expect(didUnmount).toBe(true);
+      expect(patchSpy).toHaveBeenCalledOnce();
+      expect(flushSpy).not.toHaveBeenCalled();
+      expect(fixture.checkboxPatchCalls).toBe(1);
+      expect(rowProperties(fixture).flag).toBe(true);
+      expect(fixture.vault.text(ROW_PATH)).toBe(initialBytes);
+      const staged = fixture.data.snapshot(DATABASE_ID as PageId);
+      expect(staged.status).toBe('ready');
+      if (staged.status !== 'ready') throw new Error('The staged checkbox snapshot was not ready.');
+      expect(staged.history.canUndo).toBe(true);
+
+      root = mountRoot(fixture, { mountState, locale: 'es' });
+      const restored = JSON.parse(root.transientState?.read() ?? 'null') as {
+        version?: number;
+        kind?: string;
+        phase?: string;
+        checked?: boolean;
+      } | null;
+      expect(restored).toMatchObject({
+        version: 2,
+        kind: 'checkbox',
+        phase: 'pending-flush',
+        checked: true,
+      });
+      expect(root.element.querySelector('input[type="checkbox"][data-field="flag"]')).toBeNull();
+      const retry = root.element.querySelector<HTMLButtonElement>('button[data-action="retry"]');
+      expect(retry).not.toBeNull();
+      expect(retry?.disabled).toBe(false);
+      retry?.click();
+      await waitForSaved(root.element);
+      expect(patchSpy).toHaveBeenCalledOnce();
+      expect(flushSpy).toHaveBeenCalledOnce();
+      expect(fixture.checkboxPatchCalls).toBe(1);
+      const afterRetry = fixture.data.snapshot(DATABASE_ID as PageId);
+      expect(afterRetry.status).toBe('ready');
+      if (afterRetry.status !== 'ready') throw new Error('The retried checkbox snapshot was not ready.');
+      expect(afterRetry.history.canUndo).toBe(true);
+      expect(fixture.vault.applyCount).toBe(initialApplyCount + 1);
+      expect(fixture.vault.text(ROW_PATH)).not.toBe(initialBytes);
+      expect(root.transientState?.read()).toBeUndefined();
+
+      const vault = fixture.vault;
+      root.unmount();
+      await fixture.close();
+      fixtures.delete(fixture);
+      const reopened = await openFixture(vault);
+      expect(rowProperties(reopened).flag).toBe(true);
+      expect(reopened.vault.text(ROW_PATH)).toContain('Flag: true');
+    } finally {
+      unsubscribe();
+      patchSpy.mockRestore();
+      flushSpy.mockRestore();
+    }
+  });
+
+  it('leaves text and checkbox cells readonly on an older host while preserving number editing', () => {
     const window = new Window({ url: 'http://morrow.test/' });
     windows.push(window);
     const element = window.document.createElement('div');
@@ -1451,10 +1841,17 @@ describe('Polaris Dados text-cell editor with real host APIs', () => {
         properties: [
           { id: 'message', name: 'Message', type: 'text', options: [] },
           { id: 'quantity', name: 'Quantity', type: 'number', options: [] },
+          { id: 'flag', name: 'Flag', type: 'checkbox', options: [] },
         ],
         views: [],
       },
-      rows: [{ id: ROW_ID as PageId, title: 'Widget', properties: { message: 'keep me', quantity: 1 } }],
+      rows: [
+        {
+          id: ROW_ID as PageId,
+          title: 'Widget',
+          properties: { message: 'keep me', quantity: 1, flag: true },
+        },
+      ],
       history: { canUndo: false, canRedo: false },
       readonly: false,
       diagnostic: null,
@@ -1494,6 +1891,7 @@ describe('Polaris Dados text-cell editor with real host APIs', () => {
     });
     const root = element as unknown as HTMLElement;
     expect(root.querySelector('button[data-action="edit"][data-field="message"]')).toBeNull();
+    expect(root.querySelector('button[data-action="edit"][data-field="flag"]')).toBeNull();
     const numberEdit = root.querySelector<HTMLButtonElement>(
       'button[data-action="edit"][data-field="quantity"]',
     );

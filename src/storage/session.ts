@@ -478,14 +478,7 @@ export class WorkspaceSession {
     if (matchingProperties.length !== 1) {
       return { ok: false, code: 'unsupported', message: 'That database property identifier is ambiguous.' };
     }
-    if (property.type !== 'number' && property.type !== 'text') {
-      if (property.type === 'checkbox' && typeof candidateValue === 'string') {
-        return {
-          ok: false,
-          code: 'invalid-value',
-          message: 'Checkbox values must be booleans, not strings.',
-        };
-      }
+    if (property.type !== 'number' && property.type !== 'text' && property.type !== 'checkbox') {
       return {
         ok: false,
         code: 'read-only',
@@ -496,7 +489,11 @@ export class WorkspaceSession {
       (property.type === 'number' &&
         (typeof candidateValue !== 'number' || !Number.isFinite(candidateValue))) ||
       (property.type === 'text' &&
-        !(candidateValue === null || (typeof candidateValue === 'string' && candidateValue.length <= 10_000)))
+        !(
+          candidateValue === null ||
+          (typeof candidateValue === 'string' && candidateValue.length <= 10_000)
+        )) ||
+      (property.type === 'checkbox' && typeof candidateValue !== 'boolean')
     ) {
       return {
         ok: false,
@@ -504,10 +501,12 @@ export class WorkspaceSession {
         message:
           property.type === 'number'
             ? 'Number cells require a finite number.'
-            : 'Text cells require an exact string of at most 10,000 units or null.',
+            : property.type === 'text'
+              ? 'Text cells require an exact string of at most 10,000 units or null.'
+              : 'Checkbox cells require a boolean.',
       };
     }
-    const value = candidateValue as number | string | null;
+    const value = candidateValue as number | string | boolean | null;
     const before = pilotDataCellValue(row.properties, property.id);
     if (!before) {
       return { ok: false, code: 'unsupported', message: 'That cell is not a representable scalar value.' };
@@ -648,11 +647,14 @@ export class WorkspaceSession {
       return { ok: false, code: 'property-not-found', message: 'That history property no longer exists.' };
     }
     const property = properties[0]!;
-    if (properties.length !== 1 || (property.type !== 'number' && property.type !== 'text')) {
+    if (
+      properties.length !== 1 ||
+      (property.type !== 'number' && property.type !== 'text' && property.type !== 'checkbox')
+    ) {
       return {
         ok: false,
         code: 'unsupported',
-        message: 'That history property is no longer a unique number or text property.',
+        message: 'That history property is no longer a unique number, text, or checkbox property.',
       };
     }
 
@@ -1081,6 +1083,7 @@ function pilotDataCellValue(
   if (value === null) return { present: true, value: null };
   if (typeof value === 'number' && Number.isFinite(value)) return { present: true, value };
   if (typeof value === 'string' && value.length <= 10_000) return { present: true, value };
+  if (typeof value === 'boolean') return { present: true, value };
   return null;
 }
 
@@ -1089,14 +1092,16 @@ function isValidPilotDataCellValue(value: PilotDataHistoryCellValue): boolean {
     ? value.value === null
     : value.value === null ||
         (typeof value.value === 'number' && Number.isFinite(value.value)) ||
-        (typeof value.value === 'string' && value.value.length <= 10_000);
+        (typeof value.value === 'string' && value.value.length <= 10_000) ||
+        typeof value.value === 'boolean';
 }
 
 function isPilotDataHistoryCellValueForType(value: PilotDataHistoryCellValue, type: PropType): boolean {
   if (value.present === false) return value.value === null;
-  if (value.value === null) return type === 'number' || type === 'text';
+  if (value.value === null) return type === 'number' || type === 'text' || type === 'checkbox';
   if (type === 'number') return typeof value.value === 'number' && Number.isFinite(value.value);
   if (type === 'text') return typeof value.value === 'string' && value.value.length <= 10_000;
+  if (type === 'checkbox') return typeof value.value === 'boolean';
   return false;
 }
 

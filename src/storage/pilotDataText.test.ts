@@ -14,11 +14,13 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import type { VaultScan } from '../core/vault/load';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import { createDataApi } from '../app/plugins/dataApi';
 import type { DataApi, DataApiSnapshot } from '../app/plugins/dataApi';
 import { createProviderDataScope } from '../app/plugins/providerDataScope';
+import { splitFrontmatter } from '../core/vault/frontmatter';
 import type { VaultBridge, VaultChange, VaultFileInfo } from './vaultBridge';
 import { MemoryVault } from './memoryVault';
 import { WorkspaceSession } from './session';
@@ -68,6 +70,7 @@ Synthetic row.
 class DiskVault implements VaultBridge {
   private readonly listeners = new Set<(changes: VaultChange[]) => void>();
   applyCount = 0;
+  readonly writtenPaths: string[] = [];
 
   constructor(readonly root: string) {}
 
@@ -141,6 +144,7 @@ class DiskVault implements VaultBridge {
           }
           await mkdir(dirname(this.path(op.path)), { recursive: true });
           await writeFile(this.path(op.path), op.text, 'utf8');
+          this.writtenPaths.push(op.path);
         } else if (op.op === 'rename') {
           try {
             await access(this.path(op.from));
@@ -231,7 +235,7 @@ class DiskVault implements VaultBridge {
   }
 }
 
-function sourceFiles(row = NORMAL_ROW): Record<string, string> {
+function sourceFiles(row = NORMAL_ROW, extraFiles: Record<string, string> = {}): Record<string, string> {
   return {
     'Inventory.md': DATABASE,
     'Inventory/Widget.md': row,
@@ -239,6 +243,28 @@ function sourceFiles(row = NORMAL_ROW): Record<string, string> {
     'Inventory/Missing.md': `---\nQuantity: 1\n---\nMissing text.\n`,
     'Inventory/Empty.md': `---\n---\nEmpty text.\n`,
     'Inventory/Limit.md': `---\n---\nMaximum text length.\n`,
+    ...extraFiles,
+  };
+}
+
+function withDiskRegistry(files: Record<string, string>): Record<string, string> {
+  const orderByParent = new Map<string, number>();
+  const pages = Object.fromEntries(
+    Object.keys(files)
+      .filter((path) => ['.md', '.canvas'].includes(extname(path).toLowerCase()))
+      .sort()
+      .map((path, index) => {
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        const order = orderByParent.get(parent) ?? 0;
+        orderByParent.set(parent, order + 1);
+        const id = `disk-${path.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+        return [path, { id, created: index + 1, order }];
+      }),
+  );
+  return {
+    ...files,
+    '.morrow/workspace.json': `${JSON.stringify({ version: 1, pages }, null, 1)}\n`,
+    '.morrow/recent.json': `${JSON.stringify({ version: 1, opened: {}, activity: {} }, null, 1)}\n`,
   };
 }
 
@@ -574,6 +600,7 @@ describe('Polaris Dados exact opt-in text storage', () => {
     };
     const scope = createProviderDataScope(source, databaseId, { isActive: () => true, editable: true });
     try {
+      expect(scope.api.patchCheckboxCell).toBeUndefined();
       expect(
         scope.api.patchCell({
           databaseId,
@@ -1177,4 +1204,600 @@ describe('Polaris Dados exact opt-in text storage', () => {
       }
     },
   );
+});
+
+describe('Polaris Dados checkbox host contract', () => {
+  it('undoes a checkbox added to a body-only row back to its exact original bytes', async () => {
+    const original = 'Body only checkbox row.\n';
+    const bridge = await makeVault(
+      withDiskRegistry(sourceFiles(NORMAL_ROW, { 'Inventory/Body only checkbox.md': original })),
+    );
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Body only checkbox.md');
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      expect(Object.keys(rowOf(initial, rowId).properties)).toEqual([]);
+      expect(
+        api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+      expect(await bridge.readText('Inventory/Body only checkbox.md')).toContain('Flag: false');
+
+      expect(
+        api.history({
+          databaseId,
+          direction: 'undo',
+          expectedRevision: ready(api.snapshot(databaseId)).revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+      expect(await bridge.readText('Inventory/Body only checkbox.md')).toBe(original);
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('writes booleans through the scoped API, preserves null and absence in history, and reopens from disk', async () => {
+    const files = withDiskRegistry(
+      sourceFiles(NORMAL_ROW, {
+        'Inventory.md': DATABASE.replace('id: flag', 'id: __proto__'),
+        'Inventory/Null checkbox.md': `---\nFlag: null\n---\nExplicit null checkbox.\n`,
+        'Inventory/Missing checkbox.md': `---\nMessage: absent\n---\nMissing checkbox.\n`,
+      }),
+    );
+    const bridge = await makeVault(files);
+    let session = await open(bridge);
+    let handle = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const widgetId = idAt(session, 'Inventory/Widget.md');
+    const nullId = idAt(session, 'Inventory/Null checkbox.md');
+    const missingId = idAt(session, 'Inventory/Missing checkbox.md');
+    let active = true;
+    const scope = createProviderDataScope(handle.api, databaseId, { isActive: () => active, editable: true });
+    const api = scope.api;
+    const rowWrites = () => bridge.writtenPaths.filter((path) => !path.startsWith('.morrow/'));
+    const flushAt = async (expectedPath: string) => {
+      const before = rowWrites().length;
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+      expect(rowWrites().slice(before)).toEqual([expectedPath]);
+    };
+    const patchCheckbox = (rowId: string, value: boolean) => {
+      if (!api.patchCheckboxCell) throw new Error('This provider scope has no checkbox capability.');
+      return api.patchCheckboxCell({
+        databaseId,
+        rowId,
+        propertyId: '__proto__',
+        value,
+        expectedRevision: ready(api.snapshot(databaseId)).revision,
+      });
+    };
+    const history = (direction: 'undo' | 'redo') =>
+      api.history({
+        databaseId,
+        direction,
+        expectedRevision: ready(api.snapshot(databaseId)).revision,
+      });
+
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      const widgetProperties = rowOf(initial, widgetId).properties as Record<string, unknown>;
+      expect(Object.hasOwn(widgetProperties, '__proto__')).toBe(true);
+      expect(widgetProperties.__proto__).toBe(true);
+      expect(Object.hasOwn(rowOf(initial, nullId).properties, '__proto__')).toBe(true);
+      expect(rowOf(initial, nullId).properties.__proto__).toBeNull();
+      expect(Object.hasOwn(rowOf(initial, missingId).properties, '__proto__')).toBe(false);
+      expect(bridge.applyCount).toBe(0);
+
+      expect(patchCheckbox(widgetId, false)).toMatchObject({ status: 'staged' });
+      expect(rowOf(ready(api.snapshot(databaseId)), widgetId).properties.__proto__).toBe(false);
+      await flushAt('Inventory/Widget.md');
+      expect(await bridge.readText('Inventory/Widget.md')).toContain('Flag: false');
+
+      expect(history('undo')).toMatchObject({ status: 'staged' });
+      expect(rowOf(ready(api.snapshot(databaseId)), widgetId).properties.__proto__).toBe(true);
+      await flushAt('Inventory/Widget.md');
+      expect(await bridge.readText('Inventory/Widget.md')).toContain('Flag: true');
+      expect(history('redo')).toMatchObject({ status: 'staged' });
+      expect(rowOf(ready(api.snapshot(databaseId)), widgetId).properties.__proto__).toBe(false);
+      await flushAt('Inventory/Widget.md');
+      expect(await bridge.readText('Inventory/Widget.md')).toContain('Flag: false');
+
+      expect(patchCheckbox(nullId, true)).toMatchObject({ status: 'staged' });
+      await flushAt('Inventory/Null checkbox.md');
+      expect(history('undo')).toMatchObject({ status: 'staged' });
+      expect(Object.hasOwn(rowOf(ready(api.snapshot(databaseId)), nullId).properties, '__proto__')).toBe(
+        true,
+      );
+      expect(rowOf(ready(api.snapshot(databaseId)), nullId).properties.__proto__).toBeNull();
+      await flushAt('Inventory/Null checkbox.md');
+      expect(await bridge.readText('Inventory/Null checkbox.md')).toContain('Flag: null');
+      expect(history('redo')).toMatchObject({ status: 'staged' });
+      await flushAt('Inventory/Null checkbox.md');
+
+      expect(patchCheckbox(missingId, false)).toMatchObject({ status: 'staged' });
+      await flushAt('Inventory/Missing checkbox.md');
+      expect(history('undo')).toMatchObject({ status: 'staged' });
+      expect(Object.hasOwn(rowOf(ready(api.snapshot(databaseId)), missingId).properties, '__proto__')).toBe(
+        false,
+      );
+      await flushAt('Inventory/Missing checkbox.md');
+      expect(await bridge.readText('Inventory/Missing checkbox.md')).not.toContain('Flag:');
+      expect(history('redo')).toMatchObject({ status: 'staged' });
+      await flushAt('Inventory/Missing checkbox.md');
+
+      expect(new Set(rowWrites())).toEqual(
+        new Set(['Inventory/Widget.md', 'Inventory/Null checkbox.md', 'Inventory/Missing checkbox.md']),
+      );
+      active = false;
+      scope.dispose();
+      handle.cleanup();
+      await session.close();
+
+      session = await open(bridge);
+      handle = apiFor(session);
+      const reopenedDatabaseId = idAt(session, 'Inventory.md');
+      const reopenedWidgetId = idAt(session, 'Inventory/Widget.md');
+      const reopenedNullId = idAt(session, 'Inventory/Null checkbox.md');
+      const reopenedMissingId = idAt(session, 'Inventory/Missing checkbox.md');
+      const reopened = ready(handle.api.snapshot(reopenedDatabaseId));
+      expect((rowOf(reopened, reopenedWidgetId).properties as Record<string, unknown>).__proto__).toBe(false);
+      expect(Object.hasOwn(rowOf(reopened, reopenedNullId).properties, '__proto__')).toBe(true);
+      expect(rowOf(reopened, reopenedNullId).properties.__proto__).toBe(true);
+      expect(Object.hasOwn(rowOf(reopened, reopenedMissingId).properties, '__proto__')).toBe(true);
+      expect(rowOf(reopened, reopenedMissingId).properties.__proto__).toBe(false);
+      expect(reopened.history).toEqual({ canUndo: false, canRedo: false });
+    } finally {
+      scope.dispose();
+      handle.cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads only published boolean aliases without opening-time writes and guards unknown raw values', async () => {
+    const aliases: Array<[string, string, boolean]> = [
+      ['true-yaml', 'true', true],
+      ['false-yaml', 'false', false],
+      ['true-string', '"true"', true],
+      ['true-yes', '" YES "', true],
+      ['true-x', '"x"', true],
+      ['true-one', '"1"', true],
+      ['false-string', '"false"', false],
+      ['false-no', '"no"', false],
+      ['false-zero', '"0"', false],
+    ];
+    const aliasFiles = Object.fromEntries(
+      aliases.map(([name, raw]) => [
+        `Inventory/Legacy ${name}.md`,
+        `---\nFlag: ${raw}\n---\nLegacy alias.\n`,
+      ]),
+    );
+    const source = sourceFiles(NORMAL_ROW, aliasFiles);
+    const originalAliases = Object.fromEntries(Object.entries(aliasFiles));
+    const bridge = await makeVault(withDiskRegistry(source));
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    try {
+      const snapshot = ready(api.snapshot(databaseId));
+      for (const [name, , expected] of aliases) {
+        const rowId = idAt(session, `Inventory/Legacy ${name}.md`);
+        expect(rowOf(snapshot, rowId).properties.flag).toBe(expected);
+        expect(await bridge.readText(`Inventory/Legacy ${name}.md`)).toBe(
+          originalAliases[`Inventory/Legacy ${name}.md`],
+        );
+      }
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+      expect(bridge.applyCount).toBe(0);
+      expect(bridge.writtenPaths).toEqual([]);
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+
+    const unsafePath = 'Inventory/Unknown checkbox.md';
+    const unsafeOriginal = `---\nFlag: maybe\n---\nUnknown scalar.\n`;
+    const unsafeBridge = await makeVault(
+      withDiskRegistry(sourceFiles(NORMAL_ROW, { [unsafePath]: unsafeOriginal })),
+    );
+    const unsafeSession = await open(unsafeBridge);
+    const unsafeHandle = apiFor(unsafeSession);
+    try {
+      const rowId = idAt(unsafeSession, unsafePath);
+      expect(unsafeSession.getState().pages[rowId]!.extra.Flag).toBe('maybe');
+      expect(Object.hasOwn(unsafeSession.getState().pages[rowId]!.properties, 'flag')).toBe(false);
+      expect(unsafeHandle.api.snapshot(idAt(unsafeSession, 'Inventory.md'))).toMatchObject({
+        status: 'unsupported',
+        diagnostic: { code: 'unrepresentable-cell' },
+      });
+      expect(
+        unsafeHandle.api.patchCheckboxCell?.({
+          databaseId: idAt(unsafeSession, 'Inventory.md'),
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: unsafeSession.pilotDataRevision(idAt(unsafeSession, 'Inventory.md')),
+        }),
+      ).toMatchObject({ status: 'error', code: 'unsupported' });
+      expect(await unsafeHandle.api.flush(idAt(unsafeSession, 'Inventory.md'))).toMatchObject({
+        status: 'error',
+        code: 'unsupported',
+      });
+      expect(unsafeBridge.applyCount).toBe(0);
+      expect(await unsafeBridge.readText(unsafePath)).toBe(unsafeOriginal);
+    } finally {
+      unsafeHandle.cleanup();
+      await unsafeSession.close();
+      await rm(unsafeBridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects non-boolean values, wrong property modes, accessor payloads, fences, and stale revisions', async () => {
+    const bridge = await makeVault(withDiskRegistry(sourceFiles()));
+    const session = await open(bridge);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    let providerActive = true;
+    let hostReadonly = false;
+    const { api, cleanup } = apiFor(session, {
+      isProviderActive: () => providerActive,
+      isHostReadonly: () => hostReadonly,
+    });
+    let scopeActive = true;
+    let editable = true;
+    const scope = createProviderDataScope(api, databaseId, {
+      isActive: () => scopeActive,
+      editable: () => editable,
+    });
+    const rawPatch = api.patchCheckboxCell as unknown as (input: unknown) => unknown;
+    const initial = ready(api.snapshot(databaseId));
+    const diskBefore = await bridge.readText('Inventory/Widget.md');
+    try {
+      expect(api.patchCheckboxCell).toBeTypeOf('function');
+      for (const value of [null, 'false', 'true', 0, 1, {}, []]) {
+        expect(
+          rawPatch({ databaseId, rowId, propertyId: 'flag', value, expectedRevision: initial.revision }),
+        ).toMatchObject({
+          status: 'error',
+          code: 'invalid-value',
+        });
+        expect(
+          (scope.api.patchCheckboxCell as unknown as (input: unknown) => unknown)({
+            databaseId,
+            rowId,
+            propertyId: 'flag',
+            value,
+            expectedRevision: initial.revision,
+          }),
+        ).toMatchObject({ status: 'error', code: 'invalid-value' });
+      }
+      expect(
+        rawPatch({
+          databaseId,
+          rowId,
+          propertyId: 'quantity',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'read-only',
+      });
+      expect(
+        rawPatch({
+          databaseId,
+          rowId,
+          propertyId: 'message',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'read-only',
+      });
+      expect(
+        api.patchTextCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: null,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'read-only',
+      });
+      expect(
+        session.patchPilotDataCell({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: null,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ ok: false, code: 'invalid-value' });
+
+      let accessorCalls = 0;
+      const accessorPayload = Object.defineProperties(
+        {},
+        {
+          databaseId: { enumerable: true, value: databaseId },
+          rowId: { enumerable: true, value: rowId },
+          propertyId: { enumerable: true, value: 'flag' },
+          value: {
+            enumerable: true,
+            get: () => {
+              accessorCalls += 1;
+              return false;
+            },
+          },
+          expectedRevision: { enumerable: true, value: initial.revision },
+        },
+      );
+      expect(rawPatch(accessorPayload)).toMatchObject({ status: 'error', code: 'invalid-value' });
+      expect(accessorCalls).toBe(0);
+
+      editable = false;
+      expect(
+        scope.api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'host-readonly',
+      });
+      editable = true;
+      scopeActive = false;
+      expect(
+        scope.api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'owner-inactive',
+      });
+      scopeActive = true;
+      hostReadonly = true;
+      expect(
+        rawPatch({ databaseId, rowId, propertyId: 'flag', value: false, expectedRevision: initial.revision }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'host-readonly',
+      });
+      hostReadonly = false;
+      providerActive = false;
+      expect(
+        rawPatch({ databaseId, rowId, propertyId: 'flag', value: false, expectedRevision: initial.revision }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'provider-inactive',
+      });
+      providerActive = true;
+      const releaseFence = session.beginMutationFence();
+      try {
+        expect(
+          rawPatch({
+            databaseId,
+            rowId,
+            propertyId: 'flag',
+            value: false,
+            expectedRevision: initial.revision,
+          }),
+        ).toMatchObject({
+          status: 'error',
+          code: 'read-only',
+        });
+      } finally {
+        releaseFence();
+      }
+
+      expect(
+        scope.api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({
+        status: 'staged',
+      });
+      expect(
+        rawPatch({ databaseId, rowId, propertyId: 'flag', value: true, expectedRevision: initial.revision }),
+      ).toMatchObject({
+        status: 'error',
+        code: 'stale-revision',
+      });
+      expect(rowOf(ready(api.snapshot(databaseId)), rowId).properties.flag).toBe(false);
+      expect(ready(api.snapshot(databaseId)).history).toEqual({ canUndo: true, canRedo: false });
+      expect(await bridge.readText('Inventory/Widget.md')).toBe(diskBefore);
+      expect(bridge.applyCount).toBe(0);
+    } finally {
+      scope.dispose();
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('removes an incompatible string tag and persists a boolean in the raw frontmatter', async () => {
+    const row = `---
+Message: "  opening  "
+Quantity: 2
+# Keep this comment beside the property.
+fLaG: !!str yes # Checkbox annotation.
+vendorNote: "keep this exact value" # Unknown property annotation.
+---
+Tagged checkbox row.
+`;
+    const bridge = await makeVault(withDiskRegistry(sourceFiles(row)));
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      expect(rowOf(initial, rowId).properties.flag).toBe(true);
+      expect(
+        api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+
+      const written = await bridge.readText('Inventory/Widget.md');
+      const raw = parse(splitFrontmatter(written!).yaml) as Record<string, unknown>;
+      expect(raw.fLaG).toBe(false);
+      expect(typeof raw.fLaG).toBe('boolean');
+      expect(written).toContain('# Keep this comment beside the property.');
+      expect(written).toContain('fLaG: false # Checkbox annotation.');
+      expect(written).toContain('vendorNote: "keep this exact value" # Unknown property annotation.');
+      expect(written).toContain('Message: "  opening  "');
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an unchanged schema property exact raw value during a checkbox write', async () => {
+    const row = `---
+Message: "  opening  "
+Quantity: !!str 2
+Flag: true
+---
+Tagged untouched schema value.
+`;
+    const bridge = await makeVault(withDiskRegistry(sourceFiles(row)));
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      expect(rowOf(initial, rowId).properties.quantity).toBe(2);
+      expect(
+        api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+
+      const written = await bridge.readText('Inventory/Widget.md');
+      const raw = parse(splitFrontmatter(written!).yaml) as Record<string, unknown>;
+      expect(raw.Flag).toBe(false);
+      expect(typeof raw.Flag).toBe('boolean');
+      expect(raw.Quantity).toBe('2');
+      expect(typeof raw.Quantity).toBe('string');
+      expect(written).toContain('Quantity: !!str 2');
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a checkbox in a flow-map row and leaves the other schema value unchanged', async () => {
+    const row = `---
+{Flag: true, Quantity: 2}
+---
+Flow-map checkbox row.
+`;
+    const bridge = await makeVault(withDiskRegistry(sourceFiles(row)));
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      expect(rowOf(initial, rowId).properties.quantity).toBe(2);
+      expect(
+        api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+
+      const written = await bridge.readText('Inventory/Widget.md');
+      const raw = parse(splitFrontmatter(written!).yaml) as Record<string, unknown>;
+      expect(raw.Flag).toBe(false);
+      expect(typeof raw.Flag).toBe('boolean');
+      expect(raw.Quantity).toBe(2);
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['duplicate keys', `---\nFlag: !!str yes\nFlag: !!str no\n---\nDuplicate checkbox key.\n`],
+    ['dependent alias', `---\nFlag: &checkbox !!str yes\nMirror: *checkbox\n---\nAliased checkbox key.\n`],
+  ])('refuses an unsafe checkbox YAML update with %s before writing files', async (_name, row) => {
+    const bridge = await makeVault(withDiskRegistry(sourceFiles(row)));
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    const original = await bridge.readText('Inventory/Widget.md');
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      const currentValue = rowOf(initial, rowId).properties.flag;
+      expect(typeof currentValue).toBe('boolean');
+      expect(
+        api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: !currentValue,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+
+      expect(await api.flush(databaseId)).toMatchObject({
+        status: 'error',
+        code: 'save-failed',
+        message: expect.stringContaining('cannot be changed without risking another value'),
+      });
+      expect(session.saveStatus.errorCode).toBe('unsafe-checkbox-frontmatter');
+      expect(bridge.applyCount).toBe(0);
+      expect(bridge.writtenPaths).toEqual([]);
+      expect(await bridge.readText('Inventory/Widget.md')).toBe(original);
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
 });

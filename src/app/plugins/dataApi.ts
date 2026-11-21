@@ -123,6 +123,14 @@ export interface DataApi {
     value: string | null;
     expectedRevision: string;
   }): DataApiPatchResult;
+  /** Stages one boolean edit for an opted-in checkbox property. */
+  patchCheckboxCell?(input: {
+    databaseId: PageId;
+    rowId: PageId;
+    propertyId: string;
+    value: boolean;
+    expectedRevision: string;
+  }): DataApiPatchResult;
   /** Restores one contextual data-cell edit in memory; the caller must flush to persist it. */
   history(input: {
     databaseId: PageId;
@@ -180,7 +188,7 @@ export function createDataApi(options: {
     dispose();
   });
 
-  const patch = (input: unknown, expectedValueType: 'number' | 'text'): DataApiPatchResult => {
+  const patch = (input: unknown, expectedValueType: 'number' | 'text' | 'checkbox'): DataApiPatchResult => {
     if (!isActive()) return apiError('owner-inactive', 'This plugin data API handle is no longer active.');
     if (options.isHostReadonly()) return apiError('host-readonly', 'Morrow is in read-only mode.');
     const captured = captureCellPatchInput(input, expectedValueType);
@@ -203,6 +211,13 @@ export function createDataApi(options: {
       )
     ) {
       return apiError('read-only', 'Only manual number properties can be edited by this API method.');
+    }
+    const property = snapshot.schema.properties.find((candidate) => candidate.id === parsed.propertyId);
+    if (expectedValueType === 'checkbox' && property && property.type !== 'checkbox') {
+      return apiError('read-only', 'Only checkbox properties can be edited by this API method.');
+    }
+    if (expectedValueType === 'text' && parsed.value === null && property?.type === 'checkbox') {
+      return apiError('read-only', 'Checkbox values must be edited with the checkbox API method.');
     }
     const result = backend.patchCell(parsed);
     if (!result.ok) return apiError(result.code as DataApiErrorCode, result.message);
@@ -235,6 +250,15 @@ export function createDataApi(options: {
       expectedRevision: string;
     }): DataApiPatchResult {
       return patch(input, 'text');
+    },
+    patchCheckboxCell(input: {
+      databaseId: PageId;
+      rowId: PageId;
+      propertyId: string;
+      value: boolean;
+      expectedRevision: string;
+    }): DataApiPatchResult {
+      return patch(input, 'checkbox');
     },
     history(input: {
       databaseId: PageId;
@@ -328,7 +352,7 @@ function apiError(code: DataApiErrorCode, message: string): DataApiPatchResult &
   return { status: 'error', code, message };
 }
 
-export interface DataApiCellPatch<Value extends number | string | null> {
+export interface DataApiCellPatch<Value extends number | string | boolean | null> {
   databaseId: PageId;
   rowId: PageId;
   propertyId: string;
@@ -336,7 +360,7 @@ export interface DataApiCellPatch<Value extends number | string | null> {
   expectedRevision: string;
 }
 
-export interface CapturedDataApiCellPatch<Value extends number | string | null> {
+export interface CapturedDataApiCellPatch<Value extends number | string | boolean | null> {
   /** A valid, own data property captured once, even when another field is invalid. */
   databaseId: PageId | null;
   /** A plain canonical DTO with every field validated for the selected method. */
@@ -369,14 +393,19 @@ export function captureCellPatchInput(
 ): CapturedDataApiCellPatch<string | null>;
 export function captureCellPatchInput(
   input: unknown,
-  expectedValueType: 'number' | 'text',
+  expectedValueType: 'checkbox',
   revisionValidation?: RevisionValidation,
-): CapturedDataApiCellPatch<number | string | null>;
+): CapturedDataApiCellPatch<boolean>;
 export function captureCellPatchInput(
   input: unknown,
-  expectedValueType: 'number' | 'text',
+  expectedValueType: 'number' | 'text' | 'checkbox',
+  revisionValidation?: RevisionValidation,
+): CapturedDataApiCellPatch<number | string | boolean | null>;
+export function captureCellPatchInput(
+  input: unknown,
+  expectedValueType: 'number' | 'text' | 'checkbox',
   revisionValidation: RevisionValidation = 'native',
-): CapturedDataApiCellPatch<number | string | null> {
+): CapturedDataApiCellPatch<number | string | boolean | null> {
   const captured = ownDataFields(input, ['databaseId', 'rowId', 'propertyId', 'value', 'expectedRevision']);
   const values = captured?.values;
   const databaseId = values && isValidId(values.databaseId) ? values.databaseId : null;
@@ -393,13 +422,17 @@ export function captureCellPatchInput(
   }
   if (
     (expectedValueType === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) ||
-    (expectedValueType === 'text' && !(value === null || (typeof value === 'string' && value.length <= 10_000)))
+    (expectedValueType === 'text' &&
+      !(value === null || (typeof value === 'string' && value.length <= 10_000))) ||
+    (expectedValueType === 'checkbox' && typeof value !== 'boolean')
   ) {
     return { databaseId, patch: null };
   }
   return {
     databaseId,
-    patch: { databaseId, rowId, propertyId, value, expectedRevision } as DataApiCellPatch<number | string | null>,
+    patch: { databaseId, rowId, propertyId, value, expectedRevision } as DataApiCellPatch<
+      number | string | boolean | null
+    >,
   };
 }
 

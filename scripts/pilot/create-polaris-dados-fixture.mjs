@@ -10,9 +10,11 @@ const repositoryRoot = resolve(scriptDirectory, '../..');
 const pluginSource = resolve(repositoryRoot, 'plugins/polaris-dados');
 const bundleSource = resolve(repositoryRoot, 'dist/polaris-dados/main.js');
 const args = process.argv.slice(2);
+const includeCheckboxDemo = args[0] === '--checkbox-demo';
+if (includeCheckboxDemo) args.shift();
 
 if (args.length < 1 || args.length > 2 || args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: node scripts/pilot/create-polaris-dados-fixture.mjs <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n');
+  process.stdout.write('Usage: node scripts/pilot/create-polaris-dados-fixture.mjs [--checkbox-demo] <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n');
   process.exit(args.includes('--help') || args.includes('-h') ? 0 : 2);
 }
 
@@ -42,9 +44,10 @@ let idSequence = 0n;
 const now = Date.now();
 const allocateId = (kind) => `${kind}-${firstId + idSequence++}`;
 const destinations = [];
+const pagesPerVault = includeCheckboxDemo ? 8 : 3;
 for (let index = 0; index < targets.length; index += 1) {
   const marker = index === 0 ? 'OPEN-OLD' : 'OPEN-DESTINATION';
-  destinations.push(await createVault(targets[index], targetStates[index], marker, index, allocateId, now + index * 3, sourceFiles));
+  destinations.push(await createVault(targets[index], targetStates[index], marker, index, allocateId, now + index * pagesPerVault, sourceFiles));
 }
 
 process.stdout.write(`${JSON.stringify({
@@ -127,6 +130,7 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
   await writeExclusive(resolve(target, 'Inventory.md'), inventory);
   await writeExclusive(resolve(target, 'Inventory/Widget.md'), row);
   await writeExclusive(resolve(target, 'Views.md'), note);
+  const checkboxFiles = includeCheckboxDemo ? await createCheckboxDemo(target, workspace.pages, allocateId, createdAt + 3) : [];
   await writeExclusive(resolve(target, '.morrow/workspace.json'), `${JSON.stringify(workspace, null, 1)}\n`);
   await writeExclusive(resolve(target, '.morrow/plugins.json'), `${JSON.stringify({ enabled: ['polaris-dados'] }, null, 2)}\n`);
   await writeExclusive(resolve(pluginDirectory, 'main.js'), files.bundle);
@@ -148,6 +152,7 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
       'Inventory.md',
       'Inventory/Widget.md',
       'Views.md',
+      ...checkboxFiles,
       '.morrow/workspace.json',
       '.morrow/plugins.json',
       '.morrow/plugins/polaris-dados/main.js',
@@ -156,6 +161,57 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
       '.morrow/plugins/polaris-dados/LICENSE',
     ],
   };
+}
+
+async function createCheckboxDemo(target, pages, allocateId, createdAt) {
+  const sourceId = allocateId('polaris-source');
+  const viewId = allocateId('polaris-table-view');
+  const bank = `---
+kind: database
+polarisDados:
+  version: 1
+  provider: polaris-dados
+database:
+  properties:
+    - id: sample
+      name: Sample
+      type: text
+    - id: reviewed
+      name: Reviewed
+      type: checkbox
+  views:
+    - id: ${viewId}
+      name: Table
+      type: table
+      filters: []
+      sorts: []
+      groupBy: null
+      dateProp: null
+      hidden: []
+---
+# Checklist
+`;
+  const views = ['Review queue', 'Review summary'].map((title) => encodeViewMarker({
+    viewId: allocateId('polaris-linked-view'),
+    sourceDatabaseId: sourceId,
+    title,
+    columnOrder: ['reviewed'],
+    filter: null,
+  }));
+  const note = ['# Checklist Views', '', ...views.flatMap((view) => [view, ''])].join('\n');
+  const files = [
+    { path: 'Checklist.md', id: sourceId, order: 2, text: bank },
+    { path: 'Checklist/Unchecked.md', id: allocateId('polaris-row'), order: 0, text: '---\nSample: Unchecked\nReviewed: false\n---\nStarts unchecked.\n' },
+    { path: 'Checklist/Null.md', id: allocateId('polaris-row'), order: 1, text: '---\nSample: "Null"\nReviewed: null\n---\nStarts with an explicit null.\n' },
+    { path: 'Checklist/Missing.md', id: allocateId('polaris-row'), order: 2, text: '---\nSample: Missing\n---\nStarts without a Reviewed property.\n' },
+    { path: 'Checklist Views.md', id: allocateId('polaris-note'), order: 3, text: note },
+  ];
+  await mkdir(resolve(target, 'Checklist'));
+  for (const [index, file] of files.entries()) {
+    await writeExclusive(resolve(target, file.path), file.text);
+    pages[file.path] = { id: file.id, created: createdAt + index, order: file.order };
+  }
+  return files.map((file) => file.path);
 }
 
 function encodeViewMarker(value) {

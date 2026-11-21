@@ -276,7 +276,7 @@ try {
   $mcpTarget = Join-Path $packageDir 'mcp/index.js'
   New-Item -ItemType Directory -Path (Split-Path -Parent $mcpTarget) -Force | Out-Null
   Copy-Item -LiteralPath $mcpSource -Destination $mcpTarget
-  $fixtureResult = Invoke-LoggedCommand 'create-synthetic-fixture' 'node' @('scripts/pilot/create-polaris-dados-fixture.mjs', $fixtureDir) $repoRoot
+  $fixtureResult = Invoke-LoggedCommand 'create-synthetic-fixture' 'node' @('scripts/pilot/create-polaris-dados-fixture.mjs', '--checkbox-demo', $fixtureDir) $repoRoot
   if ($fixtureResult.ExitCode -ne 0) { throw "Synthetic fixture generation failed (exit $($fixtureResult.ExitCode))." }
 
   $fixturePlugin = Join-Path $fixtureDir '.morrow/plugins/polaris-dados'

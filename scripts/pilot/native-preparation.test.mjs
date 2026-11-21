@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
+import { parse } from 'yaml';
 
 import {
   buildVaultRegistry,
@@ -72,6 +73,36 @@ test('fixture generator creates two isolated vaults with monotonic IDs and two d
   assert.equal(new Set(allIds).size, allIds.length);
   const numbers = allIds.map((id) => BigInt(/-(\d+)$/.exec(id)?.[1] ?? '-1'));
   assert.ok(numbers.every((number, index) => index === 0 || number > numbers[index - 1]));
+});
+
+test('Windows checkbox demo keeps false, null, and missing distinct in one shared bank', async (t) => {
+  const root = await temporaryDirectory();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'demo');
+  const output = await run(process.execPath, [FIXTURE_GENERATOR, '--checkbox-demo', target], REPOSITORY_ROOT);
+  const { vaults: [vault] } = JSON.parse(output);
+  const read = (file) => readFile(path.join(target, file), 'utf8');
+  const workspace = JSON.parse(await read('.morrow/workspace.json'));
+  const database = parse((await read('Checklist.md')).split('---\n')[1]);
+  const views = decodeViews(await read('Checklist Views.md'));
+  const ids = Object.values(workspace.pages).map((value) => value.id);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(database.database.properties, [
+    { id: 'sample', name: 'Sample', type: 'text' },
+    { id: 'reviewed', name: 'Reviewed', type: 'checkbox' },
+  ]);
+  assert.equal(views.length, 2);
+  assert.notEqual(views[0].viewId, views[1].viewId);
+  for (const view of views) {
+    assert.equal(view.sourceDatabaseId, workspace.pages['Checklist.md'].id);
+    assert.deepEqual(view.columnOrder, ['reviewed']);
+    assert.equal(view.filter, null);
+  }
+  assert.deepEqual(parse((await read('Checklist/Unchecked.md')).split('---\n')[1]), { Sample: 'Unchecked', Reviewed: false });
+  assert.deepEqual(parse((await read('Checklist/Null.md')).split('---\n')[1]), { Sample: 'Null', Reviewed: null });
+  assert.deepEqual(parse((await read('Checklist/Missing.md')).split('---\n')[1]), { Sample: 'Missing' });
+  assert.equal(decodeViews(await read('Views.md')).length, 2);
+  for (const file of Object.keys(workspace.pages)) assert.ok(vault.files.includes(file));
 });
 
 test('source freeze and post-build artifact inventory identify commit, WIP, tests, and immutable inputs', async (t) => {

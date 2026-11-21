@@ -45,7 +45,21 @@ interface TextDraft extends DraftBase {
   selectionEnd: number | null;
 }
 
-type Draft = NumberDraft | TextDraft;
+type CheckboxInitialValue =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'null' }
+  | { readonly kind: 'boolean'; readonly value: boolean };
+
+interface CheckboxDraft extends DraftBase {
+  readonly kind: 'checkbox';
+  readonly initialValue: CheckboxInitialValue;
+  readonly schemaSignature: string;
+  checked: boolean;
+  touched: boolean;
+  focused: boolean;
+}
+
+type Draft = NumberDraft | TextDraft | CheckboxDraft;
 
 interface PendingFlush {
   readonly kind: 'cell' | 'history';
@@ -72,11 +86,61 @@ interface StoredTextDraft {
   readonly pendingFlushErrorDetail: string | null;
 }
 
+interface StoredCheckboxDraft {
+  readonly version: 2;
+  readonly kind: 'checkbox';
+  readonly phase: 'editing' | 'patching' | 'pending-flush';
+  readonly databaseId: string;
+  readonly rowId: string;
+  readonly propertyId: string;
+  readonly expectedRevision: string;
+  readonly schemaSignature: string;
+  readonly initialValue: CheckboxInitialValue;
+  readonly checked: boolean;
+  readonly touched: boolean;
+  readonly blocked: DraftBase['blocked'];
+  readonly errorDetail: string | null;
+  readonly focused: boolean;
+  readonly pendingFlushErrorDetail: string | null;
+}
+
 interface RestoredTextDraft {
   readonly draft: TextDraft;
   readonly patchIntent: boolean;
   readonly pendingFlush: boolean;
   readonly pendingFlushErrorDetail: string | null;
+}
+
+interface RestoredCheckboxDraft {
+  readonly draft: CheckboxDraft;
+  readonly patchIntent: boolean;
+  readonly pendingFlush: boolean;
+  readonly pendingFlushErrorDetail: string | null;
+}
+
+function isCheckboxInitialValue(value: unknown): value is CheckboxInitialValue {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'missing' || record.kind === 'null') return true;
+  return record.kind === 'boolean' && typeof record.value === 'boolean';
+}
+
+function readCheckboxInitialValue(
+  properties: Readonly<Record<string, unknown>>,
+  propertyId: string,
+): CheckboxInitialValue | null {
+  if (!Object.hasOwn(properties, propertyId)) return { kind: 'missing' };
+  const value = properties[propertyId];
+  if (value === null) return { kind: 'null' };
+  if (typeof value === 'boolean') return { kind: 'boolean', value };
+  return null;
+}
+
+function sameCheckboxInitialValue(left: CheckboxInitialValue, right: CheckboxInitialValue): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind !== 'boolean' || (right.kind === 'boolean' && left.value === right.value))
+  );
 }
 
 function restoreTextDraft(serialized: string, databaseId: string): RestoredTextDraft | null {
@@ -138,6 +202,58 @@ function restoreTextDraft(serialized: string, databaseId: string): RestoredTextD
   }
 }
 
+function restoreCheckboxDraft(serialized: string, databaseId: string): RestoredCheckboxDraft | null {
+  try {
+    const value: unknown = JSON.parse(serialized);
+    if (typeof value !== 'object' || value === null) return null;
+    const stored = value as Record<string, unknown>;
+    if (
+      stored.version !== 2 ||
+      stored.kind !== 'checkbox' ||
+      stored.databaseId !== databaseId ||
+      (stored.phase !== 'editing' && stored.phase !== 'patching' && stored.phase !== 'pending-flush') ||
+      typeof stored.rowId !== 'string' ||
+      typeof stored.propertyId !== 'string' ||
+      typeof stored.expectedRevision !== 'string' ||
+      typeof stored.schemaSignature !== 'string' ||
+      !isCheckboxInitialValue(stored.initialValue) ||
+      typeof stored.checked !== 'boolean' ||
+      typeof stored.touched !== 'boolean' ||
+      (stored.blocked !== null &&
+        stored.blocked !== 'stale' &&
+        stored.blocked !== 'readonly' &&
+        stored.blocked !== 'disabled') ||
+      (stored.errorDetail !== null && typeof stored.errorDetail !== 'string') ||
+      typeof stored.focused !== 'boolean' ||
+      (stored.pendingFlushErrorDetail !== null && typeof stored.pendingFlushErrorDetail !== 'string')
+    ) {
+      return null;
+    }
+    const blocked = stored.blocked as DraftBase['blocked'];
+    return {
+      draft: {
+        kind: 'checkbox',
+        rowId: stored.rowId,
+        propertyId: stored.propertyId,
+        expectedRevision: stored.expectedRevision,
+        schemaSignature: stored.schemaSignature,
+        initialValue: stored.initialValue,
+        checked: stored.checked,
+        touched: stored.touched,
+        blocked,
+        errorCode: blocked === 'stale' ? 'stale-revision' : blocked === 'readonly' ? 'host-readonly' : null,
+        errorDetail: stored.errorDetail,
+        focused: stored.focused,
+      },
+      patchIntent: stored.phase === 'patching',
+      pendingFlush: stored.phase === 'pending-flush',
+      pendingFlushErrorDetail: stored.pendingFlushErrorDetail,
+    };
+  } catch {
+    return null;
+  }
+}
+
 interface Notice {
   readonly kind: 'status' | 'error';
   readonly message: string;
@@ -172,6 +288,7 @@ interface PendingViewFlush {
 type CellDisplay = EvaluatedCell & { readonly text: string; readonly accessibleText: string };
 
 let nextViewFormId = 0;
+let nextCheckboxStatusId = 0;
 
 /** Mount the Polaris Dados grid into the host-owned root. */
 export function mountPolarisDados(context: DatabaseProviderContext): () => void {
@@ -231,7 +348,8 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   try {
     const serialized = transientState?.read();
     if (typeof serialized === 'string') {
-      const restored = restoreTextDraft(serialized, databaseId);
+      const restored =
+        restoreCheckboxDraft(serialized, databaseId) ?? restoreTextDraft(serialized, databaseId);
       if (restored) {
         draft = restored.draft;
         patchIntentPending = restored.patchIntent;
@@ -262,24 +380,49 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
 
   const textSchemaSignature = (snapshot: ReadySnapshot): string => JSON.stringify(snapshot.schema.properties);
 
-  const checkpointTextDraft = () => {
-    if (draft?.kind !== 'text') return;
-    const stored: StoredTextDraft = {
-      version: 1,
+  const checkpointDraft = () => {
+    if (draft?.kind === 'text') {
+      const stored: StoredTextDraft = {
+        version: 1,
+        phase: pendingFlush?.kind === 'cell' ? 'pending-flush' : patchIntentPending ? 'patching' : 'editing',
+        databaseId,
+        rowId: draft.rowId,
+        propertyId: draft.propertyId,
+        expectedRevision: draft.expectedRevision,
+        schemaSignature: draft.schemaSignature,
+        initialRawValue: draft.initialRawValue,
+        initialVisibleValue: draft.initialVisibleValue,
+        rawValue: draft.rawValue,
+        blocked: draft.blocked,
+        errorDetail: draft.errorDetail,
+        focused: draft.focused,
+        selectionStart: draft.selectionStart,
+        selectionEnd: draft.selectionEnd,
+        pendingFlushErrorDetail: pendingFlush?.kind === 'cell' ? pendingFlush.errorDetail : null,
+      };
+      try {
+        transientState?.write(JSON.stringify(stored));
+      } catch {
+        // A revoked generation cannot update the host's retained slot.
+      }
+      return;
+    }
+    if (draft?.kind !== 'checkbox') return;
+    const stored: StoredCheckboxDraft = {
+      version: 2,
+      kind: 'checkbox',
       phase: pendingFlush?.kind === 'cell' ? 'pending-flush' : patchIntentPending ? 'patching' : 'editing',
       databaseId,
       rowId: draft.rowId,
       propertyId: draft.propertyId,
       expectedRevision: draft.expectedRevision,
       schemaSignature: draft.schemaSignature,
-      initialRawValue: draft.initialRawValue,
-      initialVisibleValue: draft.initialVisibleValue,
-      rawValue: draft.rawValue,
+      initialValue: draft.initialValue,
+      checked: draft.checked,
+      touched: draft.touched,
       blocked: draft.blocked,
       errorDetail: draft.errorDetail,
       focused: draft.focused,
-      selectionStart: draft.selectionStart,
-      selectionEnd: draft.selectionEnd,
       pendingFlushErrorDetail: pendingFlush?.kind === 'cell' ? pendingFlush.errorDetail : null,
     };
     try {
@@ -289,7 +432,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     }
   };
 
-  const clearTextDraft = () => {
+  const clearDraftCheckpoint = () => {
     try {
       transientState?.write(undefined);
     } catch {
@@ -297,8 +440,14 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     }
   };
 
-  const restoreTextDraftFocus = () => {
-    if (disposed || signal.aborted || !restoreDraftFocusPending || draft?.kind !== 'text' || pendingFlush)
+  const restoreDraftFocus = () => {
+    if (
+      disposed ||
+      signal.aborted ||
+      !restoreDraftFocusPending ||
+      (draft?.kind !== 'text' && draft?.kind !== 'checkbox') ||
+      pendingFlush
+    )
       return;
     const restoredDraft = draft;
     const target = [...container.querySelectorAll<HTMLElement>('[data-focus-key]')].find(
@@ -313,8 +462,8 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       return;
     }
 
-    const selectionStart = restoredDraft.selectionStart;
-    const selectionEnd = restoredDraft.selectionEnd;
+    const selectionStart = restoredDraft.kind === 'text' ? restoredDraft.selectionStart : null;
+    const selectionEnd = restoredDraft.kind === 'text' ? restoredDraft.selectionEnd : null;
     restoreDraftFocusPending = false;
     target.focus({ preventScroll: true });
     if (target.tagName !== 'TEXTAREA') return;
@@ -329,7 +478,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     }
   };
 
-  const scheduleTextDraftFocusRestore = () => {
+  const scheduleDraftFocusRestore = () => {
     if (restoreFocusScheduled || !restoreDraftFocusPending) return;
     restoreFocusScheduled = true;
     const generationSignal = signal;
@@ -338,7 +487,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       restoreFocusScheduled = false;
       if (generationSignal !== signal || generation !== restoreFocusGeneration || generationSignal.aborted)
         return;
-      restoreTextDraftFocus();
+      restoreDraftFocus();
     });
   };
 
@@ -350,6 +499,40 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     busy ||
     !!pendingFlush ||
     currentSnapshot?.status !== 'ready';
+
+  const checkboxDraftReadonly = () =>
+    draft?.kind !== 'checkbox' ||
+    draft.blocked !== null ||
+    !editable ||
+    busy ||
+    pendingFlush?.kind === 'cell' ||
+    currentSnapshot?.status !== 'ready' ||
+    currentSnapshot.readonly ||
+    typeof data.patchCheckboxCell !== 'function';
+
+  const checkboxDraftIndeterminate = (activeDraft: CheckboxDraft) =>
+    activeDraft.initialValue.kind !== 'boolean' && !activeDraft.touched;
+
+  const checkboxDraftWriteBlocked = () =>
+    checkboxDraftReadonly() || (draft?.kind === 'checkbox' && checkboxDraftIndeterminate(draft));
+
+  const checkboxDraftStatus = (activeDraft: CheckboxDraft) => {
+    const selected = activeDraft.checked ? messages.trueValue : messages.falseValue;
+    if (activeDraft.blocked !== null) {
+      const value = activeDraft.touched
+        ? selected
+        : activeDraft.initialValue.kind === 'missing'
+          ? messages.missing
+          : activeDraft.initialValue.kind === 'null'
+            ? messages.blank
+            : selected;
+      return messages.checkboxDraftValue(value);
+    }
+    if (activeDraft.touched || activeDraft.initialValue.kind === 'boolean')
+      return messages.checkboxWillSave(selected);
+    if (activeDraft.initialValue.kind === 'missing') return messages.checkboxInitialMissing;
+    return messages.checkboxInitialNull;
+  };
 
   const textDraftReadonly = () =>
     draft?.kind !== 'text' ||
@@ -389,8 +572,11 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   const render = (focusRoot = false, focusOverride: string | null = null) => {
     if (disposed) return;
     const focus = captureFocus();
-    const restoreTextFocus =
-      restoreDraftFocusPending && draft?.kind === 'text' && !pendingFlush && !focusOverride;
+    const restoreDraft =
+      restoreDraftFocusPending &&
+      (draft?.kind === 'text' || draft?.kind === 'checkbox') &&
+      !pendingFlush &&
+      !focusOverride;
     const fragment = document.createDocumentFragment();
 
     if (unsupportedViewApi) {
@@ -455,9 +641,9 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       element.focus({ preventScroll: true });
       return;
     }
-    if (restoreTextFocus) {
-      if (element.isConnected) restoreTextDraftFocus();
-      else scheduleTextDraftFocusRestore();
+    if (restoreDraft) {
+      if (element.isConnected) restoreDraftFocus();
+      else scheduleDraftFocusRestore();
       return;
     }
     if (!focus.inside && !focusOverride) return;
@@ -1319,14 +1505,22 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       (candidate) => candidate.dataset.editor === draft?.propertyId,
     );
     const textarea = editor?.querySelector<HTMLTextAreaElement>('textarea[data-field]');
+    const checkbox = editor?.querySelector<HTMLInputElement>('input[type="checkbox"][data-field]');
+    const checkboxStatus = editor?.querySelector<HTMLElement>('[data-checkbox-status]');
     const save = editor?.querySelector<HTMLButtonElement>('[data-action="save"]');
     const cancel = editor?.querySelector<HTMLButtonElement>('[data-action="cancel"]');
     if (textarea) {
       const readonly = textDraftReadonly();
       if (textarea.readOnly !== readonly) textarea.readOnly = readonly;
     }
-    if (save) save.disabled = draftWriteBlocked();
-    if (cancel) cancel.disabled = busy;
+    if (checkbox && draft?.kind === 'checkbox') {
+      checkbox.disabled = checkboxDraftReadonly();
+      checkbox.checked = draft.checked;
+      checkbox.indeterminate = checkboxDraftIndeterminate(draft);
+      if (checkboxStatus) checkboxStatus.textContent = checkboxDraftStatus(draft);
+    }
+    if (save) save.disabled = draft?.kind === 'checkbox' ? checkboxDraftWriteBlocked() : draftWriteBlocked();
+    if (cancel) cancel.disabled = busy || pendingFlush?.kind === 'cell';
   };
 
   const renderGrid = (snapshot: ReadySnapshot): HTMLTableElement => {
@@ -1454,7 +1648,8 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         !snapshot.readonly &&
         !draft &&
         (property.type === 'number' ||
-          (property.type === 'text' && typeof data.patchTextCell === 'function')) &&
+          (property.type === 'text' && typeof data.patchTextCell === 'function') ||
+          (property.type === 'checkbox' && typeof data.patchCheckboxCell === 'function')) &&
         !busy &&
         !pendingFlush &&
         !viewDraft;
@@ -1496,12 +1691,23 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         const cell = cells[column]!;
         if (draft?.rowId === row.id && draft.propertyId === property.id) {
           const textarea = cell.querySelector<HTMLTextAreaElement>('textarea[data-field]');
+          const checkbox = cell.querySelector<HTMLInputElement>('input[type="checkbox"][data-field]');
+          const checkboxStatus = cell.querySelector<HTMLElement>('[data-checkbox-status]');
           const save = cell.querySelector<HTMLButtonElement>('button[data-action="save"]');
+          const cancel = cell.querySelector<HTMLButtonElement>('button[data-action="cancel"]');
           if (textarea) {
             const readonly = textDraftReadonly();
             if (textarea.readOnly !== readonly) textarea.readOnly = readonly;
           }
-          if (save) save.disabled = draftWriteBlocked();
+          if (checkbox && draft?.kind === 'checkbox') {
+            checkbox.disabled = checkboxDraftReadonly();
+            checkbox.checked = draft.checked;
+            checkbox.indeterminate = checkboxDraftIndeterminate(draft);
+            if (checkboxStatus) checkboxStatus.textContent = checkboxDraftStatus(draft);
+          }
+          if (save)
+            save.disabled = draft?.kind === 'checkbox' ? checkboxDraftWriteBlocked() : draftWriteBlocked();
+          if (cancel) cancel.disabled = busy || pendingFlush?.kind === 'cell';
           continue;
         }
         cell.replaceWith(renderCell(snapshot, row, property));
@@ -1556,12 +1762,24 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         const cell = cells[columnIndex]!;
         if (column.kind === 'property' && draft?.rowId === row.id && draft.propertyId === column.id) {
           const textarea = cell.querySelector<HTMLTextAreaElement>('textarea[data-field]');
+          const checkbox = cell.querySelector<HTMLInputElement>('input[type="checkbox"][data-field]');
+          const checkboxStatus = cell.querySelector<HTMLElement>('[data-checkbox-status]');
           const save = cell.querySelector<HTMLButtonElement>('button[data-action="save"]');
+          const cancel = cell.querySelector<HTMLButtonElement>('button[data-action="cancel"]');
           if (textarea) {
             const readonly = textDraftReadonly();
             if (textarea.readOnly !== readonly) textarea.readOnly = readonly;
           }
-          if (save) save.disabled = draftWriteBlocked() || !!viewDraft;
+          if (checkbox && draft?.kind === 'checkbox') {
+            checkbox.disabled = checkboxDraftReadonly() || !!viewDraft;
+            checkbox.checked = draft.checked;
+            checkbox.indeterminate = checkboxDraftIndeterminate(draft);
+            if (checkboxStatus) checkboxStatus.textContent = checkboxDraftStatus(draft);
+          }
+          if (save)
+            save.disabled =
+              (draft?.kind === 'checkbox' ? checkboxDraftWriteBlocked() : draftWriteBlocked()) || !!viewDraft;
+          if (cancel) cancel.disabled = busy || pendingFlush?.kind === 'cell';
           continue;
         }
         cell.replaceWith(renderLinkedCell(snapshot, row, column));
@@ -1648,7 +1866,21 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
           selectionStart: 0,
           selectionEnd: 0,
         };
-        checkpointTextDraft();
+        checkpointDraft();
+      } else if (property.type === 'checkbox') {
+        if (typeof data.patchCheckboxCell !== 'function') return;
+        const initialValue = readCheckboxInitialValue(latestRow.properties, property.id);
+        if (!initialValue) return;
+        draft = {
+          ...base,
+          kind: 'checkbox',
+          initialValue,
+          schemaSignature: textSchemaSignature(latest),
+          checked: initialValue.kind === 'boolean' ? initialValue.value : false,
+          touched: false,
+          focused: false,
+        };
+        checkpointDraft();
       } else if (property.type === 'number') {
         draft = {
           ...base,
@@ -1664,6 +1896,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
 
   const renderEditor = (row: DataApiRow, property: ProviderProperty): HTMLElement => {
     if (draft?.kind === 'text') return renderTextEditor(row, property, draft);
+    if (draft?.kind === 'checkbox') return renderCheckboxEditor(row, property, draft);
     const editor = document.createElement('div');
     editor.dataset.editor = property.id;
     const input = document.createElement('input');
@@ -1729,6 +1962,99 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     return editor;
   };
 
+  const renderCheckboxEditor = (
+    row: DataApiRow,
+    property: ProviderProperty,
+    activeDraft: CheckboxDraft,
+  ): HTMLElement => {
+    const editor = document.createElement('div');
+    editor.dataset.editor = property.id;
+    const label = document.createElement('label');
+    label.style.display = 'inline-flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '0.35rem';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = activeDraft.checked;
+    checkbox.indeterminate = checkboxDraftIndeterminate(activeDraft);
+    checkbox.disabled = checkboxDraftReadonly();
+    checkbox.dataset.field = property.id;
+    checkbox.dataset.rowId = row.id;
+    checkbox.dataset.focusKey = focusKey('input', row.id, property.id);
+    checkbox.setAttribute('aria-label', messages.editorCell(property.name, row.title));
+    const labelText = document.createElement('span');
+    labelText.textContent = messages.editorCell(property.name, row.title);
+    label.append(checkbox, labelText);
+
+    const status = document.createElement('span');
+    status.dataset.checkboxStatus = property.id;
+    status.textContent = checkboxDraftStatus(activeDraft);
+    checkbox.setAttribute('aria-describedby', `polaris-checkbox-status-${++nextCheckboxStatusId}`);
+    status.id = checkbox.getAttribute('aria-describedby')!;
+    checkbox.addEventListener('focus', () => {
+      if (draft?.kind !== 'checkbox' || draft.rowId !== row.id || draft.propertyId !== property.id) return;
+      draft.focused = true;
+      checkpointDraft();
+    });
+    checkbox.addEventListener('blur', () => {
+      if (draft?.kind !== 'checkbox' || draft.rowId !== row.id || draft.propertyId !== property.id) return;
+      draft.focused = false;
+      checkpointDraft();
+    });
+    checkbox.addEventListener('change', () => {
+      if (draft?.kind !== 'checkbox' || draft.rowId !== row.id || draft.propertyId !== property.id) return;
+      if (checkboxDraftReadonly()) {
+        checkbox.checked = draft.checked;
+        checkbox.indeterminate = checkboxDraftIndeterminate(draft);
+        return;
+      }
+      draft.checked = checkbox.checked;
+      draft.touched = true;
+      draft.focused = document.activeElement === checkbox;
+      draft.errorCode = null;
+      draft.errorDetail = null;
+      notice = null;
+      status.textContent = checkboxDraftStatus(draft);
+      checkpointDraft();
+      if (currentSnapshot?.status === 'ready') {
+        if (view) refreshCellDraftControls();
+        else updateGridInPlace(currentSnapshot);
+      }
+    });
+    checkbox.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelDraft();
+      } else if (event.key === ' ') {
+        // Keep Space's browser checkbox action. Stop only host-level key handling.
+        event.stopPropagation();
+      }
+    });
+    editor.append(label, status);
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '0.35rem';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.dataset.action = 'save';
+    save.dataset.focusKey = focusKey('save', row.id, property.id);
+    save.textContent = messages.save;
+    save.disabled = checkboxDraftWriteBlocked();
+    save.addEventListener('click', () => void saveDraft());
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.dataset.action = 'cancel';
+    cancel.dataset.focusKey = focusKey('cancel', row.id, property.id);
+    cancel.textContent = messages.cancel;
+    cancel.disabled = busy || pendingFlush?.kind === 'cell';
+    cancel.addEventListener('click', cancelDraft);
+    actions.append(save, cancel);
+    editor.append(actions);
+    return editor;
+  };
+
   const renderTextEditor = (row: DataApiRow, property: ProviderProperty, activeDraft: TextDraft) => {
     const editor = document.createElement('div');
     editor.dataset.editor = property.id;
@@ -1774,7 +2100,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       activeDraft.errorCode = null;
       activeDraft.errorDetail = null;
       notice = null;
-      checkpointTextDraft();
+      checkpointDraft();
       if (currentSnapshot?.status === 'ready') updateGridInPlace(currentSnapshot);
     });
     const checkpointTextSelection = () => {
@@ -1790,7 +2116,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       draft.focused = document.activeElement === textarea;
       draft.selectionStart = textarea.selectionStart;
       draft.selectionEnd = textarea.selectionEnd;
-      checkpointTextDraft();
+      checkpointDraft();
     };
     textarea.addEventListener('focus', checkpointTextSelection);
     textarea.addEventListener('blur', checkpointTextSelection);
@@ -2018,60 +2344,142 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     return null;
   };
 
+  const checkboxDraftStaleReason = (
+    checkboxDraft: CheckboxDraft,
+    snapshot: DataApiSnapshot,
+  ): string | null => {
+    if (snapshot.status !== 'ready') {
+      return snapshot.status === 'unsupported'
+        ? snapshot.diagnostic.message
+        : 'The database is no longer available.';
+    }
+    if (snapshot.revision !== checkboxDraft.expectedRevision)
+      return 'The data changed after this checkbox draft was opened.';
+    if (textSchemaSignature(snapshot) !== checkboxDraft.schemaSignature)
+      return 'The database schema changed after this checkbox draft was opened.';
+    const row = snapshot.rows.find((candidate) => candidate.id === checkboxDraft.rowId);
+    if (!row) return 'The row for this checkbox draft is no longer available.';
+    const property = snapshot.schema.properties.find(
+      (candidate) => candidate.id === checkboxDraft.propertyId,
+    );
+    if (!property || property.type !== 'checkbox')
+      return 'The checkbox property for this draft is no longer available.';
+    const currentValue = readCheckboxInitialValue(row.properties, checkboxDraft.propertyId);
+    if (!currentValue || !sameCheckboxInitialValue(currentValue, checkboxDraft.initialValue))
+      return 'The checkbox value changed without a matching revision.';
+    return null;
+  };
+
   const resolveRestoredPatchIntent = (snapshot: DataApiSnapshot): void => {
-    if (!patchIntentPending || draft?.kind !== 'text') return;
+    if (!patchIntentPending || (draft?.kind !== 'text' && draft?.kind !== 'checkbox')) return;
     const activeDraft = draft;
     patchIntentPending = false;
 
     let staleReason: string | null = null;
-    if (snapshot.status !== 'ready') {
-      staleReason = textDraftStaleReason(activeDraft, snapshot);
+    if (activeDraft.kind === 'text') {
+      if (snapshot.status !== 'ready') {
+        staleReason = textDraftStaleReason(activeDraft, snapshot);
+      } else {
+        const row = snapshot.rows.find((candidate) => candidate.id === activeDraft.rowId);
+        const property = snapshot.schema.properties.find(
+          (candidate) => candidate.id === activeDraft.propertyId,
+        );
+        if (textSchemaSignature(snapshot) !== activeDraft.schemaSignature) {
+          staleReason = 'The database schema changed while this text edit was being saved.';
+        } else if (!row) {
+          staleReason = 'The row for this text draft is no longer available.';
+        } else if (!property || property.type !== 'text') {
+          staleReason = 'The text property for this draft is no longer available.';
+        } else if (snapshot.revision !== activeDraft.expectedRevision) {
+          if (row.properties[activeDraft.propertyId] === activeDraft.rawValue) {
+            // The value and revision prove that the in-memory patch was accepted. Retry only its flush.
+            pendingFlush = { kind: 'cell', errorDetail: null, retryAvailable: true };
+            activeDraft.focused = false;
+            restoreDraftFocusPending = false;
+            notice = { kind: 'status', message: messages.pendingFlushRetry };
+          } else {
+            staleReason = 'The data changed while this text edit was being saved; the draft was preserved.';
+          }
+        } else {
+          const value = row.properties[activeDraft.propertyId];
+          const visibleValue = typeof value === 'string' ? normalizeTextAreaValue(value) : '';
+          if (visibleValue !== activeDraft.initialVisibleValue) {
+            staleReason =
+              'The cell changed without a matching revision while this text edit was being saved.';
+          } else if (!editable) {
+            activeDraft.blocked = 'disabled';
+            activeDraft.errorCode = null;
+            activeDraft.errorDetail = null;
+            notice = { kind: 'status', message: messages.readonly };
+          } else if (snapshot.readonly) {
+            activeDraft.blocked = 'readonly';
+            activeDraft.errorCode = 'host-readonly';
+            activeDraft.errorDetail = snapshot.diagnostic?.message ?? null;
+            notice = {
+              kind: 'status',
+              message: messages.readonly,
+              detail: activeDraft.errorDetail ?? undefined,
+            };
+          } else {
+            activeDraft.blocked = null;
+            activeDraft.errorCode = null;
+            activeDraft.errorDetail = null;
+            notice = null;
+          }
+        }
+      }
+    } else if (snapshot.status !== 'ready') {
+      staleReason = checkboxDraftStaleReason(activeDraft, snapshot);
     } else {
       const row = snapshot.rows.find((candidate) => candidate.id === activeDraft.rowId);
       const property = snapshot.schema.properties.find(
         (candidate) => candidate.id === activeDraft.propertyId,
       );
+      const currentValue = row ? readCheckboxInitialValue(row.properties, activeDraft.propertyId) : null;
       if (textSchemaSignature(snapshot) !== activeDraft.schemaSignature) {
-        staleReason = 'The database schema changed while this text edit was being saved.';
+        staleReason = 'The database schema changed while this checkbox edit was being saved.';
       } else if (!row) {
-        staleReason = 'The row for this text draft is no longer available.';
-      } else if (!property || property.type !== 'text') {
-        staleReason = 'The text property for this draft is no longer available.';
+        staleReason = 'The row for this checkbox draft is no longer available.';
+      } else if (!property || property.type !== 'checkbox') {
+        staleReason = 'The checkbox property for this draft is no longer available.';
       } else if (snapshot.revision !== activeDraft.expectedRevision) {
-        if (row.properties[activeDraft.propertyId] === activeDraft.rawValue) {
-          // The value and revision prove that the in-memory patch was accepted. Retry only its flush.
+        if (
+          currentValue?.kind === 'boolean' &&
+          currentValue.value === activeDraft.checked &&
+          !sameCheckboxInitialValue(activeDraft.initialValue, {
+            kind: 'boolean',
+            value: activeDraft.checked,
+          })
+        ) {
+          // The selected boolean replaced the captured state, so only its flush can be retried.
           pendingFlush = { kind: 'cell', errorDetail: null, retryAvailable: true };
           activeDraft.focused = false;
           restoreDraftFocusPending = false;
           notice = { kind: 'status', message: messages.pendingFlushRetry };
         } else {
-          staleReason = 'The data changed while this text edit was being saved; the draft was preserved.';
+          staleReason = 'The data changed while this checkbox edit was being saved; the draft was preserved.';
         }
+      } else if (!sameCheckboxInitialValue(currentValue ?? { kind: 'missing' }, activeDraft.initialValue)) {
+        staleReason = 'The checkbox value changed without a matching revision.';
+      } else if (!editable) {
+        activeDraft.blocked = 'disabled';
+        activeDraft.errorCode = null;
+        activeDraft.errorDetail = null;
+        notice = { kind: 'status', message: messages.readonly };
+      } else if (snapshot.readonly) {
+        activeDraft.blocked = 'readonly';
+        activeDraft.errorCode = 'host-readonly';
+        activeDraft.errorDetail = snapshot.diagnostic?.message ?? null;
+        notice = {
+          kind: 'status',
+          message: messages.readonly,
+          detail: activeDraft.errorDetail ?? undefined,
+        };
       } else {
-        const value = row.properties[activeDraft.propertyId];
-        const visibleValue = typeof value === 'string' ? normalizeTextAreaValue(value) : '';
-        if (visibleValue !== activeDraft.initialVisibleValue) {
-          staleReason = 'The cell changed without a matching revision while this text edit was being saved.';
-        } else if (!editable) {
-          activeDraft.blocked = 'disabled';
-          activeDraft.errorCode = null;
-          activeDraft.errorDetail = null;
-          notice = { kind: 'status', message: messages.readonly };
-        } else if (snapshot.readonly) {
-          activeDraft.blocked = 'readonly';
-          activeDraft.errorCode = 'host-readonly';
-          activeDraft.errorDetail = snapshot.diagnostic?.message ?? null;
-          notice = {
-            kind: 'status',
-            message: messages.readonly,
-            detail: activeDraft.errorDetail ?? undefined,
-          };
-        } else {
-          activeDraft.blocked = null;
-          activeDraft.errorCode = null;
-          activeDraft.errorDetail = null;
-          notice = null;
-        }
+        activeDraft.blocked = null;
+        activeDraft.errorCode = null;
+        activeDraft.errorDetail = null;
+        notice = null;
       }
     }
 
@@ -2081,7 +2489,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       activeDraft.errorDetail = staleReason;
       notice = { kind: 'error', message: messages.staleDraft, detail: staleReason };
     }
-    checkpointTextDraft();
+    checkpointDraft();
   };
 
   const renderDetachedDraftNotice = (): HTMLElement => {
@@ -2097,6 +2505,22 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       copyableDraft.style.display = 'block';
       copyableDraft.style.width = '100%';
       wrapper.append(copyableDraft);
+    } else if (draft?.kind === 'checkbox') {
+      const preview = document.createElement('label');
+      preview.style.display = 'inline-flex';
+      preview.style.alignItems = 'center';
+      preview.style.gap = '0.35rem';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = draft.checked;
+      checkbox.indeterminate = checkboxDraftIndeterminate(draft);
+      checkbox.disabled = true;
+      checkbox.dataset.draftValue = draft.propertyId;
+      checkbox.setAttribute('aria-label', `${draft.propertyId}: ${checkboxDraftStatus(draft)}`);
+      const status = document.createElement('span');
+      status.textContent = checkboxDraftStatus(draft);
+      preview.append(checkbox, status);
+      wrapper.append(preview);
     }
     const cancel = document.createElement('button');
     cancel.type = 'button';
@@ -2120,13 +2544,17 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
             ? draft.blocked === 'stale'
               ? (draft.errorDetail ?? 'The data changed after this draft was opened.')
               : textDraftStaleReason(draft, snapshot)
-            : snapshot.status !== 'ready' || snapshot.revision !== draft.expectedRevision
-              ? snapshot.status === 'ready'
-                ? 'This draft was opened from an older data revision.'
-                : snapshot.status === 'unsupported'
-                  ? snapshot.diagnostic.message
-                  : 'The database is no longer available.'
-              : null;
+            : draft.kind === 'checkbox'
+              ? draft.blocked === 'stale'
+                ? (draft.errorDetail ?? 'The data changed after this checkbox draft was opened.')
+                : checkboxDraftStaleReason(draft, snapshot)
+              : snapshot.status !== 'ready' || snapshot.revision !== draft.expectedRevision
+                ? snapshot.status === 'ready'
+                  ? 'This draft was opened from an older data revision.'
+                  : snapshot.status === 'unsupported'
+                    ? snapshot.diagnostic.message
+                    : 'The database is no longer available.'
+                : null;
         if (staleReason) {
           draft.blocked = 'stale';
           draft.errorCode = 'stale-revision';
@@ -2155,7 +2583,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
           draft.errorDetail = null;
           notice = null;
         }
-        checkpointTextDraft();
+        checkpointDraft();
       }
       if (view) {
         if (!container.querySelector('table')) {
@@ -2221,11 +2649,11 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
 
   function cancelDraft(): void {
     if (!draft || busy || pendingFlush?.kind === 'cell' || disposed) return;
-    const wasTextDraft = draft.kind === 'text';
+    const wasCheckpointed = draft.kind === 'text' || draft.kind === 'checkbox';
     draft = null;
     patchIntentPending = false;
     restoreDraftFocusPending = false;
-    if (wasTextDraft) clearTextDraft();
+    if (wasCheckpointed) clearDraftCheckpoint();
     notice = null;
     render(true);
   }
@@ -2233,6 +2661,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   async function saveDraft(): Promise<void> {
     if (!draft || draft.blocked === 'stale' || busy || pendingFlush || disposed || signal.aborted) return;
     const activeDraft = draft;
+    if (activeDraft.kind === 'checkbox' && checkboxDraftIndeterminate(activeDraft)) return;
     const refreshDraftUi = () => {
       if (view) {
         refreshCurrentNotice();
@@ -2253,7 +2682,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       activeDraft.blocked = 'readonly';
       activeDraft.errorDetail = error instanceof Error ? error.message : String(error);
       notice = { kind: 'status', message: messages.readonly, detail: activeDraft.errorDetail };
-      checkpointTextDraft();
+      checkpointDraft();
       refreshDraftUi();
       return;
     }
@@ -2277,6 +2706,14 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       refreshDraftUi();
       return;
     }
+    if (activeDraft.kind === 'checkbox' && typeof data.patchCheckboxCell !== 'function') {
+      activeDraft.blocked = 'readonly';
+      activeDraft.errorDetail = 'Checkbox editing is not available in this host.';
+      notice = { kind: 'status', message: messages.readonly, detail: activeDraft.errorDetail };
+      checkpointDraft();
+      refreshDraftUi();
+      return;
+    }
 
     let numberValue: number | null = null;
     if (activeDraft.kind === 'number') {
@@ -2289,21 +2726,21 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         return;
       }
       numberValue = parsed.value;
-    } else if (activeDraft.rawValue.length > 10_000) {
+    } else if (activeDraft.kind === 'text' && activeDraft.rawValue.length > 10_000) {
       activeDraft.errorCode = 'invalid-value';
       activeDraft.errorDetail = null;
       notice = { kind: 'error', message: messages.invalidTextLength };
-      checkpointTextDraft();
+      checkpointDraft();
       refreshDraftUi();
       return;
     }
 
     busy = true;
     notice = { kind: 'status', message: messages.saving };
-    if (activeDraft.kind === 'text') {
+    if (activeDraft.kind === 'text' || activeDraft.kind === 'checkbox') {
       activeDraft.focused = false;
       patchIntentPending = true;
-      checkpointTextDraft();
+      checkpointDraft();
     }
     refreshDraftUi();
     let result: ReturnType<DataApi['patchCell']>;
@@ -2317,13 +2754,21 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
               value: numberValue!,
               expectedRevision: activeDraft.expectedRevision,
             })
-          : data.patchTextCell!({
-              databaseId,
-              rowId: activeDraft.rowId,
-              propertyId: activeDraft.propertyId,
-              value: activeDraft.rawValue,
-              expectedRevision: activeDraft.expectedRevision,
-            });
+          : activeDraft.kind === 'text'
+            ? data.patchTextCell!({
+                databaseId,
+                rowId: activeDraft.rowId,
+                propertyId: activeDraft.propertyId,
+                value: activeDraft.rawValue,
+                expectedRevision: activeDraft.expectedRevision,
+              })
+            : data.patchCheckboxCell!({
+                databaseId,
+                rowId: activeDraft.rowId,
+                propertyId: activeDraft.propertyId,
+                value: activeDraft.checked,
+                expectedRevision: activeDraft.expectedRevision,
+              });
     } catch (error) {
       result = {
         status: 'error' as const,
@@ -2355,16 +2800,16 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
         result.code === 'stale-revision'
           ? { kind: 'error', message: messages.staleDraft, detail: result.message }
           : { kind: 'error', message: messages.saveError(result.message), detail: result.message };
-      checkpointTextDraft();
+      checkpointDraft();
       refreshDraftUi();
       return;
     }
 
     patchIntentPending = false;
     pendingFlush = { kind: 'cell', errorDetail: null, retryAvailable: false };
-    if (activeDraft.kind === 'text') {
+    if (activeDraft.kind === 'text' || activeDraft.kind === 'checkbox') {
       draft = activeDraft;
-      checkpointTextDraft();
+      checkpointDraft();
     } else {
       draft = null;
     }
@@ -2455,16 +2900,16 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       pendingFlush.errorDetail = result.message;
       pendingFlush.retryAvailable = true;
       notice = { kind: 'error', message: messages.saveError(result.message), detail: result.message };
-      checkpointTextDraft();
+      checkpointDraft();
       render();
       return;
     }
 
     const completed = pendingFlush;
     pendingFlush = null;
-    if (completed.kind === 'cell' && draft?.kind === 'text') {
+    if (completed.kind === 'cell' && (draft?.kind === 'text' || draft?.kind === 'checkbox')) {
       draft = null;
-      clearTextDraft();
+      clearDraftCheckpoint();
     }
     notice = { kind: 'status', message: messages.saved };
     try {

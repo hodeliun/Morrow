@@ -14,6 +14,10 @@ export interface ProviderMessages {
   readonly missing: string;
   readonly trueValue: string;
   readonly falseValue: string;
+  readonly checkboxInitialMissing: string;
+  readonly checkboxInitialNull: string;
+  readonly checkboxWillSave: (value: string) => string;
+  readonly checkboxDraftValue: (value: string) => string;
   readonly loading: string;
   readonly noDatabase: string;
   readonly readonly: string;
@@ -96,6 +100,10 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     missing: 'Ausente',
     trueValue: 'Verdadeiro',
     falseValue: 'Falso',
+    checkboxInitialMissing: 'O valor está ausente; escolha um valor antes de salvar.',
+    checkboxInitialNull: 'O valor é nulo; escolha um valor antes de salvar.',
+    checkboxWillSave: (value) => `Salvar vai gravar ${value}.`,
+    checkboxDraftValue: (value) => `Rascunho: ${value}.`,
     loading: 'Carregando dados…',
     noDatabase: 'Os dados deste banco não estão disponíveis.',
     readonly: 'Somente leitura.',
@@ -152,7 +160,8 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     pickerTargetUnavailable: 'Não há um editor de nota elegível. Abra a nota desejada e recapture o ponto.',
     pickerSourceMissing: 'O banco selecionado não está mais disponível. Escolha outro banco.',
     pickerSourceUnsupported: 'O banco selecionado não é compatível com o Polaris Dados neste momento.',
-    pickerSourceReadonly: 'O banco está somente leitura ou há um conflito de salvamento. Resolva isso e tente novamente.',
+    pickerSourceReadonly:
+      'O banco está somente leitura ou há um conflito de salvamento. Resolva isso e tente novamente.',
     pickerApiUnsupported: 'Esta versão da API do Morrow não pode inserir visualizações do Polaris Dados.',
     pickerDocumentChanged: 'A nota mudou depois da captura. Revise o destino e recapture o ponto.',
     pickerSelectionChanged: 'A seleção mudou depois da captura. Recapture o ponto de inserção.',
@@ -163,7 +172,8 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     pickerReadOnly: 'Morrow está em modo somente leitura. Não é possível inserir agora.',
     pickerInsertRejected: 'O editor recusou a inserção. O texto e o histórico da nota foram preservados.',
     pickerAlreadyUsed: 'Este ponto de inserção já foi usado. Recapture antes de tentar novamente.',
-    pickerInsertFailed: 'Não foi possível inserir a visualização. O ponto foi liberado; recapture para tentar novamente.',
+    pickerInsertFailed:
+      'Não foi possível inserir a visualização. O ponto foi liberado; recapture para tentar novamente.',
     defaultViewSuffix: 'visualização',
     unnamedDatabase: 'Banco de dados',
   },
@@ -179,6 +189,10 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     missing: 'Missing',
     trueValue: 'True',
     falseValue: 'False',
+    checkboxInitialMissing: 'The value is missing; choose a value before saving.',
+    checkboxInitialNull: 'The value is null; choose a value before saving.',
+    checkboxWillSave: (value) => `Save will write ${value}.`,
+    checkboxDraftValue: (value) => `Draft: ${value}.`,
     loading: 'Loading data…',
     noDatabase: 'This database data is unavailable.',
     readonly: 'Read only.',
@@ -261,6 +275,10 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     missing: 'Ausente',
     trueValue: 'Verdadero',
     falseValue: 'Falso',
+    checkboxInitialMissing: 'El valor está ausente; elige un valor antes de guardar.',
+    checkboxInitialNull: 'El valor es nulo; elige un valor antes de guardar.',
+    checkboxWillSave: (value) => `Guardar escribirá ${value}.`,
+    checkboxDraftValue: (value) => `Borrador: ${value}.`,
     loading: 'Cargando datos…',
     noDatabase: 'Los datos de esta base no están disponibles.',
     readonly: 'Solo lectura.',
@@ -318,7 +336,8 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     pickerTargetUnavailable: 'No hay un editor de nota elegible. Abre la nota deseada y vuelve a capturar.',
     pickerSourceMissing: 'La base seleccionada ya no está disponible. Elige otra base.',
     pickerSourceUnsupported: 'Polaris Datos no admite la base seleccionada en este momento.',
-    pickerSourceReadonly: 'La base es de solo lectura o hay un conflicto de guardado. Resuélvelo e inténtalo de nuevo.',
+    pickerSourceReadonly:
+      'La base es de solo lectura o hay un conflicto de guardado. Resuélvelo e inténtalo de nuevo.',
     pickerApiUnsupported: 'Esta versión de la API de Morrow no puede insertar vistas de Polaris Datos.',
     pickerDocumentChanged: 'La nota cambió después de la captura. Revisa el destino y vuelve a capturarlo.',
     pickerSelectionChanged: 'La selección cambió después de la captura. Vuelve a capturar el destino.',
@@ -327,9 +346,11 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     pickerSessionClosed: 'La sesión de la nota terminó. Abre otra nota y vuelve a capturar.',
     pickerOwnerEnded: 'El plugin terminó. Actívalo de nuevo para insertar una vista.',
     pickerReadOnly: 'Morrow está en modo de solo lectura. No se puede insertar ahora.',
-    pickerInsertRejected: 'El editor rechazó la inserción. Se preservaron el texto y el historial de la nota.',
+    pickerInsertRejected:
+      'El editor rechazó la inserción. Se preservaron el texto y el historial de la nota.',
     pickerAlreadyUsed: 'Este punto de inserción ya se usó. Vuelve a capturarlo antes de intentarlo otra vez.',
-    pickerInsertFailed: 'No se pudo insertar la vista. Se liberó el destino; vuelve a capturarlo para reintentar.',
+    pickerInsertFailed:
+      'No se pudo insertar la vista. Se liberó el destino; vuelve a capturarlo para reintentar.',
     defaultViewSuffix: 'vista',
     unnamedDatabase: 'Base de datos',
   },

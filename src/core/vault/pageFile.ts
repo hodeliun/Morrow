@@ -164,7 +164,7 @@ export function writeProperty(prop: PropDef, value: PropValue | undefined, prese
     case 'number':
       return typeof value === 'number' ? value : undefined;
     case 'checkbox':
-      return value === true ? true : undefined;
+      return value === true || (preserveNull && value === false) ? value : undefined;
     case 'select': {
       const option = prop.options.find((candidate) => candidate.id === value);
       return option?.name;
@@ -227,6 +227,16 @@ export function readProperty(
       return { value: Number.isFinite(value) && raw !== '' ? value : null, added };
     }
     case 'checkbox':
+      if (preserveOptedInValue) {
+        if (raw === null) return { value: null, added };
+        if (typeof raw === 'boolean') return { value: raw, added };
+        if (typeof raw === 'string') {
+          const text = raw.trim();
+          if (/^(true|yes|x|1)$/i.test(text)) return { value: true, added };
+          if (/^(false|no|0)$/i.test(text)) return { value: false, added };
+        }
+        return { value: null, added };
+      }
       return {
         value: raw === true || (typeof raw === 'string' && /^(true|yes|x)$/i.test(raw.trim())),
         added,
@@ -286,7 +296,9 @@ export function takeProperties(
     const raw = extra[key];
     const preserveExactText = preserveNull && prop.type === 'text';
     if (preserveExactText && !isRepresentableOptedInTextRaw(raw)) continue;
-    const read = readProperty(prop, raw, newOptionId, preserveExactText);
+    const preserveOptedInCheckbox = preserveNull && prop.type === 'checkbox';
+    if (preserveOptedInCheckbox && !isRepresentableOptedInCheckboxRaw(raw)) continue;
+    const read = readProperty(prop, raw, newOptionId, preserveExactText || preserveOptedInCheckbox);
     if (read.added.length) prop.options.push(...read.added);
     if (preserveNull && raw === null) setOwnPropertyValue(properties, prop.id, null);
     if (read.value !== null) setOwnPropertyValue(properties, prop.id, read.value);
@@ -306,6 +318,14 @@ function setOwnPropertyValue<T>(record: Record<string, T>, key: string, value: T
 
 function isRepresentableOptedInTextRaw(raw: unknown): boolean {
   return raw === null || (typeof raw === 'string' && raw.length <= 10_000);
+}
+
+function isRepresentableOptedInCheckboxRaw(raw: unknown): boolean {
+  return (
+    raw === null ||
+    typeof raw === 'boolean' ||
+    (typeof raw === 'string' && /^(true|yes|x|1|false|no|0)$/i.test(raw.trim()))
+  );
 }
 
 function scalarText(value: unknown): string | null {

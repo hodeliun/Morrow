@@ -47,7 +47,7 @@ import {
   sameValue,
 } from '../core/vault/pageFile';
 import type { PageSource } from '../core/vault/pageFile';
-import { splitFrontmatter } from '../core/vault/frontmatter';
+import { findKey, splitFrontmatter, updateFrontmatter } from '../core/vault/frontmatter';
 import {
   ATTACHMENTS_DIR,
   basename,
@@ -797,7 +797,82 @@ export class VaultRepository implements WorkspaceRepository {
       parent?.kind === 'database' ? parent.database : null,
       parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
-    const text = renderPageText(composeFrontmatter(managed, page.extra, source), source, body);
+    let frontmatter = composeFrontmatter(managed, page.extra, source);
+    const changedCheckboxKeys = new Set<string>();
+    const unchangedSchemaKeys = new Set<string>();
+    const previousProperties = this.lastState?.pages[id]?.properties;
+    if (
+      parent?.kind === 'database' &&
+      parent.database &&
+      Object.hasOwn(parent.extra, 'polarisDados') &&
+      previousProperties
+    ) {
+      for (const property of parent.database.properties) {
+        if (property.type !== 'checkbox') continue;
+        const wasPresent = Object.hasOwn(previousProperties, property.id);
+        const isPresent = Object.hasOwn(page.properties, property.id);
+        if (wasPresent === isPresent && sameValue(previousProperties[property.id], page.properties[property.id]))
+          continue;
+        changedCheckboxKeys.add(
+          findKey(frontmatter, property.name) ??
+            (source?.rawData ? findKey(source.rawData, property.name) : undefined) ??
+            property.name,
+        );
+      }
+    }
+    if (changedCheckboxKeys.size > 0 && source?.rawData && parent?.database && previousProperties) {
+      const unchangedRawValues = new Map<string, unknown>();
+      for (const property of parent.database.properties) {
+        const wasPresent = Object.hasOwn(previousProperties, property.id);
+        const isPresent = Object.hasOwn(page.properties, property.id);
+        if (
+          wasPresent !== isPresent ||
+          !sameValue(previousProperties[property.id], page.properties[property.id])
+        )
+          continue;
+        const sourceKey = findKey(source.rawData, property.name);
+        if (sourceKey !== undefined) {
+          unchangedRawValues.set(sourceKey, source.rawData[sourceKey]);
+          unchangedSchemaKeys.add(sourceKey);
+        }
+      }
+      if (unchangedRawValues.size > 0) {
+        const preserved = new Map<string, unknown>();
+        for (const key of source.keyOrder) {
+          if (unchangedRawValues.has(key)) {
+            preserved.set(key, unchangedRawValues.get(key));
+            continue;
+          }
+          const currentKey = findKey(frontmatter, key);
+          if (currentKey !== undefined) preserved.set(currentKey, frontmatter[currentKey]);
+        }
+        for (const [key, value] of Object.entries(frontmatter)) {
+          if (!preserved.has(key)) preserved.set(key, value);
+        }
+        frontmatter = Object.fromEntries(preserved);
+      }
+    }
+    let text: string;
+    if (changedCheckboxKeys.size > 0 && source?.rawData && source.rawHead) {
+      const updated = updateFrontmatter(
+        source.rawYaml,
+        source.rawData,
+        frontmatter,
+        body,
+        changedCheckboxKeys,
+        unchangedSchemaKeys,
+      );
+      if (updated === null) {
+        throw new WorkspaceWriteError(
+          'unsafe-checkbox-frontmatter',
+          'The checkbox change was kept in memory but not written because its frontmatter cannot be changed without risking another value. No files were changed.',
+          false,
+        );
+      }
+      text = updated;
+    } else {
+      text = renderPageText(frontmatter, source, body);
+    }
     // the next save starts from what this one wrote, so keys added in morrow keep their spelling and order
     if (source) {
       const written = splitFrontmatter(text);

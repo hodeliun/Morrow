@@ -1,4 +1,4 @@
-import { parse, parseDocument, stringify } from 'yaml';
+import { isAlias, isMap, isPair, isScalar, parse, parseDocument, stringify } from 'yaml';
 import { isRecord } from '../doc';
 
 // frontmatter keys morrow reads and writes, every other key is kept exactly as it was
@@ -178,28 +178,65 @@ export function updateFrontmatter(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
   body: string,
+  optedInCheckboxKeys: ReadonlySet<string> = new Set(),
+  preserveRawKeys: ReadonlySet<string> = new Set(),
 ): string | null {
-  if (Object.keys(after).length === 0) return body;
+  const changedCheckboxKeys = [...optedInCheckboxKeys].filter((name) => {
+    const beforeKey = findKey(before, name);
+    const afterKey = findKey(after, name);
+    if (beforeKey === undefined) return afterKey !== undefined;
+    if (afterKey === undefined) return true;
+    return !same(before[beforeKey], after[afterKey]);
+  });
+  if (Object.keys(after).length === 0 && changedCheckboxKeys.length === 0) return body;
   const order = Object.keys(after);
   const kept = Object.keys(before).filter((key) => Object.hasOwn(after, key));
   // a key that moved, such as one renamed into another's place, is easier to get right by writing it all
   if (kept.some((key, index) => order[index] !== key)) return null;
   try {
     const document = parseDocument(yaml, { uniqueKeys: false });
-    if (document.errors.length > 0 || !document.contents) return null;
+    if (document.errors.length > 0 || (!document.contents && changedCheckboxKeys.length === 0)) return null;
+    if (changedCheckboxKeys.length > 0) {
+      if (document.contents && !isMap(document.contents)) return null;
+      if (isMap(document.contents)) {
+        for (const name of changedCheckboxKeys) {
+          const matchingPairs = document.contents.items.filter((item) => {
+            if (!isPair(item)) return false;
+            const pair = item;
+            const key = isAlias(pair.key)
+              ? pair.key.resolve(document)
+              : isScalar(pair.key)
+                ? pair.key
+                : null;
+            return isScalar(key) && typeof key.value === 'string' && key.value.toLowerCase() === name.toLowerCase();
+          });
+          if (matchingPairs.length > 1) return null;
+        }
+      }
+    }
     for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) document.delete(key);
     for (const [key, value] of Object.entries(after)) {
       if (Object.hasOwn(before, key) && same(before[key], value)) continue;
       // a changed value keeps its quoting, except an empty one, whose quotes only meant empty
       const blank = before[key] === '' || before[key] === null;
       document.set(key, blank ? document.createNode(value) : value);
+      if (changedCheckboxKeys.some((checkboxKey) => checkboxKey.toLowerCase() === key.toLowerCase())) {
+        const valueNode = document.get(key, true);
+        if (isScalar(valueNode) && valueNode.tag === 'tag:yaml.org,2002:str') valueNode.tag = undefined;
+      }
     }
-    const text = document.toString({
+    let text = document.toString({
       lineWidth: 0,
       defaultStringType: 'PLAIN',
       defaultKeyType: 'PLAIN',
       flowCollectionPadding: false,
     });
+    if (changedCheckboxKeys.length > 0) {
+      text = restoreUnchangedScalarLines(yaml, text, before, after, changedCheckboxKeys, preserveRawKeys);
+      const parsed = parse(text, { maxAliasCount: 100, uniqueKeys: false }) ?? {};
+      if (!isRecord(parsed) || !same(parsed, after)) return null;
+    }
+    if (Object.keys(after).length === 0) return body;
     return `---\n${text}${text.endsWith('\n') ? '' : '\n'}---\n${body}`;
   } catch {
     return null;
@@ -208,6 +245,77 @@ export function updateFrontmatter(
 
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function restoreUnchangedScalarLines(
+  source: string,
+  rendered: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  changedCheckboxKeys: readonly string[],
+  preserveRawKeys: ReadonlySet<string>,
+): string {
+  try {
+    const original = parseDocument(source, { uniqueKeys: false });
+    const output = parseDocument(rendered, { uniqueKeys: false });
+    if (
+      !isMap(original.contents) ||
+      original.contents.flow ||
+      !isMap(output.contents) ||
+      output.contents.flow
+    )
+      return rendered;
+
+    const candidates = new Map<string, string>();
+    const originalCounts = new Map<string, number>();
+    for (const item of original.contents.items) {
+      if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
+      const key = item.key.value;
+      if (!preserveRawKeys.has(key)) continue;
+      if (!Object.hasOwn(before, key) || !Object.hasOwn(after, key) || !same(before[key], after[key])) continue;
+      if (changedCheckboxKeys.some((name) => name.toLowerCase() === key.toLowerCase())) continue;
+      if (!isScalar(item.value) || !item.key.range || !item.value.range) continue;
+      const keyLine = lineBounds(source, item.key.range[0]);
+      const valueLine = lineBounds(source, item.value.range[0]);
+      if (keyLine.start !== valueLine.start || keyLine.end !== valueLine.end) continue;
+      originalCounts.set(key, (originalCounts.get(key) ?? 0) + 1);
+      candidates.set(key, keyLine.line);
+    }
+
+    const outputPairs = new Map<string, { count: number; start: number; end: number }>();
+    for (const item of output.contents.items) {
+      if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
+      const key = item.key.value;
+      if (!candidates.has(key) || !isScalar(item.value) || !item.key.range || !item.value.range) continue;
+      const keyLine = lineBounds(rendered, item.key.range[0]);
+      const valueLine = lineBounds(rendered, item.value.range[0]);
+      if (keyLine.start !== valueLine.start || keyLine.end !== valueLine.end) continue;
+      const current = outputPairs.get(key);
+      outputPairs.set(key, { count: (current?.count ?? 0) + 1, start: keyLine.start, end: keyLine.end });
+    }
+
+    const replacements: Array<{ start: number; end: number; line: string }> = [];
+    for (const [key, line] of candidates) {
+      const target = outputPairs.get(key);
+      if (originalCounts.get(key) !== 1 || target?.count !== 1) continue;
+      if (rendered.slice(target.start, target.end) !== line)
+        replacements.push({ ...target, line });
+    }
+    for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
+      rendered = `${rendered.slice(0, replacement.start)}${replacement.line}${rendered.slice(replacement.end)}`;
+    }
+    return rendered;
+  } catch {
+    return rendered;
+  }
+}
+
+function lineBounds(source: string, offset: number): { start: number; end: number; line: string } {
+  const start = source.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+  const newline = source.indexOf('\n', offset);
+  let end = newline < 0 ? source.length : newline;
+  if (end > start && source[end - 1] === '\r') end -= 1;
+  return { start, end, line: source.slice(start, end) };
 }
 
 // tags may be a list, a single string or a comma separated string, with or without the leading #

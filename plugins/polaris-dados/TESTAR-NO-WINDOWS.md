@@ -1,6 +1,6 @@
 # Testar o piloto Polaris Dados no Windows
 
-Este candidato experimental usa Morrow 2.1.0 e inclui o piloto Polaris Dados com edição de números e texto. O ZIP inclui um executável compilado nativamente no Windows. O build verifica o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste.
+Este candidato experimental usa Morrow 2.1.0 e inclui o piloto Polaris Dados com edição de números, texto e caixas de seleção. O ZIP inclui um executável compilado nativamente no Windows. O build verifica o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste.
 
 ## Requisitos
 
@@ -38,6 +38,13 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 2. Abra outro rascunho em `Name`. Alterne o modo de leitura e volte ao modo de edição. O texto digitado deve continuar no rascunho.
 3. Confirme em **Save** ou **Salvar**. Confira em `Views` que as duas visualizações exibem o novo texto. Se a view `Origin low stock` estiver vazia, ajuste `Quantity` para pelo menos 3 no exercício anterior.
 4. Feche o Morrow normalmente, abra o mesmo cofre de demonstração pelo launcher e confira o texto nas duas visualizações.
+
+## Edição de caixas de seleção
+
+1. Abra `Checklist` e edite **Reviewed** na linha `Unchecked`, identificada pela coluna **Sample**. Pressione **Espaço** com o foco na caixa, confirme em **Salvar** e confira **Verdadeiro** (**True**).
+2. Abra `Checklist Views`. As duas views usam a mesma tabela. Em **Review queue**, edite `Unchecked`, desmarque e salve. Confira **Falso** (**False**) para a mesma linha em **Review summary**.
+3. Nas linhas `Null` e `Missing`, abra a edição e pressione **Escape** ou **Cancelar**. Os valores devem continuar como **Vazio** (**Blank**) e **Ausente** (**Missing**), respectivamente.
+4. Feche o aplicativo normalmente, abra `PilotState\DemoVault` pelo launcher e confira que `Unchecked` continua desmarcada nas duas views.
 
 ## Limites deste candidato
 
