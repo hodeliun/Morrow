@@ -1,0 +1,112 @@
+name: Pilot Windows JSONL transport
+on:
+  push:
+    branches:
+      - codex/e003-g07-windows-runtime
+    paths:
+      - .github/workflows/pilot-windows-jsonl.yml
+      - scripts/pilot/windows-native-process.ps1
+      - scripts/pilot/windows-native-process.own.test.ps1
+      - scripts/pilot/windows-native-process.independent.test.ps1
+
+permissions:
+  contents: read
+
+jobs:
+  frames:
+    name: JSONL frames ${{ matrix.suite }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - own
+          - independent
+    env:
+      POLARIS_SUITE: ${{ matrix.suite }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify JSONL framing with synthetic streams
+        shell: pwsh
+        run: |-
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $suite = $env:POLARIS_SUITE
+          $name = 'morrow-jsonl-{0}-{1}-{2}-{3}' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT, $env:GITHUB_SHA, $suite
+          $root = Join-Path $env:RUNNER_TEMP $name
+          if (Test-Path -LiteralPath $root) { throw 'JSONL evidence root already exists.' }
+          $null = New-Item -ItemType Directory -Path $root
+          $receiptPath = Join-Path $root 'workflow-receipt.json'
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          $receipt = [ordered]@{
+            schemaVersion = 1
+            issue = 246
+            runId = $env:GITHUB_RUN_ID
+            attempt = $env:GITHUB_RUN_ATTEMPT
+            sha = $env:GITHUB_SHA
+            suite = $suite
+            status = 'initializing'
+            testExitCode = $null
+            exitCode = 1
+            powershell = $PSVersionTable.PSVersion.ToString()
+            os = [Environment]::OSVersion.VersionString
+            appLaunched = $false
+            driverStarted = $false
+            guiTested = $false
+            sources = @()
+            failure = $null
+          }
+          [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 6), $utf8)
+          try {
+            if ($suite -notin @('own', 'independent')) { throw 'Unexpected suite.' }
+            $paths = @(
+              '.github/workflows/pilot-windows-jsonl.yml',
+              'scripts/pilot/windows-native-process.ps1',
+              'scripts/pilot/windows-native-process.own.test.ps1',
+              'scripts/pilot/windows-native-process.independent.test.ps1',
+              'scripts/pilot/windows-native-process-policy.ps1'
+            )
+            $receipt.sources = @(
+              foreach ($relative in $paths) {
+                $source = Join-Path $env:GITHUB_WORKSPACE $relative
+                $file = Get-Item -LiteralPath $source
+                [ordered]@{
+                  path = $relative
+                  bytes = $file.Length
+                  sha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+              }
+            )
+            $engine = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+            $test = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/windows-native-process.{0}.test.ps1" -f $suite)
+            $log = Join-Path $root 'suite.log'
+            $evidence = Join-Path $root 'suite-evidence'
+            & $engine -NoProfile -NonInteractive -File $test -EvidenceRoot $evidence *> $log
+            $receipt.testExitCode = $LASTEXITCODE
+            if ($receipt.testExitCode -eq 0) {
+              $receipt.status = 'framing-tests-passed'
+              $receipt.exitCode = 0
+            } else {
+              $receipt.status = 'framing-tests-failed'
+            }
+          } catch {
+            $receipt.status = 'workflow-failed'
+            $receipt.failure = [ordered]@{ type = $_.Exception.GetType().FullName }
+          } finally {
+            [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 6), $utf8)
+          }
+          exit $receipt.exitCode
+
+      - name: Upload JSONL evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morrow-jsonl-246-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/morrow-jsonl-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ matrix.suite }}/
+          if-no-files-found: error
+          retention-days: 30
