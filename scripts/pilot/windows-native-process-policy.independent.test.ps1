@@ -49,6 +49,7 @@ $script:CanaryWasSet = $false
 $script:Outsider = $null
 $script:CaseOutcomes = [Collections.Generic.List[object]]::new()
 $script:IdentityReceipts = [Collections.Generic.List[object]]::new()
+$script:SafeObserveInventoryEvidence = $null
 $script:Utf8NoBom = [Text.UTF8Encoding]::new($false)
 $script:FinalReceiptWritten = $false
 
@@ -234,6 +235,25 @@ function Get-DiagnosticValue {
   return $null
 }
 
+function Get-SafeBoundedCount {
+  param(
+    [AllowNull()][object] $Value,
+    [Parameter(Mandatory)][ValidateRange(1, 1024)][int] $Maximum
+  )
+
+  if ($null -eq $Value) { return [ordered]@{ value = $null; valid = $true; capped = $false } }
+  $integralTypes = @([byte], [sbyte], [short], [ushort], [int], [uint32], [long], [ulong])
+  if ($Value.GetType() -notin $integralTypes) { return [ordered]@{ value = $null; valid = $false; capped = $false } }
+  try { $number = [decimal]$Value } catch { return [ordered]@{ value = $null; valid = $false; capped = $false } }
+  if ($number -lt 0) { return [ordered]@{ value = $null; valid = $false; capped = $false } }
+  $capped = $number -gt $Maximum
+  return [ordered]@{
+    value = if ($capped) { $Maximum } else { [int]$number }
+    valid = $true
+    capped = $capped
+  }
+}
+
 function New-SafeFailureSummary {
   param(
     [Parameter(Mandatory)][System.Management.Automation.ErrorRecord] $ErrorRecord,
@@ -307,7 +327,7 @@ function New-SafeFailureSummary {
   $rawSourceLine = 0
   if ($null -ne $ErrorRecord.InvocationInfo) { $rawSourceLine = [int]$ErrorRecord.InvocationInfo.ScriptLineNumber }
   $safeSourceLine = if ($rawSourceLine -ge 1 -and $rawSourceLine -le 5000) { $rawSourceLine } else { $null }
-  return [ordered]@{
+  $summary = [ordered]@{
     check = $CheckName
     substep = $safeSubstep
     errorId = $safeErrorId
@@ -317,6 +337,11 @@ function New-SafeFailureSummary {
     fields = @($safeFields)
     cleanup = $cleanup
   }
+  if ($CheckName -ceq 'observe-fresh-snapshot-assertions-and-owned-job-inventory' -and
+      $script:SafeObserveInventoryEvidence -is [System.Collections.IDictionary]) {
+    $summary['inventoryEvidence'] = $script:SafeObserveInventoryEvidence
+  }
+  return $summary
 }
 
 function Test-ExpectedPolicyError {
@@ -1386,6 +1411,7 @@ function Get-IndependentCimIdentitySnapshot {
 }
 
 function Test-IndependentObserveAndRootExitInventory {
+  $script:SafeObserveInventoryEvidence = $null
   $script:CurrentSubstep = 'observe-independent:prepare'
   $caseRoot = New-CaseRoot -Name 'observe-root-descendant'
   $descendantReadyPath = Join-Path $caseRoot 'descendant-ready.marker'
@@ -1685,17 +1711,100 @@ exit 0
         Assert-Equal -Actual $snapshotValue -Expected $expectedValue -Message 'The exited root snapshot differed from its last proved identity.'
       }
     }
-    $script:CurrentSubstep = 'observe-independent:exited-job-inventory'
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-diagnostics'
+    $exitedInventoryMembers = @()
+    if ($null -ne $exitedObservation.inventory.members) { $exitedInventoryMembers = @($exitedObservation.inventory.members) }
+    $exitedObservedEntries = @($exitedInventoryMembers | Where-Object { $_.state -ceq 'observed' })
+    $exitedArrivedEntries = @($exitedInventoryMembers | Where-Object { $_.state -ceq 'arrived' })
+    $exitedDisappearedEntries = @($exitedInventoryMembers | Where-Object { $_.state -ceq 'disappeared' })
+    $exitedUnobservableEntries = @($exitedInventoryMembers | Where-Object { $_.state -ceq 'unobservable' })
+    $exitedDescendantEntries = @($exitedInventoryMembers | Where-Object { [int]$_.processId -eq $descendantProcessId })
+    $exitedRootEntries = @($exitedInventoryMembers | Where-Object { [int]$_.processId -eq $rootProcessId })
+    $exitedOutsiderEntries = @($exitedInventoryMembers | Where-Object { [int]$_.processId -eq [int]$script:Outsider.processId })
+    $otherInventoryEntries = @($exitedInventoryMembers | Where-Object {
+      [int]$_.processId -notin @($rootProcessId, $descendantProcessId, [int]$script:Outsider.processId)
+    })
+    $otherObservedEntries = @($otherInventoryEntries | Where-Object { $_.state -ceq 'observed' })
+    $otherArrivedEntries = @($otherInventoryEntries | Where-Object { $_.state -ceq 'arrived' })
+    $otherDisappearedEntries = @($otherInventoryEntries | Where-Object { $_.state -ceq 'disappeared' })
+    $otherUnobservableEntries = @($otherInventoryEntries | Where-Object { $_.state -ceq 'unobservable' })
+    $liveInventoryMembers = @()
+    if ($null -ne $liveObservation.inventory.members) { $liveInventoryMembers = @($liveObservation.inventory.members) }
+    $knownDescendantObservedCount = @($exitedDescendantEntries | Where-Object { $_.state -ceq 'observed' }).Count
+    $exitedBeforeCount = Get-SafeBoundedCount -Value $exitedObservation.inventory.memberCountBefore -Maximum 64
+    $exitedAfterCount = Get-SafeBoundedCount -Value $exitedObservation.inventory.memberCountAfter -Maximum 64
+    $exitedProjectedCount = Get-SafeBoundedCount -Value $exitedInventoryMembers.Count -Maximum 128
+    $liveBeforeCount = Get-SafeBoundedCount -Value $liveObservation.inventory.memberCountBefore -Maximum 64
+    $liveAfterCount = Get-SafeBoundedCount -Value $liveObservation.inventory.memberCountAfter -Maximum 64
+    $liveProjectedCount = Get-SafeBoundedCount -Value $liveInventoryMembers.Count -Maximum 128
+    $inventoryStatusValue = [string]$exitedObservation.inventory.status
+    if ($inventoryStatusValue -notin @('available', 'unavailable', 'partial', 'empty')) { $inventoryStatusValue = 'unknown' }
+    $safeIsEmptyValue = if ($exitedObservation.inventory.isEmpty -is [bool]) { [bool]$exitedObservation.inventory.isEmpty } else { $null }
+    $descendantParentProof = $exitedDescendantEntries.Count -eq 1 -and
+      [int]$exitedDescendantEntries[0].metadata.parentProcessId -eq $rootProcessId -and
+      [int]$descendantCim.parentProcessId -eq $rootProcessId
+    $script:SafeObserveInventoryEvidence = [ordered]@{
+      status = $inventoryStatusValue
+      isEmpty = $safeIsEmptyValue
+      exitedMemberCountBefore = $exitedBeforeCount.value
+      exitedMemberCountBeforeValid = $exitedBeforeCount.valid
+      exitedMemberCountBeforeCapped = $exitedBeforeCount.capped
+      exitedMemberCountAfter = $exitedAfterCount.value
+      exitedMemberCountAfterValid = $exitedAfterCount.valid
+      exitedMemberCountAfterCapped = $exitedAfterCount.capped
+      exitedProjectedMemberCount = $exitedProjectedCount.value
+      exitedProjectedMemberCountCapped = $exitedProjectedCount.capped
+      liveMemberCountBefore = $liveBeforeCount.value
+      liveMemberCountBeforeValid = $liveBeforeCount.valid
+      liveMemberCountBeforeCapped = $liveBeforeCount.capped
+      liveMemberCountAfter = $liveAfterCount.value
+      liveMemberCountAfterValid = $liveAfterCount.valid
+      liveMemberCountAfterCapped = $liveAfterCount.capped
+      liveProjectedMemberCount = $liveProjectedCount.value
+      liveProjectedMemberCountCapped = $liveProjectedCount.capped
+      observedCount = (Get-SafeBoundedCount -Value $exitedObservedEntries.Count -Maximum 128).value
+      arrivedCount = (Get-SafeBoundedCount -Value $exitedArrivedEntries.Count -Maximum 128).value
+      disappearedCount = (Get-SafeBoundedCount -Value $exitedDisappearedEntries.Count -Maximum 128).value
+      unobservableCount = (Get-SafeBoundedCount -Value $exitedUnobservableEntries.Count -Maximum 128).value
+      knownDescendantEntryCount = (Get-SafeBoundedCount -Value $exitedDescendantEntries.Count -Maximum 128).value
+      knownDescendantObservedCount = (Get-SafeBoundedCount -Value $knownDescendantObservedCount -Maximum 128).value
+      rootMemberPresent = ($exitedRootEntries.Count -gt 0)
+      outsiderMemberPresent = ($exitedOutsiderEntries.Count -gt 0)
+      descendantParentMatchesRoot = [bool]$descendantParentProof
+      additionalMemberCount = (Get-SafeBoundedCount -Value $otherInventoryEntries.Count -Maximum 128).value
+      additionalObservedCount = (Get-SafeBoundedCount -Value $otherObservedEntries.Count -Maximum 128).value
+      additionalArrivedCount = (Get-SafeBoundedCount -Value $otherArrivedEntries.Count -Maximum 128).value
+      additionalDisappearedCount = (Get-SafeBoundedCount -Value $otherDisappearedEntries.Count -Maximum 128).value
+      additionalUnobservableCount = (Get-SafeBoundedCount -Value $otherUnobservableEntries.Count -Maximum 128).value
+    }
+
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-status'
     Assert-Equal -Actual ([string]$exitedObservation.inventory.status) -Expected 'available' -Message 'The remaining Job inventory was not available after root exit.'
-    Assert-True -Condition (-not [bool]$exitedObservation.inventory.isEmpty -and [int]$exitedObservation.inventory.memberCountBefore -eq 1 -and [int]$exitedObservation.inventory.memberCountAfter -eq 1) -Message 'The exited-root inventory did not show exactly one live Job descendant.'
-    $remainingEntries = @($exitedObservation.inventory.members | Where-Object { $_.state -ceq 'observed' })
-    if ($remainingEntries.Count -ne 1 -or [int]$remainingEntries[0].processId -ne $descendantProcessId -or
-        [int]$remainingEntries[0].metadata.parentProcessId -ne $rootProcessId) {
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-nonempty'
+    Assert-True -Condition (-not [bool]$exitedObservation.inventory.isEmpty) -Message 'The exited-root inventory was incorrectly reported empty.'
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-bounds'
+    Assert-True -Condition ([int]$exitedObservation.inventory.memberCountBefore -ge 0 -and [int]$exitedObservation.inventory.memberCountBefore -le 64 -and
+      [int]$exitedObservation.inventory.memberCountAfter -ge 0 -and [int]$exitedObservation.inventory.memberCountAfter -le 64 -and
+      $exitedInventoryMembers.Count -le 128) -Message 'The exited-root inventory exceeded its bounded process projection.'
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-before-count'
+    Assert-Equal -Actual ([int]$exitedObservation.inventory.memberCountBefore) -Expected 1 -Message 'The pre-observation Job member count after root exit differed from the expected single child.'
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-after-count'
+    Assert-Equal -Actual ([int]$exitedObservation.inventory.memberCountAfter) -Expected 1 -Message 'The final Job member count after root exit differed from the expected single child.'
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-descendant'
+    $remainingEntries = @($exitedInventoryMembers | Where-Object { $_.state -ceq 'observed' })
+    if ($remainingEntries.Count -ne 1 -or [int]$remainingEntries[0].processId -ne $descendantProcessId) {
       throw 'The exited-root inventory did not preserve the live child and CIM parent without fabricating a root member.'
     }
-    if (@($exitedObservation.inventory.members | Where-Object { [int]$_.processId -eq $rootProcessId }).Count -ne 0) {
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-parent-proof'
+    if ([int]$remainingEntries[0].metadata.parentProcessId -ne $rootProcessId -or [int]$descendantCim.parentProcessId -ne $rootProcessId) {
+      throw 'The remaining Job child did not retain the independently confirmed root parent.'
+    }
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-root-excluded'
+    if ($exitedRootEntries.Count -ne 0) {
       throw 'The exited root was fabricated as a current Job member.'
     }
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory-outsider-excluded'
+    if ($exitedOutsiderEntries.Count -ne 0) { throw 'The outsider appeared in the private capsule Job inventory.' }
 
     $script:CurrentSubstep = 'observe-independent:stale-assertion-is-nondestructive'
     $staleMismatch = [ordered]@{ parentProcessId = [int]$expectedAssertion.parentProcessId + 1 }
@@ -1742,6 +1851,7 @@ exit 0
       cleanupRootExited = [bool]$cleanup.rootExited
       observeElapsedMs = $observeClock.ElapsedMilliseconds
       cleanupElapsedMs = $cleanupElapsedMs
+      exitedInventoryDiagnostics = $script:SafeObserveInventoryEvidence
     })
     return [ordered]@{
       identityFreshWhileLive = $true
@@ -1755,6 +1865,7 @@ exit 0
       outsiderExcludedAndPreserved = $true
       inventoryStatusWhileLive = [string]$liveObservation.inventory.status
       inventoryStatusAfterRootExit = [string]$exitedObservation.inventory.status
+      exitedInventoryDiagnostics = $script:SafeObserveInventoryEvidence
       cleanupElapsedMs = $cleanupElapsedMs
     }
   } finally {
