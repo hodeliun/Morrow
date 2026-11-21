@@ -139,6 +139,7 @@ fn save_spell_languages(languages: &[String]) -> Res<()> {
 }
 
 // the languages spelling uses on this system: the ones picked, or the system's own
+#[cfg(any(target_os = "linux", windows))]
 pub fn spell_languages() -> Vec<String> {
     let chosen = chosen_spell_languages();
     if chosen.is_empty() {
