@@ -8,36 +8,46 @@ on:
       - scripts/pilot/windows-native-process.ps1
       - scripts/pilot/windows-native-process.own.test.ps1
       - scripts/pilot/windows-native-process.independent.test.ps1
+      - scripts/pilot/windows-native-process.controller*.ps1
 
 permissions:
   contents: read
 
 jobs:
-  frames:
-    name: JSONL frames ${{ matrix.suite }}
+  transport:
+    name: JSONL ${{ matrix.leaf }} ${{ matrix.suite }}
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        leaf:
+          - '246'
+          - '247'
         suite:
           - own
           - independent
     env:
       POLARIS_SUITE: ${{ matrix.suite }}
+      POLARIS_JSONL_LEAF: ${{ matrix.leaf }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Verify JSONL framing with synthetic streams
+      - name: Verify JSONL transport with synthetic fixtures
         shell: pwsh
         run: |-
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
+          $PSNativeCommandUseErrorActionPreference = $false
           $suite = $env:POLARIS_SUITE
-          $name = 'morrow-jsonl-{0}-{1}-{2}-{3}' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT, $env:GITHUB_SHA, $suite
+          $leaf = $env:POLARIS_JSONL_LEAF
+          if ($leaf -cnotin @('246', '247') -or $suite -cnotin @('own', 'independent')) {
+            throw 'Unexpected JSONL suite.'
+          }
+          $name = 'morrow-jsonl-{0}-{1}-{2}-{3}-{4}' -f $leaf, $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT, $env:GITHUB_SHA, $suite
           $root = Join-Path $env:RUNNER_TEMP $name
           if (Test-Path -LiteralPath $root) { throw 'JSONL evidence root already exists.' }
           $null = New-Item -ItemType Directory -Path $root
@@ -45,7 +55,7 @@ jobs:
           $utf8 = [Text.UTF8Encoding]::new($false)
           $receipt = [ordered]@{
             schemaVersion = 1
-            issue = 246
+            issue = [int]$leaf
             runId = $env:GITHUB_RUN_ID
             attempt = $env:GITHUB_RUN_ATTEMPT
             sha = $env:GITHUB_SHA
@@ -59,11 +69,11 @@ jobs:
             driverStarted = $false
             guiTested = $false
             sources = @()
+            regressions = @()
             failure = $null
           }
           [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 6), $utf8)
           try {
-            if ($suite -notin @('own', 'independent')) { throw 'Unexpected suite.' }
             $paths = @(
               '.github/workflows/pilot-windows-jsonl.yml',
               'scripts/pilot/windows-native-process.ps1',
@@ -71,6 +81,19 @@ jobs:
               'scripts/pilot/windows-native-process.independent.test.ps1',
               'scripts/pilot/windows-native-process-policy.ps1'
             )
+            if ($leaf -ceq '247') {
+              $paths += @(
+                'scripts/pilot/windows-native-process.controller.ps1',
+                'scripts/pilot/windows-native-process.controller.own.test.ps1',
+                'scripts/pilot/windows-native-process.controller.independent.test.ps1',
+                'scripts/pilot/windows-process.ps1',
+                'scripts/pilot/windows-native-job.ps1',
+                'scripts/pilot/windows-native-job.own.test.ps1',
+                'scripts/pilot/windows-native-job.independent.test.ps1',
+                'scripts/pilot/windows-native-process-policy.own.test.ps1',
+                'scripts/pilot/windows-native-process-policy.independent.test.ps1'
+              )
+            }
             $receipt.sources = @(
               foreach ($relative in $paths) {
                 $source = Join-Path $env:GITHUB_WORKSPACE $relative
@@ -83,16 +106,39 @@ jobs:
               }
             )
             $engine = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
-            $test = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/windows-native-process.{0}.test.ps1" -f $suite)
+            $stem = if ($leaf -ceq '247') { 'windows-native-process.controller' } else { 'windows-native-process' }
+            $test = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/{0}.{1}.test.ps1" -f $stem, $suite)
             $log = Join-Path $root 'suite.log'
             $evidence = Join-Path $root 'suite-evidence'
             & $engine -NoProfile -NonInteractive -File $test -EvidenceRoot $evidence *> $log
             $receipt.testExitCode = $LASTEXITCODE
-            if ($receipt.testExitCode -eq 0) {
-              $receipt.status = 'framing-tests-passed'
+            if ($leaf -ceq '247' -and $receipt.testExitCode -eq 0) {
+              foreach ($regression in @(
+                @{ issue = 188; stem = 'windows-native-job' },
+                @{ issue = 189; stem = 'windows-native-process-policy' }
+              )) {
+                $name = 'regression-{0}-{1}' -f $regression.issue, $suite
+                $regressionTest = Join-Path $env:GITHUB_WORKSPACE ("scripts/pilot/{0}.{1}.test.ps1" -f $regression.stem, $suite)
+                $regressionLog = Join-Path $root "$name.log"
+                $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $regressionTest, '-EvidenceRoot', (Join-Path $root $name))
+                if ($regression.issue -eq 189 -and $suite -ceq 'independent') {
+                  $arguments += @('-PolicyPath', (Join-Path $env:GITHUB_WORKSPACE 'scripts/pilot/windows-native-process-policy.ps1'))
+                }
+                & $engine @arguments *> $regressionLog
+                $receipt.regressions += [ordered]@{
+                  issue = $regression.issue
+                  suite = $suite
+                  exitCode = $LASTEXITCODE
+                  logSha256 = (Get-FileHash -LiteralPath $regressionLog -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+              }
+            }
+            $regressionFailures = @($receipt.regressions | Where-Object { $_.exitCode -ne 0 })
+            if ($receipt.testExitCode -eq 0 -and $regressionFailures.Count -eq 0) {
+              $receipt.status = if ($leaf -ceq '246') { 'framing-tests-passed' } else { 'controller-tests-passed' }
               $receipt.exitCode = 0
             } else {
-              $receipt.status = 'framing-tests-failed'
+              $receipt.status = if ($leaf -ceq '246') { 'framing-tests-failed' } else { 'controller-or-regression-tests-failed' }
             }
           } catch {
             $receipt.status = 'workflow-failed'
@@ -106,7 +152,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: morrow-jsonl-246-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
-          path: ${{ runner.temp }}/morrow-jsonl-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ matrix.suite }}/
+          name: morrow-jsonl-${{ matrix.leaf }}-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/morrow-jsonl-${{ matrix.leaf }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}-${{ matrix.suite }}/
           if-no-files-found: error
           retention-days: 30
