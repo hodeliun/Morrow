@@ -187,7 +187,8 @@ function Test-PolicyIdentityAssertionError {
   foreach ($field in $ExpectedFields) {
     if ($reportedFields -cnotcontains $field) { return $false }
   }
-  if ($reportedFields.Count -ne $ExpectedFields.Count) { return $false }
+  $expectedFieldCount = if ($null -eq $ExpectedFields) { 0 } else { $ExpectedFields.Length }
+  if ($reportedFields.Count -ne $expectedFieldCount) { return $false }
 
   $safeDiagnosticJson = ConvertTo-Json -InputObject $diagnostics -Depth 8 -Compress
   $safeErrorText = [string]$errorRecord.Exception.Message
@@ -770,9 +771,15 @@ try {
     [pscustomobject]@{ value = ([ordered]@{ ownerSid = 42 }); field = 'ownerSid'; forbidden = '42' }
   )
   $allMalformedAssertionsRejectedSafely = $true
+  $invalidAssertionIndex = 0
   foreach ($case in $invalidAssertionCases) {
-    $expectedInvalidFields = if ($null -eq $case.field) { @() } else { @([string]$case.field) }
-    $forbiddenStrings = if ($null -eq $case.forbidden) { @() } else { @($case.forbidden | ForEach-Object { [string]$_ }) }
+    $failurePhase = 'identity-assertion-malformed-shape-' + $invalidAssertionIndex.ToString('D2', [Globalization.CultureInfo]::InvariantCulture)
+    [string[]]$expectedInvalidFields = @()
+    if ($null -ne $case.field) { $expectedInvalidFields = [string[]]@([string]$case.field) }
+    [string[]]$forbiddenStrings = @()
+    if ($null -ne $case.forbidden) {
+      $forbiddenStrings = [string[]]@($case.forbidden | ForEach-Object { [string]$_ })
+    }
     if (-not (Test-PolicyIdentityAssertionError `
         -Action { ConvertTo-PilotWindowsNativeProcessIdentityAssertion -IdentityAssertion $case.value } `
         -ExpectedErrorId 'Morrow.WindowsNativeProcess.InvalidIdentityAssertion' `
@@ -782,7 +789,9 @@ try {
       $allMalformedAssertionsRejectedSafely = $false
       break
     }
+    $invalidAssertionIndex++
   }
+  $failurePhase = 'identity-assertion-malformed-check'
   $checks.identityAssertionRejectsMalformedClosedShape = $allMalformedAssertionsRejectedSafely
   Assert-PolicyCheck -Condition $checks.identityAssertionRejectsMalformedClosedShape -Name 'identityAssertionRejectsMalformedClosedShape'
 
@@ -1645,7 +1654,7 @@ $reportLines = @(
   $checks.observeRejectsMalformedRawAssertionBeforeCapsuleProbe = $true
   Assert-PolicyCheck -Condition $checks.observeRejectsMalformedRawAssertionBeforeCapsuleProbe -Name 'observeRejectsMalformedRawAssertionBeforeCapsuleProbe'
 
-  $failurePhase = 'observe-live-root'
+  $failurePhase = 'observe-live-root-fresh-call'
   $liveObservation = Observe-WindowsNativeProcess -Capsule $capsule
   $liveIdentity = $liveObservation.root.identity
   $fullIdentityAssertion = [ordered]@{
@@ -1656,6 +1665,7 @@ $reportLines = @(
     creationTimeUtc = [string]$liveIdentity.creationTimeUtc
     ownerSid = [string]$liveIdentity.ownerSid
   }
+  $failurePhase = 'observe-live-root-fresh-check'
   $checks.observeReturnsFreshFullIdentity = (
     $liveObservation.root.state -ceq 'alive' -and
     $liveObservation.root.identityStatus -ceq 'fresh' -and [bool]$liveObservation.root.identityFresh -and
@@ -1666,7 +1676,9 @@ $reportLines = @(
     -not [string]::IsNullOrWhiteSpace([string]$fullIdentityAssertion.ownerSid)
   )
   Assert-PolicyCheck -Condition $checks.observeReturnsFreshFullIdentity -Name 'observeReturnsFreshFullIdentity'
+  $failurePhase = 'observe-live-root-six-field-call'
   $matchingObservation = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $failurePhase = 'observe-live-root-six-field-check'
   $checks.observeAcceptsMatchingSixFieldAssertion = (
     $matchingObservation.root.identityStatus -ceq 'fresh' -and
     $matchingObservation.root.identity.processId -eq $fullIdentityAssertion.processId -and
@@ -1678,16 +1690,21 @@ $reportLines = @(
   )
   Assert-PolicyCheck -Condition $checks.observeAcceptsMatchingSixFieldAssertion -Name 'observeAcceptsMatchingSixFieldAssertion'
 
+  $failurePhase = 'observe-live-root-divergent-assertion'
   $badObserveAssertion = [ordered]@{ processId = [int]$fullIdentityAssertion.processId + 1 }
   $null = Invoke-ExpectedPolicyFailure `
     -Action { Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $badObserveAssertion } `
     -ExpectedErrorId 'Morrow.WindowsNativeProcess.IdentityMismatch' `
     -ExpectedFields @('processId')
   $checks.observeRejectsDivergentIdentityField = $true
+  $failurePhase = 'observe-live-root-divergent-check'
   Assert-PolicyCheck -Condition $checks.observeRejectsDivergentIdentityField -Name 'observeRejectsDivergentIdentityField'
+  $failurePhase = 'observe-live-root-preserved-after-mismatch'
   $stillLiveObservation = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
+  $failurePhase = 'observe-live-root-preserved-check'
   $checks.observeMismatchPreservesCapsule = $stillLiveObservation.root.identityStatus -ceq 'fresh'
   Assert-PolicyCheck -Condition $checks.observeMismatchPreservesCapsule -Name 'observeMismatchPreservesCapsule'
+  $failurePhase = 'observe-live-root-inventory-check'
   $checks.observeInventoryReportsOwnedRoot = (
     $liveObservation.inventory.status -ceq 'available' -and
     -not [bool]$liveObservation.inventory.isEmpty -and
@@ -1776,12 +1793,14 @@ exit 0
   } finally {
     if ($null -ne $rootWaitProcess) { $rootWaitProcess.Dispose() }
   }
+  $failurePhase = 'observe-exited-root-handle-observation'
   $observeTree = Observe-WindowsNativeProcess -Capsule $observeCapsule
   $descendantPid = 0
   if ([IO.File]::Exists($observeDescendantPidPath)) {
     try { $descendantPid = [int][IO.File]::ReadAllText($observeDescendantPidPath) } catch { $descendantPid = 0 }
   }
   $descendantEntry = @($observeTree.inventory.members | Where-Object { $_.processId -eq $descendantPid })
+  $failurePhase = 'observe-exited-root-snapshot-check'
   $checks.observeReturnsExitedRootSnapshot = (
     $observeTree.root.state -ceq 'exited' -and
     $observeTree.root.identityStatus -ceq 'snapshot' -and
@@ -1790,6 +1809,7 @@ exit 0
     $observeTree.root.identity.processId -gt 0
   )
   Assert-PolicyCheck -Condition $checks.observeReturnsExitedRootSnapshot -Name 'observeReturnsExitedRootSnapshot'
+  $failurePhase = 'observe-exited-root-descendant-inventory-check'
   $checks.observeKeepsDescendantVisibleAfterRootExit = (
     $descendantPid -gt 0 -and $descendantEntry.Count -eq 1 -and
     $descendantEntry[0].state -ceq 'observed' -and
@@ -1797,6 +1817,7 @@ exit 0
     -not [bool]$observeTree.inventory.isEmpty
   )
   Assert-PolicyCheck -Condition $checks.observeKeepsDescendantVisibleAfterRootExit -Name 'observeKeepsDescendantVisibleAfterRootExit'
+  $failurePhase = 'observe-exited-root-owned-job-cleanup'
   $outsider.Refresh()
   $outsiderAliveBeforeObserveCleanup = -not $outsider.HasExited
   $observeTreeCleanup = $observeCapsule.Dispose()
@@ -1807,12 +1828,16 @@ exit 0
   }
   $observeCapsuleCleanupConfirmed = [bool]$observeTreeCleanup.jobEmpty -and [bool]$observeTreeCleanup.rootExited
   $checks.observeCleanupKillsOnlyOwnedJob = $observeCapsuleCleanupConfirmed
+  $failurePhase = 'observe-exited-root-cleanup-check'
   Assert-PolicyCheck -Condition $checks.observeCleanupKillsOnlyOwnedJob -Name 'observeCleanupKillsOnlyOwnedJob'
+  $failurePhase = 'observe-exited-root-outsider-preserved'
   $outsider.Refresh()
   $checks.outsiderSurvivesObserveCleanup = $outsiderAliveBeforeObserveCleanup -and -not $outsider.HasExited
   Assert-PolicyCheck -Condition $checks.outsiderSurvivesObserveCleanup -Name 'outsiderSurvivesObserveCleanup'
+  $failurePhase = 'observe-live-other-capsule-preserved'
   $mainAfterTreeCleanup = Observe-WindowsNativeProcess -Capsule $capsule -IdentityAssertion $fullIdentityAssertion
   $checks.observeCleanupPreservesOtherCapsule = $mainAfterTreeCleanup.root.identityStatus -ceq 'fresh'
+  $failurePhase = 'observe-live-other-capsule-preserved-check'
   Assert-PolicyCheck -Condition $checks.observeCleanupPreservesOtherCapsule -Name 'observeCleanupPreservesOtherCapsule'
   $allNativeJobsCleaned = $false
   $observeCapsule = $null

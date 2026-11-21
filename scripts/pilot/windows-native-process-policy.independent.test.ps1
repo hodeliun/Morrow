@@ -302,11 +302,18 @@ function New-SafeFailureSummary {
   }
 
   $safeSubstep = if ($Substep -match '^[A-Za-z0-9:_-]{1,96}$' -and $Substep -notmatch '(?i)^S-\d+-') { $Substep } else { 'unknown' }
+  $rawExceptionType = if ($null -ne $ErrorRecord.Exception) { [string]$ErrorRecord.Exception.GetType().FullName } else { '' }
+  $safeExceptionType = if ($rawExceptionType -match '^System(?:\.[A-Za-z0-9_+`]+){1,8}$') { $rawExceptionType } else { 'Other' }
+  $rawSourceLine = 0
+  if ($null -ne $ErrorRecord.InvocationInfo) { $rawSourceLine = [int]$ErrorRecord.InvocationInfo.ScriptLineNumber }
+  $safeSourceLine = if ($rawSourceLine -ge 1 -and $rawSourceLine -le 5000) { $rawSourceLine } else { $null }
   return [ordered]@{
     check = $CheckName
     substep = $safeSubstep
     errorId = $safeErrorId
     stage = $safeStage
+    exceptionType = $safeExceptionType
+    sourceLine = $safeSourceLine
     fields = @($safeFields)
     cleanup = $cleanup
   }
@@ -1651,18 +1658,24 @@ exit 0
     Assert-Equal -Actual ([int]$descendantEntries[0].metadata.parentProcessId) -Expected $rootProcessId -Message 'The descendant parent came from something other than independent CIM.'
     Assert-Equal -Actual ([int]$descendantCim.parentProcessId) -Expected $rootProcessId -Message 'Independent CIM did not identify the synthetic root as the descendant parent.'
 
-    $script:CurrentSubstep = 'observe-independent:root-exits-with-job-child'
+    $script:CurrentSubstep = 'observe-independent:root-release-signal'
     [IO.File]::WriteAllText($releasePath, 'release', $script:Utf8NoBom)
+    $script:CurrentSubstep = 'observe-independent:root-managed-exit-wait'
     if (-not $rootWaitProcess.WaitForExit(15000)) { throw 'The synthetic root did not exit within its bounded wait.' }
+    $script:CurrentSubstep = 'observe-independent:root-managed-exit-code'
     Assert-Equal -Actual ([int]$rootWaitProcess.ExitCode) -Expected 0 -Message 'The synthetic root returned a fixture failure code.'
+    $script:CurrentSubstep = 'observe-independent:child-remained-alive-after-root-exit'
     $descendantWaitProcess.Refresh()
     Assert-True -Condition (-not $descendantWaitProcess.HasExited) -Message 'The synthetic descendant did not remain alive after its root exited.'
 
+    $script:CurrentSubstep = 'observe-independent:exited-root-observe-call'
     $exitedObservation = Observe-WindowsNativeProcess -Capsule $observeCapsule -IdentityAssertion $expectedAssertion
+    $script:CurrentSubstep = 'observe-independent:exited-root-state'
     Assert-Equal -Actual ([string]$exitedObservation.root.state) -Expected 'exited' -Message 'Observe did not report the exited synthetic root.'
     Assert-Equal -Actual ([string]$exitedObservation.root.identityStatus) -Expected 'snapshot' -Message 'Observe did not mark the exited root identity as a snapshot.'
     Assert-True -Condition (-not [bool]$exitedObservation.root.identityFresh) -Message 'The exited root identity was mislabeled fresh.'
     Assert-Equal -Actual ([uint32]$exitedObservation.root.exitCode) -Expected ([uint32]$rootWaitProcess.ExitCode) -Message 'Observe returned an incorrect cached root exit code.'
+    $script:CurrentSubstep = 'observe-independent:exited-root-snapshot-fields'
     foreach ($field in @('processId', 'parentProcessId', 'executablePath', 'executableSha256', 'creationTimeUtc', 'ownerSid')) {
       $expectedValue = $liveIdentity.PSObject.Properties[$field].Value
       $snapshotValue = $exitedObservation.root.identity.PSObject.Properties[$field].Value
@@ -1672,6 +1685,7 @@ exit 0
         Assert-Equal -Actual $snapshotValue -Expected $expectedValue -Message 'The exited root snapshot differed from its last proved identity.'
       }
     }
+    $script:CurrentSubstep = 'observe-independent:exited-job-inventory'
     Assert-Equal -Actual ([string]$exitedObservation.inventory.status) -Expected 'available' -Message 'The remaining Job inventory was not available after root exit.'
     Assert-True -Condition (-not [bool]$exitedObservation.inventory.isEmpty -and [int]$exitedObservation.inventory.memberCountBefore -eq 1 -and [int]$exitedObservation.inventory.memberCountAfter -eq 1) -Message 'The exited-root inventory did not show exactly one live Job descendant.'
     $remainingEntries = @($exitedObservation.inventory.members | Where-Object { $_.state -ceq 'observed' })
