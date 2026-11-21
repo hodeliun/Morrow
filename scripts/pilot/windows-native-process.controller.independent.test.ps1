@@ -626,8 +626,8 @@ function Assert-StartOrObserveResult {
   Assert-Condition -Condition ($root['identity'] -is [System.Collections.IDictionary]) -Name 'RootSnapshotMissing'
   $identity=$root['identity']
   Assert-ExactNames -Dictionary $identity -Expected @('processId','parentProcessId','executablePath','executableSha256','creationTimeUtc','ownerSid') -Name 'RootIdentityFields'
-  Assert-IntegerValue -Value $identity['processId'] -Minimum 1 -Maximum [long]::MaxValue -Name 'RootProcessId'
-  Assert-IntegerValue -Value $identity['parentProcessId'] -Minimum 1 -Maximum [long]::MaxValue -Name 'RootParentProcessId'
+  Assert-IntegerValue -Value $identity['processId'] -Minimum 1 -Maximum ([long]::MaxValue) -Name 'RootProcessId'
+  Assert-IntegerValue -Value $identity['parentProcessId'] -Minimum 1 -Maximum ([long]::MaxValue) -Name 'RootParentProcessId'
   Assert-Condition -Condition ([long]$identity['processId'] -eq $ExpectedRootPid) -Name 'ObservedRootPidMismatch'
   Assert-Condition -Condition ([long]$identity['parentProcessId'] -eq $ExpectedParentPid) -Name 'ObservedParentPidMismatch'
   Assert-Condition -Condition ($identity['executablePath'] -is [string] -and [string]::Equals([IO.Path]::GetFullPath([string]$identity['executablePath']),$script:RuntimeExePath,[StringComparison]::OrdinalIgnoreCase)) -Name 'ObservedImagePathMismatch'
@@ -643,8 +643,8 @@ function Assert-StartOrObserveResult {
   Assert-Condition -Condition ($inventory -is [System.Collections.IDictionary]) -Name 'InventoryNotObject'
   Assert-ExactNames -Dictionary $inventory -Expected @('status','isEmpty','memberCountBefore','memberCountAfter','members') -Name 'InventoryFields'
   Assert-Condition -Condition ($inventory['status'] -is [string] -and -not [string]::IsNullOrWhiteSpace([string]$inventory['status'])) -Name 'InventoryStatusEmpty'
-  Assert-IntegerValue -Value $inventory['memberCountBefore'] -Minimum 0 -Maximum [long]::MaxValue -Name 'InventoryBeforeCount'
-  Assert-IntegerValue -Value $inventory['memberCountAfter'] -Minimum 0 -Maximum [long]::MaxValue -Name 'InventoryAfterCount'
+  Assert-IntegerValue -Value $inventory['memberCountBefore'] -Minimum 0 -Maximum ([long]::MaxValue) -Name 'InventoryBeforeCount'
+  Assert-IntegerValue -Value $inventory['memberCountAfter'] -Minimum 0 -Maximum ([long]::MaxValue) -Name 'InventoryAfterCount'
   Assert-Condition -Condition ($inventory['isEmpty'] -is [bool]) -Name 'InventoryIsEmptyNotBool'
   Assert-Condition -Condition ($inventory['members'] -is [Array]) -Name 'InventoryMembersNotArray'
   return $Result
@@ -736,7 +736,7 @@ function Wait-ForFixtureHandle {
         $manifest=ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($files[0].FullName,$script:Utf8NoBom)) -AsHashtable -DateKind String -ErrorAction Stop
         $phase='manifest-identity'
         Assert-Condition -Condition ([string]$manifest['role'] -ceq $Role -and [string]$manifest['nonce'] -ceq $Case.Nonce) -Name 'FixtureManifestIdentity'
-        Assert-IntegerValue -Value $manifest['processId'] -Minimum 1 -Maximum [long]::MaxValue -Name 'FixtureManifestPid'
+        Assert-IntegerValue -Value $manifest['processId'] -Minimum 1 -Maximum ([long]::MaxValue) -Name 'FixtureManifestPid'
         $phase='process-handle'
         if ($null -eq $process) {
           # Hold a manifest-selected observer handle provisionally until its full OS identity is verified.
