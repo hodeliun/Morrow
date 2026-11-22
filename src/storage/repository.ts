@@ -16,6 +16,8 @@ export interface WriteBatch {
   quietPageIds?: PageId[];
   /** Read-only source records that must still match before dependent pilot data is written. */
   checkPages?: PageId[];
+  /** Pages whose `morrowNoteStyle` update must fail instead of rebasing over an external edit. */
+  noteStylePages?: PageId[];
   snapshots?: Snapshot[];
   // the whole workspace at the time of the write, file based storage lays out pages from it
   state?: WorkspaceState;

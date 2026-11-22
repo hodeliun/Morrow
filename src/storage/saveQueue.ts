@@ -51,6 +51,8 @@ export class SaveQueue {
   private readonly quietDelayMs: number;
   private retryBlocked = false;
   private disposed = false;
+  private isolation: { done: Promise<void>; pages: Set<PageId> } | null = null;
+  private isolationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly writer: { write(batch: WriteBatch): Promise<void> },
@@ -81,6 +83,7 @@ export class SaveQueue {
       this.dirtyDocs.has(id) ||
       this.removed.has(id) ||
       this.checkPages.has(id) ||
+      this.isolation?.pages.has(id) === true ||
       this.writing.has(id);
     if (!hasPendingWrite) return false;
 
@@ -92,6 +95,7 @@ export class SaveQueue {
       !this.dirtyDocs.has(id) &&
       !this.removed.has(id) &&
       !this.checkPages.has(id) &&
+      !this.isolation?.pages.has(id) &&
       !this.writing.has(id) &&
       this.current.state !== 'error';
     return !quietOnly;
@@ -102,10 +106,7 @@ export class SaveQueue {
   }
 
   hasPending(): boolean {
-    return (
-      this.dirtyPages.size + this.dirtyDocs.size + this.removed.size + this.checkPages.size > 0 ||
-      this.inFlight !== null
-    );
+    return this.hasQueuedChanges() || this.isolation !== null;
   }
 
   // The second argument accepts both the fork's dependency list and upstream's quiet flag.
@@ -156,10 +157,75 @@ export class SaveQueue {
     if (this.hasNonQuietPendingChanges()) {
       if (this.current.state !== 'error') this.setStatus({ ...this.current, state: 'pending' });
       const maySchedule = hasNonQuietInput || (this.timer === null && this.inFlight === null);
-      if (!this.retryBlocked && maySchedule)
+      if (!this.isolation && !this.retryBlocked && maySchedule)
         this.schedule(this.current.state === 'error' ? this.retryDelay() : this.delayMs);
-    } else if (addedQuiet && this.timer === null && this.inFlight === null && !this.retryBlocked) {
+    } else if (
+      !this.isolation &&
+      addedQuiet &&
+      this.timer === null &&
+      this.inFlight === null &&
+      !this.retryBlocked
+    ) {
       this.schedule(this.current.state === 'error' ? this.retryDelay() : this.quietDelayMs);
+    }
+  }
+
+  /** Runs an isolated typed write after queued work drains, without adding it to the retry batch. */
+  async runIsolated<T>(
+    pages: PageId[],
+    operation: () => Promise<T>,
+  ): Promise<{ ok: true; value: T } | { ok: false }> {
+    let release!: () => void;
+    const previous = this.isolationTail;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.isolationTail = previous.then(() => done);
+    await previous;
+    if (this.disposed) {
+      release();
+      return { ok: false };
+    }
+
+    // Reserve the write lane before awaiting any in-flight batch. A concurrent flush waits here,
+    // and new edits stay queued until this operation either commits or refuses the style.
+    this.clearTimer();
+    this.isolation = { done, pages: new Set(pages) };
+    try {
+      while (!this.disposed) {
+        if (await this.drainQueuedForIsolation()) break;
+        if (this.current.state === 'error') return { ok: false };
+      }
+      if (this.disposed) return { ok: false };
+
+      this.setStatus({ ...this.current, state: 'saving' });
+      try {
+        const value = await operation();
+        const more = this.hasQueuedChanges();
+        this.setStatus({
+          state: more ? 'pending' : 'saved',
+          lastSavedAt: this.now(),
+          error: null,
+          errorCode: null,
+          failures: 0,
+        });
+        return { ok: true, value };
+      } catch (error) {
+        const more = this.hasQueuedChanges();
+        this.setStatus({
+          ...this.current,
+          state: more ? 'pending' : 'error',
+          error: errorMessage(error),
+          errorCode: error instanceof WorkspaceWriteError ? error.code : 'save-failed',
+          failures: this.current.failures + 1,
+        });
+        throw error;
+      }
+    } finally {
+      if (this.isolation?.done === done) this.isolation = null;
+      release();
+      if (this.hasPendingChanges() && this.timer === null && !this.retryBlocked && !this.disposed)
+        this.schedule(this.pendingDelay());
     }
   }
 
@@ -167,11 +233,23 @@ export class SaveQueue {
   async flush(): Promise<boolean> {
     if (this.disposed) return !this.hasPending();
     this.clearTimer();
-    while (this.inFlight) await this.inFlight;
-    if (this.dirtyPages.size + this.dirtyDocs.size + this.removed.size + this.checkPages.size > 0) {
-      this.inFlight = this.writeOnce();
-      await this.inFlight;
+    if (this.isolation) {
+      await this.isolation.done;
+      return this.flush();
     }
+    while (this.inFlight) {
+      const active = this.inFlight;
+      await active;
+      const isolationAfterWrite = this.currentIsolation();
+      if (isolationAfterWrite) {
+        await isolationAfterWrite.done;
+        return this.flush();
+      }
+    }
+    if (!this.hasPendingChanges()) return true;
+    this.inFlight = this.writeOnce();
+    await this.inFlight;
+    if (this.isolation) return this.flush();
     return !this.hasPending();
   }
 
@@ -179,6 +257,21 @@ export class SaveQueue {
     this.disposed = true;
     this.clearTimer();
     this.listeners.clear();
+  }
+
+  private async drainQueuedForIsolation(): Promise<boolean> {
+    while (!this.disposed) {
+      this.clearTimer();
+      if (this.inFlight) {
+        await this.inFlight;
+        continue;
+      }
+      if (!this.hasPendingChanges()) return true;
+      this.inFlight = this.writeOnce();
+      await this.inFlight;
+      if (this.current.state === 'error') return false;
+    }
+    return false;
   }
 
   private async writeOnce(): Promise<void> {
@@ -241,7 +334,7 @@ export class SaveQueue {
         });
       }
       this.retryBlocked = false;
-      if (more && this.timer === null) this.schedule(this.pendingDelay());
+      if (more && this.timer === null && !this.isolation) this.schedule(this.pendingDelay());
     } catch (error) {
       // put the ids back so the next attempt writes the latest version of each record
       for (const id of docs) if (!this.removed.has(id)) this.dirtyDocs.add(id);
@@ -271,7 +364,7 @@ export class SaveQueue {
         errorCode: error instanceof WorkspaceWriteError ? error.code : 'save-failed',
         failures: this.current.failures + 1,
       });
-      if (!nonRetryable) this.schedule(this.retryDelay());
+      if (!nonRetryable && !this.isolation) this.schedule(this.retryDelay());
     }
   }
 
@@ -297,6 +390,17 @@ export class SaveQueue {
       this.removed.has(id) ||
       this.checkPages.has(id)
     );
+  }
+
+  private hasQueuedChanges(): boolean {
+    return (
+      this.dirtyPages.size + this.dirtyDocs.size + this.removed.size + this.checkPages.size > 0 ||
+      this.inFlight !== null
+    );
+  }
+
+  private currentIsolation(): { done: Promise<void>; pages: Set<PageId> } | null {
+    return this.isolation;
   }
 
   private pendingDelay(): number {

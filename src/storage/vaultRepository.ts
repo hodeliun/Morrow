@@ -24,7 +24,9 @@ import type {
 } from '../core/model';
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
-import { childrenOf } from '../core/tree';
+import { childrenOf, isEffectivelyTrashed } from '../core/tree';
+import { isValidNoteStyle } from '../core/noteStyle';
+import type { NoteStyle } from '../core/noteStyle';
 import {
   findUnrepresentablePageContent,
   findUnrepresentableVaultMetadata,
@@ -59,6 +61,7 @@ import {
   isUnambiguousFrontmatter,
   splitFrontmatter,
   updateFrontmatter,
+  updateMorrowNoteStyleFile,
 } from '../core/vault/frontmatter';
 import {
   ATTACHMENTS_DIR,
@@ -394,6 +397,7 @@ export class VaultRepository implements WorkspaceRepository {
       ...batch.pages.map((page) => page.id),
       ...batch.docs.map((record) => record.id),
       ...batch.removed,
+      ...(batch.noteStylePages ?? []),
       ...(batch.snapshots ?? []).map((snapshot) => snapshot.pageId),
     ]);
     for (const id of touched) if (this.locked.has(id)) return this.protectionMessage(id);
@@ -405,6 +409,29 @@ export class VaultRepository implements WorkspaceRepository {
       if (page?.parentId && this.locked.has(page.parentId)) {
         return this.protectionMessage(page.parentId);
       }
+    }
+
+    for (const id of batch.noteStylePages ?? []) {
+      const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
+      const before =
+        this.lastState && Object.hasOwn(this.lastState.pages, id) ? this.lastState.pages[id] : undefined;
+      const placement = this.layout.get(id);
+      if (!page || !before || page.kind !== 'page' || isEffectivelyTrashed(state.pages, id))
+        return 'A note style can only be changed on a live ordinary page.';
+      if (this.isPilotDataRecord(id))
+        return 'Note styles cannot be changed on opted-in Polaris Dados records.';
+      if (!placement?.file || extension(placement.file) !== 'md' || !this.texts.has(id))
+        return 'The page has no writable Markdown source for its note style.';
+      if (!isValidNoteStyle(page.extra.morrowNoteStyle)) return 'The saved note style is invalid.';
+      if (batch.docs.some((record) => record.id === id))
+        return 'A note-style write cannot include a body change.';
+      const withoutStyle = (candidate: PageMeta) => {
+        const extra = { ...candidate.extra };
+        delete extra.morrowNoteStyle;
+        return { ...candidate, updatedAt: 0, extra };
+      };
+      if (!sameValue(withoutStyle(before), withoutStyle(page)))
+        return 'A note-style write can change only morrowNoteStyle.';
     }
 
     for (const id of this.locked) {
@@ -445,6 +472,28 @@ export class VaultRepository implements WorkspaceRepository {
   async write(batch: WriteBatch): Promise<void> {
     const state = batch.state ?? this.lastState;
     if (!state) throw new Error('Nothing to write yet.');
+    const noteStyleIds = batch.noteStylePages ?? [];
+    if (noteStyleIds.length > 0) {
+      const isolated =
+        noteStyleIds.length === 1 &&
+        batch.pages.length === 1 &&
+        batch.pages[0]?.id === noteStyleIds[0] &&
+        batch.docs.length === 0 &&
+        batch.removed.length === 0 &&
+        (batch.checkPages?.length ?? 0) === 0 &&
+        (batch.quietPageIds?.length ?? 0) === 0 &&
+        (batch.snapshots?.length ?? 0) === 0;
+      if (!isolated)
+        throw new WorkspaceWriteError(
+          'unsafe-note-style',
+          'A note-style write must be isolated from other workspace changes.',
+          false,
+        );
+      const refusal = this.validateWrite(batch);
+      if (refusal) throw new Error(refusal);
+      await this.writeNoteStyleOnly(state, noteStyleIds[0]!);
+      return;
+    }
     const refusal = this.validateWrite(batch);
     if (refusal) throw new Error(refusal);
     const metadataRefusal = await this.validateMetadataBeforeWrite();
@@ -578,6 +627,22 @@ export class VaultRepository implements WorkspaceRepository {
       ops.push({ op: 'check', path: source.file, expect: baseline, id });
       checkedSources.add(source.file.toLowerCase());
     }
+    // A style request can be a reducer no-op, but it still needs a compare against the
+    // bytes loaded for this page before the session is allowed to report success.
+    for (const id of batch.noteStylePages ?? []) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) {
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'The Markdown source for this note style is no longer available.',
+          false,
+        );
+      }
+      if (checkedSources.has(source.file.toLowerCase())) continue;
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+      checkedSources.add(source.file.toLowerCase());
+    }
     for (const id of sourcesToCheck) {
       const source = this.layout.get(id);
       const baseline = this.texts.get(id);
@@ -663,11 +728,7 @@ export class VaultRepository implements WorkspaceRepository {
       }
       const pendingLinks = docChanged.has(id)
         ? { markdown: new Map<string, PageId>(), wiki: new Map<string, PageId>() }
-        : pendingTargetsForSource(
-            this.sources.get(id)?.body ?? null,
-            doc,
-            this.pendingLinkRetargets.get(id),
-          );
+        : pendingTargetsForSource(this.sources.get(id)?.body ?? null, doc, this.pendingLinkRetargets.get(id));
       const rendered = this.render(
         state,
         next,
@@ -680,8 +741,7 @@ export class VaultRepository implements WorkspaceRepository {
         retargeted,
         movedPages,
         pendingLinks,
-        (targetId, kind, destination) =>
-          rememberLinkRetarget(id, targetId, kind, destination),
+        (targetId, kind, destination) => rememberLinkRetarget(id, targetId, kind, destination),
       );
       const text = rendered.text;
       if (text === null) continue;
@@ -772,6 +832,7 @@ export class VaultRepository implements WorkspaceRepository {
     await this.run(
       ops,
       next,
+      new Set(),
       guardedLinkedViewPages,
       linkReferrers,
       plannedSources,
@@ -783,6 +844,78 @@ export class VaultRepository implements WorkspaceRepository {
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
     this.registryDirty = false;
+  }
+
+  private async writeNoteStyleOnly(state: WorkspaceState, id: PageId): Promise<void> {
+    const page = state.pages[id];
+    const placement = this.layout.get(id);
+    const baseline = this.texts.get(id);
+    const sourceText = page?.encrypted ? this.plainTexts.get(id) : baseline;
+    if (!page || !placement?.file || baseline === undefined || sourceText === undefined) {
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        'The note style was not written because its Markdown source could not be verified.',
+        false,
+      );
+    }
+
+    const noteStylePages = new Set<PageId>([id]);
+    const plannedSources = new Map<PageId, PageSource>();
+    let op: VaultOp;
+    const sourceStyle = readPageText(sourceText).extra.morrowNoteStyle;
+    if (sameValue(page.extra.morrowNoteStyle, sourceStyle)) {
+      // An equal saved value still performs source CAS but does not canonicalize YAML or enqueue a retry.
+      op = { op: 'check', path: placement.file, expect: baseline, id };
+    } else {
+      const text = updateMorrowNoteStyleFile(sourceText, page.extra.morrowNoteStyle as NoteStyle);
+      if (text === null) {
+        throw new WorkspaceWriteError(
+          'unsafe-frontmatter',
+          'The note style was not written because its YAML could not be changed without risking another value. No files were changed.',
+          false,
+        );
+      }
+      const parsed = readPageText(text);
+      if (parsed.error || !parsed.source.rawData) {
+        throw new WorkspaceWriteError(
+          'unsafe-frontmatter',
+          'The note style was not written because its updated YAML could not be verified. No files were changed.',
+          false,
+        );
+      }
+      plannedSources.set(id, parsed.source);
+      let written = text;
+      if (page.encrypted) {
+        const pageKey = this.keys.get(id);
+        if (!pageKey) {
+          throw new WorkspaceWriteError(
+            'page-inaccessible',
+            'This encrypted note is locked and its style cannot be saved.',
+            false,
+          );
+        }
+        written = await encryptPage(text, pageKey);
+        this.pendingPlain.set(id, text);
+      }
+      op = { op: 'write', path: placement.file, text: written, expect: baseline, id };
+    }
+
+    try {
+      await this.run(
+        [op],
+        new Map(this.layout),
+        noteStylePages,
+        new Set(),
+        new Set(),
+        plannedSources,
+        new Map(),
+        new Set(),
+      );
+      this.lastState = state;
+    } catch (error) {
+      this.pendingPlain.delete(id);
+      throw error;
+    }
   }
 
   private navigationSourceDependencies(
@@ -1014,11 +1147,7 @@ export class VaultRepository implements WorkspaceRepository {
     retargeted: Set<PageId>,
     movedPages: Set<PageId>,
     pendingTargets: PendingLinkTargets,
-    rememberLinkRetarget: (
-      targetId: PageId,
-      kind: PendingLinkRetarget['kind'],
-      destination: string,
-    ) => void,
+    rememberLinkRetarget: (targetId: PageId, kind: PendingLinkRetarget['kind'], destination: string) => void,
   ): RenderedPage {
     const page = state.pages[id]!;
     const placement = layout.get(id)!;
@@ -1069,11 +1198,7 @@ export class VaultRepository implements WorkspaceRepository {
     if (source && source.body !== null) {
       body =
         resolveOld || pendingTargets.markdown.size > 0 || pendingTargets.wiki.size > 0
-          ? retargetLinks(
-              source.body,
-              wikiTarget,
-              markdownTarget,
-            )
+          ? retargetLinks(source.body, wikiTarget, markdownTarget)
           : source.body;
       if (body !== source.body) {
         source = { ...source, body };
@@ -1106,9 +1231,7 @@ export class VaultRepository implements WorkspaceRepository {
     const unchangedSchemaKeys = new Set<string>();
     let schemaValuesChanged = false;
     const optedInDatabase =
-      parent?.kind === 'database' &&
-      parent.database !== null &&
-      Object.hasOwn(parent.extra, 'polarisDados');
+      parent?.kind === 'database' && parent.database !== null && Object.hasOwn(parent.extra, 'polarisDados');
     const unchangedSourceValues = new Map<string, unknown>();
     if (source?.rawData && parent?.kind === 'database' && parent.database) {
       for (const property of parent.database.properties) {
@@ -1143,9 +1266,7 @@ export class VaultRepository implements WorkspaceRepository {
 
         if (!sameAsSource) schemaValuesChanged = true;
         if (property.type === 'checkbox' && optedInDatabase && !sameAsSource) {
-          changedCheckboxKeys.add(
-            findKey(frontmatter, property.name) ?? sourceKey ?? property.name,
-          );
+          changedCheckboxKeys.add(findKey(frontmatter, property.name) ?? sourceKey ?? property.name);
         }
         if (!sameAsSource) continue;
         unchangedSourceValues.set(sourceKey, raw);
@@ -1214,6 +1335,7 @@ export class VaultRepository implements WorkspaceRepository {
   private async run(
     ops: VaultOp[],
     next: Map<PageId, Placement>,
+    noteStylePages: ReadonlySet<PageId>,
     guardedLinkedViewPages: ReadonlySet<PageId>,
     guardedLinkReferrers: ReadonlySet<PageId>,
     plannedSources: ReadonlyMap<PageId, PageSource>,
@@ -1227,6 +1349,7 @@ export class VaultRepository implements WorkspaceRepository {
       await this.runOps(
         ops,
         next,
+        noteStylePages,
         guardedLinkedViewPages,
         guardedLinkReferrers,
         plannedSources,
@@ -1246,6 +1369,7 @@ export class VaultRepository implements WorkspaceRepository {
   private async runOps(
     ops: VaultOp[],
     next: Map<PageId, Placement>,
+    noteStylePages: ReadonlySet<PageId>,
     guardedLinkedViewPages: ReadonlySet<PageId>,
     guardedLinkReferrers: ReadonlySet<PageId>,
     plannedSources: ReadonlyMap<PageId, PageSource>,
@@ -1267,8 +1391,7 @@ export class VaultRepository implements WorkspaceRepository {
           const beforeRename = op.op === 'rename' ? affectedPlacements(layout, op.from) : null;
           if (results[i]!.ok) {
             this.applied(op, layout, next, plannedSources);
-            if (op.op === 'write' && op.id && guardedLinkReferrers.has(op.id))
-              writtenReferrers.add(op.id);
+            if (op.op === 'write' && op.id && guardedLinkReferrers.has(op.id)) writtenReferrers.add(op.id);
             if (beforeRename) {
               for (const [id, before] of beforeRename) {
                 const after = layout.get(id);
@@ -1288,6 +1411,14 @@ export class VaultRepository implements WorkspaceRepository {
         if (failedAt === -1) throw new Error('The desktop shell stopped before finishing the save.');
         const failed = results[failedAt]!;
         const op = pending[failedAt]!;
+        const pageId = op.op === 'check' || op.op === 'write' ? op.id : undefined;
+        if (!failed.ok && failed.code === 'conflict' && pageId && noteStylePages.has(pageId)) {
+          throw new WorkspaceWriteError(
+            'save-conflict',
+            'The note changed on disk; its bytes were preserved and the style change was refused. Reopen the vault to review the external version.',
+            false,
+          );
+        }
         if (
           !failed.ok &&
           failed.code === 'conflict' &&

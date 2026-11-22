@@ -1,5 +1,7 @@
 import { isAlias, isMap, isPair, isScalar, parse, parseDocument, stringify } from 'yaml';
 import { isRecord } from '../doc';
+import { isValidNoteStyle } from '../noteStyle';
+import type { NoteStyle } from '../noteStyle';
 
 // frontmatter keys morrow reads and writes, every other key is kept exactly as it was
 export const MANAGED_KEYS = new Set(['title', 'icon', 'kind', 'tags', 'tag', 'database', 'cover']);
@@ -198,7 +200,8 @@ export function updateFrontmatter(
     if (afterKey === undefined) return true;
     return !same(before[beforeKey], after[afterKey]);
   });
-  if (Object.keys(after).length === 0 && changedCheckboxKeys.length === 0 && !verifyUnchangedValues) return body;
+  if (Object.keys(after).length === 0 && changedCheckboxKeys.length === 0 && !verifyUnchangedValues)
+    return body;
   const order = Object.keys(after);
   const kept = Object.keys(before).filter((key) => Object.hasOwn(after, key));
   // a key that moved, such as one renamed into another's place, is easier to get right by writing it all
@@ -214,7 +217,8 @@ export function updateFrontmatter(
     const document = parseDocument(yaml, { uniqueKeys: false });
     if (document.errors.length > 0) return null;
     if (!document.contents) {
-      if (verifyUnchangedValues ? Object.keys(before).length > 0 : changedCheckboxKeys.length === 0) return null;
+      if (verifyUnchangedValues ? Object.keys(before).length > 0 : changedCheckboxKeys.length === 0)
+        return null;
     }
     if (verifyUnchangedValues && document.contents && !isMap(document.contents)) return null;
     if (changedCheckboxKeys.length > 0) {
@@ -224,12 +228,10 @@ export function updateFrontmatter(
           const matchingPairs = document.contents.items.filter((item) => {
             if (!isPair(item)) return false;
             const pair = item;
-            const key = isAlias(pair.key)
-              ? pair.key.resolve(document)
-              : isScalar(pair.key)
-                ? pair.key
-                : null;
-            return isScalar(key) && typeof key.value === 'string' && key.value.toLowerCase() === name.toLowerCase();
+            const key = isAlias(pair.key) ? pair.key.resolve(document) : isScalar(pair.key) ? pair.key : null;
+            return (
+              isScalar(key) && typeof key.value === 'string' && key.value.toLowerCase() === name.toLowerCase()
+            );
           });
           if (matchingPairs.length > 1) return null;
         }
@@ -269,6 +271,116 @@ export function updateFrontmatter(
   }
 }
 
+/**
+ * Updates only the owned members of `morrowNoteStyle`, keeping the original body and unrelated YAML
+ * nodes in place. A duplicate or unsupported style representation is refused instead of rewritten.
+ */
+export function updateMorrowNoteStyleFile(text: string, style: NoteStyle): string | null {
+  if (!isValidNoteStyle(style)) return null;
+  const bom = text.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const source = bom ? text.slice(1) : text;
+  const split = splitFrontmatter(source);
+  if (split.error) return null;
+
+  // No frontmatter is safe to extend. An opener without a matching close is malformed and must stay put.
+  if (split.head === '') {
+    if (/^---[ \t]*\r?\n/.test(source)) return null;
+    return `${bom}${joinFrontmatter({ morrowNoteStyle: style }, split.body)}`;
+  }
+  if (!split.data || !isUnambiguousFrontmatter(split.yaml, split.data)) return null;
+
+  const current = split.data.morrowNoteStyle;
+  if (current !== undefined && !isRecord(current)) return null;
+  const document = parseDocument(split.yaml, { uniqueKeys: true });
+  if (document.errors.length > 0) return null;
+  const root = document.contents;
+  if (!isMap(root) && !(root === null && current === undefined)) return null;
+  const stylePair = isMap(root)
+    ? root.items.find((item) => isPair(item) && isScalar(item.key) && item.key.value === 'morrowNoteStyle')
+    : undefined;
+  const lineBreak = (split.head || source).includes('\r\n') ? '\r\n' : '\n';
+  let yaml = split.yaml;
+  const styleFields = ['font', 'fontSize', 'lineHeight', 'blockSpacing', 'width'] as const;
+  if (!stylePair) {
+    const block = [
+      'morrowNoteStyle:',
+      ...styleFields.map((field) => `  ${field}: ${encodeStyleScalar(style[field])}`),
+    ].join(lineBreak);
+    const separator = split.yaml.length > 0 && !split.yaml.endsWith('\n') ? lineBreak : '';
+    yaml = `${split.yaml}${separator}${block}`;
+  } else {
+    if (!isPair(stylePair) || !isMap(stylePair.value) || stylePair.value.flow) return null;
+    const values = new Map<string, { start: number; end: number }>();
+    for (const item of stylePair.value.items) {
+      if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
+      const key = item.key.value;
+      if (!styleFields.includes(key as (typeof styleFields)[number])) continue;
+      if (values.has(key) || !isScalar(item.value) || isAlias(item.value) || !item.value.range) return null;
+      values.set(key, { start: item.value.range[0], end: item.value.range[1] });
+    }
+
+    const edits: Array<{ start: number; end: number; text: string }> = [];
+    for (const field of styleFields) {
+      const range = values.get(field);
+      if (range) edits.push({ ...range, text: encodeStyleScalar(style[field]) });
+    }
+
+    const missing = styleFields.filter((field) => !values.has(field));
+    if (missing.length > 0) {
+      const last = stylePair.value.items[stylePair.value.items.length - 1];
+      const endNode = last && isPair(last) ? (last.value ?? last.key) : stylePair.key;
+      const offset = lineEndAfter(yaml, endNode?.range?.[1] ?? stylePair.key.range?.[1] ?? 0);
+      const first = stylePair.value.items.find((item) => isPair(item) && item.key.range);
+      const firstKey = first && isPair(first) ? first.key.range?.[0] : undefined;
+      const indent = firstKey === undefined ? '  ' : leadingIndent(yaml, firstKey);
+      const addition = missing
+        .map((field) => `${indent}${field}: ${encodeStyleScalar(style[field])}${lineBreak}`)
+        .join('');
+      const separator = offset === yaml.length && offset > 0 && !yaml.endsWith('\n') ? lineBreak : '';
+      edits.push({ start: offset, end: offset, text: `${separator}${addition}` });
+    }
+    for (const edit of edits.sort((a, b) => b.start - a.start))
+      yaml = `${yaml.slice(0, edit.start)}${edit.text}${yaml.slice(edit.end)}`;
+  }
+
+  const expected = {
+    ...split.data,
+    morrowNoteStyle: { ...(isRecord(current) ? current : {}), ...style },
+  };
+  if (!isUnambiguousFrontmatter(yaml, expected)) return null;
+  const opening = OPEN.exec(source);
+  if (!opening) return null;
+  const rest = `\n${source.slice(opening[0].length)}`;
+  const closing = CLOSE.exec(rest);
+  if (!closing) return null;
+  const closeStart = opening[0].length + closing.index - 1;
+  const updated = `${source.slice(0, opening[0].length)}${yaml}${source.slice(closeStart)}`;
+  const verified = splitFrontmatter(updated);
+  if (
+    verified.error ||
+    !verified.data ||
+    !isUnambiguousFrontmatter(verified.yaml, expected) ||
+    verified.body !== split.body
+  )
+    return null;
+  return `${bom}${updated}`;
+}
+
+function encodeStyleScalar(value: NoteStyle[keyof NoteStyle]): string {
+  return stringify(value, { lineWidth: 0, defaultStringType: 'PLAIN', defaultKeyType: 'PLAIN' }).trim();
+}
+
+function lineEndAfter(source: string, offset: number): number {
+  if (source[offset - 1] === '\n') return offset;
+  const newline = source.indexOf('\n', offset);
+  return newline < 0 ? source.length : newline + 1;
+}
+
+function leadingIndent(source: string, offset: number): string {
+  const lineStart = source.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+  return /^[ \t]*/.exec(source.slice(lineStart, offset))?.[0] ?? '';
+}
+
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -298,7 +410,8 @@ function restoreUnchangedScalarLines(
       if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
       const key = item.key.value;
       if (!preserveRawKeys.has(key)) continue;
-      if (!Object.hasOwn(before, key) || !Object.hasOwn(after, key) || !same(before[key], after[key])) continue;
+      if (!Object.hasOwn(before, key) || !Object.hasOwn(after, key) || !same(before[key], after[key]))
+        continue;
       if (changedCheckboxKeys.some((name) => name.toLowerCase() === key.toLowerCase())) continue;
       if (!isScalar(item.value) || !item.key.range || !item.value.range) continue;
       const keyLine = lineBounds(source, item.key.range[0]);
@@ -324,8 +437,7 @@ function restoreUnchangedScalarLines(
     for (const [key, line] of candidates) {
       const target = outputPairs.get(key);
       if (originalCounts.get(key) !== 1 || target?.count !== 1) continue;
-      if (rendered.slice(target.start, target.end) !== line)
-        replacements.push({ ...target, line });
+      if (rendered.slice(target.start, target.end) !== line) replacements.push({ ...target, line });
     }
     for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
       rendered = `${rendered.slice(0, replacement.start)}${replacement.line}${rendered.slice(replacement.end)}`;

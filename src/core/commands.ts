@@ -4,6 +4,8 @@ import { normalizeExtra, normalizeTag } from './vault/frontmatter';
 import { normalizeDatabase } from './migrations';
 import { emptyDoc, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, newPageMeta, PAGE_KINDS, validCover } from './model';
 import type { DatabaseDef, DocNode, PageId, PageKind, PageMeta, PropValue, WorkspaceState } from './model';
+import { isValidNoteStyleInput, mergeNoteStyleExtra } from './noteStyle';
+import type { NoteStyle } from './noteStyle';
 import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
 import { setTaskChecked } from './tasks';
@@ -42,6 +44,7 @@ export type Command =
   | { type: 'task.setChecked'; pageId: PageId; index: number; checked: boolean; now: number }
   | { type: 'page.setTags'; id: PageId; tags: string[]; now: number }
   | { type: 'page.setCover'; id: PageId; cover: string | null; now: number }
+  | { type: 'page.setNoteStyle'; id: PageId; style: NoteStyle; now: number }
   | { type: 'page.setEncrypted'; id: PageId; encrypted: boolean; now: number }
   | { type: 'page.setKind'; id: PageId; kind: PageKind; now: number }
   // merges values into a database row, null clears a value
@@ -191,6 +194,16 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       if (command.cover !== null && cover === null) return fail('Invalid cover.');
       if (cover === page.value.cover) return unchanged(state);
       return updatePage(state, { ...page.value, cover, updatedAt: command.now });
+    }
+    case 'page.setNoteStyle': {
+      const page = requirePage(state, command.id);
+      if (!page.ok) return page;
+      if (page.value.kind !== 'page') return fail('Note styles can only be saved on ordinary pages.');
+      if (!isValidNoteStyleInput(command.style)) return fail('Invalid note style.');
+      const extra = mergeNoteStyleExtra(page.value.extra, command.style);
+      if (!extra) return fail('This note style uses an unsupported format and was left unchanged.');
+      if (JSON.stringify(extra) === JSON.stringify(page.value.extra)) return unchanged(state);
+      return updatePage(state, { ...page.value, extra, updatedAt: command.now });
     }
     case 'page.setEncrypted': {
       const page = requirePage(state, command.id);

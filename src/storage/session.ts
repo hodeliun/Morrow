@@ -16,6 +16,13 @@ import type {
 import { fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { isEffectivelyTrashed } from '../core/tree';
+import {
+  isValidNoteStyleInput,
+  mergeNoteStyleExtra,
+  projectNoteStyle,
+  resolveDefaultNoteStyle,
+} from '../core/noteStyle';
+import type { BasePageWidth, NoteStyle, NoteStyleFont } from '../core/noteStyle';
 import { WorkspaceWriteError } from './repository';
 import { openRepository } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
@@ -32,6 +39,27 @@ const MUTATION_FENCE_MESSAGE = 'The workspace session is preparing to close.';
 const PILOT_DATA_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const PILOT_DATA_REVISION_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:r\d+$/i;
 
+export interface NoteStyleSnapshot {
+  pageId: PageId;
+  revision: string;
+  style: NoteStyle | null;
+}
+
+export type NoteStyleFailureCode =
+  | 'session-closed'
+  | 'page-not-found'
+  | 'unsupported'
+  | 'read-only'
+  | 'inaccessible'
+  | 'trashed'
+  | 'stale-revision'
+  | 'invalid-style'
+  | 'save-conflict'
+  | 'save-failed';
+
+export type NoteStyleResult =
+  { ok: true; value: NoteStyleSnapshot } | { ok: false; code: NoteStyleFailureCode; message: string };
+
 // the single place where commands run, state lives and changes are queued for disk
 export class WorkspaceSession {
   private state: WorkspaceState;
@@ -39,6 +67,9 @@ export class WorkspaceSession {
   private readonly mutationFenceLeases = new Set<symbol>();
   private readonly mutationFenceListeners = new Set<() => void>();
   private readonly pilotDataSessionId = crypto.randomUUID();
+  private readonly noteStyleSessionId = crypto.randomUUID();
+  private readonly noteStyleRevisions = new Map<PageId, number>();
+  private noteStyleRevisionClock = 0;
   private readonly pilotDataRevisions = new Map<PageId, { fingerprint: string | null; revision: number }>();
   private readonly pilotDataHistory = new PilotDataHistory();
   private pilotDataRevisionClock = 0;
@@ -127,6 +158,7 @@ export class WorkspaceSession {
       pages: { ...this.state.pages, [id]: opened.value.page },
       docs: { ...this.state.docs, [id]: opened.value.doc },
     };
+    this.bumpNoteStyleRevisions([id]);
     this.refreshPilotDataRevisions(this.state);
     for (const listener of this.listeners) listener();
     return ok(this.state);
@@ -142,6 +174,7 @@ export class WorkspaceSession {
     const docs = { ...this.state.docs };
     delete docs[id];
     this.state = { pages: this.state.pages, docs };
+    this.bumpNoteStyleRevisions([id]);
     this.refreshPilotDataRevisions(this.state);
     for (const listener of this.listeners) listener();
   }
@@ -186,6 +219,139 @@ export class WorkspaceSession {
 
   pathOf(id: PageId): string | null {
     return this.repository.pathOf?.(id) ?? null;
+  }
+
+  /** Reads the saved style and returns an opaque revision scoped to this page and session. */
+  readNoteStyle(pageId: PageId): NoteStyleResult {
+    if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
+    const page = ownPage(this.state.pages, pageId);
+    if (!page) return noteStyleFailure('page-not-found', 'That page no longer exists.');
+    if (page.kind !== 'page')
+      return noteStyleFailure('unsupported', 'Note styles can only be read on ordinary pages.');
+    return {
+      ok: true,
+      value: {
+        pageId,
+        revision: this.noteStyleRevision(pageId),
+        style: projectNoteStyle(page.extra.morrowNoteStyle),
+      },
+    };
+  }
+
+  /** Writes one page-style value with a source CAS before publishing it in session state. */
+  async setNoteStyle(input: {
+    pageId: PageId;
+    style: NoteStyle;
+    expectedRevision: string;
+  }): Promise<NoteStyleResult> {
+    const pageId = input.pageId;
+    const expectedRevision = input.expectedRevision;
+    const initialTargetError = this.noteStyleTargetError(pageId);
+    if (initialTargetError) return initialTargetError;
+    if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+    if (!isValidNoteStyleInput(input.style)) return noteStyleFailure('invalid-style', 'Invalid note style.');
+    const style: NoteStyle = {
+      font: input.style.font,
+      fontSize: input.style.fontSize,
+      lineHeight: input.style.lineHeight,
+      blockSpacing: input.style.blockSpacing,
+      width: input.style.width,
+    };
+
+    try {
+      const isolated = await this.queue.runIsolated([pageId], async () => {
+        const targetError = this.noteStyleTargetError(pageId);
+        if (targetError) return targetError;
+        if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+        if (expectedRevision !== this.noteStyleRevision(pageId))
+          return noteStyleFailure(
+            'stale-revision',
+            'This note changed while its style editor was open. Reopen it to review the latest version.',
+          );
+
+        const result = applyCommand(this.state, {
+          type: 'page.setNoteStyle',
+          id: pageId,
+          style,
+          now: Date.now(),
+        });
+        if (!result.ok) return this.noteStyleCommandFailure(result.error);
+        const { state: candidate, changes } = result.value;
+        const refusal = this.validateChanges(changes, candidate, undefined, [pageId]);
+        if (refusal) return this.noteStyleCommandFailure(refusal);
+        const page = ownPage(candidate.pages, pageId);
+        if (!page) return noteStyleFailure('page-not-found', 'That page no longer exists.');
+
+        const batch: WriteBatch = {
+          pages: [page],
+          docs: [],
+          removed: [],
+          noteStylePages: [pageId],
+          state: candidate,
+        };
+        await this.exclusive(async () => {
+          // Establish the page-id registry first; the style write itself then has no sidecar tail
+          // that could fail after the Markdown source has been confirmed.
+          await this.repository.markInitialized();
+          await this.repository.write(batch);
+        });
+
+        // Merge the confirmed key into the latest state so concurrent body/metadata edits survive.
+        if (changes.pages.has(pageId)) {
+          const current = ownPage(this.state.pages, pageId);
+          if (current?.kind === 'page') {
+            const updated = candidate.pages[pageId]!;
+            const extra = mergeNoteStyleExtra(current.extra, style) ?? {
+              ...current.extra,
+              morrowNoteStyle: updated.extra.morrowNoteStyle,
+            };
+            this.state = {
+              ...this.state,
+              pages: {
+                ...this.state.pages,
+                [pageId]: {
+                  ...current,
+                  updatedAt: Math.max(current.updatedAt, updated.updatedAt),
+                  extra,
+                },
+              },
+            };
+            this.bumpNoteStyleRevisions([pageId]);
+            this.refreshPilotDataRevisions(this.state);
+            for (const listener of this.listeners) listener();
+          }
+        }
+        const confirmedPage = ownPage(this.state.pages, pageId);
+        if (!confirmedPage || confirmedPage.kind !== 'page')
+          return noteStyleFailure('page-not-found', 'That page no longer exists.');
+        return {
+          ok: true as const,
+          value: {
+            pageId,
+            revision: this.noteStyleRevision(pageId),
+            style: projectNoteStyle(confirmedPage.extra.morrowNoteStyle),
+          },
+        };
+      });
+      return isolated.ok ? isolated.value : this.noteStyleSaveFailure();
+    } catch {
+      return this.noteStyleSaveFailure();
+    }
+  }
+
+  /** Resolves a legacy profile default or the 2.2 font/width defaults, then uses the same guarded write. */
+  async restoreNoteStyle(input: {
+    pageId: PageId;
+    expectedRevision: string;
+    profileDefault: unknown;
+    font: NoteStyleFont;
+    width: BasePageWidth;
+  }): Promise<NoteStyleResult> {
+    return this.setNoteStyle({
+      pageId: input.pageId,
+      expectedRevision: input.expectedRevision,
+      style: resolveDefaultNoteStyle(input.profileDefault, input.font, input.width),
+    });
   }
 
   fileUrl(id: FileId): string | null {
@@ -260,6 +426,7 @@ export class WorkspaceSession {
     for (const id of patch.removed) if (acceptedSet.has(id)) this.protectedReasons.delete(id);
     if (accepted.length > 0) {
       this.state = { pages, docs };
+      this.bumpNoteStyleRevisions(accepted);
       this.refreshPilotDataRevisions(this.state);
       const affectedDatabases = new Set([
         ...pilotDataDatabasesForPages(previousState, accepted),
@@ -712,6 +879,7 @@ export class WorkspaceSession {
         message: 'That history step changed before it could be applied.',
       };
     }
+    this.bumpNoteStyleRevisions([row.id]);
     this.queue.enqueue(changes, [database.id]);
     for (const listener of this.listeners) listener();
     return { ok: true, status: 'staged', revision: stagedRevision };
@@ -754,13 +922,22 @@ export class WorkspaceSession {
   ): Result<WorkspaceState> {
     if (this.closed) return fail('The workspace session is closed.');
     if (this.isMutationFenced) return fail(MUTATION_FENCE_MESSAGE);
+    if (command.type === 'page.setNoteStyle')
+      return fail('Note styles must be changed through the typed note-style operation.');
     const result = applyCommand(this.state, command);
     if (!result.ok) return result;
     const { state, changes } = result.value;
-    if (state === this.state) return ok(state);
+    if (state === this.state) {
+      return ok(state);
+    }
     const refusal = this.validateChanges(changes, state, allowedPilotDataDatabaseId);
     if (refusal) return fail(refusal);
     this.state = state;
+    this.bumpNoteStyleRevisions([
+      ...(command.type === 'page.markOpened' ? [] : changes.pages),
+      ...changes.docs,
+      ...changes.removed,
+    ]);
     this.refreshPilotDataRevisions(this.state);
     beforeQueue?.();
     this.queue.enqueue(
@@ -776,6 +953,8 @@ export class WorkspaceSession {
   executeAll(commands: Command[]): Result<WorkspaceState> {
     if (this.closed) return fail('The workspace session is closed.');
     if (this.isMutationFenced) return fail(MUTATION_FENCE_MESSAGE);
+    if (commands.some((command) => command.type === 'page.setNoteStyle'))
+      return fail('Note styles must be changed through the typed note-style operation.');
     let draft = this.state;
     const all = { pages: new Set<PageId>(), docs: new Set<PageId>(), removed: new Set<PageId>() };
     for (const command of commands) {
@@ -789,6 +968,7 @@ export class WorkspaceSession {
     const refusal = this.validateChanges(all, draft);
     if (refusal) return fail(refusal);
     this.state = draft;
+    this.bumpNoteStyleRevisions([...all.pages, ...all.docs, ...all.removed]);
     this.refreshPilotDataRevisions(this.state);
     this.queue.enqueue(all);
     for (const listener of this.listeners) listener();
@@ -917,6 +1097,7 @@ export class WorkspaceSession {
     changes: { pages: Set<PageId>; docs: Set<PageId>; removed: Set<PageId> },
     state: WorkspaceState,
     allowedPilotDataDatabaseId?: PageId,
+    noteStylePages: PageId[] = [],
   ): string | null {
     const pilotDataRefusal = this.validatePilotDataChanges(state, allowedPilotDataDatabaseId);
     if (pilotDataRefusal) return pilotDataRefusal;
@@ -926,9 +1107,63 @@ export class WorkspaceSession {
       pages: [...changes.pages].flatMap((id) => (state.pages[id] ? [state.pages[id]!] : [])),
       docs: [...changes.docs].flatMap((id) => (state.docs[id] ? [{ id, doc: state.docs[id]! }] : [])),
       removed: [...changes.removed].filter((id) => !state.pages[id]),
+      noteStylePages,
       state,
     };
     return this.repository.validateWrite?.(batch) ?? null;
+  }
+
+  private noteStyleTargetError(pageId: PageId): NoteStyleResult | null {
+    if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
+    const page = ownPage(this.state.pages, pageId);
+    if (!page) return noteStyleFailure('page-not-found', 'That page no longer exists.');
+    if (page.kind !== 'page')
+      return noteStyleFailure('unsupported', 'Note styles can only be saved on ordinary pages.');
+    if (isEffectivelyTrashed(this.state.pages, pageId))
+      return noteStyleFailure('trashed', 'A page in the trash cannot be styled.');
+    if (this.unreadable.has(pageId) || this.protectedReasons.has(pageId) || this.isPilotDataPage(pageId))
+      return noteStyleFailure('read-only', 'This note is read only.');
+    return null;
+  }
+
+  private noteStyleSaveFailure(): NoteStyleResult {
+    const status = this.queue.status;
+    if (status.errorCode === 'save-conflict') {
+      return noteStyleFailure(
+        'save-conflict',
+        status.error ??
+          'The note changed on disk; its bytes were preserved and the style change was refused. Reopen the vault to review it.',
+      );
+    }
+    return noteStyleFailure('save-failed', status.error ?? 'The note style could not be confirmed on disk.');
+  }
+
+  private noteStyleCommandFailure(message: string): NoteStyleResult {
+    const code = message.startsWith('Invalid note style')
+      ? 'invalid-style'
+      : message.startsWith('This note style') || message.startsWith('Note styles can only')
+        ? 'unsupported'
+        : message.includes('no writable Markdown source')
+          ? 'inaccessible'
+          : 'read-only';
+    return noteStyleFailure(code, message);
+  }
+
+  private noteStyleRevision(pageId: PageId): string {
+    // This is a monotonic session-local clock, not a content hash: A→B→A must not revive a
+    // revision token previously handed to a style editor.
+    let revision = this.noteStyleRevisions.get(pageId);
+    if (revision === undefined) {
+      revision = ++this.noteStyleRevisionClock;
+      this.noteStyleRevisions.set(pageId, revision);
+    }
+    return `${this.noteStyleSessionId}:${pageId}:r${revision}`;
+  }
+
+  private bumpNoteStyleRevisions(ids: Iterable<PageId>): void {
+    for (const id of new Set(ids)) {
+      this.noteStyleRevisions.set(id, ++this.noteStyleRevisionClock);
+    }
   }
 
   private validatePilotDataChanges(state: WorkspaceState, allowedDatabaseId?: PageId): string | null {
@@ -950,10 +1185,10 @@ export class WorkspaceSession {
   }
 
   private isPilotDataPage(id: PageId): boolean {
-    const page = this.state.pages[id];
+    const page = ownPage(this.state.pages, id);
     if (!page) return false;
     if (page.kind === 'database' && hasPilotDataMarker(page.extra)) return true;
-    const parent = page.parentId ? this.state.pages[page.parentId] : undefined;
+    const parent = page.parentId ? ownPage(this.state.pages, page.parentId) : undefined;
     return parent?.kind === 'database' && hasPilotDataMarker(parent.extra);
   }
 
@@ -1030,6 +1265,10 @@ export class WorkspaceSession {
 
 function hasPilotDataMarker(extra: Record<string, unknown>): boolean {
   return Object.hasOwn(extra, 'polarisDados');
+}
+
+function noteStyleFailure(code: NoteStyleFailureCode, message: string): NoteStyleResult {
+  return { ok: false, code, message };
 }
 
 function ownPage(pages: Record<PageId, PageMeta>, id: PageId): PageMeta | undefined {
