@@ -1,9 +1,9 @@
-import { Extension, InputRule, wrappingInputRule } from '@tiptap/core';
-import type { AnyExtension } from '@tiptap/core';
+import { Extension, InputRule, isAtEndOfNode, resolveFocusPosition, wrappingInputRule } from '@tiptap/core';
+import type { AnyExtension, Editor } from '@tiptap/core';
 import { Blockquote } from '@tiptap/extension-blockquote';
 import { Code } from '@tiptap/extension-code';
 import { Details, DetailsContent, DetailsSummary } from '@tiptap/extension-details';
-import { TaskItem, TaskList } from '@tiptap/extension-list';
+import { listHelpers, TaskItem, TaskList } from '@tiptap/extension-list';
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
 import { Placeholder } from '@tiptap/extensions';
 import StarterKit from '@tiptap/starter-kit';
@@ -28,12 +28,15 @@ import type { PageLinkOptions } from './PageLink';
 import { PolarisDadosView } from './PolarisDadosView';
 import type { PolarisDadosViewMountContext } from './PolarisDadosView';
 import { SlashCommand } from './SlashCommand';
-import { IndentedLines, KeepTab, lineContent, LineEdges } from './turnInto';
+import { canTurnListItem, IndentedLines, KeepTab, lineContent, LineEdges, turnListItem } from './turnInto';
+import { joinBackward, joinForward, lift } from '@tiptap/pm/commands';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import type { EditorState } from '@tiptap/pm/state';
 import type { Transaction } from '@tiptap/pm/state';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import type { Node as PMNode } from '@tiptap/pm/model';
-import { ReplaceAroundStep } from '@tiptap/pm/transform';
+import type { EditorView } from '@tiptap/pm/view';
+import { joinPoint, ReplaceAroundStep } from '@tiptap/pm/transform';
 import { isHexBlockBackground, supportsHexBlockBackgroundOwner } from '../../core/markdown/blockBackground';
 import { Column, Columns, DateMention, TableOfContents } from './Structure';
 
@@ -141,16 +144,21 @@ const CodePreview = Extension.create({
 // a block's own background colour, from the colour in its Turn into menu
 function unsupportedCustomBlockBackgrounds(doc: PMNode): Map<string, number> {
   const counts = new Map<string, number>();
-  const visit = (node: PMNode, ancestors: string[]) => {
+  const visit = (node: PMNode, ancestors: string[], firstTaskItemParagraph = false) => {
     const backgroundColor = normalizeInlineColor(node.attrs.backgroundColor);
+    const ambiguousTaskFirstParagraph =
+      node.type.name === 'paragraph' && firstTaskItemParagraph && backgroundColor !== null;
     if (
-      isHexBlockBackground(backgroundColor) &&
-      !supportsHexBlockBackgroundOwner(node.type.name, ancestors)
+      ambiguousTaskFirstParagraph ||
+      (isHexBlockBackground(backgroundColor) &&
+        !supportsHexBlockBackgroundOwner(node.type.name, ancestors, firstTaskItemParagraph))
     ) {
-      const signature = JSON.stringify([backgroundColor, node.type.name, ancestors]);
+      const signature = JSON.stringify([backgroundColor, node.type.name, ancestors, firstTaskItemParagraph]);
       counts.set(signature, (counts.get(signature) ?? 0) + 1);
     }
-    node.forEach((child) => visit(child, [...ancestors, node.type.name]));
+    node.forEach((child, _offset, index) =>
+      visit(child, [...ancestors, node.type.name], node.type.name === 'taskItem' && index === 0),
+    );
   };
   visit(doc, []);
   return counts;
@@ -163,46 +171,413 @@ function introducesUnsupportedCustomBlockBackground(oldDoc: PMNode, newDoc: PMNo
   return false;
 }
 
-function fragmentHasCustomBackground(fragment: Fragment): boolean {
+function fragmentHasBlockBackground(fragment: Fragment): boolean {
   let found = false;
   fragment.forEach((node) => {
     if (found) return;
-    const backgroundColor = normalizeInlineColor(node.attrs.backgroundColor);
-    if (isHexBlockBackground(backgroundColor) || fragmentHasCustomBackground(node.content)) found = true;
+    if (normalizeInlineColor(node.attrs.backgroundColor) || fragmentHasBlockBackground(node.content))
+      found = true;
   });
   return found;
 }
 
-function transactionTouchesCustomBackground(transaction: Transaction): boolean {
-  return transaction.steps.some((step, index) => {
-    const sourceDoc = transaction.docs[index];
-    const candidate = step as typeof step & { from?: unknown; to?: unknown; slice?: Slice };
-    if (candidate.slice && candidate.slice.content && fragmentHasCustomBackground(candidate.slice.content)) {
-      return true;
-    }
+function listItemHasParagraphBackgroundAt(doc: PMNode, position: number): boolean {
+  const safePosition = Math.max(0, Math.min(position, doc.content.size));
+  const $position = doc.resolve(safePosition);
+  for (let depth = $position.depth; depth > 0; depth--) {
+    const item = $position.node(depth);
+    if (item.type.name !== 'listItem' && item.type.name !== 'taskItem') continue;
+    let found = false;
+    item.descendants((node) => {
+      if (node.type.name === 'paragraph' && normalizeInlineColor(node.attrs.backgroundColor)) {
+        found = true;
+        return false;
+      }
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
+function listItemHasConflictingBackgrounds(item: PMNode): boolean {
+  const itemBackground = normalizeInlineColor(item.attrs.backgroundColor);
+  if (!itemBackground) return false;
+  const first = item.firstChild;
+  if (first?.type.name !== 'paragraph') return false;
+  const firstBackground = normalizeInlineColor(first.attrs.backgroundColor);
+  if (firstBackground !== null) return firstBackground !== itemBackground;
+  let laterParagraphBackground = false;
+  item.forEach((child, _offset, index) => {
     if (
-      !sourceDoc ||
-      typeof candidate.from !== 'number' ||
-      typeof candidate.to !== 'number' ||
-      candidate.from < 0 ||
-      candidate.to < candidate.from ||
-      candidate.to > sourceDoc.content.size
+      index > 0 &&
+      child.type.name === 'paragraph' &&
+      normalizeInlineColor(child.attrs.backgroundColor) !== null
     ) {
+      laterParagraphBackground = true;
+    }
+  });
+  return laterParagraphBackground;
+}
+
+function listItemHasHexParagraphBackground(item: PMNode): boolean {
+  if (isHexBlockBackground(normalizeInlineColor(item.attrs.backgroundColor))) return true;
+  let found = false;
+  item.forEach((child) => {
+    if (
+      child.type.name === 'paragraph' &&
+      isHexBlockBackground(normalizeInlineColor(child.attrs.backgroundColor))
+    ) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+const BLOCK_LIST_TYPES = new Set(['bulletList', 'orderedList', 'taskList']);
+
+function isIndentedLinesDeleteCandidate(state: EditorState): boolean {
+  const { selection, doc } = state;
+  if (!selection.empty) return false;
+  const { $from } = selection;
+  if (!$from.parent.isTextblock || $from.parentOffset !== $from.parent.content.size) return false;
+  if ($from.depth > 0 && ['listItem', 'taskItem'].includes($from.node(-1).type.name)) return false;
+  const next = doc.resolve($from.after()).nodeAfter;
+  return next !== null && BLOCK_LIST_TYPES.has(next.type.name);
+}
+
+function backgroundSensitiveDeleteBeforeList(editor: Editor, view: EditorView): boolean {
+  const { selection, doc } = view.state;
+  if (!selection.empty) return false;
+  const { $from } = selection;
+  if (!$from.parent.isTextblock || $from.parentOffset !== $from.parent.content.size) return false;
+  const parent = $from.node($from.depth - 1);
+  if (parent.type.name === 'listItem' || parent.type.name === 'taskItem') return false;
+
+  // IndentedLines.Delete consumes an empty line by deleting only that line. Do not preflight a
+  // speculative join of the list behind it.
+  if ($from.parent.content.size === 0) return false;
+
+  // IndentedLines.Delete first lifts this item to a paragraph, then joins it to the current line.
+  // Preflight the same conversion and block only when that join would discard a HEX-owned color.
+  const listPosition = $from.after();
+  const next = doc.resolve(listPosition).nodeAfter;
+  if (!next || !BLOCK_LIST_TYPES.has(next.type.name)) return false;
+  const item = next.firstChild;
+  const first = item?.firstChild;
+  if (
+    !item ||
+    (item.type.name !== 'listItem' && item.type.name !== 'taskItem') ||
+    !first?.isTextblock
+  ) {
+    return false;
+  }
+
+  const firstBackground = normalizeInlineColor(first.attrs.backgroundColor);
+  const itemBackground = normalizeInlineColor(item.attrs.backgroundColor);
+  const hasHexBackground = listItemHasHexParagraphBackground(item);
+  const currentBackground = normalizeInlineColor($from.parent.attrs.backgroundColor);
+
+  // A dual first paragraph cannot use the normal turn-into path; StarterKit may handle the key instead.
+  // Stop that fallback before it drops either owner when a HEX marker is involved.
+  if (
+    hasHexBackground &&
+    firstBackground !== null &&
+    itemBackground !== null &&
+    firstBackground !== itemBackground
+  ) {
+    return true;
+  }
+  if (!canTurnListItem(editor, listPosition + 1, { kind: 'paragraph' })) return false;
+
+  const liftedBackground = firstBackground ?? itemBackground;
+  return (
+    liftedBackground !== null &&
+    hasHexBackground &&
+    liftedBackground !== currentBackground
+  );
+}
+
+function backgroundCounts(doc: PMNode): Map<string, number> {
+  const counts = new Map<string, number>();
+  doc.descendants((node) => {
+    const color = normalizeInlineColor(node.attrs.backgroundColor);
+    if (color === null) return;
+    const key = JSON.stringify([node.type.name, color]);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+  return counts;
+}
+
+function losesBlockBackground(before: PMNode, after: PMNode): boolean {
+  const previous = backgroundCounts(before);
+  const next = backgroundCounts(after);
+  for (const [key, count] of previous) if (count > (next.get(key) ?? 0)) return true;
+  return false;
+}
+
+function blockStartAt(doc: PMNode, position: number): { start: number; end: number } | null {
+  const $position = doc.resolve(position);
+  for (let depth = $position.depth; depth > 0; depth--) {
+    const node = $position.node(depth);
+    if (node.isTextblock) return { start: $position.before(depth), end: $position.after(depth) };
+  }
+  return null;
+}
+
+function nextTextblockStart(doc: PMNode, after: number): number | null {
+  let found: number | null = null;
+  doc.descendants((node, position) => {
+    if (node.isTextblock && position >= after && found === null) {
+      found = position;
       return false;
     }
-    return fragmentHasCustomBackground(sourceDoc.slice(candidate.from, candidate.to).content);
+    return found === null;
+  });
+  return found;
+}
+
+function itemHasHexBackground(item: PMNode): boolean {
+  if (isHexBlockBackground(normalizeInlineColor(item.attrs.backgroundColor))) return true;
+  let found = false;
+  item.descendants((node) => {
+    if (isHexBlockBackground(normalizeInlineColor(node.attrs.backgroundColor))) {
+      found = true;
+      return false;
+    }
+  });
+  return found;
+}
+
+function nearbyJoinHasHexBackground(doc: PMNode, position: number): boolean {
+  const current = blockStartAt(doc, position);
+  if (!current) return false;
+  const nextStart = nextTextblockStart(doc, current.end);
+  const positions = [current.start, ...(nextStart === null ? [] : [nextStart])];
+  for (const start of positions) {
+    const $position = doc.resolve(start + 1);
+    for (let depth = $position.depth; depth > 0; depth--) {
+      const node = $position.node(depth);
+      if (isHexBlockBackground(normalizeInlineColor(node.attrs.backgroundColor))) return true;
+      if ((node.type.name === 'listItem' || node.type.name === 'taskItem') && itemHasHexBackground(node))
+        return true;
+    }
+  }
+  return false;
+}
+
+function previewJoinItemForward(state: EditorState): Transaction | null {
+  const point = joinPoint(state.doc, state.selection.$from.pos, 1);
+  if (point === null || point === undefined) return null;
+  const $point = state.doc.resolve(point);
+  if (
+    !$point.nodeBefore ||
+    !$point.nodeAfter ||
+    $point.nodeBefore.type.spec.isolating ||
+    $point.nodeAfter.type.spec.isolating
+  ) {
+    return null;
+  }
+  try {
+    return state.tr.join(point, 2);
+  } catch {
+    return null;
+  }
+}
+
+function previewForwardThenBackward(state: EditorState): Transaction | null {
+  let forward: Transaction | null = null;
+  if (!joinForward(state, (transaction) => (forward = transaction)) || !forward) return null;
+  const afterForward = state.apply(forward);
+  let backward: Transaction | null = null;
+  if (joinBackward(afterForward, (transaction) => (backward = transaction)) && backward) return backward;
+  return forward;
+}
+
+function previewLiftThenBackward(state: EditorState): Transaction | null {
+  const target = resolveFocusPosition(state.doc, state.selection.from + 4);
+  let focusedState = state;
+  if (target && !state.selection.eq(target)) {
+    focusedState = state.apply(state.tr.setSelection(target));
+  }
+
+  let lifted: Transaction | null = null;
+  if (!lift(focusedState, (transaction) => (lifted = transaction)) || !lifted) return null;
+  const afterLift = focusedState.apply(lifted);
+  let backward: Transaction | null = null;
+  if (joinBackward(afterLift, (transaction) => (backward = transaction)) && backward) return backward;
+  return lifted;
+}
+
+function previewDeleteJoin(state: EditorState): Transaction | null {
+  for (const itemName of ['listItem', 'taskItem']) {
+    if (!isAtEndOfNode(state, itemName)) continue;
+    if (listHelpers.nextListIsDeeper(itemName, state)) return previewLiftThenBackward(state);
+    if (listHelpers.nextListIsHigher(itemName, state)) return previewForwardThenBackward(state);
+    return previewJoinItemForward(state);
+  }
+
+  let forward: Transaction | null = null;
+  if (joinForward(state, (transaction) => (forward = transaction)) && forward) return forward;
+  return null;
+}
+
+function backgroundSensitiveDeleteJoin(state: EditorState): boolean {
+  const { selection, doc } = state;
+  if (!selection.empty || !selection.$from.parent.isTextblock) return false;
+  if (selection.$from.parentOffset !== selection.$from.parent.content.size) return false;
+  if (!nearbyJoinHasHexBackground(doc, selection.from)) return false;
+  const preview = previewDeleteJoin(state);
+  return preview !== null && preview.docChanged && losesBlockBackground(doc, preview.doc);
+}
+
+function listTypeForShortcut(event: KeyboardEvent): 'bulletList' | 'orderedList' | 'taskList' | null {
+  if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return null;
+  const key =
+    event.code === 'Digit7' || event.key === '7' || event.key === '&'
+      ? '7'
+      : event.code === 'Digit8' || event.key === '8' || event.key === '*'
+        ? '8'
+        : event.code === 'Digit9' || event.key === '9' || event.key === '('
+          ? '9'
+          : null;
+  return key === '7' ? 'orderedList' : key === '8' ? 'bulletList' : key === '9' ? 'taskList' : null;
+}
+
+function backgroundSensitiveListShortcut(
+  editor: Editor,
+  view: EditorView,
+  event: KeyboardEvent,
+): boolean {
+  const targetList = listTypeForShortcut(event);
+  const { selection, doc } = view.state;
+  if (targetList) {
+    const found = new Map<number, PMNode>();
+    const addAt = (position: number, item: PMNode, parentList: PMNode) => {
+      if (item.type.name !== 'listItem' && item.type.name !== 'taskItem') return;
+      const taskConversion = (parentList.type.name === 'taskList') !== (targetList === 'taskList');
+      if (
+        listItemHasConflictingBackgrounds(item) &&
+        (parentList.type.name === targetList || taskConversion)
+      ) {
+        found.set(position, item);
+      }
+    };
+    if (selection.empty) {
+      const { $from } = selection;
+      for (let depth = $from.depth; depth > 0; depth--) {
+        addAt($from.before(depth), $from.node(depth), $from.node(depth - 1));
+      }
+    } else {
+      doc.nodesBetween(selection.from, selection.to, (node, position) => {
+        if (node.type.name !== 'listItem' && node.type.name !== 'taskItem') return true;
+        const parentList = doc.resolve(position).parent;
+        addAt(position, node, parentList);
+        return true;
+      });
+    }
+    if (!found.size) return false;
+
+    // The task shortcut can safely convert this row when only its later paragraphs have colors.
+    // Reuse the editor's checked conversion so both the item palette and those paragraphs survive.
+    if (targetList === 'taskList' && selection.empty && found.size === 1) {
+      const [position, item] = found.entries().next().value as [number, PMNode];
+      if (
+        item.type.name === 'taskItem' &&
+        normalizeInlineColor(item.firstChild?.attrs.backgroundColor) === null &&
+        canTurnListItem(editor, position, { kind: 'paragraph' }) &&
+        turnListItem(editor, position, { kind: 'paragraph' })
+      ) {
+        return true;
+      }
+    }
+    return true;
+  }
+
+  if (event.key === 'Delete') {
+    if (isIndentedLinesDeleteCandidate(view.state)) {
+      if (backgroundSensitiveDeleteBeforeList(editor, view)) return true;
+    } else if (backgroundSensitiveDeleteJoin(view.state)) {
+      return true;
+    }
+  }
+
+  if (event.key === 'Delete' && selection.empty) {
+    const { $from } = selection;
+    if (!$from.parent.isTextblock || $from.parentOffset !== $from.parent.content.size) return false;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      const item = $from.node(depth);
+      if (item.type.name !== 'listItem' && item.type.name !== 'taskItem') continue;
+      if ($from.index(depth) !== item.childCount - 1) return false;
+      const parentList = $from.node(depth - 1);
+      if (!['bulletList', 'orderedList', 'taskList'].includes(parentList.type.name)) return false;
+      const nextItem = parentList.maybeChild($from.index(depth - 1) + 1);
+      return nextItem !== null && listItemHasConflictingBackgrounds(nextItem);
+    }
+    return false;
+  }
+
+  if (event.key !== 'Backspace' || !selection.empty) return false;
+  const { $from } = selection;
+  if ($from.parent.type.name !== 'paragraph' || $from.parentOffset !== 0) return false;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const item = $from.node(depth);
+    if (
+      (item.type.name === 'listItem' || item.type.name === 'taskItem') &&
+      $from.index(depth) === 0 &&
+      listItemHasConflictingBackgrounds(item)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function transactionTouchesBlockBackground(transaction: Transaction): boolean {
+  return transaction.steps.some((step, index) => {
+    const sourceDoc = transaction.docs[index];
+    const candidate = step as typeof step & {
+      from?: unknown;
+      to?: unknown;
+      pos?: unknown;
+      slice?: Slice;
+    };
+    if (candidate.slice && candidate.slice.content && fragmentHasBlockBackground(candidate.slice.content)) {
+      return true;
+    }
+    if (!sourceDoc) return false;
+
+    const positions = [candidate.from, candidate.pos, candidate.to].filter(
+      (position): position is number => typeof position === 'number' && Number.isFinite(position),
+    );
+    if (positions.some((position) => listItemHasParagraphBackgroundAt(sourceDoc, position))) return true;
+
+    if (typeof candidate.from === 'number' && typeof candidate.to === 'number') {
+      if (candidate.from < 0 || candidate.to < candidate.from || candidate.to > sourceDoc.content.size) {
+        return false;
+      }
+      return fragmentHasBlockBackground(sourceDoc.slice(candidate.from, candidate.to).content);
+    }
+    return false;
   });
 }
 
 const BlockBackground = Extension.create({
   name: 'blockBackground',
+  // Its keyboard guard must precede StarterKit's list lift shortcut.
+  priority: 1100,
   addProseMirrorPlugins() {
+    const editor = this.editor;
     return [
       new Plugin({
         key: new PluginKey('blockBackgroundEmptyParagraph'),
+        props: {
+          handleKeyDown: (view, event) => {
+            return backgroundSensitiveListShortcut(editor, view, event);
+          },
+        },
         filterTransaction: (transaction, state) =>
           !transaction.docChanged ||
-          !transactionTouchesCustomBackground(transaction) ||
+          !transactionTouchesBlockBackground(transaction) ||
           !introducesUnsupportedCustomBlockBackground(state.doc, transaction.doc),
         appendTransaction: (transactions, _oldState, newState) => {
           if (

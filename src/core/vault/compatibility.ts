@@ -565,6 +565,18 @@ function unsupportedMarkerIssue(
   const blockBackgroundMarkers = hasBlockBackground
     ? inspectBlockBackgroundMarkers(body, options.resolveAttachmentHref ?? mayResolveLocalAttachment)
     : [];
+  const sourceLines = body.split(/\r?\n/);
+  const approvedBlockBackgroundLines = new Map<number, string>();
+  for (const marker of blockBackgroundMarkers) {
+    if (
+      marker.approved &&
+      marker.tokenType === 'html_block' &&
+      marker.sourceLine !== null &&
+      hasOnlyMarkdownContainerPrefixes(sourceLines[marker.sourceLine] ?? '', marker.comment)
+    ) {
+      approvedBlockBackgroundLines.set(marker.sourceLine, marker.comment);
+    }
+  }
   let blockBackgroundTokenIndex = 0;
   let blockBackgroundIndex = 0;
   for (const token of markerTokens(body)) {
@@ -588,8 +600,7 @@ function unsupportedMarkerIssue(
           !inspected.color ||
           (inspected.titleHeading && !explicitTitle) ||
           token.type !== 'html_block' ||
-          token.content.trim() !== comment ||
-          token.invalidListPosition
+          token.content.trim() !== comment
         ) {
           return 'The page contains a Morrow block marker this version cannot safely edit.';
         }
@@ -609,7 +620,7 @@ function unsupportedMarkerIssue(
       allowedViewMarkers.set(comment, (allowedViewMarkers.get(comment) ?? 0) + 1);
     }
   }
-  for (const marker of rawMorrowComments(body)) {
+  for (const marker of rawMorrowComments(body, approvedBlockBackgroundLines)) {
     if (marker.name === 'header-column' && marker.closed) continue;
     if (marker.name === 'block-background' && marker.closed) {
       const inspected = blockBackgroundMarkers[blockBackgroundIndex++];
@@ -786,8 +797,11 @@ function hasOverdeepPolarisDadosView(body: string): boolean {
   return false;
 }
 
-function rawMorrowComments(body: string): Array<{ name: string; comment: string; closed: boolean }> {
-  const visible = markdownOutsideFences(body);
+function rawMorrowComments(
+  body: string,
+  approvedBlockBackgroundLines: ReadonlyMap<number, string> = new Map(),
+): Array<{ name: string; comment: string; closed: boolean }> {
+  const visible = markdownOutsideFences(body, approvedBlockBackgroundLines);
   const comments: Array<{ name: string; comment: string; closed: boolean }> = [];
   const openings = /<!--[ \t\r\n]*morrow:([a-z][\w-]*)/gi;
   let match: RegExpExecArray | null;
@@ -802,11 +816,15 @@ function rawMorrowComments(body: string): Array<{ name: string; comment: string;
   return comments;
 }
 
-function markdownOutsideFences(markdown: string): string {
+function markdownOutsideFences(
+  markdown: string,
+  approvedBlockBackgroundLines: ReadonlyMap<number, string> = new Map(),
+): string {
   const lines = markdown.split(/\r?\n/);
   const output: string[] = [];
   let fence: { character: '`' | '~'; length: number } | null = null;
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex]!;
     const content = stripContainerMarkers(line);
     const run = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(content);
     if (fence) {
@@ -821,6 +839,11 @@ function markdownOutsideFences(markdown: string): string {
       output.push('');
       continue;
     }
+    const approvedBlockBackground = approvedBlockBackgroundLines.get(lineIndex);
+    if (approvedBlockBackground) {
+      output.push(approvedBlockBackground);
+      continue;
+    }
     if (/^(?: {4,}|\t)/.test(content)) {
       output.push('');
       continue;
@@ -828,6 +851,25 @@ function markdownOutsideFences(markdown: string): string {
     output.push(withoutInlineCode(content));
   }
   return output.join('\n');
+}
+
+function hasOnlyMarkdownContainerPrefixes(line: string, expectedComment: string): boolean {
+  let content = line;
+  for (let depth = 0; depth < MAX_DOC_DEPTH; depth++) {
+    content = content.replace(/^[ \t]*/, '');
+    const quote = /^>[ \t]?/.exec(content);
+    if (quote) {
+      content = content.slice(quote[0].length);
+      continue;
+    }
+    const list = /^(?:[-+*]|\d{1,9}[.)])[ \t]+/.exec(content);
+    if (list) {
+      content = content.slice(list[0].length);
+      continue;
+    }
+    return content.trimEnd() === expectedComment;
+  }
+  return false;
 }
 
 function stripContainerMarkers(line: string): string {

@@ -19,6 +19,7 @@ import {
 } from './EditorMenus';
 import { createExtensions } from './extensions';
 import { tagDecorations } from './Extras';
+import { BLOCK_ITEMS } from './SlashCommand';
 import type { DecorationSet } from '@tiptap/pm/view';
 
 // code blocks watch the vault's pages for bases, there is no vault open here
@@ -421,8 +422,8 @@ describe('turn into', () => {
     });
   });
 
-  it('keeps colored block owners out of unsupported list and toggle conversions', () => {
-    for (const targetKind of ['bulletList', 'toggle', 'callout'] as const) {
+  it('keeps list conversions when representable and blocks unsupported toggle/callout conversions', () => {
+    for (const targetKind of ['toggle', 'callout'] as const) {
       const target = make({
         type: 'doc',
         content: [{ ...p('Shaded line'), attrs: { backgroundColor: '#2f80ed' } }],
@@ -436,6 +437,20 @@ describe('turn into', () => {
       editor = null;
     }
 
+    const list = make({
+      type: 'doc',
+      content: [{ ...p('Shaded line'), attrs: { backgroundColor: '#2f80ed' } }],
+    });
+    turnInto(list, 0, { kind: 'bulletList' });
+    expect(json(list).content![0]!.type).toBe('bulletList');
+    expect(json(list).content![0]!.content![0]!.content![0]).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: '#2f80ed' },
+    });
+    expect(docToMarkdown(markdownToDoc(docToMarkdown(json(list))))).toEqual(docToMarkdown(json(list)));
+    list.destroy();
+    editor = null;
+
     const native = make({
       type: 'doc',
       content: [{ ...p('Native palette'), attrs: { backgroundColor: 'green' } }],
@@ -444,7 +459,294 @@ describe('turn into', () => {
     expect(json(native).content![0]!.type).toBe('bulletList');
   });
 
-  it('blocks StarterKit list shortcuts for HEX owners while keeping edits and undo saveable', () => {
+  it('preserves list paragraph and native item colors through safe menu conversions', () => {
+    const color = '#2f80ed';
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              content: [{ ...p('Colored item line'), attrs: { backgroundColor: color } }],
+            },
+          ],
+        },
+      ],
+    });
+    turnInto(target, 1, { kind: 'heading', level: 2 });
+    expect(json(target).content![0]).toMatchObject({
+      type: 'heading',
+      attrs: { level: 2, backgroundColor: color },
+    });
+    expect(docToMarkdown(markdownToDoc(docToMarkdown(json(target))))).toEqual(docToMarkdown(json(target)));
+    expect(target.commands.undo()).toBe(true);
+    expect(json(target).content![0]!.content![0]!.content![0]!).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: color },
+    });
+    target.destroy();
+    editor = null;
+
+    const task = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: true, backgroundColor: 'yellow' },
+              content: [p('Native item color')],
+            },
+          ],
+        },
+      ],
+    });
+    turnInto(task, 1, { kind: 'bulletList' });
+    expect(json(task).content![0]!.content![0]).toMatchObject({
+      type: 'listItem',
+      attrs: { backgroundColor: 'yellow' },
+    });
+    expect(docToMarkdown(markdownToDoc(docToMarkdown(json(task))))).toEqual(docToMarkdown(json(task)));
+    task.destroy();
+    editor = null;
+
+    const refused = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              content: [{ ...p('Task first line'), attrs: { backgroundColor: color } }],
+            },
+          ],
+        },
+      ],
+    });
+    const before = json(refused);
+    const selection = refused.state.selection;
+    turnInto(refused, 1, { kind: 'taskList' });
+    expect(json(refused)).toEqual(before);
+    expect(refused.state.selection).toEqual(selection);
+    expect(() => docToMarkdown(json(refused))).not.toThrow();
+  });
+
+  it('keeps an empty colored list paragraph beside the native item palette when its text is deleted', () => {
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              attrs: { backgroundColor: 'yellow' },
+              content: [{ ...p('First'), attrs: { backgroundColor: '#2f80ed' } }],
+            },
+          ],
+        },
+      ],
+    });
+    let textPos = -1;
+    target.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === 'First') textPos = pos;
+    });
+    expect(textPos).toBeGreaterThan(0);
+
+    target.view.dispatch(target.state.tr.delete(textPos, textPos + 'First'.length));
+
+    expect(json(target).content![0]!.content![0]).toMatchObject({
+      type: 'listItem',
+      attrs: { backgroundColor: 'yellow' },
+      content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } }],
+    });
+    expect(json(target).content![0]!.content![0]!.content![0]!.content ?? []).toEqual([]);
+    const saved = docToMarkdown(json(target));
+    expect(saved).toContain('<!-- morrow:block-background:#2f80ed -->');
+    expect(saved).toContain('<br> <!-- background: yellow -->');
+    expect(docToMarkdown(markdownToDoc(saved))).toBe(saved);
+    expect(target.commands.undo()).toBe(true);
+    expect(docToMarkdown(json(target))).toContain('First');
+    let paragraphPos = -1;
+    target.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'paragraph' && node.textContent === 'First') paragraphPos = pos;
+    });
+    expect(paragraphPos).toBeGreaterThan(0);
+    setBlockBackground(target, [paragraphPos], null);
+    expect(json(target).content![0]!.content![0]!.content![0]!.attrs?.backgroundColor ?? null).toBeNull();
+    const withoutParagraphColor = docToMarkdown(json(target));
+    expect(withoutParagraphColor).not.toContain('morrow:block-background');
+    expect(withoutParagraphColor).toContain('<!-- background: yellow -->');
+    expect(docToMarkdown(markdownToDoc(withoutParagraphColor))).toBe(withoutParagraphColor);
+  });
+
+  it('refuses to convert a named-colored first paragraph into an ambiguous task title', () => {
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              attrs: { backgroundColor: 'yellow' },
+              content: [{ ...p('First'), attrs: { backgroundColor: 'green' } }],
+            },
+          ],
+        },
+      ],
+    });
+    const before = json(target);
+    const selection = target.state.selection;
+    expect(() => docToMarkdown(before)).not.toThrow();
+
+    turnInto(target, 1, { kind: 'taskList' });
+
+    expect(json(target)).toEqual(before);
+    expect(target.state.selection).toEqual(selection);
+    expect(() => docToMarkdown(json(target))).not.toThrow();
+  });
+
+  it('blocks removing a task first paragraph when that would expose a colored paragraph as the title', () => {
+    const source = [
+      '- [ ] First <!-- background: blue -->',
+      '',
+      '  <!-- morrow:block-background:green -->',
+      '',
+      '  Second',
+    ].join('\n');
+    const target = make(markdownToDoc(source));
+    const before = json(target);
+    let firstParagraphPos = -1;
+    let firstParagraphSize = 0;
+    target.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'paragraph' && node.textContent === 'First') {
+        firstParagraphPos = pos;
+        firstParagraphSize = node.nodeSize;
+      }
+    });
+    expect(firstParagraphPos).toBeGreaterThan(0);
+    expect(json(target).content![0]!.content![0]!.content![1]).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: 'green' },
+    });
+
+    target.view.dispatch(target.state.tr.delete(firstParagraphPos, firstParagraphPos + firstParagraphSize));
+
+    expect(json(target)).toEqual(before);
+    expect(() => docToMarkdown(json(target))).not.toThrow();
+  });
+
+  it('refuses list-item conversions that would discard either of two distinct backgrounds', () => {
+    const targets = [
+      { kind: 'paragraph' } as const,
+      { kind: 'heading', level: 2 } as const,
+      { kind: 'blockquote' } as const,
+    ];
+    for (const targetKind of targets) {
+      editor?.destroy();
+      editor = null;
+      const target = make({
+        type: 'doc',
+        content: [
+          {
+            type: 'bulletList',
+            content: [
+              {
+                type: 'listItem',
+                attrs: { backgroundColor: 'yellow' },
+                content: [{ ...p('First'), attrs: { backgroundColor: '#2f80ed' } }],
+              },
+            ],
+          },
+        ],
+      });
+      const before = json(target);
+      const selection = target.state.selection;
+
+      turnInto(target, 1, targetKind);
+
+      expect(json(target), targetKind.kind).toEqual(before);
+      expect(target.state.selection, targetKind.kind).toEqual(selection);
+      expect(() => docToMarkdown(json(target))).not.toThrow();
+    }
+  });
+
+  it('carries a sole native item palette onto its converted block', () => {
+    const targets = [
+      { kind: 'paragraph' } as const,
+      { kind: 'heading', level: 2 } as const,
+      { kind: 'blockquote' } as const,
+    ];
+    for (const targetKind of targets) {
+      editor?.destroy();
+      editor = null;
+      const target = make({
+        type: 'doc',
+        content: [
+          {
+            type: 'bulletList',
+            content: [
+              {
+                type: 'listItem',
+                attrs: { backgroundColor: 'yellow' },
+                content: [p('First')],
+              },
+            ],
+          },
+        ],
+      });
+
+      turnInto(target, 1, targetKind);
+
+      const converted = json(target).content![0]!;
+      const owner = converted.type === 'blockquote' ? converted.content?.[0] : converted;
+      expect(owner, targetKind.kind).toMatchObject({ attrs: { backgroundColor: 'yellow' } });
+      expect(docToMarkdown(markdownToDoc(docToMarkdown(json(target))))).toEqual(docToMarkdown(json(target)));
+    }
+  });
+
+  it('keeps list paragraph and item palettes when turning an item into a lettered list', () => {
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              attrs: { backgroundColor: 'yellow' },
+              content: [{ ...p('First'), attrs: { backgroundColor: '#2f80ed' } }],
+            },
+          ],
+        },
+      ],
+    });
+
+    turnInto(target, 1, { kind: 'letteredList' });
+
+    const list = json(target).content![0]!;
+    expect(list).toMatchObject({
+      type: 'orderedList',
+      attrs: { type: 'a' },
+      content: [
+        {
+          type: 'listItem',
+          attrs: { backgroundColor: 'yellow' },
+          content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } }],
+        },
+      ],
+    });
+    const saved = docToMarkdown(json(target));
+    expect(saved).toContain('<!-- letters -->');
+    expect(docToMarkdown(markdownToDoc(saved))).toBe(saved);
+  });
+
+  it('preserves HEX owners through StarterKit list shortcuts and undo', () => {
     for (const key of ['8', '7']) {
       const target = make({
         type: 'doc',
@@ -455,13 +757,26 @@ describe('turn into', () => {
       const shortcut = new KeyboardEvent('keydown', { key, ctrlKey: true, shiftKey: true });
       const handled = target.view.someProp('handleKeyDown', (handler) => handler(target.view, shortcut));
       expect(handled, `Ctrl+Shift+${key}`).toBe(true);
-      expect(json(target), `Ctrl+Shift+${key}`).toEqual(before);
-      expect(() => docToMarkdown(json(target))).not.toThrow();
+      const list = json(target).content![0]!;
+      expect(list.type, `Ctrl+Shift+${key}`).toBe(key === '8' ? 'bulletList' : 'orderedList');
+      expect(list.content![0]!.content![0]).toMatchObject({
+        type: 'paragraph',
+        attrs: { backgroundColor: '#2f80ed' },
+      });
+      const converted = json(target);
+      const serialized = docToMarkdown(converted);
+      expect(docToMarkdown(markdownToDoc(serialized))).toEqual(serialized);
 
-      const end = target.state.doc.content.size - 1;
+      let end = -1;
+      target.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Shaded line') end = pos + node.nodeSize;
+      });
+      expect(end).toBeGreaterThan(0);
       target.view.dispatch(target.state.tr.insertText(' edited', end));
-      expect(json(target).content![0]!.content![0]!.text).toBe('Shaded line edited');
+      expect(docToMarkdown(json(target))).toContain('Shaded line edited');
       expect(() => docToMarkdown(json(target))).not.toThrow();
+      expect(target.commands.undo()).toBe(true);
+      expect(json(target)).toEqual(converted);
       expect(target.commands.undo()).toBe(true);
       expect(json(target)).toEqual(before);
       expect(target.commands.undo()).toBe(false);
@@ -507,7 +822,8 @@ describe('turn into', () => {
     expect(() => docToMarkdown(json(target))).not.toThrow();
   });
 
-  it('blocks custom HEX insertion beneath an unsupported list owner', () => {
+  it('allows HEX ownership on a direct list paragraph and rejects a task first paragraph', () => {
+    const color = '#2f80ed';
     const target = make({
       type: 'doc',
       content: [
@@ -517,22 +833,104 @@ describe('turn into', () => {
         },
       ],
     });
-    let paragraphEnd = -1;
+    let paragraphPos = -1;
     target.state.doc.descendants((node, pos) => {
-      if (node.type.name === 'paragraph') paragraphEnd = pos + node.nodeSize;
+      if (node.type.name === 'paragraph') paragraphPos = pos;
     });
-    expect(paragraphEnd).toBeGreaterThan(0);
-    const before = json(target);
-    target.commands.insertContentAt(paragraphEnd, {
+    expect(paragraphPos).toBeGreaterThan(0);
+    target.view.dispatch(
+      target.state.tr.setNodeMarkup(paragraphPos, undefined, {
+        ...target.state.doc.nodeAt(paragraphPos)!.attrs,
+        backgroundColor: color,
+      }),
+    );
+    expect(json(target).content?.[0]?.content?.[0]?.content?.[0]).toMatchObject({
       type: 'paragraph',
-      attrs: { backgroundColor: '#2f80ed' },
-      content: [{ type: 'text', text: 'Unsafe insertion' }],
+      attrs: { backgroundColor: color },
     });
-    expect(json(target)).toEqual(before);
-    expect(() => docToMarkdown(json(target))).not.toThrow();
+    const saved = docToMarkdown(json(target));
+    expect(saved).toContain('<!-- morrow:block-background:#2f80ed -->');
+    expect(docToMarkdown(markdownToDoc(saved))).toEqual(saved);
+
+    for (const backgroundColor of [color, 'green']) {
+      const task = make({
+        type: 'doc',
+        content: [
+          {
+            type: 'taskList',
+            content: [
+              { type: 'taskItem', attrs: { checked: false }, content: [p('Task first line'), p('later')] },
+            ],
+          },
+        ],
+      });
+      let taskParagraphPos = -1;
+      task.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent === 'Task first line') taskParagraphPos = pos;
+      });
+      const before = json(task);
+      task.view.dispatch(
+        task.state.tr.setNodeMarkup(taskParagraphPos, undefined, {
+          ...task.state.doc.nodeAt(taskParagraphPos)!.attrs,
+          backgroundColor,
+        }),
+      );
+      expect(json(task)).toEqual(before);
+      expect(docToMarkdown(json(task))).not.toContain('morrow:block-background');
+      task.destroy();
+      editor = null;
+    }
   });
 
-  it('flushes an unrelated edit after a rejected list shortcut without protecting the page', async () => {
+  it('keeps list paragraph backgrounds through paste, keyboard split, and undo', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const source = `- \n  ${marker}\n\n  Pasted colored item\n`;
+    const target = make({ type: 'doc', content: [p('Above'), p(''), p('Below')] });
+    const original = json(target);
+    const start = target.state.doc.child(0).nodeSize + 1;
+    target.commands.setTextSelection(start);
+    const event = {
+      clipboardData: { types: ['text/plain'], getData: () => source },
+    } as unknown as ClipboardEvent;
+    let handled = false;
+    target.view.someProp('handlePaste', (handler) => {
+      const result = handler(target.view, event, target.state.doc.slice(0, 0));
+      if (result) handled = true;
+      return result;
+    });
+    expect(handled).toBe(true);
+    const listItem = json(target).content?.find((node) => node.type === 'bulletList')?.content?.[0];
+    expect(listItem?.content?.[0]).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: '#2f80ed' },
+    });
+    expect(docToMarkdown(markdownToDoc(docToMarkdown(json(target))))).toEqual(docToMarkdown(json(target)));
+    expect(target.commands.undo()).toBe(true);
+    expect(json(target)).toEqual(original);
+
+    const keyboard = make(markdownToDoc(source));
+    let end = -1;
+    keyboard.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === 'Pasted colored item') end = pos + node.nodeSize;
+    });
+    expect(end).toBeGreaterThan(0);
+    keyboard.commands.setTextSelection(end);
+    const enter = new KeyboardEvent('keydown', { key: 'Enter' });
+    keyboard.view.someProp('handleKeyDown', (handler) => handler(keyboard.view, enter));
+    expect(() => docToMarkdown(json(keyboard))).not.toThrow();
+    const colors: string[] = [];
+    keyboard.state.doc.descendants((node) => {
+      if (node.type.name === 'paragraph' && node.attrs.backgroundColor === '#2f80ed')
+        colors.push(node.textContent);
+    });
+    expect(colors.length).toBeGreaterThan(0);
+    expect(keyboard.commands.undo()).toBe(true);
+    expect(docToMarkdown(markdownToDoc(docToMarkdown(json(keyboard))))).toEqual(
+      docToMarkdown(json(keyboard)),
+    );
+  });
+
+  it('flushes and reopens a colored list item after its keyboard conversion', async () => {
     const marker = '<!-- morrow:block-background:#2f80ed -->';
     const notePath = 'Notes.md';
     const vault = new MemoryVault({
@@ -550,9 +948,17 @@ describe('turn into', () => {
       target.commands.setTextSelection(1);
       const shortcut = new KeyboardEvent('keydown', { key: '8', ctrlKey: true, shiftKey: true });
       target.view.someProp('handleKeyDown', (handler) => handler(target.view, shortcut));
-      expect(json(target).content![0]!.type).toBe('paragraph');
+      expect(json(target).content![0]!.type).toBe('bulletList');
+      expect(json(target).content![0]!.content![0]!.content![0]).toMatchObject({
+        type: 'paragraph',
+        attrs: { backgroundColor: '#2f80ed' },
+      });
 
-      const end = target.state.doc.content.size - 1;
+      let end = -1;
+      target.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Shaded line') end = pos + node.nodeSize;
+      });
+      expect(end).toBeGreaterThan(0);
       target.view.dispatch(target.state.tr.insertText(' edited', end));
       expect(() => docToMarkdown(json(target))).not.toThrow();
       expect(session.execute({ type: 'page.setDoc', id: 'note-page', doc: json(target), now: 43 }).ok).toBe(
@@ -571,14 +977,875 @@ describe('turn into', () => {
       if (!reopened.ok) throw new Error(reopened.error);
       try {
         expect(reopened.value.protectedReasons.has('note-page')).toBe(false);
-        expect(reopened.value.getState().docs['note-page']!.content?.[0]?.attrs?.backgroundColor).toBe(
-          '#2f80ed',
-        );
+        expect(
+          reopened.value.getState().docs['note-page']!.content?.[0]?.content?.[0]?.content?.[0]?.attrs
+            ?.backgroundColor,
+        ).toBe('#2f80ed');
       } finally {
         await reopened.value.close();
       }
     } finally {
       if (!session.isClosed) await session.close();
+    }
+  });
+
+  it('preserves list backgrounds through protected shortcuts, empty-line Enter, and slash dispatch', async () => {
+    const color = '#2f80ed';
+    const listPath = 'List shortcut.md';
+    const taskPath = 'Task empty line.md';
+    const codePath = 'Slash code.md';
+    const togglePath = 'Slash toggle.md';
+    const listSource = docToMarkdown({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              attrs: { backgroundColor: 'yellow' },
+              content: [{ ...p('First'), attrs: { backgroundColor: color } }],
+            },
+            { type: 'listItem', content: [p('Keep')] },
+          ],
+        },
+      ],
+    } as DocNode);
+    const taskSource = docToMarkdown({
+      type: 'doc',
+      content: [
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: false },
+              content: [p('Task'), { ...p(''), attrs: { backgroundColor: color } }],
+            },
+          ],
+        },
+      ],
+    } as DocNode);
+    const coloredSlashSource = (trigger: '/code' | '/toggle') =>
+      docToMarkdown({
+        type: 'doc',
+        content: [
+          {
+            type: 'bulletList',
+            content: [
+              {
+                type: 'listItem',
+                content: [{ ...p(trigger), attrs: { backgroundColor: 'green' } }],
+              },
+            ],
+          },
+        ],
+      } as DocNode);
+    const codeSource = coloredSlashSource('/code');
+    const toggleSource = coloredSlashSource('/toggle');
+    const notePaths = [listPath, taskPath, codePath, togglePath];
+    const noteIds = ['shortcut-list', 'empty-task-line', 'slash-code', 'slash-toggle'];
+    const sources = [listSource, taskSource, codeSource, toggleSource];
+    const vault = new MemoryVault({
+      ...Object.fromEntries(notePaths.map((path, index) => [path, sources[index]])),
+      '.morrow/workspace.json': JSON.stringify({
+        version: 1,
+        pages: Object.fromEntries(notePaths.map((path, index) => [path, { id: noteIds[index] }])),
+      }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      const shortcutEditor = make(session.getState().docs['shortcut-list']!);
+      const beforeShortcut = json(shortcutEditor);
+      let firstText = -1;
+      shortcutEditor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'First') firstText = pos;
+      });
+      expect(firstText).toBeGreaterThan(0);
+      shortcutEditor.commands.setTextSelection(firstText);
+      const shortcut = new KeyboardEvent('keydown', {
+        key: '8',
+        code: 'Digit8',
+        ctrlKey: true,
+        shiftKey: true,
+      });
+      let shortcutHandled = false;
+      shortcutEditor.view.someProp('handleKeyDown', (handler) => {
+        const handled = handler(shortcutEditor.view, shortcut);
+        if (handled) shortcutHandled = true;
+        return handled;
+      });
+      expect(shortcutHandled).toBe(true);
+      expect(json(shortcutEditor)).toEqual(beforeShortcut);
+
+      const deletionControl = make(session.getState().docs['shortcut-list']!);
+      const firstItem = deletionControl.state.doc.nodeAt(1)!;
+      deletionControl.view.dispatch(
+        deletionControl.state.tr.delete(1, 1 + firstItem.nodeSize),
+      );
+      expect(
+        json(deletionControl).content![0]!.content!.map((item) => item.content?.[0]?.content?.[0]?.text),
+      ).toEqual(['Keep']);
+      deletionControl.destroy();
+      editor = null;
+
+      const nestedShortcutEditor = make({
+        type: 'doc',
+        content: [
+          {
+            type: 'bulletList',
+            content: [
+              {
+                type: 'listItem',
+                content: [
+                  p('Parent'),
+                  {
+                    type: 'bulletList',
+                    content: [
+                      {
+                        type: 'listItem',
+                        attrs: { backgroundColor: 'yellow' },
+                        content: [{ ...p('Nested'), attrs: { backgroundColor: color } }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      const beforeNestedShortcut = json(nestedShortcutEditor);
+      let nestedText = -1;
+      nestedShortcutEditor.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Nested') nestedText = pos;
+      });
+      expect(nestedText).toBeGreaterThan(0);
+      nestedShortcutEditor.commands.setTextSelection(nestedText);
+      const nestedShortcut = new KeyboardEvent('keydown', {
+        key: '8',
+        code: 'Digit8',
+        ctrlKey: true,
+        shiftKey: true,
+      });
+      let nestedShortcutHandled = false;
+      nestedShortcutEditor.view.someProp('handleKeyDown', (handler) => {
+        const handled = handler(nestedShortcutEditor.view, nestedShortcut);
+        if (handled) nestedShortcutHandled = true;
+        return handled;
+      });
+      expect(nestedShortcutHandled).toBe(true);
+      expect(json(nestedShortcutEditor)).toEqual(beforeNestedShortcut);
+      nestedShortcutEditor.destroy();
+      editor = null;
+
+      const taskEditor = make(session.getState().docs['empty-task-line']!);
+      let emptyColoredParagraph = -1;
+      taskEditor.state.doc.descendants((node, pos) => {
+        if (
+          node.type.name === 'paragraph' &&
+          node.content.size === 0 &&
+          node.attrs.backgroundColor === color
+        ) {
+          emptyColoredParagraph = pos;
+        }
+      });
+      expect(emptyColoredParagraph).toBeGreaterThan(0);
+      taskEditor.commands.setTextSelection(emptyColoredParagraph + 1);
+      const enter = new KeyboardEvent('keydown', { key: 'Enter' });
+      let enterHandled = false;
+      taskEditor.view.someProp('handleKeyDown', (handler) => {
+        const handled = handler(taskEditor.view, enter);
+        if (handled) enterHandled = true;
+        return handled;
+      });
+      expect(enterHandled).toBe(true);
+      const rootLine = json(taskEditor).content!.find(
+        (node) => node.type === 'paragraph' && node.attrs?.backgroundColor === color,
+      );
+      expect(rootLine).toBeDefined();
+      const taskSaved = docToMarkdown(json(taskEditor));
+      expect(taskSaved).toContain(`<!-- morrow:block-background:${color} -->`);
+      expect(docToMarkdown(markdownToDoc(taskSaved))).toBe(taskSaved);
+
+      for (const [path, id, trigger, commandId] of [
+        [codePath, 'slash-code', '/code', 'code'],
+        [togglePath, 'slash-toggle', '/toggle', 'toggle'],
+      ] as const) {
+        const slashEditor = make(session.getState().docs[id]!);
+        const beforeSlash = json(slashEditor);
+        let triggerStart = -1;
+        slashEditor.state.doc.descendants((node, pos) => {
+          if (node.isText && node.text === trigger) triggerStart = pos;
+        });
+        expect(triggerStart).toBeGreaterThan(0);
+        const triggerEnd = triggerStart + trigger.length;
+        slashEditor.commands.setTextSelection(triggerEnd);
+        const command = BLOCK_ITEMS.find((entry) => entry.id === commandId)!;
+        command.run(slashEditor, { from: triggerStart, to: triggerEnd }, { createChild: () => null });
+        expect(json(slashEditor), path).toEqual(beforeSlash);
+        slashEditor.destroy();
+        editor = null;
+      }
+
+      const baselineToggle = make({
+        type: 'doc',
+        content: [
+          {
+            type: 'bulletList',
+            content: [{ type: 'listItem', content: [p('Baseline/toggle')] }],
+          },
+        ],
+      });
+      let toggleStart = -1;
+      baselineToggle.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'Baseline/toggle') toggleStart = pos + 'Baseline'.length;
+      });
+      const toggleEnd = toggleStart + '/toggle'.length;
+      baselineToggle.commands.setTextSelection(toggleEnd);
+      BLOCK_ITEMS.find((entry) => entry.id === 'toggle')!.run(
+        baselineToggle,
+        { from: toggleStart, to: toggleEnd },
+        { createChild: () => null },
+      );
+      expect(json(baselineToggle).content![0]!.type).toBe('details');
+      baselineToggle.destroy();
+      editor = null;
+
+      expect(
+        session.execute({ type: 'page.setDoc', id: 'empty-task-line', doc: json(taskEditor), now: 46 }).ok,
+      ).toBe(true);
+      expect(await session.flush()).toBe(true);
+      expect(vault.text(listPath)).toBe(listSource);
+      expect(vault.text(codePath)).toBe(codeSource);
+      expect(vault.text(togglePath)).toBe(toggleSource);
+      expect(vault.text(taskPath)).toContain(`<!-- morrow:block-background:${color} -->`);
+      taskEditor.destroy();
+      editor = null;
+
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      for (const id of noteIds) expect(reopened.protectedReasons.has(id), id).toBe(false);
+      expect(reopened.getState().docs['shortcut-list']!.content![0]!.content![0]).toMatchObject({
+        attrs: { backgroundColor: 'yellow' },
+        content: [{ type: 'paragraph', attrs: { backgroundColor: color } }],
+      });
+      expect(reopened.getState().docs['empty-task-line']!.content).toContainEqual(
+        expect.objectContaining({ type: 'paragraph', attrs: expect.objectContaining({ backgroundColor: color }) }),
+      );
+      for (const id of ['slash-code', 'slash-toggle']) {
+        const trigger = id === 'slash-code' ? '/code' : '/toggle';
+        expect(reopened.getState().docs[id]!.content![0]!.content![0]!.content![0]).toMatchObject({
+          type: 'paragraph',
+          attrs: { backgroundColor: 'green' },
+          content: [{ text: trigger }],
+        });
+      }
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('guards only list shortcuts whose lift cannot represent both background owners', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const palette = '<!-- background: yellow -->';
+    const fixtures = [
+      {
+        path: 'Ordered dual.md',
+        id: 'ordered-dual',
+        source: `1. \n   ${marker}\n\n   First ${palette}\n\n2. Second\n\nNeighbor\n`,
+        key: '7',
+        find: 'First',
+        expected: 'blocked',
+      },
+      {
+        path: 'Selected middle dual.md',
+        id: 'selected-middle',
+        source: `- Head\n- \n  ${marker}\n\n  First ${palette}\n- Tail\n\nNeighbor\n`,
+        key: '8',
+        find: 'Head',
+        expected: 'blocked',
+      },
+      {
+        path: 'Backspace dual.md',
+        id: 'backspace-dual',
+        source: `- \n  ${marker}\n\n  First ${palette}\n\n- Second\n\nNeighbor\n`,
+        key: 'Backspace',
+        find: 'First',
+        expected: 'blocked',
+      },
+      {
+        path: 'Task owners.md',
+        id: 'task-owners',
+        source: `- [ ] First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        key: '9',
+        find: 'First',
+        expected: 'converted',
+      },
+    ] as const;
+    const vault = new MemoryVault({
+      ...Object.fromEntries(fixtures.map(({ path, source }) => [path, source])),
+      '.morrow/workspace.json': JSON.stringify({
+        version: 1,
+        pages: Object.fromEntries(fixtures.map(({ path, id }) => [path, { id }])),
+      }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      const firstTextPosition = (target: Editor, text: string) => {
+        let position = -1;
+        target.state.doc.descendants((node, pos) => {
+          if (node.isText && typeof node.text === 'string' && node.text.includes(text) && position < 0)
+            position = pos + node.text.indexOf(text);
+        });
+        return position;
+      };
+      const press = (
+        target: Editor,
+        key: string,
+        selection: number | { from: number; to: number },
+        modifiers: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; code?: string } = {},
+      ) => {
+        target.commands.setTextSelection(selection);
+        const event = new KeyboardEvent('keydown', { key, ...modifiers });
+        let handled = false;
+        target.view.someProp('handleKeyDown', (handler) => {
+          const result = handler(target.view, event);
+          if (result) handled = true;
+          return result;
+        });
+        return handled;
+      };
+
+      for (const fixture of fixtures) {
+        const target = make(session.getState().docs[fixture.id]!);
+        const before = target.state.doc;
+        const position = firstTextPosition(target, fixture.find);
+        expect(position, fixture.id).toBeGreaterThan(0);
+        const selection =
+          fixture.id === 'selected-middle'
+            ? { from: position + 1, to: firstTextPosition(target, 'Tail') + 2 }
+            : position;
+        const handled = press(
+          target,
+          fixture.key,
+          selection,
+          fixture.key === 'Backspace'
+            ? {}
+            : { ctrlKey: true, shiftKey: true, code: `Digit${fixture.key}` },
+        );
+        expect(handled, fixture.id).toBe(true);
+        if (fixture.expected === 'blocked') {
+          expect(target.state.doc.eq(before), fixture.id).toBe(true);
+        } else {
+          expect(target.state.doc.eq(before), fixture.id).toBe(false);
+          expect(json(target).content![0]).toMatchObject({
+            type: 'paragraph',
+            attrs: { backgroundColor: 'yellow' },
+            content: [{ text: 'First' }],
+          });
+          expect(json(target).content![1]).toMatchObject({
+            type: 'paragraph',
+            attrs: { backgroundColor: '#2f80ed' },
+            content: [{ text: 'Second line' }],
+          });
+          expect(docToMarkdown(markdownToDoc(docToMarkdown(json(target))))).toBe(
+            docToMarkdown(json(target)),
+          );
+        }
+        expect(
+          session.execute({ type: 'page.setDoc', id: fixture.id, doc: json(target), now: 47 }).ok,
+          fixture.id,
+        ).toBe(true);
+        target.destroy();
+        editor = null;
+      }
+
+      const nativeOnly = make(markdownToDoc(`- First ${palette}\n\n- Second\n`));
+      const nativeStart = firstTextPosition(nativeOnly, 'First');
+      const nativeBefore = nativeOnly.state.doc;
+      expect(press(nativeOnly, '8', nativeStart, { ctrlKey: true, shiftKey: true, code: 'Digit8' })).toBe(
+        true,
+      );
+      expect(nativeOnly.state.doc.eq(nativeBefore)).toBe(false);
+      nativeOnly.destroy();
+      editor = null;
+
+      const hexOnly = make(markdownToDoc(`- \n  ${marker}\n\n  First\n\n- Second\n`));
+      const hexStart = firstTextPosition(hexOnly, 'First');
+      const hexBefore = hexOnly.state.doc;
+      expect(press(hexOnly, '8', hexStart, { ctrlKey: true, shiftKey: true, code: 'Digit8' })).toBe(true);
+      expect(hexOnly.state.doc.eq(hexBefore)).toBe(false);
+      expect(docToMarkdown(json(hexOnly))).toContain(marker);
+      hexOnly.destroy();
+      editor = null;
+
+      expect(await session.flush()).toBe(true);
+      for (const fixture of fixtures) {
+        const saved = vault.text(fixture.path)!;
+        expect(saved, fixture.id).toContain(marker);
+        expect(saved, fixture.id).toContain(palette);
+        expect(saved, fixture.id).toContain('Neighbor');
+      }
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      for (const fixture of fixtures) expect(reopened.protectedReasons.has(fixture.id), fixture.id).toBe(false);
+      const ordered = reopened.getState().docs['ordered-dual']!.content![0]!.content![0]!;
+      expect(ordered).toMatchObject({
+        attrs: { backgroundColor: 'yellow' },
+        content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } }],
+      });
+      const selectedMiddle = reopened.getState().docs['selected-middle']!.content![0]!.content![1]!;
+      expect(selectedMiddle).toMatchObject({
+        attrs: { backgroundColor: 'yellow' },
+        content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } }],
+      });
+      const backspaceItem = reopened.getState().docs['backspace-dual']!.content![0]!.content![0]!;
+      expect(backspaceItem).toMatchObject({
+        attrs: { backgroundColor: 'yellow' },
+        content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } }],
+      });
+      expect(reopened.getState().docs['task-owners']!.content!.slice(0, 2)).toMatchObject([
+        { type: 'paragraph', attrs: { backgroundColor: 'yellow' }, content: [{ text: 'First' }] },
+        { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [{ text: 'Second line' }] },
+      ]);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('blocks only background-losing task conversions and forward list joins', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const palette = '<!-- background: yellow -->';
+    const fixtures = [
+      {
+        path: 'Task to bullet.md',
+        id: 'task-to-bullet',
+        source: `- [ ] First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        key: '8',
+        find: 'First',
+        modifiers: { ctrlKey: true, shiftKey: true, code: 'Digit8' },
+        expected: 'blocked',
+      },
+      {
+        path: 'Bullet to task.md',
+        id: 'bullet-to-task',
+        source: `- First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        key: '9',
+        find: 'First',
+        modifiers: { ctrlKey: true, shiftKey: true, code: 'Digit9' },
+        expected: 'blocked',
+      },
+      {
+        path: 'Forward join.md',
+        id: 'forward-join',
+        source: `- Before\n\n- First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        key: 'Delete',
+        find: 'Before',
+        modifiers: {},
+        expected: 'blocked',
+      },
+      {
+        path: 'Bullet to ordered.md',
+        id: 'bullet-to-ordered',
+        source: `- First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        key: '7',
+        find: 'First',
+        modifiers: { ctrlKey: true, shiftKey: true, code: 'Digit7' },
+        expected: 'converted',
+      },
+      {
+        path: 'Explicit delete.md',
+        id: 'explicit-delete',
+        source: `- Before\n\n- First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        key: 'Delete',
+        find: 'Before',
+        modifiers: {},
+        expected: 'text-delete',
+      },
+    ] as const;
+    const vault = new MemoryVault({
+      ...Object.fromEntries(fixtures.map(({ path, source }) => [path, source])),
+      '.morrow/workspace.json': JSON.stringify({
+        version: 1,
+        pages: Object.fromEntries(fixtures.map(({ path, id }) => [path, { id }])),
+      }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    const editors: Editor[] = [];
+    try {
+      const firstTextPosition = (target: Editor, text: string) => {
+        let position = -1;
+        target.state.doc.descendants((node, pos) => {
+          if (node.isText && typeof node.text === 'string' && node.text.includes(text) && position < 0)
+            position = pos + node.text.indexOf(text);
+        });
+        return position;
+      };
+      const press = (
+        target: Editor,
+        key: string,
+        position: number,
+        modifiers: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; code?: string },
+      ) => {
+        target.commands.setTextSelection(position);
+        const event = new KeyboardEvent('keydown', { key, ...modifiers });
+        let handled = false;
+        target.view.someProp('handleKeyDown', (handler) => {
+          const result = handler(target.view, event);
+          if (result) handled = true;
+          return result;
+        });
+        return handled;
+      };
+
+      for (const fixture of fixtures) {
+        const target = make(session.getState().docs[fixture.id]!);
+        editors.push(target);
+        const position = firstTextPosition(target, fixture.find);
+        expect(position, fixture.id).toBeGreaterThan(0);
+        const before = target.state.doc;
+        const cursor =
+          fixture.key === 'Delete' && fixture.expected === 'text-delete'
+            ? position + 1
+            : fixture.key === 'Delete'
+              ? position + fixture.find.length
+              : position;
+        const handled = press(target, fixture.key, cursor, fixture.modifiers);
+
+        if (fixture.expected === 'blocked') {
+          expect(handled, fixture.id).toBe(true);
+          expect(target.state.doc.eq(before), fixture.id).toBe(true);
+        } else if (fixture.expected === 'converted') {
+          expect(handled, fixture.id).toBe(true);
+          expect(target.state.doc.eq(before), fixture.id).toBe(false);
+          expect(json(target).content![0]!.type).toBe('orderedList');
+          expect(docToMarkdown(markdownToDoc(docToMarkdown(json(target))))).toBe(docToMarkdown(json(target)));
+        } else {
+          expect(handled, fixture.id).toBe(false);
+          target.view.dispatch(target.state.tr.delete(cursor, cursor + 1));
+          expect(docToMarkdown(json(target))).toContain('Bfore');
+        }
+
+        expect(
+          session.execute({ type: 'page.setDoc', id: fixture.id, doc: json(target), now: 48 }).ok,
+          fixture.id,
+        ).toBe(true);
+      }
+
+      expect(await session.flush()).toBe(true);
+      for (const fixture of fixtures) {
+        const saved = vault.text(fixture.path)!;
+        expect(saved, fixture.id).toContain('Neighbor');
+        if (fixture.expected === 'blocked' || fixture.expected === 'converted') {
+          expect(saved, fixture.id).toContain(marker);
+          expect(saved, fixture.id).toContain(palette);
+        }
+      }
+      expect(vault.text('Bullet to ordered.md')).toMatch(/^1\. First/);
+      expect(vault.text('Explicit delete.md')).toContain('Bfore');
+
+      for (const target of editors) target.destroy();
+      editors.length = 0;
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      for (const fixture of fixtures) expect(reopened.protectedReasons.has(fixture.id), fixture.id).toBe(false);
+      expect(reopened.getState().docs['task-to-bullet']!.content![0]!.type).toBe('taskList');
+      expect(reopened.getState().docs['bullet-to-task']!.content![0]!.type).toBe('bulletList');
+      expect(reopened.getState().docs['forward-join']!.content![0]!.content).toHaveLength(2);
+      expect(reopened.getState().docs['forward-join']!.content![0]!.content![1]).toMatchObject({
+        attrs: { backgroundColor: 'yellow' },
+        content: [
+          { type: 'paragraph', content: [{ text: 'First' }] },
+          { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [{ text: 'Second line' }] },
+        ],
+      });
+      expect(reopened.getState().docs['bullet-to-ordered']!.content![0]!.type).toBe('orderedList');
+      expect(docToMarkdown(reopened.getState().docs['explicit-delete']!)).toContain('Bfore');
+    } finally {
+      for (const target of editors) target.destroy();
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('preflights Delete before joining the first list owner into the preceding paragraph', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const palette = '<!-- background: yellow -->';
+    const fixtures = [
+      {
+        path: 'Boundary task dual.md',
+        id: 'boundary-task-dual',
+        source: `Before\n\n- [ ] First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        expected: 'blocked',
+      },
+      {
+        path: 'Boundary bullet first dual.md',
+        id: 'boundary-bullet-first-dual',
+        source: `Before\n\n- \n  ${marker}\n\n  First ${palette}\n\n- Second\n\nNeighbor\n`,
+        expected: 'blocked',
+      },
+      {
+        path: 'Boundary bullet later dual.md',
+        id: 'boundary-bullet-later-dual',
+        source: `Before\n\n- First ${palette}\n\n  ${marker}\n\n  Second line\n\n- Second\n\nNeighbor\n`,
+        expected: 'blocked',
+      },
+      {
+        path: 'Boundary HEX only first.md',
+        id: 'boundary-hex-only-first',
+        source: `Before\n\n- \n  ${marker}\n\n  First\n\n- Second\n\nNeighbor\n`,
+        expected: 'blocked',
+      },
+      {
+        path: 'Boundary native only.md',
+        id: 'boundary-native-only',
+        source: `Before\n\n- First ${palette}\n\n- Second\n\nNeighbor\n`,
+        expected: 'joined',
+      },
+      {
+        path: 'Boundary plain.md',
+        id: 'boundary-plain',
+        source: 'Before\n\n- First\n\n- Second\n\nNeighbor\n',
+        expected: 'joined',
+      },
+    ] as const;
+    const vault = new MemoryVault({
+      ...Object.fromEntries(fixtures.map(({ path, source }) => [path, source])),
+      '.morrow/workspace.json': JSON.stringify({
+        version: 1,
+        pages: Object.fromEntries(fixtures.map(({ path, id }) => [path, { id }])),
+      }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    const editors: Editor[] = [];
+    try {
+      const firstTextPosition = (target: Editor, text: string) => {
+        let position = -1;
+        target.state.doc.descendants((node, pos) => {
+          if (node.isText && typeof node.text === 'string' && node.text.includes(text) && position < 0)
+            position = pos + node.text.indexOf(text);
+        });
+        return position;
+      };
+      for (const fixture of fixtures) {
+        const target = make(session.getState().docs[fixture.id]!);
+        editors.push(target);
+        const position = firstTextPosition(target, 'Before');
+        expect(position, fixture.id).toBeGreaterThan(0);
+        const before = target.state.doc;
+        target.commands.setTextSelection(position + 'Before'.length);
+        const event = new KeyboardEvent('keydown', { key: 'Delete' });
+        let handled = false;
+        target.view.someProp('handleKeyDown', (handler) => {
+          const result = handler(target.view, event);
+          if (result) handled = true;
+          return result;
+        });
+
+        expect(handled, fixture.id).toBe(true);
+        if (fixture.expected === 'blocked') {
+          expect(target.state.doc.eq(before), fixture.id).toBe(true);
+        } else {
+          expect(target.state.doc.eq(before), fixture.id).toBe(false);
+          expect(docToMarkdown(json(target))).toContain('BeforeFirst');
+        }
+        expect(
+          session.execute({ type: 'page.setDoc', id: fixture.id, doc: json(target), now: 49 }).ok,
+          fixture.id,
+        ).toBe(true);
+      }
+
+      expect(await session.flush()).toBe(true);
+      for (const fixture of fixtures) {
+        const saved = vault.text(fixture.path)!;
+        expect(saved, fixture.id).toContain('Neighbor');
+        if (fixture.expected === 'blocked') {
+          expect(saved, fixture.id).toContain(marker);
+          if (fixture.id !== 'boundary-hex-only-first') expect(saved, fixture.id).toContain(palette);
+        }
+      }
+
+      for (const target of editors) target.destroy();
+      editors.length = 0;
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      for (const fixture of fixtures) expect(reopened.protectedReasons.has(fixture.id), fixture.id).toBe(false);
+      for (const fixture of fixtures.filter((entry) => entry.expected === 'blocked')) {
+        expect(reopened.getState().docs[fixture.id]!.content![0]!.type, fixture.id).toBe('paragraph');
+      }
+      for (const fixture of fixtures.filter((entry) => entry.expected === 'joined')) {
+        expect(docToMarkdown(reopened.getState().docs[fixture.id]!)).toContain('BeforeFirst');
+      }
+    } finally {
+      for (const target of editors) target.destroy();
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('preflights the actual Delete join and leaves an empty line before a list removable', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const palette = '<!-- background: yellow -->';
+    const fixtures = [
+      {
+        path: 'Same item paragraph join.md',
+        id: 'same-item-paragraph-join',
+        source: `- [ ] First ${palette}\n\n  ${marker}\n\n  Second line\n\nNeighbor\n`,
+        find: 'First',
+        expected: 'blocked',
+      },
+      {
+        path: 'Next item HEX only.md',
+        id: 'next-item-hex-only',
+        source: `- Before\n- \n  ${marker}\n\n  First\n\nNeighbor\n`,
+        find: 'Before',
+        expected: 'blocked',
+      },
+      {
+        path: 'Different list dual.md',
+        id: 'different-list-dual',
+        source: `- Before\n\n1. First ${palette}\n\n   ${marker}\n\n   Second line\n\nNeighbor\n`,
+        find: 'Before',
+        expected: 'blocked',
+      },
+      {
+        path: 'Empty before dual.md',
+        id: 'empty-before-dual',
+        source: `- \n  ${marker}\n\n  First ${palette}\n\n- Second\n\nNeighbor\n`,
+        find: 'First',
+        expected: 'empty-removed',
+      },
+    ] as const;
+    const vault = new MemoryVault({
+      ...Object.fromEntries(fixtures.map(({ path, source }) => [path, source])),
+      '.morrow/workspace.json': JSON.stringify({
+        version: 1,
+        pages: Object.fromEntries(fixtures.map(({ path, id }) => [path, { id }])),
+      }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    const editors: Editor[] = [];
+    try {
+      const firstTextPosition = (target: Editor, text: string) => {
+        let position = -1;
+        target.state.doc.descendants((node, pos) => {
+          if (node.isText && typeof node.text === 'string' && node.text.includes(text) && position < 0)
+            position = pos + node.text.indexOf(text);
+        });
+        return position;
+      };
+
+      for (const fixture of fixtures) {
+        const target = make(session.getState().docs[fixture.id]!);
+        editors.push(target);
+        if (fixture.expected === 'empty-removed') {
+          target.commands.insertContentAt(0, { type: 'paragraph' });
+          expect(target.state.doc.firstChild?.type.name, fixture.id).toBe('paragraph');
+          expect(target.state.doc.firstChild?.content.size, fixture.id).toBe(0);
+          target.commands.setTextSelection(1);
+        } else {
+          const position = firstTextPosition(target, fixture.find);
+          expect(position, fixture.id).toBeGreaterThan(0);
+          target.commands.setTextSelection(position + fixture.find.length);
+        }
+
+        const before = target.state.doc;
+        const event = new KeyboardEvent('keydown', { key: 'Delete' });
+        let handled = false;
+        target.view.someProp('handleKeyDown', (handler) => {
+          const result = handler(target.view, event);
+          if (result) handled = true;
+          return result;
+        });
+        expect(handled, fixture.id).toBe(true);
+
+        if (fixture.expected === 'blocked') {
+          expect(target.state.doc.eq(before), fixture.id).toBe(true);
+        } else {
+          expect(target.state.doc.eq(before), fixture.id).toBe(false);
+          expect(target.state.doc.firstChild?.type.name, fixture.id).toBe('bulletList');
+        }
+        expect(
+          session.execute({ type: 'page.setDoc', id: fixture.id, doc: json(target), now: 50 }).ok,
+          fixture.id,
+        ).toBe(true);
+      }
+
+      expect(await session.flush()).toBe(true);
+      for (const fixture of fixtures) {
+        const saved = vault.text(fixture.path)!;
+        expect(saved, fixture.id).toContain(marker);
+        if (fixture.id !== 'next-item-hex-only') expect(saved, fixture.id).toContain(palette);
+        expect(saved, fixture.id).toContain('Neighbor');
+      }
+
+      for (const target of editors) target.destroy();
+      editors.length = 0;
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      for (const fixture of fixtures) expect(reopened.protectedReasons.has(fixture.id), fixture.id).toBe(false);
+      expect(reopened.getState().docs['same-item-paragraph-join']!.content![0]!.type).toBe('taskList');
+      expect(reopened.getState().docs['next-item-hex-only']!.content![0]!.type).toBe('bulletList');
+      expect(reopened.getState().docs['different-list-dual']!.content![0]!.type).toBe('bulletList');
+      expect(reopened.getState().docs['empty-before-dual']!.content![0]!.type).toBe('bulletList');
+      expect(docToMarkdown(reopened.getState().docs['empty-before-dual']!)).toContain(marker);
+    } finally {
+      for (const target of editors) target.destroy();
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
     }
   });
 
@@ -619,6 +1886,144 @@ describe('turn into', () => {
       attrs: { backgroundColor: '#2f80ed' },
       content: [{ text: 'Delete me' }],
     });
+  });
+
+  it('flushes and reopens a list paragraph cleared beside a native item palette', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const notePath = 'List empty with palette.md';
+    const source = `- \n  ${marker}\n\n  First <!-- background: yellow -->\n`;
+    const vault = new MemoryVault({
+      [notePath]: source,
+      '.morrow/workspace.json': JSON.stringify({ version: 1, pages: { [notePath]: { id: 'list-empty' } } }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      expect(session.protectedReasons.has('list-empty')).toBe(false);
+      const target = make(session.getState().docs['list-empty']);
+      let textPos = -1;
+      target.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'First') textPos = pos;
+      });
+      expect(textPos).toBeGreaterThan(0);
+      target.view.dispatch(target.state.tr.delete(textPos, textPos + 'First'.length));
+      expect(json(target).content![0]!.content![0]!.attrs?.backgroundColor).toBe('yellow');
+      expect(json(target).content![0]!.content![0]!.content![0]!.attrs?.backgroundColor).toBe('#2f80ed');
+
+      expect(session.execute({ type: 'page.setDoc', id: 'list-empty', doc: json(target), now: 44 }).ok).toBe(
+        true,
+      );
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text(notePath)!;
+      expect(saved).toContain(marker);
+      expect(saved).toContain('<br> <!-- background: yellow -->');
+      expect(target.commands.undo()).toBe(true);
+      expect(json(target)).toMatchObject({
+        content: [
+          {
+            type: 'bulletList',
+            content: [
+              {
+                type: 'listItem',
+                attrs: { backgroundColor: 'yellow' },
+                content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } }],
+              },
+            ],
+          },
+        ],
+      });
+      target.destroy();
+      editor = null;
+
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      expect(reopened.protectedReasons.has('list-empty')).toBe(false);
+      expect(reopened.getState().docs['list-empty']!.content![0]!.content![0]).toMatchObject({
+        attrs: { backgroundColor: 'yellow' },
+        content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [] }],
+      });
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('blocks a task title deletion that would turn a later palette paragraph into the title, then saves an edit', async () => {
+    const marker = '<!-- morrow:block-background:green -->';
+    const notePath = 'Task palette.md';
+    const source = `- [ ] First <!-- background: blue -->\n\n  ${marker}\n\n  Second\n`;
+    const vault = new MemoryVault({
+      [notePath]: source,
+      '.morrow/workspace.json': JSON.stringify({ version: 1, pages: { [notePath]: { id: 'task-page' } } }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    let session: WorkspaceSession | undefined = opened.value;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      expect(session.protectedReasons.has('task-page')).toBe(false);
+      const target = make(session.getState().docs['task-page']);
+      const before = json(target);
+      let firstParagraphPos = -1;
+      let firstParagraphSize = 0;
+      target.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'paragraph' && node.textContent === 'First') {
+          firstParagraphPos = pos;
+          firstParagraphSize = node.nodeSize;
+        }
+      });
+      expect(firstParagraphPos).toBeGreaterThan(0);
+      target.view.dispatch(target.state.tr.delete(firstParagraphPos, firstParagraphPos + firstParagraphSize));
+      expect(json(target)).toEqual(before);
+
+      let firstTextEnd = -1;
+      target.state.doc.descendants((node, pos) => {
+        if (node.isText && node.text === 'First') firstTextEnd = pos + node.nodeSize;
+      });
+      expect(firstTextEnd).toBeGreaterThan(0);
+      target.view.dispatch(target.state.tr.insertText(' edited', firstTextEnd));
+      const editedDoc = json(target);
+      expect(() => docToMarkdown(editedDoc)).not.toThrow();
+      expect(session.execute({ type: 'page.setDoc', id: 'task-page', doc: editedDoc, now: 45 }).ok).toBe(
+        true,
+      );
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text(notePath)!;
+      expect(saved).toContain('First edited');
+      expect(saved).toContain(marker);
+      expect(saved.match(/<!-- morrow:block-background:/g)).toHaveLength(1);
+      target.destroy();
+      editor = null;
+
+      await session.close();
+      session = undefined;
+      const result = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!result.ok) throw new Error(result.error);
+      reopened = result.value;
+      expect(reopened.protectedReasons.has('task-page')).toBe(false);
+      const item = reopened.getState().docs['task-page']!.content![0]!.content![0]!;
+      expect(item).toMatchObject({
+        type: 'taskItem',
+        attrs: { backgroundColor: 'blue' },
+        content: [{ type: 'paragraph' }, { type: 'paragraph', attrs: { backgroundColor: 'green' } }],
+      });
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
   });
 
   it('colours the whole block rather than its words', () => {

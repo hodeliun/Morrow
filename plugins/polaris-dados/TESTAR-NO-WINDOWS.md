@@ -69,6 +69,10 @@ O build verifica os hashes do bundle, manifesto, README e licença de ambos os p
 
 Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parágrafo **Plain neighbor** mantém o fundo normal. Desative o Polaris Documento e alterne entre os temas claro e escuro. Edite o parágrafo vizinho, salve e reabra a nota. A cor legada deve permanecer.
 
+### Fundos de listas e tarefas antigas
+
+Em `Links`, **List item with native background** usa o amarelo nativo do item. O azul HEX aparece em **Legacy list paragraph**, **Legacy task paragraph** e **Old nested list paragraph**. **Legacy numbered paragraph** fica roxo. Edite **Plain neighbor**, salve e reabra a mesma nota para conferir os fundos e a tarefa marcada.
+
 ### Cálculo de fórmula antiga no texto
 
 1. Abra `Resolved target` com o Polaris Dados ativado. A fórmula `2 + 3` exibe **5** no parágrafo.

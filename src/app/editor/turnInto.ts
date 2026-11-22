@@ -5,6 +5,7 @@ import type { Node as PMNode, Schema } from '@tiptap/pm/model';
 import { Plugin, PluginKey, Selection, TextSelection } from '@tiptap/pm/state';
 import type { EditorState } from '@tiptap/pm/state';
 import { liftTarget } from '@tiptap/pm/transform';
+import { normalizeInlineColor } from '../../core/model';
 import { isMac } from '../platform/desktop';
 import { getPreferences } from '../platform/preferences';
 
@@ -46,6 +47,11 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
   const { nodes } = schema;
   const first = item.firstChild;
   if (!first?.isTextblock) return null;
+  const itemBackground = normalizeInlineColor(item.attrs.backgroundColor);
+  const firstBackground = normalizeInlineColor(first.attrs.backgroundColor);
+  const distinctBackgrounds =
+    itemBackground !== null && firstBackground !== null && itemBackground !== firstBackground;
+  const convertedBackground = backgroundAttrs(firstBackground !== null ? first : item);
   const rest = item.content.cut(first.nodeSize);
   const after = (block: PMNode) => {
     const children: PMNode[] = [block];
@@ -60,21 +66,32 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
       const itemType = target.kind === 'taskList' ? nodes.taskItem : nodes.listItem;
       const listType = nodes[target.kind === 'letteredList' ? 'orderedList' : target.kind];
       if (!itemType || !listType) return null;
-      const attrs = target.kind === 'taskList' ? { checked: item.attrs.checked === true } : null;
+      const attrs = {
+        ...(target.kind === 'taskList' ? { checked: item.attrs.checked === true } : {}),
+        ...(item.attrs.backgroundColor != null ? { backgroundColor: item.attrs.backgroundColor } : {}),
+      };
+      if (target.kind === 'taskList' && hasBackground(first)) return null;
       return [listType.create(listAttrs(target), itemType.create(attrs, item.content))];
     }
     case 'paragraph':
-      return nodes.paragraph ? after(nodes.paragraph.create(null, first.content)) : null;
+      if (!nodes.paragraph || distinctBackgrounds) return null;
+      return after(nodes.paragraph.create(convertedBackground, first.content));
     case 'heading':
+      if (!nodes.heading || distinctBackgrounds) return null;
       return nodes.heading
-        ? after(nodes.heading.create({ level: target.level }, lineContent(nodes.heading, first)))
+        ? after(
+            nodes.heading.create(
+              { level: target.level, ...convertedBackground },
+              lineContent(nodes.heading, first),
+            ),
+          )
         : null;
     case 'blockquote':
-      return nodes.blockquote && nodes.paragraph
-        ? after(nodes.blockquote.create(null, nodes.paragraph.create(null, first.content)))
+      return nodes.blockquote && nodes.paragraph && !distinctBackgrounds
+        ? after(nodes.blockquote.create(null, nodes.paragraph.create(convertedBackground, first.content)))
         : null;
     case 'codeBlock': {
-      if (!nodes.codeBlock) return null;
+      if (!nodes.codeBlock || hasBackground(first) || itemBackground !== null) return null;
       const text = first.textContent;
       return after(
         nodes.codeBlock.create(
@@ -85,7 +102,15 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
     }
     case 'toggle': {
       const { details, detailsSummary, detailsContent, paragraph } = nodes;
-      if (!details || !detailsSummary || !detailsContent || !paragraph) return null;
+      if (
+        !details ||
+        !detailsSummary ||
+        !detailsContent ||
+        !paragraph ||
+        hasBackground(first) ||
+        itemBackground !== null
+      )
+        return null;
       return [
         details.create({ open: true }, [
           detailsSummary.create(
@@ -99,6 +124,14 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
     default:
       return null;
   }
+}
+
+function hasBackground(node: PMNode): boolean {
+  return normalizeInlineColor(node.attrs.backgroundColor) !== null;
+}
+
+function backgroundAttrs(node: PMNode): Record<string, unknown> | null {
+  return node.attrs.backgroundColor == null ? null : { backgroundColor: node.attrs.backgroundColor };
 }
 
 // turns one item of a list into something else the way notion does. the list is cut around it, so the
@@ -141,6 +174,15 @@ export function turnListItem(editor: Editor, pos: number, target: TurnTarget): b
   editor.view.dispatch(tr.scrollIntoView());
   editor.view.focus();
   return true;
+}
+
+/** Checks the same list-item conversion guards without changing the editor. */
+export function canTurnListItem(editor: Editor, pos: number, target: TurnTarget): boolean {
+  const { state } = editor;
+  const item = state.doc.nodeAt(pos);
+  if (!item || !LIST_ITEMS.has(item.type.name)) return false;
+  const list = state.doc.resolve(pos).parent;
+  return LISTS.has(list.type.name) && convertItem(state.schema, item, target) !== null;
 }
 
 // the list item the cursor is writing the first line of, so a / command there changes only that item
@@ -263,9 +305,10 @@ export const IndentedLines = Extension.create({
         if ($from.parent.content.size === 0 && lastLine && lastItem) {
           const { tr } = editor.state;
           const end = $from.after(-2);
+          const paragraphAttrs = backgroundAttrs($from.parent);
           tr.delete($from.before(), $from.after());
           const at = tr.mapping.map(end);
-          tr.insert(at, editor.schema.nodes.paragraph!.create());
+          tr.insert(at, editor.schema.nodes.paragraph!.create(paragraphAttrs));
           tr.setSelection(TextSelection.create(tr.doc, at + 1));
           editor.view.dispatch(tr.scrollIntoView());
           return true;

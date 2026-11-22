@@ -42,7 +42,7 @@ import { editMathNear } from './Extras';
 import { insertFiles } from './Media';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
-import { listItemAtCursor, turnListItem } from './turnInto';
+import { canTurnListItem, listItemAtCursor, turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
 
 export const SLASH_COMMAND_PLUGIN_KEY = new PluginKey('slashCommand');
@@ -96,6 +96,8 @@ const turnItem = (editor: Editor, range: Range, target: TurnTarget): boolean => 
       ? 'letteredList'
       : list;
   if (kind === target.kind) return false;
+  // Check before deleting the slash command. Unsupported conversions leave the text and its color intact.
+  if (!canTurnListItem(editor, item, target)) return true;
   chain(editor, range).run();
   turnListItem(editor, item, target);
   return true;

@@ -734,7 +734,7 @@ describe('colours', () => {
     expect(markdownToDoc(serialized)).toEqual(doc);
   });
 
-  it('does not interpret orphaned, duplicate, inline, fenced, cell, list, or details markers', () => {
+  it('does not interpret orphaned, duplicate, inline, fenced, cell, task-first, or details markers', () => {
     const marker = '<!-- morrow:block-background:#2f80ed -->';
     const cases = [
       marker,
@@ -742,13 +742,60 @@ describe('colours', () => {
       `Inline ${marker} text.`,
       `\`\`\`markdown\n${marker}\n\`\`\``,
       `| ${marker} |\n| --- |\n| Cell |`,
-      `- First item\n\n  ${marker}\n\n  Nested paragraph.`,
+      `- \n  ${marker}\n\n  [ ] First task paragraph.`,
+      `- \n  <!-- morrow:block-background:green -->\n\n  [ ] First task paragraph.`,
       `<details>\n<summary>Hidden</summary>\n\n${marker}\n\nInside.\n\n</details>`,
     ];
     for (const source of cases) {
       const doc = markdownToDoc(source);
       expect(hasBlockBackground(doc), source).toBe(false);
     }
+  });
+
+  it('recognizes direct paragraphs in simple, numbered, nested, and later task list positions', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const source = [
+      '- ',
+      `  ${marker}`,
+      '  First bullet paragraph.',
+      '',
+      '3. Numbered item',
+      '',
+      `   ${marker}`,
+      '',
+      '   Numbered follow-up.',
+      '',
+      '- Parent item',
+      '  - Nested first paragraph.',
+      '',
+      `    ${marker}`,
+      '',
+      '    Nested follow-up.',
+      '',
+      '- [ ] Task title',
+      '',
+      `  ${marker}`,
+      '',
+      '  Later task paragraph.',
+      '',
+      '- ',
+      `  ${marker}`,
+      '  <br>',
+      '',
+    ].join('\n');
+    const doc = markdownToDoc(source);
+    const inspections = inspectBlockBackgroundMarkers(source);
+    expect(inspections).toHaveLength(5);
+    expect(inspections.every((inspection) => inspection.approved)).toBe(true);
+    const paragraph = (node: DocNode) =>
+      node.type === 'paragraph' && node.attrs?.backgroundColor === '#2f80ed';
+    expect(paragraph(doc.content![0]!.content![0]!.content![0]!)).toBe(true);
+    expect(paragraph(doc.content![1]!.content![0]!.content![1]!)).toBe(true);
+    expect(paragraph(doc.content![2]!.content![0]!.content![1]!.content![0]!.content![1]!)).toBe(true);
+    expect(doc.content![3]!.type).toBe('taskList');
+    expect(paragraph(doc.content![3]!.content![0]!.content![1]!)).toBe(true);
+    expect(paragraph(doc.content![4]!.content![0]!.content![0]!)).toBe(true);
+    expect(markdownToDoc(docToMarkdown(doc))).toEqual(doc);
   });
 
   it('proves the normalized marker owner after embeds and callouts are converted', () => {
@@ -770,19 +817,28 @@ describe('colours', () => {
     }
 
     const represented = `${marker}\n\nRead [the file](assets/a.pdf) safely.\n`;
-    expect(inspectBlockBackgroundMarkers(represented, (href) => resolveFile(href) !== null)[0]?.approved).toBe(
-      true,
-    );
     expect(
-      markdownToDoc(represented, { resolveFile }).content?.[0]?.attrs?.backgroundColor,
-    ).toBe('#2f80ed');
+      inspectBlockBackgroundMarkers(represented, (href) => resolveFile(href) !== null)[0]?.approved,
+    ).toBe(true);
+    expect(markdownToDoc(represented, { resolveFile }).content?.[0]?.attrs?.backgroundColor).toBe('#2f80ed');
   });
 
-  it('refuses to serialize custom backgrounds in structures outside the codec allowlist', () => {
+  it('refuses custom backgrounds on items and task first paragraphs, not direct list paragraphs', () => {
     const paragraph = { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [text('No')] };
     const docs: DocNode[] = [
-      { type: 'doc', content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [paragraph] }] }] },
-      { type: 'doc', content: [{ type: 'details', content: [{ type: 'detailsContent', content: [paragraph] }] }] },
+      {
+        type: 'doc',
+        content: [
+          {
+            type: 'taskList',
+            content: [{ type: 'taskItem', attrs: { checked: false }, content: [paragraph] }],
+          },
+        ],
+      },
+      {
+        type: 'doc',
+        content: [{ type: 'details', content: [{ type: 'detailsContent', content: [paragraph] }] }],
+      },
       {
         type: 'doc',
         content: [
@@ -792,9 +848,126 @@ describe('colours', () => {
           },
         ],
       },
-      { type: 'doc', content: [{ type: 'listItem', attrs: { backgroundColor: '#2f80ed' }, content: [p(text('No'))] }] },
+      {
+        type: 'doc',
+        content: [{ type: 'listItem', attrs: { backgroundColor: '#2f80ed' }, content: [p(text('No'))] }],
+      },
     ];
     for (const doc of docs) expect(() => docToMarkdown(doc)).toThrow(/custom block backgrounds/i);
+  });
+
+  it('refuses a palette background on the first task paragraph', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: false },
+              content: [{ type: 'paragraph', attrs: { backgroundColor: 'green' }, content: [text('First')] }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(() => docToMarkdown(doc)).toThrow(/palette backgrounds.*task first paragraph/i);
+  });
+
+  it('round trips paragraph backgrounds beside independent list-item palette backgrounds', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              attrs: { backgroundColor: 'yellow' },
+              content: [
+                { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [text('First')] },
+                p(text('Plain follow-up')),
+                {
+                  type: 'paragraph',
+                  attrs: { backgroundColor: 'green' },
+                  content: [text('Named follow-up')],
+                },
+                { type: 'paragraph', attrs: { backgroundColor: '#12ab34' }, content: [] },
+              ],
+            },
+            {
+              type: 'listItem',
+              content: [
+                p(text('Parent')),
+                {
+                  type: 'bulletList',
+                  content: [
+                    {
+                      type: 'listItem',
+                      content: [
+                        {
+                          type: 'paragraph',
+                          attrs: { backgroundColor: '#2f80ed' },
+                          content: [text('Nested')],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'taskList',
+          content: [
+            {
+              type: 'taskItem',
+              attrs: { checked: true, backgroundColor: 'blue' },
+              content: [
+                p(text('Task first line')),
+                {
+                  type: 'paragraph',
+                  attrs: { backgroundColor: '#12ab34' },
+                  content: [text('Task follow-up')],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const out = docToMarkdown(doc);
+    expect(out).toContain(`- \n  ${marker}\n\n  First <!-- background: yellow -->`);
+    expect(out).toContain('<!-- background: blue -->');
+    expect(out).toContain('<!-- morrow:block-background:green -->');
+    expect(out).toContain('<!-- morrow:block-background:#12ab34 -->');
+    expect(markdownToDoc(out)).toEqual(doc);
+  });
+
+  it('round trips an empty colored first paragraph with its list-item palette', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [
+            {
+              type: 'listItem',
+              attrs: { backgroundColor: 'yellow' },
+              content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [] }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const source = docToMarkdown(doc);
+    expect(source).toBe(`- \n  ${marker}\n\n  <br> <!-- background: yellow -->\n`);
+    expect(markdownToDoc(source)).toEqual(doc);
   });
 
   it('keeps the existing title extraction for a native named background on the first H1', () => {

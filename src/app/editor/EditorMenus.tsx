@@ -940,7 +940,15 @@ function linkable(editor: Editor, pos: number): boolean {
 // blocks the handle menu can turn into something else: lines of text, single list items, quotes and toggles
 const TURNABLE = new Set(['listItem', 'taskItem', 'blockquote', 'details']);
 const BACKGROUND_OWNER_TYPES = new Set(['paragraph', 'heading', 'blockquote']);
-const BACKGROUND_SAFE_TURNS = new Set(['columns', 'paragraph', 'heading', 'blockquote']);
+const BACKGROUND_SAFE_TURNS = new Set([
+  'columns',
+  'paragraph',
+  'heading',
+  'blockquote',
+  'bulletList',
+  'orderedList',
+  'letteredList',
+]);
 function turnable(editor: Editor, pos: number): boolean {
   const node = editor.state.doc.nodeAt(pos);
   return !!node && (node.isTextblock || TURNABLE.has(node.type.name));
@@ -965,6 +973,65 @@ function firstTextPosition(editor: Editor, pos: number): number | null {
 export function turnInto(editor: Editor, pos: number, target: TurnTarget): void {
   const node = editor.state.doc.nodeAt(pos);
   if (!node) return;
+  const hasBackground = normalizeInlineColor(node.attrs.backgroundColor) !== null;
+  const $position = editor.state.doc.resolve(pos);
+  let insideListItem = false;
+  for (let depth = 1; depth <= $position.depth; depth++) {
+    const name = $position.node(depth).type.name;
+    if (name === 'listItem' || name === 'taskItem') insideListItem = true;
+  }
+  if (
+    node.type.name === 'paragraph' &&
+    hasBackground &&
+    insideListItem &&
+    !['paragraph', 'bulletList', 'orderedList', 'letteredList'].includes(target.kind)
+  )
+    return;
+  const first = node.firstChild;
+  const isListItem = node.type.name === 'listItem' || node.type.name === 'taskItem';
+  const firstListParagraphHasBackground =
+    isListItem &&
+    first?.type.name === 'paragraph' &&
+    normalizeInlineColor(first.attrs.backgroundColor) !== null;
+  const itemBackground = isListItem ? normalizeInlineColor(node.attrs.backgroundColor) : null;
+  const firstBackground = firstListParagraphHasBackground
+    ? normalizeInlineColor(first.attrs.backgroundColor)
+    : null;
+  const distinctListBackgrounds =
+    itemBackground !== null && firstBackground !== null && itemBackground !== firstBackground;
+  if (
+    firstListParagraphHasBackground &&
+    (target.kind === 'taskList' ||
+      ![
+        'columns',
+        'paragraph',
+        'heading',
+        'blockquote',
+        'bulletList',
+        'orderedList',
+        'letteredList',
+      ].includes(target.kind))
+  ) {
+    return;
+  }
+  if (distinctListBackgrounds && ['paragraph', 'heading', 'blockquote'].includes(target.kind)) {
+    return;
+  }
+  if (
+    itemBackground !== null &&
+    ![
+      'columns',
+      'paragraph',
+      'heading',
+      'blockquote',
+      'bulletList',
+      'orderedList',
+      'letteredList',
+      'taskList',
+    ].includes(target.kind)
+  ) {
+    return;
+  }
   // a whole block goes into the first column as it is, whatever it was
   if (target.kind === 'columns') {
     intoColumns(editor, pos, pos + node.nodeSize, target.count);
@@ -1006,24 +1073,28 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
   const chain = editor.chain().focus().setTextSelection(at).clearNodes();
   switch (target.kind) {
     case 'paragraph':
-      if (customBackground)
-        chain.updateAttributes('paragraph', { backgroundColor: normalizedBackground });
+      if (customBackground) chain.updateAttributes('paragraph', { backgroundColor: normalizedBackground });
       chain.run();
       return;
     case 'heading':
       chain.setHeading({ level: target.level });
-      if (customBackground)
-        chain.updateAttributes('heading', { backgroundColor: normalizedBackground });
+      if (customBackground) chain.updateAttributes('heading', { backgroundColor: normalizedBackground });
       chain.run();
       return;
     case 'bulletList':
-      chain.toggleBulletList().run();
+      chain.toggleBulletList();
+      if (customBackground) chain.updateAttributes('paragraph', { backgroundColor: normalizedBackground });
+      chain.run();
       return;
     case 'orderedList':
-      chain.toggleOrderedList().run();
+      chain.toggleOrderedList();
+      if (customBackground) chain.updateAttributes('paragraph', { backgroundColor: normalizedBackground });
+      chain.run();
       return;
     case 'letteredList':
-      chain.toggleOrderedList().updateAttributes('orderedList', { type: 'a' }).run();
+      chain.toggleOrderedList().updateAttributes('orderedList', { type: 'a' });
+      if (customBackground) chain.updateAttributes('paragraph', { backgroundColor: normalizedBackground });
+      chain.run();
       return;
     case 'callout':
       chain.setCallout().run();
@@ -1048,8 +1119,7 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
       return;
     case 'blockquote':
       chain.setBlockquote();
-      if (customBackground)
-        chain.updateAttributes('blockquote', { backgroundColor: normalizedBackground });
+      if (customBackground) chain.updateAttributes('blockquote', { backgroundColor: normalizedBackground });
       chain.run();
       return;
     case 'codeBlock':

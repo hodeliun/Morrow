@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
+import { findUnrepresentablePageContent } from '../../src/core/vault/compatibility';
 
 const execFileAsync = promisify(execFile);
 const pluginDirectory = path.resolve(import.meta.dirname);
@@ -116,6 +117,7 @@ describe('Polaris Documento Windows fixture option', () => {
     const workspace = JSON.parse(await read('.morrow/workspace.json'));
     const plugins = JSON.parse(await read('.morrow/plugins.json'));
     const links = await read('Links.md');
+    expect(findUnrepresentablePageContent(links)).toBeNull();
     const relation = await read('Relations/Relation sample.md');
     const relationDatabase = await read('Relations.md');
     const resolved = await read('Resolved target.md');
@@ -127,6 +129,17 @@ describe('Polaris Documento Windows fixture option', () => {
     expect(links).toContain('[External documentation](https://example.com/docs)');
     expect(links).toContain(
       '<!-- morrow:block-background:#a1b2c3 -->\nLegacy HEX background.\n\nPlain neighbor.',
+    );
+
+    expect(links).toContain(
+      '- Section\n  - Nested section\n    - <!-- morrow:block-background:#3867b3 -->\n' +
+        '      Old nested list paragraph.\n\n1. \n   <!-- morrow:block-background:#7c40ab -->\n' +
+        '\n   Legacy numbered paragraph.',
+    );
+    expect(links).toContain(
+      '- List item with native background <!-- background: yellow -->\n\n' +
+        '  <!-- morrow:block-background:#2f80ed -->\n\n  Legacy list paragraph.\n\n' +
+        '  - [x] Nested task\n\n    <!-- morrow:block-background:#2f80ed -->\n\n    Legacy task paragraph.',
     );
     expect(relationDatabase).toContain('type: relation');
     expect(relation).toContain('"[[Resolved target]]"');

@@ -21,15 +21,40 @@ export function isHexBlockBackground(value: unknown): value is `#${string}` {
 }
 
 const SUPPORTED_HEX_BACKGROUND_OWNERS = new Set(['paragraph', 'heading', 'blockquote']);
-const SUPPORTED_HEX_BACKGROUND_ANCESTORS = new Set(['doc', 'columns', 'column', 'blockquote']);
+const SUPPORTED_HEX_BACKGROUND_ANCESTORS = new Set([
+  'doc',
+  'columns',
+  'column',
+  'blockquote',
+  'bulletList',
+  'orderedList',
+  'taskList',
+  'listItem',
+  'taskItem',
+]);
+const SUPPORTED_LIST_ITEM_CONTAINERS = new Set(['bulletList', 'orderedList']);
+const SUPPORTED_HEX_BACKGROUND_NON_LIST_ANCESTORS = new Set(['doc', 'columns', 'column', 'blockquote']);
 
 /** Shared owner-chain rule used by parsing, serialization, and editor transaction validation. */
 export function supportsHexBlockBackgroundOwner(
   ownerType: string,
   ancestorTypes: readonly string[],
+  firstTaskItemParagraph = false,
 ): boolean {
+  const parentType = ancestorTypes.at(-1);
+  const listContainerType = ancestorTypes.at(-2);
+  const directListParagraph =
+    ownerType === 'paragraph' && (parentType === 'listItem' || parentType === 'taskItem');
+  if (directListParagraph) {
+    return (
+      ((parentType === 'taskItem' && listContainerType === 'taskList') ||
+        (parentType === 'listItem' && SUPPORTED_LIST_ITEM_CONTAINERS.has(listContainerType ?? ''))) &&
+      !(parentType === 'taskItem' && firstTaskItemParagraph) &&
+      ancestorTypes.every((ancestor) => SUPPORTED_HEX_BACKGROUND_ANCESTORS.has(ancestor))
+    );
+  }
   return (
     SUPPORTED_HEX_BACKGROUND_OWNERS.has(ownerType) &&
-    ancestorTypes.every((ancestor) => SUPPORTED_HEX_BACKGROUND_ANCESTORS.has(ancestor))
+    ancestorTypes.every((ancestor) => SUPPORTED_HEX_BACKGROUND_NON_LIST_ANCESTORS.has(ancestor))
   );
 }

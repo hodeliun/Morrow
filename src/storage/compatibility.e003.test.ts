@@ -498,13 +498,16 @@ Synthetic row.
       expect(reopened.getState().docs['note-page']!.content?.[0]?.attrs?.backgroundColor).toBe('#2f80ed');
       expect(reopened.getState().docs['note-page']!.content?.[2]?.content?.[0]?.text).toBe(marker);
       expect(
-        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[0]?.attrs?.backgroundColor,
+        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[0]?.attrs
+          ?.backgroundColor,
       ).toBe('#12ab34');
       expect(
-        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[1]?.attrs?.backgroundColor,
+        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[1]?.attrs
+          ?.backgroundColor,
       ).toBe('yellow');
       expect(
-        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[2]?.attrs?.backgroundColor,
+        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[2]?.attrs
+          ?.backgroundColor,
       ).toBe('red');
     } finally {
       if (first && !first.isClosed) await first.close();
@@ -512,44 +515,297 @@ Synthetic row.
     }
   });
 
-  it('protects the page when an identical marker also appears in a list', async () => {
+  it('opens and saves identical marker text on a root paragraph and direct list paragraphs', async () => {
     const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const presetMarker = '<!-- morrow:block-background:green -->';
     const source = [
       marker,
       'Supported paragraph.',
       '',
-      '- List item',
+      '- ',
+      `  ${marker}`,
+      '  First list paragraph.',
       '',
       `  ${marker}`,
       '',
-      '  Unsupported list child.',
+      '  Second list paragraph.',
+      '',
+      `  ${presetMarker}`,
+      '',
+      '  Named preset paragraph.',
       '',
     ].join('\n');
-    expect(findUnrepresentablePageContent(source)).toMatch(/morrow block marker/i);
+    expect(findUnrepresentablePageContent(source)).toBeNull();
     const vault = new ObservedMemoryVault({
       'Notes.md': source,
       '.morrow/workspace.json': registryFor({ 'Notes.md': 'note-page' }),
     });
     let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
     try {
       session = await open(vault);
-      expect(session.protectedReasons.get('note-page')).toMatch(/morrow block marker/i);
-      expect(vault.applyCalls).toHaveLength(0);
-      expect(session.getState().docs['note-page']).toEqual({
-        type: 'doc',
-        content: [{ type: 'rawBlock', attrs: { text: source } }],
-      });
+      expect(session.protectedReasons.has('note-page')).toBe(false);
+      const original = session.getState().docs['note-page']!;
+      expect(docToMarkdown(original).match(/<!-- morrow:block-background:/g)).toHaveLength(4);
+      expect(original.content?.[1]?.content?.[0]?.content?.[2]?.attrs?.backgroundColor).toBe('green');
+      const edited: DocNode = {
+        ...original,
+        content: [
+          ...(original.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Neighbor edit.' }] },
+        ],
+      };
+      expect(session.execute({ type: 'page.setDoc', id: 'note-page', doc: edited, now: 41 }).ok).toBe(true);
       expect(await session.flush()).toBe(true);
-      expect(vault.text('Notes.md')).toBe(source);
-      expect(vault.applyCalls).toHaveLength(0);
+      const saved = vault.text('Notes.md')!;
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      expect(saved.match(/<!-- morrow:block-background:/g)).toHaveLength(4);
+      expect(saved).toContain('Neighbor edit.');
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('note-page')).toBe(false);
+      const reopenedMarkdown = docToMarkdown(reopened.getState().docs['note-page']!);
+      expect(reopenedMarkdown.match(/<!-- morrow:block-background:/g)).toHaveLength(4);
+      expect(reopenedMarkdown).toContain('Neighbor edit.');
     } finally {
       if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
     }
   });
 
-  it('protects a block marker in an indented nested-list HTML block', async () => {
+  it('preserves a block marker in an indented nested-list paragraph across save and reopen', async () => {
     const marker = '<!-- morrow:block-background:#2f80ed -->';
     const source = `- Pai\n  - Filho\n\n    ${marker}\n\n    Parágrafo do filho\n`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    const vault = new ObservedMemoryVault({
+      'Notes.md': source,
+      '.morrow/workspace.json': registryFor({ 'Notes.md': 'note-page' }),
+    });
+    let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      expect(session.protectedReasons.has('note-page')).toBe(false);
+      const original = session.getState().docs['note-page']!;
+      expect(docToMarkdown(original)).toContain(marker);
+      const edited: DocNode = {
+        ...original,
+        content: [
+          ...(original.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Neighbor edit.' }] },
+        ],
+      };
+      expect(session.execute({ type: 'page.setDoc', id: 'note-page', doc: edited, now: 42 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text('Notes.md')!;
+      expect(saved).toContain(marker);
+      expect(saved).toContain('Neighbor edit.');
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('note-page')).toBe(false);
+      expect(docToMarkdown(reopened.getState().docs['note-page']!)).toContain(marker);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('round-trips a published same-line nested-list background with mixed scanner controls', async () => {
+    const nestedMarker = '<!-- morrow:block-background:#2f80ed -->';
+    const rootMarker = '<!-- morrow:block-background:#7c40ab -->';
+    const codeMarker = '<!-- morrow:block-background:#cafe00 -->';
+    const fencedMarker = '<!-- morrow:block-background:#beef00 -->';
+    const inlineMarker = '<!-- morrow:block-background:#deaf00 -->';
+    const source = [
+      '- One',
+      '  - Two',
+      `    - ${nestedMarker}`,
+      '      Nested',
+      '',
+      rootMarker,
+      'Root',
+      '',
+      `    ${codeMarker}`,
+      '    Literal code marker.',
+      '',
+      '~~~markdown',
+      fencedMarker,
+      '~~~',
+      '',
+      `Inline code: \`${inlineMarker}\`.`,
+      '',
+    ].join('\n');
+    expect(
+      inspectBlockBackgroundMarkers(source).map((marker) => [marker.comment, marker.approved, marker.sourceLine]),
+    ).toEqual([
+      [nestedMarker, true, 2],
+      [rootMarker, true, 5],
+    ]);
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const vault = new ObservedMemoryVault({
+      'Published nested list.md': source,
+      '.morrow/workspace.json': registryFor({ 'Published nested list.md': 'published-nested-list' }),
+    });
+    let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      expect(session.protectedReasons.has('published-nested-list')).toBe(false);
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(vault.text('Published nested list.md')).toBe(source);
+      const original = session.getState().docs['published-nested-list']!;
+      const edited: DocNode = {
+        ...original,
+        content: [
+          ...(original.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Neighbor edit.' }] },
+        ],
+      };
+      expect(
+        session.execute({ type: 'page.setDoc', id: 'published-nested-list', doc: edited, now: 44 }).ok,
+      ).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text('Published nested list.md')!;
+      expect(saved).toContain(nestedMarker);
+      expect(saved).toContain(rootMarker);
+      expect(saved).toContain(`\`\`\`markdown\n${fencedMarker}\n\`\`\``);
+      expect(saved).toContain(`\`${inlineMarker}\``);
+      expect(saved).toContain(codeMarker);
+      expect(saved).toContain('Neighbor edit.');
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('published-nested-list')).toBe(false);
+      const reopenedDoc = reopened.getState().docs['published-nested-list']!;
+      expect(docToMarkdown(reopenedDoc)).toContain(nestedMarker);
+      expect(docToMarkdown(reopenedDoc)).toContain(rootMarker);
+      expect(docToMarkdown(reopenedDoc)).toContain('Neighbor edit.');
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('does not whitelist trailing content or other markers after a nested-list prefix', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const trailingContent = `- One\n  - Two\n    - ${marker} extra\n      Nested\n`;
+    const unknownMarker = '- One\n  - Two\n    - <!-- morrow:future-marker -->\n      Nested\n';
+    expect(findUnrepresentablePageContent(trailingContent)).toMatch(/morrow block marker/i);
+    expect(findUnrepresentablePageContent(unknownMarker)).toMatch(/morrow block marker/i);
+  });
+
+  it('keeps mixed root, nested-task, and ordered-list backgrounds editable across save and reopen', async () => {
+    const rootMarker = '<!-- morrow:block-background:#a1b2c3 -->';
+    const nestedMarker = '<!-- morrow:block-background:#2f80ed -->';
+    const orderedMarker = '<!-- morrow:block-background:#7c40ab -->';
+    const codeMarker = '<!-- morrow:block-background:#cafe00 -->';
+    const fencedMarker = '<!-- morrow:block-background:#beef00 -->';
+    const inlineMarker = '<!-- morrow:block-background:#deaf00 -->';
+    const source = [
+      rootMarker,
+      'Root colored paragraph.',
+      '',
+      `    ${codeMarker}`,
+      '    Literal code marker.',
+      '',
+      '```markdown',
+      fencedMarker,
+      '```',
+      '',
+      `Inline code: \`${inlineMarker}\`.`,
+      '',
+      '- Parent item',
+      '  - [x] Nested task',
+      '',
+      `    ${nestedMarker}`,
+      '',
+      '    Nested shaded paragraph.',
+      '',
+      '1. ',
+      `   ${orderedMarker}`,
+      '',
+      '   Ordered shaded paragraph.',
+      '',
+    ].join('\n');
+    expect(
+      inspectBlockBackgroundMarkers(source).map((marker) => [marker.comment, marker.approved, marker.sourceLine]),
+    ).toEqual([
+      [rootMarker, true, 0],
+      [nestedMarker, true, 15],
+      [orderedMarker, true, 20],
+    ]);
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const vault = new ObservedMemoryVault({
+      'Mixed backgrounds.md': source,
+      '.morrow/workspace.json': registryFor({ 'Mixed backgrounds.md': 'mixed-backgrounds' }),
+    });
+    let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      expect(session.protectedReasons.has('mixed-backgrounds')).toBe(false);
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(vault.text('Mixed backgrounds.md')).toBe(source);
+      const original = session.getState().docs['mixed-backgrounds']!;
+      expect(docToMarkdown(original)).toContain(nestedMarker);
+      expect(docToMarkdown(original)).toContain(orderedMarker);
+      expect(docToMarkdown(original)).toContain(`${codeMarker}\n`);
+
+      const edited: DocNode = {
+        ...original,
+        content: [
+          ...(original.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Neighbor edit.' }] },
+        ],
+      };
+      expect(
+        session.execute({ type: 'page.setDoc', id: 'mixed-backgrounds', doc: edited, now: 43 }).ok,
+      ).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text('Mixed backgrounds.md')!;
+      expect(saved).toContain('Neighbor edit.');
+      expect(saved).toContain(nestedMarker);
+      expect(saved).toContain(orderedMarker);
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      expect(vault.applyCalls.length).toBeGreaterThan(0);
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('mixed-backgrounds')).toBe(false);
+      expect(docToMarkdown(reopened.getState().docs['mixed-backgrounds']!)).toContain('Neighbor edit.');
+      expect(docToMarkdown(reopened.getState().docs['mixed-backgrounds']!)).toContain(nestedMarker);
+      expect(docToMarkdown(reopened.getState().docs['mixed-backgrounds']!)).toContain(orderedMarker);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('does not whitelist an indented code marker as a background owner', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const indentedCode = `    ${marker}\n    Literal code marker.\n`;
+    expect(inspectBlockBackgroundMarkers(indentedCode)).toHaveLength(0);
+    expect(findUnrepresentablePageContent(indentedCode)).toBeNull();
+    const codeBlock = markdownToDoc(indentedCode).content?.[0];
+    expect(codeBlock?.type).toBe('codeBlock');
+    expect(codeBlock?.content?.[0]?.text).toContain(marker);
+    expect(codeBlock?.content?.[0]?.text).toContain('Literal code marker.');
+  });
+
+  it('protects an ambiguous marker on the first task paragraph without writing', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const source = `- \n  ${marker}\n\n  [ ] Task first paragraph\n`;
+    expect(inspectBlockBackgroundMarkers(source)[0]?.approved).toBe(false);
     expect(findUnrepresentablePageContent(source)).toMatch(/morrow block marker/i);
     const vault = new ObservedMemoryVault({
       'Notes.md': source,
@@ -559,11 +815,6 @@ Synthetic row.
     try {
       session = await open(vault);
       expect(session.protectedReasons.get('note-page')).toMatch(/morrow block marker/i);
-      expect(session.getState().docs['note-page']).toEqual({
-        type: 'doc',
-        content: [{ type: 'rawBlock', attrs: { text: source } }],
-      });
-      expect(vault.applyCalls).toHaveLength(0);
       expect(await session.flush()).toBe(true);
       expect(vault.text('Notes.md')).toBe(source);
       expect(vault.applyCalls).toHaveLength(0);
@@ -594,9 +845,7 @@ Synthetic row.
     };
     expect(findUnrepresentablePageContent(attachment[1]!)).toMatch(/morrow block marker/i);
     expect(findUnrepresentablePageContent(callout[1]!)).toMatch(/morrow block marker/i);
-    expect(
-      inspectBlockBackgroundMarkers(`${marker}\n\n![image](assets/a.png)\n`)[0]?.approved,
-    ).toBe(false);
+    expect(inspectBlockBackgroundMarkers(`${marker}\n\n![image](assets/a.png)\n`)[0]?.approved).toBe(false);
     expect(
       inspectBlockBackgroundMarkers(`${marker}\n\nBefore ![image](assets/a.png) after\n`)[0]?.approved,
     ).toBe(false);
@@ -691,7 +940,9 @@ Synthetic row.
           },
         ],
       };
-      expect(session.execute({ type: 'page.setDoc', id: 'heading-page', doc: headingDoc, now: 42 }).ok).toBe(true);
+      expect(session.execute({ type: 'page.setDoc', id: 'heading-page', doc: headingDoc, now: 42 }).ok).toBe(
+        true,
+      );
       expect(await session.flush()).toBe(true);
       const saved = vault.text(noteFile)!;
       expect(saved).toMatch(/^---\ntitle: Notes\n---\n/);
@@ -740,7 +991,9 @@ Synthetic row.
       expect(vault.text('assets/a.pdf')).toBe('attachment bytes');
       const noteWriteAttempts = vault.applyCalls
         .slice(callsBeforeEdit)
-        .flatMap((batch) => batch.filter((operation) => operation.op === 'write' && operation.path === noteFile));
+        .flatMap((batch) =>
+          batch.filter((operation) => operation.op === 'write' && operation.path === noteFile),
+        );
       expect(noteWriteAttempts).toHaveLength(1);
     } finally {
       if (session && !session.isClosed) await session.close();
@@ -753,7 +1006,10 @@ Synthetic row.
     const empty: DocNode = { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [] };
     const sources = [
       docToMarkdown({ type: 'doc', content: [empty] }),
-      docToMarkdown({ type: 'doc', content: [empty, { type: 'paragraph', content: [{ type: 'text', text: 'After' }] }] }),
+      docToMarkdown({
+        type: 'doc',
+        content: [empty, { type: 'paragraph', content: [{ type: 'text', text: 'After' }] }],
+      }),
     ];
     for (const source of sources) {
       expect(source).toContain(`${marker}\n<br>`);
@@ -779,7 +1035,9 @@ Synthetic row.
     try {
       session = await open(vault);
       const emptyDoc: DocNode = { type: 'doc', content: [empty] };
-      expect(session.execute({ type: 'page.setDoc', id: 'empty-page', doc: emptyDoc, now: 40 }).ok).toBe(true);
+      expect(session.execute({ type: 'page.setDoc', id: 'empty-page', doc: emptyDoc, now: 40 }).ok).toBe(
+        true,
+      );
       expect(await session.flush()).toBe(true);
       const saved = vault.text(noteFile)!;
       expect(saved).toContain(`${marker}\n<br>`);
@@ -800,6 +1058,52 @@ Synthetic row.
     }
   });
 
+  it('reopens an empty colored paragraph inside a list after a neighboring edit', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const empty: DocNode = { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [] };
+    const source = docToMarkdown({
+      type: 'doc',
+      content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [empty] }] }],
+    });
+    expect(source).toContain(`${marker}`);
+    expect(inspectBlockBackgroundMarkers(source)[0]?.approved).toBe(true);
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    const vault = new ObservedMemoryVault({
+      'List empty.md': source,
+      '.morrow/workspace.json': registryFor({ 'List empty.md': 'list-empty' }),
+    });
+    let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      expect(session.protectedReasons.has('list-empty')).toBe(false);
+      const current = session.getState().docs['list-empty']!;
+      const edited: DocNode = {
+        ...current,
+        content: [
+          ...(current.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Neighbor edit.' }] },
+        ],
+      };
+      expect(session.execute({ type: 'page.setDoc', id: 'list-empty', doc: edited, now: 43 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text('List empty.md')!;
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      expect(saved).toContain(marker);
+      expect(saved).toContain('Neighbor edit.');
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('list-empty')).toBe(false);
+      expect(docToMarkdown(reopened.getState().docs['list-empty']!)).toContain(marker);
+      expect(docToMarkdown(reopened.getState().docs['list-empty']!)).toContain('Neighbor edit.');
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
   it('allows only exact markers bound to supported standalone blocks', () => {
     const marker = '<!-- morrow:block-background:#2f80ed -->';
     const invalid = [
@@ -808,7 +1112,7 @@ Synthetic row.
       `Inline ${marker} text.`,
       `<details>\n<summary>Hidden</summary>\n\n${marker}\n\nInside.\n\n</details>`,
       `<div>\n${marker}\n\nInside raw wrapper.\n\n</div>`,
-      `- Item\n\n  ${marker}\n\n  Nested item body.`,
+      `- \n  ${marker}\n\n  [ ] Ambiguous task paragraph.`,
       `| ${marker} |\n| --- |\n| Cell |`,
       `${marker}\n\n# Consumed title`,
       `${marker.replace('#2f80ed', '#2f80e')}\n\nParagraph.`,
@@ -816,7 +1120,9 @@ Synthetic row.
       '<p data-block-background="#2f80ed">Unsupported HTML</p>',
     ];
     for (const source of invalid) {
-      expect(findUnrepresentablePageContent(source), source).toMatch(/morrow block marker|layout or block identifier/i);
+      expect(findUnrepresentablePageContent(source), source).toMatch(
+        /morrow block marker|layout or block identifier/i,
+      );
     }
 
     const explicitTitle = `---\ntitle: Explicit\n---\n${marker}\n\n# Body heading\n`;

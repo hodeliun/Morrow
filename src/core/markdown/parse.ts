@@ -47,6 +47,7 @@ export interface BlockBackgroundMarkerInspection {
   color: InlineColor | null;
   tokenIndex: number;
   tokenType: string;
+  sourceLine: number | null;
   approved: boolean;
   targetType: string | null;
   targetTag: string | null;
@@ -921,6 +922,9 @@ function inspectBlockBackgroundMarkerTokens(tokens: Token[]): BlockBackgroundMar
           previousBackground?.type === 'html_block' &&
           (parseBlockBackgroundMarker(previousBackground.content.trim()) !== null ||
             BACKGROUND_PATTERN.test(previousBackground.content.trim()));
+        const listItemLevel = listItems.at(-1);
+        const directListParagraph =
+          targetType === 'paragraph_open' && listItemLevel !== undefined && next?.level === listItemLevel + 1;
         const approved =
           token.type === 'html_block' &&
           token.content.trim() === comment &&
@@ -928,7 +932,7 @@ function inspectBlockBackgroundMarkerTokens(tokens: Token[]): BlockBackgroundMar
           !duplicateBackground &&
           targetType !== null &&
           next?.level === token.level &&
-          listItems.length === 0 &&
+          (listItems.length === 0 || directListParagraph) &&
           tableDepth === 0 &&
           layoutIsSupported &&
           isColumnChild;
@@ -945,6 +949,7 @@ function inspectBlockBackgroundMarkerTokens(tokens: Token[]): BlockBackgroundMar
           color,
           tokenIndex,
           tokenType: token.type,
+          sourceLine: token.map?.[0] ?? null,
           approved,
           targetType,
           targetTag,
@@ -991,10 +996,16 @@ function proveBlockBackgroundOwners(
           : marker.targetType === 'blockquote_open'
             ? 'blockquote'
             : null;
+    const firstTaskItemParagraph =
+      owner?.node.type === 'paragraph' &&
+      owner.ancestors.some(
+        (ancestor) => ancestor.type === 'taskItem' && ancestor.content?.[0] === owner.node,
+      );
     const supportedChain = owner
       ? supportsHexBlockBackgroundOwner(
           owner.node.type,
           owner.ancestors.map((ancestor) => ancestor.type),
+          firstTaskItemParagraph,
         )
       : false;
     const proven =
