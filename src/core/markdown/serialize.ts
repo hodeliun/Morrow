@@ -8,6 +8,8 @@ export interface SerializeOptions {
   titleOf?: (id: PageId) => string | null;
   // how a wiki link names its page, a file name or a vault path, defaults to the title
   linkTarget?: (id: PageId) => string | null;
+  // current path for a Markdown page link, relative to the source note unless root-relative
+  markdownLinkTarget?: (id: PageId, originalHref: string) => string | null;
   // relative path an exported file is written to, null when it is not exported
   filePath?: (fileId: string) => string | null;
 }
@@ -390,7 +392,10 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
       const markdownHref = node.attrs?.markdownHref;
       if (typeof markdownHref === 'string') {
         const label = String(node.attrs?.alias ?? node.attrs?.label ?? '');
-        out += `${pendingSpace}[${formatLinkLabel(label, inTable)}](${formatMarkdownHref(markdownHref)})`;
+        const id = typeof node.attrs?.id === 'string' ? node.attrs.id : null;
+        const target = id ? options.markdownLinkTarget?.(id, markdownHref) : null;
+        const href = target ? retargetMarkdownHref(markdownHref, target) : markdownHref;
+        out += `${pendingSpace}[${formatLinkLabel(label, inTable)}](${formatMarkdownHref(href)})`;
       } else out += pendingSpace + wikiLink(node, options, inTable);
       pendingSpace = '';
       continue;
@@ -529,6 +534,31 @@ function formatMarkdownHref(href: string): string {
   )
     return href;
   return `<${escapeAngleDestination(href)}>`;
+}
+
+/** Replaces only the path of a stored Markdown href, preserving its query and fragment verbatim. */
+export function retargetMarkdownHref(originalHref: string, targetPath: string): string {
+  const suffixStart = originalHref.search(/[?#]/);
+  const originalPath = suffixStart === -1 ? originalHref : originalHref.slice(0, suffixStart);
+  const suffix = suffixStart === -1 ? '' : originalHref.slice(suffixStart);
+  const rootRelative =
+    targetPath.startsWith('/') || (originalPath.startsWith('/') && !originalPath.startsWith('//'));
+  const explicitRelative = originalPath.startsWith('./') || targetPath.startsWith('./');
+  const cleanTarget = targetPath.replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+  const prefix = rootRelative ? '/' : explicitRelative && !cleanTarget.startsWith('../') ? './' : '';
+  return `${prefix}${encodeMarkdownPath(cleanTarget)}${suffix}`;
+}
+
+function encodeMarkdownPath(path: string): string {
+  return path
+    .split('/')
+    .map((segment) =>
+      encodeURIComponent(segment).replace(
+        /[!'()*]/g,
+        (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+      ),
+    )
+    .join('/');
 }
 
 function escapeAngleDestination(href: string): string {

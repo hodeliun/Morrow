@@ -4,9 +4,13 @@ import { decryptPage, encryptPage, isEncryptedText, newPageKey } from '../core/c
 import type { PageKey } from '../core/crypto';
 import { isDocEmpty, isRecord, validateDoc, walk } from '../core/doc';
 import { snapshotsToPrune } from '../core/history';
-import { parseWikiLink } from '../core/markdown/parse';
-import { docToMarkdown } from '../core/markdown/serialize';
-import { markdownToDoc } from '../core/markdown/parse';
+import {
+  markdownHrefPath,
+  markdownRetargetSpans,
+  markdownToDoc,
+  parseWikiLink,
+} from '../core/markdown/parse';
+import { docToMarkdown, retargetMarkdownHref } from '../core/markdown/serialize';
 import { displayTitle, emptyDoc, newPageMeta } from '../core/model';
 import type {
   DocNode,
@@ -35,6 +39,7 @@ import {
   parseOptions,
   readRegistry,
   resolveFile,
+  resolveMarkdownPageLink,
 } from '../core/vault/load';
 import type { LoadedVault, RegistryEntry, Resolver } from '../core/vault/load';
 import {
@@ -67,6 +72,7 @@ import {
   joinPath,
   MORROW_DIR,
   relativePath,
+  resolveRelative,
   safeFileName,
   stripExtension,
   TRASH_DIR,
@@ -138,7 +144,6 @@ function localDay(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 const DATE_NAME = /^\d{4}-\d{2}-\d{2}$/;
-const WIKI_LINK = /(!?)\[\[([^[\]\n]{0,400}?)\]\]/g;
 
 export class VaultRepository implements WorkspaceRepository {
   private layout = new Map<PageId, Placement>();
@@ -374,6 +379,7 @@ export class VaultRepository implements WorkspaceRepository {
 
     const candidates = new Set<PageId>([...docChanged, ...metaChanged]);
     const structuralCandidates = new Set<PageId>(docChanged);
+    const markdownReferrers = new Set<PageId>();
     for (const [id, placement] of next)
       if (!previous.has(id) || movedPages.has(id) || (placement.file && !this.texts.has(id))) {
         candidates.add(id);
@@ -381,9 +387,17 @@ export class VaultRepository implements WorkspaceRepository {
       }
     if (retargeted.size > 0 || movedPages.size > 0) {
       for (const [id, doc] of Object.entries(state.docs)) {
-        if (linksTo(doc, retargeted) || (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages))) {
+        const linksToMovedMarkdownPage = linksToMarkdownPage(doc, movedPages);
+        const movedMarkdownSource = movedPages.has(id) && hasMarkdownPageLink(doc);
+        if (
+          linksTo(doc, retargeted) ||
+          linksToMovedMarkdownPage ||
+          movedMarkdownSource ||
+          (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages))
+        ) {
           candidates.add(id);
           structuralCandidates.add(id);
+          if (linksToMovedMarkdownPage || movedMarkdownSource) markdownReferrers.add(id);
         }
       }
     }
@@ -433,6 +447,9 @@ export class VaultRepository implements WorkspaceRepository {
       preservedSources.add(id);
       for (const dependency of dependencies) sourcesToCheck.add(dependency);
     }
+    // Check every Markdown referrer before moves begin so a known external edit cannot leave a
+    // partially moved target followed by a failed referrer write.
+    for (const id of markdownReferrers) sourcesToCheck.add(id);
 
     const checkedSources = new Set<string>();
     for (const id of batch.checkPages ?? []) {
@@ -469,7 +486,9 @@ export class VaultRepository implements WorkspaceRepository {
     }
     ops.push(...planMoves(previous, next));
 
-    const resolveOld = retargeted.size > 0 ? makeResolver(state, previous, this.sources) : null;
+    const resolveOld =
+      retargeted.size > 0 || movedPages.size > 0 ? makeResolver(state, previous, this.sources) : null;
+    const resolveCurrent = makeResolver(state, next, this.sources);
     const skippedQuietSerialization = new Set<PageId>();
     const plannedSources = new Map<PageId, PageSource>();
     for (const id of candidates) {
@@ -480,6 +499,7 @@ export class VaultRepository implements WorkspaceRepository {
       const structurallyAffectedCanvas =
         state.pages[id]?.kind === 'canvas' && doc !== undefined && linksTo(doc, movedPages);
       const retargetedLink = retargeted.size > 0 && doc !== undefined && linksTo(doc, retargeted);
+      const retargetedMarkdownLink = markdownReferrers.has(id);
       const enteredThroughQuiet =
         (quietPageIds.has(id) && metaChanged.has(id)) || quietSchemaDependents.has(id);
       const quietOnlyCandidate =
@@ -490,6 +510,7 @@ export class VaultRepository implements WorkspaceRepository {
         !movedPages.has(id) &&
         !retargeted.has(id) &&
         !retargetedLink &&
+        !retargetedMarkdownLink &&
         !structurallyAffectedCanvas;
       if (quietOnlyCandidate) {
         skippedQuietSerialization.add(id);
@@ -503,7 +524,9 @@ export class VaultRepository implements WorkspaceRepository {
         docChanged.has(id),
         previous.get(id),
         resolveOld,
+        resolveCurrent,
         retargeted,
+        movedPages,
       );
       const text = rendered.text;
       if (text === null) continue;
@@ -584,7 +607,7 @@ export class VaultRepository implements WorkspaceRepository {
       if (!folderPages.has(folder.toLowerCase())) ops.push({ op: 'rmdir', path: folder });
     }
 
-    await this.run(ops, next, guardedLinkedViewPages, plannedSources);
+    await this.run(ops, next, guardedLinkedViewPages, markdownReferrers, plannedSources);
     this.lastState = state;
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
@@ -618,6 +641,7 @@ export class VaultRepository implements WorkspaceRepository {
       movedPages.has(id) ||
       retargeted.size > 0 ||
       docChanged.has(id) ||
+      linksToMarkdownPage(state.docs[id], movedPages) ||
       this.locked.has(id) ||
       page.encrypted ||
       (!isOptedInDatabase(page) && !isOptedInDatabase(parent))
@@ -815,7 +839,9 @@ export class VaultRepository implements WorkspaceRepository {
     edited: boolean,
     before: Placement | undefined,
     resolveOld: Resolver | null,
+    resolveCurrent: Resolver,
     retargeted: Set<PageId>,
+    movedPages: Set<PageId>,
   ): RenderedPage {
     const page = state.pages[id]!;
     const placement = layout.get(id)!;
@@ -827,6 +853,13 @@ export class VaultRepository implements WorkspaceRepository {
     // a folder that just got a note of its own, for its tags, properties or kind, has no text yet
     const doc = state.docs[id] ?? emptyDoc();
     const dir = dirname(placement.file!);
+    const beforeDir = before?.file ? dirname(before.file) : before ? dirname(before.folder) : dir;
+    const markdownTarget = (href: string): string | null => {
+      if (!resolveOld) return null;
+      const targetId = resolveMarkdownPageLink(href, beforeDir, resolveOld);
+      if (!targetId || (!movedPages.has(id) && !movedPages.has(targetId))) return null;
+      return markdownPageTargetPath(targetId, href, dir, layout, resolveCurrent);
+    };
     let source = this.sources.get(id) ?? null;
     const movedDir = before !== undefined && dirname(before.folder) !== dirname(placement.folder);
     if (source && source.body !== null && (edited || (movedDir && hasFileRefs(doc)))) {
@@ -835,10 +868,14 @@ export class VaultRepository implements WorkspaceRepository {
     let body: string;
     if (source && source.body !== null) {
       body = resolveOld
-        ? retargetLinks(source.body, (target) => {
-            const found = resolveOld.resolve(target, before ? dirname(before.folder) : dir);
-            return found && retargeted.has(found) ? (targets.get(found) ?? null) : null;
-          })
+        ? retargetLinks(
+            source.body,
+            (target) => {
+              const found = resolveOld.resolve(target, beforeDir);
+              return found && retargeted.has(found) ? (targets.get(found) ?? null) : null;
+            },
+            markdownTarget,
+          )
         : source.body;
       if (body !== source.body) {
         source = { ...source, body };
@@ -846,6 +883,8 @@ export class VaultRepository implements WorkspaceRepository {
     } else {
       body = docToMarkdown(doc, {
         linkTarget: (pageId) => targets.get(pageId) ?? null,
+        markdownLinkTarget: (pageId, href) =>
+          markdownPageTargetPath(pageId, href, dir, layout, resolveCurrent),
         titleOf: (pageId) => (state.pages[pageId] ? displayTitle(state.pages[pageId]) : null),
         filePath: (fileId) =>
           fileId.includes('/') || fileId.includes('.') ? relativePath(dir, fileId) : null,
@@ -972,13 +1011,14 @@ export class VaultRepository implements WorkspaceRepository {
     ops: VaultOp[],
     next: Map<PageId, Placement>,
     guardedLinkedViewPages: ReadonlySet<PageId>,
+    guardedMarkdownReferrers: ReadonlySet<PageId>,
     plannedSources: ReadonlyMap<PageId, PageSource>,
   ): Promise<void> {
     const started = Date.now();
     for (const op of ops) if (op.op === 'write') this.wroteAt.set(op.path.toLowerCase(), started);
     this.saving++;
     try {
-      await this.runOps(ops, next, guardedLinkedViewPages, plannedSources);
+      await this.runOps(ops, next, guardedLinkedViewPages, guardedMarkdownReferrers, plannedSources);
     } finally {
       this.saving--;
       if (this.saving === 0 && this.held.length > 0) {
@@ -993,6 +1033,7 @@ export class VaultRepository implements WorkspaceRepository {
     ops: VaultOp[],
     next: Map<PageId, Placement>,
     guardedLinkedViewPages: ReadonlySet<PageId>,
+    guardedMarkdownReferrers: ReadonlySet<PageId>,
     plannedSources: ReadonlyMap<PageId, PageSource>,
   ): Promise<void> {
     let pending = ops;
@@ -1022,12 +1063,15 @@ export class VaultRepository implements WorkspaceRepository {
         op.id &&
         (this.isPilotDataRecord(op.id) ||
           guardedLinkedViewPages.has(op.id) ||
+          guardedMarkdownReferrers.has(op.id) ||
           this.hasLinkedViewBaseline(op.id))
       ) {
         this.layout = layout;
         throw new WorkspaceWriteError(
           'save-conflict',
-          'A Polaris Dados source or linked-view note changed on disk. The staged change was kept in memory and not written; reopen the vault to review the external version.',
+          guardedMarkdownReferrers.has(op.id)
+            ? 'A Markdown link referrer changed on disk; its bytes were preserved and the retarget was refused. Reopen the vault to review the external version.'
+            : 'A Polaris Dados source or linked-view note changed on disk. The staged change was kept in memory and not written; reopen the vault to review the external version.',
           false,
         );
       }
@@ -1035,12 +1079,15 @@ export class VaultRepository implements WorkspaceRepository {
         if (
           this.isPilotDataRecord(op.id) ||
           guardedLinkedViewPages.has(op.id) ||
+          guardedMarkdownReferrers.has(op.id) ||
           this.hasLinkedViewBaseline(op.id)
         ) {
           this.layout = layout;
           throw new WorkspaceWriteError(
             'save-conflict',
-            'A Polaris Dados source or linked-view note changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
+            guardedMarkdownReferrers.has(op.id)
+              ? 'A Markdown link referrer changed during retargeting; its bytes were preserved and automatic retry was refused. Reopen the vault to review the external version.'
+              : 'A Polaris Dados source or linked-view note changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
             false,
           );
         }
@@ -1872,33 +1919,91 @@ function hasFileRefs(doc: DocNode): boolean {
   return found;
 }
 
-// rewrites [[links]] in a file morrow has not otherwise touched, outside code
-export function retargetLinks(body: string, newTarget: (target: string) => string | null): string {
-  let fenced = false;
-  return body
-    .split('\n')
-    .map((line) => {
-      if (/^\s*(```|~~~)/.test(line)) {
-        fenced = !fenced;
-        return line;
+function linksToMarkdownPage(doc: DocNode | undefined, ids: Set<PageId>): boolean {
+  if (!doc || ids.size === 0) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (
+      node.type === 'pageLink' &&
+      typeof node.attrs?.id === 'string' &&
+      typeof node.attrs?.markdownHref === 'string' &&
+      ids.has(node.attrs.id)
+    ) {
+      found = true;
+    }
+    return !found;
+  });
+  return found;
+}
+
+function hasMarkdownPageLink(doc: DocNode | undefined): boolean {
+  if (!doc) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (node.type === 'pageLink' && typeof node.attrs?.markdownHref === 'string') found = true;
+    return !found;
+  });
+  return found;
+}
+
+function markdownPageTargetPath(
+  id: PageId,
+  href: string,
+  sourceDir: string,
+  layout: Map<PageId, Placement>,
+  resolver: Resolver,
+): string | null {
+  const destination = markdownHrefPath(href);
+  if (!destination || !/\.(md|canvas)$/i.test(destination.path)) return null;
+  const target = layout.get(id);
+  if (!target?.file || isInTrash(target.folder)) return null;
+  if (resolveMarkdownPageLink(href, sourceDir, resolver) === id) return null;
+
+  const currentPath = destination.path.startsWith('/')
+    ? destination.path.slice(1)
+    : resolveRelative(sourceDir, destination.path);
+  if (currentPath === target.file) return null;
+  return destination.path.startsWith('/') ? `/${target.file}` : relativePath(sourceDir, target.file);
+}
+
+// rewrites only source ranges emitted by Morrow's configured Markdown parser
+export function retargetLinks(
+  body: string,
+  newWikiTarget: (target: string) => string | null,
+  newMarkdownTarget?: (href: string) => string | null,
+): string {
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  for (const span of markdownRetargetSpans(body)) {
+    if (span.kind === 'wiki') {
+      const bang = span.raw.startsWith('!') ? '!' : '';
+      const inner = span.raw.slice(bang.length + 2, -2);
+      const originalTarget = span.target ?? parseWikiLink(inner, bang === '!').target;
+      const target = newWikiTarget(originalTarget);
+      if (!target || target === originalTarget) continue;
+      if (span.targetStart !== undefined && span.targetEnd !== undefined) {
+        edits.push({ start: span.targetStart, end: span.targetEnd, text: target });
+        continue;
       }
-      if (fenced || !line.includes('[[')) return line;
-      return line
-        .split(/(`[^`]*`)/)
-        .map((part, index) =>
-          index % 2 === 1
-            ? part
-            : part.replace(WIKI_LINK, (match, bang: string, inner: string) => {
-                const link = parseWikiLink(inner, bang === '!');
-                const target = newTarget(link.target);
-                if (!target || target === link.target) return match;
-                const rest = inner.slice(inner.indexOf(link.target) + link.target.length);
-                return `${bang}[[${target}${rest}]]`;
-              }),
-        )
-        .join('');
-    })
-    .join('\n');
+      const rest = inner.slice(inner.indexOf(originalTarget) + originalTarget.length);
+      edits.push({ start: span.start, end: span.end, text: bang + '[[' + target + rest + ']]' });
+      continue;
+    }
+
+    const targetPath = newMarkdownTarget?.(span.raw);
+    if (!targetPath) continue;
+    const href = retargetMarkdownHref(span.raw, targetPath);
+    if (href !== span.raw) edits.push({ start: span.start, end: span.end, text: href });
+  }
+
+  edits.sort((left, right) => right.start - left.start);
+  let result = body;
+  let nextStart = body.length + 1;
+  for (const edit of edits) {
+    if (edit.end > nextStart) continue;
+    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+    nextStart = edit.start;
+  }
+  return result;
 }
 
 function safeCanvas(text: string): DocNode | null {

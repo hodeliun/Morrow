@@ -46,6 +46,24 @@ md.block.ruler.before('fence', 'math_block', mathBlockRule, {
   alt: ['paragraph', 'reference', 'blockquote', 'list'],
 });
 
+// The installed table rule intentionally unescapes `\\|` while splitting cells. Preserve the
+// source offsets only for retarget scans so edits can map token ranges back through that change.
+const tableRuleDefinition = md.block.ruler.__rules__.find((rule) => rule.name === 'table');
+const markdownTableRule = tableRuleDefinition?.fn as
+  ((state: StateBlock, startLine: number, endLine: number, silent: boolean) => boolean) | undefined;
+if (!tableRuleDefinition || !markdownTableRule) throw new Error('markdown-it table rule is unavailable');
+md.block.ruler.at(
+  'table',
+  (state, startLine, endLine, silent) => {
+    const tokenStart = state.tokens.length;
+    const matched = markdownTableRule(state, startLine, endLine, silent);
+    if (matched && !silent && state.env?.morrowRetargetSourceMaps === true)
+      attachTableCellSourceMaps(state, state.tokens.slice(tokenStart));
+    return matched;
+  },
+  { alt: tableRuleDefinition.alt },
+);
+
 // markdown-it normalizes link destinations before exposing them on tokens. Wrap the built-in rule so
 // inline note links can keep the source spelling without reimplementing CommonMark link parsing.
 const linkRuleDefinition = md.inline.ruler.__rules__.find((rule) => rule.name === 'link');
@@ -65,8 +83,10 @@ md.inline.ruler.at(
       if (linkToken) {
         const meta: Record<string, unknown> = { ...(linkToken.meta ?? {}), morrowMarkdownHrefScanned: true };
         const destination = scanMarkdownDestination(state.src, labelEnd + 1, 16_384);
-        if (destination && destination.close === state.pos - 1)
+        if (destination && destination.close === state.pos - 1) {
           meta.markdownHref = state.src.slice(destination.start, destination.end);
+          meta.morrowMarkdownHrefRange = { start: destination.start, end: destination.end };
+        }
         linkToken.meta = meta;
       }
     }
@@ -82,6 +102,141 @@ const TASK_PREFIX = /^\[([ \u00a0xX]?)\](?:\s+|$)/;
 const CALLOUT = /^\[!([A-Za-z][\w-]{0,30})(?:\|([^\]\n]{0,80}))?\]([+-]?)[ \t]*/;
 const WIKI = /^(!?)\[\[([^[\]\n]{0,400}?)\]\]/;
 
+interface TableCellSourceMap {
+  normalizedStart: number;
+  removedBefore: ArrayLike<number>;
+}
+
+interface EscapedTableCell {
+  content: string;
+  normalizedStart: number;
+  removedBefore: number[];
+}
+
+function attachTableCellSourceMaps(state: StateBlock, tokens: Token[]): void {
+  let inTable = false;
+  let rowLine: number | null = null;
+  let cellIndex = 0;
+  const rows = new Map<number, EscapedTableCell[] | null>();
+  for (const token of tokens) {
+    if (token.type === 'table_open') inTable = true;
+    else if (token.type === 'table_close') {
+      inTable = false;
+      rowLine = null;
+    } else if (inTable && token.type === 'tr_open') {
+      rowLine = Array.isArray(token.map) ? token.map[0]! : null;
+      cellIndex = 0;
+    } else if (inTable && token.type === 'tr_close') {
+      rowLine = null;
+    } else if (inTable && rowLine !== null && token.type === 'inline') {
+      let cells = rows.get(rowLine);
+      if (cells === undefined) {
+        cells = tableCellsAtSourceLine(state, rowLine);
+        rows.set(rowLine, cells);
+      }
+      const cell = cells?.[cellIndex];
+      if (cell && cell.content === token.content) {
+        token.meta = {
+          ...(token.meta ?? {}),
+          morrowTableCellSourceMap: {
+            normalizedStart: cell.normalizedStart,
+            removedBefore: cell.removedBefore.length ? Uint32Array.from(cell.removedBefore) : [],
+          } satisfies TableCellSourceMap,
+        };
+      }
+      cellIndex++;
+    }
+  }
+}
+
+function tableCellsAtSourceLine(state: StateBlock, line: number): EscapedTableCell[] | null {
+  const lineStart = state.bMarks[line]! + state.tShift[line]!;
+  const lineEnd = state.eMarks[line]!;
+  if (lineStart < 0 || lineEnd < lineStart || lineEnd > state.src.length) return null;
+  const sourceLine = state.src.slice(lineStart, lineEnd);
+  const leadingWhitespace = sourceLine.length - sourceLine.trimStart().length;
+  const tableLine = sourceLine.trim();
+  const cells = splitEscapedTableCells(tableLine);
+  if (cells.length && cells[0]!.content === '') cells.shift();
+  if (cells.length && cells[cells.length - 1]!.content === '') cells.pop();
+
+  const tableLineStart = lineStart + leadingWhitespace;
+  return cells.map((cell) => {
+    const leading = cell.content.length - cell.content.trimStart().length;
+    const content = cell.content.trim();
+    const removedBeforeLeading = cell.removedBefore.filter((offset) => offset < leading).length;
+    const removedBefore = cell.removedBefore
+      .filter((offset) => offset >= leading && offset < leading + content.length)
+      .map((offset) => offset - leading);
+    return {
+      content,
+      normalizedStart: tableLineStart + cell.segmentStart + leading + removedBeforeLeading,
+      removedBefore,
+    };
+  });
+}
+
+function splitEscapedTableCells(line: string): Array<{
+  content: string;
+  segmentStart: number;
+  removedBefore: number[];
+}> {
+  const cells: Array<{ content: string; segmentStart: number; removedBefore: number[] }> = [];
+  const decoded = new Uint16Array(line.length);
+  let segmentStart = 0;
+  let cellOutputStart = 0;
+  let outputLength = 0;
+  let removedBefore: number[] = [];
+  let isEscaped = false;
+  for (let position = 0; position < line.length; position++) {
+    const char = line[position]!;
+    if (char === '|') {
+      if (isEscaped) {
+        outputLength--;
+        removedBefore.push(outputLength - cellOutputStart);
+        decoded[outputLength++] = 0x7c;
+      } else {
+        cells.push({
+          content: utf16BufferSlice(decoded, cellOutputStart, outputLength),
+          segmentStart,
+          removedBefore,
+        });
+        segmentStart = position + 1;
+        cellOutputStart = outputLength;
+        removedBefore = [];
+      }
+    } else {
+      decoded[outputLength++] = line.charCodeAt(position);
+    }
+    isEscaped = char === '\\';
+  }
+  cells.push({
+    content: utf16BufferSlice(decoded, cellOutputStart, outputLength),
+    segmentStart,
+    removedBefore,
+  });
+  return cells;
+}
+
+function utf16BufferSlice(buffer: Uint16Array, start: number, end: number): string {
+  const parts: string[] = [];
+  for (let index = start; index < end; index += 8192)
+    parts.push(String.fromCharCode(...buffer.subarray(index, Math.min(end, index + 8192))));
+  return parts.join('');
+}
+
+function unescapeTablePipes(text: string): string {
+  const chars: string[] = [];
+  let isEscaped = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (char === '|' && isEscaped) chars.pop();
+    chars.push(char);
+    isEscaped = char === '\\';
+  }
+  return chars.join('');
+}
+
 // [[target#anchor|alias]] and ![[embed]], before markdown links so the brackets are not read as one
 function wikiLinkRule(state: StateInline, silent: boolean): boolean {
   const start = state.pos;
@@ -90,8 +245,18 @@ function wikiLinkRule(state: StateInline, silent: boolean): boolean {
   const match = WIKI.exec(state.src.slice(start, Math.min(state.posMax, start + 810)));
   if (!match) return false;
   if (!silent) {
+    const wiki = parseWikiLink(match[2]!, match[1] === '!');
+    const inner = match[2]!;
+    const aliasStart = inner.search(/\\?\|/);
+    const path = (aliasStart === -1 ? inner : inner.slice(0, aliasStart)).split('#', 1)[0]!;
+    const targetStartInPath = path.length - path.trimStart().length;
+    const targetStart = start + (match[1]?.length ?? 0) + 2 + targetStartInPath;
     const token = state.push('wikilink', '', 0);
-    token.meta = { ...parseWikiLink(match[2]!, match[1] === '!') };
+    token.meta = {
+      ...wiki,
+      morrowRetargetRange: { start, end: start + match[0].length },
+      morrowRetargetTargetRange: { start: targetStart, end: targetStart + wiki.target.length },
+    };
     token.markup = match[0];
   }
   state.pos += match[0].length;
@@ -621,6 +786,327 @@ export function markdownToPage(
     };
   }
   return { title: fallbackTitle, doc };
+}
+
+export interface MarkdownRetargetSpan {
+  kind: 'markdown' | 'wiki';
+  start: number;
+  end: number;
+  raw: string;
+  target?: string;
+  targetStart?: number;
+  targetEnd?: number;
+}
+
+interface InlineSourceLine {
+  rawStart: number;
+  localStart: number;
+  localEnd: number;
+  contentColumn: number;
+}
+
+/** Returns exact source ranges for links accepted by Morrow's configured Markdown parser. */
+export function markdownRetargetSpans(source: string): MarkdownRetargetSpan[] {
+  if (source.length > MAX_INPUT) return [];
+  const normalized = source.replace(/\r\n?/g, '\n');
+  let tokens: Token[];
+  try {
+    tokens = md.parse(normalized, { morrowRetargetSourceMaps: true });
+  } catch {
+    return [];
+  }
+
+  const normalizedLineStarts = markdownLineStarts(normalized);
+  const rawLineStarts = markdownLineStarts(source);
+  const cursors = new Map<number, number>();
+  const spans: MarkdownRetargetSpan[] = [];
+  let tableRowMap: [number, number] | null = null;
+
+  for (const block of tokens) {
+    if (block.type === 'tr_close') tableRowMap = null;
+    if (block.type === 'tr_open') tableRowMap = block.map as [number, number] | null;
+    if (block.type !== 'inline' || !block.children) continue;
+
+    const lineMap = (block.map as [number, number] | null) ?? tableRowMap;
+    const tableMap = tableCellSourceMap(block.meta);
+    if (!tableMap && !lineMap) continue;
+    const lines = tableMap
+      ? null
+      : mapInlineSourceLines(
+          block.content,
+          lineMap!,
+          normalized,
+          normalizedLineStarts,
+          rawLineStarts,
+          cursors,
+        );
+    if (!tableMap && !lines) continue;
+    const mapRange = (start: number, end: number) =>
+      tableMap
+        ? mapTableCellSourceRange(
+            block.content,
+            tableMap,
+            start,
+            end,
+            normalizedLineStarts,
+            rawLineStarts,
+            normalized.length,
+            source.length,
+          )
+        : mapInlineSourceRange(block.content, lines!, start, end);
+    const sourceMatches = (raw: string, expected: string) =>
+      (tableMap ? unescapeTablePipes(raw) : raw) === expected;
+
+    const visit = (children: Token[]) => {
+      for (const token of children) {
+        const meta = token.meta as Record<string, unknown> | null;
+        if (token.type === 'wikilink' && meta) {
+          const range = sourceRange(meta.morrowRetargetRange);
+          const targetRange = sourceRange(meta.morrowRetargetTargetRange);
+          const target = typeof meta.target === 'string' ? meta.target : undefined;
+          const mapped = range ? mapRange(range.start, range.end) : null;
+          const mappedTarget = targetRange && target ? mapRange(targetRange.start, targetRange.end) : null;
+          if (mapped) {
+            const raw = source.slice(mapped.start, mapped.end);
+            if (sourceMatches(raw, token.markup) && mappedTarget && target) {
+              const rawTarget = source.slice(mappedTarget.start, mappedTarget.end);
+              if (!sourceMatches(rawTarget, target)) {
+                if (token.children) visit(token.children);
+                continue;
+              }
+              spans.push({
+                kind: 'wiki',
+                start: mapped.start,
+                end: mapped.end,
+                raw,
+                target,
+                targetStart: mappedTarget.start,
+                targetEnd: mappedTarget.end,
+              });
+            }
+          }
+        } else if (token.type === 'link_open' && meta?.morrowMarkdownHrefScanned === true) {
+          const range = sourceRange(meta.morrowMarkdownHrefRange);
+          const href = typeof meta.markdownHref === 'string' ? meta.markdownHref : null;
+          const mapped = range ? mapRange(range.start, range.end) : null;
+          if (href !== null && mapped) {
+            const raw = source.slice(mapped.start, mapped.end);
+            if (sourceMatches(raw, href))
+              spans.push({ kind: 'markdown', start: mapped.start, end: mapped.end, raw });
+          }
+        }
+        if (token.children) visit(token.children);
+      }
+    };
+    visit(block.children);
+  }
+
+  spans.sort((left, right) => left.start - right.start || left.end - right.end);
+  const nonOverlapping: MarkdownRetargetSpan[] = [];
+  let previousEnd = -1;
+  for (const span of spans) {
+    if (span.start < previousEnd) continue;
+    nonOverlapping.push(span);
+    previousEnd = span.end;
+  }
+  return nonOverlapping;
+}
+
+function tableCellSourceMap(value: unknown): TableCellSourceMap | null {
+  if (!value || typeof value !== 'object') return null;
+  const map = (value as Record<string, unknown>).morrowTableCellSourceMap;
+  if (!map || typeof map !== 'object') return null;
+  const candidate = map as { normalizedStart?: unknown; removedBefore?: unknown };
+  const removedBefore = candidate.removedBefore;
+  if (
+    !Number.isInteger(candidate.normalizedStart) ||
+    !(Array.isArray(removedBefore) || removedBefore instanceof Uint32Array)
+  )
+    return null;
+  for (let index = 0; index < removedBefore.length; index++) {
+    const offset = removedBefore[index];
+    if (!Number.isInteger(offset) || Number(offset) < 0 || (index > 0 && offset! < removedBefore[index - 1]!))
+      return null;
+  }
+  return {
+    normalizedStart: Number(candidate.normalizedStart),
+    removedBefore,
+  };
+}
+
+function mapTableCellSourceRange(
+  content: string,
+  map: TableCellSourceMap,
+  start: number,
+  end: number,
+  normalizedLineStarts: number[],
+  rawLineStarts: number[],
+  normalizedLength: number,
+  rawLength: number,
+): { start: number; end: number } | null {
+  if (start < 0 || end > content.length || end <= start) return null;
+  const removedBefore = (offset: number) => {
+    let low = 0;
+    let high = map.removedBefore.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (map.removedBefore[middle]! < offset) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  const normalizedStart = map.normalizedStart + start + removedBefore(start);
+  const normalizedEnd = map.normalizedStart + end + removedBefore(end);
+  const rawStart = normalizedToRawOffset(
+    normalizedStart,
+    normalizedLineStarts,
+    rawLineStarts,
+    normalizedLength,
+    rawLength,
+  );
+  const rawEnd = normalizedToRawOffset(
+    normalizedEnd,
+    normalizedLineStarts,
+    rawLineStarts,
+    normalizedLength,
+    rawLength,
+  );
+  return rawStart === null || rawEnd === null || rawEnd <= rawStart ? null : { start: rawStart, end: rawEnd };
+}
+
+function normalizedToRawOffset(
+  offset: number,
+  normalizedLineStarts: number[],
+  rawLineStarts: number[],
+  normalizedLength: number,
+  rawLength: number,
+): number | null {
+  if (offset < 0 || offset > normalizedLength) return null;
+  if (offset === normalizedLength) return rawLength;
+  let low = 0;
+  let high = normalizedLineStarts.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (normalizedLineStarts[middle]! <= offset) low = middle + 1;
+    else high = middle;
+  }
+  const line = low - 1;
+  const normalizedStart = normalizedLineStarts[line];
+  const rawStart = rawLineStarts[line];
+  if (normalizedStart === undefined || rawStart === undefined) return null;
+  return rawStart + offset - normalizedStart;
+}
+
+function sourceRange(value: unknown): { start: number; end: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const range = value as { start?: unknown; end?: unknown };
+  return Number.isInteger(range.start) &&
+    Number.isInteger(range.end) &&
+    Number(range.end) > Number(range.start)
+    ? { start: Number(range.start), end: Number(range.end) }
+    : null;
+}
+
+function markdownLineStarts(source: string): number[] {
+  const starts = [0];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] === '\r') {
+      if (source[index + 1] === '\n') index++;
+      starts.push(index + 1);
+    } else if (source[index] === '\n') starts.push(index + 1);
+  }
+  return starts;
+}
+
+function mapInlineSourceLines(
+  content: string,
+  lineMap: [number, number],
+  normalized: string,
+  normalizedLineStarts: number[],
+  rawLineStarts: number[],
+  cursors: Map<number, number>,
+): Array<InlineSourceLine | null> | null {
+  const localLineStarts = [0];
+  for (let index = 0; index < content.length; index++)
+    if (content[index] === '\n') localLineStarts.push(index + 1);
+  const localLineCount =
+    localLineStarts.length === lineMap[1] - lineMap[0] + 1 && content.endsWith('\n')
+      ? localLineStarts.length - 1
+      : localLineStarts.length;
+  const sourceLineCount = lineMap[1] - lineMap[0];
+  if (sourceLineCount < 1) return null;
+
+  const lines: Array<InlineSourceLine | null> = [];
+  let nextSourceLine = lineMap[0];
+  for (let index = 0; index < localLineCount; index++) {
+    const localStart = localLineStarts[index]!;
+    const localEnd = index + 1 < localLineStarts.length ? localLineStarts[index + 1]! - 1 : content.length;
+    const inlineLine = content.slice(localStart, localEnd);
+    if (!inlineLine) {
+      lines.push(null);
+      continue;
+    }
+
+    const candidateLines =
+      localLineCount === sourceLineCount
+        ? [lineMap[0] + index]
+        : Array.from(
+            { length: Math.max(0, lineMap[1] - nextSourceLine) },
+            (_, offset) => nextSourceLine + offset,
+          );
+    const candidates: Array<{ line: number; rawStart: number; contentColumn: number }> = [];
+    for (const line of candidateLines) {
+      const normalizedStart = normalizedLineStarts[line];
+      const rawStart = rawLineStarts[line];
+      if (normalizedStart === undefined || rawStart === undefined) continue;
+      const normalizedEnd = normalizedLineStarts[line + 1] ?? normalized.length;
+      const sourceLineEnd =
+        normalizedEnd > normalizedStart && normalized[normalizedEnd - 1] === '\n'
+          ? normalizedEnd - 1
+          : normalizedEnd;
+      const sourceLine = normalized.slice(normalizedStart, sourceLineEnd);
+      const cursor = cursors.get(line) ?? 0;
+      const contentColumn = sourceLine.indexOf(inlineLine, cursor);
+      if (contentColumn < 0) continue;
+      if (localLineCount !== sourceLineCount && sourceLine.indexOf(inlineLine, contentColumn + 1) !== -1)
+        continue;
+      candidates.push({ line, rawStart, contentColumn });
+    }
+    if (candidates.length !== 1) {
+      lines.push(null);
+      continue;
+    }
+    const mapped = candidates[0]!;
+    cursors.set(mapped.line, mapped.contentColumn + inlineLine.length);
+    nextSourceLine = Math.max(nextSourceLine, mapped.line + 1);
+    lines.push({ rawStart: mapped.rawStart, localStart, localEnd, contentColumn: mapped.contentColumn });
+  }
+  return lines;
+}
+
+function mapInlineSourceRange(
+  content: string,
+  lines: Array<InlineSourceLine | null>,
+  start: number,
+  end: number,
+): { start: number; end: number } | null {
+  if (start < 0 || end > content.length || end <= start) return null;
+  let lineIndex = -1;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line && start >= line.localStart && end <= line.localEnd) {
+      lineIndex = index;
+      break;
+    }
+  }
+  if (lineIndex === -1) return null;
+  const line = lines[lineIndex]!;
+  const localColumnStart = start - line.localStart;
+  const localColumnEnd = end - line.localStart;
+  return {
+    start: line.rawStart + line.contentColumn + localColumnStart,
+    end: line.rawStart + line.contentColumn + localColumnEnd,
+  };
 }
 
 // a time written just after a date, [[2026-11-10]] 17:05, belongs to the date
