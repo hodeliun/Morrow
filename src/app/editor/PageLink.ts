@@ -91,6 +91,14 @@ export const PageLink = Node.create<PageLinkOptions>({
       target: optional('target'),
       anchor: optional('anchor'),
       alias: optional('alias'),
+      markdownHref: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-markdown-href'),
+        renderHTML: (attributes: Record<string, unknown>) =>
+          typeof attributes.markdownHref === 'string'
+            ? { 'data-markdown-href': attributes.markdownHref }
+            : {},
+      },
       embed: {
         default: null,
         parseHTML: (element) => (element.hasAttribute('data-embed') ? true : null),
@@ -100,7 +108,7 @@ export const PageLink = Node.create<PageLinkOptions>({
   },
 
   parseHTML() {
-    return [{ tag: 'a[data-page-id]' }];
+    return [{ tag: 'a[data-page-id]', priority: 100 }];
   },
 
   renderHTML({ node, HTMLAttributes }) {

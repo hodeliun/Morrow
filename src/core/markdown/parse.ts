@@ -4,6 +4,7 @@ import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, nearestColor, TEXT_HEX }
 import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
+import { scanMarkdownDestination } from './markdownLinkDestination';
 import {
   ALIGN_PATTERN,
   BACKGROUND_PATTERN,
@@ -22,6 +23,8 @@ export interface ParseOptions {
   resolvePage?: (target: string) => PageId | null;
   // resolves relative links such as notion exports use between pages
   resolveLink?: (href: string) => PageId | null;
+  // resolves an inline Markdown link only when its exact page file path is unique
+  resolveMarkdownPageLink?: (markdownHref: string) => PageId | null;
   // resolves image and file paths, and ![[embeds]], to stored files
   resolveFile?: (href: string) => { fileId: string; name: string; image: boolean } | null;
   // links to pages that do not exist yet stay live and create the page when followed, on by default
@@ -42,6 +45,35 @@ md.inline.ruler.after('strikethrough', 'highlight', highlightRule);
 md.block.ruler.before('fence', 'math_block', mathBlockRule, {
   alt: ['paragraph', 'reference', 'blockquote', 'list'],
 });
+
+// markdown-it normalizes link destinations before exposing them on tokens. Wrap the built-in rule so
+// inline note links can keep the source spelling without reimplementing CommonMark link parsing.
+const linkRuleDefinition = md.inline.ruler.__rules__.find((rule) => rule.name === 'link');
+const markdownLinkRule = linkRuleDefinition?.fn as
+  ((state: StateInline, silent: boolean) => boolean) | undefined;
+if (!linkRuleDefinition || !markdownLinkRule) throw new Error('markdown-it inline link rule is unavailable');
+md.inline.ruler.at(
+  'link',
+  (state, silent) => {
+    const linkStart = state.pos;
+    const labelEnd =
+      state.src.charCodeAt(linkStart) === 0x5b ? state.md.helpers.parseLinkLabel(state, linkStart, true) : -1;
+    const tokenStart = state.tokens.length;
+    const matched = markdownLinkRule(state, silent);
+    if (matched && !silent && labelEnd >= 0 && state.src.charCodeAt(labelEnd + 1) === 0x28) {
+      const linkToken = state.tokens.slice(tokenStart).find((token) => token.type === 'link_open');
+      if (linkToken) {
+        const meta: Record<string, unknown> = { ...(linkToken.meta ?? {}), morrowMarkdownHrefScanned: true };
+        const destination = scanMarkdownDestination(state.src, labelEnd + 1, 16_384);
+        if (destination && destination.close === state.pos - 1)
+          meta.markdownHref = state.src.slice(destination.start, destination.end);
+        linkToken.meta = meta;
+      }
+    }
+    return matched;
+  },
+  { alt: linkRuleDefinition.alt },
+);
 
 const MAX_INPUT = 5_000_000;
 // a checkbox is [ ] or [x], and notion's exports also write an empty box as [] or with a non-breaking space
@@ -619,7 +651,8 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
     const index = marks.map((mark) => mark.type).lastIndexOf(type);
     if (index !== -1) marks.splice(index, 1);
   };
-  let pageTarget: { id: PageId; label: string } | null = null;
+  let pageTarget: { id: PageId; label: string; markdownHref: string | null; anchor: string | null } | null =
+    null;
 
   for (const token of tokens) {
     if (pageTarget && token.type !== 'link_close') {
@@ -651,9 +684,16 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         break;
       case 'link_open': {
         const href = String(token.attrGet('href') ?? '');
-        const pageId = options.resolveLink?.(href) ?? null;
+        const scannedInlineLink = token.meta?.morrowMarkdownHrefScanned === true;
+        const markdownHref = typeof token.meta?.markdownHref === 'string' ? token.meta.markdownHref : null;
+        const pageId =
+          scannedInlineLink && options.resolveMarkdownPageLink
+            ? markdownHref === null
+              ? null
+              : (options.resolveMarkdownPageLink(markdownHref) ?? null)
+            : (options.resolveLink?.(href) ?? null);
         const file = pageId ? null : (options.resolveFile?.(href) ?? null);
-        if (pageId) pageTarget = { id: pageId, label: '' };
+        if (pageId) pageTarget = { id: pageId, label: '', markdownHref, anchor: markdownAnchor(href) };
         else if (file) marks.push({ type: 'link', attrs: { href, fileRef: file } });
         else marks.push({ type: 'link', attrs: { href } });
         break;
@@ -672,7 +712,17 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         break;
       case 'link_close':
         if (pageTarget) {
-          out.push({ type: 'pageLink', attrs: { id: pageTarget.id, label: pageTarget.label.trim() } });
+          const label = pageTarget.label.trim();
+          out.push({
+            type: 'pageLink',
+            attrs: {
+              id: pageTarget.id,
+              label,
+              alias: label,
+              ...(pageTarget.markdownHref !== null ? { markdownHref: pageTarget.markdownHref } : {}),
+              ...(pageTarget.anchor !== null ? { anchor: pageTarget.anchor } : {}),
+            },
+          });
           pageTarget = null;
         } else remove('link');
         break;
@@ -721,6 +771,57 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
     }
   }
   return dateTimes(mergeText(out));
+}
+
+function markdownAnchor(href: string): string | null {
+  const hash = href.indexOf('#');
+  if (hash === -1) return null;
+  const fragment = href.slice(hash + 1);
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
+}
+
+export interface MarkdownHrefPath {
+  // A vault-relative path after CommonMark unescaping, entity decoding and one URL decode per segment.
+  path: string;
+  // The query/fragment suffix exactly as captured from the Markdown source.
+  suffix: string;
+}
+
+/**
+ * Converts a scanner-captured Markdown href into its CommonMark path semantics while leaving its
+ * query/fragment suffix untouched. Path decoding stays segment-local so encoded separators cannot
+ * change which vault file a link names.
+ */
+export function markdownHrefPath(href: string): MarkdownHrefPath | null {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) return null;
+  const suffixStart = href.search(/[?#]/);
+  const rawPath = suffixStart === -1 ? href : href.slice(0, suffixStart);
+  if (!rawPath) return null;
+
+  const commonMarkSegments = rawPath.split('/').map((segment) => md.utils.unescapeAll(segment));
+  const commonMarkPath = commonMarkSegments.join('/');
+  if (/^[a-z][a-z0-9+.-]*:/i.test(commonMarkPath) || commonMarkPath.startsWith('//')) return null;
+  const pathSegments: string[] = [];
+  for (const commonMarkSegment of commonMarkSegments) {
+    if (/[/?#\\]/.test(commonMarkSegment)) return null;
+    let segment: string;
+    try {
+      segment = decodeURIComponent(commonMarkSegment);
+    } catch {
+      segment = commonMarkSegment;
+    }
+    if (/[\\/]/.test(segment)) return null;
+    pathSegments.push(segment);
+  }
+
+  return {
+    path: pathSegments.join('/'),
+    suffix: suffixStart === -1 ? '' : href.slice(suffixStart),
+  };
 }
 
 // obsidian sizes a picture in its alt text: "a cat|300", "a cat|300x200", or just "300" in an embed

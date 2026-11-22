@@ -1,6 +1,7 @@
 import { BACKGROUND_HEX, COLORS, TEXT_HEX } from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
 import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
+import { scanMarkdownDestination } from './markdownLinkDestination';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
@@ -386,7 +387,11 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
     }
     if (node.type === 'pageLink') {
       closeTo(0);
-      out += pendingSpace + wikiLink(node, options, inTable);
+      const markdownHref = node.attrs?.markdownHref;
+      if (typeof markdownHref === 'string') {
+        const label = String(node.attrs?.alias ?? node.attrs?.label ?? '');
+        out += `${pendingSpace}[${formatLinkLabel(label, inTable)}](${formatMarkdownHref(markdownHref)})`;
+      } else out += pendingSpace + wikiLink(node, options, inTable);
       pendingSpace = '';
       continue;
     }
@@ -510,6 +515,50 @@ function escapeLineStart(text: string): string {
 
 function formatHref(href: string): string {
   return /[\s()<>]/.test(href) ? `<${href.replace(/[<>]/g, encodeURIComponent)}>` : href;
+}
+
+function formatMarkdownHref(href: string): string {
+  const source = `[link](${href})`;
+  const openingParen = '[link]'.length;
+  const destination = scanMarkdownDestination(source, openingParen, 16_384);
+  if (
+    destination &&
+    destination.start === openingParen + 1 &&
+    destination.end === openingParen + 1 + href.length &&
+    destination.close === source.length - 1
+  )
+    return href;
+  return `<${escapeAngleDestination(href)}>`;
+}
+
+function escapeAngleDestination(href: string): string {
+  let out = '';
+  for (let index = 0; index < href.length; index++) {
+    const char = href[index]!;
+    if (char === '\\' && index + 1 < href.length) out += char + href[++index]!;
+    else out += char === '<' || char === '>' ? `\\${char}` : char;
+  }
+  return out;
+}
+
+function formatLinkLabel(label: string, inTable = false): string {
+  let out = '';
+  for (let index = 0; index < label.length; index++) {
+    const entity = /^&(?:#?\w+;)/.exec(label.slice(index));
+    if (entity) {
+      out += escapeText(entity[0]);
+      index += entity[0].length - 1;
+      continue;
+    }
+    const char = label[index]!;
+    if (char === '\n' || char === '\r') {
+      out += ' ';
+      continue;
+    }
+    if ('\\[]`*_~=$<'.includes(char) || (inTable && char === '|')) out += '\\';
+    out += char;
+  }
+  return out;
 }
 
 function prefixLines(text: string, prefix: string, emptyPrefix: string): string {

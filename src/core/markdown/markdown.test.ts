@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { anchorSlice } from '../anchors';
-import type { DocNode } from '../model';
-import { markdownToDoc, markdownToPage } from './parse';
+import type { DocNode, PageId, WorkspaceState } from '../model';
+import { loadVault, makeResolver, resolveMarkdownPageLink } from '../vault/load';
+import type { Resolver, VaultScan } from '../vault/load';
+import type { Placement } from '../vault/layout';
+import { scanMarkdownDestination } from './markdownLinkDestination';
+import { markdownHrefPath, markdownToDoc, markdownToPage } from './parse';
 import { docToMarkdown } from './serialize';
 
 const text = (value: string, marks?: string[]): DocNode =>
@@ -9,6 +13,27 @@ const text = (value: string, marks?: string[]): DocNode =>
     ? { type: 'text', text: value, marks: marks.map((type) => ({ type })) }
     : { type: 'text', text: value };
 const p = (...content: DocNode[]): DocNode => ({ type: 'paragraph', content });
+
+function resolverForFiles(files: Array<{ id: PageId; path: string | null }>): Resolver {
+  const pages = Object.fromEntries(
+    files.map(({ id, path }) => [
+      id,
+      {
+        id,
+        title:
+          path
+            ?.split('/')
+            .pop()
+            ?.replace(/\.(md|canvas)$/i, '') ?? id,
+        trashedAt: null,
+      },
+    ]),
+  );
+  const layout = new Map<PageId, Placement>(
+    files.map(({ id, path }) => [id, { file: path, folder: path?.replace(/\.(md|canvas)$/i, '') ?? id }]),
+  );
+  return makeResolver({ pages } as unknown as WorkspaceState, layout, new Map());
+}
 
 // a realistic note touching every supported block
 const NOTE = `## Weekly review
@@ -293,6 +318,245 @@ describe('markdown import', () => {
     expect(markdownToDoc('')).toEqual({ type: 'doc', content: [{ type: 'paragraph' }] });
     expect(() => markdownToDoc('>'.repeat(5000))).not.toThrow();
     expect(() => markdownToDoc('['.repeat(10000))).not.toThrow();
+  });
+});
+
+describe('inline Markdown page links', () => {
+  const resolver = resolverForFiles([
+    { id: 'target', path: 'Notes/Árvore#.md' },
+    { id: 'diagram', path: 'Targets/Diagram.canvas' },
+    { id: 'diagram-note', path: 'Targets/Diagram.md' },
+    { id: 'left-note', path: 'Left/Note.md' },
+    { id: 'right-note', path: 'Right/Note.md' },
+    { id: 'case-one', path: 'Case/Collision.md' },
+    { id: 'case-two', path: 'case/collision.md' },
+    { id: 'split-path', path: 'Notes/A/T.md' },
+    { id: 'encoded-host', path: 'example.com/T.md' },
+    { id: 'backslash-path', path: 'Notes/A\\B.md' },
+    { id: 'folder', path: null },
+  ]);
+
+  it('scans a bounded inline destination without normalizing its source spelling', () => {
+    const source = '[label](<./Árvore%23.md?q=1&amp;x=%2f#Seção%2F> "title")';
+    const openingParenOffset = source.indexOf('(');
+    const scan = scanMarkdownDestination(source, openingParenOffset, source.length);
+
+    expect(scan).not.toBeNull();
+    expect(source.slice(scan!.start, scan!.end)).toBe('./Árvore%23.md?q=1&amp;x=%2f#Seção%2F');
+    expect(source[scan!.close]).toBe(')');
+    expect(scanMarkdownDestination(source, openingParenOffset, 8)).toBeNull();
+    expect(scanMarkdownDestination(source, source.length, 100)).toBeNull();
+    expect(scanMarkdownDestination('[x](./T.md?q=a\\ b#f)', 3, 100)).toBeNull();
+    expect(scanMarkdownDestination('[x](./T.md?q=a\u0001b#f)', 3, 100)).toBeNull();
+  });
+
+  it('resolves only a unique full file path after splitting suffix delimiters', () => {
+    expect(resolveMarkdownPageLink('../Notes/%C3%81rvore%23.md?q=1#Section', 'Docs', resolver)).toBe(
+      'target',
+    );
+    expect(resolveMarkdownPageLink('/Notes/%C3%81rvore%23.md?q=1#Section', 'Docs', resolver)).toBe('target');
+    expect(resolveMarkdownPageLink('Targets/Diagram.canvas', '', resolver)).toBe('diagram');
+    expect(resolveMarkdownPageLink('Targets/Diagram.md', '', resolver)).toBe('diagram-note');
+    expect(resolveMarkdownPageLink('Note.md', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('Case/Collision.md', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('Folder.md', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('../../Outside.md', 'Docs', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('A%2FT.md', 'Notes', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('%2F%2Fexample.com/T.md', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('A%5CB.md', 'Notes', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('https://example.org/Notes/Árvore.md', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('//example.org/Notes/Árvore.md', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('#heading', '', resolver)).toBeNull();
+    expect(resolveMarkdownPageLink('?mode=compact', '', resolver)).toBeNull();
+  });
+
+  it('uses Markdown entity semantics for path lookup while leaving the raw suffix intact', () => {
+    const entityResolver = resolverForFiles([
+      { id: 'semantic-path', path: 'Notes/A&B.md' },
+      { id: 'literal-entity', path: 'Notes/A&amp;B.md' },
+    ]);
+    const rawHref = './A&amp;B.md?view=compact&amp;mode=raw#Section';
+
+    expect(markdownHrefPath(rawHref)).toEqual({
+      path: './A&B.md',
+      suffix: '?view=compact&amp;mode=raw#Section',
+    });
+    expect(resolveMarkdownPageLink(rawHref, 'Notes', entityResolver)).toBe('semantic-path');
+
+    const source = `[link](${rawHref})`;
+    const parse = (markdown: string) =>
+      markdownToDoc(markdown, {
+        resolveMarkdownPageLink: (href) => resolveMarkdownPageLink(href, 'Notes', entityResolver),
+      });
+    const first = parse(source);
+    const serialized = docToMarkdown(first);
+    const reopened = parse(serialized);
+
+    expect(first.content![0]!.content![0]!.attrs).toMatchObject({
+      id: 'semantic-path',
+      markdownHref: rawHref,
+    });
+    expect(reopened.content![0]!.content![0]!.attrs).toMatchObject({
+      id: 'semantic-path',
+      markdownHref: rawHref,
+    });
+    expect(docToMarkdown(reopened)).toBe(serialized);
+  });
+
+  it('keeps the original href, label and decoded anchor on a resolved page link', () => {
+    const rawHref = './Árvore%23.md?q=1&amp;token=%2f#Seção%2F';
+    const source = `[open section](${rawHref})`;
+    const doc = markdownToDoc(source, {
+      resolveMarkdownPageLink: (href) => resolveMarkdownPageLink(href, 'Notes', resolver),
+      // A strict miss must not fall through to the older fuzzy path resolver.
+      resolveLink: () => 'wrong-page',
+    });
+    const link = doc.content![0]!.content![0]!;
+
+    expect(link).toEqual({
+      type: 'pageLink',
+      attrs: {
+        id: 'target',
+        label: 'open section',
+        alias: 'open section',
+        markdownHref: rawHref,
+        anchor: 'Seção/',
+      },
+    });
+    expect(docToMarkdown(doc)).toBe(`${source}\n`);
+  });
+
+  it('escapes entity-like page labels so a reopened link shows the same text', () => {
+    const source = '[X &amp;copy;](./T.md?q=1#Topic)';
+    const resolve = () => 'target';
+    const first = markdownToDoc(source, { resolveMarkdownPageLink: resolve });
+    const originalLink = first.content![0]!.content![0]!;
+    const serialized = docToMarkdown(first);
+    const reopened = markdownToDoc(serialized, { resolveMarkdownPageLink: resolve });
+    const reopenedLink = reopened.content![0]!.content![0]!;
+
+    expect(originalLink.attrs?.alias).toBe('X &copy;');
+    expect(serialized).toBe('[X \\&copy;](./T.md?q=1#Topic)\n');
+    expect(reopenedLink.attrs?.alias).toBe('X &copy;');
+    expect(reopenedLink.attrs?.markdownHref).toBe('./T.md?q=1#Topic');
+    expect(docToMarkdown(reopened)).toBe(serialized);
+  });
+
+  it.each([
+    ['greater-than escape', '[ref](<./T.md?q=a\\>b#Topic>)', './T.md?q=a\\>b#Topic'],
+    ['less-than escape', '[ref](<./T.md?q=a\\<b#Topic>)', './T.md?q=a\\<b#Topic'],
+  ])('preserves an escaped angle glyph in the raw href (%s)', (_label, source, rawHref) => {
+    const resolve = () => 'target';
+    const first = markdownToDoc(source, { resolveMarkdownPageLink: resolve });
+    const serialized = docToMarkdown(first);
+    const reopened = markdownToDoc(serialized, { resolveMarkdownPageLink: resolve });
+    const originalLink = first.content![0]!.content![0]!;
+    const reopenedLink = reopened.content![0]!.content![0]!;
+
+    expect(originalLink.attrs?.markdownHref).toBe(rawHref);
+    expect(reopenedLink.attrs?.markdownHref).toBe(rawHref);
+    expect(reopenedLink.attrs?.anchor).toBe('Topic');
+    expect(serialized).not.toContain('%3E');
+    expect(serialized).not.toContain('%3C');
+    expect(docToMarkdown(reopened)).toBe(serialized);
+  });
+
+  it.each([
+    ['less-than', '[ref](./T.md?q=a<b(c)#f)', './T.md?q=a<b(c)#f'],
+    ['greater-than', '[ref](./T.md?q=a>b(c)#f)', './T.md?q=a>b(c)#f'],
+  ])('preserves a bare href with balanced parentheses and %s (%s)', (_glyph, source, rawHref) => {
+    const resolve = () => 'target';
+    const first = markdownToDoc(source, { resolveMarkdownPageLink: resolve });
+    const serialized = docToMarkdown(first);
+    const reopened = markdownToDoc(serialized, { resolveMarkdownPageLink: resolve });
+
+    expect(first.content![0]!.content![0]!.attrs?.markdownHref).toBe(rawHref);
+    expect(serialized).toBe(`${source}\n`);
+    expect(reopened.content![0]!.content![0]!.attrs?.markdownHref).toBe(rawHref);
+    expect(docToMarkdown(reopened)).toBe(serialized);
+  });
+
+  it('keeps an angle-delimited href containing an escaped space on a repeated save', () => {
+    const source = '[x](<./T.md?q=a\\ b#f>)';
+    const rawHref = './T.md?q=a\\ b#f';
+    const resolve = () => 'target';
+    const first = markdownToDoc(source, { resolveMarkdownPageLink: resolve });
+    const serialized = docToMarkdown(first);
+    const reopened = markdownToDoc(serialized, { resolveMarkdownPageLink: resolve });
+
+    expect(first.content![0]!.content![0]!.attrs?.markdownHref).toBe(rawHref);
+    expect(serialized).toBe(`${source}\n`);
+    expect(reopened.content![0]!.content![0]!.attrs?.markdownHref).toBe(rawHref);
+    expect(docToMarkdown(reopened)).toBe(serialized);
+  });
+
+  it('loads a source-relative page file link by its unique Markdown file path', () => {
+    const rawHref = './Target%23page.md?view=compact#Section%2F';
+    const vault: VaultScan = {
+      files: [
+        {
+          path: 'Notes/Source.md',
+          text: `[target](${rawHref}) [ambiguous](Note.md)`,
+          mtime: 1,
+          birthtime: 1,
+        },
+        { path: 'Notes/Target#page.md', text: '', mtime: 1, birthtime: 1 },
+        { path: 'Left/Note.md', text: '', mtime: 1, birthtime: 1 },
+        { path: 'Right/Note.md', text: '', mtime: 1, birthtime: 1 },
+      ],
+      folders: [],
+      others: [],
+      registry: null,
+      recent: null,
+    };
+    let nextId = 0;
+    const loaded = loadVault(vault, () => `loaded-${++nextId}`, 1);
+    const idAt = (path: string) => [...loaded.layout].find(([, placement]) => placement.file === path)?.[0];
+    const source = loaded.docs[idAt('Notes/Source.md')!]!;
+    const nodes = source.content![0]!.content!;
+
+    expect(nodes[0]!.attrs).toMatchObject({
+      id: idAt('Notes/Target#page.md'),
+      label: 'target',
+      alias: 'target',
+      markdownHref: rawHref,
+      anchor: 'Section/',
+    });
+    expect(nodes[2]!.type).toBe('text');
+    expect(nodes[2]!.marks?.find((mark) => mark.type === 'link')?.attrs?.href).toBe('Note.md');
+  });
+
+  it('leaves external, fragment-only, query-only and ambiguous links as ordinary links', () => {
+    const source =
+      '[external](https://example.org/page) [heading](#intro) [query](?view=1) [ambiguous](Note.md)';
+    const doc = markdownToDoc(source, {
+      resolveMarkdownPageLink: (href) => resolveMarkdownPageLink(href, '', resolver),
+      resolveLink: () => 'wrong-page',
+    });
+    const links = doc.content![0]!.content!.filter((node) =>
+      node.marks?.some((mark) => mark.type === 'link'),
+    );
+
+    expect(links.map((node) => node.marks?.find((mark) => mark.type === 'link')?.attrs?.href)).toEqual([
+      'https://example.org/page',
+      '#intro',
+      '?view=1',
+      'Note.md',
+    ]);
+    expect(links.every((node) => node.type === 'text')).toBe(true);
+    expect(docToMarkdown(doc)).toBe(`${source}\n`);
+  });
+
+  it('does not resolve inline-looking text inside code', () => {
+    const doc = markdownToDoc('`[code](Notes/Árvore%23.md)`\n\n```md\n[code](Notes/Árvore%23.md)\n```', {
+      resolveMarkdownPageLink: () => 'wrong-page',
+    });
+
+    expect(doc.content![0]!.content).toEqual([
+      { type: 'text', text: '[code](Notes/Árvore%23.md)', marks: [{ type: 'code' }] },
+    ]);
+    expect(doc.content![1]!.type).toBe('codeBlock');
+    expect(doc.content![1]!.content?.[0]?.text).toBe('[code](Notes/Árvore%23.md)');
   });
 });
 

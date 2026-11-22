@@ -2,7 +2,7 @@
 import { canvasDoc, readCanvas } from '../canvas';
 import { isEncryptedText } from '../crypto';
 import { validateDoc, isRecord } from '../doc';
-import { markdownToDoc } from '../markdown/parse';
+import { markdownHrefPath, markdownToDoc } from '../markdown/parse';
 import type { ParseOptions } from '../markdown/parse';
 import { newPageMeta } from '../model';
 import type { DocNode, PageId, PageMeta, WorkspaceState } from '../model';
@@ -306,7 +306,9 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
     const reason = `The parent database is protected: ${protectedPages.get(parent.id)}`;
     protectedPages.set(page.id, reason);
     unreadable.push(page.id);
-    problems.push(`“${layout.get(page.id)?.file ?? page.title}” is a row in an unsupported database and is shown read only.`);
+    problems.push(
+      `“${layout.get(page.id)?.file ?? page.title}” is a row in an unsupported database and is shown read only.`,
+    );
   }
 
   // database rows read their property values from frontmatter keys named after each property
@@ -413,8 +415,18 @@ export function parseOptions(
       const path = resolveRelative(dir, decoded) ?? decoded;
       return resolver.byPath(stripExtension(path)) ?? resolver.byPath(stripExtension(decoded));
     },
+    resolveMarkdownPageLink: (href) => resolveMarkdownPageLink(href, dir, resolver),
     ...(resolveFileHref ? { resolveFile: resolveFileHref } : {}),
   };
+}
+
+export function resolveMarkdownPageLink(href: string, sourceDir: string, resolver: Resolver): PageId | null {
+  const destination = markdownHrefPath(href);
+  if (!destination || !/\.(md|canvas)$/i.test(destination.path)) return null;
+  const path = destination.path.startsWith('/')
+    ? destination.path.slice(1)
+    : resolveRelative(sourceDir, destination.path);
+  return path === null ? null : resolver.byMarkdownPath(path);
 }
 
 export function resolveFile(
@@ -451,6 +463,8 @@ export interface Resolver {
   // finds the page a [[link]] means, the way obsidian does: path, then file name, then title or alias
   resolve(target: string, fromDir: string): PageId | null;
   byPath(path: string): PageId | null;
+  // finds a unique Markdown page file path without falling back to a title or basename
+  byMarkdownPath(path: string): PageId | null;
 }
 
 export function makeResolver(
@@ -459,6 +473,7 @@ export function makeResolver(
   sources: ReadonlyMap<PageId, PageSource>,
 ): Resolver {
   const paths = new Map<string, PageId>();
+  const markdownPaths = new Map<string, Set<PageId>>();
   const names = new Map<string, PageId[]>();
   const titles = new Map<string, PageId[]>();
   const add = (map: Map<string, PageId[]>, key: string, id: PageId) =>
@@ -467,6 +482,12 @@ export function makeResolver(
     if (!state.pages[id]) continue;
     const lower = placement.folder.toLowerCase();
     if (!paths.has(lower) || placement.file?.endsWith('.md')) paths.set(lower, id);
+    if (placement.file && /\.(md|canvas)$/i.test(placement.file)) {
+      const file = placement.file.toLowerCase();
+      const candidates = markdownPaths.get(file) ?? new Set<PageId>();
+      candidates.add(id);
+      markdownPaths.set(file, candidates);
+    }
     add(names, foldText(basename(placement.folder)), id);
   }
   for (const page of Object.values(state.pages)) {
@@ -487,8 +508,13 @@ export function makeResolver(
     })[0]!;
   };
   const byPath = (path: string) => paths.get(path.replace(/^\/+/, '').toLowerCase()) ?? null;
+  const byMarkdownPath = (path: string) => {
+    const ids = markdownPaths.get(path.replace(/^\/+/, '').toLowerCase());
+    return ids?.size === 1 ? [...ids][0]! : null;
+  };
   return {
     byPath,
+    byMarkdownPath,
     resolve(target, fromDir) {
       const clean = target.trim().replace(/\.(md|canvas)$/i, '');
       if (!clean) return null;
