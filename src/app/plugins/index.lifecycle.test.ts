@@ -8,7 +8,6 @@ import type { WorkspaceSession } from '../../storage/session';
 
 const SETTINGS_FILE = '.morrow/plugins.json';
 const PLUGINS_FOLDER = '.morrow/plugins';
-const MANIFEST_FILE = `${PLUGINS_FOLDER}/fixture/manifest.json`;
 const MAIN_FILE = `${PLUGINS_FOLDER}/fixture/main.js`;
 const PREFERENCES_KEY = 'morrow.preferences';
 
@@ -103,24 +102,28 @@ let priorMorrow: Window['morrow'];
 let priorPreferences: string | null;
 let databaseSequence = 0;
 
-async function createHarness(options: { enabled?: string[]; code?: string } = {}): Promise<Harness> {
+async function createHarness(
+  options: { enabled?: string[]; code?: string; pluginId?: string } = {},
+): Promise<Harness> {
   vi.resetModules();
   priorMorrow = window.morrow;
   priorPreferences = localStorage.getItem(PREFERENCES_KEY);
+  const pluginId = options.pluginId ?? 'fixture';
+  const pluginFolder = `${PLUGINS_FOLDER}/${pluginId}`;
 
   const files = new Map<string, string>([
     [SETTINGS_FILE, JSON.stringify({ enabled: options.enabled ?? [] })],
     [
-      MANIFEST_FILE,
+      `${pluginFolder}/manifest.json`,
       JSON.stringify({
-        id: 'fixture',
+        id: pluginId,
         name: 'Synthetic lifecycle fixture',
         version: '1.0.0',
         description: 'Local test fixture.',
         author: 'Test',
       }),
     ],
-    [MAIN_FILE, options.code ?? 'export default () => {};'],
+    [`${pluginFolder}/main.js`, options.code ?? 'export default () => {};'],
   ]);
   const delayedReads = new Map<string, { promise: Promise<string | null>; started?: () => void }>();
   const readText = vi.fn((path: string) => {
@@ -231,6 +234,29 @@ afterEach(async () => {
 });
 
 describe('plugin loader lifecycle', () => {
+  it('exposes the note-style mount only to Documento and cleans its registration on disable', async () => {
+    const h = await createHarness({
+      pluginId: 'polaris-documento',
+      enabled: ['polaris-documento'],
+      code: `export default (morrow) => {
+        morrow.pages.noteStylePanel.add((container) => {
+          container.textContent = 'Documento panel';
+          return () => { container.textContent = ''; };
+        });
+      };`,
+    });
+    await h.loader.startPlugins();
+
+    const registration = h.registry.documentoNoteStylePanel();
+    expect(registration?.owner).toBe('polaris-documento');
+    expect(registration?.isActive()).toBe(true);
+    expect(registration?.mount).toBeTypeOf('function');
+
+    await h.loader.setPluginEnabled('polaris-documento', false);
+    expect(registration?.isActive()).toBe(false);
+    expect(h.registry.documentoNoteStylePanel()).toBeNull();
+  });
+
   it('deduplicates startup before settings I/O and ignores a stopped pending startup', async () => {
     const h = await createHarness({ enabled: ['fixture'], code: 'export default () => {};' });
     const settingsRead = deferred<string | null>();

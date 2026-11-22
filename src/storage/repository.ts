@@ -73,6 +73,8 @@ export interface WorkspaceRepository {
   attachState?(getState: () => WorkspaceState): void;
   // where a page's file lives, relative to the storage location
   pathOf?(id: PageId): string | null;
+  /** True only when the page has its own writable Markdown file, not just a folder placement. */
+  hasWritableNoteStyleSource?(id: PageId): boolean;
   // small files of morrow's own beside the pages, such as flashcard progress
   readMeta?(name: string): Promise<string | null>;
   writeMeta?(name: string, text: string): Promise<void>;

@@ -221,6 +221,21 @@ export class WorkspaceSession {
     return this.repository.pathOf?.(id) ?? null;
   }
 
+  /** Host-only preflight that distinguishes a note file from a folder with the same path suffix. */
+  hasWritableNoteStyleSource(id: PageId): boolean {
+    const page = ownPage(this.state.pages, id);
+    return (
+      !this.closed &&
+      page?.kind === 'page' &&
+      !this.isMutationFenced &&
+      !isEffectivelyTrashed(this.state.pages, id) &&
+      !this.unreadable.has(id) &&
+      !this.protectedReasons.has(id) &&
+      !this.isPilotDataPage(id) &&
+      this.repository.hasWritableNoteStyleSource?.(id) === true
+    );
+  }
+
   /** Reads the saved style and returns an opaque revision scoped to this page and session. */
   readNoteStyle(pageId: PageId): NoteStyleResult {
     if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');

@@ -21,10 +21,11 @@ import {
   addPluginAction,
   addPluginBlock,
   addPluginInlineColorControl,
+  addPluginNoteStylePanel,
   pluginActions,
   pluginBlocks,
 } from './registry';
-import type { PluginInlineColorControlMount } from './registry';
+import type { PluginInlineColorControlMount, PluginNoteStylePanelMount } from './registry';
 import { createDataApi } from './dataApi';
 import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
 import type { DatabaseProviderRegistration } from './providerApi';
@@ -441,6 +442,15 @@ function pluginApi(id: string, state: Running) {
           now: Date.now(),
         });
         if (!result.ok) throw new Error(result.error);
+      },
+      noteStylePanel: {
+        add(mount: PluginNoteStylePanelMount) {
+          assertActive();
+          if (id !== 'polaris-documento')
+            throw new Error('Only Polaris Documento can add a note-style panel.');
+          if (typeof mount !== 'function') throw new Error('A note-style panel needs a mount function.');
+          return keep(addPluginNoteStylePanel(id, mount));
+        },
       },
     },
     editor: {

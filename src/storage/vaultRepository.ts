@@ -304,6 +304,11 @@ export class VaultRepository implements WorkspaceRepository {
     return placement ? (placement.file ?? placement.folder) : null;
   }
 
+  hasWritableNoteStyleSource(id: PageId): boolean {
+    const placement = this.layout.get(id);
+    return Boolean(placement?.file && extension(placement.file) === 'md' && this.texts.has(id));
+  }
+
   // lets edits made elsewhere be read against the live workspace, not the last saved one
   attachState(getState: () => WorkspaceState): void {
     this.currentState = getState;

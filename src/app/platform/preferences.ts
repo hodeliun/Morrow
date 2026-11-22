@@ -3,6 +3,8 @@ import { useSyncExternalStore } from 'react';
 import type { SupportedLocale } from '../i18n/types';
 import { COLORS } from '../../core/model';
 import type { ColorName } from '../../core/model';
+import { isValidNoteStyle, projectNoteStyle } from '../../core/noteStyle';
+import type { NoteStyle } from '../../core/noteStyle';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type WritingFont = 'serif' | 'sans' | 'mono';
@@ -153,6 +155,8 @@ export interface Preferences {
   plugins: boolean;
   // the colour last picked for words, which ctrl shift h puts on again
   lastColor: { kind: 'text' | 'bg'; color: ColorName } | null;
+  /** Valid legacy per-note style used when restoring a page style. */
+  defaultNoteStyle?: NoteStyle;
 }
 
 const KEY = 'morrow.preferences';
@@ -251,6 +255,9 @@ function read(): Preferences {
     const raw = localStorage.getItem(KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw) as Partial<Preferences>;
+    const defaultNoteStyle = isValidNoteStyle(parsed.defaultNoteStyle)
+      ? projectNoteStyle(parsed.defaultNoteStyle)
+      : null;
     return {
       locale: ['en', 'es', 'pt'].includes(parsed.locale as SupportedLocale)
         ? (parsed.locale as SupportedLocale)
@@ -346,6 +353,7 @@ function read(): Preferences {
         ? SIDEBAR_MODULES.filter((module) => parsed.hiddenModules!.includes(module))
         : [],
       sidebarOrder: readSidebarOrder(parsed.sidebarOrder),
+      ...(defaultNoteStyle ? { defaultNoteStyle } : {}),
     };
   } catch {
     return defaults;

@@ -41,6 +41,7 @@ import { Emoji } from './Emoji';
 import { LockedPage } from './EncryptDialog';
 import { PageProperties } from './PageProperties';
 import { PageTags } from './TagsView';
+import { NoteStyleAction } from './NoteStyleAction';
 import { applyTemplateTo, deleteForever, restorePage, setArchived, trashPage } from '../operations';
 import { outlineShown, usePreferences } from '../platform/preferences';
 import type { FooterSection } from '../platform/preferences';
@@ -365,6 +366,9 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               }}
             />
           </h1>
+          {page.kind === 'page' && nativeEditable && !trashed && !unreadable && (
+            <NoteStyleAction pageId={id} />
+          )}
           {page.kind !== 'database' && <PageTags page={page} editable={nativeEditable} />}
           {isTemplate && <RepeatBar page={page} editable={nativeEditable} />}
           {!unreadable && (

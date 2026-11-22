@@ -130,6 +130,18 @@ class ObservedMemoryVault extends MemoryVault {
 }
 
 describe('typed note style persistence', () => {
+  it('distinguishes a folder named like a Markdown file from a writable note source', async () => {
+    const vault = new MemoryVault({ 'x.md/Child.md': 'Child note.\n' });
+    const session = await open(vault);
+    const folderId = pageIdAt(session, 'x.md');
+    const childId = pageIdAt(session, 'x.md/Child.md');
+
+    expect(session.pathOf(folderId)).toBe('x.md');
+    expect(session.hasWritableNoteStyleSource(folderId)).toBe(false);
+    expect(session.hasWritableNoteStyleSource(childId)).toBe(true);
+    await session.close();
+  });
+
   it('writes only the style, preserves raw YAML and body, then reopens at the same page id', async () => {
     const vault = new MemoryVault({ 'Note.md': ORIGINAL, 'Untouched.md': 'Leave me alone.\n' });
     const session = await open(vault);
