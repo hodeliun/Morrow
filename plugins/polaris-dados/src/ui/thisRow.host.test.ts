@@ -31,6 +31,13 @@ const properties: ReadySnapshot['schema']['properties'] = [
     options: [],
     formula: 'thisRow.Quantity * thisRow.Price',
   },
+  {
+    id: 'list-sum',
+    name: 'List sum',
+    type: 'formula',
+    options: [],
+    formula: 'List(thisRow.Quantity, thisRow.Price).Sum()',
+  },
   { id: 'row-list', name: 'Row list', type: 'formula', options: [], formula: '[thisRow]' },
   { id: 'nested-row-list', name: 'Nested row list', type: 'formula', options: [], formula: '[[thisRow]]' },
 ];
@@ -211,8 +218,10 @@ describe('Polaris Dados thisRow host rendering', () => {
     const { window, source, linked, data } = mountRoots();
     expect(value(source, 'total')).toBe('20');
     expect(value(source, 'row-total')).toBe('20');
+    expect(value(source, 'list-sum')).toBe('12');
     expect(value(linked, 'total')).toBe('20');
     expect(value(linked, 'row-total')).toBe('20');
+    expect(value(linked, 'list-sum')).toBe('12');
     for (const root of [source, linked]) {
       expect(root.querySelector('[data-field="row-list"] [data-value-kind="error"]')?.textContent).toBe(
         'Formula error',
@@ -244,8 +253,10 @@ describe('Polaris Dados thisRow host rendering', () => {
     expect(data.patchCalls[0]).toMatchObject({ propertyId: 'quantity', value: 3 });
     expect(value(source, 'total')).toBe('30');
     expect(value(source, 'row-total')).toBe('30');
+    expect(value(source, 'list-sum')).toBe('13');
     expect(value(linked, 'total')).toBe('30');
     expect(value(linked, 'row-total')).toBe('30');
+    expect(value(linked, 'list-sum')).toBe('13');
     expect(data.current().rows[0]?.properties).toEqual({ name: 'Widget', quantity: 3, price: 10 });
   });
 });

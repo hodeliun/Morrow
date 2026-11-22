@@ -184,3 +184,82 @@ describe('Polaris Dados formula row context', () => {
     });
   });
 });
+
+describe('Polaris Dados local list methods', () => {
+  it('implements the published aggregation, count, and positional semantics', () => {
+    const properties = [
+      formula('sum', 'Sum', 'List(2, 3).Sum()'),
+      formula('average', 'Average', 'List(2, 4).Average()'),
+      formula('avg', 'Avg', 'List(2, 4).Avg()'),
+      formula('min', 'Min', 'List(2, 4).Min()'),
+      formula('max', 'Max', 'List(2, 4).Max()'),
+      formula('count', 'Count', 'List(null, false, 0, "").Count()'),
+      formula('first', 'First', 'List(false, "middle", 0).First()'),
+      formula('last', 'Last', 'List(false, "middle", 0).Last()'),
+      formula('sum-empty', 'Empty sum', 'List().Sum()'),
+      formula('average-empty', 'Empty average', 'List().Average()'),
+      formula('min-empty', 'Empty min', 'List().Min()'),
+      formula('max-empty', 'Empty max', 'List().Max()'),
+      formula('count-empty', 'Empty count', 'List().Count()'),
+      formula('first-empty', 'Empty first', 'List().First()'),
+      formula('last-empty', 'Empty last', 'List().Last()'),
+    ] satisfies readonly ProviderProperty[];
+
+    expect(evaluate(properties, {}, 'sum')).toEqual({ kind: 'number', value: 5 });
+    expect(evaluate(properties, {}, 'average')).toEqual({ kind: 'number', value: 3 });
+    expect(evaluate(properties, {}, 'avg')).toEqual({ kind: 'number', value: 3 });
+    expect(evaluate(properties, {}, 'min')).toEqual({ kind: 'number', value: 2 });
+    expect(evaluate(properties, {}, 'max')).toEqual({ kind: 'number', value: 4 });
+    expect(evaluate(properties, {}, 'count')).toEqual({ kind: 'number', value: 3 });
+    expect(evaluate(properties, {}, 'first')).toEqual({ kind: 'boolean', value: false });
+    expect(evaluate(properties, {}, 'last')).toEqual({ kind: 'number', value: 0 });
+    expect(evaluate(properties, {}, 'sum-empty')).toEqual({ kind: 'number', value: 0 });
+    for (const id of ['average-empty', 'min-empty', 'max-empty', 'first-empty', 'last-empty']) {
+      expect(evaluate(properties, {}, id)).toEqual({ kind: 'null' });
+    }
+    expect(evaluate(properties, {}, 'count-empty')).toEqual({ kind: 'number', value: 0 });
+  });
+
+  it('keeps errors visible, lets IfError recover, and preserves free Sum coercion', () => {
+    const properties = [
+      formula('wrong-receiver', 'Wrong receiver', '1.Sum()'),
+      formula('wrong-arity', 'Wrong arity', 'List(1).Sum(2)'),
+      formula('numeric-only', 'Numeric only', 'List(1, "2").Sum()'),
+      formula('recovered', 'Recovered', 'IfError(List(1, "2").Sum(), 9)'),
+      formula('free-sum', 'Free Sum', 'Sum("2", 3)'),
+      formula('free-sum-empty', 'Free empty Sum', 'Sum()'),
+      formula('unknown-method', 'Unknown method', 'List(1).Median()'),
+    ] satisfies readonly ProviderProperty[];
+
+    expect(evaluate(properties, {}, 'wrong-receiver')).toMatchObject({
+      kind: 'error',
+      message: 'Sum() needs a local list of values.',
+    });
+    expect(evaluate(properties, {}, 'wrong-arity')).toMatchObject({
+      kind: 'error',
+      message: 'Sum() takes no arguments.',
+    });
+    expect(evaluate(properties, {}, 'numeric-only')).toMatchObject({
+      kind: 'error',
+      message: 'Sum() only accepts finite numbers.',
+    });
+    expect(evaluate(properties, {}, 'recovered')).toEqual({ kind: 'number', value: 9 });
+    expect(evaluate(properties, {}, 'free-sum')).toEqual({ kind: 'number', value: 5 });
+    expect(evaluate(properties, {}, 'free-sum-empty')).toEqual({ kind: 'number', value: 0 });
+    expect(evaluate(properties, {}, 'unknown-method')).toMatchObject({ kind: 'error' });
+  });
+
+  it('accepts 2,000 values and rejects 2,001', () => {
+    const properties = [
+      scalar('values', 'Values'),
+      formula('sum', 'Sum', 'thisRow.Values.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    const values = Array.from({ length: 2000 }, () => 1);
+
+    expect(evaluate(properties, { values }, 'sum')).toEqual({ kind: 'number', value: 2000 });
+    expect(evaluate(properties, { values: [...values, 1] }, 'sum')).toMatchObject({
+      kind: 'error',
+      message: 'Sum() is limited to 2000 values.',
+    });
+  });
+});

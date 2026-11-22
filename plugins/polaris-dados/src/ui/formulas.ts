@@ -16,6 +16,9 @@ export type EvaluatedCell =
 
 const MAX_FORMULA_DEPTH = 24;
 const MAX_REFERENCED_FORMULAS = 64;
+const MAX_LOCAL_LIST_VALUES = 2000;
+
+const LOCAL_LIST_METHODS = new Set(['sum', 'average', 'avg', 'min', 'max', 'count', 'first', 'last']);
 
 interface FormulaEvaluationBudget {
   readonly cache: Map<string, EvaluatedCell>;
@@ -95,6 +98,9 @@ function evaluateFormulaProperty(
       }
       return resolveDataProperty(name);
     },
+    invokeMethod(receiver, name, arguments_) {
+      return invokeLocalListMethod(receiver, name, arguments_);
+    },
   });
 
   budget.visiting.delete(property.id);
@@ -130,4 +136,45 @@ function normalizeValue(value: FormulaRuntimeValue): EvaluatedCell {
 function containsUnsupportedReference(value: FormulaRuntimeValue): boolean {
   if (Array.isArray(value)) return value.some(containsUnsupportedReference);
   return typeof value === 'object' && value !== null;
+}
+
+function invokeLocalListMethod(
+  receiver: FormulaRuntimeValue,
+  name: string,
+  arguments_: readonly unknown[],
+): FormulaRuntimeValue {
+  const method = name.toLowerCase();
+  if (!Array.isArray(receiver)) {
+    throw new Error(`${name}() needs a local list of values.`);
+  }
+  if (!LOCAL_LIST_METHODS.has(method)) {
+    throw new Error(`There is no list method called “${name}”.`);
+  }
+  if (arguments_.length !== 0) {
+    throw new Error(`${name}() takes no arguments.`);
+  }
+  if (receiver.length > MAX_LOCAL_LIST_VALUES) {
+    throw new Error(`${name}() is limited to ${MAX_LOCAL_LIST_VALUES} values.`);
+  }
+
+  if (method === 'count') return receiver.filter((value) => value !== null).length;
+  if (method === 'first') return receiver[0] ?? null;
+  if (method === 'last') return receiver[receiver.length - 1] ?? null;
+  if (receiver.length === 0) return method === 'sum' ? 0 : null;
+
+  const numbers = receiver.map((value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`${name}() only accepts finite numbers.`);
+    }
+    return value;
+  });
+  if (method === 'min') return Math.min(...numbers);
+  if (method === 'max') return Math.max(...numbers);
+
+  const total = numbers.reduce((sum, value) => {
+    const next = sum + value;
+    if (!Number.isFinite(next)) throw new Error(`${name}() produced a non-finite number.`);
+    return next;
+  }, 0);
+  return method === 'sum' ? total : total / numbers.length;
 }
