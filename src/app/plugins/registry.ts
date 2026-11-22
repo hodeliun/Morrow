@@ -39,6 +39,9 @@ export interface PluginNoteStylePanelLabels {
   readonly lineHeight: string;
   readonly blockSpacing: string;
   readonly width: string;
+  readonly previewWidth: string;
+  readonly previewHeading: string;
+  readonly previewBody: string;
   readonly fonts: Readonly<Record<NoteStyleFont, string>>;
   readonly widths: Readonly<Record<NoteStyleWidth, string>>;
   readonly save: string;

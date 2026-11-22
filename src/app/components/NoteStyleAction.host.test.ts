@@ -184,7 +184,7 @@ afterEach(async () => {
   activeSession = null;
   document.body.replaceChildren();
   window.localStorage.clear();
-  setPreferences({ readingMode: false, defaultNoteStyle: undefined, pageWidths: {} });
+  setPreferences({ locale: 'en', readingMode: false, defaultNoteStyle: undefined, pageWidths: {} });
   vi.unstubAllGlobals();
 });
 
@@ -267,6 +267,35 @@ describe('host note-style action', () => {
       expect(session.hasWritableNoteStyleSource(secondId)).toBe(true);
       expect(firstText).toBe('Note.md');
       expect(secondText).toBe('Other.md');
+    } finally {
+      await app.unmount();
+      app.container.remove();
+    }
+  });
+
+  it('passes the release sample labels through to Documento in English and Portuguese', async () => {
+    const session = await open({ 'Note.md': 'A note.\n' });
+    const noteId = pageIdAt(session, 'Note.md');
+    setPreferences({ readingMode: false, locale: 'en' });
+    const mounted: MountedPanel[] = [];
+    cleanupRegistration = registerRenderer(mounted);
+    const app = mount();
+
+    try {
+      await app.render(action(noteId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+      expect(mounted[0]!.host.labels.previewWidth).toBe('Page width preview');
+      expect(mounted[0]!.host.labels.previewHeading).toBe('Preview heading');
+      expect(mounted[0]!.host.labels.previewBody).toBe('This is a preview of your text.');
+
+      await act(async () => mounted[0]!.cancel.click());
+      await act(async () => setPreferences({ locale: 'pt' }));
+      await app.render(action(noteId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Estilo da página"]')!);
+
+      expect(mounted[1]!.host.labels.previewWidth).toBe('Prévia da largura da página');
+      expect(mounted[1]!.host.labels.previewHeading).toBe('Prévia do título');
+      expect(mounted[1]!.host.labels.previewBody).toBe('Esta é uma prévia do texto.');
     } finally {
       await app.unmount();
       app.container.remove();

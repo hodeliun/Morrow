@@ -1,11 +1,19 @@
 # Polaris Documento
 
-Polaris Documento restores the Polaris presentation for page links and database relation chips and
-displays saved `morrowNoteStyle` values on their notes. Style display is read-only: the host exposes a
-typed, scoped presentation projection while the original YAML remains untouched. The plugin registers
-theme-aware CSS with Morrow's `styles.add` API; the host removes that style when the plugin is disabled
-or reloaded. External links keep Morrow's normal `.prose a` styling because every page-link rule
-targets `.prose a.page-link`.
+Polaris Documento restores the Polaris presentation for page links and database relation chips,
+displays saved `morrowNoteStyle` values on their notes, and provides the per-note style controls with
+a local preview. The host supplies typed, scoped reads and writes; the preview does not change the
+page until Save is confirmed. Cancel, Escape, and plugin disable discard the local draft. External
+links keep Morrow's normal `.prose a` styling because every page-link rule targets `.prose a.page-link`.
+
+Open **Page style** beside an editable Markdown page title. Choose a font and width, then adjust text
+size, line height, and block spacing. The sample previews comfortable, wide, and full widths at 68%,
+84%, and 100% of its frame. Save confirms the style for that note; Restore applies the current profile
+default. A save conflict keeps the draft open so it can be adjusted and retried.
+
+The plugin registers its theme-aware styles and page-style panel with the host APIs. The host removes
+the panel and its styles when the plugin is disabled or reloaded. The panel edits only the style field;
+it does not create pages or change note body text.
 
 ## Build
 

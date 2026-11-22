@@ -2,6 +2,6 @@
   "id": "polaris-documento",
   "name": "Polaris Documento",
   "version": "0.1.0",
-  "description": "Restores Polaris page-link and relation-chip presentation and displays saved note styles.",
+  "description": "Restores Polaris link and relation styles, displays saved note styles, and provides per-note style controls.",
   "author": "Polaris"
 }

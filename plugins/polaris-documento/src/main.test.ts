@@ -2,8 +2,13 @@ import { Window } from 'happy-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { activate, type PolarisDocumentoApi } from './main';
-import type { PluginInlineColorControlMount } from '../../../src/app/plugins/registry';
+import activate, { type PolarisDocumentoApi } from './main';
+import { en } from '../../../src/app/i18n/locales/en';
+import type {
+  PluginInlineColorControlMount,
+  PluginNoteStylePanelMount,
+  PluginNoteStylePanelHost,
+} from '../../../src/app/plugins/registry';
 
 const windows: Window[] = [];
 
@@ -25,6 +30,8 @@ function stylesHarness(window: Window) {
     };
   });
   let activeControl: PluginInlineColorControlMount | null = null;
+  let activePanel: PluginNoteStylePanelMount | null = null;
+  let mountedPanelCleanup: (() => void) | null = null;
   const addControl = vi.fn((mount: PluginInlineColorControlMount) => {
     activeControl = mount;
     let attached = true;
@@ -34,13 +41,77 @@ function stylesHarness(window: Window) {
       if (activeControl === mount) activeControl = null;
     };
   });
+  const addPanel = vi.fn((mount: PluginNoteStylePanelMount) => {
+    activePanel = mount;
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      if (activePanel === mount) {
+        activePanel = null;
+        mountedPanelCleanup?.();
+        mountedPanelCleanup = null;
+      }
+    };
+  });
   return {
-    api: { editor: { inlineColorControl: { add: addControl } }, styles: { add } } as PolarisDocumentoApi,
+    api: {
+      editor: { inlineColorControl: { add: addControl } },
+      pages: { noteStylePanel: { add: addPanel } },
+      styles: { add },
+    } as PolarisDocumentoApi,
     add,
     addControl,
+    addPanel,
     activeControl: () => activeControl,
+    activePanel: () => activePanel,
+    mountActivePanel(container: HTMLElement, host: PluginNoteStylePanelHost) {
+      if (!activePanel) throw new Error('The Documento note-style panel is not registered.');
+      mountedPanelCleanup?.();
+      mountedPanelCleanup = activePanel(container, host) ?? null;
+    },
   };
 }
+
+describe('Polaris Documento note-style panel activation', () => {
+  it('registers and mounts through the host pages API, then unregisters and cleans up on disable', () => {
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const { api, addPanel, activePanel, mountActivePanel } = stylesHarness(window);
+    const initial = {
+      font: 'sans',
+      fontSize: 16,
+      lineHeight: 1.5,
+      blockSpacing: 8,
+      width: 'comfortable',
+    } as const;
+    const host: PluginNoteStylePanelHost = {
+      initial,
+      labels: en.pageStyle,
+      save: async (style) => ({ ok: true as const, style }),
+      restore: async () => ({ ok: true as const, style: initial }),
+      cancel: vi.fn(),
+    };
+    const container = window.document.createElement('div');
+    window.document.body.append(container);
+
+    const disable = activate(api);
+
+    expect(addPanel).toHaveBeenCalledOnce();
+    expect(activePanel()).toBeTypeOf('function');
+    mountActivePanel(container as unknown as HTMLElement, host);
+    expect(container.querySelector('[data-note-style-field="font"]')).not.toBeNull();
+    expect(container.querySelector('.note-style-preview strong')?.textContent).toBe(
+      en.pageStyle.previewHeading,
+    );
+
+    disable();
+
+    expect(activePanel()).toBeNull();
+    expect(container.querySelector('.note-style-panel')).toBeNull();
+    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(0);
+  });
+});
 
 function pluginRules(window: Window) {
   const style = window.document.querySelector(
@@ -81,31 +152,42 @@ describe('Polaris Documento styles lifecycle', () => {
   it('registers scoped styles and removes them on disable and reload cleanup', () => {
     const window = new Window({ url: 'http://morrow.test/' });
     windows.push(window);
-    const { api, add, addControl, activeControl } = stylesHarness(window);
+    const { api, add, addControl, addPanel, activeControl, activePanel } = stylesHarness(window);
 
     const disable = activate(api);
-    expect(add).toHaveBeenCalledTimes(2);
+    expect(add).toHaveBeenCalledTimes(3);
     expect(addControl).toHaveBeenCalledOnce();
+    expect(addPanel).toHaveBeenCalledOnce();
     expect(activeControl()).toBeTypeOf('function');
-    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(2);
+    expect(activePanel()).toBeTypeOf('function');
+    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(3);
     expect(
       [...window.document.querySelectorAll('style[data-plugin="polaris-documento"]')]
         .map((style) => style.textContent)
         .join('\n'),
     ).toContain('.color-custom-control');
+    expect(
+      [...window.document.querySelectorAll('style[data-plugin="polaris-documento"]')]
+        .map((style) => style.textContent)
+        .join('\n'),
+    ).toContain('.note-style-preview');
 
     disable();
     disable();
     expect(activeControl()).toBeNull();
+    expect(activePanel()).toBeNull();
     expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(0);
 
     const reload = activate(api);
-    expect(add).toHaveBeenCalledTimes(4);
+    expect(add).toHaveBeenCalledTimes(6);
     expect(addControl).toHaveBeenCalledTimes(2);
+    expect(addPanel).toHaveBeenCalledTimes(2);
     expect(activeControl()).toBeTypeOf('function');
-    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(2);
+    expect(activePanel()).toBeTypeOf('function');
+    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(3);
     reload();
     expect(activeControl()).toBeNull();
+    expect(activePanel()).toBeNull();
     expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(0);
   });
 

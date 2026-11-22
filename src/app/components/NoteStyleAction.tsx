@@ -124,6 +124,9 @@ function panelLabels(): PluginNoteStylePanelLabels {
     lineHeight: t('pageStyle.lineHeight'),
     blockSpacing: t('pageStyle.blockSpacing'),
     width: t('pageStyle.width'),
+    previewWidth: t('pageStyle.previewWidth'),
+    previewHeading: t('pageStyle.previewHeading'),
+    previewBody: t('pageStyle.previewBody'),
     fonts: Object.freeze({
       serif: t('pageStyle.fonts.serif'),
       sans: t('pageStyle.fonts.sans'),

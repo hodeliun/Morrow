@@ -1,9 +1,19 @@
 import { styles } from './styles';
 import { inlineColorStyles } from './inlineColorStyles';
 import { mountInlineColorControl } from './inlineColorControl';
-import type { PluginInlineColorControlMount } from '../../../src/app/plugins/registry';
+import { mountNoteStylePanel } from './noteStylePanel';
+import { noteStylePanelStyles } from './noteStylePanelStyles';
+import type {
+  PluginInlineColorControlMount,
+  PluginNoteStylePanelMount,
+} from '../../../src/app/plugins/registry';
 
 export interface PolarisDocumentoApi {
+  readonly pages?: {
+    readonly noteStylePanel?: {
+      add?(mount: PluginNoteStylePanelMount): () => void;
+    };
+  };
   readonly editor?: {
     readonly inlineColorControl?: {
       add?(mount: PluginInlineColorControlMount): () => void;
@@ -22,6 +32,11 @@ export function activate(api: PolarisDocumentoApi): () => void {
   if (typeof addInlineColorControl === 'function') {
     cleanups.push(api.styles.add(inlineColorStyles));
     cleanups.push(addInlineColorControl(mountInlineColorControl));
+  }
+  const addNoteStylePanel = api.pages?.noteStylePanel?.add;
+  if (typeof addNoteStylePanel === 'function') {
+    cleanups.push(api.styles.add(noteStylePanelStyles));
+    cleanups.push(addNoteStylePanel(mountNoteStylePanel));
   }
   let active = true;
   return () => {
