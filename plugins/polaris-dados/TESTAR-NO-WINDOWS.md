@@ -75,6 +75,12 @@ Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parág
 2. Desative o Polaris Dados. O texto salvo **Legacy total** volta no mesmo lugar. Edite **Editable neighbor**, salve e reabra. O texto salvo permanece.
 3. Reative o plugin para obter **5** novamente. A cópia de `Resolved target.md` em `PilotState\DemoVault` mantém o marcador original. O valor calculado fica na interface.
 
+### Criar uma fórmula dentro da nota
+
+1. Em `Resolved target`, comece um parágrafo, digite `/formula` e escolha **Fórmula inline**.
+2. Escreva `6 * 7`, dê o nome **Total novo** e confirme em **Salvar**. O resultado no parágrafo deve ser **42**.
+3. Use desfazer para voltar ao comando e refazer para restaurar o resultado. Salve e reabra a nota para conferir o **42**. Ao desativar o Dados, a nota mostra **Total novo**.
+
 ## Fluxo curto
 
 1. Abra a nota `Inventory` no cofre `PilotState\DemoVault`.

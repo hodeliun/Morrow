@@ -1,4 +1,5 @@
 import type { Editor, Range } from '@tiptap/core';
+import { exitSuggestion } from '@tiptap/suggestion';
 import {
   createLegacyFormulaMarker,
   LEGACY_FORMULA_NODE,
@@ -10,9 +11,13 @@ import { newId } from '../platform/files';
 import { captureEditorInsertionTarget } from '../editor/editorInsertion';
 import type { EditorInsertionOwner } from '../editor/editorInsertion';
 import { pageEditorInsertionPeerFor } from '../editor/pageEditorCoordination';
+import { SLASH_COMMAND_PLUGIN_KEY } from '../editor/SlashCommand';
+import { activeHash, getTabs, targetPane } from '../tabs';
+import { parseRoute } from '../router';
 import type { PluginEditorInsertionTargetV1 } from './editorApi';
 import { addPluginBlock } from './registry';
 import type { PluginBlock } from './registry';
+import { getWorkspaceSessionGeneration } from '../workspace';
 import type {
   PluginInlineFormulaConfirmation,
   PluginInlineFormulaInsertionHost,
@@ -51,6 +56,9 @@ export function addInlineFormulaSlashCommand(
       if (!safeSlashRange(editor, range)) return;
       const peer = pageEditorInsertionPeerFor(editor);
       if (!peer) return;
+      const navigation = formulaNavigationSnapshot();
+      if (!navigation || navigation.pane !== peer.pane || navigation.pageId !== peer.pageId) return;
+      const sessionGeneration = getWorkspaceSessionGeneration();
 
       const rawTarget = captureEditorInsertionTarget(owner, { editor, range, inlineRange: true });
       if (!rawTarget) return;
@@ -70,6 +78,24 @@ export function addInlineFormulaSlashCommand(
         pending.delete(host);
       };
       const host: PluginInlineFormulaInsertionHost = Object.freeze({
+        dismiss() {
+          if (consumed || !active || !ownerIsActive(owner, generation) || editor.isDestroyed) return;
+          try {
+            exitSuggestion(editor.view, SLASH_COMMAND_PLUGIN_KEY);
+          } catch {
+            // Dismissing the suggestion is best-effort; the captured target remains independently guarded.
+          }
+        },
+        canRestoreFocus() {
+          if (!ownerIsActive(owner, generation) || editor.isDestroyed || !editor.view.dom.isConnected)
+            return false;
+          if (getWorkspaceSessionGeneration() !== sessionGeneration || peer.session.isClosed) return false;
+          const currentPeer = pageEditorInsertionPeerFor(editor);
+          if (!currentPeer || currentPeer.identity !== peer.identity || currentPeer.session !== peer.session || currentPeer.pane !== peer.pane)
+            return false;
+          const currentNavigation = formulaNavigationSnapshot();
+          return Boolean(currentNavigation && sameFormulaNavigation(navigation, currentNavigation));
+        },
         confirm(input: PluginInlineFormulaConfirmation): PluginInlineFormulaInsertionResult {
           if (consumed) return fail('already-used');
           if (!active || !ownerIsActive(owner, generation)) {
@@ -129,6 +155,32 @@ function ownerIsActive(owner: EditorInsertionOwner, generation: number): boolean
   } catch {
     return false;
   }
+}
+
+interface FormulaNavigationSnapshot {
+  readonly activeTab: string;
+  readonly pane: string;
+  readonly hash: string;
+  readonly pageId: string;
+}
+
+function formulaNavigationSnapshot(): FormulaNavigationSnapshot | null {
+  try {
+    const tabs = getTabs();
+    const tab = tabs.tabs.find((item) => item.id === tabs.active);
+    const pane = targetPane();
+    const hash = activeHash();
+    const route = parseRoute(hash);
+    if (!tab || route.name !== 'page') return null;
+    return { activeTab: tab.id, pane, hash, pageId: route.id };
+  } catch {
+    return null;
+  }
+}
+
+function sameFormulaNavigation(first: FormulaNavigationSnapshot, second: FormulaNavigationSnapshot): boolean {
+  return first.activeTab === second.activeTab && first.pane === second.pane &&
+    first.hash === second.hash && first.pageId === second.pageId;
 }
 
 function safeSlashRange(editor: Editor, range: Range): boolean {

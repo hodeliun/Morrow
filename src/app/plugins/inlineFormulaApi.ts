@@ -17,6 +17,10 @@ export type PluginInlineFormulaInsertionResult =
 
 /** The plugin can confirm a bounded formula or leave the original slash command in place. */
 export interface PluginInlineFormulaInsertionHost {
+  /** Closes the active slash suggestion without changing the captured command text. */
+  dismiss?(): void;
+  /** Reports whether it is still safe to return focus to the captured pane, without exposing its editor. */
+  canRestoreFocus?(): boolean;
   confirm(input: PluginInlineFormulaConfirmation): PluginInlineFormulaInsertionResult;
   cancel(): void;
 }

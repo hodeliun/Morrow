@@ -10,6 +10,7 @@ import type { LinkedViewInsertPickerApi } from './ui/insertView';
 import { providerMessages } from './ui/locale';
 import { mountPolarisDados } from './ui/mount';
 import { mountInlineFormulaResult } from './ui/inlineFormulaResult';
+import { createFormulaAuthoringController, formulaAuthoringMessages } from './ui/formulaAuthoring';
 
 export const POLARIS_DADOS_PROVIDER_ID = 'polaris-dados';
 
@@ -70,10 +71,15 @@ export function activate(api: PolarisDadosPluginApi): () => void {
   let unregisterCommand = () => {};
   let unregisterSlash = () => {};
   let unregisterInlineFormula = () => {};
+  let unregisterInlineFormulaSlash = () => {};
+  let formulaAuthoring: ReturnType<typeof createFormulaAuthoringController> | null = null;
   let disposed = false;
   const cleanup = () => {
     if (disposed) return;
     disposed = true;
+    formulaAuthoring?.dispose();
+    formulaAuthoring = null;
+    unregisterInlineFormulaSlash();
     unregisterSlash();
     unregisterInlineFormula();
     unregisterCommand();
@@ -100,6 +106,16 @@ export function activate(api: PolarisDadosPluginApi): () => void {
       run: picker.open,
     });
     unregisterInlineFormula = api.inlineFormulas.registerPresentation(mountInlineFormulaResult);
+    if (typeof api.inlineFormulas.addSlashCommand === 'function') {
+      formulaAuthoring = createFormulaAuthoringController(api.locale);
+      const formulaMessages = formulaAuthoringMessages(api.locale);
+      unregisterInlineFormulaSlash = api.inlineFormulas.addSlashCommand({
+        title: formulaMessages.slashTitle,
+        description: formulaMessages.slashDescription,
+        keywords: formulaMessages.slashKeywords,
+        onInvoke: formulaAuthoring.onInvoke,
+      });
+    }
   } catch (error) {
     cleanup();
     throw error;

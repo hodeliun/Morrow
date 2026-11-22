@@ -10,6 +10,7 @@ import type {
 } from '../../../../src/app/plugins/dataApi';
 import type { DatabaseProviderRegistration } from '../../../../src/app/plugins/providerApi';
 import type { PluginInlineFormulaPresentationMount } from '../../../../src/app/plugins/registry';
+import type { PluginInlineFormulaSlashCommand } from '../../../../src/app/plugins/inlineFormulaApi';
 import { activate, POLARIS_DADOS_PROVIDER_ID, type PolarisDadosPluginApi } from '../main';
 import { parseFiniteNumber } from './mount';
 
@@ -194,6 +195,7 @@ function mountPlugin(
   locale: 'pt' | 'en' | 'es' = 'en',
   editable = true,
   sharedWindow?: Window,
+  formulaSlashApi = true,
 ) {
   const window = sharedWindow ?? new Window({ url: 'http://morrow.test/' });
   if (!sharedWindow) windows.push(window);
@@ -203,6 +205,7 @@ function mountPlugin(
   const controller = new AbortController();
   const holder: { registration?: DatabaseProviderRegistration } = {};
   const formulaHolder: { mount?: PluginInlineFormulaPresentationMount } = {};
+  const formulaSlashHolder: { command?: PluginInlineFormulaSlashCommand } = {};
   let registered = 0;
   const pluginApi: PolarisDadosPluginApi = {
     data,
@@ -224,6 +227,14 @@ function mountPlugin(
           if (formulaHolder.mount === mount) formulaHolder.mount = undefined;
         };
       },
+      ...(formulaSlashApi ? {
+        addSlashCommand(command: PluginInlineFormulaSlashCommand) {
+          formulaSlashHolder.command = command;
+          return () => {
+            if (formulaSlashHolder.command === command) formulaSlashHolder.command = undefined;
+          };
+        },
+      } : {}),
     },
     commands: {
       add: () => () => {},
@@ -256,6 +267,7 @@ function mountPlugin(
     unregister,
     registered,
     inlineFormulaMount: () => formulaHolder.mount,
+    inlineFormulaSlashCommand: () => formulaSlashHolder.command,
   };
 }
 
@@ -347,6 +359,23 @@ describe('Polaris Dados provider module', () => {
     expect(mounted.inlineFormulaMount()).toBeUndefined();
     cleanup?.();
     mounted.unmount();
+  });
+
+  it('registers the localized formula form only when the host offers the optional slash capability', () => {
+    const currentHost = mountPlugin(makeDataDouble().api, 'es');
+    expect(currentHost.inlineFormulaSlashCommand()).toMatchObject({
+      title: 'Fórmula en línea',
+      description: 'Inserta un resultado calculado en la nota.',
+    });
+    currentHost.unregister();
+    expect(currentHost.inlineFormulaSlashCommand()).toBeUndefined();
+    currentHost.unmount();
+
+    const olderHost = mountPlugin(makeDataDouble().api, 'en', true, undefined, false);
+    expect(olderHost.registered).toBe(1);
+    expect(olderHost.inlineFormulaSlashCommand()).toBeUndefined();
+    olderHost.unregister();
+    olderHost.unmount();
   });
 
   it('registers the provider and uses the extracted formula engine while editing with keyboard', async () => {

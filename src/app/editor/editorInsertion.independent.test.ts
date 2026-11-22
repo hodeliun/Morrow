@@ -21,6 +21,9 @@ import type { PluginInlineFormulaInsertionHost } from '../plugins/inlineFormulaA
 import { getLocalizedBlocks, runSlashCommandItem } from './SlashCommand';
 import { commitEditors, focusedEditor } from './commits';
 import { PageEditor } from './PageEditor';
+import { addPluginInlineFormulaPresentation } from '../plugins/registry';
+import { createFormulaAuthoringController, formulaAuthoringMessages } from '../../../plugins/polaris-dados/src/ui/formulaAuthoring';
+import { mountInlineFormulaResult } from '../../../plugins/polaris-dados/src/ui/inlineFormulaResult';
 import { navigate } from '../router';
 import { PaneContext, closeSide, getTabs, openSide, setActivePane, startTabs } from '../tabs';
 import { setSession } from '../workspace';
@@ -259,6 +262,8 @@ const harnesses = new Set<PageEditorHarness>();
 const handles = new Set<InsertionHandle>();
 const stopTabListeners = new Set<() => void>();
 const formulaRegistrations = new Set<() => void>();
+const formulaAuthorings = new Set<ReturnType<typeof createFormulaAuthoringController>>();
+const formulaPresentations = new Set<() => void>();
 let preferencesBeforeTest = getPreferences();
 
 beforeEach(() => {
@@ -275,6 +280,14 @@ afterEach(async () => {
   for (const unregister of [...formulaRegistrations]) {
     unregister();
     formulaRegistrations.delete(unregister);
+  }
+  for (const authoring of [...formulaAuthorings]) {
+    authoring.dispose();
+    formulaAuthorings.delete(authoring);
+  }
+  for (const unregister of [...formulaPresentations]) {
+    unregister();
+    formulaPresentations.delete(unregister);
   }
   for (const harness of [...harnesses]) {
     await harness.unmount();
@@ -542,6 +555,207 @@ describe('independent editor insertion capture', () => {
     expect(writes).toHaveBeenCalled();
     unregister();
     formulaRegistrations.delete(unregister);
+  });
+
+  it('opens the localized form from the real slash menu without editing the command, then saves a result with undo and storage', async () => {
+    const { pageId, session, vault } = await openWorkspace({ text: 'north = south here' });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+    await selectCursor(editor, 'north = south here', 'here', 0);
+
+    const messages = formulaAuthoringMessages('pt');
+    const authoring = createFormulaAuthoringController('pt');
+    formulaAuthorings.add(authoring);
+    const unregisterPresentation = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult);
+    formulaPresentations.add(unregisterPresentation);
+    const formulaHost: { value: PluginInlineFormulaInsertionHost | null } = { value: null };
+    const unregisterSlashCommand = addInlineFormulaSlashCommand(testOwner(), (target) => target, {
+      title: messages.slashTitle,
+      description: messages.slashDescription,
+      keywords: messages.slashKeywords,
+      onInvoke: (host) => {
+        formulaHost.value = host;
+        authoring.onInvoke(host);
+      },
+    });
+    formulaRegistrations.add(unregisterSlashCommand);
+    const beforeSlash = editor.state.doc.toJSON();
+
+    await act(async () => { expect(editor.commands.insertContent('/formula')).toBe(true); });
+    const slashDoc = editor.state.doc.toJSON();
+    expect(docText(editor)).toBe('north = south /formulahere');
+    expect(document.querySelector('.suggestion-menu[role="listbox"]')).not.toBeNull();
+    expect(writes).not.toHaveBeenCalled();
+
+    await act(async () => {
+      editor.view.dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('.suggestion-menu[role="listbox"]')).toBeNull();
+    expect(document.querySelectorAll('form[role="dialog"]')).toHaveLength(1);
+    expect(document.querySelector('form[role="dialog"] h2')?.textContent).toBe('Inserir fórmula inline');
+    expect(document.activeElement).toBe(document.querySelector('form[role="dialog"] label[for$="-formula"] input'));
+    expect(formulaHost.value?.canRestoreFocus?.()).toBe(true);
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+    expect(docText(editor)).toContain('=');
+    expect(writes).not.toHaveBeenCalled();
+
+    const formulaInput = document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-formula"] input')!;
+    await act(async () => {
+      formulaInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelectorAll('form[role="dialog"]')).toHaveLength(1);
+    expect(document.querySelector('form[role="dialog"] [role="alert"]')?.textContent).toContain('Digite uma fórmula');
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+
+    await act(async () => {
+      formulaInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(editor.view.dom);
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+    expect(writes).not.toHaveBeenCalled();
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(beforeSlash);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+
+    await act(async () => {
+      editor.view.dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelectorAll('form[role="dialog"]')).toHaveLength(1);
+    const savedFormula = document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-formula"] input')!;
+    const savedName = document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-name"] input')!;
+    savedFormula.value = '2 + 3';
+    savedName.value = 'Total';
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+    });
+
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    let rawMarker = '';
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === LEGACY_FORMULA_NODE) rawMarker = String(node.attrs.raw ?? '');
+    });
+    expect(parseLegacyFormulaMarker(rawMarker)).toMatchObject({ fallback: 'Total' });
+    expect(document.querySelector('.legacy-formula-presentation')?.textContent).toBe('5');
+    expect(writes).not.toHaveBeenCalled();
+
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(document.querySelector('.legacy-formula-presentation')?.textContent).toBe('5');
+    await act(async () => {
+      expect(commitEditors()).toBe(true);
+      expect(await session.flush()).toBe(true);
+    });
+    const saved = vault.text(NOTE_PATH);
+    expect(saved).toContain(rawMarker);
+    const reopened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `unexpected-formula-reopen-${++idCounter}`),
+      { delayMs: 60_000 },
+    );
+    if (!reopened.ok) throw new Error(reopened.error);
+    sessions.add(reopened.value);
+    expect(docToMarkdown(reopened.value.getState().docs[pageId]!)).toBe(saved);
+
+    unregisterPresentation();
+    formulaPresentations.delete(unregisterPresentation);
+    expect(document.querySelector('.legacy-formula-presentation')?.textContent).toBe('Total');
+    authoring.dispose();
+    unregisterSlashCommand();
+    formulaRegistrations.delete(unregisterSlashCommand);
+    expect(getLocalizedBlocks().some((item) => item.id.startsWith('plugin:polaris-dados:inline-formula-'))).toBe(false);
+  });
+
+  it('reports protected writes and avoids returning focus to a page after its pane changes', async () => {
+    const { pageId, session, vault } = await openWorkspace({ text: '/formula' });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+
+    const authoring = createFormulaAuthoringController('en');
+    formulaAuthorings.add(authoring);
+    const unregister = addInlineFormulaSlashCommand(testOwner(), (target) => target, {
+      title: 'Inline formula',
+      keywords: 'formula',
+      onInvoke: authoring.onInvoke,
+    });
+    formulaRegistrations.add(unregister);
+    const command = getLocalizedBlocks().find((item) => item.id === 'plugin:polaris-dados:inline-formula-1');
+    if (!command) throw new Error('The formula slash command did not register.');
+    const range = { from: 1, to: 9 };
+    await act(async () => {
+      editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, range.to)));
+    });
+    const invoke = async () => act(async () => {
+      runSlashCommandItem(editor, range, command.id, { createChild: () => null });
+    });
+
+    await invoke();
+    const formulaInput = document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-formula"] input');
+    if (!formulaInput) throw new Error('The formula dialog did not open.');
+    formulaInput.value = '6 * 7';
+    await act(async () => { await setPreferences({ readingMode: true }); });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+    });
+    expect(document.querySelector('form[role="dialog"] [role="alert"]')?.textContent).toContain('read-only');
+    expect(docText(editor)).toBe('/formula');
+    expect(writes).not.toHaveBeenCalled();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] footer button[type="button"]')!.click();
+    });
+    expect(document.activeElement).toBe(editor.view.dom);
+
+    await act(async () => { await setPreferences({ readingMode: false }); });
+    await invoke();
+    const secondInput = document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-formula"] input');
+    if (!secondInput) throw new Error('The second formula dialog did not open.');
+    await act(async () => openSide('#/page/synthetic-side-target'));
+    await act(async () => {
+      secondInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(document.activeElement).not.toBe(editor.view.dom);
+    expect(docText(editor)).toBe('/formula');
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('keeps a typed equals sign as ordinary note text while the formula action is registered', async () => {
+    const { pageId, session } = await openWorkspace({ text: 'north' });
+    setMainRoute(pageId);
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+    const authoring = createFormulaAuthoringController('en');
+    formulaAuthorings.add(authoring);
+    const unregister = addInlineFormulaSlashCommand(testOwner(), (target) => target, {
+      title: 'Inline formula',
+      keywords: 'formula',
+      onInvoke: authoring.onInvoke,
+    });
+    formulaRegistrations.add(unregister);
+    await act(async () => {
+      editor.view.dispatch(editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, editor.state.doc.content.size - 1),
+      ));
+      expect(editor.commands.insertContent('=')).toBe(true);
+    });
+
+    expect(docText(editor)).toBe('north=');
+    expect(document.querySelector('.suggestion-menu[role="listbox"]')).toBeNull();
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
   });
 
   it('revalidates selection and read-only changes, revokes pending hosts on plugin unload, and rejects nested paragraphs', async () => {

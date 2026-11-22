@@ -45,6 +45,8 @@ import { renderSuggestion } from './SuggestionMenu';
 import { listItemAtCursor, turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
 
+export const SLASH_COMMAND_PLUGIN_KEY = new PluginKey('slashCommand');
+
 interface BlockItem extends MenuItem {
   keywords: string;
   run: (editor: Editor, range: Range, options: SlashOptions) => void;
@@ -586,7 +588,7 @@ export const SlashCommand = Extension.create<SlashOptions>({
     return [
       Suggestion<MenuItem, MenuItem>({
         editor: this.editor,
-        pluginKey: new PluginKey('slashCommand'),
+        pluginKey: SLASH_COMMAND_PLUGIN_KEY,
         char: '/',
         startOfLine: false,
         // names like "2 columns" have spaces, a sentence typed after a slash simply finds nothing
