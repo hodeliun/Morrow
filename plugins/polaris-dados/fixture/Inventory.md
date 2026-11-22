@@ -18,6 +18,10 @@ database:
       name: Total
       type: formula
       formula: Quantity * Price
+    - id: inventory-quantity
+      name: Inventory quantity
+      type: formula
+      formula: Inventory.Quantity.Sum()
   views:
     - id: inventory-table-v1
       name: Table

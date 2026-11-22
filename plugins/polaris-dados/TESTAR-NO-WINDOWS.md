@@ -33,15 +33,38 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 5. Com foco no editor, use **Tab** até um chip de relação em `Relations` para conferir o contorno de foco. A navegação e as ações dos links e relações continuam pertencendo ao Morrow.
 6. Em Settings/Configurações → Plugins, desabilite **Polaris Documento**. Os estilos do plugin devem sair; os links e as relações continuam disponíveis com a apresentação padrão do Morrow. Habilite-o novamente e confirme que a apresentação do plugin voltou.
 
+### Cores HEX e estilos salvos
+
+1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.
+2. Salve e reabra a nota. Alterne entre os temas claro e escuro. Desabilite o Documento e confira que os campos HEX saem da paleta e as cores aplicadas permanecem no texto.
+3. Para conferir um estilo salvo por nota, crie `Exemplo de estilo.md` em `PilotState\DemoVault` com o conteúdo abaixo. Habilite o Documento e abra a nota nos modos de edição e leitura.
+
+```markdown
+---
+morrowNoteStyle:
+  font: serif
+  fontSize: 20
+  lineHeight: 1.8
+  blockSpacing: 12
+  width: wide
+---
+
+# Exemplo de estilo
+
+Primeiro parágrafo.
+
+Segundo parágrafo.
+```
+
 O build verifica os hashes do bundle, manifesto, README e licença de ambos os plugins dentro do ZIP extraído, além da lista SHA-256 completa do pacote. Essa verificação não abre a GUI do Windows nem equivale ao aceite visual nessa plataforma.
 
 ## Fluxo curto
 
 1. Abra a nota `Inventory` no cofre `PilotState\DemoVault`.
-2. Confira que `Quantity` é 2, `Price` é 10 e `Total` calculado é 20.
-3. Edite `Quantity` para 3 e confirme em **Save**. Confira que `Total` muda para 30.
-4. Abra a nota `Views` (com o cabeçalho `Origin Views`) e confira as duas visualizações vinculadas (`Origin primary stock` e `Origin low stock`). Ambas usam os dados de `Inventory.md` e mantêm título, filtro e ordem de colunas próprios.
-5. Feche o Morrow normalmente e clique em `windows-launch.cmd` outra vez. Reabra `PilotState\DemoVault` pela interface e confira que `Quantity` continua 3, `Total` continua 30 e as duas visualizações permanecem.
+2. Confira que `Quantity` é 2, `Price` é 10 e `Total` é 20. A coluna `Inventory quantity` soma `Quantity` de todo o banco e começa em 2.
+3. Edite `Quantity` para 3 e confirme em **Save**. Confira que `Total` muda para 30 e `Inventory quantity` muda para 3.
+4. Abra a nota `Views` (com o cabeçalho `Origin Views`) e confira as duas visualizações vinculadas (`Origin primary stock` e `Origin low stock`). Ambas usam os dados de `Inventory.md` e mantêm título, filtro e ordem de colunas próprios. A coluna `Inventory quantity` usa todas as linhas do banco, inclusive as que o filtro da view oculta.
+5. Feche o Morrow normalmente e clique em `windows-launch.cmd` outra vez. Reabra `PilotState\DemoVault` pela interface e confira que `Quantity` e `Inventory quantity` continuam em 3, `Total` continua em 30 e as duas visualizações permanecem.
 
 ## Edição de texto
 
