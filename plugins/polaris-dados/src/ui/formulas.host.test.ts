@@ -40,10 +40,17 @@ const DATABASE = [
   '    - id: listed',
   '      name: Listed',
   '      type: number',
+  '    - id: flag',
+  '      name: Flag',
+  '      type: checkbox',
   '    - id: total',
   '      name: Total',
   '      type: formula',
   '      formula: Inventory.Quantity.Sum()',
+  '    - id: filtered-total',
+  '      name: Filtered Total',
+  '      type: formula',
+  '      formula: Inventory.Filter(CurrentValue.Flag).Quantity.Sum()',
   '  views:',
   '    - id: table',
   '      name: Table',
@@ -53,8 +60,8 @@ const DATABASE = [
   '',
 ].join('\n');
 
-const HIDDEN_ROW = ['---', 'Name: Hidden', 'Quantity: 2', 'Listed: 0', '---', 'Filtered row.', ''].join('\n');
-const VISIBLE_ROW = ['---', 'Name: Visible', 'Quantity: 3', 'Listed: 1', '---', 'Visible row.', ''].join(
+const HIDDEN_ROW = ['---', 'Name: Hidden', 'Quantity: 2', 'Listed: 0', 'Flag: false', '---', 'Filtered row.', ''].join('\n');
+const VISIBLE_ROW = ['---', 'Name: Visible', 'Quantity: 3', 'Listed: 1', 'Flag: true', '---', 'Visible row.', ''].join(
   '\n',
 );
 const VIEW_DATA: PolarisDadosViewData = {
@@ -62,7 +69,7 @@ const VIEW_DATA: PolarisDadosViewData = {
   viewId: VIEW_ID,
   sourceDatabaseId: DATABASE_ID,
   title: 'Visible inventory',
-  columnOrder: ['total'],
+  columnOrder: ['total', 'filtered-total'],
   filter: { propertyId: 'listed', op: 'gte', value: 1 },
 };
 const VIEW_NOTE = ['# Shared view', '', encodePolarisDadosViewMarker(VIEW_DATA), ''].join('\n');
@@ -240,16 +247,16 @@ function cellValue(root: HTMLElement, rowId: string, propertyId: string) {
   return { kind: output.dataset.valueKind, text: output.textContent };
 }
 
-function openNumberEditor(root: HTMLElement, rowId: string, propertyId: string): HTMLInputElement {
+function openCheckboxEditor(root: HTMLElement, rowId: string, propertyId: string): HTMLInputElement {
   const edit = root.querySelector<HTMLButtonElement>(
     `button[data-action="edit"][data-row-id="${rowId}"][data-field="${propertyId}"]`,
   );
   if (!edit) throw new Error(`Missing Edit control for ${rowId}.${propertyId}.`);
   edit.click();
   const input = root.querySelector<HTMLInputElement>(
-    `input[data-row-id="${rowId}"][data-field="${propertyId}"]`,
+    `input[type="checkbox"][data-row-id="${rowId}"][data-field="${propertyId}"]`,
   );
-  if (!input) throw new Error(`Missing editor for ${rowId}.${propertyId}.`);
+  if (!input) throw new Error(`Missing checkbox editor for ${rowId}.${propertyId}.`);
   return input;
 }
 
@@ -277,7 +284,7 @@ afterEach(async () => {
 });
 
 describe('table formula projections through the real provider session', () => {
-  it('updates an omitted row in source and filtered view, undoes it, and reopens the original bytes', async () => {
+  it('updates a filtered subtotal from an omitted row, undoes it, and reopens the original bytes', async () => {
     const fixture = await openFixture();
     const initialDatabaseBytes = fixture.vault.text(DATABASE_PATH);
     const initialHiddenRowBytes = fixture.vault.text(HIDDEN_ROW_PATH);
@@ -290,29 +297,39 @@ describe('table formula projections through the real provider session', () => {
     expect(cellValue(source.element, HIDDEN_ROW_ID, 'total')).toEqual({ kind: 'number', text: '5' });
     expect(cellValue(source.element, VISIBLE_ROW_ID, 'total')).toEqual({ kind: 'number', text: '5' });
     expect(cellValue(linked.element, VISIBLE_ROW_ID, 'total')).toEqual({ kind: 'number', text: '5' });
+    expect(cellValue(source.element, HIDDEN_ROW_ID, 'filtered-total')).toEqual({ kind: 'number', text: '3' });
+    expect(cellValue(source.element, VISIBLE_ROW_ID, 'filtered-total')).toEqual({ kind: 'number', text: '3' });
+    expect(cellValue(linked.element, VISIBLE_ROW_ID, 'filtered-total')).toEqual({ kind: 'number', text: '3' });
     expect(linked.element.querySelector(`tr[data-row-id="${HIDDEN_ROW_ID}"]`)).toBeNull();
     expect(fixture.pageListCalls()).toBeGreaterThan(0);
 
-    const input = openNumberEditor(source.element, HIDDEN_ROW_ID, 'quantity');
-    input.value = '4';
-    input.dispatchEvent(new source.window.Event('input', { bubbles: true }) as unknown as Event);
+    const checkbox = openCheckboxEditor(source.element, HIDDEN_ROW_ID, 'flag');
+    expect(checkbox.checked).toBe(false);
+    checkbox.click();
+    expect(checkbox.checked).toBe(true);
     source.element.querySelector<HTMLButtonElement>('button[data-action="save"]')?.click();
 
     await until('the full database formula to update in both surfaces', () => {
       try {
         return (
-          cellValue(source.element, HIDDEN_ROW_ID, 'total').text === '7' &&
-          cellValue(source.element, VISIBLE_ROW_ID, 'total').text === '7' &&
-          cellValue(linked.element, VISIBLE_ROW_ID, 'total').text === '7' &&
-          fixture.vault.text(HIDDEN_ROW_PATH)?.includes('Quantity: 4') === true
+          cellValue(source.element, HIDDEN_ROW_ID, 'total').text === '5' &&
+          cellValue(source.element, VISIBLE_ROW_ID, 'total').text === '5' &&
+          cellValue(linked.element, VISIBLE_ROW_ID, 'total').text === '5' &&
+          cellValue(source.element, HIDDEN_ROW_ID, 'filtered-total').text === '5' &&
+          cellValue(source.element, VISIBLE_ROW_ID, 'filtered-total').text === '5' &&
+          cellValue(linked.element, VISIBLE_ROW_ID, 'filtered-total').text === '5' &&
+          fixture.vault.text(HIDDEN_ROW_PATH)?.includes('Flag: true') === true
         );
       } catch {
         return false;
       }
     });
+    expect(cellValue(source.element, HIDDEN_ROW_ID, 'total')).toEqual({ kind: 'number', text: '5' });
+    expect(cellValue(source.element, VISIBLE_ROW_ID, 'total')).toEqual({ kind: 'number', text: '5' });
+    expect(cellValue(linked.element, VISIBLE_ROW_ID, 'total')).toEqual({ kind: 'number', text: '5' });
     expect(linked.element.querySelector(`tr[data-row-id="${HIDDEN_ROW_ID}"]`)).toBeNull();
     expect(fixture.vault.text(DATABASE_PATH)).toBe(initialDatabaseBytes);
-    expect(fixture.vault.text(HIDDEN_ROW_PATH)).not.toMatch(/^Total:/m);
+    expect(fixture.vault.text(HIDDEN_ROW_PATH)).not.toMatch(/^Total:|^Filtered Total:/m);
 
     const undo = new source.window.KeyboardEvent('keydown', {
       key: 'z',
@@ -328,6 +345,9 @@ describe('table formula projections through the real provider session', () => {
           cellValue(source.element, HIDDEN_ROW_ID, 'total').text === '5' &&
           cellValue(source.element, VISIBLE_ROW_ID, 'total').text === '5' &&
           cellValue(linked.element, VISIBLE_ROW_ID, 'total').text === '5' &&
+          cellValue(source.element, HIDDEN_ROW_ID, 'filtered-total').text === '3' &&
+          cellValue(source.element, VISIBLE_ROW_ID, 'filtered-total').text === '3' &&
+          cellValue(linked.element, VISIBLE_ROW_ID, 'filtered-total').text === '3' &&
           fixture.vault.text(HIDDEN_ROW_PATH) === initialHiddenRowBytes
         );
       } catch {
@@ -348,9 +368,17 @@ describe('table formula projections through the real provider session', () => {
     if (reopenedSnapshot.status !== 'ready') throw new Error('The database did not reopen as ready.');
     const reopenedFormula = reopenedSnapshot.schema.properties.find((property) => property.id === 'total');
     expect(reopenedFormula?.formula).toBe('Inventory.Quantity.Sum()');
+    const reopenedFilteredFormula = reopenedSnapshot.schema.properties.find(
+      (property) => property.id === 'filtered-total',
+    );
+    expect(reopenedFilteredFormula?.formula).toBe('Inventory.Filter(CurrentValue.Flag).Quantity.Sum()');
     expect(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.quantity).toBe(2);
+    expect(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.flag).toBe(false);
     expect(
       Object.hasOwn(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)!.properties, 'total'),
+    ).toBe(false);
+    expect(
+      Object.hasOwn(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)!.properties, 'filtered-total'),
     ).toBe(false);
   });
 });

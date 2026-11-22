@@ -545,6 +545,175 @@ describe('Polaris Dados current-database formula projections', () => {
     });
   });
 
+  it('filters the current snapshot by a manual checkbox, caches by predicate and column, and skips excluded values', () => {
+    const properties = [
+      checkbox('flag', 'Flag'),
+      scalar('quantity', 'Quantity'),
+      formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+      formula('filtered-again', 'Filtered again', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    let flagReads = 0;
+    let quantityReads = 0;
+    const trackedRow = (id: string, flag: boolean, quantity: number | null): DataApiRow => {
+      const rowProperties = Object.defineProperties({}, {
+        flag: {
+          enumerable: true,
+          get() {
+            flagReads += 1;
+            return flag;
+          },
+        },
+        quantity: {
+          enumerable: true,
+          get() {
+            quantityReads += 1;
+            if (!flag) throw new Error('An excluded quantity was read.');
+            return quantity;
+          },
+        },
+      }) as DataApiRow['properties'];
+      return { id, title: id, properties: rowProperties };
+    };
+    const snapshot = readySnapshot(properties, [
+      trackedRow('included-one', true, 2),
+      trackedRow('excluded-null', false, null),
+      trackedRow('included-two', true, 3),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'filtered', scope)).toEqual({ kind: 'number', value: 5 });
+    expect(value(snapshot, properties, 'filtered-again', scope)).toEqual({ kind: 'number', value: 5 });
+    expect(flagReads).toBe(3);
+    expect(quantityReads).toBe(2);
+    expect(scope.filteredRows.size).toBe(1);
+    expect(scope.filteredColumns.size).toBe(1);
+  });
+
+  it('rejects missing or null checkbox predicates and reads quantities only for selected rows', () => {
+    const properties = [
+      checkbox('flag', 'Flag'),
+      scalar('quantity', 'Quantity'),
+      formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    const formulaId = 'filtered';
+    for (const [id, propertiesValue] of [
+      ['missing-flag', { quantity: 9 }],
+      ['null-flag', { flag: null, quantity: 9 }],
+    ] as const) {
+      const snapshot = readySnapshot(properties, [row(id, propertiesValue)]);
+      const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+      expect(value(snapshot, properties, formulaId, scope)).toMatchObject({
+        kind: 'error',
+        message: expect.stringContaining(id === 'missing-flag' ? 'is missing' : 'non-null boolean'),
+      });
+      expect(scope.filteredColumns.size).toBe(0);
+    }
+
+    const selectedNull = readySnapshot(properties, [row('selected-null', { flag: true, quantity: null })]);
+    expect(value(selectedNull, properties, formulaId)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('only accepts finite numbers'),
+    });
+
+    const excludedNull = readySnapshot(properties, [row('excluded-null', { flag: false, quantity: null })]);
+    expect(value(excludedNull, properties, formulaId)).toEqual({ kind: 'number', value: 0 });
+
+    const selectedMissing = readySnapshot(properties, [row('selected-missing', { flag: true })]);
+    expect(value(selectedMissing, properties, formulaId)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('only accepts finite numbers'),
+    });
+
+    const excludedMissing = readySnapshot(properties, [row('excluded-missing', { flag: false })]);
+    expect(value(excludedMissing, properties, formulaId)).toEqual({ kind: 'number', value: 0 });
+  });
+
+  it('keeps filtered table access to the direct checkbox Sum chain', () => {
+    const properties = [
+      checkbox('flag', 'Flag'),
+      scalar('quantity', 'Quantity'),
+      scalar('name', 'Name', 'text'),
+      formula('general', 'General predicate', 'Inventory.Filter(CurrentValue.Flag && true).Quantity.Sum()'),
+      formula('average', 'Filtered average', 'Inventory.Filter(CurrentValue.Flag).Quantity.Average()'),
+      formula('chained', 'Chained filter', 'Inventory.Filter(CurrentValue.Flag).Filter(CurrentValue.Flag).Quantity.Sum()'),
+      formula('text-filter', 'Text filter', 'Inventory.Filter(CurrentValue.Name).Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    let reads = 0;
+    const snapshot = readySnapshot(properties, [
+      {
+        id: 'r1',
+        title: 'R1',
+        get properties() {
+          reads += 1;
+          return { flag: true, quantity: 2, name: 'one' } as DataApiRow['properties'];
+        },
+      } as DataApiRow,
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    for (const formulaId of ['general', 'average', 'chained', 'text-filter']) {
+      expect(value(snapshot, properties, formulaId, scope)).toMatchObject({ kind: 'error' });
+    }
+    expect(reads).toBe(0);
+    expect(scope.filteredRows.size).toBe(0);
+  });
+
+  it('checks built-in CurrentValue identity before cache access in both evaluation orders', () => {
+    const properties = [
+      checkbox('flag', 'Flag'),
+      scalar('quantity', 'Quantity'),
+      formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+      formula(
+        'shadowed-current-value',
+        'Shadowed CurrentValue',
+        'WithName(9, CurrentValue, Inventory.Filter(CurrentValue.Flag).Quantity.Sum())',
+      ),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('r1', { flag: true, quantity: 2 })]);
+    const title = resolveFormulaDatabaseTitle(databaseId, pages);
+    const aliasFirstScope = createFormulaEvaluationScope(snapshot, title);
+
+    expect(value(snapshot, properties, 'shadowed-current-value', aliasFirstScope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('shadows the built-in CurrentValue'),
+    });
+    expect(aliasFirstScope.filteredRows.size).toBe(0);
+    expect(value(snapshot, properties, 'filtered', aliasFirstScope)).toEqual({ kind: 'number', value: 2 });
+
+    const warmedScope = createFormulaEvaluationScope(snapshot, title);
+    expect(value(snapshot, properties, 'filtered', warmedScope)).toEqual({ kind: 'number', value: 2 });
+    expect(value(snapshot, properties, 'shadowed-current-value', warmedScope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('shadows the built-in CurrentValue'),
+    });
+    expect(value(snapshot, properties, 'filtered', warmedScope)).toEqual({ kind: 'number', value: 2 });
+  });
+
+  it('checks the filter row limit before reading any row properties', () => {
+    const properties = [
+      checkbox('flag', 'Flag'),
+      scalar('quantity', 'Quantity'),
+      formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    let rowPropertyReads = 0;
+    const rows = Array.from({ length: 2001 }, (_, index) => ({
+      id: `oversized-${index}`,
+      title: `Oversized ${index}`,
+      get properties() {
+        rowPropertyReads += 1;
+        return { flag: true, quantity: 1 } as DataApiRow['properties'];
+      },
+    })) as DataApiRow[];
+    const snapshot = readySnapshot(properties, rows);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'filtered', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('limited to 2000 rows'),
+    });
+    expect(rowPropertyReads).toBe(0);
+  });
+
   it('caches each projected property within the snapshot and checks the 2,000-row limit before reading rows', () => {
     const properties = [
       scalar('quantity', 'Quantity'),

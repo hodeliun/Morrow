@@ -34,6 +34,7 @@ export type FormulaDatabaseTitleResolution =
 interface ProjectedColumn {
   readonly values: FormulaRuntimeValue[];
   readonly aggregates: Map<string, ProjectionAggregateResult>;
+  readonly filterPredicateId?: string;
 }
 
 type ProjectedColumnResult =
@@ -44,12 +45,26 @@ type ProjectionAggregateResult =
   | { readonly status: 'value'; readonly value: FormulaRuntimeValue }
   | { readonly status: 'error'; readonly message: string };
 
+interface FilteredRows {
+  readonly predicateProperty: ProviderProperty;
+  readonly rows: readonly DataApiRow[];
+  readonly tableReference: FormulaRuntimeValue[];
+  readonly filterCalls: Set<string>;
+}
+
+type FilteredRowsResult =
+  | { readonly status: 'ready'; readonly filteredRows: FilteredRows }
+  | { readonly status: 'error'; readonly message: string };
+
 /** A single immutable provider snapshot plus its bounded, shared table-column projections. */
 export interface FormulaEvaluationScope {
   readonly snapshot: ReadySnapshot;
   readonly databaseTitle: FormulaDatabaseTitleResolution;
   readonly columns: Map<string, ProjectedColumnResult>;
+  readonly filteredRows: Map<string, FilteredRowsResult>;
+  readonly filteredColumns: Map<string, ProjectedColumnResult>;
   readonly projectedArrays: WeakMap<FormulaRuntimeValue[], ProjectedColumn>;
+  readonly filteredRowArrays: WeakMap<FormulaRuntimeValue[], FilteredRows>;
   readonly approvedProjectionSpans: Map<string, ApprovedTableProjectionSpans>;
 }
 
@@ -57,6 +72,13 @@ interface ApprovedTableProjectionSpans {
   readonly roots: ReadonlyMap<string, 'member' | 'string-index' | 'dynamic-index'>;
   readonly columns: ReadonlySet<string>;
   readonly rootByColumn: ReadonlyMap<string, string>;
+  readonly filterCalls: ReadonlyMap<string, ApprovedTableFilter>;
+  readonly filteredColumns: ReadonlyMap<string, string>;
+}
+
+interface ApprovedTableFilter {
+  readonly predicateName: string;
+  readonly propertyColumnSpan: string;
 }
 
 const LOCAL_LIST_METHODS = new Set(['sum', 'average', 'avg', 'min', 'max', 'count', 'first', 'last']);
@@ -98,7 +120,10 @@ export function createFormulaEvaluationScope(
     snapshot,
     databaseTitle,
     columns: new Map(),
+    filteredRows: new Map(),
+    filteredColumns: new Map(),
     projectedArrays: new WeakMap(),
+    filteredRowArrays: new WeakMap(),
     approvedProjectionSpans: new Map(),
   };
 }
@@ -224,6 +249,23 @@ function evaluateFormulaProperty(
         }
         return projectedColumn(scope, projectedProperty);
       }
+      if (Array.isArray(receiver)) {
+        const filtered = scope?.filteredRowArrays.get(receiver);
+        if (filtered) {
+          const filterCall = projectionSpans.filteredColumns.get(spanKey(span));
+          if (!filterCall || !filtered.filterCalls.has(filterCall)) {
+            throw new Error('Filtered table rows only support a direct numeric-column Sum() projection.');
+          }
+          const projectedProperty = resolveProjectedProperty(properties, name);
+          if (projectedProperty.type !== 'number') {
+            throw new Error(
+              `Table projections only support manual number columns; “${name}” is ${projectedProperty.type}.`,
+            );
+          }
+          if (!scope) throw new Error('The mounted database snapshot is unavailable.');
+          return projectedFilteredColumn(scope, filtered, projectedProperty);
+        }
+      }
       const rootKey = projectionSpans.rootByColumn.get(spanKey(span));
       if (rootKey && shadowedProjectionRoots.has(rootKey)) {
         throw new Error(
@@ -235,10 +277,33 @@ function evaluateFormulaProperty(
       }
       return resolveDataProperty(name);
     },
-    invokeMethod(receiver, name, arguments_) {
+    invokeMethod(receiver, name, arguments_, evaluateArgument, span) {
       if (Array.isArray(receiver)) {
         const projection = scope?.projectedArrays.get(receiver);
         if (projection) return aggregateProjection(projection, name, arguments_.length);
+      }
+      if (
+        typeof receiver === 'object' &&
+        receiver !== null &&
+        !Array.isArray(receiver) &&
+        receiver.formulaKind === 'table'
+      ) {
+        if (name.toLowerCase() !== 'filter') {
+          throw new Error('Tables only support Filter(CurrentValue.Checkbox).NumberColumn.Sum() projections.');
+        }
+        const filterCall = projectionSpans.filterCalls.get(spanKey(span));
+        if (!filterCall || !scope || receiver.databaseId !== scope.snapshot.databaseId) {
+          throw new Error('Table filters only support a direct Filter(CurrentValue.Checkbox) projection.');
+        }
+        if (arguments_.length !== 1) throw new Error('Filter() takes exactly one CurrentValue checkbox column.');
+        return filteredTableRows(
+          scope,
+          properties,
+          filterCall,
+          spanKey(span),
+          arguments_[0]!,
+          evaluateArgument,
+        );
       }
       return invokeLocalListMethod(receiver, name, arguments_);
     },
@@ -317,6 +382,116 @@ function projectedColumn(scope: FormulaEvaluationScope, property: ProviderProper
   return values;
 }
 
+function filteredTableRows(
+  scope: FormulaEvaluationScope,
+  properties: readonly ProviderProperty[],
+  filter: ApprovedTableFilter,
+  filterCallKey: string,
+  predicate: Expr,
+  evaluate: (expression: Expr, currentValue?: FormulaRuntimeValue) => FormulaRuntimeValue,
+): FormulaRuntimeValue[] {
+  if (predicate.kind !== 'member' || predicate.object.kind !== 'identifier') {
+    throw new Error('Filter() needs the built-in CurrentValue checkbox predicate.');
+  }
+  const currentValueSentinel: FormulaRowRef = {
+    formulaKind: 'row',
+    id: 'table-filter-current-value-sentinel',
+    databaseId: scope.snapshot.databaseId,
+  };
+  if (evaluate(predicate.object, currentValueSentinel) !== currentValueSentinel) {
+    throw new Error('Filter() cannot use an alias that shadows the built-in CurrentValue.');
+  }
+
+  const predicateProperty = resolveProjectedProperty(properties, filter.predicateName);
+  if (predicateProperty.type !== 'checkbox') {
+    throw new Error(
+      `Table filters only support manual checkbox columns; “${filter.predicateName}” is ${predicateProperty.type}.`,
+    );
+  }
+
+  const cached = scope.filteredRows.get(predicateProperty.id);
+  if (cached?.status === 'error') throw new Error(cached.message);
+  if (cached?.status === 'ready') {
+    cached.filteredRows.filterCalls.add(filterCallKey);
+    return cached.filteredRows.tableReference;
+  }
+  if (scope.snapshot.rows.length > MAX_TABLE_PROJECTION_ROWS) {
+    const message = `Table filters are limited to ${MAX_TABLE_PROJECTION_ROWS} rows.`;
+    scope.filteredRows.set(predicateProperty.id, { status: 'error', message });
+    throw new Error(message);
+  }
+
+  const rows: DataApiRow[] = [];
+  try {
+    for (const row of scope.snapshot.rows) {
+      const rowProperties = row.properties;
+      if (!Object.hasOwn(rowProperties, predicateProperty.id)) {
+        throw new Error(`Filter predicate “${filter.predicateName}” is missing for row “${row.id}”.`);
+      }
+      const value = rowProperties[predicateProperty.id];
+      if (typeof value !== 'boolean') {
+        throw new Error(
+          `Filter predicate “${filter.predicateName}” must be a non-null boolean for row “${row.id}”.`,
+        );
+      }
+      if (value) rows.push(row);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    scope.filteredRows.set(predicateProperty.id, { status: 'error', message });
+    throw new Error(message, { cause: error });
+  }
+
+  const filteredRows: FilteredRows = {
+    predicateProperty,
+    rows,
+    tableReference: new Array<FormulaRuntimeValue>(rows.length).fill(null),
+    filterCalls: new Set([filterCallKey]),
+  };
+  scope.filteredRows.set(predicateProperty.id, { status: 'ready', filteredRows });
+  scope.filteredRowArrays.set(filteredRows.tableReference, filteredRows);
+  return filteredRows.tableReference;
+}
+
+function projectedFilteredColumn(
+  scope: FormulaEvaluationScope,
+  filteredRows: FilteredRows,
+  property: ProviderProperty,
+): FormulaRuntimeValue[] {
+  const cacheKey = `${filteredRows.predicateProperty.id}\u0000${property.id}`;
+  const cached = scope.filteredColumns.get(cacheKey);
+  if (cached?.status === 'error') throw new Error(cached.message);
+  if (cached?.status === 'ready') return cached.projection.values;
+  if (scope.snapshot.rows.length > MAX_TABLE_PROJECTION_ROWS) {
+    const message = `Table filters are limited to ${MAX_TABLE_PROJECTION_ROWS} rows.`;
+    scope.filteredColumns.set(cacheKey, { status: 'error', message });
+    throw new Error(message);
+  }
+
+  const values: FormulaRuntimeValue[] = [];
+  try {
+    for (const row of filteredRows.rows) {
+      const rowProperties = row.properties;
+      values.push(
+        Object.hasOwn(rowProperties, property.id) ? toRuntimeValue(rowProperties[property.id]) : null,
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    scope.filteredColumns.set(cacheKey, { status: 'error', message });
+    throw new Error(message, { cause: error });
+  }
+
+  const projection: ProjectedColumn = {
+    values,
+    aggregates: new Map(),
+    filterPredicateId: filteredRows.predicateProperty.id,
+  };
+  scope.filteredColumns.set(cacheKey, { status: 'ready', projection });
+  scope.projectedArrays.set(values, projection);
+  return values;
+}
+
 function aggregateProjection(
   projection: ProjectedColumn,
   name: string,
@@ -327,6 +502,9 @@ function aggregateProjection(
     throw new Error(
       `${name}() is not available for table columns; use Sum, Average, Avg, Min, Max, or Count.`,
     );
+  }
+  if (projection.filterPredicateId && method !== 'sum') {
+    throw new Error('Filtered table projections only support Sum().');
   }
   if (argumentCount !== 0) throw new Error(`${name}() takes no arguments.`);
   const cached = projection.aggregates.get(method);
@@ -352,6 +530,8 @@ function approvedTableProjectionSpans(
   const roots = new Map<string, 'member' | 'string-index' | 'dynamic-index'>();
   const columns = new Set<string>();
   const rootByColumn = new Map<string, string>();
+  const filterCalls = new Map<string, ApprovedTableFilter>();
+  const filteredColumns = new Map<string, string>();
   let expression: Expr | null = null;
   try {
     expression = parseFormula(source);
@@ -359,13 +539,43 @@ function approvedTableProjectionSpans(
     // The runtime parser provides the existing syntax diagnostic.
   }
   if (expression) {
-    const addColumnReceiver = (candidate: Expr) => {
+    const addColumnReceiver = (candidate: Expr, aggregateMethod: string) => {
       if (candidate.kind === 'member') {
-        addProjectionSpans(
-          candidate.object,
-          { start: candidate.nameStart, end: candidate.nameEnd },
-          'member',
-        );
+        const propertyColumnSpan = spanKey({ start: candidate.nameStart, end: candidate.nameEnd });
+        if (candidate.object.kind === 'identifier') {
+          addProjectionSpans(
+            candidate.object,
+            { start: candidate.nameStart, end: candidate.nameEnd },
+            'member',
+          );
+          return;
+        }
+        const filterCall = candidate.object;
+        if (
+          filterCall.kind !== 'call' ||
+          filterCall.callee.kind !== 'member' ||
+          filterCall.callee.name.toLowerCase() !== 'filter' ||
+          filterCall.callee.object.kind !== 'identifier'
+        ) {
+          return;
+        }
+        const rootKey = spanKey(filterCall.callee.object);
+        roots.set(rootKey, 'member');
+        if (aggregateMethod.toLowerCase() !== 'sum' || filterCall.args.length !== 1) return;
+        const predicate = filterCall.args[0]!;
+        if (
+          predicate.kind !== 'member' ||
+          predicate.object.kind !== 'identifier' ||
+          predicate.object.name.toLowerCase() !== 'currentvalue'
+        ) {
+          return;
+        }
+        const filterCallKey = spanKey(filterCall.callee);
+        const filter = { predicateName: predicate.name, propertyColumnSpan };
+        filterCalls.set(filterCallKey, filter);
+        filteredColumns.set(propertyColumnSpan, filterCallKey);
+        columns.add(propertyColumnSpan);
+        rootByColumn.set(propertyColumnSpan, rootKey);
       } else if (
         candidate.kind === 'call' &&
         candidate.callee.kind === 'identifier' &&
@@ -403,7 +613,7 @@ function approvedTableProjectionSpans(
           node.callee.kind === 'member' &&
           ['sum', 'average', 'avg', 'min', 'max', 'count'].includes(node.callee.name.toLowerCase())
         ) {
-          addColumnReceiver(node.callee.object);
+          addColumnReceiver(node.callee.object, node.callee.name);
         }
         if (node.callee.kind === 'member') visit(node.callee.object);
         else if (node.callee.kind !== 'identifier') visit(node.callee);
@@ -427,7 +637,7 @@ function approvedTableProjectionSpans(
     };
     visit(expression);
   }
-  const approved = { roots, columns, rootByColumn };
+  const approved = { roots, columns, rootByColumn, filterCalls, filteredColumns };
   scope?.approvedProjectionSpans.set(source, approved);
   return approved;
 }
