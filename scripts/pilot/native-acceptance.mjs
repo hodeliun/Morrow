@@ -32,6 +32,12 @@ const BASELINE_COMBINATION_ID = 'pt-light-100';
 const WEB_ELEMENT_KEY = 'element-6066-11e4-a52e-4f735466cecf';
 const WEBDRIVER_KEYS = Object.freeze({ Enter: '\uE007', Space: '\uE00D' });
 
+export const LANGUAGE_SECTION_LABELS = Object.freeze({
+  en: 'Language and region',
+  pt: 'Idioma e região',
+  es: 'Idioma y región',
+});
+
 const UI_LABELS = Object.freeze({
   en: {
     settings: 'Settings',
@@ -676,19 +682,9 @@ async function inspectLocalizedPreferences(context, combo) {
 
   const settingsActivation = await openSettings(context.driver, combo.locale);
   if (settingsActivation) keyboardActivations.push(settingsActivation);
-  const languageSelector = `button.select-button[aria-label="${labels.language}"]`;
-  await waitFor(
-    `localized language preference control for ${combo.id}`,
-    () =>
-      context.driver.execute(`return Boolean(document.querySelector(${JSON.stringify(languageSelector)}));`),
-    Boolean,
-  );
-  keyboardActivations.push(
-    await activateByKeyboard(context.driver, languageSelector, {
-      key: 'Enter',
-      label: 'Language selector',
-    }),
-  );
+  const languagePreference = await openLocalizedLanguageSelector(context.driver, combo.locale);
+  keyboardActivations.push(languagePreference.sectionActivation, languagePreference.selectorActivation);
+  const languageSelector = languagePreference.selector;
   const selectedLocale = await waitFor(
     `selected locale option for ${combo.id}`,
     () =>
@@ -763,6 +759,7 @@ async function inspectLocalizedPreferences(context, combo) {
 
   return {
     documentLanguage: await context.driver.execute('return document.documentElement.lang ?? null;'),
+    languageSection: languagePreference.state,
     localeOption: selectedLocale,
     settingsLabel,
     theme,
@@ -1059,6 +1056,76 @@ export function isLanguageSelectorSelectionRetained(state, expectedLocale) {
     state.localeControlPresent === true &&
     state.listboxOpen === false &&
     state.localeText === expectedLocale,
+  );
+}
+
+export function isLanguageSectionReady(state, expectedLabel) {
+  return Boolean(
+    state?.settingsOpen === true &&
+    state.activeSectionCount === 1 &&
+    state.activeSectionAriaCurrent === 'page' &&
+    state.activeSectionLabel === expectedLabel &&
+    state.sectionLabelMatches === true &&
+    state.languageSelectorCount === 1 &&
+    state.languageSelectorVisible === true &&
+    state.languageSelectorEnabled === true,
+  );
+}
+
+export async function openLocalizedLanguageSelector(driver, locale) {
+  const expectedLabel = LANGUAGE_SECTION_LABELS[locale];
+  if (!expectedLabel) throw new Error(`Unsupported language settings locale: ${locale}`);
+
+  const activation = await activateUniqueByText(
+    driver,
+    '.settings-dialog .settings-nav-item',
+    null,
+    expectedLabel,
+    'Language settings section',
+  );
+  const state = await waitFor(
+    `localized language section and preference selector for ${locale}`,
+    () => readLanguageSectionReadiness(driver, locale),
+    (value) => isLanguageSectionReady(value, expectedLabel),
+  );
+  if (!isLanguageSectionReady(state, expectedLabel)) {
+    throw new Error(`Language section is not active with a unique visible selector for ${locale}.`);
+  }
+  activation.postcondition = state;
+  const selector = `button.select-button[aria-label="${UI_LABELS[locale].language}"]`;
+  const selectorActivation = await activateByKeyboard(driver, selector, {
+    key: 'Enter',
+    label: 'Language selector',
+  });
+  return { sectionActivation: activation, selectorActivation, selector, state };
+}
+
+async function readLanguageSectionReadiness(driver, locale) {
+  const expectedLabel = LANGUAGE_SECTION_LABELS[locale];
+  const selector = `button.select-button[aria-label="${UI_LABELS[locale].language}"]`;
+  return driver.execute(
+    `
+      const expectedLabel = arguments[0];
+      const selector = arguments[1];
+      const dialog = document.querySelector('.settings-dialog');
+      const activeSections = [...(dialog?.querySelectorAll('.settings-nav-item[aria-current="page"]') ?? [])];
+      const section = activeSections.length === 1 ? activeSections[0] : null;
+      const controls = [...(dialog?.querySelectorAll(selector) ?? [])];
+      const control = controls.length === 1 ? controls[0] : null;
+      const rect = control?.getBoundingClientRect();
+      const style = control ? getComputedStyle(control) : null;
+      return {
+        settingsOpen: dialog !== null,
+        activeSectionCount: activeSections.length,
+        activeSectionAriaCurrent: section?.getAttribute('aria-current') ?? null,
+        activeSectionLabel: section?.textContent?.trim() ?? null,
+        sectionLabelMatches: section?.textContent?.trim() === expectedLabel,
+        languageSelectorCount: controls.length,
+        languageSelectorVisible: Boolean(rect && rect.width > 0 && rect.height > 0 && style?.display !== 'none' && style?.visibility !== 'hidden'),
+        languageSelectorEnabled: Boolean(control && !control.disabled && control.getAttribute('aria-disabled') !== 'true'),
+      };
+    `,
+    [expectedLabel, selector],
   );
 }
 

@@ -5,9 +5,12 @@ import {
   assertNativeAcceptanceCombinationEvidence,
   buildNativeAcceptanceCombinationEvidence,
   isKeyboardActivationEvidence,
+  isLanguageSectionReady,
+  openLocalizedLanguageSelector,
   isHostInventoryDraftStatus,
   isLanguageSelectorSelectionRetained,
   isHostSavedStatus,
+  LANGUAGE_SECTION_LABELS,
   measureNativeZoom,
   OWN_NATIVE_ACCEPTANCE_COMBINATIONS,
   zoomLevelForPercent,
@@ -344,6 +347,157 @@ test('confirming the current locale closes only its list and preserves Settings'
     true,
   );
   assert.equal(isKeyboardActivationEvidence(keyboardActivation({ key: 'Escape' })), false);
+});
+
+test('language section readiness is verified before the language selector receives keyboard input', async () => {
+  const expectedLabel = 'Idioma e região';
+  const languageSectionSelector = '.settings-dialog .settings-nav-item';
+  const languageSelector = 'button.select-button[aria-label="Idioma"]';
+  const calls = [];
+  let sectionInspections = 0;
+  let selectorInspections = 0;
+  const readiness = {
+    settingsOpen: true,
+    activeSectionCount: 1,
+    activeSectionAriaCurrent: 'page',
+    activeSectionLabel: expectedLabel,
+    sectionLabelMatches: true,
+    languageSelectorCount: 1,
+    languageSelectorVisible: true,
+    languageSelectorEnabled: true,
+  };
+  const driver = {
+    path: (value) => value,
+    request: async (method, route, body) => {
+      if (method === 'POST' && route.startsWith('/element/') && route.endsWith('/value')) {
+        assert.deepEqual(body, { text: '\uE007', value: ['\uE007'] });
+        calls.push(
+          route.includes('language-section') ? 'webdriver-enter-section' : 'webdriver-enter-selector',
+        );
+        return {};
+      }
+      if (method === 'DELETE' && route === '/actions') {
+        calls.push('release-actions');
+        return {};
+      }
+      throw new Error(`Unexpected WebDriver request: ${method} ${route}`);
+    },
+    execute: async (_script, args = []) => {
+      if (args[0] === languageSectionSelector) {
+        sectionInspections += 1;
+        calls.push(sectionInspections === 1 ? 'inspect-section-before' : 'inspect-section-after');
+        return {
+          count: 1,
+          element: { 'element-6066-11e4-a52e-4f735466cecf': 'language-section' },
+          descriptor: {
+            tagName: 'BUTTON',
+            role: 'button',
+            accessibleName: expectedLabel,
+            focusable: true,
+            visible: true,
+            rect: { x: 20, y: 30, width: 180, height: 32 },
+          },
+          focus: {
+            targetActive: false,
+            activeElement: { tagName: 'BODY', role: null, accessibleName: '' },
+          },
+          route: '#/home',
+          state: {
+            settingsOpen: true,
+            settingsSection: sectionInspections === 1 ? 'Geral' : expectedLabel,
+          },
+          viewport: {
+            innerWidth: 1280,
+            innerHeight: 720,
+            devicePixelRatio: 1,
+            visualViewportWidth: 1280,
+            visualViewportHeight: 720,
+          },
+        };
+      }
+      if (args[0] === languageSelector) {
+        selectorInspections += 1;
+        calls.push(selectorInspections === 1 ? 'inspect-selector-before' : 'inspect-selector-after');
+        return {
+          count: 1,
+          element: { 'element-6066-11e4-a52e-4f735466cecf': 'language-control' },
+          descriptor: {
+            tagName: 'BUTTON',
+            role: 'button',
+            accessibleName: 'Idioma',
+            focusable: true,
+            visible: true,
+            rect: { x: 180, y: 110, width: 220, height: 36 },
+          },
+          focus: {
+            targetActive: false,
+            activeElement: { tagName: 'BODY', role: null, accessibleName: '' },
+          },
+          route: '#/home',
+          state: { settingsOpen: true, settingsSection: expectedLabel },
+          viewport: {
+            innerWidth: 1280,
+            innerHeight: 720,
+            devicePixelRatio: 1,
+            visualViewportWidth: 1280,
+            visualViewportHeight: 720,
+          },
+        };
+      }
+      if (args[0] === expectedLabel) {
+        calls.push('check-section-readiness');
+        return readiness;
+      }
+      throw new Error('Unexpected browser read in language section test.');
+    },
+  };
+
+  assert.deepEqual(LANGUAGE_SECTION_LABELS, {
+    en: 'Language and region',
+    pt: 'Idioma e região',
+    es: 'Idioma y región',
+  });
+  assert.notEqual(LANGUAGE_SECTION_LABELS.en, 'Language');
+  assert.notEqual(LANGUAGE_SECTION_LABELS.pt, 'Idioma');
+  assert.notEqual(LANGUAGE_SECTION_LABELS.es, 'Idioma');
+  assert.deepEqual(calls, []);
+
+  const result = await openLocalizedLanguageSelector(driver, 'pt');
+  assert.deepEqual(calls, [
+    'inspect-section-before',
+    'webdriver-enter-section',
+    'release-actions',
+    'inspect-section-after',
+    'check-section-readiness',
+    'inspect-selector-before',
+    'webdriver-enter-selector',
+    'release-actions',
+    'inspect-selector-after',
+  ]);
+  assert.equal(result.sectionActivation.key, 'Enter');
+  assert.equal(result.sectionActivation.label, 'Language settings section');
+  assert.equal(result.sectionActivation.before.state.settingsSection, 'Geral');
+  assert.equal(result.sectionActivation.after.state.settingsSection, expectedLabel);
+  assert.equal(result.selector, languageSelector);
+  assert.equal(result.selectorActivation.key, 'Enter');
+  assert.equal(result.selectorActivation.label, 'Language selector');
+  assert.deepEqual(result.state, readiness);
+  assert.equal(isLanguageSectionReady(result.state, expectedLabel), true);
+  assert.equal(isKeyboardActivationEvidence(result.sectionActivation), true);
+  assert.equal(isKeyboardActivationEvidence(result.selectorActivation), true);
+
+  for (const invalid of [
+    { ...readiness, settingsOpen: false },
+    { ...readiness, activeSectionCount: 2 },
+    { ...readiness, activeSectionAriaCurrent: null },
+    { ...readiness, activeSectionLabel: 'Geral' },
+    { ...readiness, sectionLabelMatches: false },
+    { ...readiness, languageSelectorCount: 0 },
+    { ...readiness, languageSelectorVisible: false },
+    { ...readiness, languageSelectorEnabled: false },
+  ]) {
+    assert.equal(isLanguageSectionReady(invalid, expectedLabel), false);
+  }
 });
 
 test('the real combination checker accepts either observed host Saved or Saving during the local draft', () => {
