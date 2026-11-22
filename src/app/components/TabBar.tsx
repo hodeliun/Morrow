@@ -17,6 +17,7 @@ import {
   Paperclip,
   LayoutTemplate,
   BookOpen,
+  LayoutGrid,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useDeferredValue, useEffect, useRef, useState } from 'react';
@@ -34,9 +35,12 @@ import {
   openSide,
   openTab,
   reopenClosedTab,
+  setPanePreset,
   setTabPinned,
   useTabs,
 } from '../tabs';
+import { panePresetOf } from '../paneLayout';
+import type { PanePreset } from '../paneLayout';
 import type { Tab } from '../tabs';
 import { setUi } from '../ui';
 import { useWorkspace } from '../workspace';
@@ -102,10 +106,13 @@ function describe(hash: string, state: WorkspaceState): { title: string; icon: R
 
 // every open tab, in the row the window's own buttons sit in
 export function TabBar() {
-  const { tabs, active, closed } = useTabs();
+  const tabState = useTabs();
+  const { tabs, active, closed } = tabState;
   // titles and icons catch up just after typing
   const state = useDeferredValue(useWorkspace());
   const [menu, setMenu] = useState<{ tab: Tab; at: DOMRect } | null>(null);
+  const [layoutMenuAt, setLayoutMenuAt] = useState<DOMRect | null>(null);
+  const selectedPreset = panePresetOf(tabState.layout);
   const strip = useRef<HTMLDivElement>(null);
   // the tab being shown stays in view when there are more tabs than room
   useEffect(() => {
@@ -125,10 +132,7 @@ export function TabBar() {
       {
         label: t('tabs.openSplit'),
         icon: Columns2,
-        onSelect: () => {
-          activateTab(tab.id);
-          openSide(tab.hash);
-        },
+        onSelect: () => openSide(tab.hash, tab.id),
       },
       { separator: true },
       {
@@ -213,13 +217,22 @@ export function TabBar() {
       </div>
       <button
         type="button"
+        className="icon-button tab-layout"
+        title={t('tabs.chooseLayout')}
+        aria-label={t('tabs.chooseLayout')}
+        onClick={(event) => setLayoutMenuAt(event.currentTarget.getBoundingClientRect())}
+      >
+        <LayoutGrid size={14} />
+      </button>
+      <button
+        type="button"
         className="icon-button tab-new"
         title={t('tabs.newTabTitle', { shortcut: formatShortcut('Mod+T') })}
         aria-label={t('tabs.newTab')}
         onClick={() => {
           // a new tab starts at search, to find a page or make one straight away
           openTab();
-          setUi({ palette: true });
+          setUi({ palette: true, paletteForSide: false, palettePaneScope: null });
         }}
       >
         <Plus size={14} />
@@ -230,6 +243,25 @@ export function TabBar() {
           entries={entries(menu.tab)}
           onClose={() => setMenu(null)}
           label={t('tabs.tabOptions')}
+        />
+      )}
+      {layoutMenuAt && (
+        <Menu
+          anchor={layoutMenuAt}
+          entries={(
+            [
+              ['single', 'tabs.layoutSingle'],
+              ['two-columns', 'tabs.layoutTwoColumns'],
+              ['one-left-two-right', 'tabs.layoutLeftTwoRight'],
+              ['two-by-two', 'tabs.layoutTwoByTwo'],
+            ] as const
+          ).map(([preset, label]) => ({
+            label: t(label),
+            checked: selectedPreset === preset,
+            onSelect: () => setPanePreset(preset as PanePreset),
+          }))}
+          onClose={() => setLayoutMenuAt(null)}
+          label={t('tabs.chooseLayout')}
         />
       )}
     </div>

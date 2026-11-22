@@ -115,6 +115,13 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 3. Nas linhas `Null` e `Missing`, abra a edição e pressione **Escape** ou **Cancelar**. Os valores devem continuar como **Vazio** (**Blank**) e **Ausente** (**Missing**), respectivamente.
 4. Feche o aplicativo normalmente, abra `PilotState\DemoVault` pelo launcher e confira que `Unchecked` continua desmarcada nas duas views.
 
+## Abrir notas e bancos em até quatro painéis
+
+1. Abra a nota `Resolved target` e clique em **Escolher layout dos painéis** na barra de abas.
+2. Experimente **Um painel**, **Duas colunas**, **Um à esquerda, dois à direita** e **Dois por dois**.
+3. Num painel vazio, clique em **Abrir uma nota ou banco aqui**. Escolha `Inventory` e confira se o banco abriu no painel que você escolheu. Preencha outros painéis com notas.
+4. Volte a duas colunas e depois à grade. Durante a mesma sessão, as notas e os bancos desanexados voltam aos painéis. A gravação desse layout entre sessões será entregue na #289.
+
 ## Verificações opcionais da base 2.2
 
 Use somente conteúdo sintético. O modo de leitura é uma preferência global. Para conferir a restauração de rolagem em divisão, ative **Reading mode / Modo de leitura**, abra a mesma nota longa nos dois painéis e defina posições de rolagem diferentes. Navegue para fora da nota e reabra-a em cada painel. Confirme que cada painel restaura sua própria posição.

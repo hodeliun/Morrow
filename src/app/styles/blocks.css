@@ -551,7 +551,8 @@
   color: var(--text);
 }
 /* sits on the same line as the middle of the tabs, outside the strip so it stays in view */
-.tab-new {
+.tab-new,
+.tab-layout {
   flex: none;
   -webkit-app-region: no-drag;
   align-self: flex-end;

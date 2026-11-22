@@ -53,10 +53,18 @@ export interface Toast {
   action?: { label: string; run: () => void };
 }
 
+export interface PalettePaneScope {
+  readonly paneId: string;
+  readonly sessionGeneration: number;
+  readonly topologyRevision: number;
+}
+
 export interface UiState {
   palette: boolean;
   // the palette was opened to choose the page for the new side of a split
   paletteForSide: boolean;
+  // the palette was opened from a specific empty pane; null for global and legacy split palettes
+  palettePaneScope: PalettePaneScope | null;
   dialog: Dialog | null;
   confirm: Confirm | null;
   toasts: Toast[];
@@ -75,6 +83,7 @@ export interface UiState {
 let state: UiState = {
   palette: false,
   paletteForSide: false,
+  palettePaneScope: null,
   dialog: null,
   confirm: null,
   toasts: [],
@@ -108,7 +117,7 @@ export function useUi(): UiState {
 }
 
 export function openDialog(dialog: Dialog): void {
-  setUi({ dialog, palette: false });
+  setUi({ dialog, palette: false, palettePaneScope: null });
 }
 
 export function closeDialog(): void {
@@ -116,7 +125,7 @@ export function closeDialog(): void {
 }
 
 export function confirmAction(options: Confirm): void {
-  setUi({ confirm: options, palette: false });
+  setUi({ confirm: options, palette: false, palettePaneScope: null });
 }
 
 export function closeConfirm(): void {

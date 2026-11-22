@@ -213,7 +213,14 @@ export function Sidebar() {
         icon={Search}
         label={t('common.search')}
         hint={formatShortcut('Mod+K')}
-        onClick={() => setUi({ palette: true, mobileSidebar: false })}
+        onClick={() =>
+          setUi({
+            palette: true,
+            paletteForSide: false,
+            palettePaneScope: null,
+            mobileSidebar: false,
+          })
+        }
       />
     ),
     home: (

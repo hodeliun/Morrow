@@ -3,18 +3,19 @@
 import { createContext, useContext, useSyncExternalStore } from 'react';
 import {
   allocateSideInstanceId,
+  applyPanePresetPreservingAssignments,
   DEFAULT_SPLIT_RATIO,
   isSideInstanceIdFor,
   migrateLegacySplit,
   visiblePaneLeaves,
 } from './paneLayout';
-import type { PaneLayout, PaneLeaf, PaneNode, PaneTabInstance } from './paneLayout';
+import type { PaneLayout, PaneLeaf, PaneNode, PanePreset, PaneTabInstance } from './paneLayout';
 import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage';
 import type { CurrentTabsSnapshot, LegacyTabsSnapshot } from './paneLayoutStorage';
 import { getPreferences } from './platform/preferences';
 
 export type PaneId = string;
-export type PaneRole = 'main' | 'side';
+export type PaneRole = 'main' | 'side' | 'third' | 'fourth';
 
 export interface PaneHistory {
   hash: string;
@@ -49,6 +50,8 @@ interface TabState {
   projectionKind: 'legacy-two-pane' | 'fork-layout';
   // Fork v2, malformed and future snapshots stay byte-exact until a lossless writer is available.
   persistenceWritable: boolean;
+  // A user-selected preset owns its leaf assignments; it is not the legacy two-pane projection.
+  explicitLayout: boolean;
   // Raw value observed during load or the last successful write; prevents overwriting another window.
   observedStorageRaw: string | null;
 }
@@ -59,6 +62,7 @@ const MAX_CLOSED = 10;
 const LAYOUT_ID = 'morrow-pane-layout';
 const listeners = new Set<() => void>();
 let counter = 0;
+let urlAnchorPaneId: PaneId | null = null;
 const newTabId = () => `t${Date.now().toString(36)}${(counter++).toString(36)}`;
 
 type PaneLayoutState = PaneLayout<PaneTabInstance<string>>;
@@ -190,16 +194,103 @@ function selectedPaneLeaves(layout: PaneLayoutState): PaneLeaf[] {
   return visiblePaneLeaves(layout).filter((leaf) => leaf.tabId !== null && ids.has(leaf.tabId));
 }
 
+function paneForTabGroup(tabId: string, layout: PaneLayoutState): PaneId | null {
+  const instance = layout.tabs.find((tab) => tab.id === tabId);
+  if (!instance) return null;
+  const pair = pairForInstance(layout.tabs, instance);
+  const ids = new Set(pair ? [pair.main.id, pair.side.id] : [instance.id]);
+  return visiblePaneLeaves(layout).find((leaf) => leaf.tabId !== null && ids.has(leaf.tabId))?.id ?? null;
+}
+
+interface PaneBounds {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+function adjacentPaneId(layout: PaneLayoutState, sourcePaneId: PaneId): PaneId | null {
+  const leaves = visiblePaneLeaves(layout);
+  if (leaves.length < 2) return null;
+  const bounds = new Map<PaneId, PaneBounds>();
+  const collect = (node: PaneNode, rect: PaneBounds): void => {
+    if (node.kind === 'leaf') {
+      bounds.set(node.id, rect);
+      return;
+    }
+    if (node.axis === 'columns') {
+      const firstWidth = rect.width * node.ratio;
+      collect(node.first, { ...rect, width: firstWidth });
+      collect(node.second, {
+        ...rect,
+        x: rect.x + firstWidth,
+        width: rect.width - firstWidth,
+      });
+      return;
+    }
+    const firstHeight = rect.height * node.ratio;
+    collect(node.first, { ...rect, height: firstHeight });
+    collect(node.second, {
+      ...rect,
+      y: rect.y + firstHeight,
+      height: rect.height - firstHeight,
+    });
+  };
+  collect(layout.root, { x: 0, y: 0, width: 1, height: 1 });
+  const source = bounds.get(sourcePaneId);
+  if (!source) return null;
+  const sourceCenterY = source.y + source.height / 2;
+  const overlapsVertically = (candidate: PaneBounds) =>
+    Math.min(source.y + source.height, candidate.y + candidate.height) - Math.max(source.y, candidate.y) > 1e-8;
+  const right: PaneId[] = [];
+  const left: PaneId[] = [];
+  for (const leaf of leaves) {
+    if (leaf.id === sourcePaneId) continue;
+    const candidate = bounds.get(leaf.id)!;
+    if (overlapsVertically(candidate) && Math.abs(source.x + source.width - candidate.x) < 1e-8)
+      right.push(leaf.id);
+    if (overlapsVertically(candidate) && Math.abs(candidate.x + candidate.width - source.x) < 1e-8)
+      left.push(leaf.id);
+  }
+  const candidates = right.length ? right : left;
+  if (candidates.length) {
+    return candidates.sort((first, second) => {
+      const firstY = bounds.get(first)!.y + bounds.get(first)!.height / 2;
+      const secondY = bounds.get(second)!.y + bounds.get(second)!.height / 2;
+      return Math.abs(firstY - sourceCenterY) - Math.abs(secondY - sourceCenterY);
+    })[0]!;
+  }
+  return leaves
+    .filter((leaf) => leaf.id !== sourcePaneId)
+    .sort((first, second) => {
+      const firstBounds = bounds.get(first.id)!;
+      const secondBounds = bounds.get(second.id)!;
+      const firstDistance =
+        Math.abs(firstBounds.x + firstBounds.width / 2 - (source.x + source.width / 2)) +
+        Math.abs(firstBounds.y + firstBounds.height / 2 - sourceCenterY);
+      const secondDistance =
+        Math.abs(secondBounds.x + secondBounds.width / 2 - (source.x + source.width / 2)) +
+        Math.abs(secondBounds.y + secondBounds.height / 2 - sourceCenterY);
+      return firstDistance - secondDistance;
+    })[0]?.id ?? null;
+}
+
 function resolvePaneId(pane: PaneId, layout = current().layout): PaneId | null {
-  const leaves = selectedPaneLeaves(layout);
+  const leaves = visiblePaneLeaves(layout);
   if (leaves.some((leaf) => leaf.id === pane)) return pane;
-  if (pane === 'main') return leaves[0]?.id ?? null;
-  if (pane === 'side') return leaves[1]?.id ?? null;
+  const selected = selectedPaneLeaves(layout);
+  if (pane === 'main') return selected[0]?.id ?? leaves[0]?.id ?? null;
+  if (pane === 'side') return selected[1]?.id ?? leaves[1]?.id ?? null;
+  if (pane === 'third') return leaves[2]?.id ?? null;
+  if (pane === 'fourth') return leaves[3]?.id ?? null;
   return null;
 }
 
 function primaryPaneId(layout = current().layout): PaneId | null {
-  return selectedPaneLeaves(layout)[0]?.id ?? null;
+  // A v2 snapshot keeps the selected pair's launch target as the URL anchor until the user
+  // explicitly chooses a preset. Presets then return URL ownership to the first physical leaf.
+  const leaves = visiblePaneLeaves(layout);
+  return leaves.find((leaf) => leaf.id === urlAnchorPaneId)?.id ?? leaves[0]?.id ?? null;
 }
 
 function assignedTabForPane(pane: PaneId, layout = current().layout): PaneTabInstance<string> | null {
@@ -219,6 +310,7 @@ function stateFromLayout(
   projectionKind: TabState['projectionKind'] = 'legacy-two-pane',
   projectionOrder?: readonly string[] | null,
   physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>,
+  explicitLayout = projectionKind === 'fork-layout',
 ): TabState {
   const normalizedPhysicalOrder = normalizePhysicalOrderByGroup(layout, physicalOrderByGroup);
   const focused = focusedInstance(layout);
@@ -258,6 +350,7 @@ function stateFromLayout(
     projectionIds: visibleProjectionIds,
     projectionOrder: effectiveProjectionOrder,
     projectionKind,
+    explicitLayout,
     closed: [...closed].slice(-MAX_CLOSED),
     persistenceWritable,
     observedStorageRaw,
@@ -285,6 +378,25 @@ function clearMissingAssignments(layout: PaneLayoutState): PaneLayoutState {
   };
   const root = clear(layout.root);
   return root === layout.root ? layout : { ...layout, root };
+}
+
+function legacyLayoutCanRepresent(
+  layout: PaneLayoutState,
+  activeId: string,
+  explicitLayout = false,
+): boolean {
+  const root = layout.root;
+  const active = layout.tabs.find((tab) => tab.id === activeId);
+  const activePair = active ? pairForInstance(layout.tabs, active) : null;
+  if (root.kind === 'leaf') return activePair === null;
+  if (root.axis !== 'columns' || root.first.kind !== 'leaf' || root.second.kind !== 'leaf') return false;
+  const first = root.first.tabId;
+  const second = root.second.tabId;
+  if (!first || first === second) return false;
+  if (!activePair) return !explicitLayout && first === activeId && second === null;
+  if (!second) return false;
+  const pairIds = new Set([activePair.main.id, activePair.side.id]);
+  return pairIds.has(first) && pairIds.has(second);
 }
 
 function uniqueTreeId(layout: PaneLayoutState, preferred: string): string {
@@ -395,22 +507,52 @@ function layoutForProjection(
   };
 }
 
-function applyLaunchHash(layout: PaneLayoutState, activeId: string, hash: string): PaneLayoutState {
+function applyLaunchHash(
+  layout: PaneLayoutState,
+  activeId: string,
+  hash: string,
+): { readonly layout: PaneLayoutState; readonly anchorPaneId: PaneId | null } {
   const exact = layout.tabs.find((tab) => tab.id === activeId);
-  if (!exact) return layout;
-  const pair = pairForInstance(layout.tabs, exact);
-  const pairIds = pair ? new Set([pair.main.id, pair.side.id]) : new Set([exact.id]);
-  const primaryLeaf = visiblePaneLeaves(layout).find(
+  const pair = exact ? pairForInstance(layout.tabs, exact) : null;
+  const pairIds = pair ? new Set([pair.main.id, pair.side.id]) : new Set(exact ? [exact.id] : []);
+  let anchorLeaf = visiblePaneLeaves(layout).find(
     (leaf) => leaf.tabId !== null && pairIds.has(leaf.tabId),
   );
-  const target = layout.tabs.find((tab) => tab.id === primaryLeaf?.tabId) ?? pair?.main ?? exact;
-  if (target.target === hash) return layout;
+  const target = layout.tabs.find((tab) => tab.id === anchorLeaf?.tabId) ?? pair?.main ?? exact;
+  if (!target) {
+    const focusedLeaf = visiblePaneLeaves(layout).find((leaf) => leaf.id === layout.focusedPaneId);
+    if (!focusedLeaf || focusedLeaf.tabId !== null) return { layout, anchorPaneId: null };
+    const id = newTabId();
+    const created: PaneTabInstance<string> = { id, groupId: id, target: hash, back: [], forward: [] };
+    const next = {
+      ...layout,
+      tabs: [...layout.tabs, created],
+      root: replaceLeafAssignments(layout.root, new Map([[focusedLeaf.id, id]])),
+    };
+    return { layout: next, anchorPaneId: focusedLeaf.id };
+  }
+  if (!anchorLeaf) {
+    const focusedLeaf = visiblePaneLeaves(layout).find((leaf) => leaf.id === layout.focusedPaneId);
+    if (focusedLeaf?.tabId === null) {
+      anchorLeaf = focusedLeaf;
+      layout = {
+        ...layout,
+        root: replaceLeafAssignments(layout.root, new Map([[focusedLeaf.id, target.id]])),
+      };
+    } else {
+      anchorLeaf = visiblePaneLeaves(layout).find((leaf) => leaf.tabId === target!.id);
+    }
+  }
+  if (target.target === hash) return { layout, anchorPaneId: anchorLeaf?.id ?? null };
   const updated = {
     ...target,
     target: hash,
     back: [...target.back, target.target].slice(-MAX_HISTORY),
   };
-  return { ...layout, tabs: layout.tabs.map((tab) => (tab.id === target.id ? updated : tab)) };
+  return {
+    layout: { ...layout, tabs: layout.tabs.map((tab) => (tab.id === target.id ? updated : tab)) },
+    anchorPaneId: anchorLeaf?.id ?? null,
+  };
 }
 
 function initialState(
@@ -418,6 +560,7 @@ function initialState(
   persistenceWritable: boolean,
   observedStorageRaw: string | null,
 ): TabState {
+  urlAnchorPaneId = null;
   const id = newTabId();
   const layout = migrateLegacySplit(
     LAYOUT_ID,
@@ -430,7 +573,8 @@ function initialState(
 function fromLegacySnapshot(snapshot: LegacyTabsSnapshot, hash: string, raw: string): TabState {
   const layout = migrateLegacySplit(LAYOUT_ID, snapshot, getPreferences().splitShare);
   const started = applyLaunchHash(layout, snapshot.active, hash);
-  return stateFromLayout(started, snapshot.closed, true, raw, snapshot.active, null, 'legacy-two-pane');
+  urlAnchorPaneId = null;
+  return stateFromLayout(started.layout, snapshot.closed, true, raw, snapshot.active, null, 'legacy-two-pane');
 }
 
 function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: string): TabState {
@@ -444,22 +588,10 @@ function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: s
   if (!first) return initialState(hash, false, raw);
   const identity = projectionIdentity(snapshot.layout, first);
   const physicalOrderByGroup = normalizePhysicalOrderByGroup(snapshot.layout);
-  const pair = pairForInstance(snapshot.layout.tabs, first);
-  const selectedIds = pair ? new Set([pair.main.id, pair.side.id]) : new Set([first.id]);
-  const focusedPosition = visiblePaneLeaves(snapshot.layout)
-    .filter((leaf) => leaf.tabId !== null && selectedIds.has(leaf.tabId))
-    .findIndex((leaf) => leaf.id === snapshot.layout.focusedPaneId);
-  const requestedPane = focusedPosition === 1 ? 'side' : 'main';
-  const projected = layoutForProjection(
-    snapshot.layout,
-    identity.id,
-    requestedPane,
-    'fork-layout',
-    physicalOrderByGroup,
-  );
-  const launched = applyLaunchHash(projected, identity.id, hash);
+  const launched = applyLaunchHash(snapshot.layout, identity.id, hash);
+  urlAnchorPaneId = launched.anchorPaneId;
   return stateFromLayout(
-    launched,
+    launched.layout,
     snapshot.closed,
     false,
     raw,
@@ -468,6 +600,7 @@ function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: s
     'fork-layout',
     undefined,
     physicalOrderByGroup,
+    false,
   );
 }
 
@@ -491,6 +624,41 @@ function load(): TabState {
 
 let state: TabState | null = null;
 const current = (): TabState => (state ??= load());
+const suspendedPaneTabs = new Map<string, string[]>();
+
+function applyPresetWithSuspendedTabs(
+  layout: PaneLayoutState,
+  preset: PanePreset,
+): PaneLayoutState {
+  const next = applyPanePresetPreservingAssignments(layout, preset);
+  if (next === layout) return next;
+  const previousLeaves = visiblePaneLeaves(layout);
+  const nextLeaves = visiblePaneLeaves(next);
+  const registered = new Set(next.tabs.map((tab) => tab.id));
+  const suspended = (suspendedPaneTabs.get(layout.id) ?? []).filter((tabId) => registered.has(tabId));
+  const assigned = new Set(nextLeaves.flatMap((leaf) => (leaf.tabId ? [leaf.tabId] : [])));
+  previousLeaves.forEach((leaf) => {
+    if (leaf.tabId && registered.has(leaf.tabId) && !assigned.has(leaf.tabId) && !suspended.includes(leaf.tabId)) {
+      suspended.push(leaf.tabId);
+    }
+  });
+
+  const updates = new Map<string, string | null>();
+  for (const leaf of nextLeaves) {
+    if (leaf.tabId) continue;
+    let tabId: string | undefined;
+    while (suspended.length > 0 && !tabId) {
+      const candidate = suspended.shift()!;
+      if (registered.has(candidate) && !assigned.has(candidate)) tabId = candidate;
+    }
+    if (!tabId) continue;
+    updates.set(leaf.id, tabId);
+    assigned.add(tabId);
+  }
+  if (suspended.length > 0) suspendedPaneTabs.set(layout.id, suspended);
+  else suspendedPaneTabs.delete(layout.id);
+  return updates.size === 0 ? next : { ...next, root: replaceLeafAssignments(next.root, updates) };
+}
 
 function instanceWithTabView(
   instance: PaneTabInstance<string>,
@@ -694,13 +862,41 @@ function set(next: TabState, keepLayout = false): void {
       preserveExistingOrder,
       next.physicalOrderByGroup,
     );
-    layout = layoutForProjection(
-      layout,
-      next.active,
-      next.pane,
-      next.projectionKind,
-      next.physicalOrderByGroup,
-    );
+    if (!next.explicitLayout && visiblePaneLeaves(previous.layout).length <= 2) {
+      layout = layoutForProjection(
+        layout,
+        next.active,
+        next.pane,
+        next.projectionKind,
+        next.physicalOrderByGroup,
+      );
+    } else {
+      const active = layout.tabs.find((tab) => tab.id === next.active);
+      const pair = active ? pairForInstance(layout.tabs, active) : null;
+      const activeIds = pair
+        ? new Set(pairInPhysicalOrder(layout, pair, next.physicalOrderByGroup).map((tab) => tab.id))
+        : active
+          ? new Set([active.id])
+          : new Set<string>();
+      let visibleLeaves = visiblePaneLeaves(layout);
+      const activeIsAssigned = visibleLeaves.some(
+        (leaf) => leaf.tabId !== null && activeIds.has(leaf.tabId),
+      );
+      if (!activeIsAssigned && next.active !== previous.active && active) {
+        const destination = visibleLeaves.find((leaf) => leaf.id === layout.focusedPaneId) ?? visibleLeaves[0];
+        if (destination) {
+          const root = replaceLeafAssignments(layout.root, new Map([[destination.id, active.id]]));
+          layout = { ...layout, root, focusedPaneId: destination.id };
+          visibleLeaves = visiblePaneLeaves(layout);
+        }
+      }
+      const focusedLeaf = visibleLeaves.find((leaf) => leaf.tabId !== null && activeIds.has(leaf.tabId));
+      if (focusedLeaf) layout = { ...layout, focusedPaneId: focusedLeaf.id };
+      else if (!visibleLeaves.some((leaf) => leaf.id === layout.focusedPaneId && leaf.tabId !== null)) {
+        const fallback = visibleLeaves.find((leaf) => leaf.tabId !== null) ?? visibleLeaves[0];
+        if (fallback) layout = { ...layout, focusedPaneId: fallback.id };
+      }
+    }
   }
   const projectionIds = keepLayout
     ? next.projectionIds
@@ -722,13 +918,25 @@ function set(next: TabState, keepLayout = false): void {
     next.projectionKind,
     projectionOrder,
     next.physicalOrderByGroup,
+    next.explicitLayout,
   );
+  // Once a legacy snapshot leaves its representable two-pane shape, freeze that source for
+  // this window. Later focus or tab changes must not serialize a lossy projection.
+  if (
+    committed.persistenceWritable &&
+    (committed.projectionKind !== 'legacy-two-pane' ||
+      !legacyLayoutCanRepresent(committed.layout, committed.active, committed.explicitLayout))
+  ) {
+    committed = { ...committed, persistenceWritable: false };
+  }
   if (committed.persistenceWritable) {
     const serialized = JSON.stringify(legacyPersistenceView(committed));
     try {
       const currentRaw = localStorage.getItem(PANE_TABS_STORAGE_KEY);
       if (currentRaw !== committed.observedStorageRaw) {
         committed = { ...committed, persistenceWritable: false };
+      } else if (serialized === currentRaw) {
+        committed = { ...committed, observedStorageRaw: serialized };
       } else {
         try {
           localStorage.setItem(PANE_TABS_STORAGE_KEY, serialized);
@@ -751,6 +959,8 @@ function setLayout(
   options: {
     readonly physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>;
     readonly projectionIdReplacement?: readonly [string, string];
+    readonly disablePersistence?: boolean;
+    readonly explicitLayout?: boolean;
   } = {},
 ): void {
   const now = current();
@@ -761,18 +971,17 @@ function setLayout(
   const next = stateFromLayout(
     layout,
     now.closed,
-    now.persistenceWritable,
+    now.persistenceWritable && !options.disablePersistence,
     now.observedStorageRaw,
     now.active,
     replaceProjectionIds(now.projectionIds),
     now.projectionKind,
     replaceProjectionIds(now.projectionOrder),
     options.physicalOrderByGroup ?? now.physicalOrderByGroup,
+    options.explicitLayout ?? now.explicitLayout,
   );
   set(next, true);
 }
-
-const activeTab = (now = current()): Tab => now.tabs.find((tab) => tab.id === now.active) ?? now.tabs[0]!;
 
 function updateActive(change: (tab: Tab) => Tab, extra: Partial<TabState> = {}): void {
   const now = current();
@@ -788,9 +997,26 @@ function go(hash: string): void {
   window.location.hash = hash;
 }
 
+function replaceBrowserHash(hash: string): void {
+  if (window.location.hash === hash || (hash === '#/' && !window.location.hash)) return;
+  try {
+    history.replaceState(null, '', hash);
+  } catch {
+    // Keep the in-memory pane state if the host rejects an address replacement.
+  }
+}
+
 function goToPrimaryPane(): void {
   const primary = primaryPaneId();
-  if (primary) go(routeHashForPane(primary));
+  if (primary && assignedTabForPane(primary)) {
+    go(routeHashForPane(primary));
+    return;
+  }
+
+  // An empty URL anchor is neutral state, not a request to open a Home tab. If an internal
+  // hash change is already queued, let its handler recognize the replacement as internal.
+  arriving = arriving === null ? null : '#/';
+  replaceBrowserHash('#/');
 }
 
 // a mouse's back button can reach the app both as a button press and as a window app command. whichever
@@ -810,7 +1036,23 @@ export function startTabs(): () => void {
     const tab = primary ? assignedTabForPane(primary) : null;
     const expected = arriving === hash;
     arriving = null;
-    if (!tab || tab.target === hash) return;
+    if (!primary) return;
+    if (!tab) {
+      // `#/` is the neutral URL for an empty anchor, including hash events emitted by
+      // hosts such as Happy DOM when replaceState changes only the URL. Opening Home into
+      // an empty pane remains an explicit showInPane operation.
+      if (hash === '#/') return;
+      const now = current();
+      if (now.layout.tabs.length >= MAX_TABS) return;
+      const id = newTabId();
+      setLayout({
+        ...now.layout,
+        tabs: [...now.layout.tabs, { id, groupId: id, target: hash, back: [], forward: [] }],
+        root: replaceLeafAssignments(now.layout.root, new Map([[primary, id]])),
+      });
+      return;
+    }
+    if (tab.target === hash) return;
     const history = expected
       ? { ...tab, target: hash }
       : { ...tab, target: hash, back: [...tab.back, tab.target].slice(-MAX_HISTORY), forward: [] };
@@ -871,11 +1113,8 @@ export function startTabs(): () => void {
 
 function paneAt(target: EventTarget | null): PaneId {
   const element = target instanceof Element ? target.closest<HTMLElement>('[data-pane]') : null;
-  return element?.dataset.pane === 'side'
-    ? (resolvePaneId('side') ?? targetPane())
-    : element
-      ? (resolvePaneId('main') ?? targetPane())
-      : targetPane();
+  const exact = element?.dataset.paneId;
+  return exact ? (resolvePaneId(exact) ?? targetPane()) : targetPane();
 }
 
 export interface PaneAssignment {
@@ -884,11 +1123,33 @@ export interface PaneAssignment {
   readonly tabId: string;
 }
 
-/** The selected tab's two-pane projection, in primary-then-side order. */
+export interface PaneSlot {
+  readonly role: PaneRole;
+  readonly paneId: PaneId;
+  readonly tabId: string | null;
+}
+
+function paneRoleAt(index: number): PaneRole {
+  return index === 0 ? 'main' : index === 1 ? 'side' : index === 2 ? 'third' : 'fourth';
+}
+
+/** Assigned panes, in physical order from the left/top. */
 export function paneAssignments(layout = current().layout): PaneAssignment[] {
-  const leaves = selectedPaneLeaves(layout);
+  const leaves = visiblePaneLeaves(layout);
   return leaves.flatMap((leaf, index) =>
-    leaf.tabId ? [{ role: index === 0 ? 'main' : 'side', paneId: leaf.id, tabId: leaf.tabId }] : [],
+    leaf.tabId ? [{ role: paneRoleAt(index), paneId: leaf.id, tabId: leaf.tabId }] : [],
+  );
+}
+
+/** Visible slots include empty panes so the workspace can offer an explicit open action. */
+export function paneSlots(layout = current().layout): PaneSlot[] {
+  const now = current();
+  const hideLegacyEmptyLeaves =
+    layout === now.layout && !now.explicitLayout && now.projectionKind === 'legacy-two-pane';
+  return visiblePaneLeaves(layout).flatMap((leaf, index) =>
+    hideLegacyEmptyLeaves && leaf.tabId === null
+      ? []
+      : [{ role: paneRoleAt(index), paneId: leaf.id, tabId: leaf.tabId }],
   );
 }
 
@@ -914,7 +1175,7 @@ export function routeHashForTabId(tabId: string): string {
 
 export function paneIdForTabId(tabId: string): PaneId {
   const layout = current().layout;
-  const assigned = selectedPaneLeaves(layout).find((leaf) => leaf.tabId === tabId);
+  const assigned = visiblePaneLeaves(layout).find((leaf) => leaf.tabId === tabId);
   if (assigned) return assigned.id;
   const cacheKey = Array.from(tabId, (character) => character.codePointAt(0)!.toString(16)).join('-');
   const visibleIds = new Set(visiblePaneLeaves(layout).map((leaf) => leaf.id));
@@ -928,11 +1189,11 @@ export function isPrimaryPane(pane: PaneId): boolean {
 }
 
 export function isSidePane(pane: PaneId): boolean {
-  return resolvePaneId(pane) === selectedPaneLeaves(current().layout)[1]?.id;
+  return resolvePaneId(pane) === resolvePaneId('side');
 }
 
 export function isPaneTabVisible(tabId: string): boolean {
-  return selectedPaneLeaves(current().layout).some((leaf) => leaf.tabId === tabId);
+  return visiblePaneLeaves(current().layout).some((leaf) => leaf.tabId === tabId);
 }
 
 export function isSideTabInstance(tabId: string): boolean {
@@ -948,19 +1209,148 @@ export function setActivePane(pane: PaneId): void {
   setLayout({ ...now.layout, focusedPaneId: paneId });
 }
 
+export function setPanePreset(preset: PanePreset): void {
+  const now = current();
+  const layout = applyPresetWithSuspendedTabs(now.layout, preset);
+  if (layout === now.layout && now.explicitLayout) return;
+  urlAnchorPaneId = null;
+  setLayout(layout, {
+    disablePersistence: now.persistenceWritable && !legacyLayoutCanRepresent(layout, now.active, true),
+    explicitLayout: true,
+  });
+  goToPrimaryPane();
+}
+
+export function assignTabToPane(tabId: string, pane: PaneId): void {
+  const now = current();
+  if (!now.layout.tabs.some((tab) => tab.id === tabId)) return;
+  const paneId = resolvePaneId(pane, now.layout);
+  if (!paneId) return;
+  const leaf = visiblePaneLeaves(now.layout).find((item) => item.id === paneId);
+  if (!leaf) return;
+  if (leaf.tabId === tabId) {
+    if (now.layout.focusedPaneId !== paneId) setLayout({ ...now.layout, focusedPaneId: paneId });
+    return;
+  }
+  const updates = new Map<string, string | null>();
+  for (const item of visiblePaneLeaves(now.layout)) {
+    if (item.tabId === tabId && item.id !== paneId) updates.set(item.id, null);
+  }
+  updates.set(paneId, tabId);
+  setLayout({
+    ...now.layout,
+    root: replaceLeafAssignments(now.layout.root, updates),
+    focusedPaneId: paneId,
+  });
+  if (paneId === primaryPaneId(now.layout)) go(routeHashForPane(paneId));
+}
+
+function openNewTabInPane(hash: string, paneId: PaneId): void {
+  const now = current();
+  if (now.layout.tabs.length >= MAX_TABS) return;
+  const id = newTabId();
+  const tab: PaneTabInstance<string> = { id, groupId: id, target: hash, back: [], forward: [] };
+  const layout = {
+    ...now.layout,
+    tabs: [...now.layout.tabs, tab],
+    root: replaceLeafAssignments(now.layout.root, new Map([[paneId, id]])),
+    focusedPaneId: paneId,
+  };
+  setLayout(layout);
+  if (paneId === primaryPaneId(now.layout)) go(hash);
+}
+
+function unassignedTabForTarget(
+  layout: PaneLayoutState,
+  hash: string,
+): PaneTabInstance<string> | null {
+  const assignedIds = new Set(
+    visiblePaneLeaves(layout)
+      .map((item) => item.tabId)
+      .filter((id): id is string => id !== null),
+  );
+  return layout.tabs.find((item) => item.target === hash && !assignedIds.has(item.id)) ?? null;
+}
+
+/** Whether an empty pane can show a route, reusing the same unassigned tab as showInPane. */
+export function canOpenInEmptyPane(pane: PaneId, hash?: string): boolean {
+  const now = current();
+  const paneId = resolvePaneId(pane, now.layout);
+  if (!paneId) return false;
+  const leaf = visiblePaneLeaves(now.layout).find((item) => item.id === paneId);
+  if (!leaf || leaf.tabId !== null) return false;
+  return (
+    (hash !== undefined && unassignedTabForTarget(now.layout, hash) !== null) ||
+    now.layout.tabs.length < MAX_TABS
+  );
+}
+
 export function showInPane(hash: string, pane = targetPane(), replace = false): void {
   const now = current();
   const paneId = resolvePaneId(pane, now.layout);
   if (!paneId) return;
   const leaf = visiblePaneLeaves(now.layout).find((item) => item.id === paneId);
   const tab = leaf?.tabId ? now.layout.tabs.find((item) => item.id === leaf.tabId) : null;
-  if (!tab || tab.target === hash) return;
-  const primary = primaryPaneId(now.layout);
+  if (!tab) {
+    const available = unassignedTabForTarget(now.layout, hash);
+    let nextLayout = now.layout;
+    let tabId = available?.id;
+    if (!tabId) {
+      if (now.layout.tabs.length >= MAX_TABS) return;
+      tabId = newTabId();
+      nextLayout = {
+        ...nextLayout,
+        tabs: [...nextLayout.tabs, { id: tabId, groupId: tabId, target: hash, back: [], forward: [] }],
+      };
+    }
+    const updates = new Map<string, string | null>();
+    for (const item of visiblePaneLeaves(nextLayout)) {
+      if (item.tabId === tabId && item.id !== paneId) updates.set(item.id, null);
+    }
+    updates.set(paneId, tabId);
+    setLayout({
+      ...nextLayout,
+      root: replaceLeafAssignments(nextLayout.root, updates),
+      focusedPaneId: paneId,
+    });
+    if (paneId === primaryPaneId(now.layout)) {
+      if (replace) {
+        history.replaceState(null, '', hash);
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      } else {
+        go(hash);
+      }
+    }
+    return;
+  }
   const place = (value: string) => (value || '#/').split('?')[0];
-  if (!replace && paneId === primary && activeTab(now).pinned && place(hash) !== place(tab.target)) {
+  if (tab.target === hash) {
+    if (now.layout.focusedPaneId !== paneId) setLayout({ ...now.layout, focusedPaneId: paneId });
+    return;
+  }
+
+  const legacyTwoPane = now.projectionKind === 'legacy-two-pane' && !now.explicitLayout;
+  const legacyPair = legacyTwoPane ? pairForInstance(now.layout.tabs, tab) : null;
+  const legacyPinned = legacyPair
+    ? now.tabs.find((item) => item.id === legacyPair.main.id)?.pinned === true
+    : tab.pinned === true;
+  if (
+    !replace &&
+    legacyTwoPane &&
+    legacyPinned &&
+    paneId === primaryPaneId(now.layout) &&
+    place(hash) !== place(tab.target)
+  ) {
+    // In the legacy two-pane adapter, pinning protects the logical tab group. Navigating its
+    // primary pane opens a new solo tab, while the lateral instance remains a mutable history.
     openTab(hash);
     return;
   }
+  if (!replace && !legacyTwoPane && tab.pinned && place(hash) !== place(tab.target)) {
+    openNewTabInPane(hash, paneId);
+    return;
+  }
+  const primary = primaryPaneId(now.layout);
   const nextHistory = replace
     ? { ...tab, target: hash }
     : { ...tab, target: hash, back: [...tab.back, tab.target].slice(-MAX_HISTORY), forward: [] };
@@ -982,17 +1372,6 @@ export function showInPane(hash: string, pane = targetPane(), replace = false): 
 export function showInMain(hash: string, replace = false): void {
   const now = current();
   const primary = primaryPaneId(now.layout);
-  const primaryTarget = primary ? assignedTabForPane(primary, now.layout)?.target : undefined;
-  const place = (value: string) => (value || '#/').split('?')[0];
-  if (
-    !replace &&
-    activeTab(now).pinned &&
-    primaryTarget !== undefined &&
-    place(hash) !== place(primaryTarget)
-  ) {
-    openTab(hash);
-    return;
-  }
   if (primary) showInPane(hash, primary, replace);
 }
 
@@ -1002,8 +1381,31 @@ export function showInSide(hash: string, replace = false): void {
 }
 
 // splits the tab, the new side shows the given place and becomes where navigation goes
-export function openSide(hash = activeHash()): void {
-  const now = current();
+export function openSide(hash = activeHash(), sourceTabId?: string): void {
+  let now = current();
+  if (now.explicitLayout || visiblePaneLeaves(now.layout).length > 2) {
+    if (sourceTabId && !paneForTabGroup(sourceTabId, now.layout)) {
+      activateTab(sourceTabId);
+      now = current();
+    }
+    let sourcePane = sourceTabId
+      ? paneForTabGroup(sourceTabId, now.layout)
+      : now.layout.focusedPaneId;
+    if (visiblePaneLeaves(now.layout).length === 1) {
+      setPanePreset('two-columns');
+      now = current();
+      sourcePane = sourceTabId
+        ? paneForTabGroup(sourceTabId, now.layout)
+        : now.layout.focusedPaneId;
+    }
+    const destination = sourcePane ? adjacentPaneId(now.layout, sourcePane) : null;
+    if (destination) showInPane(hash, destination);
+    return;
+  }
+  if (sourceTabId) {
+    activateTab(sourceTabId);
+    now = current();
+  }
   const side = selectedPaneLeaves(now.layout)[1];
   if (side?.tabId) {
     setLayout({
@@ -1132,6 +1534,12 @@ export function openTab(hash = '#/', options: { background?: boolean } = {}): vo
     return;
   }
   backgroundRun = null;
+  if (now.explicitLayout || visiblePaneLeaves(now.layout).length > 2) {
+    const focusedPane = now.layout.focusedPaneId;
+    set({ ...now, tabs, active: tab.id, pane: 'main' });
+    if (focusedPane === primaryPaneId()) go(hash);
+    return;
+  }
   set({ ...now, tabs, active: tab.id, pane: 'main' });
   go(hash);
 }
@@ -1139,7 +1547,53 @@ export function openTab(hash = '#/', options: { background?: boolean } = {}): vo
 export function activateTab(id: string): void {
   const now = current();
   const tab = now.tabs.find((item) => item.id === id);
-  if (!tab || id === now.active) return;
+  if (!tab) return;
+  if (now.explicitLayout || visiblePaneLeaves(now.layout).length > 2) {
+    const exact = now.layout.tabs.find((item) => item.id === id);
+    const pair = exact ? pairForInstance(now.layout.tabs, exact) : null;
+    const ordered = pair ? pairInPhysicalOrder(now.layout, pair, now.physicalOrderByGroup) : [exact].filter(Boolean);
+    const ids = new Set(ordered.map((item) => item!.id));
+    const assigned = visiblePaneLeaves(now.layout).find(
+      (leaf) => leaf.tabId !== null && ids.has(leaf.tabId),
+    );
+    if (assigned) {
+      const updates = new Map<string, string | null>();
+      const occupied = new Set(visiblePaneLeaves(now.layout).flatMap((leaf) => (leaf.tabId ? [leaf.tabId] : [])));
+      const emptyLeaves = visiblePaneLeaves(now.layout).filter((leaf) => leaf.tabId === null);
+      let emptyIndex = 0;
+      for (const member of ordered) {
+        if (occupied.has(member!.id)) continue;
+        const destination = emptyLeaves[emptyIndex++];
+        if (!destination) break;
+        updates.set(destination.id, member!.id);
+      }
+      if (updates.size > 0) {
+        setLayout({
+          ...now.layout,
+          root: replaceLeafAssignments(now.layout.root, updates),
+          focusedPaneId: assigned.id,
+        });
+      } else if (assigned.id !== now.layout.focusedPaneId) {
+        setLayout({ ...now.layout, focusedPaneId: assigned.id });
+      }
+      goToPrimaryPane();
+      return;
+    }
+    const leaves = visiblePaneLeaves(now.layout);
+    const firstDestination = leaves.find((leaf) => leaf.id === now.layout.focusedPaneId) ?? leaves[0];
+    if (!firstDestination) return;
+    const updates = new Map<string, string | null>([[firstDestination.id, ordered[0]!.id]]);
+    const otherDestination = leaves.find((leaf) => leaf.id !== firstDestination.id && leaf.tabId === null);
+    if (ordered.length > 1 && otherDestination) updates.set(otherDestination.id, ordered[1]!.id);
+    setLayout({
+      ...now.layout,
+      root: replaceLeafAssignments(now.layout.root, updates),
+      focusedPaneId: firstDestination.id,
+    });
+    goToPrimaryPane();
+    return;
+  }
+  if (id === now.active) return;
   set({ ...now, active: id, pane: 'main' });
   goToPrimaryPane();
 }
@@ -1174,6 +1628,7 @@ export function closeTab(id = current().active): void {
   const closed = [...now.closed, now.tabs[index]!.hash].slice(-MAX_CLOSED);
   if (id !== now.active) {
     set({ ...now, tabs, closed });
+    goToPrimaryPane();
     return;
   }
   const next = tabs[Math.min(index, tabs.length - 1)]!;
@@ -1203,7 +1658,7 @@ export function closeTabsToRight(id = current().active): void {
   const closed = [...now.closed, ...gone.map((tab) => tab.hash)].slice(-MAX_CLOSED);
   const stays = tabs.some((tab) => tab.id === now.active);
   set({ ...now, tabs, closed, active: stays ? now.active : id, pane: stays ? now.pane : 'main' });
-  if (!stays) goToPrimaryPane();
+  goToPrimaryPane();
 }
 
 export function reopenClosedTab(): void {

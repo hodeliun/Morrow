@@ -5,6 +5,8 @@ export const MIN_SPLIT_RATIO = 0.2;
 export const MAX_SPLIT_RATIO = 0.8;
 export const MAX_VISIBLE_PANES = 4;
 
+export type PanePreset = 'single' | 'two-columns' | 'one-left-two-right' | 'two-by-two';
+
 export interface PaneTabInstance<TTarget = unknown> {
   readonly id: string;
   readonly groupId: string;
@@ -88,7 +90,18 @@ function split(
   second: PaneNode,
   ratio: number,
 ): PaneSplit {
-  return { kind: 'split', id: splitId(layoutId, 'root'), axis, ratio, first, second };
+  return splitAt(layoutId, 'root', axis, first, second, ratio);
+}
+
+function splitAt(
+  layoutId: string,
+  branch: string,
+  axis: PaneSplit['axis'],
+  first: PaneNode,
+  second: PaneNode,
+  ratio = DEFAULT_SPLIT_RATIO,
+): PaneSplit {
+  return { kind: 'split', id: splitId(layoutId, branch), axis, ratio, first, second };
 }
 
 export function isSideInstanceIdFor(mainId: string, candidateId: string): boolean {
@@ -131,6 +144,87 @@ function walkLeaves(node: PaneNode): PaneLeaf[] {
 
 export function visiblePaneLeaves(layout: PaneLayout): readonly PaneLeaf[] {
   return walkLeaves(layout.root);
+}
+
+export function panePresetOf(layout: PaneLayout): PanePreset | null {
+  const root = layout.root;
+  if (root.kind === 'leaf') return 'single';
+  if (root.axis !== 'columns') return null;
+  if (root.first.kind === 'leaf' && root.second.kind === 'leaf') return 'two-columns';
+  if (
+    root.first.kind === 'leaf' &&
+    root.second.kind === 'split' &&
+    root.second.axis === 'rows' &&
+    root.second.first.kind === 'leaf' &&
+    root.second.second.kind === 'leaf'
+  )
+    return 'one-left-two-right';
+  if (
+    root.first.kind === 'split' &&
+    root.first.axis === 'rows' &&
+    root.first.first.kind === 'leaf' &&
+    root.first.second.kind === 'leaf' &&
+    root.second.kind === 'split' &&
+    root.second.axis === 'rows' &&
+    root.second.first.kind === 'leaf' &&
+    root.second.second.kind === 'leaf'
+  )
+    return 'two-by-two';
+  return null;
+}
+
+function presetRoot(layoutId: string, preset: PanePreset, tabIds: readonly string[]): PaneNode {
+  const panes = Array.from({ length: preset === 'single' ? 1 : preset === 'two-columns' ? 2 : preset === 'one-left-two-right' ? 3 : 4 }, (_, index) =>
+    leaf(layoutId, index + 1, tabIds[index] ?? null),
+  );
+  switch (preset) {
+    case 'single':
+      return panes[0]!;
+    case 'two-columns':
+      return splitAt(layoutId, 'root', 'columns', panes[0]!, panes[1]!);
+    case 'one-left-two-right':
+      return splitAt(
+        layoutId,
+        'root',
+        'columns',
+        panes[0]!,
+        splitAt(layoutId, 'right', 'rows', panes[1]!, panes[2]!),
+      );
+    case 'two-by-two':
+      return splitAt(
+        layoutId,
+        'root',
+        'columns',
+        splitAt(layoutId, 'left', 'rows', panes[0]!, panes[1]!),
+        splitAt(layoutId, 'right', 'rows', panes[2]!, panes[3]!),
+      );
+  }
+}
+
+export function applyPanePresetPreservingAssignments<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  preset: PanePreset,
+): PaneLayout<TTab> {
+  if (panePresetOf(layout) === preset) return layout;
+  const count = preset === 'single' ? 1 : preset === 'two-columns' ? 2 : preset === 'one-left-two-right' ? 3 : 4;
+  const oldLeaves = visiblePaneLeaves(layout);
+  const assignedIds = oldLeaves.flatMap((pane) => (pane.tabId ? [pane.tabId] : []));
+  const focusedId = oldLeaves.find((pane) => pane.id === layout.focusedPaneId)?.tabId ?? null;
+  let retained = assignedIds;
+  if (count === 1 && focusedId) retained = [focusedId, ...assignedIds.filter((id) => id !== focusedId)];
+  else if (count < assignedIds.length && focusedId && !assignedIds.slice(0, count).includes(focusedId)) {
+    retained = [assignedIds[0]!, focusedId, ...assignedIds.slice(1).filter((id) => id !== focusedId)];
+  }
+  const tabIds = retained.slice(0, count);
+  const root = presetRoot(layout.id, preset, tabIds);
+  const nextLeaves = walkLeaves(root);
+  const focusedPaneId = nextLeaves.find((pane) => pane.tabId === focusedId)?.id ?? nextLeaves[0]!.id;
+  return {
+    ...layout,
+    root,
+    focusedPaneId,
+    topologyRevision: layout.topologyRevision + 1,
+  };
 }
 
 export function validatePaneLayout(layout: PaneLayout): readonly PaneLayoutIssue[] {

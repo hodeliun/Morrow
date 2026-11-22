@@ -3,13 +3,27 @@ import { describe, expect, it } from 'vitest';
 import { act, createElement, Fragment, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { WorkspaceSession } from '../storage/session';
-import { cacheablePaneHostIds, paneHostChildren, paneHostInstances } from './App';
+import { cacheablePaneHostIds, paneGridPlacement, paneHostChildren, paneHostInstances } from './App';
 
 function session(): WorkspaceSession {
   return {} as WorkspaceSession;
 }
 
 describe('visible pane host cache', () => {
+  it('places each preset slot in the tree order supplied by the pane model', () => {
+    expect([0, 1, 2].map((index) => paneGridPlacement('one-left-two-right', index))).toEqual([
+      { gridColumn: '1', gridRow: '1 / span 2' },
+      { gridColumn: '2', gridRow: '1' },
+      { gridColumn: '2', gridRow: '2' },
+    ]);
+    expect([0, 1, 2, 3].map((index) => paneGridPlacement('two-by-two', index))).toEqual([
+      { gridColumn: '1', gridRow: '1' },
+      { gridColumn: '1', gridRow: '2' },
+      { gridColumn: '2', gridRow: '1' },
+      { gridColumn: '2', gridRow: '2' },
+    ]);
+  });
+
   it('mounts only the visible instances, retains them while registered, and prunes closed tabs', () => {
     const workspace = session();
     expect(paneHostInstances(workspace, ['main', 'side', 'background'], ['main', 'side'])).toEqual([

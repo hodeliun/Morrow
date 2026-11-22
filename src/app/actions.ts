@@ -182,7 +182,7 @@ export const ACTIONS: Action[] = [
     // the new side starts on the same page, with the search open to pick another one for it
     run: () => {
       openSide();
-      setUi({ palette: true, paletteForSide: true });
+      setUi({ palette: true, paletteForSide: true, palettePaneScope: null });
     },
   },
   {
@@ -333,7 +333,12 @@ export const ACTIONS: Action[] = [
     icon: Search,
     shortcut: 'Mod+K',
     keywords: 'find palette',
-    run: () => setUi({ palette: !getUi().palette }),
+    run: () =>
+      setUi({
+        palette: !getUi().palette,
+        paletteForSide: false,
+        palettePaneScope: null,
+      }),
   },
   {
     id: 'search.all',

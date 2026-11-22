@@ -49,15 +49,19 @@ import {
   activateTabAt,
   claimNavigation,
   goBack,
+  getTabs,
   PaneContext,
   PaneTabContext,
   paneAssignments,
   paneIdForTabId,
+  paneSlots,
   setActivePane,
   startTabs,
   useTabs,
 } from './tabs';
 import type { PaneId, PaneRole } from './tabs';
+import { panePresetOf } from './paneLayout';
+import type { PanePreset } from './paneLayout';
 import {
   clearPropertyHistory,
   getSession,
@@ -89,6 +93,24 @@ export function cacheablePaneHostIds(tabs: readonly { id: string; target: string
   return tabs.filter((tab) => parseRoute(tab.target).name === 'page').map((tab) => tab.id);
 }
 
+export function paneGridPlacement(
+  preset: PanePreset,
+  index: number,
+): Pick<React.CSSProperties, 'gridColumn' | 'gridRow'> | undefined {
+  if (preset === 'one-left-two-right') {
+    return index === 0
+      ? { gridColumn: '1', gridRow: '1 / span 2' }
+      : { gridColumn: '2', gridRow: String(index) };
+  }
+  if (preset === 'two-by-two') {
+    return {
+      gridColumn: String(Math.floor(index / 2) + 1),
+      gridRow: String((index % 2) + 1),
+    };
+  }
+  return undefined;
+}
+
 interface PaneHostElement {
   readonly tabId: string;
   readonly element: ReactElement;
@@ -99,10 +121,11 @@ export function paneHostChildren(
   visible: readonly PaneHostElement[],
   hidden: readonly PaneHostElement[],
   splitResizer: ReactElement,
+  includeSplitResizer = true,
 ): ReactElement[] {
   const children: ReactElement[] = [];
   visible.forEach((pane, index) => {
-    if (index === 1) {
+    if (includeSplitResizer && index === 1) {
       children.push(cloneElement(splitResizer, { key: `${sessionGeneration}:split-resizer` }));
     }
     children.push(cloneElement(pane.element, { key: `${sessionGeneration}:${pane.tabId}` }));
@@ -170,13 +193,14 @@ function useGlobalShortcuts() {
       }
       if (matchesShortcut(event, 'Mod+P')) {
         event.preventDefault();
-        setUi({ palette: !ui.palette });
+        setUi({ palette: !ui.palette, paletteForSide: false, palettePaneScope: null });
         return;
       }
       for (const action of allActions()) {
         if (action.shortcut && matchesShortcut(event, action.shortcut)) {
           event.preventDefault();
-          if (ui.palette && action.id !== 'search') setUi({ palette: false });
+          if (ui.palette && action.id !== 'search')
+            setUi({ palette: false, palettePaneScope: null });
           runAction(action.id);
           return;
         }
@@ -379,7 +403,7 @@ function usePaneSize(ref: React.RefObject<HTMLElement | null>): PaneSize {
 }
 
 // one side of the window's content, a split tab shows two of these
-function Pane({
+export function Pane({
   role,
   paneId,
   tabId,
@@ -390,8 +414,8 @@ function Pane({
 }: {
   role: PaneRole;
   paneId: PaneId;
-  tabId: string;
-  route: Route;
+  tabId: string | null;
+  route: Route | null;
   active: boolean;
   hidden?: boolean;
   style?: React.CSSProperties;
@@ -411,7 +435,9 @@ function Pane({
           ref={ref}
           className={`pane${active ? ' is-active' : ''}${hidden ? ' is-cached' : ''}`}
           data-pane={hidden ? undefined : role}
-          data-tab-instance={tabId}
+          data-pane-id={hidden ? undefined : paneId}
+          data-pane-index={role === 'main' ? '0' : role === 'side' ? '1' : role === 'third' ? '2' : '3'}
+          data-tab-instance={tabId ?? undefined}
           data-size={size}
           style={hidden ? { display: 'none' } : style}
           aria-hidden={hidden || undefined}
@@ -420,9 +446,32 @@ function Pane({
           onPointerDownCapture={() => !hidden && setActivePane(paneId)}
           onFocusCapture={() => !hidden && setActivePane(paneId)}
         >
-          <ErrorBoundary resetKey={routeHash(route)}>
-            <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
-          </ErrorBoundary>
+          {route ? (
+            <ErrorBoundary resetKey={routeHash(route)}>
+              <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
+            </ErrorBoundary>
+          ) : (
+            <div className="pane-empty">
+              <button
+                type="button"
+                className="button small"
+                onClick={() => {
+                  setActivePane(paneId);
+                  setUi({
+                    palette: true,
+                    paletteForSide: false,
+                    palettePaneScope: {
+                      paneId,
+                      sessionGeneration: getWorkspaceSessionGeneration(),
+                      topologyRevision: getTabs().layout.topologyRevision,
+                    },
+                  });
+                }}
+              >
+                {t('tabs.openInPane')}
+              </button>
+            </div>
+          )}
         </section>
       </PaneTabContext.Provider>
     </PaneContext.Provider>
@@ -602,6 +651,8 @@ export function App() {
   const sliding = useSidebarSlide(prefs.sidebarOpen);
 
   const visibleAssignments = paneAssignments(tabs.layout);
+  const visibleSlots = paneSlots(tabs.layout);
+  const layoutPreset: PanePreset = panePresetOf(tabs.layout) ?? 'single';
   const cacheableIds = cacheablePaneHostIds(tabs.layout.tabs);
   const cacheableSet = new Set(cacheableIds);
   const instances = paneHostInstances(
@@ -614,27 +665,40 @@ export function App() {
   );
   const assignmentByTabId = new Map(visibleAssignments.map((assignment) => [assignment.tabId, assignment]));
   const mountedIds = new Set(instances);
-  const panes = visibleAssignments.map((assignment) => {
-    const tab = tabs.layout.tabs.find((candidate) => candidate.id === assignment.tabId)!;
+  const panes = visibleSlots.map((slot, paneIndex) => {
+    const assignment = visibleAssignments.find((candidate) => candidate.paneId === slot.paneId);
+    const tab = assignment ? tabs.layout.tabs.find((candidate) => candidate.id === assignment.tabId)! : null;
     return {
-      ...assignment,
+      ...slot,
       tab,
-      route: parseRoute(tab.target),
-      active: tabs.layout.focusedPaneId === assignment.paneId,
+      route: tab ? parseRoute(tab.target) : null,
+      active: tabs.layout.focusedPaneId === slot.paneId,
+      paneIndex,
+      hostKey: tab?.id ?? `empty:${slot.paneId}`,
       style:
-        visibleAssignments.length === 2
-          ? { flexGrow: assignment.role === 'main' ? prefs.splitShare : 1 - prefs.splitShare }
-          : undefined,
+        layoutPreset === 'two-columns'
+          ? { flexGrow: paneIndex === 0 ? prefs.splitShare : 1 - prefs.splitShare }
+          : paneGridPlacement(layoutPreset, paneIndex),
     };
   });
   const hiddenInstances = tabs.layout.tabs.filter(
     (tab) => mountedIds.has(tab.id) && !assignmentByTabId.has(tab.id),
   );
-  const renderPane = (pane: (typeof panes)[number], hidden = false) => (
+  const renderPane = (
+    pane: {
+      role: PaneRole;
+      paneId: PaneId;
+      tabId: string | null;
+      route: Route | null;
+      active: boolean;
+      style?: React.CSSProperties;
+    },
+    hidden = false,
+  ) => (
     <Pane
       role={pane.role}
       paneId={pane.paneId}
-      tabId={pane.tab.id}
+      tabId={pane.tabId}
       route={pane.route}
       active={pane.active}
       style={pane.style}
@@ -643,13 +707,12 @@ export function App() {
   );
   const paneChildren = paneHostChildren(
     sessionGeneration,
-    panes.map((pane) => ({ tabId: pane.tab.id, element: renderPane(pane) })),
+    panes.map((pane) => ({ tabId: pane.hostKey, element: renderPane(pane) })),
     hiddenInstances.map((tab) => {
       const assignment = {
         role: 'main' as const,
         paneId: paneIdForTabId(tab.id),
         tabId: tab.id,
-        tab,
         route: parseRoute(tab.target),
         active: false,
         style: undefined,
@@ -657,6 +720,7 @@ export function App() {
       return { tabId: tab.id, element: renderPane(assignment, true) };
     }),
     <SplitResizer />,
+    layoutPreset === 'two-columns',
   );
 
   return (
@@ -674,14 +738,29 @@ export function App() {
       <div className="scrim" aria-hidden="true" onClick={() => setUi({ mobileSidebar: false })} />
       <main className="main">
         <TabBar />
-        <div className={`panes${panes.length === 2 ? ' is-split' : ''}`}>{paneChildren}</div>
+        <div
+          className={`panes${visibleSlots.length > 1 ? ' is-split' : ''}`}
+          data-layout={layoutPreset}
+        >
+          {paneChildren}
+        </div>
       </main>
       {prefs.assistant && prefs.assistantOpen && desktop?.assistant && (
         <Suspense fallback={null}>
           <AssistantPanel />
         </Suspense>
       )}
-      {ui.palette && <CommandPalette key={ui.paletteForSide ? 'side' : 'main'} />}
+      {ui.palette && (
+        <CommandPalette
+          key={
+            ui.paletteForSide
+              ? 'side'
+              : ui.palettePaneScope
+                ? `pane:${ui.palettePaneScope.sessionGeneration}:${ui.palettePaneScope.topologyRevision}:${ui.palettePaneScope.paneId}`
+                : 'main'
+          }
+        />
+      )}
       <Dialogs />
       <ZoomLevel />
     </div>
