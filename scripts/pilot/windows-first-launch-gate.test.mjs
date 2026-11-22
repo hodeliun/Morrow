@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -217,11 +218,11 @@ function driverProvenance() {
       sourceCatalogUrl: 'https://msedgedriver.microsoft.com/listing.json',
       downloadUrl: 'https://msedgedriver.microsoft.com/' + DRIVER_VERSION + '/edgedriver_win64.zip',
       responseUrl: 'https://msedgedriver.microsoft.com/' + DRIVER_VERSION + '/edgedriver_win64.zip',
-      catalogGeneratedAtUtc: '2026-11-21T23:00:00.000Z',
+      catalogGeneratedAtUtc: '2026-11-21T23:00:00.0000000Z',
       catalogSizeBytes: 1000,
       catalogItemCount: 10089,
       catalogSha256: '2'.repeat(64),
-      selectedLastModified: '2026-11-21T22:00:00.000Z',
+      selectedLastModified: '2026-11-21T22:00:00.0000000Z',
       expectedArchiveBytes: 11631106,
       archiveSizeBytes: 11631106,
       archiveSha256: '3'.repeat(64),
@@ -400,7 +401,7 @@ test('creates and validates the exact run binding with separate candidate and ga
   });
 });
 
-test('source inventory pins the exact eight G15 source paths without depending on future files', () => {
+test('source inventory pins the ordered G15 paths and the legacy Windows preflight source', () => {
   assert.deepEqual(WINDOWS_FIRST_LAUNCH_GATE.sourcePaths, [
     '.github/workflows/pilot-windows-first-launch-preflight.yml',
     'scripts/pilot/windows-first-launch-gate.mjs',
@@ -410,6 +411,7 @@ test('source inventory pins the exact eight G15 source paths without depending o
     'scripts/pilot/windows-first-launch-preflight.ps1',
     'scripts/pilot/windows-first-launch-preflight.test.ps1',
     'scripts/pilot/windows-first-launch-preflight.independent.test.ps1',
+    'scripts/pilot/windows-preflight.ps1',
   ]);
   const sourceInventory = sourceHashes();
   assert.doesNotThrow(() =>
@@ -430,6 +432,66 @@ test('source inventory pins the exact eight G15 source paths without depending o
         now: NOW,
       }),
     /incomplete/,
+  );
+});
+
+test('hashes the copied legacy preflight and rejects its absence or byte drift', async (t) => {
+  const legacyPath = 'scripts/pilot/windows-preflight.ps1';
+  const root = await mkdtemp(path.join(os.tmpdir(), 'morrow-first-launch-legacy-source-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const legacyBytes = await readFile(new URL('./windows-preflight.ps1', import.meta.url));
+
+  assert.equal(WINDOWS_FIRST_LAUNCH_GATE.sourcePaths.at(-1), legacyPath);
+  for (const filePath of WINDOWS_FIRST_LAUNCH_GATE.sourcePaths) {
+    const absolutePath = path.join(root, filePath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(
+      absolutePath,
+      filePath === legacyPath ? legacyBytes : 'fixture source for ' + filePath + '\n',
+    );
+  }
+
+  const copiedSourceHashes = await hashSourceFiles(root);
+  const copiedLegacyHash = copiedSourceHashes.find((entry) => entry.path === legacyPath);
+  assert.equal(copiedLegacyHash.sha256, sha256(legacyBytes));
+  assert.equal(copiedLegacyHash.sizeBytes, legacyBytes.byteLength);
+  const f = fixture();
+  const created = createBinding({
+    context: f.context,
+    sourceHashes: copiedSourceHashes,
+    stageBytes: f.stageBytes,
+    checkOnlyReceiptBytes: f.checkOnlyReceiptBytes,
+    now: NOW,
+  });
+  assert.doesNotThrow(() =>
+    validateBinding(created.binding, {
+      context: f.context,
+      sourceHashes: copiedSourceHashes,
+      stageBytes: f.stageBytes,
+      checkOnlyReceiptBytes: f.checkOnlyReceiptBytes,
+      now: NOW,
+    }),
+  );
+
+  const copiedLegacyPath = path.join(root, legacyPath);
+  await rm(copiedLegacyPath);
+  await assert.rejects(hashSourceFiles(root), {
+    name: 'FirstLaunchGateError',
+    code: 'ERR_FIRST_LAUNCH_GATE',
+  });
+
+  await writeFile(copiedLegacyPath, Buffer.concat([legacyBytes, Buffer.from('\n# mock drift\n', 'utf8')]));
+  const driftedSourceHashes = await hashSourceFiles(root);
+  const driftedLegacyHash = driftedSourceHashes.find((entry) => entry.path === legacyPath);
+  assert.notEqual(driftedLegacyHash.sha256, copiedLegacyHash.sha256);
+  assertGateFailure(() =>
+    validateBinding(created.binding, {
+      context: f.context,
+      sourceHashes: driftedSourceHashes,
+      stageBytes: f.stageBytes,
+      checkOnlyReceiptBytes: f.checkOnlyReceiptBytes,
+      now: NOW,
+    }),
   );
 });
 
@@ -479,6 +541,68 @@ test('hashes the imported Windows run-gate source and rejects its absence or dri
   const second = await hashSourceFiles(root);
   const secondHelperHash = second.find((entry) => entry.path === importedPath).sha256;
   assert.notEqual(secondHelperHash, firstHelperHash);
+});
+
+test('Node canonical serialization retains the pinned 19-entry inventory digest', () => {
+  const inventoryBytes = Buffer.from(JSON.stringify(PINNED_PACKAGE_INVENTORY), 'utf8');
+  assert.equal(PINNED_PACKAGE_INVENTORY.length, 19);
+  assert.equal(sha256(inventoryBytes), FIRST_LAUNCH_CANDIDATE.package.canonicalInventorySha256);
+  assert.equal(inventoryBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), false);
+  assert.equal(inventoryBytes.includes(0x0a), false);
+});
+
+test('PowerShell serialization matches Node when PowerShell is available', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'morrow-first-launch-inventory-interop-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const inputPath = path.join(root, 'inventory.json');
+  const outputPath = path.join(root, 'powershell-inventory.json');
+  const scriptPath = path.join(root, 'serialize-inventory.ps1');
+  const inventoryBytes = Buffer.from(JSON.stringify(PINNED_PACKAGE_INVENTORY), 'utf8');
+  const override = process.env.MORROW_TEST_PWSH;
+  const script = [
+    'param([Parameter(Mandatory = $true)][string] $InputPath, [Parameter(Mandatory = $true)][string] $OutputPath)',
+    "$ErrorActionPreference = 'Stop'",
+    '$raw = [IO.File]::ReadAllText($InputPath, [Text.Encoding]::UTF8)',
+    '$inventory = ConvertFrom-Json -InputObject $raw -AsHashtable',
+    '$serialized = ConvertTo-Json -InputObject $inventory -Depth 20 -Compress',
+    '$encoding = [Text.UTF8Encoding]::new($false)',
+    '[IO.File]::WriteAllBytes($OutputPath, $encoding.GetBytes($serialized))',
+    '',
+  ].join('\n');
+
+  if (override !== undefined && override.trim().length === 0) {
+    assert.fail('MORROW_TEST_PWSH must name a PowerShell executable when set.');
+  }
+  await Promise.all([writeFile(inputPath, inventoryBytes), writeFile(scriptPath, script, 'utf8')]);
+
+  const args = [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    ...(process.platform === 'win32' ? ['-ExecutionPolicy', 'Bypass'] : []),
+    '-File',
+    scriptPath,
+    inputPath,
+    outputPath,
+  ];
+  const result = spawnSync(override ?? 'pwsh', args, {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    timeout: 15_000,
+  });
+  if (result.error?.code === 'ENOENT' && process.platform !== 'win32' && override === undefined) {
+    t.skip('pwsh is unavailable on this non-Windows host; the Node digest test still ran.');
+    return;
+  }
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.stderr || 'PowerShell inventory serialization failed.');
+
+  const powershellBytes = await readFile(outputPath);
+  assert.deepEqual(powershellBytes, inventoryBytes);
+  assert.equal(powershellBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), false);
+  assert.equal(powershellBytes.includes(0x0a), false);
+  assert.equal(sha256(powershellBytes), FIRST_LAUNCH_CANDIDATE.package.canonicalInventorySha256);
 });
 
 test('requires normalized local Windows runner paths and rejects aliases and alternate streams', () => {
@@ -691,6 +815,41 @@ test('rejects a WebView2 observation later than the Stage timestamp', () => {
       }),
     /postdates/,
   );
+});
+
+test('preserves seven fractional UTC digits and rejects noncanonical or impossible Edge catalog dates', () => {
+  const drivers = driverProvenance();
+  drivers.edgeDriver.catalogGeneratedAtUtc = '2026-11-21T23:00:00.1234567Z';
+  drivers.edgeDriver.selectedLastModified = '2024-02-29T22:00:00.7654321Z';
+  const f = makeBinding(fixture(contextFor(), { stageOverrides: { drivers } }));
+  assert.equal(
+    f.created.binding.stage.drivers.edgeDriver.catalogGeneratedAtUtc,
+    '2026-11-21T23:00:00.1234567Z',
+  );
+  assert.equal(
+    f.created.binding.stage.drivers.edgeDriver.selectedLastModified,
+    '2024-02-29T22:00:00.7654321Z',
+  );
+
+  for (const [field, value] of [
+    ['catalogGeneratedAtUtc', '2026-11-21T23:00:00.000Z'],
+    ['catalogGeneratedAtUtc', '2026-11-21T23:00:00.123456Z'],
+    ['catalogGeneratedAtUtc', '2026-11-21T23:00:00.12345678Z'],
+    ['catalogGeneratedAtUtc', '2026-11-21T23:00:00.1234567+00:00'],
+    ['catalogGeneratedAtUtc', '2025-02-29T23:00:00.1234567Z'],
+    ['selectedLastModified', '2026-11-21T22:00:00.000Z'],
+    ['selectedLastModified', '2026-11-21T22:00:00.123456Z'],
+    ['selectedLastModified', '2026-11-21T22:00:00.12345678Z'],
+    ['selectedLastModified', '2026-11-21T22:00:00.1234567+00:00'],
+    ['selectedLastModified', '2026-11-21T24:00:00.1234567Z'],
+  ]) {
+    const alteredDrivers = driverProvenance();
+    alteredDrivers.edgeDriver[field] = value;
+    assertGateFailure(
+      () => makeBinding(fixture(contextFor(), { stageOverrides: { drivers: alteredDrivers } })),
+      /canonical UTC timestamp with seven fractional digits/,
+    );
+  }
 });
 
 test('keeps selected Tauri and Edge driver provenance separate and rejects drift', () => {

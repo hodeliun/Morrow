@@ -21,6 +21,7 @@ const SID = /^S-1-\d+(?:-\d+)+$/;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const PINNED_PACKAGE_INVENTORY_SHA256 = 'd8d4e6cb1a419cc342f9f63f43c5931cc1d3feb6041a4a1f7d104167104b9baf';
 const TEST_FILESYSTEM_BACKING = Symbol('first-launch-test-filesystem-backing');
+const PRECISE_UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{7})Z$/;
 const WEBVIEW2_GUID = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
 const WEBVIEW2_REGISTRY_PATHS = new Set([
   'HKLM64\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\' + WEBVIEW2_GUID,
@@ -100,6 +101,7 @@ const sourcePaths = [
   'scripts/pilot/windows-first-launch-preflight.ps1',
   'scripts/pilot/windows-first-launch-preflight.test.ps1',
   'scripts/pilot/windows-first-launch-preflight.independent.test.ps1',
+  'scripts/pilot/windows-preflight.ps1',
 ];
 
 export const WINDOWS_FIRST_LAUNCH_GATE = deepFreeze({
@@ -342,6 +344,37 @@ function utcTimestamp(value, label) {
     fail(label + ' must be a canonical UTC timestamp.');
   }
   return milliseconds;
+}
+
+function preciseUtcTimestamp(value, label) {
+  const timestamp = requiredString(value, label);
+  const match = PRECISE_UTC_TIMESTAMP.exec(timestamp);
+  if (!match) fail(label + ' must be a canonical UTC timestamp with seven fractional digits.');
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  if (
+    year === 0 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth[month - 1] ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    fail(label + ' must be a valid canonical UTC timestamp with seven fractional digits.');
+  }
+
+  return timestamp;
 }
 
 function nowMilliseconds(value) {
@@ -692,11 +725,11 @@ function validateEdgeDriver(driver, runtimeVersion) {
   if (driver.downloadUrl !== expectedDownload || driver.responseUrl !== expectedDownload) {
     fail('EdgeDriver download provenance does not match its selected version.');
   }
-  utcTimestamp(driver.catalogGeneratedAtUtc, 'EdgeDriver catalog generation time');
+  preciseUtcTimestamp(driver.catalogGeneratedAtUtc, 'EdgeDriver catalog generation time');
   positiveInteger(driver.catalogSizeBytes, 'EdgeDriver catalog size');
   positiveInteger(driver.catalogItemCount, 'EdgeDriver catalog item count');
   requiredSha256(driver.catalogSha256, 'EdgeDriver catalog SHA-256');
-  utcTimestamp(driver.selectedLastModified, 'EdgeDriver selected item modification time');
+  preciseUtcTimestamp(driver.selectedLastModified, 'EdgeDriver selected item modification time');
   positiveInteger(driver.expectedArchiveBytes, 'EdgeDriver expected archive size');
   positiveInteger(driver.archiveSizeBytes, 'EdgeDriver archive size');
   if (driver.archiveSizeBytes !== driver.expectedArchiveBytes) {

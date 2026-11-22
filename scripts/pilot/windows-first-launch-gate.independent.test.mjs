@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -27,6 +28,7 @@ const SOURCE_PATHS = [
   'scripts/pilot/windows-first-launch-preflight.ps1',
   'scripts/pilot/windows-first-launch-preflight.test.ps1',
   'scripts/pilot/windows-first-launch-preflight.independent.test.ps1',
+  'scripts/pilot/windows-preflight.ps1',
 ];
 
 const PURPOSE = 'first-windows-launch';
@@ -72,7 +74,7 @@ const CANDIDATE_PILOT_ID = 'app.morrow.polaris-dados-pilot';
 const CANDIDATE_SOURCE_AUDIT_SHA = '77f85cf358e799fef123ab4218e29acf30320711f8edaa12251885880002dcc8';
 const CANDIDATE_CANONICAL_INVENTORY_SHA = 'd8d4e6cb1a419cc342f9f63f43c5931cc1d3feb6041a4a1f7d104167104b9baf';
 const FIXED_NOW = Date.parse('2026-11-22T12:00:00.000Z');
-const RUNNER_TEMP = 'C:\\a\\_temp\\morrow-issue-248-44970000001-1';
+const RUNNER_TEMP = 'C:\\a\\_temp\\morrow-issue-251-44970000001-1';
 const WORKSPACE = 'C:\\a\\Morrow\\Morrow';
 
 let sourceWorkspace;
@@ -227,11 +229,11 @@ function makeDrivers() {
       sourceCatalogUrl: 'https://msedgedriver.microsoft.com/listing.json',
       downloadUrl: `https://msedgedriver.microsoft.com/${edgeVersion}/edgedriver_win64.zip`,
       responseUrl: `https://msedgedriver.microsoft.com/${edgeVersion}/edgedriver_win64.zip`,
-      catalogGeneratedAtUtc: '2026-11-22T11:58:00.000Z',
+      catalogGeneratedAtUtc: '2026-11-22T11:58:00.1234567Z',
       catalogSizeBytes: 1_048_576,
       catalogItemCount: 4_096,
       catalogSha256: sha256('independent-fixture:edge-catalog'),
-      selectedLastModified: '2026-11-22T11:57:00.000Z',
+      selectedLastModified: '2026-11-22T11:57:00.7654321Z',
       expectedArchiveBytes: 123_456,
       archiveSizeBytes: 123_456,
       archiveSha256: sha256('independent-fixture:edge-archive'),
@@ -365,7 +367,7 @@ function createBindingFixture({
 }
 
 async function createSourceWorkspace() {
-  const workspace = await mkdtemp(path.join(os.tmpdir(), 'morrow-g15-248-independent-'));
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'morrow-g15-251-independent-'));
   for (const sourcePath of SOURCE_PATHS) {
     const absolute = path.join(workspace, sourcePath);
     await mkdir(path.dirname(absolute), { recursive: true });
@@ -413,12 +415,54 @@ test('public configuration freezes the separate gate and candidate identities', 
   assert.equal(GATE.workflowRef, WORKFLOW_REF);
   assert.equal(GATE.lifetimeMs, 7_200_000);
   assert.deepEqual(GATE.sourcePaths, SOURCE_PATHS);
+  assert.equal(SOURCE_PATHS.at(-1), 'scripts/pilot/windows-preflight.ps1');
+  assert.equal(SOURCE_PATHS.filter((sourcePath) => sourcePath === 'scripts/pilot/windows-preflight.ps1').length, 1);
   assert.equal(SOURCE_PATHS.filter((sourcePath) => sourcePath === 'scripts/pilot/windows-run-gate.mjs').length, 1);
   assert.equal(sha256(JSON.stringify(PINNED_PACKAGE_INVENTORY)), CANDIDATE_CANONICAL_INVENTORY_SHA);
   assert.deepEqual(FIRST_LAUNCH_CANDIDATE, EXPECTED_CANDIDATE);
   assert.notEqual(FIRST_LAUNCH_CANDIDATE.candidateBuildRunId, GATE_RUN_ID);
   assert.equal(FIRST_LAUNCH_CANDIDATE.candidateBuildRunId, CANDIDATE_BUILD_RUN_ID);
   assert.equal(FIRST_LAUNCH_CANDIDATE.artifact.id, CANDIDATE_ARTIFACT_ID);
+});
+
+test('PowerShell and Node serialize the pinned inventory to the same UTF-8 bytes and digest', async () => {
+  const nodeBytes = Buffer.from(JSON.stringify(PINNED_PACKAGE_INVENTORY), 'utf8');
+  assert.equal(sha256(nodeBytes), CANDIDATE_CANONICAL_INVENTORY_SHA);
+
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'morrow-g15-251-serializer-'));
+  const inventoryPath = path.join(scratch, 'inventory.json');
+  const scriptPath = path.join(scratch, 'serialize-inventory.ps1');
+  const powershellScript = String.raw`param([Parameter(Mandatory = $true)][string] $InventoryPath)
+$ErrorActionPreference = 'Stop'
+$utf8 = [Text.UTF8Encoding]::new($false, $true)
+$source = [IO.File]::ReadAllText($InventoryPath, $utf8)
+$items = @(ConvertFrom-Json -InputObject $source -AsHashtable)
+$orderedInventory = @(
+  foreach ($item in $items) {
+    [ordered]@{
+      path = [string]$item.path
+      sizeBytes = [long]$item.sizeBytes
+      sha256 = [string]$item.sha256
+    }
+  }
+)
+$json = ConvertTo-Json -InputObject $orderedInventory -Depth 3 -Compress
+[Console]::OpenStandardOutput().Write($utf8.GetBytes($json))
+`;
+  try {
+    await writeFile(inventoryPath, nodeBytes);
+    await writeFile(scriptPath, powershellScript, 'utf8');
+    const executable = process.env.MORROW_POWERSHELL_EXE || (process.platform === 'win32' ? 'pwsh.exe' : 'pwsh');
+    const result = spawnSync(executable, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptPath, inventoryPath,
+    ], { timeout: 15_000, maxBuffer: 1024 * 1024 });
+    assert.equal(result.error, undefined, `PowerShell serializer could not start: ${result.error?.code ?? result.error?.message}`);
+    assert.equal(result.status, 0, `PowerShell serializer failed: ${result.stderr?.toString('utf8') ?? ''}`);
+    assert.deepEqual(result.stdout, nodeBytes, 'PowerShell must preserve the canonical entry/key order and exact UTF-8 JSON bytes');
+    assert.equal(sha256(result.stdout), CANDIDATE_CANONICAL_INVENTORY_SHA);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test('safe context accepts only the exact gate repository, branch, workflow and first attempt', () => {
@@ -457,7 +501,7 @@ test('source hashing covers the ordered gate source inventory and reacts to byte
   const beforeHashes = await gate.hashSourceFiles(sourceWorkspace);
   const driftWorkspace = await createSourceWorkspace();
   try {
-    const target = path.join(driftWorkspace, SOURCE_PATHS[0]);
+    const target = path.join(driftWorkspace, 'scripts/pilot/windows-preflight.ps1');
     await writeFile(target, 'changed independent source bytes', 'utf8');
     const driftHashes = await gate.hashSourceFiles(driftWorkspace);
     assert.notDeepEqual(driftHashes, beforeHashes);
@@ -467,7 +511,7 @@ test('source hashing covers the ordered gate source inventory and reacts to byte
 
   const missingWorkspace = await createSourceWorkspace();
   try {
-    await rm(path.join(missingWorkspace, 'scripts/pilot/windows-run-gate.mjs'));
+    await rm(path.join(missingWorkspace, 'scripts/pilot/windows-preflight.ps1'));
     await assert.rejects(gate.hashSourceFiles(missingWorkspace), (error) => {
       assert.equal(error?.name, 'FirstLaunchGateError');
       assert.equal(error?.code, 'ERR_FIRST_LAUNCH_GATE');
@@ -475,6 +519,60 @@ test('source hashing covers the ordered gate source inventory and reacts to byte
     });
   } finally {
     await rm(missingWorkspace, { recursive: true, force: true });
+  }
+
+});
+
+test('requires exact seven-digit UTC vendor timestamps and binds their source bytes without millisecond truncation', () => {
+  const fixture = createBindingFixture();
+  assert.equal(fixture.stage.drivers.edgeDriver.catalogGeneratedAtUtc, '2026-11-22T11:58:00.1234567Z');
+  assert.equal(fixture.stage.drivers.edgeDriver.selectedLastModified, '2026-11-22T11:57:00.7654321Z');
+  assert.equal(fixture.binding.stage.sha256, sha256(fixture.stageBytes));
+  const parsedStage = JSON.parse(fixture.stageBytes.toString('utf8'));
+  assert.equal(parsedStage.drivers.edgeDriver.catalogGeneratedAtUtc, '2026-11-22T11:58:00.1234567Z');
+  assert.equal(parsedStage.drivers.edgeDriver.selectedLastModified, '2026-11-22T11:57:00.7654321Z');
+  assert.match(fixture.binding.createdAtUtc, /^2026-11-22T12:00:00\.000Z$/);
+  assert.match(fixture.binding.expiresAtUtc, /^2026-11-22T14:00:00\.000Z$/);
+
+  const lastDigitMutant = createBindingFixture({
+    stageMutator: (stage) => {
+      stage.drivers.edgeDriver.catalogGeneratedAtUtc = '2026-11-22T11:58:00.1234568Z';
+      return stage;
+    },
+  });
+  assert.equal(lastDigitMutant.binding.stage.sha256, sha256(lastDigitMutant.stageBytes));
+  assert.notEqual(lastDigitMutant.binding.stage.sha256, fixture.binding.stage.sha256);
+  const selectedTimeLastDigitMutant = createBindingFixture({
+    stageMutator: (stage) => {
+      stage.drivers.edgeDriver.selectedLastModified = '2026-11-22T11:57:00.7654322Z';
+      return stage;
+    },
+  });
+  assert.equal(selectedTimeLastDigitMutant.binding.stage.sha256, sha256(selectedTimeLastDigitMutant.stageBytes));
+  assert.notEqual(selectedTimeLastDigitMutant.binding.stage.sha256, fixture.binding.stage.sha256);
+
+  const invalidTimestamps = [
+    ['catalogGeneratedAtUtc', '2026-11-22T11:58:00.123456Z'],
+    ['catalogGeneratedAtUtc', '2026-11-22T11:58:00.12345678Z'],
+    ['catalogGeneratedAtUtc', '2026-11-22T11:58:00.1234567+00:00'],
+    ['catalogGeneratedAtUtc', '2026-02-30T11:58:00.1234567Z'],
+    ['selectedLastModified', '2026-11-22T11:57:00.765432Z'],
+    ['selectedLastModified', '2026-11-22T11:57:00.76543210Z'],
+    ['selectedLastModified', '2026-11-22T11:57:00.7654321-00:00'],
+    ['selectedLastModified', '2026-11-22T11:57:00.7654321Z '],
+  ];
+  for (const [field, value] of invalidTimestamps) {
+    const altered = makeBytes((stage) => {
+      stage.drivers.edgeDriver[field] = value;
+      return stage;
+    });
+    expectGateError(() => gate.createBinding({
+      context: fixture.context,
+      sourceHashes: fixture.sourceHashes,
+      stageBytes: altered.stageBytes,
+      checkOnlyReceiptBytes: altered.checkOnlyReceiptBytes,
+      now: FIXED_NOW,
+    }));
   }
 });
 
@@ -779,7 +877,7 @@ test('rejects source-hash drift after the binding was created', async () => {
   const fixture = createBindingFixture();
   const driftWorkspace = await createSourceWorkspace();
   try {
-    await writeFile(path.join(driftWorkspace, SOURCE_PATHS[1]), 'gate implementation drift', 'utf8');
+    await writeFile(path.join(driftWorkspace, 'scripts/pilot/windows-preflight.ps1'), 'legacy source drift', 'utf8');
     const changedSourceHashes = await gate.hashSourceFiles(driftWorkspace);
     expectGateError(() => gate.validateBinding(fixture.binding, {
       context: fixture.context,
@@ -791,6 +889,12 @@ test('rejects source-hash drift after the binding was created', async () => {
   } finally {
     await rm(driftWorkspace, { recursive: true, force: true });
   }
+});
+
+test('binding rejects a duplicated legacy source hash entry', () => {
+  const duplicateSourceHashes = sourceHashes.map((entry) => ({ ...entry }));
+  duplicateSourceHashes.at(-1).path = duplicateSourceHashes.at(-2).path;
+  expectGateError(() => createBindingFixture({ sourceHashesOverride: duplicateSourceHashes }));
 });
 
 test('Actions artifact metadata must be for the candidate build, not the new gate run', () => {
