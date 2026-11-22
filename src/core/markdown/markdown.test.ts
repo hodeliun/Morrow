@@ -779,9 +779,71 @@ describe('colours', () => {
     expect(doc.content!.some((node) => node.attrs?.backgroundColor)).toBe(false);
   });
 
-  it('snaps other colours to the nearest one in the palette', () => {
+  it('preserves exact six-digit colours and maps legacy short hex to the nearest palette colour', () => {
     const doc = markdownToDoc('<span style="color: #ff0000">alarm</span>');
-    expect(doc.content![0]!.content![0]!.marks).toEqual([{ type: 'textColor', attrs: { color: 'red' } }]);
+    expect(doc.content![0]!.content![0]!.marks).toEqual([{ type: 'textColor', attrs: { color: '#ff0000' } }]);
+
+    const legacyShortHex = markdownToDoc('<span style="color: #f00">alarm</span>');
+    expect(legacyShortHex.content![0]!.content![0]!.marks).toEqual([
+      { type: 'textColor', attrs: { color: 'red' } },
+    ]);
+  });
+
+  it('preserves exact inline hex values, overlap, and marks inside headings', () => {
+    const source = [
+      '## <mark style="background: #ABCDEF"><span style="color: #12AB34">Both</span></mark> <span style="color: red">Preset</span>',
+      '',
+      '<mark style="background-color: #F00">Legacy highlight</mark>',
+    ].join('\n');
+    const doc = markdownToDoc(source);
+    const out = docToMarkdown(doc);
+
+    expect(out).toBe(
+      '## <mark style="background: #abcdef"><span style="color: #12ab34">Both</span></mark> <span style="color: #d44c47">Preset</span>\n\n<mark style="background: #fbecdd">Legacy highlight</mark>\n',
+    );
+    expect(markdownToDoc(out)).toEqual(doc);
+    expect(doc.content![0]!.content![0]!.marks).toEqual([
+      { type: 'highlight', attrs: { color: '#abcdef' } },
+      { type: 'textColor', attrs: { color: '#12ab34' } },
+    ]);
+  });
+
+  it.each([
+    '<span style="color: #1234">bad length</span>',
+    '<span style="color: #12345">bad length</span>',
+    '<mark style="background: #1234567">bad length</mark>',
+    '<span style="color: #123456; background: url(javascript:alert(1))">extra CSS</span>',
+    '<mark style="color: #123456">wrong property</mark>',
+    '<span style="background: #123456">wrong property</span>',
+    '<mark style="background: rgb(1, 2, 3)">non-hex CSS</mark>',
+  ])('does not turn unsupported inline color shape into CSS: %s', (source) => {
+    const doc = markdownToDoc(source);
+    const text = doc.content!.flatMap((block) => block.content ?? []);
+    expect(
+      text.every(
+        (node) => !(node.marks ?? []).some((mark) => ['textColor', 'highlight'].includes(mark.type)),
+      ),
+    ).toBe(true);
+    const saved = docToMarkdown(doc);
+    expect(saved).toContain('\\<');
+    expect(saved).not.toMatch(/(?<!\\)<(?:span|mark)\s+style=/);
+  });
+
+  it('does not serialize an invalid color attribute as CSS', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        p({
+          type: 'text',
+          text: 'unsafe',
+          marks: [
+            { type: 'textColor', attrs: { color: '#1234' } },
+            { type: 'highlight', attrs: { color: 'red; background: url(javascript:alert(1))' } },
+          ],
+        }),
+      ],
+    };
+    expect(docToMarkdown(doc)).toBe('unsafe\n');
   });
 });
 

@@ -98,6 +98,118 @@ describe('the editor', () => {
     expect(json(target).content!.map((node) => node.type)).toEqual(['paragraph', 'horizontalRule']);
   });
 
+  it('renders inline custom colors as validated CSS while keeping palette marks unchanged', () => {
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [
+            {
+              type: 'text',
+              text: 'Both',
+              marks: [
+                { type: 'highlight', attrs: { color: '#abcdef' } },
+                { type: 'textColor', attrs: { color: '#12ab34' } },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'text',
+              text: 'Preset',
+              marks: [
+                { type: 'highlight', attrs: { color: 'blue' } },
+                { type: 'textColor', attrs: { color: 'red' } },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'text',
+              text: 'Invalid',
+              marks: [{ type: 'textColor', attrs: { color: '#1234' } }],
+            },
+          ],
+        },
+      ],
+    });
+
+    const customHeading = target.view.dom.querySelector('h2 mark[style] span[style]');
+    expect(customHeading?.getAttribute('style')).toBe('color: #12ab34;');
+    expect(customHeading?.parentElement?.getAttribute('style')).toBe('background-color: #abcdef;');
+    expect(customHeading?.getAttribute('data-color')).toBe('#12ab34');
+    expect(customHeading?.parentElement?.getAttribute('data-color')).toBe('#abcdef');
+
+    const preset = target.view.dom.querySelector('.text-red');
+    expect(preset?.getAttribute('data-color')).toBe('red');
+    expect(preset?.getAttribute('style')).toBeNull();
+    expect(preset?.parentElement?.getAttribute('data-color')).toBe('blue');
+    expect(preset?.parentElement?.classList.contains('bg-blue')).toBe(true);
+
+    const invalid = target.view.dom.querySelector('p:last-child span');
+    expect(invalid?.getAttribute('style')).toBeNull();
+    expect(invalid?.getAttribute('data-color')).toBeNull();
+  });
+
+  it('parses only supported inline color shapes from HTML', () => {
+    const target = make(
+      '<p><span data-color="#12AB34" style="color: #12ab34">custom</span> <mark data-color="#ABCDEF" style="background-color: #abcdef">marker</mark> <span style="color: #fedcba">standalone</span> <span style="color: red">preset</span></p>' as never,
+    );
+    const content = json(target).content![0]!.content!;
+    const text = (value: string) => content.find((node) => node.text === value);
+    expect(text('custom')?.marks).toEqual([{ type: 'textColor', attrs: { color: '#12ab34' } }]);
+    expect(text('marker')?.marks).toEqual([{ type: 'highlight', attrs: { color: '#abcdef' } }]);
+    expect(text('standalone')?.marks).toEqual([{ type: 'textColor', attrs: { color: '#fedcba' } }]);
+    expect(text('preset')?.marks).toEqual([{ type: 'textColor', attrs: { color: 'red' } }]);
+
+    const pasted = make({ type: 'doc', content: [p('')] });
+    pasted.commands.setTextSelection(1);
+    expect(
+      pasted.commands.insertContent(
+        '<span data-color="#123456" style="color: #123456">pasted text</span><mark data-color="#abcdef" style="background-color: #abcdef">pasted highlight</mark>',
+      ),
+    ).toBe(true);
+    const pastedNodes = json(pasted).content![0]!.content!;
+    expect(pastedNodes.find((node) => node.text === 'pasted text')?.marks).toEqual([
+      { type: 'textColor', attrs: { color: '#123456' } },
+    ]);
+    expect(pastedNodes.find((node) => node.text === 'pasted highlight')?.marks).toEqual([
+      { type: 'highlight', attrs: { color: '#abcdef' } },
+    ]);
+
+    const cssomPaste = make({ type: 'doc', content: [p('')] });
+    cssomPaste.commands.setTextSelection(1);
+    expect(
+      cssomPaste.commands.insertContent(
+        '<span data-color="#12ab34" style="color: rgb(18, 171, 52);">CSSOM text</span><mark data-color="#abcdef" style="background-color: rgb(171, 205, 239);">CSSOM highlight</mark>',
+      ),
+    ).toBe(true);
+    const cssomNodes = json(cssomPaste).content![0]!.content!;
+    expect(cssomNodes.find((node) => node.text === 'CSSOM text')?.marks).toEqual([
+      { type: 'textColor', attrs: { color: '#12ab34' } },
+    ]);
+    expect(cssomNodes.find((node) => node.text === 'CSSOM highlight')?.marks).toEqual([
+      { type: 'highlight', attrs: { color: '#abcdef' } },
+    ]);
+
+    const unsafe = make(
+      '<p><span style="color: #123456; background: url(javascript:alert(1))">extra CSS</span><mark style="background: #1234">malformed</mark><span data-color="#123456" style="color: #123457">mismatch</span><span data-color="#123456" style="color: rgb(18, 52, 87)">rgb mismatch</span><span data-color="#123456" style="color: rgb(18, 52, 256)">rgb out of range</span><span data-color="#123456" style="color: rgba(18, 52, 86, 1)">rgb alpha</span><span data-color="#123456" style="color: rgb(18, 52, 86); opacity: 0.5">rgb extra CSS</span><span data-color="#123456" style="background-color: #123456">wrong property</span><mark data-color="#abcdef" style="background-color: #abcdef; color: red">multi</mark><mark data-color="red" style="background-color: #abcdef">palette pair</mark><span data-color="#abcdef">unpaired custom</span></p>' as never,
+    );
+    expect(
+      json(unsafe)
+        .content![0]!.content!.flatMap((node) => node.marks ?? [])
+        .some((mark) => mark.type === 'textColor' || mark.type === 'highlight'),
+    ).toBe(false);
+  });
+
   it('changes the case of words in a table cell', () => {
     const cell = (type: string, text: string) => ({ type, content: [p(text)] });
     const target = make({

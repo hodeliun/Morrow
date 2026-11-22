@@ -19,8 +19,16 @@ import type { Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import type { EditorView } from '@tiptap/pm/view';
 import { common, createLowlight } from 'lowlight';
-import { CALLOUT_TONES, calloutTone, COLORS } from '../../core/model';
-import type { CalloutTone, ColorName } from '../../core/model';
+import {
+  BACKGROUND_HEX,
+  CALLOUT_TONES,
+  calloutTone,
+  inlineColorHex,
+  normalizeInlineColor,
+  parseInlineColor,
+  TEXT_HEX,
+} from '../../core/model';
+import type { CalloutTone, ColorName, InlineColor } from '../../core/model';
 import { tagClass } from '../../core/tags';
 import { emojiElement } from '../components/Emoji';
 import { getPreferences, setPreferences } from '../platform/preferences';
@@ -42,17 +50,66 @@ declare module '@tiptap/core' {
   }
 }
 
+type ParsedColorElement = { valid: true; color: InlineColor | null } | { valid: false; color: null };
+
+function colorFromElement(element: HTMLElement, prefix: 'text' | 'bg'): ParsedColorElement {
+  const palette = prefix === 'text' ? TEXT_HEX : BACKGROUND_HEX;
+  const dataColor = element.getAttribute('data-color');
+  if (dataColor !== null) {
+    const color = normalizeInlineColor(dataColor);
+    if (!color) return { valid: false, color: null };
+
+    const style = element.getAttribute('style');
+    if (!color.startsWith('#'))
+      return style === null ? { valid: true, color } : { valid: false, color: null };
+    if (style === null) return { valid: false, color: null };
+
+    const property = prefix === 'text' ? 'color' : 'background-color';
+    const match = new RegExp(`^${property}\\s*:\\s*(#[0-9a-f]{6})\\s*;?$`, 'i').exec(style.trim());
+    const rgbMatch = new RegExp(
+      `^${property}\\s*:\\s*rgb\\((0|[1-9]\\d{0,2}), (0|[1-9]\\d{0,2}), (0|[1-9]\\d{0,2})\\)\\s*;?$`,
+    ).exec(style.trim());
+    const channels = rgbMatch?.slice(1).map(Number);
+    const rgbColor =
+      channels?.length === 3 && channels.every((channel) => channel <= 255)
+        ? `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
+        : null;
+    const pairedColor = match ? normalizeInlineColor(match[1]) : rgbColor;
+    return pairedColor === color ? { valid: true, color } : { valid: false, color: null };
+  }
+
+  const style = element.getAttribute('style');
+  if (style === null) return prefix === 'bg' ? { valid: true, color: null } : { valid: false, color: null };
+  const match = /^(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3}|#[0-9a-f]{6}|[a-z]+)\s*;?$/i.exec(
+    style.trim(),
+  );
+  if (!match) return { valid: false, color: null };
+  const property = match[1]!.toLowerCase();
+  if ((prefix === 'text' && property !== 'color') || (prefix === 'bg' && property === 'color'))
+    return { valid: false, color: null };
+  const color = parseInlineColor(match[2]!, palette);
+  return color ? { valid: true, color } : { valid: false, color: null };
+}
+
 const colorAttribute = (prefix: 'text' | 'bg') => ({
   color: {
     default: null,
-    parseHTML: (element: HTMLElement) => {
-      const value = element.getAttribute('data-color');
-      return COLORS.includes(value as ColorName) ? value : null;
+    parseHTML: (element: HTMLElement) => colorFromElement(element, prefix).color,
+    renderHTML: (attributes: Record<string, unknown>) => {
+      const palette = prefix === 'text' ? TEXT_HEX : BACKGROUND_HEX;
+      const color = normalizeInlineColor(attributes.color);
+      if (!color) return {};
+      if (color.startsWith('#')) {
+        const hex = inlineColorHex(color, palette);
+        return hex
+          ? {
+              'data-color': color,
+              style: `${prefix === 'text' ? 'color' : 'background-color'}: ${hex}`,
+            }
+          : {};
+      }
+      return { 'data-color': color, class: `${prefix}-${color}` };
     },
-    renderHTML: (attributes: Record<string, unknown>) =>
-      attributes.color
-        ? { 'data-color': attributes.color, class: `${prefix}-${String(attributes.color)}` }
-        : {},
   },
 });
 
@@ -63,7 +120,12 @@ export const Highlight = Mark.create({
     return colorAttribute('bg');
   },
   parseHTML() {
-    return [{ tag: 'mark' }];
+    return [
+      {
+        tag: 'mark',
+        getAttrs: (element) => (colorFromElement(element as HTMLElement, 'bg').valid ? null : false),
+      },
+    ];
   },
   renderHTML({ HTMLAttributes }) {
     return ['mark', mergeAttributes(HTMLAttributes), 0];
@@ -110,7 +172,12 @@ export const TextColor = Mark.create({
     return colorAttribute('text');
   },
   parseHTML() {
-    return [{ tag: 'span[data-color]' }];
+    return [
+      {
+        tag: 'span',
+        getAttrs: (element) => (colorFromElement(element as HTMLElement, 'text').valid ? null : false),
+      },
+    ];
   },
   renderHTML({ HTMLAttributes }) {
     return ['span', mergeAttributes(HTMLAttributes), 0];

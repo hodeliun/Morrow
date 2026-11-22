@@ -1,4 +1,4 @@
-import { BACKGROUND_HEX, COLORS, TEXT_HEX } from '../model';
+import { BACKGROUND_HEX, COLORS, inlineColorHex, normalizeInlineColor, TEXT_HEX } from '../model';
 import type { ColorName, DocMark, DocNode, PageId } from '../model';
 import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
 import { scanMarkdownDestination } from './markdownLinkDestination';
@@ -16,7 +16,7 @@ export interface SerializeOptions {
 
 const MARK_ORDER = ['link', 'bold', 'italic', 'strike', 'underline', 'highlight', 'textColor'];
 const hexOf = (palette: Record<ColorName, string>, mark: DocMark) =>
-  typeof mark.attrs?.color === 'string' ? (palette[mark.attrs.color as ColorName] ?? null) : null;
+  inlineColorHex(mark.attrs?.color, palette);
 const MARK_OPEN: Record<string, (mark: DocMark) => string> = {
   link: () => '[',
   bold: () => '**',
@@ -442,7 +442,13 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
 
 function sortMarks(marks: DocMark[]): DocMark[] {
   return marks
-    .filter((mark) => mark.type === 'code' || MARK_ORDER.includes(mark.type))
+    .filter(
+      (mark) =>
+        (mark.type === 'code' || MARK_ORDER.includes(mark.type)) &&
+        ((mark.type !== 'textColor' && mark.type !== 'highlight') ||
+          mark.attrs?.color == null ||
+          normalizeInlineColor(mark.attrs.color) !== null),
+    )
     .sort((a, b) => MARK_ORDER.indexOf(a.type) - MARK_ORDER.indexOf(b.type));
 }
 

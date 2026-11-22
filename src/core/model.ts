@@ -41,6 +41,7 @@ export const COLORS = [
   'red',
 ] as const;
 export type ColorName = (typeof COLORS)[number];
+export type InlineColor = ColorName | `#${string}`;
 
 export interface SelectOption {
   id: string;
@@ -340,6 +341,31 @@ export function nearestColor(hex: string, palette: Record<ColorName, string>): C
     }
   }
   return best;
+}
+
+/** Accept only a palette name or an exact six-digit CSS hex value. */
+export function normalizeInlineColor(value: unknown): InlineColor | null {
+  if (typeof value !== 'string') return null;
+  if ((COLORS as readonly string[]).includes(value)) return value as ColorName;
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value.toLowerCase() as `#${string}`;
+  return null;
+}
+
+/** Read an inline color, retaining exact six-digit values while keeping old short hex palette-compatible. */
+export function parseInlineColor(value: string, palette: Record<ColorName, string>): InlineColor | null {
+  const normalized = value.trim().toLowerCase();
+  if ((COLORS as readonly string[]).includes(normalized)) return normalized as ColorName;
+  if (/^#[0-9a-f]{3}$/.test(normalized)) return nearestColor(normalized, palette);
+  const color = normalizeInlineColor(normalized);
+  if (!color || !color.startsWith('#')) return null;
+  return COLORS.find((name) => palette[name] === color) ?? color;
+}
+
+/** Convert a valid preset or exact custom inline color to safe CSS. */
+export function inlineColorHex(value: unknown, palette: Record<ColorName, string>): string | null {
+  const color = normalizeInlineColor(value);
+  if (!color) return null;
+  return color.startsWith('#') ? color : palette[color as ColorName];
 }
 
 export type FileId = string;

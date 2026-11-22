@@ -411,6 +411,63 @@ Synthetic row.
     }
   });
 
+  it('keeps exact inline colors through a core save and reopen without the Documento plugin', async () => {
+    const source = [
+      '# <span style="color: #12AB34">Title</span>',
+      '',
+      '<mark style="background: #ABCDEF"><span style="color: #FEDCBA">Overlapping marks</span></mark> and <span style="color: red">preset</span>',
+    ].join('\n');
+    const vault = new MemoryVault({
+      'Notes.md': source,
+      '.morrow/workspace.json': registryFor({ 'Notes.md': 'note-page' }),
+    });
+    let first: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      // The core session parses and persists this page without mounting the Documento plugin.
+      first = await open(vault);
+      expect(first.protectedReasons.has('note-page')).toBe(false);
+      const current = first.getState().docs['note-page']!;
+      expect(docToMarkdown(current)).toBe(
+        '# <span style="color: #12ab34">Title</span>\n\n<mark style="background: #abcdef"><span style="color: #fedcba">Overlapping marks</span></mark> and <span style="color: #d44c47">preset</span>\n',
+      );
+
+      const edited: DocNode = {
+        ...current,
+        content: [
+          ...(current.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Safe unrelated edit.' }] },
+        ],
+      };
+      expect(first.execute({ type: 'page.setDoc', id: 'note-page', doc: edited, now: 30 }).ok).toBe(true);
+      expect(await first.flush()).toBe(true);
+      await first.close();
+      first = undefined;
+
+      const savedText = vault.text('Notes.md')!;
+      expect(savedText).toContain('<span style="color: #12ab34">Title</span>');
+      expect(savedText).toContain(
+        '<mark style="background: #abcdef"><span style="color: #fedcba">Overlapping marks</span></mark>',
+      );
+      expect(savedText).toContain('Safe unrelated edit.');
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('note-page')).toBe(false);
+      const reopenedDoc = reopened.getState().docs['note-page']!;
+      expect(docToMarkdown(reopenedDoc)).toBe(savedText);
+      expect(reopenedDoc.content![0]!.content![0]!.marks).toEqual([
+        { type: 'textColor', attrs: { color: '#12ab34' } },
+      ]);
+      expect(reopenedDoc.content![1]!.content![0]!.marks).toEqual([
+        { type: 'highlight', attrs: { color: '#abcdef' } },
+        { type: 'textColor', attrs: { color: '#fedcba' } },
+      ]);
+    } finally {
+      if (first && !first.isClosed) await first.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
   it('protects 2.1 background metadata attached to the v1 atom', () => {
     expect(findUnrepresentablePageContent(`<!-- background: blue -->\n${viewMarker()}\n`)).toMatch(
       /polaris dados view/i,

@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import type { StateBlock, StateInline, Token } from 'markdown-it';
-import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, nearestColor, TEXT_HEX } from '../model';
+import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, parseInlineColor, TEXT_HEX } from '../model';
 import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
@@ -1234,15 +1234,20 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
       case 'html_inline': {
         const tag = token.content.trim().toLowerCase();
         const styled =
-          /^<(span|mark)\s+style\s*=\s*["']\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3,6})\s*;?\s*["']\s*>$/.exec(
+          /^<(span|mark)\s+style\s*=\s*(["'])\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3}|#[0-9a-f]{6}|[a-z]+)\s*;?\s*\2\s*>$/.exec(
             tag,
           );
-        const color = styled
-          ? nearestColor(styled[3]!, styled[2] === 'color' ? TEXT_HEX : BACKGROUND_HEX)
-          : null;
-        if (styled && color && styled[1] === 'span' && styled[2] === 'color')
-          marks.push({ type: 'textColor', attrs: { color } });
-        else if (styled && color && styled[1] === 'mark') marks.push({ type: 'highlight', attrs: { color } });
+        const isTextColor = styled?.[1] === 'span' && styled[3] === 'color';
+        const isHighlightColor =
+          styled?.[1] === 'mark' && (styled[3] === 'background' || styled[3] === 'background-color');
+        const color =
+          styled && isTextColor
+            ? parseInlineColor(styled[4]!, TEXT_HEX)
+            : styled && isHighlightColor
+              ? parseInlineColor(styled[4]!, BACKGROUND_HEX)
+              : null;
+        if (styled && color && isTextColor) marks.push({ type: 'textColor', attrs: { color } });
+        else if (styled && color && isHighlightColor) marks.push({ type: 'highlight', attrs: { color } });
         else if (tag === '</span>' && marks.some((mark) => mark.type === 'textColor')) remove('textColor');
         else if (tag === '<u>') marks.push({ type: 'underline' });
         else if (tag === '</u>') remove('underline');
