@@ -3,7 +3,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { DesktopBridge } from './desktop';
+import type { DesktopBridge, VaultFilePage } from './desktop';
 import { getExitPreparer } from '../exitPreparationRegistry';
 import {
   createCloseProtocolCoordinator,
@@ -115,6 +115,37 @@ export function tauriBridge(): DesktopBridge | null {
   };
   const listeners = new Set<Listener>();
   const zoomListeners = new Set<(percent: number) => void>();
+  let vaultGeneration: number | null = null;
+  let vaultGenerationFloor = 0;
+  let vaultEpoch = 0;
+  const beginVaultTransition = () => {
+    vaultEpoch += 1;
+    vaultGeneration = null;
+    return vaultEpoch;
+  };
+  const safeGeneration = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  const observeVaultGeneration = (value: unknown) => {
+    if (!safeGeneration(value) || value <= vaultGenerationFloor) return;
+    vaultGenerationFloor = value;
+    if (vaultGeneration !== null && vaultGeneration < value) vaultGeneration = null;
+  };
+  const restoreSessionGeneration = (value: unknown) => {
+    if (!safeGeneration(value) || value < vaultGenerationFloor) {
+      vaultGeneration = null;
+      return;
+    }
+    vaultGenerationFloor = Math.max(vaultGenerationFloor, value);
+    vaultGeneration = value;
+  };
+  const acceptTransitionSession = (
+    epoch: number,
+    result: { generation?: unknown; sessionGeneration?: unknown },
+  ) => {
+    observeVaultGeneration(result.generation);
+    if (epoch !== vaultEpoch) return;
+    restoreSessionGeneration(result.sessionGeneration);
+  };
   const run = (id: string) =>
     Promise.all([...listeners].map((listener) => Promise.resolve(listener(id)).catch(() => undefined)));
 
@@ -257,11 +288,53 @@ export function tauriBridge(): DesktopBridge | null {
       cloud: () => invoke('vault_cloud'),
       copyInto: (dir) => invoke('vault_copy_into', { dir }),
       createDefault: () => invoke('vault_create_default'),
-      select: (dir) => invoke('vault_select', { dir }),
-      forget: (dir) => invoke('vault_forget', { dir }),
-      reorder: (order) => invoke('vault_reorder', { order }),
-      open: () => invoke('vault_open'),
-      close: () => invoke('vault_close'),
+      select: async (dir) => {
+        const epoch = beginVaultTransition();
+        const result = await invoke<{
+          ok: boolean;
+          generation: number;
+          sessionGeneration: number | null;
+          currentChanged: boolean;
+          error: string | null;
+        }>('vault_select', { dir });
+        acceptTransitionSession(epoch, result);
+        return result.error === null ? { ok: result.ok } : { ok: result.ok, error: result.error };
+      },
+      forget: async (dir) => {
+        const epoch = beginVaultTransition();
+        const result = await invoke<{
+          ok: boolean;
+          generation: number;
+          sessionGeneration: number | null;
+          currentChanged: boolean;
+          error: string | null;
+        }>('vault_forget', { dir });
+        acceptTransitionSession(epoch, result);
+        if (!result.ok) throw new Error(result.error ?? 'The vault could not be forgotten.');
+      },
+      async reorder(order) {
+        const result = await invoke<{
+          ok: boolean;
+          error: string | null;
+        }>('vault_reorder', { order });
+        if (!result.ok) throw new Error(result.error ?? 'The vault order could not be saved.');
+      },
+      open: async () => {
+        const epoch = beginVaultTransition();
+        const result = await invoke<{
+          ok: boolean;
+          root: string | null;
+          generation: number;
+          sessionGeneration: number | null;
+        }>('vault_open');
+        observeVaultGeneration(result.generation);
+        if (epoch === vaultEpoch) restoreSessionGeneration(result.sessionGeneration);
+        return { ok: result.ok, root: result.root };
+      },
+      close: async () => {
+        beginVaultTransition();
+        await invoke('vault_close');
+      },
       scan: () => invoke('vault_scan'),
       apply: (ops) => invoke('vault_apply', { ops }),
       readText: (path) => invoke('vault_read_text', { path }),
@@ -269,6 +342,35 @@ export function tauriBridge(): DesktopBridge | null {
       createFile: (path, data) => invoke('vault_create_file', new Uint8Array(data), pathHeader(path)),
       exists: (path) => invoke('vault_exists', { path }),
       list: (path) => invoke('vault_list', { path }),
+      async listFilesPage(directory, cursor = null, limit = 100): Promise<VaultFilePage> {
+        const epoch = vaultEpoch;
+        const generation = vaultGeneration;
+        if (generation === null) {
+          return {
+            generation: 0,
+            status: 'stale',
+            entries: [],
+            nextCursor: null,
+            error: null,
+          };
+        }
+        const result = await invoke<VaultFilePage>('vault_files_page', {
+          directory,
+          generation,
+          cursor,
+          limit,
+        });
+        if (vaultEpoch !== epoch || vaultGeneration !== generation || result.generation !== generation) {
+          return {
+            generation: vaultGeneration ?? result.generation,
+            status: 'stale',
+            entries: [],
+            nextCursor: null,
+            error: null,
+          };
+        }
+        return result;
+      },
       // a folder that can't be shown, such as a phone's own storage, says why rather than doing nothing
       reveal: (path) =>
         invoke<void>('vault_reveal', { path: path ?? null }).catch(async (error: unknown) => {

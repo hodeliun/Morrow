@@ -5,6 +5,22 @@ export interface CloudFolder {
   path: string;
 }
 
+export interface VaultFileMetadata {
+  name: string;
+  path: string;
+  kind: 'file' | 'folder';
+  size: number | null;
+  modified: number | null;
+}
+
+export interface VaultFilePage {
+  generation: number;
+  status: 'ready' | 'empty' | 'notFound' | 'blocked' | 'ioError' | 'unavailable' | 'stale';
+  entries: VaultFileMetadata[];
+  nextCursor: string | null;
+  error: string | null;
+}
+
 export interface DesktopVaultApi {
   state(): Promise<{
     current: string | null;
@@ -28,6 +44,8 @@ export interface DesktopVaultApi {
   createFile(path: string, data: ArrayBuffer): Promise<void>;
   exists(path: string): Promise<boolean>;
   list(path: string): Promise<Array<{ path: string; size: number; mtime: number }>>;
+  // one page of immediate file/folder metadata from the active session; unlike list(), it never recurses
+  listFilesPage(directory: string, cursor?: string | null, limit?: number): Promise<VaultFilePage>;
   reveal(path?: string): Promise<void>;
   openFile(path: string): Promise<boolean>;
   openLink?(href: string, pagePath: string | null): Promise<boolean>;

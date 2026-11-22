@@ -31,6 +31,7 @@ const KEEP_BACKUPS: usize = 20;
 const MAX_BACKUP_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const FILE_SCHEME: &str = "morrow-file";
+static VAULT_TRANSITIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // the window's first colours, before the interface says which theme it uses
 const LIGHT: tauri::window::Color = tauri::window::Color(0xf8, 0xf8, 0xf7, 0xff);
@@ -685,39 +686,42 @@ async fn vault_create_default<R: Runtime>(app: AppHandle<R>) -> Res<String> {
 }
 
 #[tauri::command]
-async fn vault_select(dir: String) -> Res<Value> {
+async fn vault_select(dir: String) -> Res<vault::VaultTransitionResult> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
     blocking(move || vault::select(&dir)).await
 }
 
 #[tauri::command]
-async fn vault_forget(dir: String) -> Res<()> {
-    blocking(move || vault::forget(&dir)).await?
+async fn vault_forget(dir: String) -> Res<vault::VaultTransitionResult> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    blocking(move || vault::forget(&dir)).await
 }
 
 #[tauri::command]
-async fn vault_reorder(order: Vec<String>) -> Res<()> {
-    blocking(move || vault::reorder(&order)).await?
+async fn vault_reorder(order: Vec<String>) -> Res<vault::VaultTransitionResult> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    blocking(move || vault::reorder(&order)).await
 }
 
 #[tauri::command]
 async fn vault_open<R: Runtime>(app: AppHandle<R>) -> Res<Value> {
+    // Reserve the session on the command thread before spawn_blocking can delay it
+    // behind a close/select transition.
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    let reservation = vault::reserve_current_open()?;
+    let handle = app.clone();
     blocking(move || {
-        let state = vault::state();
-        let Some(current) = state["current"].as_str().map(String::from) else {
-            return Ok(json!({ "ok": false, "root": null }));
-        };
-        let handle = app.clone();
-        vault::open(&current, move |changes| {
+        vault::open_reserved(reservation, move |changes| {
             to_window(&handle, "vault:changes", changes)
-        })?;
-        Ok(json!({ "ok": true, "root": current }))
+        })
     })
     .await?
 }
 
 #[tauri::command]
-fn vault_close() {
-    vault::close();
+async fn vault_close() -> Res<()> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    blocking(vault::close).await
 }
 
 #[tauri::command]
@@ -761,6 +765,16 @@ async fn vault_exists(path: String) -> Res<bool> {
 #[tauri::command]
 async fn vault_list(path: String) -> Res<Vec<Value>> {
     blocking(move || vault::list(&path)).await?
+}
+
+#[tauri::command]
+async fn vault_files_page(
+    directory: String,
+    generation: u64,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> Res<vault::VaultFilePage> {
+    blocking(move || vault::list_metadata_page(generation, &directory, cursor.as_deref(), limit)).await
 }
 
 #[tauri::command]
@@ -1312,6 +1326,7 @@ pub fn run() {
             vault_create_file,
             vault_exists,
             vault_list,
+            vault_files_page,
             vault_reveal,
             vault_open_file,
             vault_open_link,

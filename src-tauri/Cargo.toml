@@ -47,6 +47,8 @@ gethostname = "0.5"
 which = "6"
 mime_guess = "2"
 dirs = "5"
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 trash = "5"
