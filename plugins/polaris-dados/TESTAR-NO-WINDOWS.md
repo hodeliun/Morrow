@@ -33,6 +33,13 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 5. Com foco no editor, use **Tab** até um chip de relação em `Relations` para conferir o contorno de foco. A navegação e as ações dos links e relações continuam pertencendo ao Morrow.
 6. Em Settings/Configurações → Plugins, desabilite **Polaris Documento**. Os estilos do plugin devem sair; os links e as relações continuam disponíveis com a apresentação padrão do Morrow. Habilite-o novamente e confirme que a apresentação do plugin voltou.
 
+### Editar o estilo de uma nota
+
+1. Abra `Links` no modo de edição e clique em **Estilo da página** (**Page style**).
+2. Altere a fonte, o tamanho do texto, a entrelinha, o espaçamento ou a largura. Confira a prévia no painel. Role até as ações, se necessário, e pressione **Cancelar**. A página deve manter o estilo inicial.
+3. Reabra o painel, escolha **Monoespaçada** e **Larga**, e clique em **Salvar**. Feche e reabra a nota para confirmar que o estilo ficou salvo.
+4. Use **Restaurar** para aplicar o estilo padrão do perfil à nota. Abra duas notas em painéis diferentes e confirme que alterar uma delas preserva o estilo da outra.
+
 ### Cores HEX e estilos salvos
 
 1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.
