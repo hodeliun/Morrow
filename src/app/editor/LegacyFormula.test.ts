@@ -19,7 +19,9 @@ function marker(options: { readonly name?: string; readonly formula?: string; re
     outputType: options.outputType ?? 'number',
     format: {},
   };
-  return `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}" onclick="alert(1)">${name.replaceAll('&', '&amp;')}</span>`;
+  const fallback = name.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const encoded = encodeURIComponent(JSON.stringify(payload));
+  return `<span data-morrow-result="${encoded}" onclick="alert(1)">${fallback}</span>`;
 }
 
 const editors: Editor[] = [];
@@ -68,9 +70,12 @@ describe('inert legacy formula editor node', () => {
 
     let target = make(markdownToDoc(source));
     const result = target.view.dom.querySelector<HTMLElement>('.legacy-formula-fallback');
-    expect(result?.textContent).toBe('5');
-    expect(Object.keys(contexts[0]!).sort()).toEqual(['fallback', 'format', 'formula', 'locale', 'outputType']);
-    expect(JSON.stringify(contexts[0])).not.toMatch(/resultId|pageId|name|raw|data-morrow-result/);
+    expect(result?.textContent).toBe('Legacy total 5');
+    expect(Object.keys(contexts[0]!).sort()).toEqual([
+      'fallback', 'format', 'formula', 'locale', 'name', 'outputType',
+    ]);
+    expect(contexts[0]?.name).toBe('Legacy total');
+    expect(JSON.stringify(contexts[0])).not.toMatch(/resultId|pageId|raw|data-morrow-result/);
     expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
 
     removePresentation();
@@ -82,7 +87,41 @@ describe('inert legacy formula editor node', () => {
     target = make(markdownToDoc(source));
     expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe('Legacy total');
     removePresentation = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult);
-    expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe('5');
+    expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe('Legacy total 5');
+    expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
+  });
+
+  it('projects only a literal optional name while keeping fallback and source bytes unchanged', () => {
+    const specialName = '<img src=x onerror=alert(1)> & total';
+    const source = marker({ name: specialName, formula: '40 + 2', outputType: 'auto' });
+    const originalMarkdown = docToMarkdown(markdownToDoc(source));
+    const contexts: Array<Record<string, unknown>> = [];
+    removePresentation = addPluginInlineFormulaPresentation('polaris-dados', (container, context) => {
+      contexts.push(context as unknown as Record<string, unknown>);
+      return mountInlineFormulaResult(container, context);
+    });
+
+    let target = make(markdownToDoc(source));
+    const result = target.view.dom.querySelector<HTMLElement>('.legacy-formula-fallback');
+    expect(result?.textContent).toBe(`${specialName} 42`);
+    expect(result?.querySelector('img')).toBeNull();
+    expect(contexts[0]?.name).toBe(specialName);
+    expect(Object.keys(contexts[0]!).sort()).toEqual([
+      'fallback', 'format', 'formula', 'locale', 'name', 'outputType',
+    ]);
+    expect(JSON.stringify(contexts[0])).not.toMatch(/resultId|pageId|raw|data-morrow-result/);
+    expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
+
+    removePresentation();
+    removePresentation = null;
+    expect(result?.textContent).toBe(specialName);
+    expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
+
+    destroyEditor(target);
+    target = make(markdownToDoc(source));
+    expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe(specialName);
+    removePresentation = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult);
+    expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe(`${specialName} 42`);
     expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
   });
 
@@ -106,7 +145,7 @@ describe('inert legacy formula editor node', () => {
     const results = [...target.view.dom.querySelectorAll<HTMLElement>('.legacy-formula-fallback')];
     const presentations = results.map((result) => result.querySelector<HTMLElement>('.legacy-formula-presentation')!);
     expect(results).toHaveLength(2);
-    expect(results.map((result) => result.textContent)).toEqual(['5', '9']);
+    expect(results.map((result) => result.textContent)).toEqual(['First 5', 'Second 9']);
     expect(presentations.map((presentation) => presentation.dataset.inlineFormulaState)).toEqual(['calculated', 'calculated']);
     expect(results.every((result) => !result.hasAttribute('data-inline-formula-state'))).toBe(true);
 
@@ -123,7 +162,7 @@ describe('inert legacy formula editor node', () => {
         if (container === firstNode) throw new Error('synthetic destroy cleanup failure');
       };
     });
-    expect(results.map((result) => result.textContent)).toEqual(['5', '9']);
+    expect(results.map((result) => result.textContent)).toEqual(['First 5', 'Second 9']);
     expect(() => destroyEditor(target)).not.toThrow();
     expect(results.map((result) => result.textContent)).toEqual(['First', 'Second']);
 

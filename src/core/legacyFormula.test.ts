@@ -51,6 +51,7 @@ describe('legacy inline formula results', () => {
     expect(marker?.raw).toContain('data-morrow-result=');
     expect(marker?.raw).toContain('A &lt;safe&gt; &amp; useful label');
     expect(parseLegacyFormulaPresentation(marker!.raw, marker!.fallback)).toMatchObject({
+      name: 'A <safe> & useful label',
       formula: '2 + 3',
       outputType: 'auto',
       format: {},
@@ -62,6 +63,7 @@ describe('legacy inline formula results', () => {
       formula: '',
     });
     expect(parseLegacyFormulaMarker(emptyName!.raw)?.fallback).toBe('');
+    expect(parseLegacyFormulaPresentation(emptyName!.raw, emptyName!.fallback)).not.toHaveProperty('name');
   });
 
   it('rejects marker values outside the published scalar limits', () => {
@@ -85,12 +87,15 @@ describe('legacy inline formula results', () => {
     const marker = `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}">Three</span>`;
 
     expect(parseLegacyFormulaPresentation(marker, 'Three')).toEqual({
+      name: 'Private name',
       formula: '1 + 2',
       outputType: 'number',
       format: { locale: 'pt-BR', precision: 2 },
       fallback: 'Three',
     });
-    expect(JSON.stringify(parseLegacyFormulaPresentation(marker))).not.toMatch(/private-result|private-page|Private name|data-morrow-result/);
+    expect(JSON.stringify(parseLegacyFormulaPresentation(marker))).not.toMatch(
+      /private-result|private-page|data-morrow-result/,
+    );
   });
 
   it('keeps bound, malformed, mismatched and unsupported payloads out of the renderer projection', () => {
@@ -111,9 +116,11 @@ describe('legacy inline formula results', () => {
     const bound = makeMarker({ bindings: [{ kind: 'property' }] });
     const unknownType = makeMarker({ outputType: 'future-output' });
     const unsupportedFormat = makeMarker({ format: { html: '<b>unsafe</b>' } });
+    const invalidName = makeMarker({ name: 'x'.repeat(101) });
 
     expect(parseLegacyFormulaPresentation(bound)).toBeNull();
     expect(parseLegacyFormulaPresentation(unknownType)).toBeNull();
+    expect(parseLegacyFormulaPresentation(invalidName)).toBeNull();
     expect(parseLegacyFormulaPresentation(makeMarker({}), 'Changed fallback')).toBeNull();
     expect(parseLegacyFormulaPresentation(unsupportedFormat)?.format).toBeNull();
   });

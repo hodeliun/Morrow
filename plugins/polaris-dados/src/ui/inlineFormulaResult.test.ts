@@ -51,19 +51,22 @@ describe('Polaris Dados inline scalar result presentation', () => {
   });
 
   it('keeps fallback text for missing configuration, errors, unsupported types and non-scalar values', () => {
-    const noConfig = render('');
+    const noConfig = render('', { name: 'Named fallback' });
     expect(noConfig.element.textContent).toBe('Original result');
     expect(noConfig.element.dataset.inlineFormulaState).toBe('unconfigured');
     expect(noConfig.element.getAttribute('aria-label')).toContain('Formula not configured');
+    expect(noConfig.element.querySelector('.inline-formula-name')).toBeNull();
 
-    const error = render('1 +');
+    const error = render('1 +', { name: 'Named fallback' });
     expect(error.element.textContent).toBe('Original result');
     expect(error.element.dataset.inlineFormulaState).toBe('error');
     expect(error.element.getAttribute('aria-label')).toContain('Formula error:');
+    expect(error.element.querySelector('.inline-formula-name')).toBeNull();
 
-    const unsupported = render('1 + 2', { outputType: 'progress' });
+    const unsupported = render('1 + 2', { outputType: 'progress', name: 'Named fallback' });
     expect(unsupported.element.textContent).toBe('Original result');
     expect(unsupported.element.dataset.inlineFormulaState).toBe('unsupported');
+    expect(unsupported.element.querySelector('.inline-formula-name')).toBeNull();
 
     const list = render('[1, 2]');
     expect(list.element.textContent).toBe('Original result');
@@ -87,6 +90,24 @@ describe('Polaris Dados inline scalar result presentation', () => {
     cleanup();
     expect(element.textContent).toBe('Original result');
     expect(element.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('shows a validated name as literal text before the value and omits an empty name', () => {
+    const specialName = '<img src=x onerror=alert(1)> & subtotal';
+    const named = render('2 + 3', { name: specialName });
+
+    expect(named.element.textContent).toBe(`${specialName} 5`);
+    expect(named.element.querySelector('img')).toBeNull();
+    expect(named.element.querySelector('.inline-formula-name')?.textContent).toBe(specialName);
+    expect(named.element.querySelector('.inline-formula-value')?.textContent).toBe('5');
+    expect(named.element.getAttribute('aria-label')).toBe(`Formula result: ${specialName} 5`);
+    named.cleanup();
+
+    const unnamed = render('40 + 2', { name: '' });
+    expect(unnamed.element.textContent).toBe('42');
+    expect(unnamed.element.querySelector('.inline-formula-name')).toBeNull();
+    expect(unnamed.element.querySelector('.inline-formula-value')?.textContent).toBe('42');
+    unnamed.cleanup();
   });
 
   it('offers an edit action for eligible calculated and fallback results', () => {

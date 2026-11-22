@@ -143,9 +143,20 @@ export function mountInlineFormulaResult(
     const output = container.ownerDocument.createElement('span');
     output.className = 'inline-formula-value';
     output.textContent = text;
-    container.replaceChildren(output);
+    const name = context.name?.trim() ? context.name : null;
+    if (name) {
+      const label = container.ownerDocument.createElement('span');
+      label.className = 'inline-formula-name';
+      label.textContent = name;
+      container.replaceChildren(label, container.ownerDocument.createTextNode(' '), output);
+    } else {
+      container.replaceChildren(output);
+    }
     container.dataset.inlineFormulaState = 'calculated';
-    container.setAttribute('aria-label', `${messages.inlineFormulaResult}: ${text}`);
+    container.setAttribute(
+      'aria-label',
+      `${messages.inlineFormulaResult}: ${name ? `${name} ` : ''}${text}`,
+    );
     container.removeAttribute('title');
     appendEditButton();
   };

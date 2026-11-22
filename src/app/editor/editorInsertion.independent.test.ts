@@ -1121,18 +1121,28 @@ describe('independent editor insertion capture', () => {
     });
 
     expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    const expectNamedResult = () => {
+      const presentation = document.querySelector('.legacy-formula-presentation')!;
+      expect(Array.from(presentation.children, (child) => child.className)).toEqual([
+        'inline-formula-name',
+        'inline-formula-value',
+      ]);
+      expect(presentation.querySelector('.inline-formula-name')?.textContent).toBe('Total');
+      expect(presentation.querySelector('.inline-formula-value')?.textContent).toBe('5');
+      expect(presentation.textContent).toBe('Total 5');
+    };
     let rawMarker = '';
     editor.state.doc.descendants((node) => {
       if (node.type.name === LEGACY_FORMULA_NODE) rawMarker = String(node.attrs.raw ?? '');
     });
     expect(parseLegacyFormulaMarker(rawMarker)).toMatchObject({ fallback: 'Total' });
-    expect(document.querySelector('.legacy-formula-presentation')?.textContent).toBe('5');
+    expectNamedResult();
     expect(writes).not.toHaveBeenCalled();
 
     await act(async () => { expect(editor.commands.undo()).toBe(true); });
     expect(editor.state.doc.toJSON()).toEqual(slashDoc);
     await act(async () => { expect(editor.commands.redo()).toBe(true); });
-    expect(document.querySelector('.legacy-formula-presentation')?.textContent).toBe('5');
+    expectNamedResult();
     await act(async () => {
       expect(commitEditors()).toBe(true);
       expect(await session.flush()).toBe(true);

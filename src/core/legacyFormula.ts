@@ -13,6 +13,8 @@ export interface LegacyFormulaMarker {
 
 /** The only legacy formula data the read-only inline renderer is allowed to receive. */
 export interface LegacyFormulaPresentation {
+  /** Optional validated label shown next to a calculated scalar result. */
+  readonly name?: string;
   readonly formula: string;
   readonly outputType: string;
   /** Unknown or unsupported format keys are represented as null, never forwarded. */
@@ -95,6 +97,7 @@ export function parseLegacyFormulaPresentation(
   const payload = decodePayload(opening.encodedPayload);
   if (!payload || payload.bindings.length !== 0 || !LEGACY_OUTPUT_TYPES.has(payload.outputType)) return null;
   return {
+    ...(payload.name.trim() ? { name: payload.name } : {}),
     formula: payload.formula,
     outputType: payload.outputType,
     format: projectDisplayFormat(payload.format),

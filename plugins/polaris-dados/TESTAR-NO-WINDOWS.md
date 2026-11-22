@@ -75,21 +75,21 @@ Em `Links`, **List item with native background** usa o amarelo nativo do item. O
 
 ### Cálculo de fórmula antiga no texto
 
-1. Abra `Resolved target` com o Polaris Dados ativado. A fórmula `2 + 3` exibe **5** no parágrafo.
+1. Abra `Resolved target` com o Polaris Dados ativado. A fórmula `2 + 3` exibe **Legacy total 5** no parágrafo.
 2. Desative o Polaris Dados. O texto salvo **Legacy total** volta no mesmo lugar. Edite **Editable neighbor**, salve e reabra. O texto salvo permanece.
-3. Reative o plugin para obter **5** novamente. A cópia de `Resolved target.md` em `PilotState\DemoVault` mantém o marcador original. O valor calculado fica na interface.
+3. Reative o plugin para recuperar **Legacy total 5**. A cópia de `Resolved target.md` em `PilotState\DemoVault` mantém o marcador original. O valor calculado fica na interface.
 
 ### Criar uma fórmula dentro da nota
 
 1. Em `Resolved target`, comece um parágrafo, digite `/formula` e escolha **Fórmula inline**.
-2. Escreva `6 * 7`, dê o nome **Total novo** e confirme em **Salvar**. O resultado no parágrafo deve ser **42**.
+2. Escreva `6 * 7`, dê o nome **Total novo** e confirme em **Salvar**. O parágrafo deve mostrar **Total novo 42**.
 3. Use desfazer para voltar ao comando e refazer para restaurar o resultado. Salve e reabra a nota para conferir o **42**. Ao desativar o Dados, a nota mostra **Total novo**.
 
 ### Editar uma fórmula já inserida
 
-1. Em `Resolved target`, clique no botão **Editar fórmula** junto ao resultado **5**. O formulário abre com a expressão e o nome já preenchidos. O campo de expressão aceita várias linhas. Use Ctrl+Enter para salvar a partir desse campo.
-2. Altere a expressão de `2 + 3` para `6 * 7` e salve. O resultado passa a **42**. Desfazer volta a **5** e refazer restaura **42** no mesmo ponto da nota.
-3. Reabra o formulário e altere o nome. Salve e reabra a nota. Ao desativar Polaris Dados, o novo nome aparece como texto de reserva. Use **Cancelar** ou **Escape** para sair sem gravar.
+1. Em `Resolved target`, clique no botão **Editar fórmula** junto ao resultado **Legacy total 5**. O formulário abre com a expressão e o nome já preenchidos. O campo de expressão aceita várias linhas. Use Ctrl+Enter para salvar a partir desse campo.
+2. Altere a expressão de `2 + 3` para `6 * 7` e salve. O resultado passa a **Legacy total 42**. Desfazer volta a **Legacy total 5** e refazer restaura **Legacy total 42** no mesmo ponto da nota.
+3. Reabra o formulário e altere o nome. Salve e reabra para ver o novo nome junto ao valor. Apague o campo **Nome** para mostrar apenas o valor. Ao desativar o Polaris Dados, a nota volta ao texto de reserva salvo no marcador. Use **Cancelar** ou **Escape** para sair sem gravar.
 
 ## Fluxo curto
 
