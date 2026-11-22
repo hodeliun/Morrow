@@ -1,5 +1,6 @@
 import { KNOWN_MARK_TYPES, KNOWN_NODE_TYPES, MAX_DOC_DEPTH, MAX_DOC_NODES } from './model';
 import { polarisDadosViewDocIssue } from './polarisDadosView';
+import { legacyFormulaDocIssue, LEGACY_FORMULA_NODE } from './legacyFormula';
 import type { DocNode } from './model';
 import { fail, ok } from './result';
 import type { Result } from './result';
@@ -31,6 +32,8 @@ export function validateDoc(value: unknown): Result<DocNode> {
   }
   const viewIssue = polarisDadosViewDocIssue(value);
   if (viewIssue) return fail(viewIssue);
+  const formulaIssue = legacyFormulaDocIssue(value);
+  if (formulaIssue) return fail(formulaIssue);
   return ok(value as unknown as DocNode);
 }
 
@@ -70,6 +73,7 @@ export function inlineText(node: DocNode): string {
   if (node.type === 'dateMention')
     return `${readableDate(String(node.attrs?.date ?? ''))}${node.attrs?.time ? ` ${String(node.attrs.time)}` : ''}`;
   if (node.type === 'inlineMath') return String(node.attrs?.latex ?? '');
+  if (node.type === LEGACY_FORMULA_NODE) return String(node.attrs?.fallback ?? '');
   return (node.content ?? []).map(inlineText).join('');
 }
 

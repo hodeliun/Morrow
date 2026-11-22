@@ -225,6 +225,8 @@ function inline(nodes: DocNode[] = [], context: RenderContext): string {
             ? context.renderMath(latex, false)
             : `<code class="math">${escape(latex)}</code>`;
         }
+        case 'legacyFormula':
+          return `<span class="legacy-formula-fallback">${escape(String(node.attrs?.fallback ?? ''))}</span>`;
         case 'dateMention':
           return `<time class="date-mention" datetime="${escape(String(node.attrs?.date ?? ''))}">${escape(formatDate(String(node.attrs?.date ?? '')))}</time>`;
         case 'pageLink': {

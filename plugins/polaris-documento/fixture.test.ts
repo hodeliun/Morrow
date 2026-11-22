@@ -118,16 +118,28 @@ describe('Polaris Documento Windows fixture option', () => {
     const links = await read('Links.md');
     const relation = await read('Relations/Relation sample.md');
     const relationDatabase = await read('Relations.md');
+    const resolved = await read('Resolved target.md');
 
     expect(plugins.enabled).toEqual(['polaris-dados', 'polaris-documento']);
     expect(links).toContain('[[Resolved target|Resolved: live]]');
     expect(links).toContain('[[Gone target|Missing: gone]]');
     expect(links).toContain('[[Never existed|Unresolved: unknown]]');
     expect(links).toContain('[External documentation](https://example.com/docs)');
-    expect(links).toContain('<!-- morrow:block-background:#a1b2c3 -->\nLegacy HEX background.\n\nPlain neighbor.');
+    expect(links).toContain(
+      '<!-- morrow:block-background:#a1b2c3 -->\nLegacy HEX background.\n\nPlain neighbor.',
+    );
     expect(relationDatabase).toContain('type: relation');
     expect(relation).toContain('"[[Resolved target]]"');
     expect(relation).toContain('"[[Gone target]]"');
+    const match = /<span data-morrow-result="([^"]+)">Legacy total<\/span>/.exec(resolved);
+    expect(match).not.toBeNull();
+    expect(JSON.parse(decodeURIComponent(match![1]!))).toMatchObject({
+      resultId: 'demo-legacy-result',
+      pageId: workspace.pages['Resolved target.md'].id,
+      formula: '2 + 3',
+      bindings: [],
+    });
+    expect(resolved).toContain('Editable neighbor.');
     expect(workspace.pages['Resolved target.md']).toMatchObject({ id: expect.any(String) });
     expect(workspace.pages['.trash/Gone target.md']).toMatchObject({
       id: expect.any(String),

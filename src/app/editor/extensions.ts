@@ -17,6 +17,7 @@ import { ClickBelow } from './ClickBelow';
 import { EmojiSuggest } from './EmojiSuggest';
 import { CodeBlock, Highlight, mathExtensions, MathViewTracker, RawBlock, Tags, TextColor } from './Extras';
 import { FileAttachment, FileDrop, Image } from './Media';
+import { LegacyFormula } from './LegacyFormula';
 import type { BlockMenuRequest } from './BlockHandle';
 import { CopyFromInside, MarkdownPaste, PasteOnEmptyLine } from './MarkdownPaste';
 import { MultiSelect } from './MultiSelect';
@@ -413,6 +414,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
     Highlight,
     TextColor,
     RawBlock,
+    LegacyFormula,
     PolarisDadosView.configure({ mountContext: options.linkedViewContext ?? null }),
     ...mathExtensions(),
     MathViewTracker,

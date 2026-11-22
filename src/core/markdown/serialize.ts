@@ -1,5 +1,6 @@
 import { BACKGROUND_HEX, inlineColorHex, normalizeInlineColor, TEXT_HEX } from '../model';
 import type { ColorName, DocMark, DocNode, InlineColor, PageId } from '../model';
+import { legacyFormulaDocIssue, LEGACY_FORMULA_NODE } from '../legacyFormula';
 import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
 import {
   formatBlockBackgroundMarker,
@@ -48,6 +49,8 @@ export function docToMarkdown(doc: DocNode, options: SerializeOptions = {}): str
   const viewIssue = polarisDadosViewDocIssue(doc);
   if (viewIssue) throw new TypeError(viewIssue);
   assertSupportedCustomBlockBackgrounds(doc);
+  const formulaIssue = legacyFormulaDocIssue(doc);
+  if (formulaIssue) throw new TypeError(formulaIssue);
   const out = blocks(doc.content ?? [], options).trim();
   return out.length > 0 ? `${out}\n` : '';
 }
@@ -443,6 +446,23 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
       pendingSpace = '';
       continue;
     }
+    if (node.type === LEGACY_FORMULA_NODE) {
+      const marks = sortMarks(node.marks ?? []);
+      let keep = 0;
+      while (keep < open.length && keep < marks.length && sameMark(open[keep]!, marks[keep]!)) keep++;
+      closeTo(keep);
+      if (marks.length > keep) {
+        out += pendingSpace;
+        pendingSpace = '';
+      }
+      for (const mark of marks.slice(keep)) {
+        out += MARK_OPEN[mark.type]!(mark);
+        open.push(mark);
+      }
+      out += pendingSpace + String(node.attrs?.raw ?? '');
+      pendingSpace = '';
+      continue;
+    }
     if (node.type !== 'text' || !node.text) continue;
 
     const marks = sortMarks(node.marks ?? []);
@@ -467,6 +487,21 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
   }
   closeTo(0);
   return out + pendingSpace;
+}
+
+/** Markdown copied from the editor carries a formula's readable fallback, never its stored identity. */
+export function docToClipboardMarkdown(doc: DocNode, options: SerializeOptions = {}): string {
+  const fallback = (node: DocNode): DocNode => {
+    if (node.type === LEGACY_FORMULA_NODE) {
+      return {
+        type: 'text',
+        text: String(node.attrs?.fallback ?? ''),
+        ...(node.marks?.length ? { marks: node.marks } : {}),
+      };
+    }
+    return node.content ? { ...node, content: node.content.map(fallback) } : node;
+  };
+  return docToMarkdown(fallback(doc), options);
 }
 
 function sortMarks(marks: DocMark[]): DocMark[] {

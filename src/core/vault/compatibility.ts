@@ -4,6 +4,12 @@ import { isRecord, validateDoc, walk } from '../doc';
 import { inspectBlockBackgroundMarkers, markdownToDoc } from '../markdown/parse';
 import type { DocNode } from '../model';
 import {
+  countLegacyFormulaNodes,
+  LEGACY_FORMULA_NODE,
+  legacyFormulaDocIssue,
+  legacyFormulaInlineRule,
+} from '../legacyFormula';
+import {
   COLORS,
   MAX_DOC_DEPTH,
   MAX_ICON_LENGTH,
@@ -17,7 +23,8 @@ import {
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import { MANAGED_KEYS, normalizeExtra, readTags, splitFrontmatter } from './frontmatter';
 
-const markerMarkdown = new MarkdownIt('commonmark', { html: true });
+const markerMarkdown = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
+markerMarkdown.inline.ruler.before('html_inline', LEGACY_FORMULA_NODE, legacyFormulaInlineRule);
 
 const PAGE_KINDS = new Set(['page', 'journal', 'templates', 'database']);
 const FILTER_OPS = new Set([
@@ -624,6 +631,9 @@ function unsupportedMarkerIssue(
     if (remaining === 0) return 'The page contains a Morrow block marker this version cannot safely edit.';
     allowedViewMarkers.set(marker.comment, remaining - 1);
   }
+  const parsedTokens = markerMarkdown.parse(body, {});
+  const formulaIssue = legacyFormulaIssue(body, parsedTokens);
+  if (formulaIssue) return formulaIssue;
   if (viewIds.size > 0) {
     let parsed: DocNode;
     try {
@@ -644,7 +654,7 @@ function unsupportedMarkerIssue(
       return 'The page contains a Polaris Dados view this version cannot safely represent.';
     }
   }
-  if (/\bdata-morrow-[\w-]+\b/i.test(body)) {
+  if (hasUnsupportedMorrowDataAttribute(body, parsedTokens)) {
     return 'The page contains a Polaris data extension this version cannot safely edit.';
   }
   if (/\bdata-(?:widths|block-background|block-id)\b/i.test(body)) {
@@ -661,6 +671,100 @@ function mayResolveLocalAttachment(href: string): boolean {
     !href.startsWith('#') &&
     !/\.(?:md|canvas)(?:[?#]|$)/i.test(href)
   );
+}
+
+function legacyFormulaIssue(body: string, tokens: ReturnType<typeof markerMarkdown.parse>): string | null {
+  const resultIds = new Set<string>();
+  let expectedCount = 0;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.type !== 'inline') continue;
+    const supportedParagraph = token.level === 1 && tokens[index - 1]?.type === 'paragraph_open';
+    const containsMedia = (token.children ?? []).some(
+      (child) =>
+        child.type === 'image' ||
+        (child.type === 'wikilink' && (child.meta as { embed?: unknown } | null)?.embed === true),
+    );
+    let markdownLinkDepth = 0;
+    let htmlAnchorDepth = 0;
+    for (const child of token.children ?? []) {
+      if (child.type === 'link_open') markdownLinkDepth++;
+      if (child.type === 'html_inline') {
+        if (/^\s*<a(?:\s|>)/i.test(child.content)) htmlAnchorDepth++;
+      }
+      if (child.type === LEGACY_FORMULA_NODE) {
+        const meta = child.meta as { resultId?: unknown } | null;
+        if (
+          !supportedParagraph ||
+          containsMedia ||
+          markdownLinkDepth > 0 ||
+          htmlAnchorDepth > 0 ||
+          typeof meta?.resultId !== 'string'
+        ) {
+          return 'The page contains a legacy formula result outside a supported paragraph.';
+        }
+        if (resultIds.has(meta.resultId)) return 'The page contains duplicate legacy formula result IDs.';
+        resultIds.add(meta.resultId);
+        expectedCount++;
+      }
+      if (child.type === 'link_close') markdownLinkDepth = Math.max(0, markdownLinkDepth - 1);
+      if (child.type === 'html_inline' && /^\s*<\/a\s*>/i.test(child.content))
+        htmlAnchorDepth = Math.max(0, htmlAnchorDepth - 1);
+    }
+  }
+  if (expectedCount === 0) return null;
+
+  let parsed: DocNode;
+  try {
+    parsed = markdownToDoc(body);
+  } catch {
+    return 'The page contains a legacy formula result this version cannot safely represent.';
+  }
+  if (
+    countLegacyFormulaNodes(parsed) !== expectedCount ||
+    legacyFormulaDocIssue(parsed) ||
+    !validateDoc(parsed).ok
+  ) {
+    return 'The page contains a legacy formula result this version cannot safely represent.';
+  }
+  if (hasMarkedLegacyFormula(parsed)) {
+    return 'The page contains a legacy formula result with source formatting this version cannot safely edit.';
+  }
+  return null;
+}
+
+function hasMarkedLegacyFormula(doc: DocNode): boolean {
+  let marked = false;
+  walk(doc, (node) => {
+    if (node.type === LEGACY_FORMULA_NODE && (node.marks?.length ?? 0) > 0) marked = true;
+  });
+  return marked;
+}
+
+function hasUnsupportedMorrowDataAttribute(
+  body: string,
+  tokens: ReturnType<typeof markerMarkdown.parse>,
+): boolean {
+  const formulaSpans: string[] = [];
+  for (const token of tokens) {
+    if (token.type === 'inline') {
+      for (const child of token.children ?? []) {
+        if (child.type === LEGACY_FORMULA_NODE) formulaSpans.push(child.content);
+      }
+    }
+  }
+  // Keep the former lexical guard for every occurrence except one exact span that passed all
+  // formula validation above. This also preserves protection for definitions, code and escapes.
+  let cursor = 0;
+  let remaining = '';
+  for (const span of formulaSpans) {
+    const start = body.indexOf(span, cursor);
+    if (start === -1) return true;
+    remaining += `${body.slice(cursor, start)}${' '.repeat(span.length)}`;
+    cursor = start + span.length;
+  }
+  remaining += body.slice(cursor);
+  return /\bdata-morrow-[\w-]+\b/i.test(remaining);
 }
 
 function hasOverdeepPolarisDadosView(body: string): boolean {

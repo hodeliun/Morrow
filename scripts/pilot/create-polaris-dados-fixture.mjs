@@ -250,6 +250,15 @@ async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBa
   await mkdir(resolve(target, 'Relations'));
   await mkdir(resolve(target, '.trash'));
 
+  const legacyFormula = encodeURIComponent(JSON.stringify({
+    resultId: 'demo-legacy-result',
+    pageId: ids.resolved,
+    name: 'Legacy total',
+    formula: '2 + 3',
+    bindings: [],
+    outputType: 'auto',
+    format: {},
+  }));
   const markdownFiles = [
     {
       path: 'Links.md',
@@ -318,7 +327,16 @@ async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBa
       path: 'Resolved target.md',
       id: ids.resolved,
       order: orderBase + 2,
-      text: '# Resolved target\n\nSynthetic target for the Documento visual demo.\n',
+      text: [
+        '# Resolved target',
+        '',
+        'Synthetic target for the Documento visual demo.',
+        '',
+        'Saved formula: <span data-morrow-result="' + legacyFormula + '">Legacy total</span>.',
+        '',
+        'Editable neighbor.',
+        '',
+      ].join('\n'),
     },
     {
       path: '.trash/Gone target.md',

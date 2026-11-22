@@ -7,7 +7,7 @@ import katex from 'katex';
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { docToMarkdown } from '../../core/markdown/serialize';
+import { docToClipboardMarkdown } from '../../core/markdown/serialize';
 import { docToHtml } from '../../core/site';
 import { displayTitle } from '../../core/model';
 import type { DocNode, PageId } from '../../core/model';
@@ -154,9 +154,14 @@ function withoutHtmlMarks(node: DocNode): DocNode {
 function plainTextOf(slice: Slice): string {
   let node: ProseNode | Fragment = slice.content;
   while (node.childCount === 1 && !node.firstChild!.isTextblock) node = node.firstChild!;
-  if (node.childCount === 1 && node.firstChild!.isTextblock) return node.firstChild!.textContent;
+  if (node.childCount === 1 && node.firstChild!.isTextblock) {
+    const textblock = node.firstChild!;
+    return textblock.textBetween(0, textblock.content.size, '', (leaf) =>
+      leaf.type.name === 'legacyFormula' ? String(leaf.attrs.fallback ?? '') : leaf.textContent,
+    );
+  }
   const state = getState();
-  return docToMarkdown(
+  return docToClipboardMarkdown(
     { type: 'doc', content: ((slice.content.toJSON() ?? []) as DocNode[]).map(withoutHtmlMarks) },
     {
       titleOf: (id) => (state.pages[id] ? displayTitle(state.pages[id]) : null),

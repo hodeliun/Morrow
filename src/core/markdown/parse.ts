@@ -1,9 +1,9 @@
 import MarkdownIt from 'markdown-it';
 import type { StateBlock, StateInline, Token } from 'markdown-it';
 import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, parseInlineColor, TEXT_HEX } from '../model';
-import type { DocMark, DocNode, PageId } from '../model';
+import type { DocMark, DocNode, InlineColor, PageId } from '../model';
 import { inlineText } from '../doc';
-import type { InlineColor } from '../model';
+import { LEGACY_FORMULA_NODE, legacyFormulaInlineRule } from '../legacyFormula';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import { parseBlockBackgroundMarker, supportsHexBlockBackgroundOwner } from './blockBackground';
 import { scanMarkdownDestination } from './markdownLinkDestination';
@@ -64,6 +64,7 @@ type MarkerOwnedDocNode = DocNode & { [BLOCK_BACKGROUND_MARKER_IDS]?: number[] }
 const md = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 md.inline.ruler.before('link', 'wikilink', wikiLinkRule);
 md.inline.ruler.after('backticks', 'math_inline', mathInlineRule);
+md.inline.ruler.before('html_inline', LEGACY_FORMULA_NODE, legacyFormulaInlineRule);
 md.inline.ruler.after('strikethrough', 'highlight', highlightRule);
 md.block.ruler.before('fence', 'math_block', mathBlockRule, {
   alt: ['paragraph', 'reference', 'blockquote', 'list'],
@@ -548,7 +549,10 @@ function parseMarkdownToDoc(source: string, options: ParseOptions = {}): ParsedM
         }
         if (cell && (cell.type === 'tableCell' || cell.type === 'tableHeader'))
           cellInline(token.children ?? [], options, cell, top());
-        else (top().content ??= []).push(...inlineNodes(token.children ?? [], options));
+        else
+          (top().content ??= []).push(
+            ...inlineNodes(token.children ?? [], options, stack.length === 2 && top().type === 'paragraph'),
+          );
         break;
       }
       case 'fence':
@@ -1441,7 +1445,7 @@ function dateTimes(nodes: DocNode[]): DocNode[] {
   return nodes;
 }
 
-function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
+function inlineNodes(tokens: Token[], options: ParseOptions, allowLegacyFormula = false): DocNode[] {
   const out: DocNode[] = [];
   const marks: DocMark[] = [];
   const add = (text: string, extra: DocMark[] = []) => {
@@ -1534,6 +1538,18 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
       case 'math_inline':
         out.push({ type: 'inlineMath', attrs: { latex: token.content } });
         break;
+      case LEGACY_FORMULA_NODE: {
+        const meta = token.meta as { raw?: unknown; fallback?: unknown } | null;
+        if (allowLegacyFormula && typeof meta?.raw === 'string' && typeof meta.fallback === 'string') {
+          out.push({
+            type: LEGACY_FORMULA_NODE,
+            attrs: { raw: meta.raw, fallback: meta.fallback },
+            ...(marks.length ? { marks: [...marks] } : {}),
+          });
+        } else if (typeof meta?.fallback === 'string') add(meta.fallback);
+        else if (token.content) add(token.content);
+        break;
+      }
       case 'wikilink':
         out.push(...wikiNode(token.meta as unknown as WikiLink, token.markup, options, marks));
         break;
