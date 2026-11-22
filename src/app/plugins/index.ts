@@ -38,7 +38,7 @@ import { clonePluginPageProperties } from './pageInfo';
 import { selectedProviderMarker } from './providerMarker';
 import type { PluginEditorInsertionTargetV1 } from './editorApi';
 import { addInlineFormulaSlashCommand } from './inlineFormulaAuthoring';
-import type { PluginInlineFormulaSlashCommand } from './inlineFormulaApi';
+import type { PluginInlineFormulaEditAction, PluginInlineFormulaSlashCommand } from './inlineFormulaApi';
 import { definePluginLocaleApi } from './localeApi';
 
 export type { PluginLocaleApi } from './localeApi';
@@ -318,12 +318,14 @@ function pluginApi(id: string, state: Running) {
     data,
     inlineFormulas: {
       version: 1 as const,
-      registerPresentation(mount: PluginInlineFormulaPresentationMount) {
+      registerPresentation(mount: PluginInlineFormulaPresentationMount, onEdit?: PluginInlineFormulaEditAction) {
         assertActive();
         if (id !== 'polaris-dados')
           throw new Error('Only Polaris Dados can present inline formula results.');
         if (typeof mount !== 'function') throw new Error('An inline formula presentation needs a mount function.');
-        return keep(addPluginInlineFormulaPresentation(id, mount));
+        if (onEdit !== undefined && typeof onEdit !== 'function')
+          throw new Error('An inline formula edit action needs a handler.');
+        return keep(addPluginInlineFormulaPresentation(id, mount, onEdit));
       },
       addSlashCommand(command: PluginInlineFormulaSlashCommand) {
         assertActive();

@@ -2,6 +2,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   PluginInlineFormulaConfirmation,
+  PluginInlineFormulaEditConfirmation,
+  PluginInlineFormulaEditHost,
+  PluginInlineFormulaEditInitial,
   PluginInlineFormulaInsertionHost,
   PluginInlineFormulaInsertionResult,
 } from '../../../../src/app/plugins/inlineFormulaApi';
@@ -22,11 +25,30 @@ type TestHost = PluginInlineFormulaInsertionHost & {
   cancel: () => void;
 };
 
+type TestEditHost = PluginInlineFormulaEditHost & {
+  focusAfterEdit: () => void;
+  confirm: (input: PluginInlineFormulaEditConfirmation) => PluginInlineFormulaInsertionResult;
+  cancel: () => void;
+};
+
 function host(result: PluginInlineFormulaInsertionResult = { ok: true }, canRestoreFocus = true): TestHost {
   return {
     dismiss: vi.fn(),
     canRestoreFocus: vi.fn(() => canRestoreFocus),
     confirm: vi.fn((_input: PluginInlineFormulaConfirmation) => result),
+    cancel: vi.fn(),
+  };
+}
+
+function editHost(
+  initial: PluginInlineFormulaEditInitial,
+  result: PluginInlineFormulaInsertionResult = { ok: true },
+): TestEditHost {
+  return {
+    initial,
+    focusAfterEdit: vi.fn(),
+    canRestoreFocus: vi.fn(() => true),
+    confirm: vi.fn((_input: PluginInlineFormulaEditConfirmation) => result),
     cancel: vi.fn(),
   };
 }
@@ -107,6 +129,110 @@ describe('Polaris Dados inline formula form', () => {
     form().querySelector<HTMLButtonElement>('button[type="button"]')!.click();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(operation.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('reuses the dialog with prefilled values and preserves an intentionally empty name', () => {
+    const action = controller('en');
+    const operation = editHost({
+      name: 'Old <total> & tax', formula: '2 + 3', outputType: 'auto', format: {},
+    });
+    action.onEdit(operation);
+
+    expect(form().querySelector('h2')?.textContent).toBe('Edit inline formula');
+    const name = form().querySelector<HTMLInputElement>('label[for$="-name"] input')!;
+    const formula = form().querySelector<HTMLTextAreaElement>('label[for$="-formula"] textarea')!;
+    expect(name.value).toBe('Old <total> & tax');
+    expect(formula.value).toBe('2 + 3');
+
+    name.value = '';
+    formula.value = '6 * 7';
+    form().querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    expect(operation.confirm).toHaveBeenCalledWith({ formula: '6 * 7', name: '' });
+    expect(operation.confirm).toHaveBeenCalledOnce();
+    expect(operation.cancel).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('cancels an edit without confirming or changing the prefilled draft', () => {
+    const action = controller('pt');
+    const operation = editHost({ name: 'Total', formula: '2 + 3', outputType: 'auto', format: {} });
+    action.onEdit(operation);
+    form().querySelector<HTMLTextAreaElement>('label[for$="-formula"] textarea')!.value = '9 + 9';
+    form().querySelector<HTMLButtonElement>('footer button[type="button"]')!.click();
+    expect(operation.confirm).not.toHaveBeenCalled();
+    expect(operation.cancel).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps an edited formula in the existing output format', () => {
+    const action = controller('en');
+    const operation = editHost({
+      name: 'Count',
+      formula: '2 + 3',
+      outputType: 'number',
+      format: { locale: 'en-US', precision: 2 },
+    });
+    action.onEdit(operation);
+    const formula = form().querySelector<HTMLTextAreaElement>('label[for$="-formula"] textarea')!;
+    const save = form().querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    formula.value = '"not a number"';
+    save.click();
+
+    expect(form().querySelector('[role="alert"]')?.textContent).toContain('not compatible');
+    expect(operation.confirm).not.toHaveBeenCalled();
+    expect(form().querySelector<HTMLTextAreaElement>('label[for$="-formula"] textarea')?.value).toBe('"not a number"');
+
+    formula.value = '6 * 7';
+    save.click();
+    expect(operation.confirm).toHaveBeenCalledWith({ formula: '6 * 7', name: 'Count' });
+    expect(operation.confirm).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps multiline formulas in a textarea and returns the original CRLF literal on Ctrl+Enter no-op', () => {
+    const action = controller('en');
+    const originalFormula = '1 +\r\n2';
+    const operation = editHost({
+      name: 'Two', formula: originalFormula, outputType: 'auto', format: {},
+    });
+    action.onEdit(operation);
+
+    const formula = form().querySelector<HTMLTextAreaElement>('label[for$="-formula"] textarea')!;
+    expect(form().querySelector('label[for$="-formula"] input')).toBeNull();
+    expect(formula.value.replace(/\r\n?/g, '\n')).toBe('1 +\n2');
+    const plainEnter = new KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true,
+    });
+    formula.dispatchEvent(plainEnter);
+    expect(plainEnter.defaultPrevented).toBe(false);
+    expect(operation.confirm).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    const confirmEnter = new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    formula.dispatchEvent(confirmEnter);
+    expect(confirmEnter.defaultPrevented).toBe(true);
+    expect(operation.confirm).toHaveBeenCalledWith({ formula: originalFormula, name: 'Two' });
+    expect(operation.confirm).toHaveBeenCalledOnce();
+    expect(operation.focusAfterEdit).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('returns the original name literal when the text input renders it with normalization', () => {
+    const action = controller('en');
+    const originalName = 'Line\r\nbreak';
+    const operation = editHost({
+      name: originalName, formula: '2 + 3', outputType: 'auto', format: {},
+    });
+    action.onEdit(operation);
+    const name = form().querySelector<HTMLInputElement>('label[for$="-name"] input')!;
+    const renderedName = name.value;
+    expect(renderedName).not.toBe('');
+
+    form().querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    expect(operation.confirm).toHaveBeenCalledWith({ formula: '2 + 3', name: originalName });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it.each([

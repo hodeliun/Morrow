@@ -86,6 +86,7 @@ export interface ProviderMessages {
   readonly defaultViewSuffix: string;
   readonly unnamedDatabase: string;
   readonly inlineFormulaResult: string;
+  readonly inlineFormulaEdit: string;
   readonly inlineFormulaTrue: string;
   readonly inlineFormulaFalse: string;
   readonly inlineFormulaNotConfigured: string;
@@ -183,6 +184,7 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     defaultViewSuffix: 'visualização',
     unnamedDatabase: 'Banco de dados',
     inlineFormulaResult: 'Resultado da fórmula',
+    inlineFormulaEdit: 'Editar fórmula',
     inlineFormulaTrue: 'Sim',
     inlineFormulaFalse: 'Não',
     inlineFormulaNotConfigured: 'Fórmula sem configuração',
@@ -275,6 +277,7 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     defaultViewSuffix: 'view',
     unnamedDatabase: 'Database',
     inlineFormulaResult: 'Formula result',
+    inlineFormulaEdit: 'Edit formula',
     inlineFormulaTrue: 'Yes',
     inlineFormulaFalse: 'No',
     inlineFormulaNotConfigured: 'Formula not configured',
@@ -372,6 +375,7 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     defaultViewSuffix: 'vista',
     unnamedDatabase: 'Base de datos',
     inlineFormulaResult: 'Resultado de la fórmula',
+    inlineFormulaEdit: 'Editar fórmula',
     inlineFormulaTrue: 'Sí',
     inlineFormulaFalse: 'No',
     inlineFormulaNotConfigured: 'Fórmula sin configurar',

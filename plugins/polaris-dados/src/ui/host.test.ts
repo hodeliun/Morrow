@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { Window } from 'happy-dom';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
@@ -10,7 +11,7 @@ import type {
 } from '../../../../src/app/plugins/dataApi';
 import type { DatabaseProviderRegistration } from '../../../../src/app/plugins/providerApi';
 import type { PluginInlineFormulaPresentationMount } from '../../../../src/app/plugins/registry';
-import type { PluginInlineFormulaSlashCommand } from '../../../../src/app/plugins/inlineFormulaApi';
+import type { PluginInlineFormulaEditAction, PluginInlineFormulaSlashCommand } from '../../../../src/app/plugins/inlineFormulaApi';
 import { activate, POLARIS_DADOS_PROVIDER_ID, type PolarisDadosPluginApi } from '../main';
 import { parseFiniteNumber } from './mount';
 
@@ -205,6 +206,7 @@ function mountPlugin(
   const controller = new AbortController();
   const holder: { registration?: DatabaseProviderRegistration } = {};
   const formulaHolder: { mount?: PluginInlineFormulaPresentationMount } = {};
+  const formulaEditHolder: { action?: PluginInlineFormulaEditAction } = {};
   const formulaSlashHolder: { command?: PluginInlineFormulaSlashCommand } = {};
   let registered = 0;
   const pluginApi: PolarisDadosPluginApi = {
@@ -221,10 +223,12 @@ function mountPlugin(
     },
     inlineFormulas: {
       version: 1,
-      registerPresentation(mount) {
+      registerPresentation(mount, onEdit) {
         formulaHolder.mount = mount;
+        formulaEditHolder.action = onEdit;
         return () => {
           if (formulaHolder.mount === mount) formulaHolder.mount = undefined;
+          if (formulaEditHolder.action === onEdit) formulaEditHolder.action = undefined;
         };
       },
       ...(formulaSlashApi ? {
@@ -267,6 +271,7 @@ function mountPlugin(
     unregister,
     registered,
     inlineFormulaMount: () => formulaHolder.mount,
+    inlineFormulaEditAction: () => formulaEditHolder.action,
     inlineFormulaSlashCommand: () => formulaSlashHolder.command,
   };
 }
@@ -358,6 +363,29 @@ describe('Polaris Dados provider module', () => {
     mounted.unregister();
     expect(mounted.inlineFormulaMount()).toBeUndefined();
     cleanup?.();
+    mounted.unmount();
+  });
+
+  it('registers a prefilled formula edit handler and cancels its form on plugin disable', () => {
+    const mounted = mountPlugin(makeDataDouble().api);
+    const onEdit = mounted.inlineFormulaEditAction();
+    expect(onEdit).toBeTypeOf('function');
+    const host = {
+      initial: { formula: '2 + 3', name: 'Old total', outputType: 'auto', format: {} },
+      canRestoreFocus: () => true,
+      confirm: () => ({ ok: true as const }),
+      cancel: () => {},
+    };
+    onEdit?.(host);
+    expect(document.querySelector('form[role="dialog"] h2')?.textContent).toBe('Edit inline formula');
+    expect(document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-name"] input')?.value)
+      .toBe('Old total');
+    expect(document.querySelector<HTMLTextAreaElement>('form[role="dialog"] label[for$="-formula"] textarea')?.value)
+      .toBe('2 + 3');
+
+    mounted.unregister();
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(mounted.inlineFormulaEditAction()).toBeUndefined();
     mounted.unmount();
   });
 

@@ -98,11 +98,66 @@ export function mountInlineFormulaResult(
   context: PluginInlineFormulaPresentationContext,
 ): () => void {
   const messages = providerMessages(context.locale);
+  let removeEditButtonListener: (() => void) | null = null;
+  const appendEditButton = () => {
+    if (!context.onEdit) return;
+    const doc = container.ownerDocument;
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'inline-formula-edit-action';
+    button.setAttribute('aria-label', messages.inlineFormulaEdit);
+    button.title = messages.inlineFormulaEdit;
+    button.style.display = 'inline-flex';
+    button.style.alignItems = 'center';
+    button.style.justifyContent = 'center';
+    button.style.width = '1.5em';
+    button.style.height = '1.5em';
+    button.style.marginInlineStart = '0.2em';
+    button.style.verticalAlign = 'middle';
+    const icon = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.style.width = '1em';
+    icon.style.height = '1em';
+    const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M4 16.5V20h3.5L18.8 8.7l-3.5-3.5L4 16.5Zm13.9-9.8 1.4-1.4a1 1 0 0 0 0-1.4l-1.2-1.2a1 1 0 0 0-1.4 0l-1.4 1.4 2.6 2.6Z');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '1.7');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    icon.append(path);
+    button.append(icon);
+    const onClick = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      context.onEdit?.();
+    };
+    button.addEventListener('click', onClick);
+    removeEditButtonListener = () => button.removeEventListener('click', onClick);
+    container.append(button);
+  };
+  const showValue = (text: string) => {
+    removeEditButtonListener?.();
+    removeEditButtonListener = null;
+    const output = container.ownerDocument.createElement('span');
+    output.className = 'inline-formula-value';
+    output.textContent = text;
+    container.replaceChildren(output);
+    container.dataset.inlineFormulaState = 'calculated';
+    container.setAttribute('aria-label', `${messages.inlineFormulaResult}: ${text}`);
+    container.removeAttribute('title');
+    appendEditButton();
+  };
   const showFallback = (state: 'unconfigured' | 'error' | 'unsupported', diagnosis: string) => {
+    removeEditButtonListener?.();
+    removeEditButtonListener = null;
+    container.replaceChildren();
     container.textContent = context.fallback;
     container.dataset.inlineFormulaState = state;
     container.setAttribute('aria-label', `${context.fallback}. ${diagnosis}`);
     container.setAttribute('title', diagnosis);
+    appendEditButton();
   };
 
   if (!context.formula.trim()) {
@@ -116,15 +171,14 @@ export function mountInlineFormulaResult(
       if (display.kind === 'unsupported') {
         showFallback('unsupported', messages.inlineFormulaUnsupported);
       } else {
-        container.textContent = display.text;
-        container.dataset.inlineFormulaState = 'calculated';
-        container.setAttribute('aria-label', `${messages.inlineFormulaResult}: ${display.text}`);
-        container.removeAttribute('title');
+        showValue(display.text);
       }
     }
   }
 
   return () => {
+    removeEditButtonListener?.();
+    removeEditButtonListener = null;
     container.textContent = context.fallback;
     delete container.dataset.inlineFormulaState;
     container.removeAttribute('aria-label');

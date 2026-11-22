@@ -7,6 +7,7 @@ import type { NoteStyle, NoteStyleFont, NoteStyleWidth } from '../../core/noteSt
 import type { NoteStyleFailureCode } from '../../storage/session';
 import type { LegacyFormulaPresentation } from '../../core/legacyFormula';
 import type { SupportedLocale } from '../i18n';
+import type { PluginInlineFormulaEditAction } from './inlineFormulaApi';
 
 export type PluginInlineColorKind = 'text' | 'bg';
 
@@ -88,6 +89,8 @@ export interface PluginNoteStylePanelEntry {
 /** Minimal, read-only view of an unbound legacy result; never includes identity or raw Markdown. */
 export interface PluginInlineFormulaPresentationContext extends LegacyFormulaPresentation {
   readonly locale: SupportedLocale;
+  /** Invokes one host-captured edit action; the target identity stays in the host. */
+  readonly onEdit?: () => void;
 }
 
 export type PluginInlineFormulaPresentationMount = (
@@ -99,6 +102,7 @@ export interface PluginInlineFormulaPresentationEntry {
   readonly owner: 'polaris-dados';
   readonly generation: number;
   readonly mount: PluginInlineFormulaPresentationMount;
+  readonly onEdit?: PluginInlineFormulaEditAction;
   isActive(): boolean;
 }
 
@@ -229,9 +233,11 @@ export function documentoNoteStylePanel(): PluginNoteStylePanelEntry | null {
 export function addPluginInlineFormulaPresentation(
   owner: string,
   mount: PluginInlineFormulaPresentationMount,
+  onEdit?: PluginInlineFormulaEditAction,
 ): () => void {
   if (owner !== 'polaris-dados') throw new Error('Only Polaris Dados can present inline formula results.');
   if (typeof mount !== 'function') throw new Error('An inline formula presentation needs a mount function.');
+  if (onEdit !== undefined && typeof onEdit !== 'function') throw new Error('An inline formula edit action needs a handler.');
 
   inlineFormulaPresentation?.deactivate();
   let active = true;
@@ -239,6 +245,7 @@ export function addPluginInlineFormulaPresentation(
     owner,
     generation: ++inlineFormulaPresentationGeneration,
     mount,
+    ...(onEdit ? { onEdit } : {}),
     isActive: () => active,
     deactivate: () => { active = false; },
   };

@@ -19,8 +19,15 @@ function context(
 
 function render(formula: string, changes: Partial<PluginInlineFormulaPresentationContext> = {}) {
   const element = document.createElement('span');
-  const cleanup = mountInlineFormulaResult(element, context(formula, changes));
-  return { element, cleanup };
+  const removePresentation = mountInlineFormulaResult(element, context(formula, changes));
+  document.body.append(element);
+  return {
+    element,
+    cleanup: () => {
+      removePresentation();
+      element.remove();
+    },
+  };
 }
 
 afterEach(() => {
@@ -80,6 +87,41 @@ describe('Polaris Dados inline scalar result presentation', () => {
     cleanup();
     expect(element.textContent).toBe('Original result');
     expect(element.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('offers an edit action for eligible calculated and fallback results', () => {
+    const onEdit = vi.fn();
+    const { element, cleanup } = render('2 + 3', { onEdit });
+    const button = element.querySelector<HTMLButtonElement>('button[aria-label="Edit formula"]');
+    expect(element.textContent).toBe('5');
+    expect(button).not.toBeNull();
+    expect(button?.type).toBe('button');
+    button?.focus();
+    expect(document.activeElement).toBe(button);
+    button?.click();
+    expect(onEdit).toHaveBeenCalledOnce();
+    cleanup();
+    expect(element.querySelector('button')).toBeNull();
+    expect(element.textContent).toBe('Original result');
+
+    const invalidEdit = vi.fn();
+    const invalid = render('1 +', { onEdit: invalidEdit });
+    expect(invalid.element.querySelector<HTMLButtonElement>('button[aria-label="Edit formula"]')).not.toBeNull();
+    expect(invalid.element.dataset.inlineFormulaState).toBe('error');
+    invalid.element.querySelector<HTMLButtonElement>('button')!.click();
+    expect(invalidEdit).toHaveBeenCalledOnce();
+    invalid.cleanup();
+
+    const unconfigured = render('', { onEdit: vi.fn() });
+    expect(unconfigured.element.dataset.inlineFormulaState).toBe('unconfigured');
+    expect(unconfigured.element.querySelector('button[aria-label="Edit formula"]')).not.toBeNull();
+    unconfigured.cleanup();
+
+    const unsupportedEdit = vi.fn();
+    const unsupported = render('[1, 2]', { onEdit: unsupportedEdit });
+    expect(unsupported.element.dataset.inlineFormulaState).toBe('unsupported');
+    expect(unsupported.element.querySelector('button[aria-label="Edit formula"]')).not.toBeNull();
+    unsupported.cleanup();
   });
 
   it('reuses number and date format settings only for supported scalar shapes', () => {

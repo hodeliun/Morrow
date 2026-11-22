@@ -17,7 +17,7 @@ import { getPreferences, setPreferences } from '../platform/preferences';
 import { captureEditorInsertionTarget } from './editorInsertion';
 import type { EditorInsertionOwner } from './editorInsertion';
 import { addInlineFormulaSlashCommand } from '../plugins/inlineFormulaAuthoring';
-import type { PluginInlineFormulaInsertionHost } from '../plugins/inlineFormulaApi';
+import type { PluginInlineFormulaEditHost, PluginInlineFormulaInsertionHost } from '../plugins/inlineFormulaApi';
 import { getLocalizedBlocks, runSlashCommandItem } from './SlashCommand';
 import { commitEditors, focusedEditor } from './commits';
 import { PageEditor } from './PageEditor';
@@ -465,6 +465,490 @@ describe('independent editor insertion capture', () => {
     expect(writes).toHaveBeenCalled();
     unregister();
     formulaRegistrations.delete(unregister);
+  });
+
+  it('edits a scalar result with isolated history and preserves identity, metadata, fallback, and neighbors', async () => {
+    const pageId = `inline-formula-edit-${++idCounter}` as PageId;
+    const payload = {
+      resultId: 'edit-existing',
+      pageId,
+      name: 'Original',
+      formula: '2 + 3',
+      bindings: [],
+      outputType: 'auto',
+      format: {},
+      futureField: { keep: 'café', enabled: true },
+    };
+    const encoded = encodeURIComponent(JSON.stringify(payload)).replace(/%[\da-f]{2}/gi, (part) => part.toLowerCase());
+    const originalRaw = `<span data-morrow-result='${encoded}' data-vendor="keep &amp; exact">Original</span>`;
+    const originalMarkdown = `**Before** ${originalRaw} *italic tail*`;
+    const { session, vault } = await openWorkspace({ pageId, markdown: originalMarkdown });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+
+    const initialDoc = editor.state.doc.toJSON();
+    const beforeText = docText(editor);
+    const beforePosition = cursorInside(editor, beforeText, 'Before', 0) + 'Before'.length;
+    await act(async () => {
+      editor.view.dispatch(editor.state.tr.insertText(' typed', beforePosition));
+      expect(commitEditors()).toBe(true);
+      expect(await session.flush()).toBe(true);
+    });
+    const before = editor.state.doc.toJSON();
+    const originalStored = vault.text(NOTE_PATH);
+    writes.mockClear();
+
+    const authoring = createFormulaAuthoringController('en');
+    formulaAuthorings.add(authoring);
+    const editHost: { value: PluginInlineFormulaEditHost | null } = { value: null };
+    const unregisterPresentation = addPluginInlineFormulaPresentation(
+      'polaris-dados',
+      mountInlineFormulaResult,
+      (host) => {
+        editHost.value = host;
+        authoring.onEdit(host);
+      },
+    );
+    formulaPresentations.add(unregisterPresentation);
+
+    const editButton = () => document.querySelector<HTMLButtonElement>('.inline-formula-edit-action');
+    expect(editButton()?.getAttribute('aria-label')).toBe('Edit formula');
+    expect(originalStored).toContain(originalRaw);
+    await act(async () => editButton()!.click());
+    expect(document.querySelector('form[role="dialog"] h2')?.textContent).toBe('Edit inline formula');
+    expect(document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-name"] input')?.value).toBe('Original');
+    expect(document.querySelector<HTMLTextAreaElement>('form[role="dialog"] label[for$="-formula"] textarea')?.value).toBe('2 + 3');
+    expect(editHost.value?.initial).toEqual({
+      formula: '2 + 3',
+      name: 'Original',
+      outputType: 'auto',
+      format: {},
+    });
+    expect(editHost.value?.canRestoreFocus?.()).toBe(true);
+    expect(editor.state.doc.toJSON()).toEqual(before);
+    expect(writes).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button:not([type="submit"])')!.click();
+    });
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(editor.state.doc.toJSON()).toEqual(before);
+    expect(vault.text(NOTE_PATH)).toBe(originalStored);
+    expect(writes).not.toHaveBeenCalled();
+
+    await act(async () => editButton()!.click());
+    let noOpTransactions = 0;
+    const onNoOpTransaction = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+      if (transaction.docChanged) noOpTransactions++;
+    };
+    editor.on('transaction', onNoOpTransaction as never);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+    });
+    editor.off('transaction', onNoOpTransaction as never);
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(noOpTransactions).toBe(0);
+    expect(editor.state.doc.toJSON()).toEqual(before);
+    expect(vault.text(NOTE_PATH)).toBe(originalStored);
+    expect(writes).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(editor.view.dom);
+
+    await act(async () => editButton()!.click());
+    const formulaInput = document.querySelector<HTMLTextAreaElement>('form[role="dialog"] label[for$="-formula"] textarea')!;
+    const nameInput = document.querySelector<HTMLInputElement>('form[role="dialog"] label[for$="-name"] input')!;
+    formulaInput.value = '6 * 7';
+    nameInput.value = 'New & <total>';
+    let docTransactions = 0;
+    const onTransaction = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+      if (transaction.docChanged) docTransactions++;
+    };
+    editor.on('transaction', onTransaction as never);
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+    });
+    editor.off('transaction', onTransaction as never);
+
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(editor.view.dom);
+    expect(docTransactions).toBe(1);
+    expect(docText(editor)).toBe('Before typed  italic tail');
+    expect(document.querySelector('.inline-formula-value')?.textContent).toBe('42');
+    const neighborMarks: Array<{ text: string; marks: string[] }> = [];
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.text) neighborMarks.push({ text: node.text, marks: node.marks.map((mark) => mark.type.name) });
+    });
+    expect(neighborMarks.some((item) => item.text.includes('Before') && item.marks.includes('bold'))).toBe(true);
+    expect(neighborMarks.some((item) => item.text.includes('italic tail') && item.marks.includes('italic'))).toBe(true);
+
+    let updatedRaw = '';
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === LEGACY_FORMULA_NODE) updatedRaw = String(node.attrs.raw ?? '');
+    });
+    expect(updatedRaw).toContain("data-vendor=\"keep &amp; exact\"");
+    expect(updatedRaw).toContain('%c3%a9');
+    expect(updatedRaw).toContain('New &amp; &lt;total&gt;</span>');
+    const updatedEncoded = updatedRaw.match(/data-morrow-result='([^']+)'/)?.[1];
+    expect(updatedEncoded).toBeDefined();
+    expect(JSON.parse(decodeURIComponent(updatedEncoded!))).toEqual({
+      ...payload,
+      name: 'New & <total>',
+      formula: '6 * 7',
+    });
+    expect(writes).not.toHaveBeenCalled();
+
+    const editedDoc = editor.state.doc.toJSON();
+    await act(async () => {
+      expect(editor.commands.insertContentAt(editor.state.doc.content.size - 1, ' suffix')).toBe(true);
+    });
+    const withSuffix = editor.state.doc.toJSON();
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(editedDoc);
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(before);
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(initialDoc);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(before);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(editedDoc);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(withSuffix);
+    await act(async () => {
+      expect(commitEditors()).toBe(true);
+      expect(await session.flush()).toBe(true);
+    });
+    const saved = vault.text(NOTE_PATH);
+    expect(saved).toContain(updatedRaw);
+    expect(writes).toHaveBeenCalled();
+    const reopened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `unexpected-formula-edit-reopen-${++idCounter}`),
+      { delayMs: 60_000 },
+    );
+    if (!reopened.ok) throw new Error(reopened.error);
+    sessions.add(reopened.value);
+    expect(docToMarkdown(reopened.value.getState().docs[pageId]!)).toBe(saved);
+    const persistedFormula = reopened.value.getState().docs[pageId]!.content?.[0]?.content?.find(
+      (node) => node.type === LEGACY_FORMULA_NODE,
+    );
+    expect(persistedFormula?.attrs?.raw).toBe(updatedRaw);
+
+    unregisterPresentation();
+    formulaPresentations.delete(unregisterPresentation);
+    authoring.dispose();
+    expect(document.querySelector('.legacy-formula-fallback')?.textContent).toBe('New & <total>');
+  });
+
+  it('leaves Enter and Space on the formula edit button to native button activation', async () => {
+    const pageId = `inline-formula-edit-keyboard-${++idCounter}` as PageId;
+    const marker = createLegacyFormulaMarker({
+      resultId: 'keyboard-edit-result', pageId, formula: '2 + 3', name: 'Five',
+    });
+    if (!marker) throw new Error('Could not create the synthetic formula marker.');
+    const { session } = await openWorkspace({ pageId, markdown: marker.raw });
+    setMainRoute(pageId);
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+
+    const authoring = createFormulaAuthoringController('en');
+    formulaAuthorings.add(authoring);
+    const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, authoring.onEdit);
+    formulaPresentations.add(unregister);
+    const button = harness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action');
+    if (!button) throw new Error('The formula edit action did not mount.');
+    const originalDoc = editor.state.doc.toJSON();
+
+    for (const key of ['Enter', ' ']) {
+      await act(async () => {
+        button.focus();
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        expect(button.dispatchEvent(event)).toBe(true);
+        expect(event.defaultPrevented).toBe(false);
+      });
+      expect(document.activeElement).toBe(button);
+      expect(editor.state.doc.toJSON()).toEqual(originalDoc);
+    }
+
+    await act(async () => button.click());
+    expect(document.querySelector('form[role="dialog"] h2')?.textContent).toBe('Edit inline formula');
+    expect(editor.state.doc.toJSON()).toEqual(originalDoc);
+  });
+
+  it('keeps a CRLF formula byte-stable when the textarea is saved without edits', async () => {
+    const pageId = `inline-formula-edit-crlf-${++idCounter}` as PageId;
+    const marker = createLegacyFormulaMarker({
+      resultId: 'crlf-result', pageId, formula: '1 +\r\n2', name: 'Three',
+    });
+    if (!marker) throw new Error('Could not create the synthetic multiline formula marker.');
+    const { session, vault } = await openWorkspace({ pageId, markdown: marker.raw });
+    setMainRoute(pageId);
+    const markdownBefore = vault.text(NOTE_PATH);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+
+    const authoring = createFormulaAuthoringController('en');
+    formulaAuthorings.add(authoring);
+    const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, authoring.onEdit);
+    formulaPresentations.add(unregister);
+    await act(async () => {
+      harness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action')!.click();
+    });
+    const formula = document.querySelector<HTMLTextAreaElement>('form[role="dialog"] textarea')!;
+    expect(formula.value.replace(/\r\n?/g, '\n')).toBe('1 +\n2');
+    const save = document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!;
+    await act(async () => {
+      formula.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+    });
+
+    expect(save.isConnected).toBe(false);
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(vault.text(NOTE_PATH)).toBe(markdownBefore);
+    expect(writes).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(editor.view.dom);
+  });
+
+  it.each([false, true])(
+    'edits from the same PageEditor draft when autosave already completed=%s',
+    async (autosaveBeforeSave) => {
+      const pageId = `inline-formula-edit-draft-${++idCounter}` as PageId;
+      const marker = createLegacyFormulaMarker({
+        resultId: `draft-result-${idCounter}`, pageId, formula: '2 + 3', name: 'Five',
+      });
+      if (!marker) throw new Error('Could not create the synthetic formula marker.');
+      const { session, vault } = await openWorkspace({
+        pageId, markdown: `Before ${marker.raw} after`,
+      });
+      setMainRoute(pageId);
+      const writes = vi.spyOn(vault, 'apply');
+      const harness = mountPageEditor(session, pageId);
+      await harness.render();
+      const editor = harness.editor;
+      if (!editor) throw new Error('PageEditor did not mount.');
+      await focusEditor(editor);
+
+      const authoring = createFormulaAuthoringController('en');
+      formulaAuthorings.add(authoring);
+      const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, authoring.onEdit);
+      formulaPresentations.add(unregister);
+      const text = docText(editor);
+      const position = cursorInside(editor, text, 'Before', 0) + 'Before'.length;
+      await act(async () => {
+        editor.view.dispatch(editor.state.tr.insertText(' typed', position));
+      });
+      expect(docText(editor)).toContain('Before typed');
+
+      await act(async () => {
+        harness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action')!.click();
+      });
+      if (autosaveBeforeSave) {
+        await act(async () => {
+          expect(commitEditors()).toBe(true);
+          expect(await session.flush()).toBe(true);
+        });
+      }
+      const formula = document.querySelector<HTMLTextAreaElement>('form[role="dialog"] textarea')!;
+      formula.value = '6 * 7';
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+      });
+      expect(document.querySelector('form[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(editor.view.dom);
+      expect(docText(editor)).toContain('Before typed');
+      expect(document.querySelector('.inline-formula-value')?.textContent).toBe('42');
+
+      await act(async () => {
+        expect(commitEditors()).toBe(true);
+        expect(await session.flush()).toBe(true);
+      });
+      const saved = vault.text(NOTE_PATH);
+      expect(saved).toContain('Before typed');
+      expect(saved).toContain('data-morrow-result=');
+      expect(writes).toHaveBeenCalled();
+      unregister();
+      formulaPresentations.delete(unregister);
+      authoring.dispose();
+    },
+  );
+
+  it('refreshes formula editability on read-only changes and restores focus only after a current successful save', async () => {
+    const pageId = `inline-formula-edit-readonly-${++idCounter}` as PageId;
+    const marker = createLegacyFormulaMarker({
+      resultId: 'readonly-result', pageId, formula: '2 + 3', name: 'Five',
+    });
+    if (!marker) throw new Error('Could not create the synthetic formula marker.');
+    const { session, vault } = await openWorkspace({ pageId, markdown: marker.raw });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+
+    const authoring = createFormulaAuthoringController('en');
+    formulaAuthorings.add(authoring);
+    const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, authoring.onEdit);
+    formulaPresentations.add(unregister);
+    const editButton = () => harness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action');
+    expect(editButton()).not.toBeNull();
+    await harness.render({ editable: false });
+    expect(editButton()).toBeNull();
+    await harness.render({ editable: true });
+    expect(editButton()).not.toBeNull();
+
+    await act(async () => editButton()!.click());
+    await harness.render({ editable: false });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+    });
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('read-only');
+    expect(document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')?.disabled).toBe(true);
+    expect(writes).not.toHaveBeenCalled();
+    expect(harness.container.querySelector('.inline-formula-value')?.textContent).toBe('5');
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="button"]')!.click();
+    });
+    await harness.render({ editable: true });
+    expect(editButton()).not.toBeNull();
+
+    await act(async () => editButton()!.click());
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('form[role="dialog"] button[type="submit"]')!.click();
+    });
+    expect(document.querySelector('form[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(editor.view.dom);
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('rejects an edit capture after an A→B→A document cycle', async () => {
+    const pageId = `inline-formula-edit-aba-${++idCounter}` as PageId;
+    const marker = createLegacyFormulaMarker({
+      resultId: 'aba-result', pageId, formula: '2 + 3', name: 'Stable result',
+    });
+    if (!marker) throw new Error('Could not create the synthetic formula marker.');
+    const { session, vault } = await openWorkspace({ pageId, markdown: `Before ${marker.raw} after` });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+    const target = { value: null as PluginInlineFormulaEditHost | null };
+    const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, (host) => {
+      target.value = host;
+    });
+    formulaPresentations.add(unregister);
+
+    const originalDoc = editor.state.doc.toJSON();
+    await act(async () => {
+      harness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action')!.click();
+    });
+    const host = target.value;
+    expect(host?.canRestoreFocus?.()).toBe(true);
+    await act(async () => {
+      expect(editor.commands.insertContentAt(editor.state.doc.content.size - 1, ' temporary')).toBe(true);
+      expect(editor.state.doc.toJSON()).not.toEqual(originalDoc);
+      expect(editor.commands.undo()).toBe(true);
+    });
+    expect(editor.state.doc.toJSON()).toEqual(originalDoc);
+    expect(host?.confirm({ formula: '6 * 7', name: 'Stable result' })).toEqual({
+      ok: false,
+      reason: 'document-changed',
+    });
+    expect(writes).not.toHaveBeenCalled();
+    expect(editor.state.doc.toJSON()).toEqual(originalDoc);
+  });
+
+  it('rejects an edit capture after an A→B→A navigation cycle', async () => {
+    const pageId = `inline-formula-edit-route-${++idCounter}` as PageId;
+    const marker = createLegacyFormulaMarker({
+      resultId: 'route-edit-result', pageId, formula: '2 + 3', name: 'Route result',
+    });
+    if (!marker) throw new Error('Could not create the synthetic formula marker.');
+    const { session, vault } = await openWorkspace({ pageId, markdown: marker.raw });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+    const target = { value: null as PluginInlineFormulaEditHost | null };
+    const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, (host) => {
+      target.value = host;
+    });
+    formulaPresentations.add(unregister);
+    await act(async () => {
+      harness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action')!.click();
+    });
+    expect(target.value?.canRestoreFocus?.()).toBe(true);
+
+    await act(async () => {
+      navigate({ name: 'tasks' }, { replace: true, pane: 'main' });
+      navigate({ name: 'page', id: pageId, find: null }, { replace: true, pane: 'main' });
+    });
+    expect(target.value?.confirm({ formula: '6 * 7', name: 'Route result' })).toEqual({
+      ok: false,
+      reason: 'target-changed',
+    });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('edits the clicked side-pane peer and synchronizes the same page in its other editor', async () => {
+    const pageId = `inline-formula-edit-peers-${++idCounter}` as PageId;
+    const marker = createLegacyFormulaMarker({
+      resultId: 'peer-edit-result', pageId, formula: '2 + 3', name: 'Peer total',
+    });
+    if (!marker) throw new Error('Could not create the synthetic formula marker.');
+    const { session } = await openWorkspace({ pageId, markdown: `${marker.raw} in both views` });
+    setMainRoute(pageId);
+    const mainHarness = mountPageEditor(session, pageId);
+    await mainHarness.render();
+    const mainEditor = mainHarness.editor;
+    if (!mainEditor) throw new Error('The main PageEditor did not mount.');
+
+    await act(async () => openSide(`#/page/${encodeURIComponent(pageId)}`));
+    const sidePane = getTabs().layout.focusedPaneId;
+    const sideHarness = mountPageEditor(session, pageId);
+    await sideHarness.render({ pane: sidePane });
+    const sideEditor = sideHarness.editor;
+    if (!sideEditor) throw new Error('The side PageEditor did not mount.');
+    await focusEditor(sideEditor);
+
+    const target = { value: null as PluginInlineFormulaEditHost | null };
+    const unregister = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult, (host) => {
+      target.value = host;
+    });
+    formulaPresentations.add(unregister);
+    await act(async () => {
+      sideHarness.container.querySelector<HTMLButtonElement>('.inline-formula-edit-action')!.click();
+    });
+    expect(target.value?.canRestoreFocus?.()).toBe(true);
+    expect(target.value?.confirm({ formula: '6 * 7', name: 'Updated peer total' })).toEqual({ ok: true });
+
+    const markerValues = (editor: Editor): Array<{ raw: string; fallback: string }> => {
+      const values: Array<{ raw: string; fallback: string }> = [];
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === LEGACY_FORMULA_NODE)
+          values.push({ raw: String(node.attrs.raw), fallback: String(node.attrs.fallback) });
+      });
+      return values;
+    };
+    expect(markerValues(mainEditor)).toEqual(markerValues(sideEditor));
+    expect(markerValues(mainEditor)[0]?.fallback).toBe('Updated peer total');
   });
 
   it('separates slash typing, formula insertion, and later typing into honest undo groups', async () => {

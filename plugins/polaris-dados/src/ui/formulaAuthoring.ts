@@ -1,4 +1,5 @@
 import type {
+  PluginInlineFormulaEditHost,
   PluginInlineFormulaInsertionFailureReason,
   PluginInlineFormulaInsertionHost,
   PluginInlineFormulaInsertionResult,
@@ -6,12 +7,14 @@ import type {
 import type { SupportedLocale } from '../../../../src/app/i18n';
 import type { FormulaRuntimeValue } from '../engine/formula';
 import { computeRuntimeFormula } from '../engine/formula';
+import { formatInlineFormulaValue } from './inlineFormulaResult';
 
 export interface FormulaAuthoringMessages {
   readonly slashTitle: string;
   readonly slashDescription: string;
   readonly slashKeywords: string;
   readonly title: string;
+  readonly editTitle: string;
   readonly nameLabel: string;
   readonly namePlaceholder: string;
   readonly formulaLabel: string;
@@ -22,6 +25,7 @@ export interface FormulaAuthoringMessages {
   readonly formulaRequired: string;
   readonly formulaError: (detail: string) => string;
   readonly scalarRequired: string;
+  readonly formatMismatch: string;
   readonly insertionError: (reason: PluginInlineFormulaInsertionFailureReason) => string;
 }
 
@@ -31,6 +35,7 @@ const MESSAGES: Record<SupportedLocale, FormulaAuthoringMessages> = {
     slashDescription: 'Insira um resultado calculado no corpo da nota.',
     slashKeywords: 'fórmula formula resultado cálculo inline',
     title: 'Inserir fórmula inline',
+    editTitle: 'Editar fórmula inline',
     nameLabel: 'Nome (opcional)',
     namePlaceholder: 'Ex.: Total',
     formulaLabel: 'Fórmula',
@@ -41,6 +46,7 @@ const MESSAGES: Record<SupportedLocale, FormulaAuthoringMessages> = {
     formulaRequired: 'Digite uma fórmula.',
     formulaError: (detail) => `Não foi possível avaliar a fórmula: ${detail}`,
     scalarRequired: 'A fórmula precisa resultar em um valor simples, como número, texto ou verdadeiro/falso.',
+    formatMismatch: 'O resultado não é compatível com o formato atual desta fórmula.',
     insertionError: (reason) => {
       switch (reason) {
         case 'read-only':
@@ -78,6 +84,7 @@ const MESSAGES: Record<SupportedLocale, FormulaAuthoringMessages> = {
     slashDescription: 'Insert a calculated result in the note.',
     slashKeywords: 'formula result calculated inline',
     title: 'Insert inline formula',
+    editTitle: 'Edit inline formula',
     nameLabel: 'Name (optional)',
     namePlaceholder: 'For example, Total',
     formulaLabel: 'Formula',
@@ -88,6 +95,7 @@ const MESSAGES: Record<SupportedLocale, FormulaAuthoringMessages> = {
     formulaRequired: 'Enter a formula.',
     formulaError: (detail) => `Could not evaluate this formula: ${detail}`,
     scalarRequired: 'The formula must return a simple value, such as a number, text, or true/false.',
+    formatMismatch: 'This result is not compatible with the current formula format.',
     insertionError: (reason) => {
       switch (reason) {
         case 'read-only':
@@ -125,6 +133,7 @@ const MESSAGES: Record<SupportedLocale, FormulaAuthoringMessages> = {
     slashDescription: 'Inserta un resultado calculado en la nota.',
     slashKeywords: 'fórmula formula resultado cálculo en línea',
     title: 'Insertar fórmula en línea',
+    editTitle: 'Editar fórmula en línea',
     nameLabel: 'Nombre (opcional)',
     namePlaceholder: 'Por ejemplo, Total',
     formulaLabel: 'Fórmula',
@@ -135,6 +144,7 @@ const MESSAGES: Record<SupportedLocale, FormulaAuthoringMessages> = {
     formulaRequired: 'Escribe una fórmula.',
     formulaError: (detail) => `No se pudo evaluar la fórmula: ${detail}`,
     scalarRequired: 'La fórmula debe devolver un valor simple, como número, texto o verdadero/falso.',
+    formatMismatch: 'El resultado no es compatible con el formato actual de esta fórmula.',
     insertionError: (reason) => {
       switch (reason) {
         case 'read-only':
@@ -181,6 +191,7 @@ interface ActiveForm {
 /** Owns the one lightweight formula dialog for this Polaris Dados activation. */
 export function createFormulaAuthoringController(locale: SupportedLocale): {
   readonly onInvoke: (host: PluginInlineFormulaInsertionHost) => void;
+  readonly onEdit: (host: PluginInlineFormulaEditHost) => void;
   readonly dispose: () => void;
 } {
   const messages = formulaAuthoringMessages(locale);
@@ -201,7 +212,22 @@ export function createFormulaAuthoringController(locale: SupportedLocale): {
       }
 
       host.dismiss?.();
-      active = mountFormulaDialog(host, messages, () => {
+      active = mountFormulaDialog(host, messages, 'insert', locale, () => {
+        active = null;
+      });
+    },
+    onEdit(host) {
+      if (disposed) {
+        host.cancel();
+        return;
+      }
+      if (active) {
+        host.cancel();
+        active.focus();
+        return;
+      }
+
+      active = mountFormulaDialog(host, messages, 'edit', locale, () => {
         active = null;
       });
     },
@@ -215,8 +241,10 @@ export function createFormulaAuthoringController(locale: SupportedLocale): {
 }
 
 function mountFormulaDialog(
-  host: PluginInlineFormulaInsertionHost,
+  host: PluginInlineFormulaInsertionHost | PluginInlineFormulaEditHost,
   messages: FormulaAuthoringMessages,
+  mode: 'insert' | 'edit',
+  locale: SupportedLocale,
   onClose: () => void,
 ): ActiveForm {
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -234,7 +262,7 @@ function mountFormulaDialog(
   header.className = 'dialog-header';
   const title = document.createElement('h2');
   title.id = `${id}-title`;
-  title.textContent = messages.title;
+  title.textContent = mode === 'edit' ? messages.editTitle : messages.title;
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'icon-button dialog-close';
@@ -248,14 +276,23 @@ function mountFormulaDialog(
   body.style.flexDirection = 'column';
   body.style.gap = '12px';
   const nameField = createField(id, 'name', messages.nameLabel, messages.namePlaceholder);
-  nameField.input.maxLength = 100;
-  nameField.input.autocomplete = 'off';
-  nameField.input.spellcheck = false;
-  const formulaField = createField(id, 'formula', messages.formulaLabel, messages.formulaPlaceholder);
-  formulaField.input.maxLength = 2000;
-  formulaField.input.autocomplete = 'off';
-  formulaField.input.spellcheck = false;
-  formulaField.input.setAttribute('data-autofocus', 'true');
+  nameField.control.maxLength = 100;
+  nameField.control.autocomplete = 'off';
+  nameField.control.spellcheck = false;
+  const formulaField = mode === 'edit'
+    ? createField(id, 'formula', messages.formulaLabel, messages.formulaPlaceholder, true)
+    : createField(id, 'formula', messages.formulaLabel, messages.formulaPlaceholder);
+  formulaField.control.maxLength = 2000;
+  formulaField.control.autocomplete = 'off';
+  formulaField.control.spellcheck = false;
+  formulaField.control.setAttribute('data-autofocus', 'true');
+  let renderedInitialName: string | null = null;
+  if (mode === 'edit') {
+    const initial = (host as PluginInlineFormulaEditHost).initial;
+    nameField.control.value = initial.name;
+    renderedInitialName = nameField.control.value;
+    formulaField.control.value = initial.formula;
+  }
   const error = document.createElement('div');
   error.className = 'field-error formula-authoring-error';
   error.setAttribute('role', 'alert');
@@ -315,40 +352,74 @@ function mountFormulaDialog(
     messages.insertionError(reason);
   const submit = () => {
     if (closed || submitting || saveButton.disabled) return;
-    const formula = formulaField.input.value;
+    const editHost = mode === 'edit' ? host as PluginInlineFormulaEditHost : null;
+    const enteredFormula = formulaField.control.value;
+    // Textarea normalizes source CRLF/CR to LF. Preserve the exact saved formula
+    // when the user submits without changing its text.
+    const formula = editHost && normalizeTextareaValue(enteredFormula) ===
+      normalizeTextareaValue(editHost.initial.formula)
+      ? editHost.initial.formula
+      : enteredFormula;
     if (!formula.trim()) {
       setError(messages.formulaRequired);
-      formulaField.input.focus();
+      formulaField.control.focus();
       return;
     }
     const evaluation = computeRuntimeFormula(formula, {});
     if (evaluation.error) {
       setError(messages.formulaError(evaluation.error));
-      formulaField.input.focus();
+      formulaField.control.focus();
       return;
     }
     if (!isScalar(evaluation.value)) {
       setError(messages.scalarRequired);
-      formulaField.input.focus();
+      formulaField.control.focus();
       return;
     }
 
+    if (editHost) {
+      const display = formatInlineFormulaValue(evaluation.value, {
+        formula,
+        outputType: editHost.initial.outputType,
+        format: editHost.initial.format,
+        fallback: editHost.initial.name,
+        locale,
+      });
+      if (display.kind === 'unsupported') {
+        setError(messages.formatMismatch);
+        formulaField.control.focus();
+        return;
+      }
+    }
+
     submitting = true;
-    const name = nameField.input.value.trim();
+    const enteredName = nameField.control.value;
+    const name = editHost && enteredName === renderedInitialName
+      ? editHost.initial.name
+      : mode === 'edit' ? enteredName : enteredName.trim();
     let result: PluginInlineFormulaInsertionResult;
     try {
-      result = host.confirm({ formula, ...(name ? { name } : {}) });
+      result = mode === 'edit'
+        ? (host as PluginInlineFormulaEditHost).confirm({ formula, name })
+        : (host as PluginInlineFormulaInsertionHost).confirm({ formula, ...(name ? { name } : {}) });
     } catch {
       result = { ok: false, reason: 'insert-rejected' };
     }
     if (result.ok) {
       close(false, false);
+      if (editHost) {
+        try {
+          editHost.focusAfterEdit?.();
+        } catch {
+          // The host may have been switched or removed while the form closed.
+        }
+      }
       return;
     }
     submitting = false;
     setError(reasonForFailure(result.reason));
     if (result.reason !== 'invalid-input') saveButton.disabled = true;
-    formulaField.input.focus();
+    formulaField.control.focus();
   };
   const onSubmit = (event: SubmitEvent) => {
     event.preventDefault();
@@ -367,23 +438,28 @@ function mountFormulaDialog(
       return;
     }
     if (event.key === 'Enter') {
-      // Repeated keydown events must not submit a second time, but the first
-      // Enter on a button is its native keyboard activation (including Cancel
-      // and Close). Input Enter is handled here to avoid implicit submit plus
-      // the form's submit event both processing the same key press.
+      // Buttons retain native activation. The formula editor is multiline, so
+      // plain Enter inserts a newline and Ctrl/Meta+Enter submits it.
+      if (event.target instanceof HTMLButtonElement) return;
+      if (event.target instanceof HTMLTextAreaElement) {
+        if (!event.ctrlKey && !event.metaKey) return;
+      } else if (!(event.target instanceof HTMLInputElement)) {
+        return;
+      }
+      // Repeated submit keydowns must not confirm twice. Plain textarea Enter
+      // and all button keydowns have already been left to the browser above.
       if (event.repeat) {
         event.preventDefault();
         event.stopPropagation();
         return;
       }
-      if (!(event.target instanceof HTMLInputElement)) return;
       event.preventDefault();
       event.stopPropagation();
       submit();
       return;
     }
     if (event.key !== 'Tab') return;
-    const focusable = [...form.querySelectorAll<HTMLElement>('input, button:not(:disabled)')];
+    const focusable = [...form.querySelectorAll<HTMLElement>('input, textarea, button:not(:disabled)')];
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (!first || !last) return;
@@ -403,10 +479,10 @@ function mountFormulaDialog(
     if (event.target === backdrop) cancel();
   });
   document.addEventListener('keydown', onDocumentKeyDown, true);
-  formulaField.input.focus();
+  formulaField.control.focus();
 
   return {
-    focus: () => formulaField.input.focus(),
+    focus: () => formulaField.control.focus(),
     close: () => close(true, true),
   };
 }
@@ -416,18 +492,40 @@ function createField(
   name: 'name' | 'formula',
   labelText: string,
   placeholder: string,
-): { readonly field: HTMLLabelElement; readonly input: HTMLInputElement } {
+  multiline?: false,
+): { readonly field: HTMLLabelElement; readonly control: HTMLInputElement };
+function createField(
+  prefix: string,
+  name: 'name' | 'formula',
+  labelText: string,
+  placeholder: string,
+  multiline: true,
+): { readonly field: HTMLLabelElement; readonly control: HTMLTextAreaElement };
+function createField(
+  prefix: string,
+  name: 'name' | 'formula',
+  labelText: string,
+  placeholder: string,
+  multiline = false,
+): { readonly field: HTMLLabelElement; readonly control: HTMLInputElement | HTMLTextAreaElement } {
   const field = document.createElement('label');
   field.className = 'field formula-authoring-field';
   field.htmlFor = `${prefix}-${name}`;
   field.append(document.createTextNode(labelText));
-  const input = document.createElement('input');
-  input.id = field.htmlFor;
-  input.className = 'text-input';
-  input.type = 'text';
-  input.placeholder = placeholder;
-  field.append(input);
-  return { field, input };
+  const control = multiline ? document.createElement('textarea') : document.createElement('input');
+  control.id = field.htmlFor;
+  control.className = 'text-input';
+  control.placeholder = placeholder;
+  if (control instanceof HTMLInputElement) control.type = 'text';
+  field.append(control);
+  return { field, control } as {
+    readonly field: HTMLLabelElement;
+    readonly control: HTMLInputElement | HTMLTextAreaElement;
+  };
+}
+
+function normalizeTextareaValue(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
 }
 
 function isScalar(value: FormulaRuntimeValue): boolean {

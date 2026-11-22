@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { validateDoc } from './doc';
 import {
   createLegacyFormulaMarker,
+  parseEditableLegacyFormula,
   legacyFormulaDocIssue,
   LEGACY_FORMULA_NODE,
   parseLegacyFormulaMarker,
   parseLegacyFormulaPresentation,
+  updateLegacyFormulaMarker,
 } from './legacyFormula';
 import type { DocNode } from './model';
 import { markdownToDoc } from './markdown/parse';
@@ -114,6 +116,123 @@ describe('legacy inline formula results', () => {
     expect(parseLegacyFormulaPresentation(unknownType)).toBeNull();
     expect(parseLegacyFormulaPresentation(makeMarker({}), 'Changed fallback')).toBeNull();
     expect(parseLegacyFormulaPresentation(unsupportedFormat)?.format).toBeNull();
+  });
+
+  it('updates only formula and name values while preserving extra payload data and outer HTML', () => {
+    const payload = {
+      future: { formula: 'nested stays untouched', flags: [true, null, 0] },
+      resultId: 'edit-result',
+      pageId: 'edit-page',
+      name: 'Old & <name>',
+      formula: '1 + 2',
+      bindings: [],
+      outputType: 'auto',
+      format: { precision: 2 },
+      vendorToken: 'keep % and spaces',
+    };
+    const encoded = encodeURIComponent(JSON.stringify(payload)).replaceAll("'", '%27');
+    const raw = `<span data-future = 'untouched' data-morrow-result='${encoded}' onclick="kept()" title="opaque">Old &amp; &lt;name&gt;</span>`;
+    const fallback = 'Old & <name>';
+    const originalOpeningStart = raw.slice(0, raw.indexOf(encoded));
+    const originalOpeningEnd = raw.slice(raw.indexOf(encoded) + encoded.length, raw.indexOf('>') + 1);
+    const projection = parseEditableLegacyFormula(raw, fallback);
+    expect(projection).toEqual({
+      resultId: 'edit-result',
+      pageId: 'edit-page',
+      name: 'Old & <name>',
+      formula: '1 + 2',
+      outputType: 'auto',
+      format: { precision: 2 },
+    });
+
+    const changedFormula = 'sum("literal\\" quote") + 4';
+    const formulaOnly = updateLegacyFormulaMarker(raw, fallback, { formula: changedFormula, name: fallback });
+    expect(formulaOnly).toMatchObject({ fallback, resultId: 'edit-result' });
+    expect(formulaOnly?.raw.startsWith(originalOpeningStart)).toBe(true);
+    expect(formulaOnly?.raw.includes(originalOpeningEnd.slice(0, originalOpeningEnd.indexOf('onclick')))).toBe(true);
+    expect(formulaOnly?.raw.endsWith('Old &amp; &lt;name&gt;</span>')).toBe(true);
+    const formulaOnlyEncoded = formulaOnly?.raw.match(/data-morrow-result='([^']+)'/)?.[1];
+    expect(formulaOnlyEncoded).toBeDefined();
+    const formulaOnlyPayload = JSON.parse(decodeURIComponent(formulaOnlyEncoded!));
+    expect(formulaOnlyPayload).toEqual({ ...payload, formula: changedFormula });
+
+    const updatedName = 'New "<&>" & name';
+    const renamed = updateLegacyFormulaMarker(raw, fallback, { formula: changedFormula, name: updatedName });
+    expect(renamed).toMatchObject({ fallback: updatedName, resultId: 'edit-result' });
+    expect(renamed?.raw).toContain('data-future = \'untouched\'');
+    expect(renamed?.raw).toContain('onclick="kept()" title="opaque"');
+    expect(renamed?.raw).toContain('New "&lt;&amp;&gt;" &amp; name</span>');
+    const renamedEncoded = renamed?.raw.match(/data-morrow-result='([^']+)'/)?.[1];
+    expect(renamedEncoded).toBeDefined();
+    expect(JSON.parse(decodeURIComponent(renamedEncoded!))).toEqual({
+      ...payload,
+      formula: changedFormula,
+      name: updatedName,
+    });
+
+    const cleared = updateLegacyFormulaMarker(renamed!.raw, updatedName, { formula: changedFormula, name: '' });
+    expect(cleared).toMatchObject({ fallback: '', resultId: 'edit-result' });
+    expect(cleared?.raw.endsWith('></span>')).toBe(true);
+  });
+
+  it('returns the original marker for a no-op and refuses bound or unsupported results', () => {
+    const payload = {
+      resultId: 'editable', pageId: 'page', name: 'Current', formula: '1 + 2',
+      bindings: [], outputType: 'auto', format: {}, future: { keep: true },
+    };
+    const raw = `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}" data-extra="same">Current</span>`;
+    expect(updateLegacyFormulaMarker(raw, 'Current', { name: 'Current', formula: '1 + 2' })).toEqual({
+      raw,
+      fallback: 'Current',
+      resultId: 'editable',
+    });
+    expect(parseEditableLegacyFormula(raw, 'wrong fallback')).toBeNull();
+
+    const unsupported = [
+      { bindings: [{ kind: 'property' }] },
+      { outputType: 'future-output' },
+      { format: { html: '<b>unsupported</b>' } },
+      { outputType: 'checkbox', format: { precision: 2 } },
+      { outputType: 'scale' },
+    ];
+    for (const override of unsupported) {
+      const source = `<span data-morrow-result="${encodeURIComponent(JSON.stringify({ ...payload, ...override }))}">Current</span>`;
+      expect(parseEditableLegacyFormula(source, 'Current')).toBeNull();
+      expect(updateLegacyFormulaMarker(source, 'Current', { name: 'Next', formula: '3 + 4' })).toBeNull();
+    }
+  });
+
+  it('preserves noncanonical JSON escapes and percent-encoded metadata outside changed values', () => {
+    const payloadText =
+      '{ "resultId":"escape-id", "pageId":"page", "name":"Ol\\u00e9", ' +
+      '"formula":"1 \\u002b 2", "bindings":[], "outputType":"auto", "format":{}, ' +
+      '"extra":"café & <raw>" }';
+    const encoded = encodeURIComponent(payloadText).replaceAll("'", '%27').replace(/%[\da-f]{2}/gi, (part) => part.toLowerCase());
+    const raw = `<span data-morrow-result="${encoded}" data-extra="leave">Olé</span>`;
+    const changed = updateLegacyFormulaMarker(raw, 'Olé', { formula: '1 + 3', name: 'Olé' });
+
+    expect(changed).not.toBeNull();
+    expect(changed?.raw).toContain('%c3%a9');
+    const updatedEncoded = changed?.raw.match(/data-morrow-result="([^"]+)"/)?.[1];
+    expect(updatedEncoded).toBeDefined();
+    expect(decodeURIComponent(updatedEncoded!)).toBe(
+      payloadText.replace('"formula":"1 \\u002b 2"', '"formula":"1 + 3"'),
+    );
+    expect(changed?.raw.endsWith(' data-extra="leave">Olé</span>')).toBe(true);
+  });
+
+  it('rejects duplicate top-level formula and name keys instead of updating the wrong JSON value', () => {
+    const duplicateFormula =
+      '{"resultId":"duplicate-formula","pageId":"page","name":"N","formula":"1 + 2",' +
+      '"bindings":[],"outputType":"auto","format":{},"formula":"9 + 9"}';
+    const duplicateName =
+      '{"resultId":"duplicate-name","pageId":"page","name":"N","formula":"1 + 2",' +
+      '"bindings":[],"outputType":"auto","format":{},"name":"Other"}';
+    for (const payload of [duplicateFormula, duplicateName]) {
+      const raw = `<span data-morrow-result="${encodeURIComponent(payload)}">N</span>`;
+      expect(parseEditableLegacyFormula(raw, 'N')).toBeNull();
+      expect(updateLegacyFormulaMarker(raw, 'N', { formula: '2 + 3', name: 'Changed' })).toBeNull();
+    }
   });
 
   it('round trips the exact legacy span, fallback and neighboring marks as inert atoms', () => {

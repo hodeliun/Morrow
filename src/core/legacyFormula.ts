@@ -27,6 +27,21 @@ export interface LegacyFormulaMarkerInput {
   readonly name?: string;
 }
 
+/** Host-only projection used to open the editor for an already validated scalar result. */
+export interface LegacyFormulaEditValues {
+  readonly resultId: string;
+  readonly pageId: string;
+  readonly name: string;
+  readonly formula: string;
+  readonly outputType: string;
+  readonly format: Readonly<LegacyFormulaDisplayFormat>;
+}
+
+export interface LegacyFormulaEditInput {
+  readonly name: string;
+  readonly formula: string;
+}
+
 export interface LegacyFormulaDisplayFormat {
   readonly locale?: string;
   readonly currency?: string;
@@ -38,6 +53,8 @@ export interface LegacyFormulaDisplayFormat {
 interface OpenTag {
   readonly end: number;
   readonly encodedPayload: string;
+  readonly encodedPayloadStart: number;
+  readonly encodedPayloadEnd: number;
 }
 
 /** Reads one inert legacy result span without decoding or rewriting its stored markup. */
@@ -85,6 +102,99 @@ export function parseLegacyFormulaPresentation(
   };
 }
 
+/** Reads only published, unbound scalar results whose renderer supports the stored format. */
+export function parseEditableLegacyFormula(raw: string, fallback: string): LegacyFormulaEditValues | null {
+  const marker = parseLegacyFormulaMarker(raw);
+  if (!marker || marker.raw !== raw || marker.fallback !== fallback) return null;
+  const opening = parseLegacyFormulaOpeningTag(raw);
+  if (!opening) return null;
+  let payloadText: string;
+  try {
+    payloadText = decodeURIComponent(opening.encodedPayload);
+  } catch {
+    return null;
+  }
+  if (!topLevelStringValueRange(payloadText, 'formula') || !topLevelStringValueRange(payloadText, 'name')) return null;
+  const payload = decodePayload(opening.encodedPayload);
+  const format = payload ? projectDisplayFormat(payload.format) : null;
+  if (
+    !payload ||
+    payload.bindings.length !== 0 ||
+    !EDITABLE_OUTPUT_TYPES.has(payload.outputType) ||
+    !format ||
+    !formatSupportsOutput(payload.outputType, payload.format)
+  ) return null;
+  return {
+    resultId: payload.resultId,
+    pageId: payload.pageId,
+    name: payload.name,
+    formula: payload.formula,
+    outputType: payload.outputType,
+    format,
+  };
+}
+
+/** Replaces only the two top-level JSON strings and, when renamed, its escaped fallback text. */
+export function updateLegacyFormulaMarker(
+  raw: string,
+  fallback: string,
+  input: LegacyFormulaEditInput,
+): LegacyFormulaMarker | null {
+  const current = parseEditableLegacyFormula(raw, fallback);
+  const opening = parseLegacyFormulaOpeningTag(raw);
+  if (
+    !current || !opening ||
+    !input || typeof input.formula !== 'string' || input.formula.length > 2000 ||
+    typeof input.name !== 'string' || input.name.length > 100
+  ) return null;
+  if (input.formula === current.formula && input.name === current.name) return { raw, fallback, resultId: current.resultId };
+
+  let decodedPayload: DecodedUriText;
+  try {
+    decodedPayload = decodeUriTextWithOffsets(opening.encodedPayload);
+  } catch {
+    return null;
+  }
+  const formulaRange = topLevelStringValueRange(decodedPayload.text, 'formula');
+  const nameRange = topLevelStringValueRange(decodedPayload.text, 'name');
+  if (!formulaRange || !nameRange) return null;
+
+  const replacements: Array<{
+    readonly range: { readonly start: number; readonly end: number };
+    readonly value: string;
+  }> = [];
+  if (input.formula !== current.formula) {
+    replacements.push({
+      range: mapDecodedRangeToEncoded(formulaRange, decodedPayload),
+      value: encodeURIComponent(JSON.stringify(input.formula)).replaceAll("'", '%27'),
+    });
+  }
+  if (input.name !== current.name) {
+    replacements.push({
+      range: mapDecodedRangeToEncoded(nameRange, decodedPayload),
+      value: encodeURIComponent(JSON.stringify(input.name)).replaceAll("'", '%27'),
+    });
+  }
+  replacements.sort((left, right) => right.range.start - left.range.start);
+  let encodedPayload = opening.encodedPayload;
+  for (const replacement of replacements) {
+    encodedPayload =
+      encodedPayload.slice(0, replacement.range.start) +
+      replacement.value +
+      encodedPayload.slice(replacement.range.end);
+  }
+
+  const updatedOpening =
+    raw.slice(0, opening.encodedPayloadStart) +
+    encodedPayload +
+    raw.slice(opening.encodedPayloadEnd, opening.end);
+  const fallbackStart = opening.end;
+  const fallbackEnd = raw.indexOf('<', fallbackStart);
+  if (fallbackEnd < 0) return null;
+  const innerText = input.name === current.name ? raw.slice(fallbackStart, fallbackEnd) : escapeHtmlText(input.name);
+  return parseLegacyFormulaMarker(updatedOpening + innerText + raw.slice(fallbackEnd));
+}
+
 /** Builds the published scalar marker shape while keeping its label inert HTML text. */
 export function createLegacyFormulaMarker(input: LegacyFormulaMarkerInput): LegacyFormulaMarker | null {
   if (
@@ -129,13 +239,15 @@ export function parseLegacyFormulaOpeningTag(source: string, start = 0): OpenTag
   }
   let index = start + 5;
   let encodedPayload: string | null = null;
+  let encodedPayloadStart = -1;
+  let encodedPayloadEnd = -1;
 
   while (index < source.length) {
     if (index - start > MAX_MARKER_LENGTH) return null;
     while (index < source.length && index - start <= MAX_MARKER_LENGTH && /\s/.test(source[index]!)) index++;
     if (source[index] === '>') {
       if (encodedPayload === null) return null;
-      return { end: index + 1, encodedPayload };
+      return { end: index + 1, encodedPayload, encodedPayloadStart, encodedPayloadEnd };
     }
     if (source[index] === '/' || !source[index]) return null;
 
@@ -158,17 +270,20 @@ export function parseLegacyFormulaOpeningTag(source: string, start = 0): OpenTag
     while (index < source.length && index - start <= MAX_MARKER_LENGTH && /\s/.test(source[index]!)) index++;
     const quote = source[index] === '"' || source[index] === "'" ? source[index]! : null;
     let value: string;
+    let valueStart: number;
+    let valueEnd: number;
     if (quote) {
-      const valueStart = ++index;
+      valueStart = ++index;
       while (index < source.length && source[index] !== quote) {
         if (index - start > MAX_MARKER_LENGTH) return null;
         index++;
       }
       if (index >= source.length) return null;
       value = source.slice(valueStart, index);
+      valueEnd = index;
       index++;
     } else {
-      const valueStart = index;
+      valueStart = index;
       while (
         index < source.length &&
         index - start <= MAX_MARKER_LENGTH &&
@@ -178,10 +293,13 @@ export function parseLegacyFormulaOpeningTag(source: string, start = 0): OpenTag
       }
       if (index === valueStart) return null;
       value = source.slice(valueStart, index);
+      valueEnd = index;
     }
     if (name === 'data-morrow-result') {
       if (encodedPayload !== null) return null;
       encodedPayload = value;
+      encodedPayloadStart = valueStart;
+      encodedPayloadEnd = valueEnd;
     }
   }
   return null;
@@ -285,6 +403,8 @@ export function countLegacyFormulaNodes(value: unknown): number {
 
 function decodePayload(encoded: string): {
   resultId: string;
+  pageId: string;
+  name: string;
   formula: string;
   bindings: unknown[];
   outputType: string;
@@ -309,6 +429,8 @@ function decodePayload(encoded: string): {
     }
     return {
       resultId: parsed.resultId,
+      pageId: parsed.pageId,
+      name: parsed.name,
       formula: parsed.formula,
       bindings: parsed.bindings,
       outputType: parsed.outputType,
@@ -317,6 +439,167 @@ function decodePayload(encoded: string): {
   } catch {
     return null;
   }
+}
+
+const EDITABLE_OUTPUT_TYPES = new Set(['auto', 'text', 'number', 'currency', 'percent', 'checkbox', 'date']);
+
+function formatSupportsOutput(outputType: string, format: Record<string, unknown>): boolean {
+  const keys = Object.keys(format);
+  switch (outputType) {
+    case 'auto':
+    case 'text':
+      return keys.every((key) => ['locale', 'currency', 'precision', 'negativeFormat'].includes(key));
+    case 'number':
+    case 'currency':
+    case 'percent':
+      return keys.every((key) => ['locale', 'currency', 'precision', 'negativeFormat'].includes(key));
+    case 'checkbox':
+      return keys.length === 0;
+    case 'date':
+      return keys.every((key) => key === 'locale' || key === 'dateStyle');
+    default:
+      return false;
+  }
+}
+
+function topLevelStringValueRange(
+  source: string,
+  property: string,
+): { readonly start: number; readonly end: number } | null {
+  let index = skipJsonWhitespace(source, 0);
+  if (source[index] !== '{') return null;
+  index = skipJsonWhitespace(source, index + 1);
+  let found: { readonly start: number; readonly end: number } | null = null;
+  while (index < source.length && source[index] !== '}') {
+    if (source[index] !== '"') return null;
+    const keyEnd = jsonStringEnd(source, index);
+    if (keyEnd === null) return null;
+    let key: unknown;
+    try {
+      key = JSON.parse(source.slice(index, keyEnd));
+    } catch {
+      return null;
+    }
+    index = skipJsonWhitespace(source, keyEnd);
+    if (source[index] !== ':') return null;
+    index = skipJsonWhitespace(source, index + 1);
+    const valueStart = index;
+    if (key === property) {
+      if (found || source[valueStart] !== '"') return null;
+      const valueEnd = jsonStringEnd(source, valueStart);
+      if (valueEnd === null) return null;
+      found = { start: valueStart, end: valueEnd };
+      index = valueEnd;
+    } else {
+      const valueEnd = jsonValueEnd(source, valueStart);
+      if (valueEnd === null) return null;
+      index = valueEnd;
+    }
+    index = skipJsonWhitespace(source, index);
+    if (source[index] === ',') index = skipJsonWhitespace(source, index + 1);
+    else if (source[index] !== '}') return null;
+  }
+  return found;
+}
+
+interface DecodedUriText {
+  readonly text: string;
+  readonly starts: readonly number[];
+  readonly ends: readonly number[];
+}
+
+function decodeUriTextWithOffsets(encoded: string): DecodedUriText {
+  let text = '';
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (let index = 0; index < encoded.length;) {
+    const start = index;
+    let decoded: string;
+    if (encoded[index] === '%') {
+      if (!/^%[\da-f]{2}$/i.test(encoded.slice(index, index + 3))) throw new Error('Invalid URI encoding.');
+      const firstByte = Number.parseInt(encoded.slice(index + 1, index + 3), 16);
+      const byteLength = firstByte < 0x80 ? 1 : firstByte < 0xe0 ? 2 : firstByte < 0xf0 ? 3 : 4;
+      const end = index + byteLength * 3;
+      const sequence = encoded.slice(index, end);
+      if (sequence.match(/%[\da-f]{2}/gi)?.length !== byteLength) throw new Error('Invalid UTF-8 URI sequence.');
+      decoded = decodeURIComponent(sequence);
+      index = end;
+    } else {
+      const codePoint = encoded.codePointAt(index);
+      if (codePoint === undefined) throw new Error('Invalid URI text.');
+      decoded = String.fromCodePoint(codePoint);
+      index += decoded.length;
+    }
+    text += decoded;
+    for (let offset = 0; offset < decoded.length; offset++) {
+      starts.push(start);
+      ends.push(index);
+    }
+  }
+  if (decodeURIComponent(encoded) !== text) throw new Error('URI decoding changed the source text.');
+  return { text, starts, ends };
+}
+
+function mapDecodedRangeToEncoded(
+  range: { readonly start: number; readonly end: number },
+  decoded: DecodedUriText,
+): { readonly start: number; readonly end: number } {
+  const start = decoded.starts[range.start];
+  const end = decoded.ends[range.end - 1];
+  if (start === undefined || end === undefined) throw new Error('The JSON value has no encoded source range.');
+  return { start, end };
+}
+
+function jsonValueEnd(source: string, start: number): number | null {
+  if (source[start] === '"') return jsonStringEnd(source, start);
+  if (source[start] !== '{' && source[start] !== '[') {
+    let end = start;
+    while (end < source.length && !/[\s,}\]]/.test(source[end]!)) end++;
+    return end > start ? end : null;
+  }
+  const opening = source[start];
+  const stack = [opening === '{' ? '}' : ']'];
+  let inString = false;
+  let escaped = false;
+  for (let index = start + 1; index < source.length; index++) {
+    const char = source[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') stack.push('}');
+    else if (char === '[') stack.push(']');
+    else if (char === '}' || char === ']') {
+      if (stack.pop() !== char) return null;
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return null;
+}
+
+function jsonStringEnd(source: string, start: number): number | null {
+  if (source[start] !== '"') return null;
+  let escaped = false;
+  for (let index = start + 1; index < source.length; index++) {
+    const char = source[index]!;
+    if (escaped) escaped = false;
+    else if (char === '\\') escaped = true;
+    else if (char === '"') return index + 1;
+  }
+  return null;
+}
+
+function skipJsonWhitespace(source: string, start: number): number {
+  let index = start;
+  while (index < source.length && /\s/.test(source[index]!)) index++;
+  return index;
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 function projectDisplayFormat(format: Record<string, unknown>): LegacyFormulaDisplayFormat | null {

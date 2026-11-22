@@ -3,7 +3,7 @@ import type { DataApi } from '../../../src/app/plugins/dataApi';
 import type { PluginEditorInsertionApiV1 } from '../../../src/app/plugins/editorApi';
 import type { SupportedLocale } from '../../../src/app/i18n';
 import type { PluginInlineFormulaPresentationMount } from '../../../src/app/plugins/registry';
-import type { PluginInlineFormulaSlashCommand } from '../../../src/app/plugins/inlineFormulaApi';
+import type { PluginInlineFormulaEditAction, PluginInlineFormulaSlashCommand } from '../../../src/app/plugins/inlineFormulaApi';
 import type { FormulaDatabasePage } from './ui/formulas';
 import { createLinkedViewInsertPicker } from './ui/insertView';
 import type { LinkedViewInsertPickerApi } from './ui/insertView';
@@ -33,7 +33,7 @@ export interface PolarisDadosPluginApi extends LinkedViewInsertPickerApi {
   readonly editor: { readonly insertion: PluginEditorInsertionApiV1 };
   readonly inlineFormulas: {
     readonly version: 1;
-    registerPresentation(mount: PluginInlineFormulaPresentationMount): () => void;
+    registerPresentation(mount: PluginInlineFormulaPresentationMount, onEdit?: PluginInlineFormulaEditAction): () => void;
     addSlashCommand?(command: PluginInlineFormulaSlashCommand): () => void;
   };
 }
@@ -105,9 +105,9 @@ export function activate(api: PolarisDadosPluginApi): () => void {
       keywords: messages.insertViewKeywords,
       run: picker.open,
     });
-    unregisterInlineFormula = api.inlineFormulas.registerPresentation(mountInlineFormulaResult);
+    formulaAuthoring = createFormulaAuthoringController(api.locale);
+    unregisterInlineFormula = api.inlineFormulas.registerPresentation(mountInlineFormulaResult, formulaAuthoring.onEdit);
     if (typeof api.inlineFormulas.addSlashCommand === 'function') {
-      formulaAuthoring = createFormulaAuthoringController(api.locale);
       const formulaMessages = formulaAuthoringMessages(api.locale);
       unregisterInlineFormulaSlash = api.inlineFormulas.addSlashCommand({
         title: formulaMessages.slashTitle,

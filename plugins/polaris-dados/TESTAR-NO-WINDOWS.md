@@ -81,6 +81,12 @@ Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parág
 2. Escreva `6 * 7`, dê o nome **Total novo** e confirme em **Salvar**. O resultado no parágrafo deve ser **42**.
 3. Use desfazer para voltar ao comando e refazer para restaurar o resultado. Salve e reabra a nota para conferir o **42**. Ao desativar o Dados, a nota mostra **Total novo**.
 
+### Editar uma fórmula já inserida
+
+1. Em `Resolved target`, clique no botão **Editar fórmula** junto ao resultado **5**. O formulário abre com a expressão e o nome já preenchidos. O campo de expressão aceita várias linhas. Use Ctrl+Enter para salvar a partir desse campo.
+2. Altere a expressão de `2 + 3` para `6 * 7` e salve. O resultado passa a **42**. Desfazer volta a **5** e refazer restaura **42** no mesmo ponto da nota.
+3. Reabra o formulário e altere o nome. Salve e reabra a nota. Ao desativar Polaris Dados, o novo nome aparece como texto de reserva. Use **Cancelar** ou **Escape** para sair sem gravar.
+
 ## Fluxo curto
 
 1. Abra a nota `Inventory` no cofre `PilotState\DemoVault`.
