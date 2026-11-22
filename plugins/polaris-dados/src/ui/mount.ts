@@ -22,6 +22,7 @@ import type {
 import { createFormulaEvaluationScope, evaluateCell, resolveFormulaDatabaseTitle } from './formulas';
 import { mergePrioritizedColumnOrder, projectLinkedView, type PresentedProperty } from './linkedView';
 import { providerMessages } from './locale';
+import { formatNumberCell as formatSharedNumberCell } from './numberFormatting';
 
 const PROVIDER_ID = 'polaris-dados';
 
@@ -2229,21 +2230,10 @@ export function mountPolarisDados(
 
   const formatNumberCell = (value: number, property: ProviderProperty): string => {
     const format = property.type === 'number' ? property.format : undefined;
-    if (!format) return new Intl.NumberFormat(locale, { maximumFractionDigits: 10 }).format(value);
-
-    const formatLocale = format.locale || (typeof navigator !== 'undefined' ? navigator.language : 'en-US');
-    const precision = format.precision ?? 2;
-    try {
-      const formatter = new Intl.NumberFormat(formatLocale, {
-        maximumFractionDigits: precision,
-        ...(format.precision !== undefined ? { minimumFractionDigits: precision } : {}),
-      });
-      if (format.negativeFormat === 'parentheses' && value < 0)
-        return `(${formatter.format(Math.abs(value))})`;
-      return formatter.format(value);
-    } catch {
-      return String(value);
-    }
+    const fallbackLocale = format
+      ? (typeof navigator !== 'undefined' ? navigator.language : 'en-US')
+      : locale;
+    return formatSharedNumberCell(value, format, fallbackLocale);
   };
 
   const displayCell = (

@@ -431,6 +431,7 @@ function createPluginHarness(session: WorkspaceSession): PluginTestHarness {
         },
       },
     },
+    inlineFormulas: { version: 1, registerPresentation: () => () => {} },
     get locale() {
       return getPreferences().locale;
     },

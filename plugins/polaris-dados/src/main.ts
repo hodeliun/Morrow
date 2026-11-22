@@ -2,11 +2,13 @@ import type { DatabaseProvidersApi, DatabaseProviderContext } from '../../../src
 import type { DataApi } from '../../../src/app/plugins/dataApi';
 import type { PluginEditorInsertionApiV1 } from '../../../src/app/plugins/editorApi';
 import type { SupportedLocale } from '../../../src/app/i18n';
+import type { PluginInlineFormulaPresentationMount } from '../../../src/app/plugins/registry';
 import type { FormulaDatabasePage } from './ui/formulas';
 import { createLinkedViewInsertPicker } from './ui/insertView';
 import type { LinkedViewInsertPickerApi } from './ui/insertView';
 import { providerMessages } from './ui/locale';
 import { mountPolarisDados } from './ui/mount';
+import { mountInlineFormulaResult } from './ui/inlineFormulaResult';
 
 export const POLARIS_DADOS_PROVIDER_ID = 'polaris-dados';
 
@@ -27,6 +29,10 @@ export interface PolarisDadosPluginApi extends LinkedViewInsertPickerApi {
     }): () => void;
   };
   readonly editor: { readonly insertion: PluginEditorInsertionApiV1 };
+  readonly inlineFormulas: {
+    readonly version: 1;
+    registerPresentation(mount: PluginInlineFormulaPresentationMount): () => void;
+  };
 }
 
 export function mount(
@@ -47,10 +53,12 @@ export function activate(api: PolarisDadosPluginApi): () => void {
     typeof api?.pages?.list !== 'function' ||
     typeof api?.commands?.add !== 'function' ||
     typeof api?.slash?.add !== 'function' ||
+    api?.inlineFormulas?.version !== 1 ||
+    typeof api?.inlineFormulas?.registerPresentation !== 'function' ||
     !['en', 'es', 'pt'].includes(api?.locale)
   ) {
     throw new Error(
-      'Polaris Dados requires data API v1 and database-provider API v1, editor insertion API v1, a supported locale, and page, command, and slash APIs.',
+      'Polaris Dados requires data API v1 and database-provider API v1, editor insertion API v1, inline formula presentation API v1, a supported locale, and page, command, and slash APIs.',
     );
   }
 
@@ -59,11 +67,13 @@ export function activate(api: PolarisDadosPluginApi): () => void {
   let unregisterProvider = () => {};
   let unregisterCommand = () => {};
   let unregisterSlash = () => {};
+  let unregisterInlineFormula = () => {};
   let disposed = false;
   const cleanup = () => {
     if (disposed) return;
     disposed = true;
     unregisterSlash();
+    unregisterInlineFormula();
     unregisterCommand();
     picker.dispose();
     unregisterProvider();
@@ -87,6 +97,7 @@ export function activate(api: PolarisDadosPluginApi): () => void {
       keywords: messages.insertViewKeywords,
       run: picker.open,
     });
+    unregisterInlineFormula = api.inlineFormulas.registerPresentation(mountInlineFormulaResult);
   } catch (error) {
     cleanup();
     throw error;

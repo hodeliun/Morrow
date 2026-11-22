@@ -234,6 +234,38 @@ afterEach(async () => {
 });
 
 describe('plugin loader lifecycle', () => {
+  it('exposes the inline formula presentation to Polaris Dados and removes it on disable', async () => {
+    const h = await createHarness({
+      pluginId: 'polaris-dados',
+      enabled: ['polaris-dados'],
+      code: `export default (morrow) => {
+        if (morrow.inlineFormulas.version !== 1) throw new Error('inline formula API version missing');
+        morrow.inlineFormulas.registerPresentation((container, context) => {
+          container.textContent = context.formula;
+          return () => { container.textContent = context.fallback; };
+        });
+      };`,
+    });
+    await h.loader.startPlugins();
+
+    const registration = h.registry.polarisDadosInlineFormulaPresentation();
+    expect(registration?.owner).toBe('polaris-dados');
+    expect(registration?.isActive()).toBe(true);
+    const container = document.createElement('span');
+    registration?.mount(container, {
+      formula: '1 + 2',
+      outputType: 'auto',
+      format: {},
+      fallback: 'Original',
+      locale: 'pt',
+    });
+    expect(container.textContent).toBe('1 + 2');
+
+    await h.loader.setPluginEnabled('polaris-dados', false);
+    expect(registration?.isActive()).toBe(false);
+    expect(h.registry.polarisDadosInlineFormulaPresentation()).toBeNull();
+  });
+
   it('exposes the note-style mount only to Documento and cleans its registration on disable', async () => {
     const h = await createHarness({
       pluginId: 'polaris-documento',

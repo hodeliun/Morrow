@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateDoc } from './doc';
-import { legacyFormulaDocIssue, LEGACY_FORMULA_NODE } from './legacyFormula';
+import { legacyFormulaDocIssue, LEGACY_FORMULA_NODE, parseLegacyFormulaPresentation } from './legacyFormula';
 import type { DocNode } from './model';
 import { markdownToDoc } from './markdown/parse';
 import { docToClipboardMarkdown, docToMarkdown } from './markdown/serialize';
@@ -31,6 +31,52 @@ function formulaNodes(doc: DocNode): DocNode[] {
 }
 
 describe('legacy inline formula results', () => {
+  it('projects only validated, unbound display data and omits identity and source markup', () => {
+    const payload = {
+      resultId: 'private-result',
+      pageId: 'private-page',
+      name: 'Private name',
+      formula: '1 + 2',
+      bindings: [],
+      outputType: 'number',
+      format: { locale: 'pt-BR', precision: 2 },
+    };
+    const marker = `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}">Three</span>`;
+
+    expect(parseLegacyFormulaPresentation(marker, 'Three')).toEqual({
+      formula: '1 + 2',
+      outputType: 'number',
+      format: { locale: 'pt-BR', precision: 2 },
+      fallback: 'Three',
+    });
+    expect(JSON.stringify(parseLegacyFormulaPresentation(marker))).not.toMatch(/private-result|private-page|Private name|data-morrow-result/);
+  });
+
+  it('keeps bound, malformed, mismatched and unsupported payloads out of the renderer projection', () => {
+    const makeMarker = (overrides: Record<string, unknown>) => {
+      const payload = {
+        resultId: 'safe-result',
+        pageId: 'safe-page',
+        name: 'Safe',
+        formula: '1 + 2',
+        bindings: [],
+        outputType: 'auto',
+        format: {},
+        ...overrides,
+      };
+      return `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}">Safe</span>`;
+    };
+
+    const bound = makeMarker({ bindings: [{ kind: 'property' }] });
+    const unknownType = makeMarker({ outputType: 'future-output' });
+    const unsupportedFormat = makeMarker({ format: { html: '<b>unsafe</b>' } });
+
+    expect(parseLegacyFormulaPresentation(bound)).toBeNull();
+    expect(parseLegacyFormulaPresentation(unknownType)).toBeNull();
+    expect(parseLegacyFormulaPresentation(makeMarker({}), 'Changed fallback')).toBeNull();
+    expect(parseLegacyFormulaPresentation(unsupportedFormat)?.format).toBeNull();
+  });
+
   it('round trips the exact legacy span, fallback and neighboring marks as inert atoms', () => {
     const first = legacyResult('result-a', 'Revenue & tax');
     const second = legacyResult('result-b', 'Expenses');

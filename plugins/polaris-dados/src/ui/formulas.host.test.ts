@@ -162,6 +162,7 @@ async function openFixture(vault = new MemoryVault(fixtureFiles())): Promise<Fix
       },
     },
     editor: { insertion: { version: 1, capture: () => null } },
+    inlineFormulas: { version: 1, registerPresentation: () => () => {} },
     commands: { add: () => () => {} },
     slash: { add: () => () => {} },
   };

@@ -9,6 +9,7 @@ import type {
   DataApiSnapshot,
 } from '../../../../src/app/plugins/dataApi';
 import type { DatabaseProviderRegistration } from '../../../../src/app/plugins/providerApi';
+import type { PluginInlineFormulaPresentationMount } from '../../../../src/app/plugins/registry';
 import { activate, POLARIS_DADOS_PROVIDER_ID, type PolarisDadosPluginApi } from '../main';
 import { parseFiniteNumber } from './mount';
 
@@ -201,6 +202,7 @@ function mountPlugin(
   const element = hostElement as unknown as HTMLElement;
   const controller = new AbortController();
   const holder: { registration?: DatabaseProviderRegistration } = {};
+  const formulaHolder: { mount?: PluginInlineFormulaPresentationMount } = {};
   let registered = 0;
   const pluginApi: PolarisDadosPluginApi = {
     data,
@@ -212,6 +214,15 @@ function mountPlugin(
       insertion: {
         version: 1,
         capture: () => null,
+      },
+    },
+    inlineFormulas: {
+      version: 1,
+      registerPresentation(mount) {
+        formulaHolder.mount = mount;
+        return () => {
+          if (formulaHolder.mount === mount) formulaHolder.mount = undefined;
+        };
       },
     },
     commands: {
@@ -244,6 +255,7 @@ function mountPlugin(
     unmount,
     unregister,
     registered,
+    inlineFormulaMount: () => formulaHolder.mount,
   };
 }
 
@@ -314,6 +326,27 @@ describe('Polaris Dados provider module', () => {
 
     expect(() => activate(incompatible)).toThrow('editor insertion API v1');
     expect(registrations).toBe(0);
+  });
+
+  it('registers the calculated-result view through the plugin entry point and unregisters it on deactivate', () => {
+    const mounted = mountPlugin(makeDataDouble().api);
+    const mount = mounted.inlineFormulaMount();
+    expect(mount).toBeTypeOf('function');
+    const element = mounted.window.document.createElement('span');
+    const cleanup = mount!(element as unknown as HTMLElement, {
+      formula: '2 + 3',
+      outputType: 'number',
+      format: {},
+      fallback: 'Original',
+      locale: 'en',
+    });
+    expect(element.textContent).toBe('5,00');
+    expect(element.dataset.inlineFormulaState).toBe('calculated');
+
+    mounted.unregister();
+    expect(mounted.inlineFormulaMount()).toBeUndefined();
+    cleanup?.();
+    mounted.unmount();
   });
 
   it('registers the provider and uses the extracted formula engine while editing with keyboard', async () => {

@@ -5,6 +5,8 @@ import type { LucideIcon } from 'lucide-react';
 import type { Action } from '../actions';
 import type { NoteStyle, NoteStyleFont, NoteStyleWidth } from '../../core/noteStyle';
 import type { NoteStyleFailureCode } from '../../storage/session';
+import type { LegacyFormulaPresentation } from '../../core/legacyFormula';
+import type { SupportedLocale } from '../i18n';
 
 export type PluginInlineColorKind = 'text' | 'bg';
 
@@ -83,7 +85,28 @@ export interface PluginNoteStylePanelEntry {
   isActive(): boolean;
 }
 
+/** Minimal, read-only view of an unbound legacy result; never includes identity or raw Markdown. */
+export interface PluginInlineFormulaPresentationContext extends LegacyFormulaPresentation {
+  readonly locale: SupportedLocale;
+}
+
+export type PluginInlineFormulaPresentationMount = (
+  container: HTMLElement,
+  context: PluginInlineFormulaPresentationContext,
+) => void | (() => void);
+
+export interface PluginInlineFormulaPresentationEntry {
+  readonly owner: 'polaris-dados';
+  readonly generation: number;
+  readonly mount: PluginInlineFormulaPresentationMount;
+  isActive(): boolean;
+}
+
 interface PluginNoteStylePanelRegistration extends PluginNoteStylePanelEntry {
+  deactivate(): void;
+}
+
+interface PluginInlineFormulaPresentationRegistration extends PluginInlineFormulaPresentationEntry {
   deactivate(): void;
 }
 
@@ -105,6 +128,9 @@ const blocks = new Map<string, { owner: string; block: PluginBlock }>();
 const inlineColorControls = new Map<string, PluginInlineColorControlRegistration>();
 let noteStylePanel: PluginNoteStylePanelRegistration | null = null;
 let noteStylePanelGeneration = 0;
+let inlineFormulaPresentation: PluginInlineFormulaPresentationRegistration | null = null;
+let inlineFormulaPresentationGeneration = 0;
+const inlineFormulaListeners = new Set<() => void>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -198,6 +224,52 @@ export function addPluginNoteStylePanel(owner: string, mount: PluginNoteStylePan
 
 export function documentoNoteStylePanel(): PluginNoteStylePanelEntry | null {
   return noteStylePanel?.isActive() ? noteStylePanel : null;
+}
+
+export function addPluginInlineFormulaPresentation(
+  owner: string,
+  mount: PluginInlineFormulaPresentationMount,
+): () => void {
+  if (owner !== 'polaris-dados') throw new Error('Only Polaris Dados can present inline formula results.');
+  if (typeof mount !== 'function') throw new Error('An inline formula presentation needs a mount function.');
+
+  inlineFormulaPresentation?.deactivate();
+  let active = true;
+  const registration: PluginInlineFormulaPresentationRegistration = {
+    owner,
+    generation: ++inlineFormulaPresentationGeneration,
+    mount,
+    isActive: () => active,
+    deactivate: () => { active = false; },
+  };
+  inlineFormulaPresentation = registration;
+  notifyInlineFormulaPresentation();
+
+  return () => {
+    if (!registration.isActive()) return;
+    registration.deactivate();
+    if (inlineFormulaPresentation === registration) inlineFormulaPresentation = null;
+    notifyInlineFormulaPresentation();
+  };
+}
+
+export function polarisDadosInlineFormulaPresentation(): PluginInlineFormulaPresentationEntry | null {
+  return inlineFormulaPresentation?.isActive() ? inlineFormulaPresentation : null;
+}
+
+export function subscribeInlineFormulaPresentation(listener: () => void): () => void {
+  inlineFormulaListeners.add(listener);
+  return () => inlineFormulaListeners.delete(listener);
+}
+
+function notifyInlineFormulaPresentation(): void {
+  for (const listener of inlineFormulaListeners) {
+    try {
+      listener();
+    } catch {
+      // One renderer cannot block teardown or updates for other inline results.
+    }
+  }
 }
 
 export function subscribePlugins(listener: () => void): () => void {

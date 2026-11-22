@@ -21,11 +21,16 @@ import {
   addPluginAction,
   addPluginBlock,
   addPluginInlineColorControl,
+  addPluginInlineFormulaPresentation,
   addPluginNoteStylePanel,
   pluginActions,
   pluginBlocks,
 } from './registry';
-import type { PluginInlineColorControlMount, PluginNoteStylePanelMount } from './registry';
+import type {
+  PluginInlineColorControlMount,
+  PluginInlineFormulaPresentationMount,
+  PluginNoteStylePanelMount,
+} from './registry';
 import { createDataApi } from './dataApi';
 import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
 import type { DatabaseProviderRegistration } from './providerApi';
@@ -309,6 +314,16 @@ function pluginApi(id: string, state: Running) {
     version: desktop?.version ?? '',
     plugin: id,
     data,
+    inlineFormulas: {
+      version: 1 as const,
+      registerPresentation(mount: PluginInlineFormulaPresentationMount) {
+        assertActive();
+        if (id !== 'polaris-dados')
+          throw new Error('Only Polaris Dados can present inline formula results.');
+        if (typeof mount !== 'function') throw new Error('An inline formula presentation needs a mount function.');
+        return keep(addPluginInlineFormulaPresentation(id, mount));
+      },
+    },
     providers: Object.freeze({
       version: 1 as const,
       register: (registration: DatabaseProviderRegistration) => {

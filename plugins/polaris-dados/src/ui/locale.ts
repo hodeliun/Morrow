@@ -85,6 +85,12 @@ export interface ProviderMessages {
   readonly pickerInsertFailed: string;
   readonly defaultViewSuffix: string;
   readonly unnamedDatabase: string;
+  readonly inlineFormulaResult: string;
+  readonly inlineFormulaTrue: string;
+  readonly inlineFormulaFalse: string;
+  readonly inlineFormulaNotConfigured: string;
+  readonly inlineFormulaUnsupported: string;
+  readonly inlineFormulaErrorDetail: (detail: string) => string;
 }
 
 const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
@@ -176,6 +182,12 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
       'Não foi possível inserir a visualização. O ponto foi liberado; recapture para tentar novamente.',
     defaultViewSuffix: 'visualização',
     unnamedDatabase: 'Banco de dados',
+    inlineFormulaResult: 'Resultado da fórmula',
+    inlineFormulaTrue: 'Sim',
+    inlineFormulaFalse: 'Não',
+    inlineFormulaNotConfigured: 'Fórmula sem configuração',
+    inlineFormulaUnsupported: 'Não foi possível calcular este formato; o texto original foi preservado.',
+    inlineFormulaErrorDetail: (detail) => `Erro de fórmula: ${detail}. O texto original foi preservado.`,
   },
   en: {
     region: 'Polaris Data',
@@ -262,6 +274,12 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
     pickerInsertFailed: 'The view could not be inserted. The target was released; recapture to retry.',
     defaultViewSuffix: 'view',
     unnamedDatabase: 'Database',
+    inlineFormulaResult: 'Formula result',
+    inlineFormulaTrue: 'Yes',
+    inlineFormulaFalse: 'No',
+    inlineFormulaNotConfigured: 'Formula not configured',
+    inlineFormulaUnsupported: 'This result format cannot be calculated; the original text was preserved.',
+    inlineFormulaErrorDetail: (detail) => `Formula error: ${detail}. The original text was preserved.`,
   },
   es: {
     region: 'Polaris Datos',
@@ -353,6 +371,12 @@ const MESSAGES: Record<SupportedLocale, ProviderMessages> = {
       'No se pudo insertar la vista. Se liberó el destino; vuelve a capturarlo para reintentar.',
     defaultViewSuffix: 'vista',
     unnamedDatabase: 'Base de datos',
+    inlineFormulaResult: 'Resultado de la fórmula',
+    inlineFormulaTrue: 'Sí',
+    inlineFormulaFalse: 'No',
+    inlineFormulaNotConfigured: 'Fórmula sin configurar',
+    inlineFormulaUnsupported: 'No se pudo calcular este formato; se conservó el texto original.',
+    inlineFormulaErrorDetail: (detail) => `Error de fórmula: ${detail}. Se conservó el texto original.`,
   },
 };
 

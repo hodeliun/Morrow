@@ -4,25 +4,29 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { markdownToDoc } from '../../core/markdown/parse';
 import { docToMarkdown } from '../../core/markdown/serialize';
 import type { DocNode } from '../../core/model';
+import { addPluginInlineFormulaPresentation } from '../plugins/registry';
+import { mountInlineFormulaResult } from '../../../plugins/polaris-dados/src/ui/inlineFormulaResult';
 import { createExtensions } from './extensions';
 
-function marker(): string {
+function marker(options: { readonly name?: string; readonly formula?: string; readonly outputType?: string } = {}): string {
+  const name = options.name ?? 'Visible & safe';
   const payload = {
     resultId: 'editor-result',
     pageId: 'finance-note',
-    name: 'Visible & safe',
-    formula: '1 + 2',
+    name,
+    formula: options.formula ?? '1 + 2',
     bindings: [],
-    outputType: 'number',
+    outputType: options.outputType ?? 'number',
     format: {},
   };
-  return `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}" onclick="alert(1)">Visible &amp; safe</span>`;
+  return `<span data-morrow-result="${encodeURIComponent(JSON.stringify(payload))}" onclick="alert(1)">${name.replaceAll('&', '&amp;')}</span>`;
 }
 
-let editor: Editor | null = null;
+const editors: Editor[] = [];
+let removePresentation: (() => void) | null = null;
 
 function make(content: DocNode): Editor {
-  editor = new Editor({
+  const editor = new Editor({
     element: document.createElement('div'),
     extensions: createExtensions({
       onBlockMenu: () => {},
@@ -36,15 +40,132 @@ function make(content: DocNode): Editor {
     } as never),
     content: content as never,
   });
+  editors.push(editor);
   return editor;
 }
 
+function destroyEditor(editor: Editor): void {
+  const index = editors.indexOf(editor);
+  if (index !== -1) editors.splice(index, 1);
+  editor.destroy();
+}
+
 afterEach(() => {
-  editor?.destroy();
-  editor = null;
+  removePresentation?.();
+  removePresentation = null;
+  for (const editor of editors.splice(0)) editor.destroy();
 });
 
 describe('inert legacy formula editor node', () => {
+  it('mounts Polaris Dados read-only results, restores fallback on disable, and reopens without changing Markdown', () => {
+    const source = marker({ name: 'Legacy total', formula: '2 + 3', outputType: 'auto' });
+    const originalMarkdown = docToMarkdown(markdownToDoc(source));
+    const contexts: Array<Record<string, unknown>> = [];
+    removePresentation = addPluginInlineFormulaPresentation('polaris-dados', (container, context) => {
+      contexts.push(context as unknown as Record<string, unknown>);
+      return mountInlineFormulaResult(container, context);
+    });
+
+    let target = make(markdownToDoc(source));
+    const result = target.view.dom.querySelector<HTMLElement>('.legacy-formula-fallback');
+    expect(result?.textContent).toBe('5');
+    expect(Object.keys(contexts[0]!).sort()).toEqual(['fallback', 'format', 'formula', 'locale', 'outputType']);
+    expect(JSON.stringify(contexts[0])).not.toMatch(/resultId|pageId|name|raw|data-morrow-result/);
+    expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
+
+    removePresentation();
+    removePresentation = null;
+    expect(result?.textContent).toBe('Legacy total');
+    expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
+
+    destroyEditor(target);
+    target = make(markdownToDoc(source));
+    expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe('Legacy total');
+    removePresentation = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult);
+    expect(target.view.dom.querySelector('.legacy-formula-fallback')?.textContent).toBe('5');
+    expect(docToMarkdown(target.getJSON() as DocNode)).toBe(originalMarkdown);
+  });
+
+  it('restores every mounted result when one cleanup throws and unregisters destroyed readers', () => {
+    const source = `${marker({ name: 'First', formula: '2 + 3', outputType: 'auto' })} and ${marker({ name: 'Second', formula: '4 + 5', outputType: 'auto' })}`;
+    let firstNode: HTMLElement | null = null;
+    let failedCleanupCalls = 0;
+    removePresentation = addPluginInlineFormulaPresentation('polaris-dados', (container, context) => {
+      firstNode ??= container;
+      const cleanup = mountInlineFormulaResult(container, context);
+      return () => {
+        cleanup();
+        if (container === firstNode) {
+          failedCleanupCalls++;
+          throw new Error('synthetic renderer cleanup failure');
+        }
+      };
+    });
+
+    const target = make(markdownToDoc(source));
+    const results = [...target.view.dom.querySelectorAll<HTMLElement>('.legacy-formula-fallback')];
+    const presentations = results.map((result) => result.querySelector<HTMLElement>('.legacy-formula-presentation')!);
+    expect(results).toHaveLength(2);
+    expect(results.map((result) => result.textContent)).toEqual(['5', '9']);
+    expect(presentations.map((presentation) => presentation.dataset.inlineFormulaState)).toEqual(['calculated', 'calculated']);
+    expect(results.every((result) => !result.hasAttribute('data-inline-formula-state'))).toBe(true);
+
+    expect(() => removePresentation?.()).not.toThrow();
+    removePresentation = null;
+    expect(failedCleanupCalls).toBe(1);
+    expect(results.map((result) => result.textContent)).toEqual(['First', 'Second']);
+    expect(presentations.every((presentation) => !presentation.hasAttribute('aria-label') && !presentation.hasAttribute('data-inline-formula-state'))).toBe(true);
+
+    removePresentation = addPluginInlineFormulaPresentation('polaris-dados', (container, context) => {
+      const cleanup = mountInlineFormulaResult(container, context);
+      return () => {
+        cleanup();
+        if (container === firstNode) throw new Error('synthetic destroy cleanup failure');
+      };
+    });
+    expect(results.map((result) => result.textContent)).toEqual(['5', '9']);
+    expect(() => destroyEditor(target)).not.toThrow();
+    expect(results.map((result) => result.textContent)).toEqual(['First', 'Second']);
+
+    expect(() => removePresentation?.()).not.toThrow();
+    removePresentation = null;
+    const reactivated = addPluginInlineFormulaPresentation('polaris-dados', mountInlineFormulaResult);
+    expect(results.map((result) => result.textContent)).toEqual(['First', 'Second']);
+    reactivated();
+  });
+
+  it('preserves the ProseMirror selected-node class while presentation cleanup throws', () => {
+    const target = make(markdownToDoc(marker({ name: 'Selected total', formula: '2 + 3', outputType: 'auto' })));
+    const wrapper = target.view.dom.querySelector<HTMLElement>('.legacy-formula-fallback')!;
+    const presentation = wrapper.querySelector<HTMLElement>('.legacy-formula-presentation')!;
+    target.commands.setNodeSelection(1);
+    expect(wrapper.classList.contains('ProseMirror-selectednode')).toBe(true);
+
+    const registerThrowingRenderer = () => addPluginInlineFormulaPresentation('polaris-dados', (container, context) => {
+      const cleanup = mountInlineFormulaResult(container, context);
+      return () => {
+        cleanup();
+        throw new Error('synthetic renderer cleanup failure');
+      };
+    });
+    removePresentation = registerThrowingRenderer();
+    expect(presentation.dataset.inlineFormulaState).toBe('calculated');
+    expect(wrapper.hasAttribute('data-inline-formula-state')).toBe(false);
+
+    expect(() => removePresentation?.()).not.toThrow();
+    removePresentation = null;
+    expect(wrapper.classList.contains('ProseMirror-selectednode')).toBe(true);
+    expect(presentation.textContent).toBe('Selected total');
+    expect(presentation.hasAttribute('data-inline-formula-state')).toBe(false);
+
+    removePresentation = registerThrowingRenderer();
+    expect(presentation.dataset.inlineFormulaState).toBe('calculated');
+    expect(() => destroyEditor(target)).not.toThrow();
+    expect(presentation.textContent).toBe('Selected total');
+    expect(() => removePresentation?.()).not.toThrow();
+    removePresentation = null;
+  });
+
   it('renders only the accessible fallback and does not expose active source attributes to HTML copy', () => {
     const target = make(markdownToDoc(`Before ${marker()} after`));
     const node = target.state.doc.firstChild!.child(1);

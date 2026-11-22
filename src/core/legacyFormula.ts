@@ -3,11 +3,29 @@ import type { StateInline } from 'markdown-it';
 export const LEGACY_FORMULA_NODE = 'legacyFormula';
 const MAX_MARKER_LENGTH = 100_000;
 const MARKS_ON_FORMULA = new Set(['bold', 'italic', 'strike', 'underline', 'highlight', 'textColor']);
+const LEGACY_OUTPUT_TYPES = new Set(['auto', 'text', 'number', 'currency', 'percent', 'scale', 'progress', 'date', 'checkbox']);
 
 export interface LegacyFormulaMarker {
   readonly raw: string;
   readonly fallback: string;
   readonly resultId: string;
+}
+
+/** The only legacy formula data the read-only inline renderer is allowed to receive. */
+export interface LegacyFormulaPresentation {
+  readonly formula: string;
+  readonly outputType: string;
+  /** Unknown or unsupported format keys are represented as null, never forwarded. */
+  readonly format: Readonly<LegacyFormulaDisplayFormat> | null;
+  readonly fallback: string;
+}
+
+export interface LegacyFormulaDisplayFormat {
+  readonly locale?: string;
+  readonly currency?: string;
+  readonly precision?: number;
+  readonly negativeFormat?: 'minus' | 'parentheses';
+  readonly dateStyle?: 'full' | 'long' | 'medium' | 'short';
 }
 
 interface OpenTag {
@@ -38,6 +56,25 @@ export function parseLegacyFormulaMarker(source: string, start = 0): LegacyFormu
     raw,
     fallback: decodeHtmlEntities(source.slice(opening.end, closeStart)),
     resultId: payload.resultId,
+  };
+}
+
+/** Projects only unbound scalar formula data; identity and source markup never cross the plugin API. */
+export function parseLegacyFormulaPresentation(
+  raw: string,
+  fallback?: string,
+): LegacyFormulaPresentation | null {
+  const marker = parseLegacyFormulaMarker(raw);
+  if (!marker || marker.raw !== raw || (fallback !== undefined && marker.fallback !== fallback)) return null;
+  const opening = parseLegacyFormulaOpeningTag(raw);
+  if (!opening) return null;
+  const payload = decodePayload(opening.encodedPayload);
+  if (!payload || payload.bindings.length !== 0 || !LEGACY_OUTPUT_TYPES.has(payload.outputType)) return null;
+  return {
+    formula: payload.formula,
+    outputType: payload.outputType,
+    format: projectDisplayFormat(payload.format),
+    fallback: marker.fallback,
   };
 }
 
@@ -206,7 +243,13 @@ export function countLegacyFormulaNodes(value: unknown): number {
   return count;
 }
 
-function decodePayload(encoded: string): { resultId: string } | null {
+function decodePayload(encoded: string): {
+  resultId: string;
+  formula: string;
+  bindings: unknown[];
+  outputType: string;
+  format: Record<string, unknown>;
+} | null {
   try {
     const parsed: unknown = JSON.parse(decodeURIComponent(encoded));
     if (!isRecord(parsed)) return null;
@@ -224,10 +267,61 @@ function decodePayload(encoded: string): { resultId: string } | null {
     ) {
       return null;
     }
-    return { resultId: parsed.resultId };
+    return {
+      resultId: parsed.resultId,
+      formula: parsed.formula,
+      bindings: parsed.bindings,
+      outputType: parsed.outputType,
+      format: parsed.format,
+    };
   } catch {
     return null;
   }
+}
+
+function projectDisplayFormat(format: Record<string, unknown>): LegacyFormulaDisplayFormat | null {
+  const allowedKeys = new Set(['locale', 'currency', 'precision', 'negativeFormat', 'dateStyle']);
+  if (Object.keys(format).some((key) => !allowedKeys.has(key))) return null;
+
+  const result: {
+    locale?: string;
+    currency?: string;
+    precision?: number;
+    negativeFormat?: 'minus' | 'parentheses';
+    dateStyle?: 'full' | 'long' | 'medium' | 'short';
+  } = {};
+  if (Object.hasOwn(format, 'locale')) {
+    if (typeof format.locale !== 'string' || format.locale.length > 40) return null;
+    try {
+      new Intl.NumberFormat(format.locale);
+    } catch {
+      return null;
+    }
+    result.locale = format.locale;
+  }
+  if (Object.hasOwn(format, 'currency')) {
+    if (typeof format.currency !== 'string' || !/^[A-Z]{3}$/.test(format.currency)) return null;
+    try {
+      new Intl.NumberFormat('en', { style: 'currency', currency: format.currency });
+    } catch {
+      return null;
+    }
+    result.currency = format.currency;
+  }
+  if (Object.hasOwn(format, 'precision')) {
+    if (typeof format.precision !== 'number' || !Number.isInteger(format.precision) || format.precision < 0 || format.precision > 8)
+      return null;
+    result.precision = format.precision;
+  }
+  if (Object.hasOwn(format, 'negativeFormat')) {
+    if (format.negativeFormat !== 'minus' && format.negativeFormat !== 'parentheses') return null;
+    result.negativeFormat = format.negativeFormat;
+  }
+  if (Object.hasOwn(format, 'dateStyle')) {
+    if (!['full', 'long', 'medium', 'short'].includes(String(format.dateStyle))) return null;
+    result.dateStyle = format.dateStyle as NonNullable<typeof result.dateStyle>;
+  }
+  return result;
 }
 
 function decodeHtmlEntities(value: string): string {

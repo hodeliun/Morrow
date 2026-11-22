@@ -69,11 +69,11 @@ O build verifica os hashes do bundle, manifesto, README e licença de ambos os p
 
 Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parágrafo **Plain neighbor** mantém o fundo normal. Desative o Polaris Documento e alterne entre os temas claro e escuro. Edite o parágrafo vizinho, salve e reabra a nota. A cor legada deve permanecer.
 
-### Fórmula preservada de uma nota antiga
+### Cálculo de fórmula antiga no texto
 
-1. Abra `Resolved target` e localize o texto **Legacy total** no parágrafo da fórmula.
-2. Desative o Polaris Dados. Edite **Editable neighbor** na mesma nota, salve e reabra. O texto da fórmula deve aparecer no mesmo parágrafo.
-3. Para conferir o arquivo, abra a cópia de `Resolved target.md` em `PilotState\DemoVault`. Ela contém a fórmula original no marcador da nota. Essa demonstração preserva a fórmula durante a edição. A avaliação dentro da nota é a próxima etapa.
+1. Abra `Resolved target` com o Polaris Dados ativado. A fórmula `2 + 3` exibe **5** no parágrafo.
+2. Desative o Polaris Dados. O texto salvo **Legacy total** volta no mesmo lugar. Edite **Editable neighbor**, salve e reabra. O texto salvo permanece.
+3. Reative o plugin para obter **5** novamente. A cópia de `Resolved target.md` em `PilotState\DemoVault` mantém o marcador original. O valor calculado fica na interface.
 
 ## Fluxo curto
 
