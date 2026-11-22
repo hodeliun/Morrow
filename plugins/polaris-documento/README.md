@@ -1,10 +1,11 @@
 # Polaris Documento
 
-Polaris Documento restores the Polaris presentation for page links and database relation chips
-without changing the host renderer, Markdown, or link actions. It registers theme-aware CSS with
-Morrow's `styles.add` API; the host removes that style when the plugin is disabled or reloaded.
-External links keep Morrow's normal `.prose a` styling because every page-link rule targets
-`.prose a.page-link`.
+Polaris Documento restores the Polaris presentation for page links and database relation chips and
+displays saved `morrowNoteStyle` values on their notes. Style display is read-only: the host exposes a
+typed, scoped presentation projection while the original YAML remains untouched. The plugin registers
+theme-aware CSS with Morrow's `styles.add` API; the host removes that style when the plugin is disabled
+or reloaded. External links keep Morrow's normal `.prose a` styling because every page-link rule
+targets `.prose a.page-link`.
 
 ## Build
 

@@ -84,10 +84,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let nextId = 0;
 const newId = () => `page-view-provider-${++nextId}`;
 
-async function openFixture() {
-  const opened = await WorkspaceSession.open(
-    new VaultRepository(new MemoryVault(E003_POLARIS_DADOS_FIXTURE), newId),
-  );
+async function openFixture(files: Record<string, string> = E003_POLARIS_DADOS_FIXTURE) {
+  const opened = await WorkspaceSession.open(new VaultRepository(new MemoryVault(files), newId));
   if (!opened.ok) throw new Error(opened.error);
   setSession(opened.value);
   return opened.value;
@@ -225,6 +223,55 @@ describe('provider-managed PageView boundaries', () => {
       expect(container.querySelector('[data-testid="database-view"]')?.getAttribute('data-editable')).toBe(
         'false',
       );
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('projects each note style onto its own split article and leaves unstyled notes on native preferences', async () => {
+    const session = await openFixture({
+      ...E003_POLARIS_DADOS_FIXTURE,
+      'Styles/Serif.md': `---\nmorrowNoteStyle:\n  font: serif\n  fontSize: 19\n  lineHeight: 1.8\n  blockSpacing: 12\n  width: comfortable\n---\nSerif body\n`,
+      'Styles/Mono.md': `---\nmorrowNoteStyle:\n  font: mono\n  fontSize: 14.5\n  lineHeight: 1.75\n  blockSpacing: 8\n  width: full\n---\nMono body\n`,
+      'Styles/Native.md': '---\ntitle: Native\n---\nNative body\n',
+    });
+    const serifId = pathId(session, 'Styles/Serif.md');
+    const monoId = pathId(session, 'Styles/Mono.md');
+    const nativeId = pathId(session, 'Styles/Native.md');
+    setPreferences({ font: 'sans', width: 'wide' });
+
+    const { container, root, render } = mount();
+    try {
+      await act(async () =>
+        root.render(createElement(Fragment, null, pageInPane(serifId, 'main'), pageInPane(monoId, 'side'))),
+      );
+      const serif = container.querySelector<HTMLElement>(`.page[data-polaris-note-page-id="${serifId}"]`)!;
+      const mono = container.querySelector<HTMLElement>(`.page[data-polaris-note-page-id="${monoId}"]`)!;
+      expect(serif.getAttribute('data-polaris-note-style')).toBe('saved');
+      expect(serif.matches('[data-page-id]')).toBe(false);
+      expect(serif.closest('[data-page-id]')).toBeNull();
+      expect(serif.getAttribute('data-polaris-note-font')).toBe('serif');
+      expect(serif.getAttribute('data-polaris-note-width')).toBe('comfortable');
+      expect(serif.style.getPropertyValue('--polaris-note-font-size')).toBe('19px');
+      expect(serif.style.getPropertyValue('--polaris-note-line-height')).toBe('1.8');
+      expect(serif.style.getPropertyValue('--polaris-note-block-spacing')).toBe('12px');
+      expect(mono.getAttribute('data-polaris-note-page-id')).toBe(monoId);
+      expect(mono.getAttribute('data-polaris-note-font')).toBe('mono');
+      expect(mono.getAttribute('data-polaris-note-width')).toBe('full');
+      expect(mono.style.getPropertyValue('--polaris-note-font-size')).toBe('14.5px');
+
+      await act(async () => render(pageInPane(nativeId, 'main')));
+      const nativePage = container.querySelector<HTMLElement>(
+        `.page[data-polaris-note-page-id="${nativeId}"]`,
+      )!;
+      expect(nativePage.matches('[data-page-id]')).toBe(false);
+      expect(nativePage.closest('[data-page-id]')).toBeNull();
+      expect(nativePage.classList).toContain('font-sans');
+      expect(nativePage.classList).toContain('width-wide');
+      expect(nativePage.hasAttribute('data-polaris-note-style')).toBe(false);
+      expect(nativePage.style.getPropertyValue('--polaris-note-font-size')).toBe('');
     } finally {
       await act(async () => root.unmount());
       container.remove();

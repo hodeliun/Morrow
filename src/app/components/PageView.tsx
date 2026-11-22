@@ -57,6 +57,7 @@ import { exactTime, relativeTime, useShowMore } from './primitives';
 import { PageIcon } from './Sidebar';
 import { TopBar } from './TopBar';
 import { isProviderManagedPage } from './pageEditability';
+import { readSavedNoteStyle } from './noteStyleProjection';
 
 const EMPTY_DOC = emptyDoc();
 
@@ -174,6 +175,15 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
     );
   }
 
+  const savedNoteStyle = readSavedNoteStyle(page.extra);
+  const savedNoteStyleCss = savedNoteStyle
+    ? ({
+        '--polaris-note-font-size': `${savedNoteStyle.fontSize}px`,
+        '--polaris-note-line-height': savedNoteStyle.lineHeight,
+        '--polaris-note-block-spacing': `${savedNoteStyle.blockSpacing}px`,
+      } as React.CSSProperties)
+    : undefined;
+
   const trashed = isEffectivelyTrashed(state.pages, id);
   const unreadable = getSession().unreadable.has(id);
   const protectionReason = getSession().protectedReasons.get(id);
@@ -285,7 +295,12 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         {page.kind !== 'database' && !unreadable && outlineShown(prefs, page.id) && <Outline doc={doc} />}
         <CoverBanner page={page} editable={nativeEditable} />
         <article
+          data-polaris-note-page-id={id}
+          data-polaris-note-style={savedNoteStyle ? 'saved' : undefined}
+          data-polaris-note-font={savedNoteStyle?.font}
+          data-polaris-note-width={savedNoteStyle?.width}
           className={`page font-${prefs.font} width-${prefs.pageWidths[page.id] ?? prefs.width}${page.cover ? ' has-cover' : ''}`}
+          style={savedNoteStyleCss}
         >
           {!trashed && <ConflictBanner id={id} />}
           {page.icon && (
@@ -350,9 +365,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               }}
             />
           </h1>
-          {page.kind !== 'database' && (
-            <PageTags page={page} editable={nativeEditable} />
-          )}
+          {page.kind !== 'database' && <PageTags page={page} editable={nativeEditable} />}
           {isTemplate && <RepeatBar page={page} editable={nativeEditable} />}
           {!unreadable && (
             <PageProperties

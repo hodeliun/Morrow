@@ -5,7 +5,12 @@ import { emptyWorkspace } from '../core/model';
 import type { PageId } from '../core/model';
 import { planMarkdownImport } from '../core/portability';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
-import { readPageText, renderPageText, UnsafeFrontmatterUpdateError } from '../core/vault/pageFile';
+import {
+  MANAGED_KEYS,
+  readPageText,
+  renderPageText,
+  UnsafeFrontmatterUpdateError,
+} from '../core/vault/pageFile';
 import { splitFrontmatter } from '../core/vault/frontmatter';
 import { databaseFromSubpages, fieldsForMove, releaseRow } from '../core/properties';
 import { defaultDatabase } from '../core/database';
@@ -163,6 +168,31 @@ describe('frontmatter from other apps', () => {
     expect(reopened.getState().pages[reopenedId]!.extra.disabled).toBe(false);
     expect(reopened.getState().pages[reopenedId]!.extra.zero).toBe(0);
     await reopened.close();
+  });
+
+  it('reads a saved note style without claiming the YAML key and preserves it byte-for-byte on a body edit', async () => {
+    const source = `---\nmorrowNoteStyle:\n  font: serif\n  fontSize: 19\n  lineHeight: 1.8\n  blockSpacing: 12\n  width: wide\nfutureStyleData:\n  opaque: !!str 001\n  enabled: false\n---\nOriginal body\n`;
+    const vault = new TrackedMemoryVault({ 'Note.md': source });
+    const session = await open(vault);
+    const note = idOf(session, 'Note');
+
+    expect(vault.applyCount).toBe(0);
+    expect(MANAGED_KEYS.has('morrowNoteStyle')).toBe(false);
+    expect(session.getState().pages[note]?.extra.morrowNoteStyle).toEqual({
+      font: 'serif',
+      fontSize: 19,
+      lineHeight: 1.8,
+      blockSpacing: 12,
+      width: 'wide',
+    });
+    expect(session.getState().pages[note]?.extra.futureStyleData).toEqual({ opaque: '001', enabled: false });
+
+    await runAll(session, [{ type: 'page.setDoc', id: note, doc: paragraph('Edited body'), now: 2 }]);
+    const saved = vault.text('Note.md')!;
+    expect(splitFrontmatter(saved).head).toBe(splitFrontmatter(source).head);
+    expect(saved.endsWith('Edited body\n')).toBe(true);
+    expect(readPageText(saved).extra.morrowNoteStyle).toEqual(readPageText(source).extra.morrowNoteStyle);
+    await session.close();
   });
 
   it('keeps a legacy tag anchor on unrelated edits and does not restore it after removal', async () => {
