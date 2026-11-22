@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, createElement, Fragment } from 'react';
+import { createRoot } from 'react-dom/client';
+import { allocateSideInstanceId, isSideInstanceIdFor, visiblePaneLeaves } from './paneLayout';
 import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage';
 
 // Synthetic export only. A migration pilot can obtain the source by reading
@@ -107,6 +110,57 @@ function latestForkSnapshot(): string {
   });
 }
 
+function overflowForkSnapshot(): string {
+  const tabs = Array.from({ length: 21 }, (_, index) => ({
+    id: `group-${index}`,
+    groupId: `group-${index}`,
+    target: `#/page/${index}`,
+    back: index === 20 ? ['#/page/previous'] : [],
+    forward: index === 20 ? ['#/page/next'] : [],
+  }));
+  return JSON.stringify({
+    schemaVersion: 2,
+    paneLayout: {
+      version: 1,
+      id: 'fallback-layout',
+      root: { kind: 'leaf', id: 'fallback-pane', tabId: 'group-20' },
+      focusedPaneId: 'fallback-pane',
+    },
+    tabs,
+    closed: [],
+  });
+}
+
+function legacySideCollisionSnapshot(collisionCount: number, withSide: boolean): string {
+  const collisionIds = [
+    'main:side',
+    ...Array.from({ length: collisionCount - 1 }, (_, index) => `main:side:${index + 2}`),
+  ];
+  return JSON.stringify({
+    tabs: [
+      {
+        id: 'main',
+        hash: '#/page/main',
+        back: ['#/page/main-before'],
+        forward: ['#/page/main-after'],
+        side: withSide
+          ? { hash: '#/page/side', back: ['#/page/side-before'], forward: ['#/page/side-after'] }
+          : null,
+      },
+      ...collisionIds.map((id, index) => ({
+        id,
+        hash: `#/page/collision-${index}`,
+        back: [],
+        forward: [],
+        side: null,
+      })),
+    ],
+    active: 'main',
+    pane: withSide ? 'side' : 'main',
+    closed: [],
+  });
+}
+
 async function freshTabs(raw: string | null, initialHash = '') {
   window.history.replaceState(null, '', `/${initialHash}`);
   window.localStorage.clear();
@@ -128,11 +182,73 @@ async function freshTabs(raw: string | null, initialHash = '') {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  document.body.replaceChildren();
   window.localStorage.clear();
   window.history.replaceState(null, '', '/');
 });
 
 describe('two-pane runtime snapshot compatibility', () => {
+  it('shares an exact side-instance suffix contract between the allocator and matcher', () => {
+    expect(isSideInstanceIdFor('main', 'main:side')).toBe(true);
+    expect(isSideInstanceIdFor('main', 'main:side:2')).toBe(true);
+    expect(isSideInstanceIdFor('main', 'main:side:10')).toBe(true);
+    expect(isSideInstanceIdFor('main', 'main:side2')).toBe(false);
+    expect(isSideInstanceIdFor('main', 'main:side:1')).toBe(false);
+    expect(isSideInstanceIdFor('main', 'main:side:02')).toBe(false);
+    expect(isSideInstanceIdFor('main', 'other:side:2')).toBe(false);
+
+    const usedIds = new Set([
+      'main',
+      'main:side',
+      ...Array.from({ length: 8 }, (_, index) => `main:side:${index + 2}`),
+    ]);
+    expect(allocateSideInstanceId('main', usedIds)).toBe('main:side:10');
+    expect(usedIds.has('main:side:10')).toBe(true);
+  });
+
+  it.each([
+    [1, 'main:side:2'],
+    [9, 'main:side:10'],
+  ] as const)('recognizes migrated and newly allocated side collision id %s', async (collisions, sideId) => {
+    const { tabs, readFromStorage } = await freshTabs(legacySideCollisionSnapshot(collisions, true));
+    const restored = tabs.getTabs();
+
+    expect(restored).toMatchObject({ active: 'main', pane: 'side' });
+    expect(restored.tabs[0]).toMatchObject({
+      id: 'main',
+      side: {
+        hash: '#/page/side',
+        back: ['#/page/side-before'],
+        forward: ['#/page/side-after'],
+      },
+    });
+    expect(restored.layout.tabs.map((tab) => tab.id)).toContain(sideId);
+    expect(tabs.routeHashForPane('side')).toBe('#/page/side');
+
+    tabs.openTab('#/page/background', { background: true });
+    const afterBackground = readPaneTabsSnapshot(readFromStorage());
+    expect(afterBackground.kind).toBe('legacy');
+    if (afterBackground.kind === 'legacy') {
+      expect(afterBackground.snapshot.tabs.find((tab) => tab.id === 'main')?.side).toMatchObject({
+        hash: '#/page/side',
+        back: ['#/page/side-before'],
+        forward: ['#/page/side-after'],
+      });
+      expect(afterBackground.snapshot.tabs.some((tab) => tab.hash === '#/page/background')).toBe(true);
+    }
+
+    const withoutSide = await freshTabs(legacySideCollisionSnapshot(collisions, false));
+    withoutSide.tabs.openSide('#/page/new-side');
+    expect(withoutSide.tabs.getTabs().pane).toBe('side');
+    expect(withoutSide.tabs.routeHashForPane('side')).toBe('#/page/new-side');
+    expect(withoutSide.tabs.getTabs().layout.tabs.map((tab) => tab.id)).toContain(sideId);
+    const afterSplit = readPaneTabsSnapshot(withoutSide.readFromStorage());
+    expect(afterSplit.kind).toBe('legacy');
+    if (afterSplit.kind === 'legacy') {
+      expect(afterSplit.snapshot.tabs.find((tab) => tab.id === 'main')?.side?.hash).toBe('#/page/new-side');
+    }
+  });
+
   it('loads the 2.2 snapshot into the existing two-panel state and writes only its old wire shape', async () => {
     const raw = JSON.stringify({
       tabs: [
@@ -174,6 +290,115 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(saved).not.toHaveProperty('schemaVersion');
     expect(saved.closed).toEqual(['#/page/closed']);
     expect(readPaneTabsSnapshot(writes[0]!)).toMatchObject({ kind: 'legacy' });
+  });
+
+  it('saves and reopens v0 main and side instances with independent histories for the same note', async () => {
+    const raw = JSON.stringify({
+      tabs: [
+        {
+          id: 'shared-note',
+          hash: '#/page/shared-note',
+          back: ['#/page/main-before'],
+          forward: ['#/page/main-forward'],
+          side: {
+            hash: '#/page/shared-note',
+            back: ['#/page/side-before'],
+            forward: ['#/page/side-forward'],
+          },
+        },
+      ],
+      active: 'shared-note',
+      pane: 'side',
+      closed: [],
+    });
+    const first = await freshTabs(raw, '#/page/shared-note');
+    const stop = first.tabs.startTabs();
+
+    expect(first.tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual([
+      'shared-note',
+      'shared-note:side',
+    ]);
+    expect(first.tabs.getTabs().layout.tabs[0]?.target).toBe('#/page/shared-note');
+    expect(first.tabs.getTabs().layout.tabs[1]?.target).toBe('#/page/shared-note');
+
+    first.router.navigate({ name: 'page', id: 'side-next', find: null }, { pane: 'side' });
+    first.router.navigate({ name: 'page', id: 'main-next', find: null }, { pane: 'main' });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    first.tabs.setActivePane('main');
+    first.tabs.setTabPinned('shared-note', true);
+    stop();
+
+    expect(window.location.hash).toBe('#/page/main-next');
+    expect(first.tabs.routeHashForPane('main')).toBe('#/page/main-next');
+    expect(first.tabs.routeHashForPane('side')).toBe('#/page/side-next');
+    const saved = first.writes.at(-1)!;
+    expect(readPaneTabsSnapshot(saved).kind).toBe('legacy');
+
+    const reopened = await freshTabs(saved, '#/page/main-next');
+    expect(reopened.tabs.getTabs()).toMatchObject({ active: 'shared-note', pane: 'main' });
+    expect(reopened.tabs.getTabs().layout.tabs).toEqual([
+      {
+        id: 'shared-note',
+        groupId: 'shared-note',
+        target: '#/page/main-next',
+        back: ['#/page/main-before', '#/page/shared-note'],
+        forward: [],
+        pinned: true,
+      },
+      {
+        id: 'shared-note:side',
+        groupId: 'shared-note',
+        target: '#/page/side-next',
+        back: ['#/page/side-before', '#/page/shared-note'],
+        forward: [],
+      },
+    ]);
+    expect(reopened.tabs.routeHashForPane('main')).toBe('#/page/main-next');
+    expect(reopened.tabs.routeHashForPane('side')).toBe('#/page/side-next');
+  });
+
+  it('unassigns a legacy split leaf for a solo tab and restores the inactive side on return', async () => {
+    const raw = JSON.stringify({
+      tabs: [
+        {
+          id: 'split-a',
+          hash: '#/page/a-main',
+          back: ['#/page/a-before'],
+          forward: [],
+          side: { hash: '#/page/a-side', back: ['#/page/side-before'], forward: ['#/page/side-next'] },
+        },
+        { id: 'solo-b', hash: '#/page/b', back: [], forward: [], side: null },
+      ],
+      active: 'split-a',
+      pane: 'side',
+      closed: [],
+    });
+    const { tabs } = await freshTabs(raw, '#/page/a-main');
+    const originalSide = tabs.getTabs().layout.tabs.find((tab) => tab.id === 'split-a:side');
+    expect(originalSide).toMatchObject({
+      target: '#/page/a-side',
+      back: ['#/page/side-before'],
+      forward: ['#/page/side-next'],
+    });
+
+    tabs.activateTab('solo-b');
+    expect(tabs.getTabs().tabs.find((tab) => tab.id === 'solo-b')?.side).toBeNull();
+    expect(tabs.getTabs().layout.root.kind).toBe('split');
+    expect(visiblePaneLeaves(tabs.getTabs().layout).map((leaf) => leaf.tabId)).toEqual(['solo-b', null]);
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'split-a:side')).toBe(originalSide);
+
+    tabs.activateTab('split-a');
+    expect(tabs.getTabs().tabs.find((tab) => tab.id === 'split-a')?.side).toMatchObject({
+      hash: '#/page/a-side',
+      back: ['#/page/side-before'],
+      forward: ['#/page/side-next'],
+    });
+    expect(tabs.getTabs().layout.root.kind).toBe('split');
+    expect(visiblePaneLeaves(tabs.getTabs().layout).map((leaf) => leaf.tabId)).toEqual([
+      'split-a',
+      'split-a:side',
+    ]);
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'split-a:side')).toBe(originalSide);
   });
 
   it('projects a two-pane Electron snapshot with its focused side while keeping the v2 source unchanged', async () => {
@@ -239,6 +464,163 @@ describe('two-pane runtime snapshot compatibility', () => {
 
     expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
     expect(writes).toEqual([]);
+  });
+
+  it('keeps a direct external hash as the main route before the tabs listener starts', async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const raw = JSON.stringify({
+      tabs: [
+        {
+          id: 'legacy-split',
+          hash: '#/page/saved-main',
+          back: [],
+          forward: [],
+          side: { hash: '#/page/saved-side', back: [], forward: [] },
+        },
+      ],
+      active: 'legacy-split',
+      pane: 'main',
+      closed: [],
+    });
+    const { tabs, router } = await freshTabs(raw, '#/page/saved-main');
+    tabs.getTabs();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const RouteContent = ({ id }: { id: string }) =>
+      createElement('output', { id }, router.routeHash(router.useRoute()));
+    const RouteProbe = ({ pane, id }: { pane: 'main' | 'side'; id: string }) =>
+      createElement(tabs.PaneContext.Provider, { value: pane }, createElement(RouteContent, { id }));
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            Fragment,
+            null,
+            createElement(RouteProbe, { pane: 'main', id: 'main-route' }),
+            createElement(RouteProbe, { pane: 'side', id: 'side-route' }),
+          ),
+        );
+      });
+      expect(container.querySelector('#main-route')?.textContent).toBe('#/page/saved-main');
+      expect(container.querySelector('#side-route')?.textContent).toBe('#/page/saved-side');
+
+      await act(async () => {
+        window.location.hash = '#/page/external';
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.querySelector('#main-route')?.textContent).toBe('#/page/external');
+      expect(container.querySelector('#side-route')?.textContent).toBe('#/page/saved-side');
+      expect(tabs.routeHashForPane('main')).toBe('#/page/saved-main');
+      expect(tabs.activeHash()).toBe('#/page/external');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('routes each pane from its instance while the URL remains the main anchor and hidden instances survive', async () => {
+    Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+    const raw = latestForkSnapshot();
+    const { tabs, router, writes } = await freshTabs(raw, '#/page/launch');
+    const stop = tabs.startTabs();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const RouteContent = ({ id }: { id: string }) =>
+      createElement('output', { id }, router.routeHash(router.useRoute()));
+    const RouteProbe = ({ pane, id }: { pane: 'main' | 'side'; id: string }) =>
+      createElement(tabs.PaneContext.Provider, { value: pane }, createElement(RouteContent, { id }));
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            Fragment,
+            null,
+            createElement(RouteProbe, { pane: 'main', id: 'main-route' }),
+            createElement(RouteProbe, { pane: 'side', id: 'side-route' }),
+          ),
+        );
+      });
+
+      const loaded = tabs.getTabs();
+      expect(tabs.getTabs()).toBe(loaded);
+      const nodeIds = (node: typeof loaded.layout.root): string[] =>
+        node.kind === 'leaf' ? [node.id] : [node.id, ...nodeIds(node.first), ...nodeIds(node.second)];
+      expect(nodeIds(loaded.layout.root)).toEqual([
+        'root',
+        'left',
+        'a-main',
+        'a-side',
+        'right',
+        'b-main',
+        'b-side',
+      ]);
+      expect(loaded.layout.tabs.map((tab) => tab.id)).toEqual([
+        'group-a',
+        'group-a:side',
+        'group-b',
+        'group-b:side',
+      ]);
+      expect(container.querySelector('#main-route')?.textContent).toBe('#/page/launch');
+      expect(container.querySelector('#side-route')?.textContent).toBe('#/page/b-side');
+
+      await act(async () => {
+        router.navigate({ name: 'page', id: 'side-next', find: null }, { pane: 'side' });
+      });
+      expect(window.location.hash).toBe('#/page/launch');
+      expect(container.querySelector('#main-route')?.textContent).toBe('#/page/launch');
+      expect(container.querySelector('#side-route')?.textContent).toBe('#/page/side-next');
+
+      await act(async () => {
+        router.navigate({ name: 'tasks' }, { pane: 'main' });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(window.location.hash).toBe('#/tasks');
+      expect(container.querySelector('#main-route')?.textContent).toBe('#/tasks');
+      expect(container.querySelector('#side-route')?.textContent).toBe('#/page/side-next');
+
+      await act(async () => tabs.goBack('side'));
+      expect(window.location.hash).toBe('#/tasks');
+      expect(container.querySelector('#side-route')?.textContent).toBe('#/page/b-side');
+      expect(tabs.activeHash()).toBe('#/page/b-side');
+      tabs.setActivePane('main');
+      expect(tabs.getTabs().pane).toBe('main');
+      expect(tabs.activeHash()).toBe('#/tasks');
+      expect(window.location.hash).toBe('#/tasks');
+
+      const updated = tabs.getTabs();
+      expect(updated).not.toBe(loaded);
+      expect(updated.layout.tabs.map((tab) => tab.id)).toEqual([
+        'group-a',
+        'group-a:side',
+        'group-b',
+        'group-b:side',
+      ]);
+      expect(nodeIds(updated.layout.root)).toEqual(nodeIds(loaded.layout.root));
+      expect(updated.layout.root).toBe(loaded.layout.root);
+      expect(updated.layout.tabs[0]).toBe(loaded.layout.tabs[0]);
+      expect(updated.layout.tabs[1]).toBe(loaded.layout.tabs[1]);
+      expect(updated.layout.tabs.slice(0, 2)).toEqual(loaded.layout.tabs.slice(0, 2));
+      expect(updated.layout.tabs[2]).toMatchObject({
+        id: 'group-b',
+        target: '#/tasks',
+        back: ['#/page/b-main-before', '#/page/b-main', '#/page/launch'],
+      });
+      expect(updated.layout.tabs[3]).toMatchObject({
+        id: 'group-b:side',
+        target: '#/page/b-side',
+        back: ['#/page/b-side-before'],
+        forward: ['#/page/side-next'],
+      });
+      expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+      expect(writes).toEqual([]);
+    } finally {
+      await act(async () => root.unmount());
+      stop();
+    }
   });
 
   it.each([
@@ -456,24 +838,7 @@ describe('two-pane runtime snapshot compatibility', () => {
   });
 
   it('applies the same launch overlay to a v2 snapshot that needs a temporary fallback', async () => {
-    const tabsSnapshot = Array.from({ length: 21 }, (_, index) => ({
-      id: `group-${index}`,
-      groupId: `group-${index}`,
-      target: `#/page/${index}`,
-      back: index === 20 ? ['#/page/previous'] : [],
-      forward: index === 20 ? ['#/page/next'] : [],
-    }));
-    const raw = JSON.stringify({
-      schemaVersion: 2,
-      paneLayout: {
-        version: 1,
-        id: 'fallback-layout',
-        root: { kind: 'leaf', id: 'fallback-pane', tabId: 'group-20' },
-        focusedPaneId: 'fallback-pane',
-      },
-      tabs: tabsSnapshot,
-      closed: [],
-    });
+    const raw = overflowForkSnapshot();
     const { tabs, writes } = await freshTabs(raw);
 
     expect(readPaneTabsSnapshot(raw).kind).toBe('current');
@@ -489,6 +854,163 @@ describe('two-pane runtime snapshot compatibility', () => {
       ],
     });
     expect(window.location.hash).toBe('');
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+  });
+
+  it('keeps an overflow snapshot usable through foreground, background, close, reopen, and navigation', async () => {
+    const raw = overflowForkSnapshot();
+    const { tabs, writes } = await freshTabs(raw);
+    const stop = tabs.startTabs();
+    const hiddenInstances = tabs.getTabs().layout.tabs.slice(0, 20);
+
+    expect(tabs.getTabs().tabs.map((tab) => tab.id)).toEqual(['group-20']);
+    tabs.openTab('#/page/foreground');
+    expect(tabs.getTabs().tabs.map((tab) => tab.hash)).toEqual(['#/', '#/page/foreground']);
+    expect(tabs.getTabs().active).not.toBe('group-20');
+    tabs.showInMain('#/page/foreground-next');
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(tabs.getTabs().tabs.find((tab) => tab.id === tabs.getTabs().active)?.hash).toBe(
+      '#/page/foreground-next',
+    );
+
+    tabs.openTab('#/page/background', { background: true });
+    const background = tabs.getTabs().tabs.find((tab) => tab.hash === '#/page/background')!;
+    expect(tabs.getTabs().active).not.toBe(background.id);
+    tabs.activateTab(background.id);
+    expect(tabs.getTabs().active).toBe(background.id);
+    tabs.showInMain('#/page/background-next');
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    tabs.closeTab(background.id);
+    expect(tabs.getTabs().tabs.some((tab) => tab.hash === '#/page/background-next')).toBe(false);
+    tabs.reopenClosedTab();
+    expect(tabs.getTabs().tabs.find((tab) => tab.id === tabs.getTabs().active)?.hash).toBe(
+      '#/page/background-next',
+    );
+    stop();
+
+    expect(tabs.getTabs().tabs.map((tab) => tab.id)).toContain('group-20');
+    const runtimeInstances = tabs.getTabs().layout.tabs;
+    expect(runtimeInstances.slice(0, 21).map((tab) => tab.id)).toEqual(
+      Array.from({ length: 21 }, (_, index) => `group-${index}`),
+    );
+    expect(runtimeInstances.slice(21).map((tab) => tab.target)).toEqual([
+      '#/page/foreground-next',
+      '#/page/background-next',
+    ]);
+    for (const [index, instance] of hiddenInstances.entries()) {
+      expect(runtimeInstances[index]).toBe(instance);
+    }
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+  });
+
+  it('keeps a same-group member without the legacy side suffix as an independent focused tab', async () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      paneLayout: {
+        version: 1,
+        id: 'member-layout',
+        root: {
+          kind: 'split',
+          id: 'member-root',
+          axis: 'columns',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'group-pane', tabId: 'group' },
+          second: { kind: 'leaf', id: 'member-pane', tabId: 'member' },
+        },
+        focusedPaneId: 'member-pane',
+      },
+      tabs: [
+        { id: 'group', groupId: 'group', target: '#/page/group', back: ['#/page/group-before'], forward: [] },
+        { id: 'other', groupId: 'other', target: '#/page/other', back: [], forward: ['#/page/other-next'] },
+        {
+          id: 'member',
+          groupId: 'group',
+          target: '#/page/member',
+          back: ['#/page/member-before'],
+          forward: ['#/page/member-next'],
+        },
+      ],
+      closed: [],
+    });
+    const { tabs, writes } = await freshTabs(raw, '#/page/launch');
+
+    expect(tabs.getTabs()).toMatchObject({
+      active: 'member',
+      pane: 'main',
+      tabs: [
+        { id: 'group', hash: '#/page/group', back: ['#/page/group-before'], side: null },
+        { id: 'other', hash: '#/page/other', forward: ['#/page/other-next'], side: null },
+        {
+          id: 'member',
+          hash: '#/page/launch',
+          back: ['#/page/member-before', '#/page/member'],
+          forward: ['#/page/member-next'],
+          side: null,
+        },
+      ],
+    });
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['group', 'other', 'member']);
+    expect(tabs.getTabs().layout.tabs[0]?.target).toBe('#/page/group');
+    expect(tabs.getTabs().layout.tabs[1]?.target).toBe('#/page/other');
+    expect(tabs.getTabs().layout.tabs[2]?.target).toBe('#/page/launch');
+    expect(tabs.getTabs().layout.focusedPaneId).toBe('member-pane');
+
+    tabs.activateTab('other');
+    expect(tabs.getTabs().active).toBe('other');
+    tabs.activateTab('member');
+    expect(tabs.getTabs().active).toBe('member');
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['group', 'other', 'member']);
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+  });
+
+  it('preserves interleaved v2 instance order during side navigation and changes it only on move', async () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      paneLayout: {
+        version: 1,
+        id: 'interleaved-layout',
+        root: {
+          kind: 'split',
+          id: 'interleaved-root',
+          axis: 'columns',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'main-pane', tabId: 'main' },
+          second: { kind: 'leaf', id: 'side-pane', tabId: 'main:side' },
+        },
+        focusedPaneId: 'main-pane',
+      },
+      tabs: [
+        { id: 'main', groupId: 'main', target: '#/page/main', back: [], forward: [] },
+        { id: 'other', groupId: 'other', target: '#/page/other', back: ['#/page/other-before'], forward: [] },
+        {
+          id: 'main:side',
+          groupId: 'main',
+          target: '#/page/side',
+          back: ['#/page/side-before'],
+          forward: ['#/page/side-after'],
+        },
+      ],
+      closed: [],
+    });
+    const { tabs, writes } = await freshTabs(raw, '#/page/main');
+
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['main', 'other', 'main:side']);
+    tabs.showInSide('#/page/side-next');
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['main', 'other', 'main:side']);
+    expect(tabs.routeHashForPane('side')).toBe('#/page/side-next');
+    tabs.goBack('side');
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['main', 'other', 'main:side']);
+    expect(tabs.routeHashForPane('side')).toBe('#/page/side');
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+
+    tabs.moveTab('other', 0);
+    expect(tabs.getTabs().tabs.map((tab) => tab.id)).toEqual(['other', 'main']);
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['other', 'main', 'main:side']);
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toContain('main:side');
     expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
     expect(writes).toEqual([]);
   });

@@ -1,6 +1,15 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
-import { activeHash, getTabs, showInMain, showInSide, subscribeTabs, targetPane } from './tabs';
+import {
+  activeHash,
+  getTabs,
+  routeHashForPane,
+  showInMain,
+  showInSide,
+  subscribeTabs,
+  targetPane,
+  usePane,
+} from './tabs';
 import type { PaneId } from './tabs';
 
 export type Route =
@@ -95,23 +104,21 @@ export function openPage(id: PageId, find: string | null = null, anchor: string 
   navigate({ name: 'page', id, find, anchor });
 }
 
-let cachedHash = '';
-let cachedRoute: Route = { name: 'home' };
-
-function snapshot(): Route {
-  const hash = window.location.hash;
-  if (hash !== cachedHash) {
-    cachedHash = hash;
-    cachedRoute = parseRoute(hash);
-  }
-  return cachedRoute;
-}
-
 export function useRoute(): Route {
-  return useSyncExternalStore((listener) => {
-    window.addEventListener('hashchange', listener);
-    return () => window.removeEventListener('hashchange', listener);
-  }, snapshot);
+  const pane = usePane();
+  const hash = useSyncExternalStore(
+    (listener) => {
+      window.addEventListener('hashchange', listener);
+      const stop = subscribeTabs(listener);
+      return () => {
+        window.removeEventListener('hashchange', listener);
+        stop();
+      };
+    },
+    () => (pane === 'main' ? window.location.hash || routeHashForPane('main') : routeHashForPane('side')),
+    () => '#/',
+  );
+  return useMemo(() => parseRoute(hash), [hash]);
 }
 
 // the place shown where navigation goes, the side of a split tab when that side is in use

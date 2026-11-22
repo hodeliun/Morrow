@@ -91,8 +91,17 @@ function split(
   return { kind: 'split', id: splitId(layoutId, 'root'), axis, ratio, first, second };
 }
 
-function allocateSideId(legacyTabId: string, usedIds: Set<string>): string {
-  const base = `${legacyTabId}:side`;
+export function isSideInstanceIdFor(mainId: string, candidateId: string): boolean {
+  const base = `${mainId}:side`;
+  if (candidateId === base) return true;
+  const suffixPrefix = `${base}:`;
+  if (!candidateId.startsWith(suffixPrefix)) return false;
+  const suffix = candidateId.slice(suffixPrefix.length);
+  return /^(?:[2-9]|[1-9]\d+)$/.test(suffix);
+}
+
+export function allocateSideInstanceId(mainId: string, usedIds: Set<string>): string {
+  const base = `${mainId}:side`;
   let candidate = base;
   let suffix = 2;
   while (usedIds.has(candidate)) candidate = `${base}:${suffix++}`;
@@ -187,7 +196,7 @@ export function migrateLegacySplit(
   const usedIds = new Set(legacy.tabs.map((tab) => tab.id));
   const sideIds = new Map<string, string>();
   for (const tab of legacy.tabs) {
-    if (tab.side) sideIds.set(tab.id, allocateSideId(tab.id, usedIds));
+    if (tab.side) sideIds.set(tab.id, allocateSideInstanceId(tab.id, usedIds));
   }
   const tabs = legacy.tabs.flatMap((tab) => {
     const main = { ...legacyTabInstance(tab.id, tab.id, tab), ...(tab.pinned ? { pinned: true } : {}) };
