@@ -10,6 +10,7 @@ import {
   markdownToDoc,
   parseWikiLink,
 } from '../core/markdown/parse';
+import { isHexBlockBackground } from '../core/markdown/blockBackground';
 import { docToMarkdown, retargetMarkdownHref } from '../core/markdown/serialize';
 import { displayTitle, emptyDoc, newPageMeta } from '../core/model';
 import type {
@@ -1231,6 +1232,15 @@ export class VaultRepository implements WorkspaceRepository {
       parent?.kind === 'database' ? parent.database : null,
       parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
+    const firstBlock = doc.content?.[0];
+    if (
+      firstBlock?.type === 'heading' &&
+      firstBlock.attrs?.level === 1 &&
+      isHexBlockBackground(firstBlock.attrs?.backgroundColor)
+    ) {
+      // Keep a custom-colored body H1 distinct from the implicit file title on the next read.
+      managed.set('title', displayTitle(page));
+    }
     let frontmatter = composeFrontmatter(managed, page.extra, source, page);
     const changedCheckboxKeys = new Set<string>();
     const unchangedSchemaKeys = new Set<string>();
@@ -2270,7 +2280,20 @@ export class VaultRepository implements WorkspaceRepository {
         return { ok: false };
       }
     }
-    const protectionReason = findUnrepresentablePageContent(text);
+    const index =
+      context?.otherIndex ?? new Map([...this.others].map((other) => [other.toLowerCase(), other]));
+    const names = context?.otherNames ?? new Map<string, string[]>();
+    if (!context) {
+      for (const other of this.others)
+        names.set(basename(other).toLowerCase(), [
+          ...(names.get(basename(other).toLowerCase()) ?? []),
+          other,
+        ]);
+    }
+    const dir = dirname(path);
+    const protectionReason = findUnrepresentablePageContent(text, {
+      resolveAttachmentHref: (href) => resolveFile(dir, href, index, names) !== null,
+    });
     if (protectionReason) return { ok: false, reason: protectionReason };
     const read = readPageText(text);
     if (read.error) return { ok: false };
@@ -2302,17 +2325,6 @@ export class VaultRepository implements WorkspaceRepository {
       );
       if (added) database = { ...parent, database: copy };
     }
-    const index =
-      context?.otherIndex ?? new Map([...this.others].map((other) => [other.toLowerCase(), other]));
-    const names = context?.otherNames ?? new Map<string, string[]>();
-    if (!context) {
-      for (const other of this.others)
-        names.set(basename(other).toLowerCase(), [
-          ...(names.get(basename(other).toLowerCase()) ?? []),
-          other,
-        ]);
-    }
-    const dir = dirname(path);
     const doc = markdownToDoc(
       read.body,
       parseOptions(dir, resolver, (href) => resolveFile(dir, href, index, names)),

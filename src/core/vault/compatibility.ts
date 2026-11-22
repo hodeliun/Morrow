@@ -1,7 +1,7 @@
 // Detect Markdown data the upstream model cannot represent before pageFile normalizes it.
 import MarkdownIt from 'markdown-it';
 import { isRecord, validateDoc, walk } from '../doc';
-import { markdownToDoc } from '../markdown/parse';
+import { inspectBlockBackgroundMarkers, markdownToDoc } from '../markdown/parse';
 import type { DocNode } from '../model';
 import {
   COLORS,
@@ -82,11 +82,19 @@ const RECENT_KEYS = new Set(['version', 'opened', 'activity']);
 const MAX_RECENT = 300;
 const MAX_ACTIVITY_DAYS = 400;
 
+export interface PageContentSafetyOptions {
+  /** Reports local files which Markdown parsing would promote out of their paragraph. */
+  resolveAttachmentHref?: (href: string) => boolean;
+}
+
 /**
  * Returns a readable reason when saving this Markdown through the upstream model
  * could drop or change data. This must run on the file text before readPageText.
  */
-export function findUnrepresentablePageContent(text: string): string | null {
+export function findUnrepresentablePageContent(
+  text: string,
+  options: PageContentSafetyOptions = {},
+): string | null {
   const split = splitFrontmatter(text);
   if (split.error) return null; // The normal loader already protects malformed YAML.
 
@@ -98,7 +106,8 @@ export function findUnrepresentablePageContent(text: string): string | null {
     if (extraIssue) return extraIssue;
   }
 
-  return unsupportedMarkerIssue(split.body);
+  const explicitTitle = typeof data?.title === 'string' && data.title.trim().length > 0;
+  return unsupportedMarkerIssue(split.body, explicitTitle, options);
 }
 
 export function hasUnrepresentableDatabaseSchema(text: string): boolean {
@@ -535,12 +544,22 @@ function unknownKey(raw: Record<string, unknown>, accepted: ReadonlySet<string>)
   return Object.keys(raw).some((key) => !accepted.has(key));
 }
 
-function unsupportedMarkerIssue(body: string): string | null {
+function unsupportedMarkerIssue(
+  body: string,
+  explicitTitle: boolean,
+  options: PageContentSafetyOptions,
+): string | null {
   if (hasOverdeepPolarisDadosView(body)) {
     return 'The page contains a Polaris Dados view beyond the supported wrapper depth.';
   }
   const viewIds = new Set<string>();
   const allowedViewMarkers = new Map<string, number>();
+  const hasBlockBackground = /<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/i.test(body);
+  const blockBackgroundMarkers = hasBlockBackground
+    ? inspectBlockBackgroundMarkers(body, options.resolveAttachmentHref ?? mayResolveLocalAttachment)
+    : [];
+  let blockBackgroundTokenIndex = 0;
+  let blockBackgroundIndex = 0;
   for (const token of markerTokens(body)) {
     const markers = /<!--[ \t\r\n]*morrow:([a-z][\w-]*)/gi;
     let match: RegExpExecArray | null;
@@ -553,6 +572,22 @@ function unsupportedMarkerIssue(body: string): string | null {
       }
       const comment = token.content.slice(commentStart, commentEnd + 3).trim();
       if (markerName === 'header-column') continue;
+      if (markerName === 'block-background') {
+        const inspected = blockBackgroundMarkers[blockBackgroundTokenIndex++];
+        if (
+          !inspected ||
+          inspected.comment !== comment ||
+          !inspected.approved ||
+          !inspected.color ||
+          (inspected.titleHeading && !explicitTitle) ||
+          token.type !== 'html_block' ||
+          token.content.trim() !== comment ||
+          token.invalidListPosition
+        ) {
+          return 'The page contains a Morrow block marker this version cannot safely edit.';
+        }
+        continue;
+      }
       if (markerName !== 'polaris-dados-view') {
         return 'The page contains a Morrow block marker this version cannot safely edit.';
       }
@@ -569,6 +604,19 @@ function unsupportedMarkerIssue(body: string): string | null {
   }
   for (const marker of rawMorrowComments(body)) {
     if (marker.name === 'header-column' && marker.closed) continue;
+    if (marker.name === 'block-background' && marker.closed) {
+      const inspected = blockBackgroundMarkers[blockBackgroundIndex++];
+      if (
+        !inspected ||
+        inspected.comment !== marker.comment ||
+        !inspected.approved ||
+        !inspected.color ||
+        (inspected.titleHeading && !explicitTitle)
+      ) {
+        return 'The page contains a Morrow block marker this version cannot safely edit.';
+      }
+      continue;
+    }
     if (marker.name !== 'polaris-dados-view' || !marker.closed) {
       return 'The page contains a Morrow block marker this version cannot safely edit.';
     }
@@ -603,6 +651,16 @@ function unsupportedMarkerIssue(body: string): string | null {
     return 'The page contains a layout or block identifier this version cannot safely edit.';
   }
   return null;
+}
+
+function mayResolveLocalAttachment(href: string): boolean {
+  return (
+    !!href &&
+    !/^[a-z][a-z0-9+.-]*:/i.test(href) &&
+    !href.startsWith('//') &&
+    !href.startsWith('#') &&
+    !/\.(?:md|canvas)(?:[?#]|$)/i.test(href)
+  );
 }
 
 function hasOverdeepPolarisDadosView(body: string): boolean {

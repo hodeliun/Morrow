@@ -3,7 +3,9 @@ import type { StateBlock, StateInline, Token } from 'markdown-it';
 import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, parseInlineColor, TEXT_HEX } from '../model';
 import type { DocMark, DocNode, PageId } from '../model';
 import { inlineText } from '../doc';
+import type { InlineColor } from '../model';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
+import { parseBlockBackgroundMarker, supportsHexBlockBackgroundOwner } from './blockBackground';
 import { scanMarkdownDestination } from './markdownLinkDestination';
 import {
   ALIGN_PATTERN,
@@ -29,6 +31,8 @@ export interface ParseOptions {
   resolveFile?: (href: string) => { fileId: string; name: string; image: boolean } | null;
   // links to pages that do not exist yet stay live and create the page when followed, on by default
   keepUnresolved?: boolean;
+  /** @internal Nested HTML wrappers disable marker interpretation until their format is supported. */
+  allowLegacyBlockBackgrounds?: boolean;
 }
 
 export interface WikiLink {
@@ -37,6 +41,25 @@ export interface WikiLink {
   alias: string | null;
   embed: boolean;
 }
+
+export interface BlockBackgroundMarkerInspection {
+  comment: string;
+  color: InlineColor | null;
+  tokenIndex: number;
+  tokenType: string;
+  approved: boolean;
+  targetType: string | null;
+  targetTag: string | null;
+  titleHeading: boolean;
+}
+
+interface ParsedMarkdownDoc {
+  doc: DocNode;
+  blockBackgroundMarkers: BlockBackgroundMarkerInspection[];
+}
+
+const BLOCK_BACKGROUND_MARKER_IDS = Symbol('morrow.blockBackgroundMarkerIds');
+type MarkerOwnedDocNode = DocNode & { [BLOCK_BACKGROUND_MARKER_IDS]?: number[] };
 
 const md = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 md.inline.ruler.before('link', 'wikilink', wikiLinkRule);
@@ -384,21 +407,43 @@ function takeBlockId(paragraph: DocNode): void {
 }
 
 export function markdownToDoc(source: string, options: ParseOptions = {}): DocNode {
+  return parseMarkdownToDoc(source, options).doc;
+}
+
+function parseMarkdownToDoc(source: string, options: ParseOptions = {}): ParsedMarkdownDoc {
   const text = source.length > MAX_INPUT ? source.slice(0, MAX_INPUT) : source;
   const tokens = md.parse(text.replace(/\r\n?/g, '\n'), {});
+  const hasBlockBackground = /<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/i.test(text);
+  const backgroundMarkers = hasBlockBackground ? inspectBlockBackgroundMarkerTokens(tokens) : [];
+  const approvedBackgroundMarkers = new Map(
+    (options.allowLegacyBlockBackgrounds === false ? [] : backgroundMarkers)
+      .filter((marker) => marker.approved && marker.color)
+      .map((marker) => [marker.tokenIndex, marker.color!] as const),
+  );
   const root: DocNode = { type: 'doc', content: [] };
   const stack: DocNode[] = [root];
   const top = () => stack[stack.length - 1]!;
   // what a comment morrow writes above a block says about it: its background colour, or a list counted in
   // letters. it goes on the next block at the same level
-  let pending: { attrs: Record<string, unknown>; parent: DocNode } | null = null;
-  const note = (attrs: Record<string, unknown>) => {
-    pending = { attrs: { ...(pending?.parent === top() ? pending.attrs : {}), ...attrs }, parent: top() };
+  let pending: { attrs: Record<string, unknown>; parent: DocNode; markerIds: number[] } | null = null;
+  const note = (attrs: Record<string, unknown>, blockBackgroundMarkerId?: number) => {
+    const previous = pending;
+    const sameParent = previous?.parent === top();
+    pending = {
+      attrs: { ...(sameParent ? previous.attrs : {}), ...attrs },
+      parent: top(),
+      markerIds: [
+        ...(sameParent ? previous.markerIds : []),
+        ...(blockBackgroundMarkerId === undefined ? [] : [blockBackgroundMarkerId]),
+      ],
+    };
   };
   const push = (node: DocNode) => {
     if (pending?.parent === top()) {
       const { type, ...rest } = pending.attrs;
       node.attrs = { ...node.attrs, ...rest, ...(type && node.type === 'orderedList' ? { type } : {}) };
+      if (pending.markerIds.length)
+        (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] = pending.markerIds;
     }
     pending = null;
     (top().content ??= []).push(node);
@@ -417,7 +462,8 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   let columnWidths: number[] = [];
   let tableWidths: number[] = [];
 
-  for (const token of tokens) {
+  for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+    const token = tokens[tokenIndex]!;
     if (token.type !== 'table_open' && token.type !== 'html_block') {
       headerColumn = false;
       columnWidths = [];
@@ -528,6 +574,11 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
           break;
         }
         {
+          const background = approvedBackgroundMarkers.get(tokenIndex);
+          if (background) {
+            note({ backgroundColor: background }, tokenIndex);
+            break;
+          }
           const view = decodePolarisDadosViewMarker(token.content.trim());
           if (view && hasInvalidViewListStart(stack)) {
             push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
@@ -575,8 +626,16 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
     }
   }
 
-  const doc = normalize(root);
-  return (doc.content ?? []).length > 0 ? doc : emptyDoc();
+  const invalidMarkerIds = new Set<number>();
+  const normalized = normalize(root, invalidMarkerIds);
+  const provenBackgroundMarkers = backgroundMarkers.length
+    ? proveBlockBackgroundOwners(normalized, backgroundMarkers, invalidMarkerIds)
+    : backgroundMarkers;
+  if (backgroundMarkers.length) removeBlockBackgroundMarkerIds(normalized, provenBackgroundMarkers);
+  return {
+    doc: (normalized.content ?? []).length > 0 ? normalized : emptyDoc(),
+    blockBackgroundMarkers: provenBackgroundMarkers,
+  };
 }
 
 function hasInvalidViewListStart(stack: DocNode[]): boolean {
@@ -724,7 +783,10 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
     const after = html.slice(summary ? summary.index + summary[0].length : details[0].length);
     const closed = /<\/details>\s*$/i.test(after);
     const inner = after.replace(/<\/details>\s*$/i, '').trim();
-    if (inner) body.content!.push(...(markdownToDoc(inner, options).content ?? []));
+    if (inner)
+      body.content!.push(
+        ...(markdownToDoc(inner, { ...options, allowLegacyBlockBackgrounds: false }).content ?? []),
+      );
     if (!closed) b.stack.push(node, body);
   } else if (/^<\/details>/i.test(html)) {
     if (b.top().type === 'detailsContent') {
@@ -749,7 +811,10 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
       content: [],
     };
     if (emoji) inner = inner.slice(emoji[0].length);
-    if (inner) node.content!.push(...(markdownToDoc(inner, options).content ?? []));
+    if (inner)
+      node.content!.push(
+        ...(markdownToDoc(inner, { ...options, allowLegacyBlockBackgrounds: false }).content ?? []),
+      );
     b.push(node);
     if (!closed) b.stack.push(node);
   } else if (/^<\/aside>/i.test(html)) {
@@ -786,6 +851,257 @@ export function markdownToPage(
     };
   }
   return { title: fallbackTitle, doc };
+}
+
+/** Inspects legacy background comments using the same Markdown token stream as the codec. */
+export function inspectBlockBackgroundMarkers(
+  source: string,
+  resolvesAttachment?: (href: string) => boolean,
+): BlockBackgroundMarkerInspection[] {
+  const text = source.length > MAX_INPUT ? source.slice(0, MAX_INPUT) : source;
+  if (!/<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/i.test(text)) return [];
+  const resolveFile = resolvesAttachment
+    ? (href: string) =>
+        resolvesAttachment(href)
+          ? {
+              fileId: href,
+              name: href.split('/').at(-1) || href,
+              image: /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(href),
+            }
+          : null
+    : undefined;
+  return parseMarkdownToDoc(text, { resolveFile }).blockBackgroundMarkers;
+}
+
+function inspectBlockBackgroundMarkerTokens(tokens: Token[]): BlockBackgroundMarkerInspection[] {
+  const found: BlockBackgroundMarkerInspection[] = [];
+  const listItems: number[] = [];
+  const htmlContainers: Array<{
+    tag: string;
+    nativeColumnLayout: boolean;
+    layoutKind: 'columns' | 'column' | 'other';
+  }> = [];
+  let blockquoteDepth = 0;
+  let tableDepth = 0;
+  let rootContentSeen = false;
+
+  for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+    const token = tokens[tokenIndex]!;
+    if (token.type === 'list_item_open') listItems.push(token.level);
+    if (token.type === 'list_item_close') {
+      while (listItems.length && listItems[listItems.length - 1]! >= token.level) listItems.pop();
+    }
+
+    if (token.type === 'html_block' || token.type === 'html_inline') {
+      const comments = blockBackgroundComments(token.content);
+      for (const comment of comments) {
+        const color = parseBlockBackgroundMarker(comment);
+        const next = tokens[tokenIndex + 1];
+        const syntheticEmptyParagraph =
+          next?.type === 'html_block' && /^<br\s*\/?>$/i.test(next.content.trim());
+        const targetType =
+          next && ['paragraph_open', 'heading_open', 'blockquote_open'].includes(next.type)
+            ? next.type
+            : syntheticEmptyParagraph
+              ? 'paragraph_open'
+              : null;
+        const targetTag = targetType && next ? (syntheticEmptyParagraph ? 'p' : next.tag) : null;
+        const layoutIsSupported =
+          htmlContainers.length === 0 ||
+          (htmlContainers.at(-1)?.layoutKind === 'column' &&
+            htmlContainers.some((container) => container.nativeColumnLayout) &&
+            htmlContainers.every((container) => container.nativeColumnLayout));
+        const isColumnChild = htmlContainers.length === 0 || htmlContainers.at(-1)?.layoutKind === 'column';
+        const previousBackground = tokens[tokenIndex - 1];
+        const duplicateBackground =
+          previousBackground?.type === 'html_block' &&
+          (parseBlockBackgroundMarker(previousBackground.content.trim()) !== null ||
+            BACKGROUND_PATTERN.test(previousBackground.content.trim()));
+        const approved =
+          token.type === 'html_block' &&
+          token.content.trim() === comment &&
+          color !== null &&
+          !duplicateBackground &&
+          targetType !== null &&
+          next?.level === token.level &&
+          listItems.length === 0 &&
+          tableDepth === 0 &&
+          layoutIsSupported &&
+          isColumnChild;
+        const titleHeading =
+          approved &&
+          targetType === 'heading_open' &&
+          targetTag === 'h1' &&
+          next?.level === 0 &&
+          htmlContainers.length === 0 &&
+          blockquoteDepth === 0 &&
+          !rootContentSeen;
+        found.push({
+          comment,
+          color,
+          tokenIndex,
+          tokenType: token.type,
+          approved,
+          targetType,
+          targetTag,
+          titleHeading,
+        });
+      }
+    }
+
+    if (token.type === 'blockquote_open') blockquoteDepth++;
+    if (token.type === 'blockquote_close') blockquoteDepth = Math.max(0, blockquoteDepth - 1);
+    if (token.type === 'table_open') tableDepth++;
+    if (token.type === 'table_close') tableDepth = Math.max(0, tableDepth - 1);
+
+    if (token.type === 'html_block') updateBlockBackgroundHtmlContainers(token.content, htmlContainers);
+
+    if (token.level === 0 && isRootContentToken(token)) rootContentSeen = true;
+  }
+  return found;
+}
+
+function proveBlockBackgroundOwners(
+  doc: DocNode,
+  markers: BlockBackgroundMarkerInspection[],
+  invalidMarkerIds: ReadonlySet<number>,
+): BlockBackgroundMarkerInspection[] {
+  const owners = new Map<number, Array<{ node: DocNode; ancestors: DocNode[] }>>();
+  const visit = (node: DocNode, ancestors: DocNode[]) => {
+    for (const markerId of (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] ?? []) {
+      owners.set(markerId, [...(owners.get(markerId) ?? []), { node, ancestors }]);
+    }
+    for (const child of node.content ?? []) visit(child, [...ancestors, node]);
+  };
+  visit(doc, []);
+
+  return markers.map((marker) => {
+    if (!marker.approved) return marker;
+    const candidates = owners.get(marker.tokenIndex) ?? [];
+    const owner = candidates[0];
+    const expectedNodeType =
+      marker.targetType === 'paragraph_open'
+        ? 'paragraph'
+        : marker.targetType === 'heading_open'
+          ? 'heading'
+          : marker.targetType === 'blockquote_open'
+            ? 'blockquote'
+            : null;
+    const supportedChain = owner
+      ? supportsHexBlockBackgroundOwner(
+          owner.node.type,
+          owner.ancestors.map((ancestor) => ancestor.type),
+        )
+      : false;
+    const proven =
+      candidates.length === 1 &&
+      !invalidMarkerIds.has(marker.tokenIndex) &&
+      expectedNodeType !== null &&
+      owner?.node.type === expectedNodeType &&
+      owner?.node.attrs?.backgroundColor === marker.color &&
+      supportedChain === true;
+    return { ...marker, approved: proven };
+  });
+}
+
+function removeBlockBackgroundMarkerIds(doc: DocNode, markers: BlockBackgroundMarkerInspection[]): void {
+  const approved = new Set(markers.filter((marker) => marker.approved).map((marker) => marker.tokenIndex));
+  const visit = (node: DocNode) => {
+    const owned = node as MarkerOwnedDocNode;
+    const markerIds = owned[BLOCK_BACKGROUND_MARKER_IDS] ?? [];
+    if (markerIds.length && markerIds.some((markerId) => !approved.has(markerId))) {
+      if (node.attrs && Object.hasOwn(node.attrs, 'backgroundColor')) {
+        const attrs = { ...node.attrs };
+        delete attrs.backgroundColor;
+        node.attrs = Object.keys(attrs).length ? attrs : undefined;
+      }
+    }
+    Reflect.deleteProperty(owned, BLOCK_BACKGROUND_MARKER_IDS);
+    for (const child of node.content ?? []) visit(child);
+  };
+  visit(doc);
+}
+
+function blockBackgroundComments(content: string): string[] {
+  const comments: string[] = [];
+  const opening = /<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/gi;
+  let match: RegExpExecArray | null;
+  while ((match = opening.exec(content))) {
+    const end = content.indexOf('-->', match.index);
+    comments.push((end === -1 ? content.slice(match.index) : content.slice(match.index, end + 3)).trim());
+  }
+  return comments;
+}
+
+function updateBlockBackgroundHtmlContainers(
+  content: string,
+  stack: Array<{
+    tag: string;
+    nativeColumnLayout: boolean;
+    layoutKind: 'columns' | 'column' | 'other';
+  }>,
+): void {
+  const tags = content.match(/<!--[\s\S]*?-->|<\/?[a-z][^>]*>/gi) ?? [];
+  for (const tag of tags) {
+    if (tag.startsWith('<!--')) continue;
+    const closing = /^<\/([a-z][\w-]*)\s*>$/i.exec(tag);
+    if (closing) {
+      let index = stack.length - 1;
+      while (index >= 0 && stack[index]!.tag !== closing[1]!.toLowerCase()) index--;
+      if (index >= 0) stack.splice(index);
+      continue;
+    }
+    const opening = /^<([a-z][\w-]*)\b([^>]*)>$/i.exec(tag);
+    if (!opening || /\/\s*>$/.test(tag)) continue;
+    const name = opening[1]!.toLowerCase();
+    const exactTag = tag.toLowerCase();
+    if (name === 'div' && exactTag === '<div data-columns>') {
+      stack.push({ tag: 'div', nativeColumnLayout: true, layoutKind: 'columns' });
+    } else if (
+      name === 'div' &&
+      exactTag === '<div data-column>' &&
+      stack.at(-1)?.layoutKind === 'columns' &&
+      stack.at(-1)?.nativeColumnLayout
+    ) {
+      stack.push({ tag: 'div', nativeColumnLayout: true, layoutKind: 'column' });
+    } else if (!/^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/.test(name)) {
+      stack.push({ tag: name, nativeColumnLayout: false, layoutKind: 'other' });
+    }
+  }
+}
+
+function isRootContentToken(token: Token): boolean {
+  if (
+    [
+      'paragraph_open',
+      'heading_open',
+      'blockquote_open',
+      'bullet_list_open',
+      'ordered_list_open',
+      'fence',
+      'code_block',
+      'math_block',
+      'hr',
+      'table_open',
+    ].includes(token.type)
+  ) {
+    return true;
+  }
+  if (token.type !== 'html_block') return false;
+  const value = token.content.trim();
+  if (
+    parseBlockBackgroundMarker(value) ||
+    BACKGROUND_PATTERN.test(value) ||
+    ALIGN_PATTERN.test(value) ||
+    value === HEADER_COLUMN ||
+    value === EMBED_TITLE_COMMENT ||
+    value === PREVIEW_COMMENT ||
+    value === LETTERS_COMMENT ||
+    COLUMN_WIDTHS_PATTERN.test(value)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export interface MarkdownRetargetSpan {
@@ -1390,10 +1706,13 @@ function sameMarks(a: DocMark[] = [], b: DocMark[] = []): boolean {
 }
 
 // shapes the tree so the editor schema accepts it
-function normalize(input: DocNode): DocNode {
+function normalize(input: DocNode, invalidMarkerIds: Set<number>): DocNode {
   // callouts read their title from the raw first line, before line breaks turn into spaces
   const node = input.type === 'blockquote' ? toCallout(input) : input;
-  const content = node.content?.flatMap((child) => liftMedia(normalize(child)));
+  if (node !== input) invalidateBlockBackgroundMarkers(input, invalidMarkerIds);
+  const content = node.content?.flatMap((child) =>
+    liftMedia(normalize(child, invalidMarkerIds), invalidMarkerIds),
+  );
   let next: DocNode = content ? { ...node, content } : { ...node };
   if ((next.type === 'callout' || next.type === 'detailsContent') && (next.content ?? []).length === 0) {
     next = { ...next, content: [{ type: 'paragraph', content: [] }] };
@@ -1431,9 +1750,11 @@ function marksOf(node: DocNode): { marks?: DocMark[] } {
 
 // images and embeds become blocks, a paragraph that mixes them with text is split around them,
 // so nothing an image or embed points at is ever lost
-function liftMedia(node: DocNode): DocNode[] {
+function liftMedia(node: DocNode, invalidMarkerIds: Set<number>): DocNode[] {
   if (node.type !== 'paragraph' || !node.content) return [node];
   const children = node.content;
+  const markerIds = (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] ?? [];
+  const invalidate = () => invalidateBlockBackgroundMarkers(node, invalidMarkerIds);
   const blank = (child: DocNode) =>
     child.type === 'hardBreak' ||
     child.type === 'softBreak' ||
@@ -1442,10 +1763,14 @@ function liftMedia(node: DocNode): DocNode[] {
   // a lone link to a stored file is shown as an attachment
   const refs = new Set(meaningful.map((child) => fileRefOf(child)));
   const ref = refs.size === 1 ? [...refs][0] : undefined;
-  if (ref && meaningful.every((child) => fileRefOf(child) === ref)) return [mediaBlock(ref)];
+  if (ref && meaningful.every((child) => fileRefOf(child) === ref)) {
+    invalidate();
+    return [mediaBlock(ref)];
+  }
   if (!meaningful.some((child) => child.type === 'image' || fileRefOf(child)?.embed)) {
     return [{ ...node, content: children.map(plainFileLink) }];
   }
+  if (markerIds.length) invalidate();
   const out: DocNode[] = [];
   let run: DocNode[] = [];
   const flush = () => {
@@ -1473,6 +1798,11 @@ function liftMedia(node: DocNode): DocNode[] {
   }
   flush();
   return out.length ? out : [{ ...node, content: [] }];
+}
+
+function invalidateBlockBackgroundMarkers(node: DocNode, invalidMarkerIds: Set<number>): void {
+  for (const markerId of (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] ?? [])
+    invalidMarkerIds.add(markerId);
 }
 
 function mediaBlock(ref: { fileId: string; name: string; image: boolean }): DocNode {

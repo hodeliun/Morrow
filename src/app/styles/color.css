@@ -334,6 +334,16 @@
   background: var(--block-bg);
   box-shadow: 0 0 0 2px var(--block-bg);
 }
+/* legacy HEX colours stay inside the block's available width and never rely on negative overflow */
+.prose .block-bg-custom {
+  border-radius: 4px;
+  padding-left: 0;
+  padding-right: 0;
+  margin-left: 0;
+  margin-right: 0;
+  background: var(--block-bg);
+  box-shadow: none;
+}
 .prose ul.block-bg,
 .prose ol.block-bg {
   padding-left: calc(1.45em + 6px);

@@ -1,6 +1,11 @@
-import { BACKGROUND_HEX, COLORS, inlineColorHex, normalizeInlineColor, TEXT_HEX } from '../model';
-import type { ColorName, DocMark, DocNode, PageId } from '../model';
+import { BACKGROUND_HEX, inlineColorHex, normalizeInlineColor, TEXT_HEX } from '../model';
+import type { ColorName, DocMark, DocNode, InlineColor, PageId } from '../model';
 import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
+import {
+  formatBlockBackgroundMarker,
+  isHexBlockBackground,
+  supportsHexBlockBackgroundOwner,
+} from './blockBackground';
 import { scanMarkdownDestination } from './markdownLinkDestination';
 
 export interface SerializeOptions {
@@ -42,6 +47,7 @@ const MARK_CLOSE: Record<string, (mark: DocMark) => string> = {
 export function docToMarkdown(doc: DocNode, options: SerializeOptions = {}): string {
   const viewIssue = polarisDadosViewDocIssue(doc);
   if (viewIssue) throw new TypeError(viewIssue);
+  assertSupportedCustomBlockBackgrounds(doc);
   const out = blocks(doc.content ?? [], options).trim();
   return out.length > 0 ? `${out}\n` : '';
 }
@@ -66,14 +72,15 @@ const isEmptyListParagraph = (node: DocNode | undefined) =>
 // blank lines would all fold into one. empty lines at the very end are left out
 function blocks(nodes: DocNode[], options: SerializeOptions): string {
   let last = nodes.length - 1;
-  while (last >= 0 && isEmptyParagraph(nodes[last])) last--;
+  while (last >= 0 && isEmptyParagraph(nodes[last]) && !blockBackground(nodes[last]!)) last--;
   const parts: string[] = [];
   for (const node of nodes.slice(0, last + 1)) {
     const text = isEmptyParagraph(node) ? '<br>' : block(node, options);
     if (text === null) continue;
     const background = blockBackground(node);
+    const backgroundMarker = background ? blockBackgroundComment(node, background) : null;
     const notes = [
-      ...(background ? [BACKGROUND_COMMENT(background)] : []),
+      ...(backgroundMarker ? [backgroundMarker] : []),
       ...(node.type === 'orderedList' && node.attrs?.type === 'a' ? [LETTERS_COMMENT] : []),
       ...(node.type === 'paragraph' && node.attrs?.embedTitle === false ? [EMBED_TITLE_COMMENT] : []),
       ...(node.type === 'codeBlock' && node.attrs?.preview === true ? [PREVIEW_COMMENT] : []),
@@ -220,6 +227,9 @@ function listItems(
       }
       // an item's own background is a comment at the end of its first line, other apps hide it
       const background = blockBackground(item);
+      if (background && isHexBlockBackground(background)) {
+        throw new TypeError('Custom block backgrounds are not supported on list items.');
+      }
       children.forEach((child, childIndex) => {
         let text = block(child, options) ?? '';
         if (childIndex === 0 && background && !text.includes('\n'))
@@ -281,11 +291,30 @@ export const PREVIEW_COMMENT = '<!-- preview -->';
 // a numbered list counted a, b, c. markdown only has numbers, so other apps show it numbered
 export const LETTERS_COMMENT = '<!-- letters -->';
 
-export function blockBackground(node: DocNode): ColorName | null {
-  const color = node.attrs?.backgroundColor;
-  return typeof color === 'string' && (COLORS as readonly string[]).includes(color)
-    ? (color as ColorName)
-    : null;
+export function blockBackground(node: DocNode): InlineColor | null {
+  return normalizeInlineColor(node.attrs?.backgroundColor);
+}
+
+function blockBackgroundComment(node: DocNode, color: InlineColor): string {
+  if (isHexBlockBackground(color)) {
+    const marker = formatBlockBackgroundMarker(color);
+    if (marker && supportsHexBlockBackgroundOwner(node.type, [])) return marker;
+    throw new TypeError(
+      'Custom block backgrounds are only supported on paragraphs, headings, and blockquotes.',
+    );
+  }
+  return BACKGROUND_COMMENT(color);
+}
+
+function assertSupportedCustomBlockBackgrounds(node: DocNode, ancestors: string[] = []): void {
+  const color = normalizeInlineColor(node.attrs?.backgroundColor);
+  if (color && isHexBlockBackground(color) && !supportsHexBlockBackgroundOwner(node.type, ancestors)) {
+    throw new TypeError(
+      'Custom block backgrounds are only supported on paragraphs, headings, and blockquotes.',
+    );
+  }
+  for (const child of node.content ?? [])
+    assertSupportedCustomBlockBackgrounds(child, [...ancestors, node.type]);
 }
 
 // a table row is one line of markdown, so what sits in a cell is written on that line: text, pictures as

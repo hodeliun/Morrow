@@ -136,6 +136,14 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
   const protectedPages = new Map<PageId, string>();
   const protectedDatabases = new Set<PageId>();
   let registryChanged = false;
+  const otherIndex = new Map<string, string>();
+  const otherNames = new Map<string, string[]>();
+  for (const path of scan.others) {
+    if (isHiddenPath(path)) continue;
+    otherIndex.set(path.toLowerCase(), path);
+    const name = basename(path).toLowerCase();
+    otherNames.set(name, [...(otherNames.get(name) ?? []), path]);
+  }
 
   // page files, the folder of each page is its path without the extension
   const candidates: Candidate[] = [];
@@ -262,7 +270,10 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
       pages.set(id, page);
       continue;
     }
-    const protectionReason = findUnrepresentablePageContent(candidate.file.text);
+    const protectionReason = findUnrepresentablePageContent(candidate.file.text, {
+      resolveAttachmentHref: (href) =>
+        resolveFile(dirname(candidate.file!.path), href, otherIndex, otherNames) !== null,
+    });
     if (protectionReason) {
       protectedPages.set(id, protectionReason);
       unreadable.push(id);
@@ -342,14 +353,6 @@ export function loadVault(scan: VaultScan, newId: () => string, now = Date.now()
   }
 
   const state: WorkspaceState = { pages: Object.fromEntries(pages), docs: {} };
-  const otherIndex = new Map<string, string>();
-  const otherNames = new Map<string, string[]>();
-  for (const path of scan.others) {
-    if (isHiddenPath(path)) continue;
-    otherIndex.set(path.toLowerCase(), path);
-    const name = basename(path).toLowerCase();
-    otherNames.set(name, [...(otherNames.get(name) ?? []), path]);
-  }
   const resolver = makeResolver(state, layout, sources);
   const docs: Record<PageId, DocNode> = {};
   for (const [id, { body, file }] of bodies) {

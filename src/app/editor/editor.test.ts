@@ -3,8 +3,20 @@ import { Editor } from '@tiptap/core';
 import { CellSelection } from '@tiptap/pm/tables';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DocNode } from '../../core/model';
+import { markdownToDoc } from '../../core/markdown/parse';
+import { docToMarkdown } from '../../core/markdown/serialize';
+import { MemoryVault } from '../../storage/memoryVault';
+import { WorkspaceSession } from '../../storage/session';
+import { VaultRepository } from '../../storage/vaultRepository';
 import { selectBlockRange } from './BlockSelect';
-import { changeCase, handleColorPanelKeyDown, setBlockBackground, setHeading, turnInto } from './EditorMenus';
+import {
+  changeCase,
+  handleColorPanelKeyDown,
+  setBlockBackground,
+  setHeading,
+  turnBlocks,
+  turnInto,
+} from './EditorMenus';
 import { createExtensions } from './extensions';
 import { tagDecorations } from './Extras';
 import type { DecorationSet } from '@tiptap/pm/view';
@@ -367,6 +379,248 @@ describe('turn into', () => {
     expect(json(target).content![1]!.type).toBe('callout');
   });
 
+  it('keeps a colored paragraph background when turned into a heading and preserves cursor and undo', () => {
+    const backgroundColor = '#2f80ed';
+    const target = make({
+      type: 'doc',
+      content: [{ ...p('Shaded line'), attrs: { backgroundColor } }],
+    });
+    turnInto(target, 0, { kind: 'heading', level: 2 });
+    const heading = json(target).content![0]!;
+    expect(heading).toMatchObject({ type: 'heading', attrs: { level: 2, backgroundColor } });
+    expect(target.state.selection.$from.parent.type.name).toBe('heading');
+    const serialized = docToMarkdown(json(target));
+    expect(serialized).toContain('<!-- morrow:block-background:#2f80ed -->');
+    expect(markdownToDoc(serialized)).toEqual(json(target));
+
+    expect(target.commands.undo()).toBe(true);
+    expect(json(target).content![0]).toMatchObject({ type: 'paragraph', attrs: { backgroundColor } });
+  });
+
+  it('keeps a colored paragraph background on a blockquote owner', () => {
+    const backgroundColor = '#2f80ed';
+    const target = make({
+      type: 'doc',
+      content: [{ ...p('Quoted line'), attrs: { backgroundColor } }],
+    });
+    turnInto(target, 0, { kind: 'blockquote' });
+    const quote = json(target).content![0]!;
+    expect(quote).toMatchObject({ type: 'blockquote', attrs: { backgroundColor } });
+    expect(target.state.selection.$from.parent.type.name).toBe('paragraph');
+    const serialized = docToMarkdown(json(target));
+    expect(serialized).toContain('<!-- morrow:block-background:#2f80ed -->');
+    expect(markdownToDoc(serialized)).toMatchObject({
+      type: 'doc',
+      content: [
+        {
+          type: 'blockquote',
+          attrs: { backgroundColor },
+          content: [{ type: 'paragraph', content: [{ text: 'Quoted line' }] }],
+        },
+      ],
+    });
+  });
+
+  it('keeps colored block owners out of unsupported list and toggle conversions', () => {
+    for (const targetKind of ['bulletList', 'toggle', 'callout'] as const) {
+      const target = make({
+        type: 'doc',
+        content: [{ ...p('Shaded line'), attrs: { backgroundColor: '#2f80ed' } }],
+      });
+      turnInto(target, 0, targetKind === 'toggle' ? { kind: targetKind, level: 2 } : { kind: targetKind });
+      expect(json(target).content![0]).toMatchObject({
+        type: 'paragraph',
+        attrs: { backgroundColor: '#2f80ed' },
+      });
+      editor?.destroy();
+      editor = null;
+    }
+
+    const native = make({
+      type: 'doc',
+      content: [{ ...p('Native palette'), attrs: { backgroundColor: 'green' } }],
+    });
+    turnInto(native, 0, { kind: 'bulletList' });
+    expect(json(native).content![0]!.type).toBe('bulletList');
+  });
+
+  it('blocks StarterKit list shortcuts for HEX owners while keeping edits and undo saveable', () => {
+    for (const key of ['8', '7']) {
+      const target = make({
+        type: 'doc',
+        content: [{ ...p('Shaded line'), attrs: { backgroundColor: '#2f80ed' } }],
+      });
+      const before = json(target);
+      target.commands.setTextSelection(1);
+      const shortcut = new KeyboardEvent('keydown', { key, ctrlKey: true, shiftKey: true });
+      const handled = target.view.someProp('handleKeyDown', (handler) => handler(target.view, shortcut));
+      expect(handled, `Ctrl+Shift+${key}`).toBe(true);
+      expect(json(target), `Ctrl+Shift+${key}`).toEqual(before);
+      expect(() => docToMarkdown(json(target))).not.toThrow();
+
+      const end = target.state.doc.content.size - 1;
+      target.view.dispatch(target.state.tr.insertText(' edited', end));
+      expect(json(target).content![0]!.content![0]!.text).toBe('Shaded line edited');
+      expect(() => docToMarkdown(json(target))).not.toThrow();
+      expect(target.commands.undo()).toBe(true);
+      expect(json(target)).toEqual(before);
+      expect(target.commands.undo()).toBe(false);
+      target.destroy();
+      editor = null;
+    }
+
+    for (const backgroundColor of [null, 'green']) {
+      const target = make({
+        type: 'doc',
+        content: [
+          {
+            ...p('Safe line'),
+            ...(backgroundColor ? { attrs: { backgroundColor } } : {}),
+          },
+        ],
+      });
+      target.commands.setTextSelection(1);
+      const key = '8';
+      const shortcut = new KeyboardEvent('keydown', { key, ctrlKey: true, shiftKey: true });
+      expect(target.view.someProp('handleKeyDown', (handler) => handler(target.view, shortcut))).toBe(true);
+      expect(json(target).content![0]!.type).toBe('bulletList');
+      expect(() => docToMarkdown(json(target))).not.toThrow();
+      expect(target.commands.undo()).toBe(true);
+      expect(json(target).content![0]!.type).toBe('paragraph');
+      target.destroy();
+      editor = null;
+    }
+  });
+
+  it('allows custom HEX insertion at a supported top-level owner', () => {
+    const target = make({ type: 'doc', content: [p('Above')] });
+    const insertAt = target.state.doc.content.size;
+    expect(
+      target.commands.insertContentAt(insertAt, {
+        type: 'paragraph',
+        attrs: { backgroundColor: '#2f80ed' },
+        content: [{ type: 'text', text: 'Inserted color' }],
+      }),
+    ).toBe(true);
+    const inserted = json(target).content!.find((node) => node.attrs?.backgroundColor === '#2f80ed');
+    expect(inserted).toMatchObject({ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' } });
+    expect(() => docToMarkdown(json(target))).not.toThrow();
+  });
+
+  it('blocks custom HEX insertion beneath an unsupported list owner', () => {
+    const target = make({
+      type: 'doc',
+      content: [
+        {
+          type: 'bulletList',
+          content: [{ type: 'listItem', content: [p('List item')] }],
+        },
+      ],
+    });
+    let paragraphEnd = -1;
+    target.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'paragraph') paragraphEnd = pos + node.nodeSize;
+    });
+    expect(paragraphEnd).toBeGreaterThan(0);
+    const before = json(target);
+    target.commands.insertContentAt(paragraphEnd, {
+      type: 'paragraph',
+      attrs: { backgroundColor: '#2f80ed' },
+      content: [{ type: 'text', text: 'Unsafe insertion' }],
+    });
+    expect(json(target)).toEqual(before);
+    expect(() => docToMarkdown(json(target))).not.toThrow();
+  });
+
+  it('flushes an unrelated edit after a rejected list shortcut without protecting the page', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const notePath = 'Notes.md';
+    const vault = new MemoryVault({
+      [notePath]: `${marker}\n\nShaded line\n`,
+      '.morrow/workspace.json': JSON.stringify({ version: 1, pages: { [notePath]: { id: 'note-page' } } }),
+    });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    try {
+      expect(session.protectedReasons.has('note-page')).toBe(false);
+      const target = make(session.getState().docs['note-page']);
+      target.commands.setTextSelection(1);
+      const shortcut = new KeyboardEvent('keydown', { key: '8', ctrlKey: true, shiftKey: true });
+      target.view.someProp('handleKeyDown', (handler) => handler(target.view, shortcut));
+      expect(json(target).content![0]!.type).toBe('paragraph');
+
+      const end = target.state.doc.content.size - 1;
+      target.view.dispatch(target.state.tr.insertText(' edited', end));
+      expect(() => docToMarkdown(json(target))).not.toThrow();
+      expect(session.execute({ type: 'page.setDoc', id: 'note-page', doc: json(target), now: 43 }).ok).toBe(
+        true,
+      );
+      expect(await session.flush()).toBe(true);
+      expect(vault.text(notePath)).toContain('Shaded line edited');
+      expect(vault.text(notePath)).toContain(marker);
+      target.destroy();
+      editor = null;
+
+      await session.close();
+      const reopened = await WorkspaceSession.open(new VaultRepository(vault, () => 'generated-page-again'), {
+        delayMs: 0,
+      });
+      if (!reopened.ok) throw new Error(reopened.error);
+      try {
+        expect(reopened.value.protectedReasons.has('note-page')).toBe(false);
+        expect(reopened.value.getState().docs['note-page']!.content?.[0]?.attrs?.backgroundColor).toBe(
+          '#2f80ed',
+        );
+      } finally {
+        await reopened.value.close();
+      }
+    } finally {
+      if (!session.isClosed) await session.close();
+    }
+  });
+
+  it('keeps selected colored owners out of unsupported multi-block conversions', () => {
+    const target = make({
+      type: 'doc',
+      content: [{ ...p('Shaded line'), attrs: { backgroundColor: '#2f80ed' } }, p('Following line')],
+    });
+    const before = json(target);
+    const range = { from: 0, to: target.state.doc.content.size };
+    turnBlocks(target, range, { kind: 'callout' });
+    expect(json(target).content![0]).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: '#2f80ed' },
+    });
+    expect(json(target).content![1]!.content![0]!.text).toBe(before.content![1]!.content![0]!.text);
+  });
+
+  it('keeps the custom background on an empty paragraph created by deleting its text', () => {
+    const target = make({
+      type: 'doc',
+      content: [{ ...p('Delete me'), attrs: { backgroundColor: '#2f80ed' } }],
+    });
+    target.commands.setTextSelection({ from: 1, to: 10 });
+    target.commands.deleteSelection();
+    expect(json(target).content![0]).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: '#2f80ed' },
+    });
+    const serialized = docToMarkdown(json(target));
+    expect(serialized).toContain('<!-- morrow:block-background:#2f80ed -->\n<br>');
+    expect(markdownToDoc(serialized)).toMatchObject({
+      content: [{ type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [] }],
+    });
+    expect(target.commands.undo()).toBe(true);
+    expect(json(target).content![0]).toMatchObject({
+      type: 'paragraph',
+      attrs: { backgroundColor: '#2f80ed' },
+      content: [{ text: 'Delete me' }],
+    });
+  });
+
   it('colours the whole block rather than its words', () => {
     const target = make({ type: 'doc', content: [p('Shaded')] });
     setBlockBackground(target, [0], 'green');
@@ -375,6 +629,22 @@ describe('turn into', () => {
     expect(line.content![0]!.marks).toBeUndefined();
     setBlockBackground(target, [0], null);
     expect(json(target).content![0]!.attrs?.backgroundColor ?? null).toBeNull();
+  });
+
+  it('renders only normalized HEX block backgrounds into the editor DOM', () => {
+    const target = make({
+      type: 'doc',
+      content: [
+        { ...p('Custom'), attrs: { backgroundColor: '#2F80ED' } },
+        { ...p('Unsafe'), attrs: { backgroundColor: '#123456; background:url(javascript:alert(1))' } },
+      ],
+    });
+    const html = target.getHTML();
+    expect(html).toContain('data-background="#2f80ed"');
+    expect(html).toContain('class="block-bg block-bg-custom"');
+    expect(html).toContain('style="--block-bg: #2f80ed;"');
+    expect(html).toContain('<p>Unsafe</p>');
+    expect(html).not.toContain('javascript:');
   });
 
   it('colours one item of a list on its own', () => {

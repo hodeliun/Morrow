@@ -5,14 +5,26 @@ import { loadVault, makeResolver, resolveMarkdownPageLink } from '../vault/load'
 import type { Resolver, VaultScan } from '../vault/load';
 import type { Placement } from '../vault/layout';
 import { scanMarkdownDestination } from './markdownLinkDestination';
-import { markdownHrefPath, markdownToDoc, markdownToPage } from './parse';
+import { inspectBlockBackgroundMarkers, markdownHrefPath, markdownToDoc, markdownToPage } from './parse';
 import { docToMarkdown } from './serialize';
+import { formatBlockBackgroundMarker, parseBlockBackgroundMarker } from './blockBackground';
 
 const text = (value: string, marks?: string[]): DocNode =>
   marks
     ? { type: 'text', text: value, marks: marks.map((type) => ({ type })) }
     : { type: 'text', text: value };
 const p = (...content: DocNode[]): DocNode => ({ type: 'paragraph', content });
+
+function hasBlockBackground(node: DocNode): boolean {
+  return (
+    node.attrs?.backgroundColor !== undefined ||
+    (node.content ?? []).some((child) => hasBlockBackground(child))
+  );
+}
+
+function findBlockBackgroundMarker(source: string): number {
+  return source.match(/<!-- morrow:block-background:/g)?.length ?? 0;
+}
 
 function resolverForFiles(files: Array<{ id: PageId; path: string | null }>): Resolver {
   const pages = Object.fromEntries(
@@ -671,6 +683,140 @@ describe('obsidian flavoured markdown', () => {
 });
 
 describe('colours', () => {
+  it('reads the exact standalone legacy block marker on supported blocks and native columns', () => {
+    const marker = '<!-- morrow:block-background:#2F80ED -->';
+    const source = [
+      marker,
+      'Shaded paragraph.',
+      '',
+      '<!-- morrow:block-background:green -->',
+      '## Shaded heading',
+      '',
+      '<!-- morrow:block-background:blue -->',
+      '> Shaded quote',
+      '',
+      '<!-- background: red -->',
+      'Current named format.',
+      '',
+      '<div data-columns>',
+      '<div data-column>',
+      '',
+      marker,
+      '',
+      'Shaded column paragraph.',
+      '',
+      '</div>',
+      '</div>',
+      '',
+    ].join('\n');
+    const doc = markdownToDoc(source);
+    const inspections = inspectBlockBackgroundMarkers(source);
+    expect(inspections).toHaveLength(4);
+    expect(inspections.every((marker) => marker.approved && marker.color)).toBe(true);
+    expect(doc.content?.map((node) => node.type)).toEqual([
+      'paragraph',
+      'heading',
+      'blockquote',
+      'paragraph',
+      'columns',
+    ]);
+    expect(doc.content?.[0]?.attrs?.backgroundColor).toBe('#2f80ed');
+    expect(doc.content?.[1]?.attrs?.backgroundColor).toBe('green');
+    expect(doc.content?.[2]?.attrs?.backgroundColor).toBe('blue');
+    expect(doc.content?.[3]?.attrs?.backgroundColor).toBe('red');
+    expect(doc.content?.[4]?.content?.[0]?.content?.[0]?.attrs?.backgroundColor).toBe('#2f80ed');
+    const serialized = docToMarkdown(doc);
+    expect(serialized).toContain('<!-- morrow:block-background:#2f80ed -->');
+    expect(serialized).toContain('<!-- background: green -->');
+    expect(serialized).toContain('<!-- background: blue -->');
+    expect(serialized).toContain('<!-- background: red -->');
+    expect(findBlockBackgroundMarker(serialized)).toBe(2);
+    expect(markdownToDoc(serialized)).toEqual(doc);
+  });
+
+  it('does not interpret orphaned, duplicate, inline, fenced, cell, list, or details markers', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const cases = [
+      marker,
+      `${marker}\n\n${marker}\n\nDuplicate target.`,
+      `Inline ${marker} text.`,
+      `\`\`\`markdown\n${marker}\n\`\`\``,
+      `| ${marker} |\n| --- |\n| Cell |`,
+      `- First item\n\n  ${marker}\n\n  Nested paragraph.`,
+      `<details>\n<summary>Hidden</summary>\n\n${marker}\n\nInside.\n\n</details>`,
+    ];
+    for (const source of cases) {
+      const doc = markdownToDoc(source);
+      expect(hasBlockBackground(doc), source).toBe(false);
+    }
+  });
+
+  it('proves the normalized marker owner after embeds and callouts are converted', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const resolveFile = (href: string) =>
+      href === 'assets/a.png' || href === 'assets/a.pdf'
+        ? { fileId: href, name: href.split('/').at(-1)!, image: href.endsWith('.png') }
+        : null;
+    const unstable = [
+      `${marker}\n\n![[assets/a.png]]\n`,
+      `${marker}\n\nLeft ![[assets/a.png]] right\n`,
+      `> [!note] Header\n>\n> ${marker}\n> Body\n`,
+    ];
+    for (const source of unstable) {
+      expect(inspectBlockBackgroundMarkers(source, (href) => resolveFile(href) !== null)[0]?.approved).toBe(
+        false,
+      );
+      expect(hasBlockBackground(markdownToDoc(source, { resolveFile })), source).toBe(false);
+    }
+
+    const represented = `${marker}\n\nRead [the file](assets/a.pdf) safely.\n`;
+    expect(inspectBlockBackgroundMarkers(represented, (href) => resolveFile(href) !== null)[0]?.approved).toBe(
+      true,
+    );
+    expect(
+      markdownToDoc(represented, { resolveFile }).content?.[0]?.attrs?.backgroundColor,
+    ).toBe('#2f80ed');
+  });
+
+  it('refuses to serialize custom backgrounds in structures outside the codec allowlist', () => {
+    const paragraph = { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [text('No')] };
+    const docs: DocNode[] = [
+      { type: 'doc', content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [paragraph] }] }] },
+      { type: 'doc', content: [{ type: 'details', content: [{ type: 'detailsContent', content: [paragraph] }] }] },
+      {
+        type: 'doc',
+        content: [
+          {
+            type: 'table',
+            content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [paragraph] }] }],
+          },
+        ],
+      },
+      { type: 'doc', content: [{ type: 'listItem', attrs: { backgroundColor: '#2f80ed' }, content: [p(text('No'))] }] },
+    ];
+    for (const doc of docs) expect(() => docToMarkdown(doc)).toThrow(/custom block backgrounds/i);
+  });
+
+  it('keeps the existing title extraction for a native named background on the first H1', () => {
+    const page = markdownToPage('<!-- background: blue -->\n\n# Page title', 'Note');
+    expect(page.title).toBe('Page title');
+    expect(page.doc.content).toEqual([{ type: 'paragraph' }]);
+  });
+
+  it('normalizes only safe legacy marker values', () => {
+    expect(parseBlockBackgroundMarker('<!-- morrow:block-background:#2F80ED -->')).toBe('#2f80ed');
+    expect(parseBlockBackgroundMarker('<!-- morrow:block-background:green -->')).toBe('green');
+    expect(formatBlockBackgroundMarker('#2F80ED')).toBe('<!-- morrow:block-background:#2f80ed -->');
+    for (const value of [
+      '<!--  morrow:block-background:#2f80ed -->',
+      '<!-- morrow:block-background:GREEN -->',
+      '<!-- morrow:block-background:#12345 -->',
+      '<!-- morrow:block-background:#123456; background:url(javascript:alert(1)) -->',
+    ]) {
+      expect(parseBlockBackgroundMarker(value)).toBeNull();
+    }
+  });
+
   it('round trips text colours and coloured highlights as html other apps show', () => {
     const doc: DocNode = {
       type: 'doc',

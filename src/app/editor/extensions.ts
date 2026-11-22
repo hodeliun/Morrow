@@ -8,6 +8,7 @@ import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table
 import { Placeholder } from '@tiptap/extensions';
 import StarterKit from '@tiptap/starter-kit';
 import { t } from '../i18n';
+import { normalizeInlineColor } from '../../core/model';
 import { BlockHandle } from './BlockHandle';
 import { BlockSelect } from './BlockSelect';
 import { Callout, FindReplace } from './Blocks';
@@ -28,8 +29,11 @@ import type { PolarisDadosViewMountContext } from './PolarisDadosView';
 import { SlashCommand } from './SlashCommand';
 import { IndentedLines, KeepTab, lineContent, LineEdges } from './turnInto';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import type { Transaction } from '@tiptap/pm/state';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import type { Node as PMNode } from '@tiptap/pm/model';
+import { ReplaceAroundStep } from '@tiptap/pm/transform';
+import { isHexBlockBackground, supportsHexBlockBackgroundOwner } from '../../core/markdown/blockBackground';
 import { Column, Columns, DateMention, TableOfContents } from './Structure';
 
 export interface ExtensionOptions extends PageLinkOptions {
@@ -134,8 +138,118 @@ const CodePreview = Extension.create({
 });
 
 // a block's own background colour, from the colour in its Turn into menu
+function unsupportedCustomBlockBackgrounds(doc: PMNode): Map<string, number> {
+  const counts = new Map<string, number>();
+  const visit = (node: PMNode, ancestors: string[]) => {
+    const backgroundColor = normalizeInlineColor(node.attrs.backgroundColor);
+    if (
+      isHexBlockBackground(backgroundColor) &&
+      !supportsHexBlockBackgroundOwner(node.type.name, ancestors)
+    ) {
+      const signature = JSON.stringify([backgroundColor, node.type.name, ancestors]);
+      counts.set(signature, (counts.get(signature) ?? 0) + 1);
+    }
+    node.forEach((child) => visit(child, [...ancestors, node.type.name]));
+  };
+  visit(doc, []);
+  return counts;
+}
+
+function introducesUnsupportedCustomBlockBackground(oldDoc: PMNode, newDoc: PMNode): boolean {
+  const previous = unsupportedCustomBlockBackgrounds(oldDoc);
+  for (const [signature, count] of unsupportedCustomBlockBackgrounds(newDoc))
+    if (count > (previous.get(signature) ?? 0)) return true;
+  return false;
+}
+
+function fragmentHasCustomBackground(fragment: Fragment): boolean {
+  let found = false;
+  fragment.forEach((node) => {
+    if (found) return;
+    const backgroundColor = normalizeInlineColor(node.attrs.backgroundColor);
+    if (isHexBlockBackground(backgroundColor) || fragmentHasCustomBackground(node.content)) found = true;
+  });
+  return found;
+}
+
+function transactionTouchesCustomBackground(transaction: Transaction): boolean {
+  return transaction.steps.some((step, index) => {
+    const sourceDoc = transaction.docs[index];
+    const candidate = step as typeof step & { from?: unknown; to?: unknown; slice?: Slice };
+    if (candidate.slice && candidate.slice.content && fragmentHasCustomBackground(candidate.slice.content)) {
+      return true;
+    }
+    if (
+      !sourceDoc ||
+      typeof candidate.from !== 'number' ||
+      typeof candidate.to !== 'number' ||
+      candidate.from < 0 ||
+      candidate.to < candidate.from ||
+      candidate.to > sourceDoc.content.size
+    ) {
+      return false;
+    }
+    return fragmentHasCustomBackground(sourceDoc.slice(candidate.from, candidate.to).content);
+  });
+}
+
 const BlockBackground = Extension.create({
   name: 'blockBackground',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('blockBackgroundEmptyParagraph'),
+        filterTransaction: (transaction, state) =>
+          !transaction.docChanged ||
+          !transactionTouchesCustomBackground(transaction) ||
+          !introducesUnsupportedCustomBlockBackground(state.doc, transaction.doc),
+        appendTransaction: (transactions, _oldState, newState) => {
+          if (
+            !transactions.some((transaction) =>
+              transaction.steps.some((step) => step instanceof ReplaceAroundStep),
+            )
+          )
+            return null;
+          const tr = newState.tr;
+          for (let transactionIndex = 0; transactionIndex < transactions.length; transactionIndex++) {
+            const transaction = transactions[transactionIndex]!;
+            for (let stepIndex = 0; stepIndex < transaction.steps.length; stepIndex++) {
+              const step = transaction.steps[stepIndex]!;
+              if (!(step instanceof ReplaceAroundStep)) continue;
+              const oldNode = transaction.docs[stepIndex]?.nodeAt(step.from);
+              const backgroundColor = normalizeInlineColor(oldNode?.attrs.backgroundColor);
+              if (
+                !oldNode ||
+                oldNode.type.name !== 'paragraph' ||
+                !isHexBlockBackground(backgroundColor) ||
+                oldNode.nodeSize !== step.to - step.from
+              ) {
+                continue;
+              }
+              let newPosition = transaction.mapping.slice(stepIndex + 1).map(step.from, -1);
+              let mappedEnd = transaction.mapping.slice(stepIndex + 1).map(step.to, 1);
+              for (const later of transactions.slice(transactionIndex + 1)) {
+                newPosition = later.mapping.map(newPosition, -1);
+                mappedEnd = later.mapping.map(mappedEnd, 1);
+              }
+              const newNode = newState.doc.nodeAt(newPosition);
+              if (
+                !newNode ||
+                newNode.type.name !== 'paragraph' ||
+                newNode.content.size !== 0 ||
+                newNode.attrs.backgroundColor != null ||
+                newNode.nodeSize !== mappedEnd - newPosition
+              ) {
+                continue;
+              }
+              tr.setNodeMarkup(newPosition, undefined, { ...newNode.attrs, backgroundColor });
+            }
+          }
+          return tr.docChanged ? tr : null;
+        },
+      }),
+    ];
+  },
   addGlobalAttributes() {
     return [
       {
@@ -154,14 +268,22 @@ const BlockBackground = Extension.create({
           backgroundColor: {
             default: null,
             keepOnSplit: true,
-            parseHTML: (element) => element.getAttribute('data-background'),
-            renderHTML: (attrs) =>
-              attrs.backgroundColor
-                ? {
-                    'data-background': attrs.backgroundColor,
-                    class: `block-bg block-bg-${attrs.backgroundColor}`,
-                  }
-                : {},
+            parseHTML: (element) => normalizeInlineColor(element.getAttribute('data-background')),
+            renderHTML: (attrs) => {
+              const color = normalizeInlineColor(attrs.backgroundColor);
+              if (!color) return {};
+              if (color.startsWith('#')) {
+                return {
+                  'data-background': color,
+                  class: 'block-bg block-bg-custom',
+                  style: `--block-bg: ${color}`,
+                };
+              }
+              return {
+                'data-background': color,
+                class: `block-bg block-bg-${color}`,
+              };
+            },
           },
         },
       },

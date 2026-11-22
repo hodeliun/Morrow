@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DocNode } from '../core/model';
 import { docToMarkdown } from '../core/markdown/serialize';
-import { markdownToDoc } from '../core/markdown/parse';
+import { inspectBlockBackgroundMarkers, markdownToDoc } from '../core/markdown/parse';
 import { encodePolarisDadosViewMarker } from '../core/polarisDadosView';
 import { findUnrepresentablePageContent } from '../core/vault/compatibility';
 import { splitFrontmatter } from '../core/vault/frontmatter';
@@ -409,6 +409,420 @@ Synthetic row.
       if (first && !first.isClosed) await first.close();
       if (reopened && !reopened.isClosed) await reopened.close();
     }
+  });
+
+  it('opens and saves an explicit-title H1 background while keeping a literal code marker inert', async () => {
+    const marker = '<!-- morrow:block-background:#2F80ED -->';
+    const noteFile = 'Notes.md';
+    const source = [
+      '---',
+      'title: Explicit title',
+      '---',
+      marker,
+      '',
+      '# Body heading',
+      '',
+      'Adjacent paragraph.',
+      '',
+      '```markdown',
+      marker,
+      '```',
+      '',
+      '<div data-columns>',
+      '<div data-column>',
+      '',
+      '<!-- morrow:block-background:#12AB34 -->',
+      'Column HEX background.',
+      '',
+      '<!-- morrow:block-background:yellow -->',
+      'Legacy palette background.',
+      '',
+      '<!-- background: red -->',
+      'Named column background.',
+      '',
+      '</div>',
+      '</div>',
+      '',
+    ].join('\n');
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    const vault = new ObservedMemoryVault({
+      [noteFile]: source,
+      '.morrow/workspace.json': registryFor({ [noteFile]: 'note-page' }),
+    });
+    let first: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      first = await open(vault);
+      expect(first.protectedReasons.has('note-page')).toBe(false);
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(vault.text(noteFile)).toBe(source);
+      const current = first.getState().docs['note-page']!;
+      expect(current.content?.[0]).toMatchObject({
+        type: 'heading',
+        attrs: { level: 1, backgroundColor: '#2f80ed' },
+      });
+      expect(current.content?.[2]?.type).toBe('codeBlock');
+      expect(current.content?.[2]?.content?.[0]?.text).toBe(marker);
+      expect(current.content?.[3]?.type).toBe('columns');
+      expect(current.content?.[3]?.content?.[0]?.content?.[0]?.attrs?.backgroundColor).toBe('#12ab34');
+      expect(current.content?.[3]?.content?.[0]?.content?.[1]?.attrs?.backgroundColor).toBe('yellow');
+      expect(current.content?.[3]?.content?.[0]?.content?.[2]?.attrs?.backgroundColor).toBe('red');
+
+      const edited: DocNode = {
+        ...current,
+        content: [
+          ...(current.content ?? []),
+          { type: 'paragraph', content: [{ type: 'text', text: 'Edited safely.' }] },
+        ],
+      };
+      expect(first.execute({ type: 'page.setDoc', id: 'note-page', doc: edited, now: 31 }).ok).toBe(true);
+      expect(await first.flush()).toBe(true);
+      await first.close();
+      first = undefined;
+
+      const savedFile = 'Explicit title.md';
+      expect(vault.text(savedFile)).toBeDefined();
+      const saved = vault.text(savedFile)!;
+      expect(saved).toContain('title: Explicit title');
+      expect(saved).toContain('<!-- morrow:block-background:#2f80ed -->');
+      expect(saved).toContain(`\`\`\`markdown\n${marker}\n\`\`\``);
+      expect(saved).toContain('Adjacent paragraph.');
+      expect(saved).toContain('<!-- morrow:block-background:#12ab34 -->');
+      expect(saved).toContain('<!-- background: yellow -->');
+      expect(saved).toContain('<!-- background: red -->');
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('note-page')).toBe(false);
+      expect(reopened.getState().pages['note-page']!.title).toBe('Explicit title');
+      expect(reopened.getState().docs['note-page']!.content?.[0]?.attrs?.backgroundColor).toBe('#2f80ed');
+      expect(reopened.getState().docs['note-page']!.content?.[2]?.content?.[0]?.text).toBe(marker);
+      expect(
+        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[0]?.attrs?.backgroundColor,
+      ).toBe('#12ab34');
+      expect(
+        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[1]?.attrs?.backgroundColor,
+      ).toBe('yellow');
+      expect(
+        reopened.getState().docs['note-page']!.content?.[3]?.content?.[0]?.content?.[2]?.attrs?.backgroundColor,
+      ).toBe('red');
+    } finally {
+      if (first && !first.isClosed) await first.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('protects the page when an identical marker also appears in a list', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const source = [
+      marker,
+      'Supported paragraph.',
+      '',
+      '- List item',
+      '',
+      `  ${marker}`,
+      '',
+      '  Unsupported list child.',
+      '',
+    ].join('\n');
+    expect(findUnrepresentablePageContent(source)).toMatch(/morrow block marker/i);
+    const vault = new ObservedMemoryVault({
+      'Notes.md': source,
+      '.morrow/workspace.json': registryFor({ 'Notes.md': 'note-page' }),
+    });
+    let session: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      expect(session.protectedReasons.get('note-page')).toMatch(/morrow block marker/i);
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(session.getState().docs['note-page']).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: source } }],
+      });
+      expect(await session.flush()).toBe(true);
+      expect(vault.text('Notes.md')).toBe(source);
+      expect(vault.applyCalls).toHaveLength(0);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+    }
+  });
+
+  it('protects a block marker in an indented nested-list HTML block', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const source = `- Pai\n  - Filho\n\n    ${marker}\n\n    Parágrafo do filho\n`;
+    expect(findUnrepresentablePageContent(source)).toMatch(/morrow block marker/i);
+    const vault = new ObservedMemoryVault({
+      'Notes.md': source,
+      '.morrow/workspace.json': registryFor({ 'Notes.md': 'note-page' }),
+    });
+    let session: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      expect(session.protectedReasons.get('note-page')).toMatch(/morrow block marker/i);
+      expect(session.getState().docs['note-page']).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: source } }],
+      });
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(await session.flush()).toBe(true);
+      expect(vault.text('Notes.md')).toBe(source);
+      expect(vault.applyCalls).toHaveLength(0);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+    }
+  });
+
+  it('protects marker owners promoted to media or callouts and keeps their bytes', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const attachment = ['Attachments.md', `${marker}\n\n[file](assets/a.pdf)\n`];
+    const image = ['Image.md', `${marker}\n\n![image](assets/photo.png)\n`];
+    const split = ['Split.md', `${marker}\n\nBefore ![image](assets/photo.png) after\n`];
+    const callout = ['Callout.md', `${marker}\n\n> [!note] Notice\n> Body\n`];
+    const files = {
+      [attachment[0]!]: attachment[1]!,
+      [image[0]!]: image[1]!,
+      [split[0]!]: split[1]!,
+      [callout[0]!]: callout[1]!,
+      'assets/a.pdf': 'stored attachment bytes',
+      'assets/photo.png': 'stored image bytes',
+      '.morrow/workspace.json': registryFor({
+        [attachment[0]!]: 'attachment-page',
+        [image[0]!]: 'image-page',
+        [split[0]!]: 'split-page',
+        [callout[0]!]: 'callout-page',
+      }),
+    };
+    expect(findUnrepresentablePageContent(attachment[1]!)).toMatch(/morrow block marker/i);
+    expect(findUnrepresentablePageContent(callout[1]!)).toMatch(/morrow block marker/i);
+    expect(
+      inspectBlockBackgroundMarkers(`${marker}\n\n![image](assets/a.png)\n`)[0]?.approved,
+    ).toBe(false);
+    expect(
+      inspectBlockBackgroundMarkers(`${marker}\n\nBefore ![image](assets/a.png) after\n`)[0]?.approved,
+    ).toBe(false);
+
+    const vault = new ObservedMemoryVault(files);
+    let session: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      for (const [id, source] of [
+        ['attachment-page', attachment[1]!],
+        ['image-page', image[1]!],
+        ['split-page', split[1]!],
+        ['callout-page', callout[1]!],
+      ] as const) {
+        expect(session.protectedReasons.get(id)).toMatch(/morrow block marker/i);
+        expect(session.getState().docs[id]).toEqual({
+          type: 'doc',
+          content: [{ type: 'rawBlock', attrs: { text: source } }],
+        });
+      }
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(await session.flush()).toBe(true);
+      expect(vault.text(attachment[0]!)).toBe(attachment[1]);
+      expect(vault.text(image[0]!)).toBe(image[1]);
+      expect(vault.text(split[0]!)).toBe(split[1]);
+      expect(vault.text(callout[0]!)).toBe(callout[1]);
+      expect(vault.text('assets/a.pdf')).toBe('stored attachment bytes');
+      expect(vault.text('assets/photo.png')).toBe('stored image bytes');
+      expect(vault.applyCalls).toHaveLength(0);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+    }
+  });
+
+  it('protects marker owners after real embed lifting and callout normalization', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const sources = {
+      'Wiki image.md': `${marker}\n\n![[assets/photo.png]]\n`,
+      'Wiki PDF.md': `${marker}\n\n![[assets/a.pdf]]\n`,
+      'Inline wiki image.md': `${marker}\n\nLeft ![[assets/photo.png]] right\n`,
+      'Callout body.md': `> [!note] Header\n>\n> ${marker}\n> Body\n`,
+    };
+    const files = {
+      ...sources,
+      'assets/a.pdf': 'pdf bytes',
+      'assets/photo.png': 'image bytes',
+      '.morrow/workspace.json': registryFor(
+        Object.fromEntries(Object.keys(sources).map((path, index) => [path, `post-normalize-${index}`])),
+      ),
+    };
+    const vault = new ObservedMemoryVault(files);
+    let session: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      for (const [index, [path, source]] of Object.entries(sources).entries()) {
+        const id = `post-normalize-${index}`;
+        expect(session.protectedReasons.get(id), path).toMatch(/morrow block marker/i);
+        expect(session.getState().docs[id], path).toEqual({
+          type: 'doc',
+          content: [{ type: 'rawBlock', attrs: { text: source } }],
+        });
+      }
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(await session.flush()).toBe(true);
+      for (const [path, source] of Object.entries(sources)) expect(vault.text(path)).toBe(source);
+      expect(vault.text('assets/a.pdf')).toBe('pdf bytes');
+      expect(vault.text('assets/photo.png')).toBe('image bytes');
+      expect(vault.applyCalls).toHaveLength(0);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+    }
+  });
+
+  it('persists an explicit title for a custom-colored first body H1 and reopens it safely', async () => {
+    const noteFile = 'Notes.md';
+    const original = 'Original text.\n';
+    const vault = new ObservedMemoryVault({
+      [noteFile]: original,
+      '.morrow/workspace.json': registryFor({ [noteFile]: 'heading-page' }),
+    });
+    let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      const headingDoc: DocNode = {
+        type: 'doc',
+        content: [
+          {
+            type: 'heading',
+            attrs: { level: 1, backgroundColor: '#2f80ed' },
+            content: [{ type: 'text', text: 'Body heading' }],
+          },
+        ],
+      };
+      expect(session.execute({ type: 'page.setDoc', id: 'heading-page', doc: headingDoc, now: 42 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text(noteFile)!;
+      expect(saved).toMatch(/^---\ntitle: Notes\n---\n/);
+      expect(saved).toMatch(/<!-- morrow:block-background:#2f80ed -->\s+# Body heading/);
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('heading-page')).toBe(false);
+      expect(reopened.getState().docs['heading-page']!.content?.[0]).toMatchObject({
+        type: 'heading',
+        attrs: { level: 1, backgroundColor: '#2f80ed' },
+      });
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('preserves a concurrent external marker and attachment during the write retry check', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const external = `${marker}\n\n[file](assets/a.pdf)\n`;
+    const noteFile = 'Notes.md';
+    const vault = new ObservedMemoryVault({
+      [noteFile]: 'Original text.\n',
+      'assets/a.pdf': 'attachment bytes',
+      '.morrow/workspace.json': registryFor({ [noteFile]: 'note-page' }),
+    });
+    let session: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      const callsBeforeEdit = vault.applyCalls.length;
+      const current = session.getState().docs['note-page']!;
+      const edited: DocNode = {
+        ...current,
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Staged edit.' }] }],
+      };
+      expect(session.execute({ type: 'page.setDoc', id: 'note-page', doc: edited, now: 41 }).ok).toBe(true);
+      // Simulate a disk change after the staged edit but before the vault watcher reports it.
+      vault.files.set(noteFile, external);
+      expect(await session.flush()).toBe(false);
+      expect(session.saveStatus).toMatchObject({ state: 'error' });
+      expect(session.saveStatus.error).toMatch(/changed on disk.*cannot safely represent/i);
+      expect(vault.text(noteFile)).toBe(external);
+      expect(vault.text('assets/a.pdf')).toBe('attachment bytes');
+      const noteWriteAttempts = vault.applyCalls
+        .slice(callsBeforeEdit)
+        .flatMap((batch) => batch.filter((operation) => operation.op === 'write' && operation.path === noteFile));
+      expect(noteWriteAttempts).toHaveLength(1);
+    } finally {
+      if (session && !session.isClosed) await session.close();
+    }
+    expect(vault.text(noteFile)).toBe(external);
+  });
+
+  it('round-trips an empty colored paragraph through a synthetic br, including at document end', async () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const empty: DocNode = { type: 'paragraph', attrs: { backgroundColor: '#2f80ed' }, content: [] };
+    const sources = [
+      docToMarkdown({ type: 'doc', content: [empty] }),
+      docToMarkdown({ type: 'doc', content: [empty, { type: 'paragraph', content: [{ type: 'text', text: 'After' }] }] }),
+    ];
+    for (const source of sources) {
+      expect(source).toContain(`${marker}\n<br>`);
+      expect(inspectBlockBackgroundMarkers(source)[0]?.approved).toBe(true);
+      expect(findUnrepresentablePageContent(source)).toBeNull();
+      const parsed = markdownToDoc(source);
+      expect(parsed.content?.[0]).toMatchObject({
+        type: 'paragraph',
+        attrs: { backgroundColor: '#2f80ed' },
+        content: [],
+      });
+      expect(docToMarkdown(parsed)).toBe(source);
+    }
+
+    const noteFile = 'Empty color.md';
+    const original = `${marker}\n\nOriginal text.\n`;
+    const vault = new ObservedMemoryVault({
+      [noteFile]: original,
+      '.morrow/workspace.json': registryFor({ [noteFile]: 'empty-page' }),
+    });
+    let session: WorkspaceSession | undefined;
+    let reopened: WorkspaceSession | undefined;
+    try {
+      session = await open(vault);
+      const emptyDoc: DocNode = { type: 'doc', content: [empty] };
+      expect(session.execute({ type: 'page.setDoc', id: 'empty-page', doc: emptyDoc, now: 40 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const saved = vault.text(noteFile)!;
+      expect(saved).toContain(`${marker}\n<br>`);
+      expect(findUnrepresentablePageContent(saved)).toBeNull();
+      await session.close();
+      session = undefined;
+
+      reopened = await open(vault);
+      expect(reopened.protectedReasons.has('empty-page')).toBe(false);
+      expect(reopened.getState().docs['empty-page']!.content?.[0]).toMatchObject({
+        type: 'paragraph',
+        attrs: { backgroundColor: '#2f80ed' },
+        content: [],
+      });
+    } finally {
+      if (session && !session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
+  });
+
+  it('allows only exact markers bound to supported standalone blocks', () => {
+    const marker = '<!-- morrow:block-background:#2f80ed -->';
+    const invalid = [
+      marker,
+      `${marker}\n\n${marker}\n\nDuplicate target.`,
+      `Inline ${marker} text.`,
+      `<details>\n<summary>Hidden</summary>\n\n${marker}\n\nInside.\n\n</details>`,
+      `<div>\n${marker}\n\nInside raw wrapper.\n\n</div>`,
+      `- Item\n\n  ${marker}\n\n  Nested item body.`,
+      `| ${marker} |\n| --- |\n| Cell |`,
+      `${marker}\n\n# Consumed title`,
+      `${marker.replace('#2f80ed', '#2f80e')}\n\nParagraph.`,
+      '<!-- morrow:future-layout:v1:opaque -->',
+      '<p data-block-background="#2f80ed">Unsupported HTML</p>',
+    ];
+    for (const source of invalid) {
+      expect(findUnrepresentablePageContent(source), source).toMatch(/morrow block marker|layout or block identifier/i);
+    }
+
+    const explicitTitle = `---\ntitle: Explicit\n---\n${marker}\n\n# Body heading\n`;
+    expect(findUnrepresentablePageContent(explicitTitle)).toBeNull();
+    const literal = `\`\`\`markdown\n${marker}\n\`\`\`\n`;
+    expect(findUnrepresentablePageContent(literal)).toBeNull();
   });
 
   it('keeps exact inline colors through a core save and reopen without the Documento plugin', async () => {

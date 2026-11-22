@@ -61,7 +61,8 @@ import { columnAt, moveColumn } from './ColumnGrip';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { pageIdFromHref } from '../../core/links';
-import { COLORS } from '../../core/model';
+import { isHexBlockBackground } from '../../core/markdown/blockBackground';
+import { COLORS, normalizeInlineColor } from '../../core/model';
 import type { ColorName, InlineColor } from '../../core/model';
 import { formatShortcut } from '../actions';
 import { Menu } from '../components/Menu';
@@ -938,6 +939,8 @@ function linkable(editor: Editor, pos: number): boolean {
 
 // blocks the handle menu can turn into something else: lines of text, single list items, quotes and toggles
 const TURNABLE = new Set(['listItem', 'taskItem', 'blockquote', 'details']);
+const BACKGROUND_OWNER_TYPES = new Set(['paragraph', 'heading', 'blockquote']);
+const BACKGROUND_SAFE_TURNS = new Set(['columns', 'paragraph', 'heading', 'blockquote']);
 function turnable(editor: Editor, pos: number): boolean {
   const node = editor.state.doc.nodeAt(pos);
   return !!node && (node.isTextblock || TURNABLE.has(node.type.name));
@@ -967,6 +970,10 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
     intoColumns(editor, pos, pos + node.nodeSize, target.count);
     return;
   }
+  const backgroundColor = BACKGROUND_OWNER_TYPES.has(node.type.name) ? node.attrs.backgroundColor : null;
+  const normalizedBackground = normalizeInlineColor(backgroundColor);
+  const customBackground = isHexBlockBackground(normalizedBackground);
+  if (customBackground && !BACKGROUND_SAFE_TURNS.has(target.kind)) return;
   if (turnListItem(editor, pos, target)) return;
   if (node.type.name === 'details' && target.kind === 'toggle') {
     // a toggle stays a toggle with what it folds inside it, only its title's level changes
@@ -999,10 +1006,15 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
   const chain = editor.chain().focus().setTextSelection(at).clearNodes();
   switch (target.kind) {
     case 'paragraph':
+      if (customBackground)
+        chain.updateAttributes('paragraph', { backgroundColor: normalizedBackground });
       chain.run();
       return;
     case 'heading':
-      chain.setHeading({ level: target.level }).run();
+      chain.setHeading({ level: target.level });
+      if (customBackground)
+        chain.updateAttributes('heading', { backgroundColor: normalizedBackground });
+      chain.run();
       return;
     case 'bulletList':
       chain.toggleBulletList().run();
@@ -1035,7 +1047,10 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
       chain.toggleTaskList().run();
       return;
     case 'blockquote':
-      chain.setBlockquote().run();
+      chain.setBlockquote();
+      if (customBackground)
+        chain.updateAttributes('blockquote', { backgroundColor: normalizedBackground });
+      chain.run();
       return;
     case 'codeBlock':
       chain.setCodeBlock().run();
@@ -1143,6 +1158,7 @@ export function setBlockBackground(editor: Editor, positions: number[], color: C
 // several blocks picked in the margin turn one by one from the last, so the ones before keep their place.
 // a list stands for its items, each of them turns the way one item on its own would
 export function turnBlocks(editor: Editor, range: BlockRange, target: TurnTarget): void {
+  if (!BACKGROUND_SAFE_TURNS.has(target.kind) && hasBackgroundOwnerInRange(editor, range)) return;
   if (target.kind === 'columns') {
     intoColumns(editor, range.from, range.to, target.count);
     return;
@@ -1197,6 +1213,20 @@ export function turnBlocks(editor: Editor, range: BlockRange, target: TurnTarget
   }
   for (const at of joins.reverse()) tr.join(at);
   if (tr.docChanged) editor.view.dispatch(tr);
+}
+
+function hasBackgroundOwnerInRange(editor: Editor, range: BlockRange): boolean {
+  let found = false;
+  editor.state.doc.nodesBetween(range.from, range.to, (node) => {
+    if (
+      BACKGROUND_OWNER_TYPES.has(node.type.name) &&
+      isHexBlockBackground(normalizeInlineColor(node.attrs.backgroundColor))
+    ) {
+      found = true;
+    }
+    return !found;
+  });
+  return found;
 }
 
 // what a block is now, so the menu can tick it. a list item counts as its list
