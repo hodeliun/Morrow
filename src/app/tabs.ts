@@ -1,6 +1,10 @@
 // tabs remember a place each, like a browser: the open tab follows wherever you go.
 // a tab can be split in two, each side with its own back and forward history
 import { createContext, useContext, useSyncExternalStore } from 'react';
+import { visiblePaneLeaves } from './paneLayout';
+import type { PaneTabInstance } from './paneLayout';
+import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage';
+import type { CurrentTabsSnapshot, LegacyTabsSnapshot } from './paneLayoutStorage';
 
 export type PaneId = 'main' | 'side';
 
@@ -25,9 +29,12 @@ interface TabState {
   pane: PaneId;
   // recently closed tabs, newest last, so they can be opened again
   closed: string[];
+  // Fork v2, malformed and future snapshots stay byte-exact until a lossless writer is available.
+  persistenceWritable: boolean;
+  // Raw value observed during load or the last successful write; prevents overwriting another window.
+  observedStorageRaw: string | null;
 }
 
-const KEY = 'morrow.tabs';
 const MAX_TABS = 20;
 const MAX_HISTORY = 50;
 const MAX_CLOSED = 10;
@@ -35,64 +42,194 @@ const listeners = new Set<() => void>();
 let counter = 0;
 const newTabId = () => `t${Date.now().toString(36)}${(counter++).toString(36)}`;
 
-const strings = (value: unknown, limit = MAX_HISTORY): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(-limit) : [];
-
-function readPane(raw: unknown): PaneHistory | null {
-  const value = raw as Partial<PaneHistory> | null;
-  if (typeof value?.hash !== 'string') return null;
-  return { hash: value.hash, back: strings(value.back), forward: strings(value.forward) };
-}
-
-function load(): TabState {
-  const here = window.location.hash || '#/';
-  try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Partial<TabState> | null;
-    const tabs = Array.isArray(raw?.tabs)
-      ? raw.tabs
-          .filter((tab): tab is Tab => typeof tab?.id === 'string' && typeof tab.hash === 'string')
-          .slice(0, MAX_TABS)
-          .map((tab) => ({
-            ...readPane(tab)!,
-            id: tab.id,
-            side: readPane(tab.side),
-            ...(tab.pinned === true ? { pinned: true } : {}),
-          }))
-      : [];
-    const active = tabs.find((tab) => tab.id === raw?.active) ?? tabs[0];
-    if (active) {
-      // the window opens where it was, so the open tab starts there too
-      if (active.hash !== here) active.back = [...active.back, active.hash].slice(-MAX_HISTORY);
-      active.hash = here;
-      return {
-        tabs,
-        active: active.id,
-        pane: raw?.pane === 'side' && active.side ? 'side' : 'main',
-        closed: strings(raw?.closed, MAX_CLOSED),
-      };
-    }
-  } catch {
-    // tabs are a convenience, a fresh start is fine
-  }
+function initialState(
+  hash: string,
+  persistenceWritable: boolean,
+  observedStorageRaw: string | null,
+): TabState {
   const id = newTabId();
   return {
-    tabs: [{ id, hash: here, back: [], forward: [], side: null }],
+    tabs: [{ id, hash, back: [], forward: [], side: null }],
     active: id,
     pane: 'main',
     closed: [],
+    persistenceWritable,
+    observedStorageRaw,
   };
+}
+
+function applyLaunchHash(tabs: Tab[], active: string, hash: string): void {
+  const tab = tabs.find((item) => item.id === active);
+  if (!tab) return;
+  if (tab.hash !== hash) {
+    tab.back = [...tab.back, tab.hash].slice(-MAX_HISTORY);
+    tab.hash = hash;
+  }
+}
+
+function fromLegacySnapshot(snapshot: LegacyTabsSnapshot, hash: string, raw: string): TabState {
+  const tabs: Tab[] = snapshot.tabs.map((tab) => ({
+    id: tab.id,
+    hash: tab.hash,
+    back: [...tab.back],
+    forward: [...tab.forward],
+    side: tab.side ? { hash: tab.side.hash, back: [...tab.side.back], forward: [...tab.side.forward] } : null,
+    ...(tab.pinned ? { pinned: true } : {}),
+  }));
+  const active = tabs.find((tab) => tab.id === snapshot.active)?.id ?? tabs[0]!.id;
+  const activeTab = tabs.find((tab) => tab.id === active)!;
+  const pane = snapshot.pane === 'side' && activeTab.side ? 'side' : 'main';
+  // Match 2.2: use the launch route ("#/" when absent), save the previous route in back, and
+  // retain forward history. The app's start-page effect must still see an empty window hash.
+  applyLaunchHash(tabs, active, hash);
+  return {
+    tabs,
+    active,
+    pane,
+    closed: [...snapshot.closed],
+    persistenceWritable: true,
+    observedStorageRaw: raw,
+  };
+}
+
+interface ProjectedInstance {
+  readonly tabId: string;
+  readonly pane: PaneId;
+}
+
+function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: string): TabState {
+  const groups = new Map<string, PaneTabInstance<string>[]>();
+  for (const item of snapshot.layout.tabs) {
+    const group = groups.get(item.groupId) ?? [];
+    group.push(item);
+    groups.set(item.groupId, group);
+  }
+
+  const tabs: Tab[] = [];
+  const instanceMap = new Map<string, ProjectedInstance>();
+  for (const [groupId, group] of groups) {
+    const main = group.find((item) => item.id === groupId);
+    const side =
+      group.length === 2
+        ? group.find((item) => item.id !== main?.id && item.id.startsWith(`${groupId}:side`))
+        : undefined;
+    if (main && side) {
+      tabs.push({
+        id: main.id,
+        hash: main.target,
+        back: [...main.back],
+        forward: [...main.forward],
+        side: { hash: side.target, back: [...side.back], forward: [...side.forward] },
+        ...(main.pinned || side.pinned ? { pinned: true } : {}),
+      });
+      instanceMap.set(main.id, { tabId: main.id, pane: 'main' });
+      instanceMap.set(side.id, { tabId: main.id, pane: 'side' });
+      continue;
+    }
+
+    for (const item of group) {
+      tabs.push({
+        id: item.id,
+        hash: item.target,
+        back: [...item.back],
+        forward: [...item.forward],
+        side: null,
+        ...(item.pinned ? { pinned: true } : {}),
+      });
+      instanceMap.set(item.id, { tabId: item.id, pane: 'main' });
+    }
+  }
+
+  const focusedLeaf = visiblePaneLeaves(snapshot.layout).find(
+    (leaf) => leaf.id === snapshot.layout.focusedPaneId,
+  );
+  const focusedInstance = focusedLeaf?.tabId ? instanceMap.get(focusedLeaf.tabId) : undefined;
+  const active = focusedInstance?.tabId ?? tabs[0]?.id;
+  if (!active || tabs.length > MAX_TABS) {
+    const selected =
+      snapshot.layout.tabs.find((item) => item.id === focusedLeaf?.tabId) ?? snapshot.layout.tabs[0];
+    if (!selected) return initialState(hash, false, raw);
+    const tab: Tab = {
+      id: selected.id,
+      hash: selected.target,
+      back: [...selected.back],
+      forward: [...selected.forward],
+      side: null,
+      ...(selected.pinned ? { pinned: true } : {}),
+    };
+    const fallbackTabs = [tab];
+    applyLaunchHash(fallbackTabs, tab.id, hash);
+    return {
+      tabs: fallbackTabs,
+      active: tab.id,
+      pane: 'main',
+      closed: [...snapshot.closed],
+      persistenceWritable: false,
+      observedStorageRaw: raw,
+    };
+  }
+
+  const pane =
+    focusedInstance?.pane === 'side' && tabs.find((tab) => tab.id === active)?.side ? 'side' : 'main';
+  applyLaunchHash(tabs, active, hash);
+  return {
+    tabs,
+    active,
+    pane,
+    closed: [...snapshot.closed],
+    persistenceWritable: false,
+    observedStorageRaw: raw,
+  };
+}
+
+function load(): TabState {
+  const hash = window.location.hash || '#/';
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(PANE_TABS_STORAGE_KEY);
+  } catch {
+    return initialState(hash, false, null);
+  }
+
+  const snapshot = readPaneTabsSnapshot(raw);
+  if (snapshot.kind === 'empty') return initialState(hash, true, null);
+  if (snapshot.kind === 'legacy') return fromLegacySnapshot(snapshot.snapshot, hash, raw!);
+  if (snapshot.kind === 'current') return fromCurrentSnapshot(snapshot.snapshot, hash, raw!);
+
+  // Invalid and future snapshots stay byte-exact while this window navigates in memory.
+  return initialState(hash, false, raw);
 }
 
 let state: TabState | null = null;
 const current = (): TabState => (state ??= load());
 
 function set(next: TabState): void {
-  state = next;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    // not remembering tabs is harmless
+  let committed = next;
+  if (next.persistenceWritable) {
+    const serialized = JSON.stringify({
+      tabs: next.tabs,
+      active: next.active,
+      pane: next.pane,
+      closed: next.closed,
+    });
+    try {
+      const currentRaw = localStorage.getItem(PANE_TABS_STORAGE_KEY);
+      if (currentRaw !== next.observedStorageRaw) {
+        committed = { ...next, persistenceWritable: false };
+      } else {
+        try {
+          localStorage.setItem(PANE_TABS_STORAGE_KEY, serialized);
+          committed = { ...next, observedStorageRaw: serialized };
+        } catch {
+          // not remembering tabs is harmless
+        }
+      }
+    } catch {
+      // A failed read cannot prove that the stored value is still the one loaded here.
+      committed = { ...next, persistenceWritable: false };
+    }
   }
+  state = committed;
   for (const listener of listeners) listener();
 }
 
