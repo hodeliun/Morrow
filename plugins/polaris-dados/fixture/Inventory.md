@@ -22,6 +22,13 @@ database:
       name: Inventory quantity
       type: formula
       formula: Inventory.Quantity.Sum()
+    - id: included
+      name: Included
+      type: checkbox
+    - id: included-quantity
+      name: Included quantity
+      type: formula
+      formula: Inventory.Filter(CurrentValue.Included).Quantity.Sum()
   views:
     - id: inventory-table-v1
       name: Table

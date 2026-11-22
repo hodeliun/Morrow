@@ -66,6 +66,8 @@ O build verifica os hashes do bundle, manifesto, README e licença de ambos os p
 4. Abra a nota `Views` (com o cabeçalho `Origin Views`) e confira as duas visualizações vinculadas (`Origin primary stock` e `Origin low stock`). Ambas usam os dados de `Inventory.md` e mantêm título, filtro e ordem de colunas próprios. A coluna `Inventory quantity` usa todas as linhas do banco, inclusive as que o filtro da view oculta.
 5. Feche o Morrow normalmente e clique em `windows-launch.cmd` outra vez. Reabra `PilotState\DemoVault` pela interface e confira que `Quantity` e `Inventory quantity` continuam em 3, `Total` continua em 30 e as duas visualizações permanecem.
 
+Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para 0 e `Inventory quantity` deve continuar em 3. Desfaça a alteração para recuperar o subtotal. As views vinculadas usam os mesmos valores, inclusive quando um filtro da view oculta uma linha do banco.
+
 ## Edição de texto
 
 1. Em `Inventory`, edite a célula `Name` e digite duas linhas. Use **Enter** para inserir a quebra de linha e **Escape** para cancelar. Verifique que a célula continua com o valor anterior.
