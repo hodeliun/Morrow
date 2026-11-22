@@ -818,6 +818,10 @@ export const es: TranslationSchema = {
     apply: 'Aplicar',
     dragToMoveAria: 'Arrastra para mover, pulsa para opciones de bloque',
     defaultTextColor: 'Color de texto por defecto',
+    customTextColor: 'Color de texto personalizado',
+    customHighlightColor: 'Color de resaltado personalizado',
+    hexColorFor: 'Color HEX para {target}',
+    invalidHexColor: 'Introduce un color HEX válido de seis dígitos.',
     noHighlight: 'Sin resaltado',
     moveUp: 'Subir',
     moveDown: 'Bajar',
@@ -1671,11 +1675,14 @@ export const es: TranslationSchema = {
     wrapText: 'Ajustar texto',
     providerFallback: 'Activa el plugin Polaris Dados para editar esta base. Esta vista es de solo lectura.',
     providerMountFailed: 'El proveedor Polaris Dados no pudo iniciarse. Esta vista es de solo lectura.',
-    providerUnsupported: 'El formato del proveedor de esta base no es compatible. Esta vista es de solo lectura.',
-    providerProtected: 'Morrow no puede mostrar esta base porque su estructura no es compatible. El origen quedó intacto.',
+    providerUnsupported:
+      'El formato del proveedor de esta base no es compatible. Esta vista es de solo lectura.',
+    providerProtected:
+      'Morrow no puede mostrar esta base porque su estructura no es compatible. El origen quedó intacto.',
     providerOpenBank: 'Abrir base: {title}',
     providerTechnicalDetails: 'Detalles técnicos',
-    providerMetadataDiagnostic: 'Proveedor: {provider}; versión de metadatos: {version}; API requerida del host: 1.',
+    providerMetadataDiagnostic:
+      'Proveedor: {provider}; versión de metadatos: {version}; API requerida del host: 1.',
     providerMountDiagnostic: 'Error de montaje: {message}',
     exportIcsHint: 'Guarda las filas con fecha como un archivo .ics para otras apps de calendario',
     importIcsHint: 'Añade los eventos de un archivo .ics como filas',

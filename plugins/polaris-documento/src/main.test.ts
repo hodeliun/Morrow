@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { activate, type PolarisDocumentoApi } from './main';
+import type { PluginInlineColorControlMount } from '../../../src/app/plugins/registry';
 
 const windows: Window[] = [];
 
@@ -23,7 +24,22 @@ function stylesHarness(window: Window) {
       style.remove();
     };
   });
-  return { api: { styles: { add } } as PolarisDocumentoApi, add };
+  let activeControl: PluginInlineColorControlMount | null = null;
+  const addControl = vi.fn((mount: PluginInlineColorControlMount) => {
+    activeControl = mount;
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      if (activeControl === mount) activeControl = null;
+    };
+  });
+  return {
+    api: { editor: { inlineColorControl: { add: addControl } }, styles: { add } } as PolarisDocumentoApi,
+    add,
+    addControl,
+    activeControl: () => activeControl,
+  };
 }
 
 function pluginRules(window: Window) {
@@ -62,24 +78,52 @@ function rule(rules: CSSStyleRule[], selector: string): CSSStyleRule {
 }
 
 describe('Polaris Documento styles lifecycle', () => {
-  it('adds one scoped style and removes it on disable and reload cleanup', () => {
+  it('registers scoped styles and removes them on disable and reload cleanup', () => {
     const window = new Window({ url: 'http://morrow.test/' });
     windows.push(window);
-    const { api, add } = stylesHarness(window);
+    const { api, add, addControl, activeControl } = stylesHarness(window);
 
     const disable = activate(api);
-    expect(add).toHaveBeenCalledOnce();
-    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(1);
+    expect(add).toHaveBeenCalledTimes(2);
+    expect(addControl).toHaveBeenCalledOnce();
+    expect(activeControl()).toBeTypeOf('function');
+    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(2);
+    expect(
+      [...window.document.querySelectorAll('style[data-plugin="polaris-documento"]')]
+        .map((style) => style.textContent)
+        .join('\n'),
+    ).toContain('.color-custom-control');
 
     disable();
     disable();
+    expect(activeControl()).toBeNull();
     expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(0);
 
     const reload = activate(api);
-    expect(add).toHaveBeenCalledTimes(2);
-    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(1);
+    expect(add).toHaveBeenCalledTimes(4);
+    expect(addControl).toHaveBeenCalledTimes(2);
+    expect(activeControl()).toBeTypeOf('function');
+    expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(2);
     reload();
+    expect(activeControl()).toBeNull();
     expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(0);
+  });
+
+  it('keeps the existing Documento styles active on hosts without the inline color contribution', () => {
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const add = vi.fn((css: string) => {
+      const style = window.document.createElement('style');
+      style.textContent = css;
+      window.document.head.append(style);
+      return () => style.remove();
+    });
+
+    const disable = activate({ styles: { add } });
+    expect(add).toHaveBeenCalledOnce();
+    expect(window.document.querySelector('style')?.textContent).toContain('.prose a.page-link');
+    disable();
+    expect(window.document.querySelector('style')).toBeNull();
   });
 
   it('styles host page-link and relation states while leaving external anchors and actions untouched', async () => {

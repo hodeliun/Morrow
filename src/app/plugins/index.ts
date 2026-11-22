@@ -17,7 +17,14 @@ import { getLocale } from '../i18n';
 import { activeRoute, openPage } from '../router';
 import { toast } from '../ui';
 import { getSession, getState, run } from '../workspace';
-import { addPluginAction, addPluginBlock, pluginActions, pluginBlocks } from './registry';
+import {
+  addPluginAction,
+  addPluginBlock,
+  addPluginInlineColorControl,
+  pluginActions,
+  pluginBlocks,
+} from './registry';
+import type { PluginInlineColorControlMount } from './registry';
 import { createDataApi } from './dataApi';
 import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
 import type { DatabaseProviderRegistration } from './providerApi';
@@ -438,6 +445,15 @@ function pluginApi(id: string, state: Running) {
     },
     editor: {
       insertion,
+      inlineColorControl: {
+        add(mount: PluginInlineColorControlMount) {
+          assertActive();
+          if (id !== 'polaris-documento')
+            throw new Error('Only Polaris Documento can add an inline color control.');
+          if (typeof mount !== 'function') throw new Error('An inline color control needs a mount function.');
+          return keep(addPluginInlineColorControl(id, mount));
+        },
+      },
       insert(markdown: string) {
         assertActive();
         const target = captureEditorInsertionTarget({

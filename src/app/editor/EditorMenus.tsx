@@ -59,10 +59,10 @@ import {
 import { ListLettered } from './icons';
 import { columnAt, moveColumn } from './ColumnGrip';
 import type { LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { pageIdFromHref } from '../../core/links';
 import { COLORS } from '../../core/model';
-import type { ColorName } from '../../core/model';
+import type { ColorName, InlineColor } from '../../core/model';
 import { formatShortcut } from '../actions';
 import { Menu } from '../components/Menu';
 import { colourSwatch } from '../components/TagColorMenu';
@@ -83,6 +83,8 @@ import type { TurnTarget } from './turnInto';
 import { openDialog, toast } from '../ui';
 import { getSession } from '../workspace';
 import { colorLabel } from '../i18n/labels';
+import { documentoInlineColorControl, subscribePlugins } from '../plugins/registry';
+import { createInlineColorControlHost } from './inlineColorControlHost';
 
 function ToolButton({
   label,
@@ -132,6 +134,18 @@ export function openHref(href: string): void {
   if (pageId) openPage(pageId);
   else if (LOCAL_HREF.test(href)) void openLocal(href);
   else openExternal(href);
+}
+
+export function handleColorPanelKeyDown(
+  editor: Editor,
+  event: Pick<KeyboardEvent, 'key' | 'preventDefault'>,
+  onDone: () => void,
+  isOwnerCurrent: () => boolean = () => true,
+): void {
+  if (event.key !== 'Escape') return;
+  event.preventDefault();
+  if (!editor.isDestroyed && isOwnerCurrent()) editor.commands.focus();
+  onDone();
 }
 
 async function openLocal(href: string): Promise<void> {
@@ -256,14 +270,111 @@ function useMarks(editor: Editor) {
 }
 
 // the nine colours for text and for highlighting, the same set notion, affine and select options use
+function DocumentoInlineColorControl({
+  editor,
+  kind,
+  selectionAnchor,
+  selectionHead,
+  selectedText,
+  onDone,
+}: {
+  editor: Editor;
+  kind: 'text' | 'bg';
+  selectionAnchor: number;
+  selectionHead: number;
+  selectedText: string;
+  onDone: () => void;
+}) {
+  const registration = useSyncExternalStore(
+    subscribePlugins,
+    documentoInlineColorControl,
+    documentoInlineColorControl,
+  );
+  const root = useRef<HTMLSpanElement>(null);
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+
+  const label = t(kind === 'text' ? 'editor.customTextColor' : 'editor.customHighlightColor');
+  const inputLabel = t('editor.hexColorFor', {
+    target: t(kind === 'text' ? 'editor.textColour' : 'editor.highlight'),
+  });
+  const invalidMessage = t('editor.invalidHexColor');
+
+  useEffect(() => {
+    if (!registration || !root.current) return;
+    let session: ReturnType<typeof getSession>;
+    try {
+      session = getSession();
+    } catch {
+      return;
+    }
+    const mounted = createInlineColorControlHost({
+      editor,
+      kind,
+      registration,
+      label,
+      inputLabel,
+      invalidMessage,
+      isSessionActive: () => {
+        try {
+          const current = getSession();
+          return current === session && !current.isClosed;
+        } catch {
+          return false;
+        }
+      },
+      onFinish: () => onDoneRef.current(),
+    });
+    if (!mounted) return;
+    const unmountControl = registration.mount(root.current, mounted.host);
+    return () => {
+      mounted.dispose();
+      if (typeof unmountControl === 'function') unmountControl();
+    };
+  }, [
+    registration,
+    editor,
+    kind,
+    selectionAnchor,
+    selectionHead,
+    selectedText,
+    label,
+    inputLabel,
+    invalidMessage,
+  ]);
+
+  return <span ref={root} className="documento-inline-color-control" />;
+}
+
 function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) {
+  const [ownerSession] = useState(() => {
+    try {
+      return getSession();
+    } catch {
+      return null;
+    }
+  });
+  const canReturnFocus = () => {
+    if (!ownerSession || editor.isDestroyed) return false;
+    try {
+      const current = getSession();
+      return current === ownerSession && !current.isClosed;
+    } catch {
+      return false;
+    }
+  };
   const current = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
-      text: (e.getAttributes('textColor').color as ColorName | undefined) ?? null,
+      text: (e.getAttributes('textColor').color as InlineColor | undefined) ?? null,
       bg: e.isActive('highlight')
-        ? ((e.getAttributes('highlight').color as ColorName | undefined) ?? 'yellow')
+        ? ((e.getAttributes('highlight').color as InlineColor | undefined) ?? 'yellow')
         : null,
+      selectionAnchor: e.state.selection.anchor,
+      selectionHead: e.state.selection.head,
+      selectedText: e.state.doc.textBetween(e.state.selection.from, e.state.selection.to, '\n'),
     }),
   });
   // a colour is picked, then the menu goes back to bold, italic and the rest for the same words
@@ -308,10 +419,21 @@ function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) 
           {kind === 'text' ? 'A' : ''}
         </button>
       ))}
+      <DocumentoInlineColorControl
+        editor={editor}
+        kind={kind}
+        selectionAnchor={current.selectionAnchor}
+        selectionHead={current.selectionHead}
+        selectedText={current.selectedText}
+        onDone={onDone}
+      />
     </div>
   );
   return (
-    <div className="color-panel" onKeyDown={(event) => event.key === 'Escape' && onDone()}>
+    <div
+      className="color-panel"
+      onKeyDown={(event) => handleColorPanelKeyDown(editor, event, onDone, canReturnFocus)}
+    >
       <span className="color-panel-label">{t('slash.items.text.title')}</span>
       {row('text')}
       <span className="color-panel-label">{t('editor.highlight')}</span>

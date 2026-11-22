@@ -4,7 +4,7 @@ import { CellSelection } from '@tiptap/pm/tables';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DocNode } from '../../core/model';
 import { selectBlockRange } from './BlockSelect';
-import { changeCase, setBlockBackground, setHeading, turnInto } from './EditorMenus';
+import { changeCase, handleColorPanelKeyDown, setBlockBackground, setHeading, turnInto } from './EditorMenus';
 import { createExtensions } from './extensions';
 import { tagDecorations } from './Extras';
 import type { DecorationSet } from '@tiptap/pm/view';
@@ -81,6 +81,26 @@ describe('the editor', () => {
     const summary = json(target).content![0]!.content![0]!;
     expect(summary.attrs?.level).toBe(2);
     expect(summary.content![0]!.text).toBe('Plans');
+  });
+
+  it('returns editor focus when Escape closes the inline color panel', async () => {
+    const target = make({ type: 'doc', content: [p('Selected text')] });
+    const focus = vi.spyOn(target.view, 'focus');
+    const preventDefault = vi.fn();
+    const onDone = vi.fn();
+    handleColorPanelKeyDown(target, { key: 'Escape', preventDefault }, onDone);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onDone).toHaveBeenCalledOnce();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(focus).toHaveBeenCalledOnce();
+    handleColorPanelKeyDown(target, { key: 'Enter', preventDefault }, onDone);
+    expect(focus).toHaveBeenCalledOnce();
+    expect(onDone).toHaveBeenCalledOnce();
+
+    const staleDone = vi.fn();
+    handleColorPanelKeyDown(target, { key: 'Escape', preventDefault }, staleDone, () => false);
+    expect(focus).toHaveBeenCalledOnce();
+    expect(staleDone).toHaveBeenCalledOnce();
   });
 
   it('makes a toggle title a heading with #', () => {

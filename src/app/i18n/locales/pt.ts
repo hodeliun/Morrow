@@ -818,6 +818,10 @@ export const pt: TranslationSchema = {
     apply: 'Aplicar',
     dragToMoveAria: 'Arraste para mover, clique para opções do bloco',
     defaultTextColor: 'Cor de texto padrão',
+    customTextColor: 'Cor personalizada do texto',
+    customHighlightColor: 'Cor personalizada do destaque',
+    hexColorFor: 'Cor HEX para {target}',
+    invalidHexColor: 'Digite uma cor HEX válida com seis dígitos.',
     noHighlight: 'Sem destaque',
     moveUp: 'Mover para cima',
     moveDown: 'Mover para baixo',
@@ -1667,13 +1671,18 @@ export const pt: TranslationSchema = {
     hideGroup: 'Ocultar {name}',
     hideEmptyGroups: 'Ocultar grupos vazios',
     wrapText: 'Quebrar texto',
-    providerFallback: 'Ative o plugin Polaris Dados para editar este banco. Esta visualização é somente leitura.',
-    providerMountFailed: 'O provedor Polaris Dados não conseguiu iniciar. Esta visualização é somente leitura.',
-    providerUnsupported: 'O formato do provedor deste banco não é compatível. Esta visualização é somente leitura.',
-    providerProtected: 'O Morrow não pode exibir este banco porque sua estrutura não é compatível. A origem foi preservada.',
+    providerFallback:
+      'Ative o plugin Polaris Dados para editar este banco. Esta visualização é somente leitura.',
+    providerMountFailed:
+      'O provedor Polaris Dados não conseguiu iniciar. Esta visualização é somente leitura.',
+    providerUnsupported:
+      'O formato do provedor deste banco não é compatível. Esta visualização é somente leitura.',
+    providerProtected:
+      'O Morrow não pode exibir este banco porque sua estrutura não é compatível. A origem foi preservada.',
     providerOpenBank: 'Abrir banco: {title}',
     providerTechnicalDetails: 'Detalhes técnicos',
-    providerMetadataDiagnostic: 'Provedor: {provider}; versão dos metadados: {version}; API exigida pelo host: 1.',
+    providerMetadataDiagnostic:
+      'Provedor: {provider}; versão dos metadados: {version}; API exigida pelo host: 1.',
     providerMountDiagnostic: 'Falha ao montar: {message}',
     exportIcsHint: 'Salve as linhas com data como um arquivo .ics para outros apps de calendário',
     importIcsHint: 'Adicione os eventos de um arquivo .ics como linhas',

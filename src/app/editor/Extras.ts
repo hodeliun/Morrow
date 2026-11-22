@@ -28,7 +28,7 @@ import {
   parseInlineColor,
   TEXT_HEX,
 } from '../../core/model';
-import type { CalloutTone, ColorName, InlineColor } from '../../core/model';
+import type { CalloutTone, InlineColor } from '../../core/model';
 import { tagClass } from '../../core/tags';
 import { emojiElement } from '../components/Emoji';
 import { getPreferences, setPreferences } from '../platform/preferences';
@@ -42,10 +42,10 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     highlight: {
       toggleHighlight: () => ReturnType;
-      setHighlightColor: (color: ColorName | null) => ReturnType;
+      setHighlightColor: (color: InlineColor | null) => ReturnType;
     };
     textColor: {
-      setTextColor: (color: ColorName | null) => ReturnType;
+      setTextColor: (color: InlineColor | null) => ReturnType;
     };
   }
 }
