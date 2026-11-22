@@ -1,10 +1,10 @@
 // file system access for the vault, every path is checked to stay inside the chosen folder
 use crate::paths::{self, millis, normalize};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use cap_fs_ext::{ambient_authority, DirExt};
 use cap_std::fs::Dir as CapabilityDir;
 use rayon::prelude::*;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -23,7 +23,9 @@ pub const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const TEMP_MARK: &str = ".morrow-tmp-";
 
 fn advance_generation() -> u64 {
-    SESSION_GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+    SESSION_GENERATION
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1)
 }
 
 fn current_generation() -> u64 {
@@ -199,8 +201,7 @@ pub fn state() -> Value {
 
 fn ready_session_generation() -> Option<u64> {
     let generation = current_generation();
-    OPEN
-        .lock()
+    OPEN.lock()
         .ok()?
         .as_ref()
         .filter(|open| open.generation == generation)
@@ -238,13 +239,20 @@ fn select_at(dir: &str, file: &Path) -> VaultTransitionResult {
     }
     let resolved = normalize(path);
     if !is_dir(&resolved) {
-        return transition_result(false, false, Some("That folder does not exist any more.".into()));
+        return transition_result(
+            false,
+            false,
+            Some("That folder does not exist any more.".into()),
+        );
     }
     if resolved.parent().is_none() || resolved == paths::home_dir() {
         return transition_result(
             false,
             false,
-            Some("Choose a folder of its own for your notes, not your whole drive or home folder.".into()),
+            Some(
+                "Choose a folder of its own for your notes, not your whole drive or home folder."
+                    .into(),
+            ),
         );
     }
     let text = resolved.to_string_lossy().into_owned();
@@ -714,7 +722,7 @@ fn encode_file_cursor(cursor: &FilePageCursor) -> Option<String> {
         && roundtrip.generation == cursor.generation
         && roundtrip.directory_hash == cursor.directory_hash
         && roundtrip.last_name_base64 == cursor.last_name_base64)
-    .then_some(encoded)
+        .then_some(encoded)
 }
 
 fn directory_cursor_hash(directory: &str) -> String {
@@ -741,9 +749,9 @@ fn metadata_directory(
     }
     let target = resolve_in(&snapshot.real_root, requested).map_err(|_| FilePageStatus::Blocked)?;
     if to_relative(&snapshot.real_root, &target) != requested
-        || requested
-            .split('/')
-            .any(|part| part.starts_with('.') || part.contains(TEMP_MARK) || part.contains(".morrow-move-"))
+        || requested.split('/').any(|part| {
+            part.starts_with('.') || part.contains(TEMP_MARK) || part.contains(".morrow-move-")
+        })
     {
         return Err(FilePageStatus::Blocked);
     }
@@ -846,10 +854,7 @@ fn metadata_for_directory(
         let Some(name) = file_name.to_str().map(str::to_owned) else {
             continue;
         };
-        if name.starts_with('.')
-            || name.contains(TEMP_MARK)
-            || name.contains(".morrow-move-")
-        {
+        if name.starts_with('.') || name.contains(TEMP_MARK) || name.contains(".morrow-move-") {
             continue;
         }
         let Some(relative_path) = relative_child_path(&snapshot.real_root, requested, &name) else {
@@ -1725,10 +1730,8 @@ mod tests {
     }
 
     fn metadata_test_root(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "morrow-files-{label}-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("morrow-files-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         root
     }
@@ -1779,14 +1782,21 @@ mod tests {
         fs::write(root.join(".morrow-tmp-writing"), b"temp").unwrap();
         fs::write(root.join("image.morrow-move-stage"), b"temp").unwrap();
         #[cfg(unix)]
-        fs::write(root.join("invalid\\catalog-name.bin"), b"excluded by resolve_in rules").unwrap();
+        fs::write(
+            root.join("invalid\\catalog-name.bin"),
+            b"excluded by resolve_in rules",
+        )
+        .unwrap();
 
         let snapshot = metadata_snapshot_for(&root, 41);
         let page = metadata_for_directory(&snapshot, "", None, Some(500));
         assert_eq!(page.status, FilePageStatus::Ready);
         assert_eq!(page.entries.len(), 5);
         assert_eq!(
-            page.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
+            page.entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Empty", "asset", "folder.md", "nested", "photo.png"]
         );
         assert_eq!(page.entries[1].kind, "file");
@@ -1820,8 +1830,16 @@ mod tests {
         assert_eq!(first.status, FilePageStatus::Ready);
         assert_eq!(first.entries.len(), MAX_PAGE_SIZE);
         assert_eq!(
-            first.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
-            repeated.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>()
+            first
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            repeated
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>()
         );
         assert_eq!(first.entries[0].name, "item-000.bin");
         assert_eq!(first.entries[199].name, "item-199.bin");
@@ -1876,7 +1894,9 @@ mod tests {
         let cursor = first.next_cursor.as_deref().unwrap();
         assert!(cursor.len() < 4096);
         let encoded_body = URL_SAFE_NO_PAD.decode(cursor).unwrap();
-        assert!(!encoded_body.windows(directory.len()).any(|part| part == directory.as_bytes()));
+        assert!(!encoded_body
+            .windows(directory.len())
+            .any(|part| part == directory.as_bytes()));
         let second = metadata_for_directory(&snapshot, &directory, Some(cursor), Some(1));
         assert_eq!(second.status, FilePageStatus::Ready);
         assert_eq!(second.entries.len(), 1);
@@ -2223,10 +2243,7 @@ mod tests {
         let first_generation = open(&first_root_text, |_| {}).unwrap();
         let first_page = list_metadata_page(first_generation, "", None, Some(1));
         let old_cursor = first_page.next_cursor.as_deref().unwrap().to_owned();
-        assert_eq!(
-            first_page.status,
-            FilePageStatus::Ready
-        );
+        assert_eq!(first_page.status, FilePageStatus::Ready);
 
         let second_generation = open(&first_root_text, |_| {}).unwrap();
         assert_ne!(first_generation, second_generation);

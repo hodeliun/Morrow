@@ -774,7 +774,8 @@ async fn vault_files_page(
     cursor: Option<String>,
     limit: Option<usize>,
 ) -> Res<vault::VaultFilePage> {
-    blocking(move || vault::list_metadata_page(generation, &directory, cursor.as_deref(), limit)).await
+    blocking(move || vault::list_metadata_page(generation, &directory, cursor.as_deref(), limit))
+        .await
 }
 
 #[tauri::command]
