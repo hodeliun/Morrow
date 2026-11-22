@@ -171,6 +171,15 @@ export function joinFrontmatter(data: Record<string, unknown> | null, body: stri
   return `---\n${yaml}---\n${body}`;
 }
 
+export function isUnambiguousFrontmatter(yaml: string, expected: Record<string, unknown>): boolean {
+  try {
+    const parsed = parse(yaml, { maxAliasCount: 100, uniqueKeys: true }) ?? {};
+    return isRecord(parsed) && same(parsed, expected);
+  } catch {
+    return false;
+  }
+}
+
 // changes only the keys whose values changed, so every other line keeps its exact formatting and comments.
 // null when the yaml can not be edited that way, then the whole block is written again
 export function updateFrontmatter(
@@ -180,6 +189,7 @@ export function updateFrontmatter(
   body: string,
   optedInCheckboxKeys: ReadonlySet<string> = new Set(),
   preserveRawKeys: ReadonlySet<string> = new Set(),
+  verifyUnchangedValues = false,
 ): string | null {
   const changedCheckboxKeys = [...optedInCheckboxKeys].filter((name) => {
     const beforeKey = findKey(before, name);
@@ -188,14 +198,25 @@ export function updateFrontmatter(
     if (afterKey === undefined) return true;
     return !same(before[beforeKey], after[afterKey]);
   });
-  if (Object.keys(after).length === 0 && changedCheckboxKeys.length === 0) return body;
+  if (Object.keys(after).length === 0 && changedCheckboxKeys.length === 0 && !verifyUnchangedValues) return body;
   const order = Object.keys(after);
   const kept = Object.keys(before).filter((key) => Object.hasOwn(after, key));
   // a key that moved, such as one renamed into another's place, is easier to get right by writing it all
   if (kept.some((key, index) => order[index] !== key)) return null;
   try {
+    if (verifyUnchangedValues) {
+      // Existing metadata must have one unambiguous effective value before it can be patched.
+      // This is deliberately a write-time check; the normal reader still accepts legacy YAML.
+      if (!isUnambiguousFrontmatter(yaml, before)) return null;
+    }
+    if (Object.keys(after).length === 0 && changedCheckboxKeys.length === 0) return body;
+
     const document = parseDocument(yaml, { uniqueKeys: false });
-    if (document.errors.length > 0 || (!document.contents && changedCheckboxKeys.length === 0)) return null;
+    if (document.errors.length > 0) return null;
+    if (!document.contents) {
+      if (verifyUnchangedValues ? Object.keys(before).length > 0 : changedCheckboxKeys.length === 0) return null;
+    }
+    if (verifyUnchangedValues && document.contents && !isMap(document.contents)) return null;
     if (changedCheckboxKeys.length > 0) {
       if (document.contents && !isMap(document.contents)) return null;
       if (isMap(document.contents)) {
@@ -225,6 +246,7 @@ export function updateFrontmatter(
         if (isScalar(valueNode) && valueNode.tag === 'tag:yaml.org,2002:str') valueNode.tag = undefined;
       }
     }
+    if (verifyUnchangedValues && !isMap(document.contents)) return null;
     let text = document.toString({
       lineWidth: 0,
       defaultStringType: 'PLAIN',
@@ -235,6 +257,10 @@ export function updateFrontmatter(
       text = restoreUnchangedScalarLines(yaml, text, before, after, changedCheckboxKeys, preserveRawKeys);
       const parsed = parse(text, { maxAliasCount: 100, uniqueKeys: false }) ?? {};
       if (!isRecord(parsed) || !same(parsed, after)) return null;
+    }
+    if (verifyUnchangedValues) {
+      // Equality checks presence and the effective value of every key, including untouched aliases.
+      if (!isUnambiguousFrontmatter(text, after)) return null;
     }
     if (Object.keys(after).length === 0) return body;
     return `---\n${text}${text.endsWith('\n') ? '' : '\n'}---\n${body}`;

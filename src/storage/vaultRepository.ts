@@ -41,13 +41,20 @@ import {
   composeFrontmatter,
   impliedTitle,
   managedFrontmatter,
+  readProperty,
   readPageText,
   takeProperties,
   renderPageText,
   sameValue,
+  UnsafeFrontmatterUpdateError,
 } from '../core/vault/pageFile';
 import type { PageSource } from '../core/vault/pageFile';
-import { findKey, splitFrontmatter, updateFrontmatter } from '../core/vault/frontmatter';
+import {
+  findKey,
+  isUnambiguousFrontmatter,
+  splitFrontmatter,
+  updateFrontmatter,
+} from '../core/vault/frontmatter';
 import {
   ATTACHMENTS_DIR,
   basename,
@@ -119,6 +126,11 @@ interface NavigationReadContext {
   readonly resolver: Resolver;
   readonly otherIndex: Map<string, string>;
   readonly otherNames: Map<string, string[]>;
+}
+
+interface RenderedPage {
+  text: string | null;
+  source: PageSource | null;
 }
 
 function localDay(date: Date): string {
@@ -459,6 +471,7 @@ export class VaultRepository implements WorkspaceRepository {
 
     const resolveOld = retargeted.size > 0 ? makeResolver(state, previous, this.sources) : null;
     const skippedQuietSerialization = new Set<PageId>();
+    const plannedSources = new Map<PageId, PageSource>();
     for (const id of candidates) {
       if (preservedSources.has(id)) continue;
       const placement = next.get(id);
@@ -482,7 +495,7 @@ export class VaultRepository implements WorkspaceRepository {
         skippedQuietSerialization.add(id);
         continue;
       }
-      const text = this.render(
+      const rendered = this.render(
         state,
         next,
         newTargets,
@@ -492,6 +505,7 @@ export class VaultRepository implements WorkspaceRepository {
         resolveOld,
         retargeted,
       );
+      const text = rendered.text;
       if (text === null) continue;
       let written = text;
       if (state.pages[id]!.encrypted) {
@@ -503,6 +517,7 @@ export class VaultRepository implements WorkspaceRepository {
         written = await encryptPage(text, pageKey);
         this.pendingPlain.set(id, text);
       } else if (text === this.texts.get(id)) continue;
+      if (rendered.source) plannedSources.set(id, rendered.source);
       ops.push({
         op: 'write',
         path: placement.file,
@@ -569,7 +584,7 @@ export class VaultRepository implements WorkspaceRepository {
       if (!folderPages.has(folder.toLowerCase())) ops.push({ op: 'rmdir', path: folder });
     }
 
-    await this.run(ops, next, guardedLinkedViewPages);
+    await this.run(ops, next, guardedLinkedViewPages, plannedSources);
     this.lastState = state;
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
@@ -801,11 +816,14 @@ export class VaultRepository implements WorkspaceRepository {
     before: Placement | undefined,
     resolveOld: Resolver | null,
     retargeted: Set<PageId>,
-  ): string | null {
+  ): RenderedPage {
     const page = state.pages[id]!;
     const placement = layout.get(id)!;
     if (page.kind === 'canvas')
-      return writeCanvas(canvasFromDoc(state.docs[id]), (pageId) => layout.get(pageId)?.file ?? null);
+      return {
+        text: writeCanvas(canvasFromDoc(state.docs[id]), (pageId) => layout.get(pageId)?.file ?? null),
+        source: null,
+      };
     // a folder that just got a note of its own, for its tags, properties or kind, has no text yet
     const doc = state.docs[id] ?? emptyDoc();
     const dir = dirname(placement.file!);
@@ -813,7 +831,6 @@ export class VaultRepository implements WorkspaceRepository {
     const movedDir = before !== undefined && dirname(before.folder) !== dirname(placement.folder);
     if (source && source.body !== null && (edited || (movedDir && hasFileRefs(doc)))) {
       source = { ...source, body: null };
-      this.sources.set(id, source);
     }
     let body: string;
     if (source && source.body !== null) {
@@ -825,7 +842,6 @@ export class VaultRepository implements WorkspaceRepository {
         : source.body;
       if (body !== source.body) {
         source = { ...source, body };
-        this.sources.set(id, source);
       }
     } else {
       body = docToMarkdown(doc, {
@@ -842,63 +858,71 @@ export class VaultRepository implements WorkspaceRepository {
       parent?.kind === 'database' ? parent.database : null,
       parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
-    let frontmatter = composeFrontmatter(managed, page.extra, source);
+    let frontmatter = composeFrontmatter(managed, page.extra, source, page);
     const changedCheckboxKeys = new Set<string>();
     const unchangedSchemaKeys = new Set<string>();
-    const previousProperties = this.lastState?.pages[id]?.properties;
-    if (
+    let schemaValuesChanged = false;
+    const optedInDatabase =
       parent?.kind === 'database' &&
-      parent.database &&
-      Object.hasOwn(parent.extra, 'polarisDados') &&
-      previousProperties
-    ) {
+      parent.database !== null &&
+      Object.hasOwn(parent.extra, 'polarisDados');
+    const unchangedSourceValues = new Map<string, unknown>();
+    if (source?.rawData && parent?.kind === 'database' && parent.database) {
       for (const property of parent.database.properties) {
-        if (property.type !== 'checkbox') continue;
-        const wasPresent = Object.hasOwn(previousProperties, property.id);
-        const isPresent = Object.hasOwn(page.properties, property.id);
-        if (
-          wasPresent === isPresent &&
-          sameValue(previousProperties[property.id], page.properties[property.id])
-        )
+        if (property.type === 'formula') continue;
+        const sourceKey = findKey(source.rawData, property.name);
+        const hasPageValue = Object.hasOwn(page.properties, property.id);
+        if (sourceKey === undefined) {
+          if (hasPageValue) {
+            schemaValuesChanged = true;
+            if (property.type === 'checkbox' && optedInDatabase) {
+              changedCheckboxKeys.add(findKey(frontmatter, property.name) ?? property.name);
+            }
+          }
           continue;
-        changedCheckboxKeys.add(
-          findKey(frontmatter, property.name) ??
-            (source?.rawData ? findKey(source.rawData, property.name) : undefined) ??
-            property.name,
-        );
+        }
+        const raw = source.rawData[sourceKey];
+        const parsed = readProperty(
+          property,
+          raw,
+          () => '',
+          optedInDatabase && (property.type === 'text' || property.type === 'checkbox'),
+        ).value;
+        // takeProperties leaves unrepresentable non-empty values in page.extra so they remain
+        // editable. Only restore source values that its parser actually consumes (or omits as null/empty).
+        if (parsed === null && raw !== null && raw !== '') continue;
+        // Match the page's effective property state, including whether it is present. A null raw
+        // value maps to an explicit null only in the opted-in lane; legacy schemas omit it.
+        const sourceHasPageValue = parsed !== null || (optedInDatabase && raw === null);
+        const sameAsSource =
+          hasPageValue === sourceHasPageValue &&
+          (!sourceHasPageValue || sameValue(parsed, page.properties[property.id]));
+
+        if (!sameAsSource) schemaValuesChanged = true;
+        if (property.type === 'checkbox' && optedInDatabase && !sameAsSource) {
+          changedCheckboxKeys.add(
+            findKey(frontmatter, property.name) ?? sourceKey ?? property.name,
+          );
+        }
+        if (!sameAsSource) continue;
+        unchangedSourceValues.set(sourceKey, raw);
+        unchangedSchemaKeys.add(sourceKey);
       }
     }
-    if (changedCheckboxKeys.size > 0 && source?.rawData && parent?.database && previousProperties) {
-      const unchangedRawValues = new Map<string, unknown>();
-      for (const property of parent.database.properties) {
-        const wasPresent = Object.hasOwn(previousProperties, property.id);
-        const isPresent = Object.hasOwn(page.properties, property.id);
-        if (
-          wasPresent !== isPresent ||
-          !sameValue(previousProperties[property.id], page.properties[property.id])
-        )
-          continue;
-        const sourceKey = findKey(source.rawData, property.name);
-        if (sourceKey !== undefined) {
-          unchangedRawValues.set(sourceKey, source.rawData[sourceKey]);
-          unchangedSchemaKeys.add(sourceKey);
-        }
+    // Preserve unchanged raw schema values on unrelated edits. For actual opted-in schema edits,
+    // keep the established typed serialization, except for the checkbox patch lane which must
+    // preserve untouched source lines.
+    if (
+      unchangedSourceValues.size > 0 &&
+      (!optedInDatabase || !schemaValuesChanged || changedCheckboxKeys.size > 0)
+    ) {
+      const preserved = new Map(Object.entries(frontmatter));
+      for (const [sourceKey, raw] of unchangedSourceValues) {
+        const candidateKey = findKey(frontmatter, sourceKey);
+        if (candidateKey !== undefined && candidateKey !== sourceKey) preserved.delete(candidateKey);
+        preserved.set(sourceKey, raw);
       }
-      if (unchangedRawValues.size > 0) {
-        const preserved = new Map<string, unknown>();
-        for (const key of source.keyOrder) {
-          if (unchangedRawValues.has(key)) {
-            preserved.set(key, unchangedRawValues.get(key));
-            continue;
-          }
-          const currentKey = findKey(frontmatter, key);
-          if (currentKey !== undefined) preserved.set(currentKey, frontmatter[currentKey]);
-        }
-        for (const [key, value] of Object.entries(frontmatter)) {
-          if (!preserved.has(key)) preserved.set(key, value);
-        }
-        frontmatter = Object.fromEntries(preserved);
-      }
+      frontmatter = composeFrontmatter(preserved, {}, source);
     }
     let text: string;
     if (changedCheckboxKeys.size > 0 && source?.rawData && source.rawHead) {
@@ -919,20 +943,28 @@ export class VaultRepository implements WorkspaceRepository {
       }
       text = updated;
     } else {
-      text = renderPageText(frontmatter, source, body);
+      try {
+        text = renderPageText(frontmatter, source, body);
+      } catch (error) {
+        if (error instanceof UnsafeFrontmatterUpdateError) {
+          throw new WorkspaceWriteError('unsafe-frontmatter', error.message, false);
+        }
+        throw error;
+      }
     }
-    // the next save starts from what this one wrote, so keys added in morrow keep their spelling and order
+    let writtenSource: PageSource | null = null;
     if (source) {
       const written = splitFrontmatter(text);
-      this.sources.set(id, {
+      // Keep this candidate local until its corresponding file write succeeds.
+      writtenSource = {
         ...source,
         keyOrder: Object.keys(written.data ?? {}),
         rawData: written.data,
         rawHead: written.head,
         rawYaml: written.yaml,
-      });
+      };
     }
-    return text;
+    return { text, source: writtenSource };
   }
 
   // carries out the operations and keeps track of what reached the disk, even when something fails halfway
@@ -940,12 +972,13 @@ export class VaultRepository implements WorkspaceRepository {
     ops: VaultOp[],
     next: Map<PageId, Placement>,
     guardedLinkedViewPages: ReadonlySet<PageId>,
+    plannedSources: ReadonlyMap<PageId, PageSource>,
   ): Promise<void> {
     const started = Date.now();
     for (const op of ops) if (op.op === 'write') this.wroteAt.set(op.path.toLowerCase(), started);
     this.saving++;
     try {
-      await this.runOps(ops, next, guardedLinkedViewPages);
+      await this.runOps(ops, next, guardedLinkedViewPages, plannedSources);
     } finally {
       this.saving--;
       if (this.saving === 0 && this.held.length > 0) {
@@ -960,6 +993,7 @@ export class VaultRepository implements WorkspaceRepository {
     ops: VaultOp[],
     next: Map<PageId, Placement>,
     guardedLinkedViewPages: ReadonlySet<PageId>,
+    plannedSources: ReadonlyMap<PageId, PageSource>,
   ): Promise<void> {
     let pending = ops;
     const layout = new Map(this.layout);
@@ -968,7 +1002,7 @@ export class VaultRepository implements WorkspaceRepository {
       const results: VaultOpResult[] = await this.bridge.apply(pending);
       let failedAt = -1;
       for (let i = 0; i < results.length; i++) {
-        if (results[i]!.ok) this.applied(pending[i]!, layout, next);
+        if (results[i]!.ok) this.applied(pending[i]!, layout, next, plannedSources);
         else {
           failedAt = i;
           break;
@@ -1010,15 +1044,30 @@ export class VaultRepository implements WorkspaceRepository {
             false,
           );
         }
+        const currentSplit = failed.current === null ? null : splitFrontmatter(failed.current);
+        const ambiguousFrontmatter =
+          currentSplit !== null &&
+          currentSplit.head !== '' &&
+          currentSplit.error === null &&
+          currentSplit.data !== null &&
+          !isUnambiguousFrontmatter(currentSplit.yaml, currentSplit.data);
         const reason =
           failed.current === null
             ? null
             : (findUnrepresentablePageContent(failed.current) ??
-              splitFrontmatter(failed.current).error ??
+              currentSplit?.error ??
+              (ambiguousFrontmatter ? 'The current file contains ambiguous YAML frontmatter.' : null) ??
               (isEncryptedText(failed.current) ? 'The current file is encrypted.' : null));
         if (reason) {
           // Earlier renames in this same batch may already have moved the page; keep that layout fact.
           this.layout = layout;
+          if (ambiguousFrontmatter) {
+            throw new WorkspaceWriteError(
+              'unsafe-frontmatter',
+              'The external page now contains ambiguous YAML frontmatter. Its bytes and the staged edit were kept; history capture and automatic retry were skipped.',
+              false,
+            );
+          }
           throw new Error(
             `The page changed on disk and contains content this version cannot safely represent. It was left untouched: ${reason}`,
           );
@@ -1038,11 +1087,18 @@ export class VaultRepository implements WorkspaceRepository {
     this.layout = new Map(next);
   }
 
-  private applied(op: VaultOp, layout: Map<PageId, Placement>, next: Map<PageId, Placement>): void {
+  private applied(
+    op: VaultOp,
+    layout: Map<PageId, Placement>,
+    next: Map<PageId, Placement>,
+    plannedSources: ReadonlyMap<PageId, PageSource>,
+  ): void {
     switch (op.op) {
       case 'write':
         if (op.id) {
           this.texts.set(op.id, op.text);
+          const source = plannedSources.get(op.id);
+          if (source) this.sources.set(op.id, source);
           const plain = this.pendingPlain.get(op.id);
           if (plain !== undefined) {
             this.plainTexts.set(op.id, plain);

@@ -120,10 +120,12 @@ export function composeFrontmatter(
   managed: Map<string, unknown>,
   extra: Record<string, unknown>,
   source: PageSource | null,
+  page?: PageMeta,
 ): Record<string, unknown> {
   const keyOrder = source?.keyOrder ?? [];
   // morrow's own values win over other keys of the same name
   const values = new Map<string, unknown>(managed);
+  if (source?.rawHead && source.rawData && page) preserveEquivalentManagedValues(values, source, page);
   for (const [key, value] of Object.entries(extra)) if (!values.has(key)) values.set(key, value);
   // a key keeps the spelling its file already uses, so date stays date rather than turning into Date
   const spellings = new Map<string, string>();
@@ -140,6 +142,44 @@ export function composeFrontmatter(
   return out;
 }
 
+function preserveEquivalentManagedValues(
+  managed: Map<string, unknown>,
+  source: PageSource,
+  page: PageMeta,
+): void {
+  const original = readPageText(source.rawHead);
+  const candidateTitle = displayTitle(page);
+  const equivalent = [
+    {
+      keys: ['title'],
+      same: managed.has('title')
+        ? sameValue(original.title, managed.get('title'))
+        : original.title === null || sameValue(original.title, candidateTitle),
+    },
+    { keys: ['icon'], same: sameValue(original.icon, managed.get('icon') ?? null) },
+    { keys: ['cover'], same: sameValue(original.cover, validCover(managed.get('cover'))) },
+    { keys: ['kind'], same: sameValue(original.kind, managed.get('kind') ?? null) },
+    {
+      keys: ['tag', 'tags'],
+      same: sameValue(original.tags, readTags(managed.get('tags') ?? managed.get('tag'))),
+    },
+    {
+      keys: ['database'],
+      same: sameValue(
+        original.database,
+        managed.has('database') ? normalizeDatabase(managed.get('database')) : null,
+      ),
+    },
+  ];
+  for (const group of equivalent) {
+    if (!group.same) continue;
+    const originalKeys = group.keys.filter((key) => Object.hasOwn(source.rawData!, key));
+    if (originalKeys.length === 0) continue;
+    for (const key of group.keys) managed.delete(key);
+    for (const key of originalKeys) managed.set(key, source.rawData![key]);
+  }
+}
+
 export function renderPageText(
   frontmatter: Record<string, unknown>,
   source: PageSource | null,
@@ -147,11 +187,33 @@ export function renderPageText(
 ): string {
   if (source?.rawData && source.rawHead && sameValue(frontmatter, source.rawData))
     return source.rawHead + body;
+  if (source?.rawHead && source.rawData === null) {
+    if (Object.keys(frontmatter).length === 0) return source.rawHead + body;
+    throw new UnsafeFrontmatterUpdateError();
+  }
   if (source?.rawData && source.rawHead) {
-    const updated = updateFrontmatter(source.rawYaml, source.rawData, frontmatter, body);
+    const updated = updateFrontmatter(
+      source.rawYaml,
+      source.rawData,
+      frontmatter,
+      body,
+      new Set(),
+      new Set(),
+      true,
+    );
     if (updated !== null) return updated;
+    throw new UnsafeFrontmatterUpdateError();
   }
   return joinFrontmatter(frontmatter, body);
+}
+
+export class UnsafeFrontmatterUpdateError extends Error {
+  constructor() {
+    super(
+      'The page properties were not written because its YAML frontmatter cannot be changed without risking another value. No files were changed.',
+    );
+    this.name = 'UnsafeFrontmatterUpdateError';
+  }
 }
 
 export function writeProperty(prop: PropDef, value: PropValue | undefined, preserveNull = false): unknown {

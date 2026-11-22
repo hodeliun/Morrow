@@ -247,6 +247,155 @@ function sourceFiles(row = NORMAL_ROW, extraFiles: Record<string, string> = {}):
   };
 }
 
+const ORDERED_NULL_DATABASE = `---
+kind: database
+database:
+  properties:
+    - id: estimate
+      name: Estimate
+      type: number
+    - id: due
+      name: Due
+      type: date
+    - id: owner
+      name: Owner
+      type: text
+  views:
+    - id: table
+      name: Table
+      type: table
+---
+# Inventory
+`;
+
+describe('ordinary database frontmatter preservation', () => {
+  it('keeps an absent null property in source order on unrelated edits without restoring a cleared value', async () => {
+    const original = `---
+Estimate: null
+Owner: "  Ursula  "
+vendorNote: keep this suffix
+---
+Original body.
+`;
+    const files = sourceFiles(original, { 'Inventory.md': ORDERED_NULL_DATABASE });
+    const bridge = await makeVault(withDiskRegistry(files));
+    const session = await open(bridge);
+    try {
+      const rowId = idAt(session, 'Inventory/Widget.md');
+      const originalHead = splitFrontmatter(original).head;
+      const editedDoc = {
+        type: 'doc' as const,
+        content: [
+          {
+            type: 'paragraph' as const,
+            content: [{ type: 'text' as const, text: 'Body edit' }],
+          },
+        ],
+      };
+      const bodyChange = session.execute({ type: 'page.setDoc', id: rowId, doc: editedDoc, now: 2 });
+      expect(bodyChange, JSON.stringify(bodyChange)).toMatchObject({ ok: true });
+      expect(await session.flush()).toBe(true);
+      expect(splitFrontmatter((await bridge.readText('Inventory/Widget.md'))!).head).toBe(originalHead);
+
+      expect(session.execute({ type: 'page.setIcon', id: rowId, icon: '📌', now: 3 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const iconWritten = await bridge.readText('Inventory/Widget.md');
+      const iconRaw = parse(splitFrontmatter(iconWritten!).yaml) as Record<string, unknown>;
+      expect(iconRaw.Estimate).toBeNull();
+      expect(iconRaw.Owner).toBe('  Ursula  ');
+      expect(iconWritten!.indexOf('Estimate: null')).toBeLessThan(iconWritten!.indexOf('Owner:'));
+      expect(iconWritten).toContain('vendorNote: keep this suffix');
+      expect(iconWritten).toContain('icon: 📌');
+
+      expect(
+        session.execute({ type: 'page.setProperties', id: rowId, values: { owner: null }, now: 4 }).ok,
+      ).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const cleared = await bridge.readText('Inventory/Widget.md');
+      const clearedRaw = parse(splitFrontmatter(cleared!).yaml) as Record<string, unknown>;
+      expect(clearedRaw.Estimate).toBeNull();
+      expect(Object.hasOwn(clearedRaw, 'Owner')).toBe(false);
+      expect(cleared).toContain('vendorNote: keep this suffix');
+    } finally {
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite edits to invalid number and date extras through page.setFields and reopen', async () => {
+    const original = `---
+Estimate: TBD
+Due: TBD
+Owner: "  Ursula  "
+vendorNote: keep this suffix
+---
+Invalid schema values.
+`;
+    const bridge = await makeVault(
+      withDiskRegistry(sourceFiles(original, { 'Inventory.md': ORDERED_NULL_DATABASE })),
+    );
+    let session: WorkspaceSession | undefined = await open(bridge);
+    try {
+      const rowId = idAt(session, 'Inventory/Widget.md');
+      expect(session.getState().pages[rowId]!.extra.Estimate).toBe('TBD');
+      expect(session.getState().pages[rowId]!.extra.Due).toBe('TBD');
+      expect(Object.hasOwn(session.getState().pages[rowId]!.properties, 'estimate')).toBe(false);
+      expect(Object.hasOwn(session.getState().pages[rowId]!.properties, 'due')).toBe(false);
+
+      expect(
+        session.execute({
+          type: 'page.setFields',
+          id: rowId,
+          properties: { owner: 'Ursula' },
+          extra: { Estimate: 'pending', Due: 'next week', vendorNote: 'keep this suffix' },
+          now: 2,
+        }).ok,
+      ).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const replaced = await bridge.readText('Inventory/Widget.md');
+      const replacedRaw = parse(splitFrontmatter(replaced!).yaml) as Record<string, unknown>;
+      expect(replacedRaw.Estimate).toBe('pending');
+      expect(replacedRaw.Due).toBe('next week');
+      expect(replaced).toContain('vendorNote: keep this suffix');
+
+      await session.close();
+      session = await open(bridge);
+      const reopenedId = idAt(session, 'Inventory/Widget.md');
+      expect(session.getState().pages[reopenedId]!.extra.Estimate).toBe('pending');
+      expect(session.getState().pages[reopenedId]!.extra.Due).toBe('next week');
+      expect(Object.hasOwn(session.getState().pages[reopenedId]!.properties, 'estimate')).toBe(false);
+      expect(Object.hasOwn(session.getState().pages[reopenedId]!.properties, 'due')).toBe(false);
+
+      expect(
+        session.execute({
+          type: 'page.setFields',
+          id: reopenedId,
+          properties: { owner: 'Ursula' },
+          extra: { vendorNote: 'keep this suffix' },
+          now: 3,
+        }).ok,
+      ).toBe(true);
+      expect(await session.flush()).toBe(true);
+      const removed = await bridge.readText('Inventory/Widget.md');
+      const removedRaw = parse(splitFrontmatter(removed!).yaml) as Record<string, unknown>;
+      expect(Object.hasOwn(removedRaw, 'Estimate')).toBe(false);
+      expect(Object.hasOwn(removedRaw, 'Due')).toBe(false);
+      expect(removed).toContain('vendorNote: keep this suffix');
+
+      await session.close();
+      session = await open(bridge);
+      const finalId = idAt(session, 'Inventory/Widget.md');
+      expect(Object.hasOwn(session.getState().pages[finalId]!.properties, 'estimate')).toBe(false);
+      expect(Object.hasOwn(session.getState().pages[finalId]!.properties, 'due')).toBe(false);
+      expect(Object.hasOwn(session.getState().pages[finalId]!.extra, 'Estimate')).toBe(false);
+      expect(Object.hasOwn(session.getState().pages[finalId]!.extra, 'Due')).toBe(false);
+    } finally {
+      await session?.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+});
+
 function withDiskRegistry(files: Record<string, string>): Record<string, string> {
   const orderByParent = new Map<string, number>();
   const pages = Object.fromEntries(
@@ -325,6 +474,70 @@ function rowOf(snapshot: ReturnType<typeof ready>, rowId: string) {
 }
 
 describe('Polaris Dados exact opt-in text storage', () => {
+  it('keeps equivalent tagged values and aliases on body and icon edits', async () => {
+    const original = `---
+Message: "  opening  "
+Quantity: !!str 2
+Flag: true
+tag: &topic alpha
+mirror: *topic
+---
+Original body.
+`;
+    const bridge = await makeVault(withDiskRegistry(sourceFiles(original)));
+    let nextId = 0;
+    const repository = new VaultRepository(bridge, () => `tagged-${++nextId}`);
+    const opened = await WorkspaceSession.open(repository, { delayMs: 60_000 });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    try {
+      const rowId = idAt(session, 'Inventory/Widget.md');
+      const originalHead = splitFrontmatter(original).head;
+      const editedDoc = {
+        type: 'doc' as const,
+        content: [
+          {
+            type: 'paragraph' as const,
+            content: [{ type: 'text' as const, text: 'Body edit' }],
+          },
+        ],
+      };
+      // Session commands intentionally reject body/icon edits on opted-in rows; exercise the real
+      // file repository boundary directly while leaving that host data API guard unchanged.
+      const initialState = session.getState();
+      const bodyState = { ...initialState, docs: { ...initialState.docs, [rowId]: editedDoc } };
+      await repository.write({
+        pages: [],
+        docs: [{ id: rowId, doc: editedDoc }],
+        removed: [],
+        state: bodyState,
+      });
+      const bodyWritten = await bridge.readText('Inventory/Widget.md');
+      expect(splitFrontmatter(bodyWritten!).head).toBe(originalHead);
+
+      const updatedPage = { ...bodyState.pages[rowId]!, icon: '📌', updatedAt: 3 };
+      const iconState = {
+        ...bodyState,
+        pages: { ...bodyState.pages, [rowId]: updatedPage },
+      };
+      await repository.write({ pages: [updatedPage], docs: [], removed: [], state: iconState });
+      const written = await bridge.readText('Inventory/Widget.md');
+      const raw = parse(splitFrontmatter(written!).yaml) as Record<string, unknown>;
+      expect(raw.Quantity).toBe('2');
+      expect(typeof raw.Quantity).toBe('string');
+      expect(raw.tag).toBe('alpha');
+      expect(raw.mirror).toBe('alpha');
+      expect(written).toContain('Quantity: !!str');
+      expect(written).toContain('tag: &topic alpha');
+      expect(written).toContain('mirror: *topic');
+      expect(written).toContain('icon: 📌');
+      expect(written).toContain('Body edit');
+    } finally {
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
   it('supports a text property ID of __proto__ through load, edit, undo, redo, flush, and reopen', async () => {
     const database = DATABASE.replace('id: message', 'id: __proto__');
     const vault = new MemoryVault({ ...sourceFiles(), 'Inventory.md': database });
@@ -1207,6 +1420,37 @@ describe('Polaris Dados exact opt-in text storage', () => {
 });
 
 describe('Polaris Dados checkbox host contract', () => {
+  it('writes false from an absent checkbox in a row with an empty YAML header', async () => {
+    const bridge = await makeVault(withDiskRegistry(sourceFiles()));
+    const session = await open(bridge);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Empty.md');
+    try {
+      const initial = ready(api.snapshot(databaseId));
+      expect(Object.hasOwn(rowOf(initial, rowId).properties, 'flag')).toBe(false);
+      expect(
+        api.patchCheckboxCell?.({
+          databaseId,
+          rowId,
+          propertyId: 'flag',
+          value: false,
+          expectedRevision: initial.revision,
+        }),
+      ).toMatchObject({ status: 'staged' });
+      expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+
+      const written = await bridge.readText('Inventory/Empty.md');
+      const raw = parse(splitFrontmatter(written!).yaml) as Record<string, unknown>;
+      expect(raw.Flag).toBe(false);
+      expect(typeof raw.Flag).toBe('boolean');
+    } finally {
+      cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
   it('undoes a checkbox added to a body-only row back to its exact original bytes', async () => {
     const original = 'Body only checkbox row.\n';
     const bridge = await makeVault(
@@ -1719,6 +1963,44 @@ Tagged untouched schema value.
       expect(written).toContain('Quantity: !!str 2');
     } finally {
       cleanup();
+      await session.close();
+      await rm(bridge.root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves normalized schema source values during an unrelated page metadata edit', async () => {
+    const row = `---
+Message: "  opening  "
+Quantity: !!str 2
+Flag: true
+---
+Tagged untouched schema value.
+`;
+    const files = sourceFiles(row, {
+      'Inventory.md': DATABASE.replace(
+        'polarisDados:\n  version: 1\n  provider: polaris-dados\n',
+        '',
+      ),
+    });
+    const bridge = await makeVault(withDiskRegistry(files));
+    const session = await open(bridge);
+    try {
+      const rowId = idAt(session, 'Inventory/Widget.md');
+      const changed = session.execute({ type: 'page.setIcon', id: rowId, icon: '📌', now: 2 });
+      expect(changed.ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+
+      const written = await bridge.readText('Inventory/Widget.md');
+      const raw = parse(splitFrontmatter(written!).yaml) as Record<string, unknown>;
+      expect(raw.Message).toBe('  opening  ');
+      expect(raw.Quantity).toBe('2');
+      expect(typeof raw.Quantity).toBe('string');
+      expect(raw.Flag).toBe(true);
+      expect(written).toContain('Message: "  opening  "');
+      expect(written).toContain('Quantity: !!str');
+      expect(written).toContain('Flag: true');
+      expect(written).toContain('icon: 📌');
+    } finally {
       await session.close();
       await rm(bridge.root, { recursive: true, force: true });
     }
