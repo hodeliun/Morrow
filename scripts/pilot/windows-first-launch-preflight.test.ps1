@@ -217,6 +217,51 @@ function New-TestFakeJobSessionFactory([bool] $LeaveMember, [int] $ObservationDe
   return $factory.GetNewClosure()
 }
 
+function Get-TestLauncherCheckOnlyJson([string] $StateStatus = 'new') {
+  return ConvertTo-Json -InputObject ([ordered]@{
+    status = 'passed'
+    appLaunched = $false
+    stateWritten = $false
+    packageVerified = $true
+    childEnvironmentConfigured = $true
+    childEnvironmentPathsArePilotStateChildren = $true
+    stateStatus = $StateStatus
+  }) -Depth 4 -Compress
+}
+
+function New-TestFakeLauncherJobSessionFactory([string] $LauncherOutputJson, [string] $Mode = 'success', [scriptblock] $Action) {
+  $state = [pscustomobject]@{ Request = $null; Launch = $null; SessionState = $null; Mode = $Mode }
+  $factory = {
+    param($Launch)
+    $state.Launch = $Launch
+    $request = ConvertFrom-Json -InputObject ([Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($Launch.requestPath))) `
+      -AsHashtable -NoEnumerate -DateKind String
+    $state.Request = $request
+    if ($null -ne $Action) { & $Action $request }
+    $timedOut = $Mode -ceq 'timeout'
+    $outputLimitExceeded = $Mode -ceq 'output-limit'
+    $exitCode = if ($Mode -ceq 'exit') { 7 } else { 0 }
+    $stderr = if ($Mode -ceq 'stderr') { 'unexpected diagnostic' } else { '' }
+    $receipt = [ordered]@{
+      schema = 'morrow.e003.g23.process-result.v1'
+      requestId = [string]$request.requestId
+      stageOwnerToken = [string]$request.stageOwnerToken
+      exitCode = $exitCode
+      stdout = $LauncherOutputJson
+      stderr = $stderr
+      timedOut = $timedOut
+      outputLimitExceeded = $outputLimitExceeded
+    }
+    $receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $receipt -Depth 5 -Compress))
+    Write-FirstLaunchNewFile $Launch.resultPath $receiptBytes
+    $sessionState = [MorrowFirstLaunchTest.FakeJobState]::new($false, 0, 0)
+    [MorrowFirstLaunchTest.FakeJobStateSlot]::Current = $sessionState
+    $state.SessionState = $sessionState
+    return [MorrowFirstLaunchTest.FakeWindowsJobSession]::new($sessionState)
+  }.GetNewClosure()
+  return [pscustomobject]@{ Callback = $factory; State = $state }
+}
+
 function Copy-TestCandidate {
   $json = ConvertTo-Json -InputObject (Get-FirstLaunchPins) -Depth 16 -Compress
   return (ConvertFrom-Json -InputObject $json -AsHashtable -DateKind String)
@@ -672,6 +717,61 @@ process.stdout.write(checked.binding.stage.schema);
   $process.Dispose()
   if ($exitCode -ne 0 -or $outText -cne 'morrow.e003.g15.first-launch-stage.v1') {
     throw "The generated Stage DTO failed the independent Node gate validator: $errText $outText"
+  }
+}
+
+function Assert-CheckOnlyReceiptAcceptedByGate([string] $StagePath, [string] $ReceiptPath, [string] $Workspace) {
+  $node = (Get-Command node -ErrorAction Stop).Source
+  $inline = @'
+import { readFileSync } from 'node:fs';
+import { createBinding, WINDOWS_FIRST_LAUNCH_GATE } from './scripts/pilot/windows-first-launch-gate.mjs';
+const stagePath = process.argv[1];
+const receiptPath = process.argv[2];
+const workspacePath = process.argv[3];
+const stageBytes = readFileSync(stagePath);
+const receiptBytes = readFileSync(receiptPath);
+const stage = JSON.parse(stageBytes.toString('utf8'));
+const receipt = JSON.parse(receiptBytes.toString('utf8'));
+const context = {
+  ...stage.gate,
+  runner: { os: stage.runner.os, arch: stage.runner.arch, tempRoot: stage.runner.tempRoot, workspace: 'C:\\morrow\\checkout' },
+};
+const sourceHashes = WINDOWS_FIRST_LAUNCH_GATE.sourcePaths.map((filePath, index) => ({
+  path: filePath, sha256: String(index + 1).padStart(64, '0'), sizeBytes: 10 + index,
+}));
+const checked = createBinding({
+  context, sourceHashes, stageBytes, checkOnlyReceiptBytes: receiptBytes,
+  now: Date.parse(receipt.checkedAtUtc) + 1000,
+});
+if (checked.binding.checkOnlyReceipt.sha256 !== (await import('node:crypto')).createHash('sha256').update(receiptBytes).digest('hex')) {
+  throw new Error('CheckOnly receipt digest differs from its exact input bytes.');
+}
+process.stdout.write(checked.binding.checkOnlyReceipt.schema);
+'@
+  $start = [Diagnostics.ProcessStartInfo]::new()
+  $start.FileName = $node
+  $start.WorkingDirectory = $Workspace
+  $start.UseShellExecute = $false
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  [void]$start.ArgumentList.Add('--input-type=module')
+  [void]$start.ArgumentList.Add('-e')
+  [void]$start.ArgumentList.Add($inline)
+  [void]$start.ArgumentList.Add($StagePath)
+  [void]$start.ArgumentList.Add($ReceiptPath)
+  [void]$start.ArgumentList.Add($Workspace)
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $start
+  if (-not $process.Start()) { throw 'The CheckOnly receipt gate validator did not start.' }
+  $stdout = $process.StandardOutput.ReadToEndAsync()
+  $stderr = $process.StandardError.ReadToEndAsync()
+  if (-not $process.WaitForExit(30000)) { try { $process.Kill($true) } catch {}; throw 'The CheckOnly receipt gate validator exceeded its test deadline.' }
+  $outText = $stdout.GetAwaiter().GetResult()
+  $errText = $stderr.GetAwaiter().GetResult()
+  $exitCode = $process.ExitCode
+  $process.Dispose()
+  if ($exitCode -ne 0 -or $outText -cne 'morrow.e003.g15.first-launch-check-only-receipt.v1') {
+    throw "The generated CheckOnly receipt failed the Node gate validator: $errText $outText"
   }
 }
 
@@ -1223,6 +1323,34 @@ try {
       -WorkingDirectory $root -Environment $nativeEnvironment -TimeoutMs 5000 -MaximumOutputBytes 256 -ProcessRunner $nativeProcessRunner
   }
   Assert-True ($outputLimitClock.Elapsed.TotalSeconds -lt 3) 'native output-limit termination and cleanup are bounded'
+  $unrelatedChildPidPath = Join-Path $root 'unrelated-child.pid'
+  $unrelatedEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($environmentKey in $nativeEnvironment.Keys) { $unrelatedEnvironment[[string]$environmentKey] = [string]$nativeEnvironment[$environmentKey] }
+  $unrelatedEnvironment['MORROW_TEST_UNRELATED_PID_FILE'] = $unrelatedChildPidPath
+  $unrelatedStart = [Diagnostics.ProcessStartInfo]::new()
+  $unrelatedStart.FileName = $nativePwsh
+  $unrelatedStart.WorkingDirectory = $root
+  $unrelatedStart.UseShellExecute = $false
+  $unrelatedStart.CreateNoWindow = $true
+  $unrelatedStart.Environment.Clear()
+  foreach ($environmentKey in $unrelatedEnvironment.Keys) { $unrelatedStart.Environment[[string]$environmentKey] = [string]$unrelatedEnvironment[$environmentKey] }
+  [void]$unrelatedStart.ArgumentList.Add('-NoLogo')
+  [void]$unrelatedStart.ArgumentList.Add('-NoProfile')
+  [void]$unrelatedStart.ArgumentList.Add('-NonInteractive')
+  [void]$unrelatedStart.ArgumentList.Add('-Command')
+  [void]$unrelatedStart.ArgumentList.Add('[IO.File]::WriteAllText($env:MORROW_TEST_UNRELATED_PID_FILE, [string]$PID); Start-Sleep -Seconds 30')
+  $unrelatedChild = [Diagnostics.Process]::new()
+  $unrelatedChild.StartInfo = $unrelatedStart
+  if (-not $unrelatedChild.Start()) { throw 'The unrelated benign process fixture did not start.' }
+  try {
+    $unrelatedReadyClock = [Diagnostics.Stopwatch]::StartNew()
+    while (-not [IO.File]::Exists($unrelatedChildPidPath) -and $unrelatedReadyClock.Elapsed.TotalSeconds -lt 5) {
+      Start-Sleep -Milliseconds 10
+      $unrelatedChild.Refresh()
+      if ($unrelatedChild.HasExited) { break }
+    }
+    Assert-True ([IO.File]::Exists($unrelatedChildPidPath) -and -not $unrelatedChild.HasExited) `
+      'unrelated benign child is established before the bounded timeout fixture'
   $timeoutClock = [Diagnostics.Stopwatch]::StartNew()
   $timeoutChildPidPath = Join-Path $root 'timeout-child.pid'
   $nativeEnvironment['MORROW_TEST_PID_FILE'] = $timeoutChildPidPath
@@ -1264,6 +1392,18 @@ try {
   Assert-True ([IO.File]::Exists($timeoutChildPidPath)) 'native deadline fixture published its owned child PID before timeout'
   Assert-True ($timeoutClock.Elapsed.TotalSeconds -lt 8) 'native process exit and pipe-drain timeout cleanup have a bounded tail'
   Assert-True ($timeoutChildStopped) "native deadline termination leaves no owned sleeping PowerShell child ($timeoutChildState)"
+    $unrelatedChild.Refresh()
+    Assert-True (-not $unrelatedChild.HasExited) 'native bounded termination preserves an unrelated benign process'
+  } finally {
+    try {
+      $unrelatedChild.Refresh()
+      if (-not $unrelatedChild.HasExited) {
+        $unrelatedChild.Kill($true)
+        [void]$unrelatedChild.WaitForExit(2000)
+      }
+    } catch { }
+    $unrelatedChild.Dispose()
+  }
   $stageOwnerParent = Join-Path $root 'stage-owner-lifecycle'
   [void][IO.Directory]::CreateDirectory($stageOwnerParent)
   foreach ($failedPhase in @('package', 'registry', 'cargo', 'edge')) {
@@ -1429,6 +1569,55 @@ try {
   }
   $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
   Assert-StageAcceptedByGate $stagePath $projectRoot
+  $checkOnlyRootForArgs = Join-Path $root 'private-check-only-command'
+  $checkOnlyLauncherForArgs = Join-Path (Join-Path $checkOnlyRootForArgs 'launcher') 'windows-launch.ps1'
+  $checkOnlyWorkForArgs = Join-Path $checkOnlyRootForArgs 'work'
+  $checkOnlyPackageForArgs = Join-Path $root 'pinned-package'
+  $testPowerShellPath = Join-Path $PSHOME 'pwsh'
+  if ([IO.Path]::DirectorySeparatorChar -eq '\') { $testPowerShellPath += '.exe' }
+  $closedCheckOnlyArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $checkOnlyLauncherForArgs,
+    '-PackagePath', $checkOnlyPackageForArgs, '-CheckOnly')
+  Assert-True (Assert-FirstLaunchCheckOnlyArgumentVector -Executable $testPowerShellPath `
+    -AuthorizedPowerShell $testPowerShellPath -Arguments $closedCheckOnlyArguments -PrivateRoot $checkOnlyRootForArgs `
+    -WorkingDirectory $checkOnlyWorkForArgs -LauncherPath $checkOnlyLauncherForArgs -PackageRoot $checkOnlyPackageForArgs) `
+    'CheckOnly process contract accepts only the fixed PowerShell and package command vector'
+  foreach ($argumentMutation in @(
+      [pscustomobject]@{ Name = 'missing CheckOnly'; Index = 7; Value = '-NoExit' },
+      [pscustomobject]@{ Name = 'alternate launcher'; Index = 4; Value = (Join-Path $root 'untrusted.ps1') },
+      [pscustomobject]@{ Name = 'alternate package'; Index = 6; Value = (Join-Path $root 'other-package') }
+    )) {
+    $mutatedArguments = [string[]]$closedCheckOnlyArguments.Clone()
+    $mutatedArguments[$argumentMutation.Index] = [string]$argumentMutation.Value
+    Assert-Throws "CheckOnly process contract rejects $($argumentMutation.Name)" {
+      Assert-FirstLaunchCheckOnlyArgumentVector -Executable $testPowerShellPath `
+        -AuthorizedPowerShell $testPowerShellPath -Arguments $mutatedArguments -PrivateRoot $checkOnlyRootForArgs `
+        -WorkingDirectory $checkOnlyWorkForArgs -LauncherPath $checkOnlyLauncherForArgs -PackageRoot $checkOnlyPackageForArgs
+    }
+  }
+  $validLauncherProcessResult = [pscustomobject]@{
+    ExitCode = 0; StdOut = (Get-TestLauncherCheckOnlyJson) + "`r`n"; StdErr = ''; TimedOut = $false; OutputLimitExceeded = $false
+  }
+  $parsedLauncherResult = ConvertFrom-FirstLaunchLauncherCheckOnlyOutput $validLauncherProcessResult
+  Assert-True ($parsedLauncherResult.status -ceq 'passed' -and $parsedLauncherResult.stateStatus -ceq 'new' -and
+    $parsedLauncherResult.childEnvironmentPathsArePilotStateChildren -eq $true) 'strict parser accepts the official CheckOnly stdout shape with Windows line ending'
+  foreach ($launcherOutputCase in @(
+      [pscustomobject]@{ Name = 'duplicate JSON key'; StdOut = '{"status":"passed","status":"passed"}' + "`n"; StdErr = ''; ExitCode = 0 },
+      [pscustomobject]@{ Name = 'case-alias key'; StdOut = '{"status":"passed","Status":"passed"}' + "`n"; StdErr = ''; ExitCode = 0 },
+      [pscustomobject]@{ Name = 'extra output line'; StdOut = (Get-TestLauncherCheckOnlyJson) + "`nextra`n"; StdErr = ''; ExitCode = 0 },
+      [pscustomobject]@{ Name = 'unexpected field'; StdOut = (Get-TestLauncherCheckOnlyJson).Replace('"stateStatus"', '"extra":false,"stateStatus"') + "`n"; StdErr = ''; ExitCode = 0 },
+      [pscustomobject]@{ Name = 'owned PilotState'; StdOut = (Get-TestLauncherCheckOnlyJson 'owned') + "`n"; StdErr = ''; ExitCode = 0 },
+      [pscustomobject]@{ Name = 'stderr output'; StdOut = (Get-TestLauncherCheckOnlyJson) + "`n"; StdErr = 'warning'; ExitCode = 0 },
+      [pscustomobject]@{ Name = 'nonzero exit'; StdOut = (Get-TestLauncherCheckOnlyJson) + "`n"; StdErr = ''; ExitCode = 9 },
+      [pscustomobject]@{ Name = 'missing final newline'; StdOut = Get-TestLauncherCheckOnlyJson; StdErr = ''; ExitCode = 0 }
+    )) {
+    $badLauncherResult = [pscustomobject]@{
+      ExitCode = [int]$launcherOutputCase.ExitCode; StdOut = [string]$launcherOutputCase.StdOut
+      StdErr = [string]$launcherOutputCase.StdErr; TimedOut = $false; OutputLimitExceeded = $false
+    }
+    Assert-Throws "strict launcher output rejects $($launcherOutputCase.Name)" {
+      ConvertFrom-FirstLaunchLauncherCheckOnlyOutput $badLauncherResult
+    }
+  }
   $badStageIdentity = New-TestStageIdentity
   $badStageIdentity.gate.gateRunId = '44961916968'
   Assert-Throws 'Stage DTO rejects gate run aliasing the candidate build run' {
@@ -1499,6 +1688,20 @@ try {
   }.GetNewClosure()
   $stageBefore = [IO.File]::ReadAllBytes((Join-Path $sealedFixture.stageRoot 'stage.json'))
   $verifiedInputs = & $invokeSealedInputs
+  Assert-True (-not (Test-FirstLaunchCheckOnlyKnownFolderBackingSupplied)) `
+    'an omitted optional string backing argument is treated as absent rather than as a test seam'
+  Assert-True (-not (Test-FirstLaunchCheckOnlyKnownFolderBackingSupplied '  ') -and
+    (Test-FirstLaunchCheckOnlyKnownFolderBackingSupplied $root)) `
+    'Known Folder backing detection accepts only a nonblank explicit test root'
+  if ([IO.Path]::DirectorySeparatorChar -ne '\') {
+    $productionPlanInputs = Copy-FirstLaunchValue $verifiedInputs
+    $productionPlanInputs.candidateBuild = Get-FirstLaunchCandidateBuildDto
+    $productionRootPlanError = $null
+    try { [void](Get-FirstLaunchCheckOnlyRootPlan -Inputs $productionPlanInputs) }
+    catch { $productionRootPlanError = [string]$_.Exception.Message }
+    Assert-True ($productionRootPlanError -ceq 'CheckOnly execution requires the exact Windows RUNNER_TEMP backing directory.') `
+      'omitted test backing follows the production path to its explicit platform guard'
+  }
   $expectedProfileRoot = 'C:\runner\_temp\' + $sealedFixture.profileBaseName + '\profile'
   Assert-True ($verifiedInputs.schema -ceq 'morrow.e003.g23.check-only-inputs.v1' -and $verifiedInputs.status -ceq 'verified' -and
     $verifiedInputs.stage.sha256 -ceq (Get-TestSha256 $stageBefore) -and $verifiedInputs.stage.sizeBytes -eq $stageBefore.LongLength) 'CheckOnly input pass binds the exact Stage bytes without returning them'
@@ -1592,6 +1795,112 @@ try {
   try { Assert-Throws 'Stage gate identity must match the current immutable run context' { & $invokeSealedInputs } }
   finally { [IO.File]::WriteAllBytes($stageOriginalPath, $stageOriginalBytes) }
   Assert-True ((Get-TestSha256 ([IO.File]::ReadAllBytes($stageOriginalPath))) -ceq (Get-TestSha256 $stageBefore)) 'failed verification leaves Stage bytes unchanged after fixture restoration'
+
+  $knownFolderBacking = Join-Path $sealedFixtureRoot 'check-only-known-folder-fixture'
+  $localKnownFolderBacking = Join-Path $knownFolderBacking 'local'
+  $roamingKnownFolderBacking = Join-Path $knownFolderBacking 'roaming'
+  [void][IO.Directory]::CreateDirectory($localKnownFolderBacking)
+  [void][IO.Directory]::CreateDirectory($roamingKnownFolderBacking)
+  $launcherJob = New-TestFakeLauncherJobSessionFactory ((Get-TestLauncherCheckOnlyJson) + "`r`n")
+  $checkOnlyResult = Invoke-FirstLaunchCheckOnlyCore -Inputs $verifiedInputs -JobSessionFactory $launcherJob.Callback `
+    -CheckOnlyInputsProvider $invokeSealedInputs -TestFileSystemTempRoot $sealedFixtureRoot `
+    -TestKnownFolderBackingRoot $knownFolderBacking
+  $checkOnlyReceiptKeys = @($checkOnlyResult.Receipt.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive) -join ','
+  Assert-True ($launcherJob.State.Request.role -ceq 'launcher-check-only' -and
+    $launcherJob.State.Request.timeoutMs -eq $script:FirstLaunchCheckOnlyTimeoutMs -and
+    $launcherJob.State.Request.maximumOutputBytes -eq $script:FirstLaunchCheckOnlyOutputBytes -and
+    $launcherJob.State.Request.expectedLauncherSha256 -ceq $sealedFixture.candidate.package.launcherSha256 -and
+    $launcherJob.State.Request.expectedExecutableSha256 -match '\A[0-9a-f]{64}\z') 'CheckOnly Job request binds the pinned copied launcher and authorized PowerShell host under fixed bounds'
+  Assert-True ($launcherJob.State.Request.arguments.Count -eq 8 -and
+    $launcherJob.State.Request.arguments[0] -ceq '-NoLogo' -and $launcherJob.State.Request.arguments[1] -ceq '-NoProfile' -and
+    $launcherJob.State.Request.arguments[2] -ceq '-NonInteractive' -and $launcherJob.State.Request.arguments[3] -ceq '-File' -and
+    $launcherJob.State.Request.arguments[4] -ceq $launcherJob.State.Request.launcherPath -and
+    $launcherJob.State.Request.arguments[5] -ceq '-PackagePath' -and
+    $launcherJob.State.Request.arguments[6] -ceq $verifiedInputs.package.root -and
+    $launcherJob.State.Request.arguments[7] -ceq '-CheckOnly' -and
+    @($launcherJob.State.Request.environment.Keys | Where-Object { $_ -match '^(?i:GITHUB_|ACTIONS_|TOKEN|SECRET|PASSWORD|CREDENTIAL)' }).Count -eq 0) `
+    'CheckOnly Job request has the exact official argument vector and no credential-bearing target environment'
+  Assert-True ($checkOnlyReceiptKeys -ceq 'candidateBuild,checkedAtUtc,driverHashes,executionPhase,gate,identity,knownFolders,noLaunch,pinsVerified,profiles,purpose,schema,stageSha256,status,webView2RuntimeVersion' -and
+    $checkOnlyResult.Receipt.schema -ceq 'morrow.e003.g15.first-launch-check-only-receipt.v1' -and
+    $checkOnlyResult.Receipt.status -ceq 'passed' -and $checkOnlyResult.Receipt.pinsVerified -eq $true -and
+    $checkOnlyResult.Receipt.stageSha256 -ceq $verifiedInputs.stage.sha256 -and
+    $checkOnlyResult.ReceiptSha256 -ceq (Get-TestSha256 $checkOnlyResult.ReceiptBytes) -and
+    $checkOnlyResult.Receipt.noLaunch.appLaunched -eq $false) 'successful CheckOnly emits the exact closed #248 receipt bound to Stage and remeasured drivers'
+  $checkOnlyOwnedRoot = [string]$launcherJob.State.Request.stageRoot
+  Assert-True (-not [IO.Directory]::Exists($checkOnlyOwnedRoot) -and -not [IO.File]::Exists($checkOnlyOwnedRoot + '.claim') -and
+    (Get-TestSha256 ([IO.File]::ReadAllBytes($stageOriginalPath))) -ceq (Get-TestSha256 $stageBefore) -and
+    -not [IO.Directory]::Exists((Join-Path $sealedFixtureRoot $sealedFixture.profileBaseName)) -and
+    -not [IO.Directory]::Exists((Join-Path $localKnownFolderBacking 'app.morrow.polaris-dados-pilot')) -and
+    -not [IO.Directory]::Exists((Join-Path $roamingKnownFolderBacking 'app.morrow.polaris-dados-pilot')) -and
+    -not [IO.Directory]::Exists((Join-Path $sealedFixture.stageRoot 'package/PilotState'))) `
+    'successful CheckOnly removes only its temporary claimed root and preserves sealed Stage, profiles, PilotState, and Known Folders'
+  Assert-True ($launcherJob.State.SessionState.ResumeCount -eq 1 -and $launcherJob.State.SessionState.ObserveCount -eq 1 -and
+    $launcherJob.State.SessionState.MemberQueries -eq 1 -and $launcherJob.State.SessionState.StopCount -eq 0 -and
+    $launcherJob.State.SessionState.DisposeCount -eq 1) 'successful CheckOnly waits for the exact owned Job to drain before cleanup'
+
+  $gateAcceptedStageBytes = [IO.File]::ReadAllBytes($stagePath)
+  $gateProfileRoot = 'C:\runner\_temp\morrow-issue-187-' + $stageIdentity.gate.sourceSha + '-' + $stageIdentity.gate.gateRunId + '-1\profile'
+  $gateReceiptInputs = [ordered]@{
+    gate = [ordered]@{ sourceSha = $stageIdentity.gate.sourceSha; gateRunId = $stageIdentity.gate.gateRunId; gateRunAttempt = $stageIdentity.gate.gateRunAttempt }
+    candidateBuild = $stageDto.candidateBuild
+    stage = [ordered]@{ path = $stagePath; sizeBytes = [long]$gateAcceptedStageBytes.LongLength; sha256 = Get-TestSha256 $gateAcceptedStageBytes }
+    tools = [ordered]@{
+      tauriDriver = [ordered]@{ sha256 = [string]$stageDto.drivers.tauriDriver.executableSha256 }
+      edgeDriver = [ordered]@{ executableSha256 = [string]$stageDto.drivers.edgeDriver.executableSha256 }
+    }
+    webView2RuntimeVersion = [string]$stageDto.webView2Runtime.version
+    identity = [ordered]@{ sid = 'S-1-5-21-100-200-300-1001' }
+    knownFolders = [ordered]@{ localAppData = 'C:\Users\runneradmin\AppData\Local'; roamingAppData = 'C:\Users\runneradmin\AppData\Roaming' }
+    profiles = [ordered]@{
+      root = $gateProfileRoot
+      morrowUserData = $gateProfileRoot + '\MorrowUserData'
+      webView2UserData = $gateProfileRoot + '\WebView2UserData'
+    }
+  }
+  $gateNodeReceipt = New-FirstLaunchCheckOnlyReceipt -Inputs $gateReceiptInputs -CheckedAtUtc (Get-FirstLaunchUtcMilliseconds)
+  $gateNodeReceiptPath = Join-Path $root 'node-validated-check-only-receipt.json'
+  [IO.File]::WriteAllBytes($gateNodeReceiptPath, $gateNodeReceipt.receiptBytes)
+  Assert-CheckOnlyReceiptAcceptedByGate $stagePath $gateNodeReceiptPath $projectRoot
+  Assert-True ($gateNodeReceipt.receiptSha256 -ceq (Get-TestSha256 $gateNodeReceipt.receiptBytes) -and
+    $gateNodeReceipt.receipt.stageSha256 -ceq (Get-TestSha256 $gateAcceptedStageBytes)) `
+    'closed CheckOnly receipt bytes and Stage digest match the independent Node gate validator'
+
+  foreach ($checkOnlyFailure in @(
+      [pscustomobject]@{ Name = 'timeout'; Output = (Get-TestLauncherCheckOnlyJson) + "`n"; Mode = 'timeout' },
+      [pscustomobject]@{ Name = 'process failure'; Output = (Get-TestLauncherCheckOnlyJson) + "`n"; Mode = 'exit' },
+      [pscustomobject]@{ Name = 'output cap'; Output = (Get-TestLauncherCheckOnlyJson) + "`n"; Mode = 'output-limit' },
+      [pscustomobject]@{ Name = 'unexpected stderr'; Output = (Get-TestLauncherCheckOnlyJson) + "`n"; Mode = 'stderr' },
+      [pscustomobject]@{ Name = 'launcher output mutation'; Output = (Get-TestLauncherCheckOnlyJson) + "`nextra`n"; Mode = 'success' }
+    )) {
+    $failingLauncherJob = New-TestFakeLauncherJobSessionFactory $checkOnlyFailure.Output $checkOnlyFailure.Mode
+    Assert-Throws "CheckOnly rejects $($checkOnlyFailure.Name) without a receipt" {
+      Invoke-FirstLaunchCheckOnlyCore -Inputs $verifiedInputs -JobSessionFactory $failingLauncherJob.Callback `
+        -CheckOnlyInputsProvider $invokeSealedInputs -TestFileSystemTempRoot $sealedFixtureRoot `
+        -TestKnownFolderBackingRoot $knownFolderBacking
+    }
+    $failedPrivateRoot = [string]$failingLauncherJob.State.Request.stageRoot
+    Assert-True (-not [IO.Directory]::Exists($failedPrivateRoot) -and -not [IO.File]::Exists($failedPrivateRoot + '.claim') -and
+      -not [IO.Directory]::Exists((Join-Path $sealedFixtureRoot $sealedFixture.profileBaseName)) -and
+      (Get-TestSha256 ([IO.File]::ReadAllBytes($stageOriginalPath))) -ceq (Get-TestSha256 $stageBefore)) `
+      "failed CheckOnly $($checkOnlyFailure.Name) cleans its exact root and preserves the Stage and planned profile state"
+  }
+
+  $foreignPilotPath = Join-Path $localKnownFolderBacking 'app.morrow.polaris-dados-pilot'
+  $foreignMutation = {
+    param($Request)
+    [void][IO.Directory]::CreateDirectory($foreignPilotPath)
+    [IO.File]::WriteAllText((Join-Path $foreignPilotPath 'foreign.txt'), 'preserve unrelated Known Folder bytes')
+  }.GetNewClosure()
+  $foreignMutationJob = New-TestFakeLauncherJobSessionFactory ((Get-TestLauncherCheckOnlyJson) + "`n") 'success' $foreignMutation
+  Assert-Throws 'CheckOnly detects an out-of-band pilot write under a Known Folder' {
+    Invoke-FirstLaunchCheckOnlyCore -Inputs $verifiedInputs -JobSessionFactory $foreignMutationJob.Callback `
+      -CheckOnlyInputsProvider $invokeSealedInputs -TestFileSystemTempRoot $sealedFixtureRoot `
+      -TestKnownFolderBackingRoot $knownFolderBacking
+  }
+  Assert-True ([IO.File]::ReadAllText((Join-Path $foreignPilotPath 'foreign.txt')) -ceq 'preserve unrelated Known Folder bytes' -and
+    -not [IO.Directory]::Exists([string]$foreignMutationJob.State.Request.stageRoot)) `
+    'CheckOnly cleanup preserves a foreign pilot-path mutation outside its exact claimed root'
+  [IO.Directory]::Delete($foreignPilotPath, $true)
 
   Write-Output "windows-first-launch-preflight passed $script:assertionCount assertions."
 } finally {

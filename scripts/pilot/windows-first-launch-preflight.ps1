@@ -105,6 +105,8 @@ $script:FirstLaunchMaxEdgeCatalogItems = 100000
 $script:FirstLaunchMaxEdgeArchiveBytes = 64MB
 $script:FirstLaunchEdgeProbeTimeoutMs = 15000
 $script:FirstLaunchEdgeProbeOutputBytes = 8192
+$script:FirstLaunchCheckOnlyTimeoutMs = 60000
+$script:FirstLaunchCheckOnlyOutputBytes = 16384
 $script:FirstLaunchCargoTimeoutMs = 900000
 $script:FirstLaunchCargoOutputBytes = 1MB
 $script:FirstLaunchStageOwnerMarkerName = '.morrow-e003-g23-stage-owner'
@@ -1932,9 +1934,12 @@ function Invoke-FirstLaunchBoundedProcess {
     [scriptblock] $ProcessRunner,
     [string] $StageRoot,
     [string] $StageOwnerToken,
-    [ValidateSet('cargo', 'edge-version')][string] $ProcessRole,
+    [ValidateSet('cargo', 'edge-version', 'launcher-check-only')][string] $ProcessRole,
     [scriptblock] $JobSessionFactory,
-    [string] $ExpectedExecutableSha256 = ''
+    [string] $ExpectedExecutableSha256 = '',
+    [string] $LauncherPath = '',
+    [string] $PackageRoot = '',
+    [string] $ExpectedLauncherSha256 = ''
   )
   $request = [pscustomobject]@{
     executable = $Executable
@@ -1943,6 +1948,11 @@ function Invoke-FirstLaunchBoundedProcess {
     environment = $Environment
     timeoutMs = $TimeoutMs
     maximumOutputBytes = $MaximumOutputBytes
+    role = $ProcessRole
+    expectedExecutableSha256 = $ExpectedExecutableSha256
+    launcherPath = $LauncherPath
+    packageRoot = $PackageRoot
+    expectedLauncherSha256 = $ExpectedLauncherSha256
   }
   if ($null -ne $ProcessRunner) {
     try { $result = & $ProcessRunner $request }
@@ -1961,7 +1971,8 @@ function Invoke-FirstLaunchBoundedProcess {
       $result = Invoke-FirstLaunchJobBoundedProcess -Executable $Executable -Arguments $Arguments `
         -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutMs $TimeoutMs `
         -MaximumOutputBytes $MaximumOutputBytes -StageRoot $StageRoot -StageOwnerToken $StageOwnerToken `
-        -ProcessRole $ProcessRole -JobSessionFactory $JobSessionFactory -ExpectedExecutableSha256 $ExpectedExecutableSha256
+        -ProcessRole $ProcessRole -JobSessionFactory $JobSessionFactory -ExpectedExecutableSha256 $ExpectedExecutableSha256 `
+        -LauncherPath $LauncherPath -PackageRoot $PackageRoot -ExpectedLauncherSha256 $ExpectedLauncherSha256
     } else {
       $runnerType = Get-FirstLaunchBoundedProcessType
       $result = $runnerType::Run(
@@ -2001,6 +2012,35 @@ function Assert-FirstLaunchPathBelowRoot {
   return $fullPath
 }
 
+function Assert-FirstLaunchCheckOnlyArgumentVector {
+  param(
+    [Parameter(Mandatory = $true)][string] $Executable,
+    [Parameter(Mandatory = $true)][string] $AuthorizedPowerShell,
+    [Parameter(Mandatory = $true)][string[]] $Arguments,
+    [Parameter(Mandatory = $true)][string] $PrivateRoot,
+    [Parameter(Mandatory = $true)][string] $WorkingDirectory,
+    [Parameter(Mandatory = $true)][string] $LauncherPath,
+    [Parameter(Mandatory = $true)][string] $PackageRoot
+  )
+  $expectedLauncher = Join-Path (Join-Path $PrivateRoot 'launcher') 'windows-launch.ps1'
+  $expectedWork = Join-Path $PrivateRoot 'work'
+  $expectedArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $expectedLauncher,
+    '-PackagePath', $PackageRoot, '-CheckOnly')
+  $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+  $argumentsValid = $Arguments.Count -eq $expectedArguments.Count
+  for ($argumentIndex = 0; $argumentsValid -and $argumentIndex -lt $expectedArguments.Count; $argumentIndex++) {
+    if ($Arguments[$argumentIndex] -cne $expectedArguments[$argumentIndex]) { $argumentsValid = $false }
+  }
+  if (-not [string]::Equals($Executable, [IO.Path]::GetFullPath($AuthorizedPowerShell), $comparison) -or
+      -not [string]::Equals($WorkingDirectory, [IO.Path]::GetFullPath($expectedWork), $comparison) -or
+      -not [string]::Equals($LauncherPath, [IO.Path]::GetFullPath($expectedLauncher), $comparison) -or
+      -not [string]::Equals($PackageRoot, [IO.Path]::GetFullPath($PackageRoot), $comparison) -or
+      -not $argumentsValid) {
+    throw 'The private PowerShell command is not the exact authorized CheckOnly invocation.'
+  }
+  return $true
+}
+
 function Assert-FirstLaunchProcessShimRequest {
   param([Parameter(Mandatory = $true)][string] $RequestPath, [Parameter(Mandatory = $true)][string] $ExpectedSha256)
   if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') { throw 'The private process request hash is malformed.' }
@@ -2015,8 +2055,9 @@ function Assert-FirstLaunchProcessShimRequest {
       -AsHashtable -NoEnumerate -DateKind String -ErrorAction Stop
   } catch { throw 'The private process request is malformed JSON.' }
   if ($request -isnot [Collections.IDictionary]) { throw 'The private process request root is not an object.' }
-  $expectedKeys = @('arguments', 'environment', 'executable', 'expectedExecutableSha256', 'maximumOutputBytes',
-    'requestId', 'resultPath', 'role', 'runnerToolCache', 'schema', 'stageOwnerToken', 'stageRoot', 'timeoutMs', 'workingDirectory')
+  $expectedKeys = @('arguments', 'environment', 'executable', 'expectedExecutableSha256', 'expectedLauncherSha256',
+    'launcherPath', 'maximumOutputBytes', 'packageRoot', 'requestId', 'resultPath', 'role', 'runnerToolCache',
+    'schema', 'stageOwnerToken', 'stageRoot', 'timeoutMs', 'workingDirectory')
   $requestKeys = @($request.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
   if ($requestKeys.Count -ne $expectedKeys.Count -or @($requestKeys | Where-Object { $_ -cnotin $expectedKeys }).Count -gt 0 -or
       @($expectedKeys | Where-Object { $_ -cnotin $requestKeys }).Count -gt 0 -or
@@ -2032,6 +2073,9 @@ function Assert-FirstLaunchProcessShimRequest {
       $request.environment -isnot [Collections.IDictionary] -or $request.arguments.Count -gt 8 -or
       @($request.arguments | Where-Object { $_ -isnot [string] -or ([string]$_).Length -gt 4096 }).Count -gt 0) {
     throw 'The private process request arguments or environment have an invalid type or bound.'
+  }
+  foreach ($field in @('expectedExecutableSha256', 'expectedLauncherSha256', 'executable', 'launcherPath', 'packageRoot', 'role', 'runnerToolCache')) {
+    if ($request[$field] -isnot [string]) { throw 'The private process request contains a field with an invalid type.' }
   }
   $argumentBytes = 0
   foreach ($argument in $request.arguments) { $argumentBytes += [Text.Encoding]::UTF8.GetByteCount([string]$argument) + 1 }
@@ -2070,6 +2114,14 @@ function Assert-FirstLaunchProcessShimRequest {
       throw 'The private Cargo executable is outside the exact canonical runner tool cache.'
     }
     [void](Assert-FirstLaunchNoReparsePath $executable 'Scoped Cargo executable')
+  } elseif ([string]$request.role -ceq 'launcher-check-only') {
+    $executable = [IO.Path]::GetFullPath([string]$request.executable)
+    $expectedPowerShell = [IO.Path]::GetFullPath((Join-Path $PSHOME 'pwsh.exe'))
+    if (-not [string]::Equals([string]$request.executable, $executable, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($executable, $expectedPowerShell, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'The CheckOnly child executable is not the current authorized PowerShell host.'
+    }
+    [void](Assert-FirstLaunchNoReparsePath $executable 'Authorized CheckOnly PowerShell executable')
   } else {
     $executable = Assert-FirstLaunchPathBelowRoot ([string]$request.executable) ([string]$request.stageRoot) 'Stage-local process executable'
     [void](Assert-FirstLaunchNoReparsePath $executable 'Stage-local process executable')
@@ -2110,7 +2162,8 @@ function Assert-FirstLaunchProcessShimRequest {
           [string]$request.environment.CARGO_REGISTRIES_CRATES_IO_PROTOCOL -cne 'sparse' -or
           [string]$request.environment.GIT_CONFIG_NOSYSTEM -cne '1' -or [string]$request.environment.GIT_TERMINAL_PROMPT -cne '0' -or
           [string]$request.environment.PATH -cne ([string]::Join(';', @([IO.Path]::GetDirectoryName($executable), (Join-Path $systemRoot 'System32'), $systemRoot))) -or
-          $expectedExecutableHash.Length -ne 0) {
+          $expectedExecutableHash.Length -ne 0 -or [string]$request.expectedLauncherSha256 -cne '' -or
+          [string]$request.launcherPath -cne '' -or [string]$request.packageRoot -cne '') {
         throw 'The private Cargo process request is outside the fixed tool-cache and credential-free profile.'
       }
       if ($arguments.Count -eq 1 -and $arguments[0] -ceq '--version') {
@@ -2138,9 +2191,50 @@ function Assert-FirstLaunchProcessShimRequest {
           [string]$request.environment.MSEDGEDRIVER_TELEMETRY_OPTOUT -cne '1' -or
           [string]$request.environment.PATH -cne $expectedSystemPath -or
           $expectedExecutableHash -notmatch '^[0-9a-f]{64}$' -or
+          [string]$request.expectedLauncherSha256 -cne '' -or [string]$request.launcherPath -cne '' -or
+          [string]$request.packageRoot -cne '' -or
           [long]$request.timeoutMs -gt $script:FirstLaunchEdgeProbeTimeoutMs -or
           [long]$request.maximumOutputBytes -gt $script:FirstLaunchEdgeProbeOutputBytes) {
         throw 'The private EdgeDriver process request is outside the exact version-only profile.'
+      }
+    }
+    'launcher-check-only' {
+      $expectedWork = Join-Path ([string]$request.stageRoot) 'work'
+      $expectedLauncher = Join-Path (Join-Path ([string]$request.stageRoot) 'launcher') 'windows-launch.ps1'
+      $packageRoot = [IO.Path]::GetFullPath([string]$request.packageRoot)
+      $stageRoot = [IO.Path]::GetDirectoryName($packageRoot)
+      $stageName = [IO.Path]::GetFileName($stageRoot)
+      $privateName = [IO.Path]::GetFileName([string]$request.stageRoot)
+      $stageMatch = [regex]::Match($stageName, '\Amorrow-e003-g23-stage-([0-9a-f]{40})-([1-9][0-9]{0,19})-1\z')
+      $expectedPrivateName = if ($stageMatch.Success) {
+        'morrow-e003-g23-check-only-' + $stageMatch.Groups[1].Value + '-' + $stageMatch.Groups[2].Value + '-1'
+      } else { '' }
+      $allowed = @('PATH', 'SystemRoot', 'TEMP', 'TMP', 'WINDIR')
+      if ($null -eq $stageMatch -or -not $stageMatch.Success -or
+          [IO.Path]::GetFileName($packageRoot) -cne 'package' -or
+          -not [string]::Equals([string]$request.packageRoot, $packageRoot, [StringComparison]::OrdinalIgnoreCase) -or
+          -not [string]::Equals([string]$request.launcherPath, $expectedLauncher, [StringComparison]::OrdinalIgnoreCase) -or
+          -not [string]::Equals($privateName, $expectedPrivateName, [StringComparison]::OrdinalIgnoreCase) -or
+          -not [string]::Equals([IO.Path]::GetDirectoryName($stageRoot), [IO.Path]::GetDirectoryName([string]$request.stageRoot), [StringComparison]::OrdinalIgnoreCase) -or
+          -not [string]::Equals($executable, [IO.Path]::GetFullPath((Join-Path $PSHOME 'pwsh.exe')), [StringComparison]::OrdinalIgnoreCase) -or
+          $expectedExecutableHash -notmatch '^[0-9a-f]{64}$' -or
+          $request.expectedLauncherSha256 -notmatch '^[0-9a-f]{64}$' -or
+          @($envNames | Where-Object { $_ -cnotin $allowed }).Count -gt 0 -or $envNames.Count -ne $allowed.Count -or
+          [string]$request.environment.TEMP -cne $expectedWork -or [string]$request.environment.TMP -cne $expectedWork -or
+          [string]$request.environment.PATH -cne $expectedSystemPath -or
+          [long]$request.timeoutMs -gt $script:FirstLaunchCheckOnlyTimeoutMs -or
+          [long]$request.maximumOutputBytes -gt $script:FirstLaunchCheckOnlyOutputBytes) {
+        throw 'The private launcher process request is outside the exact CheckOnly command and bounded environment.'
+      }
+      [void](Assert-FirstLaunchCheckOnlyArgumentVector -Executable $executable `
+        -AuthorizedPowerShell (Join-Path $PSHOME 'pwsh.exe') -Arguments ([string[]]$arguments) `
+        -PrivateRoot ([string]$request.stageRoot) -WorkingDirectory ([string]$request.workingDirectory) `
+        -LauncherPath ([string]$request.launcherPath) -PackageRoot $packageRoot)
+      [void](Assert-FirstLaunchNoReparsePath $packageRoot 'Sealed CheckOnly package root')
+      [void](Assert-FirstLaunchNoReparsePath $expectedLauncher 'Copied CheckOnly launcher')
+      if (-not [IO.Directory]::Exists($packageRoot) -or -not [IO.File]::Exists($expectedLauncher) -or
+          (Get-Sha256 $expectedLauncher) -cne [string]$request.expectedLauncherSha256) {
+        throw 'The private CheckOnly launcher copy is missing or differs from the Stage pin.'
       }
     }
     default { throw 'The private process request role is not approved.' }
@@ -2149,7 +2243,7 @@ function Assert-FirstLaunchProcessShimRequest {
     throw 'The private process request has invalid timeout or output limits.'
   }
   if ($expectedExecutableHash.Length -gt 0 -and (Get-Sha256 $executable) -cne $expectedExecutableHash) {
-    throw 'The Stage-local EdgeDriver executable hash changed before private process launch.'
+    throw 'The private process executable changed before launch.'
   }
   return [pscustomobject]@{
     request = $request
@@ -2264,8 +2358,11 @@ function Invoke-FirstLaunchJobBoundedProcess {
     [Parameter(Mandatory = $true)][int] $MaximumOutputBytes,
     [Parameter(Mandatory = $true)][string] $StageRoot,
     [Parameter(Mandatory = $true)][string] $StageOwnerToken,
-    [Parameter(Mandatory = $true)][ValidateSet('cargo', 'edge-version')][string] $ProcessRole,
+    [Parameter(Mandatory = $true)][ValidateSet('cargo', 'edge-version', 'launcher-check-only')][string] $ProcessRole,
     [string] $ExpectedExecutableSha256 = '',
+    [string] $LauncherPath = '',
+    [string] $PackageRoot = '',
+    [string] $ExpectedLauncherSha256 = '',
     [scriptblock] $JobSessionFactory
   )
   [void](Assert-FirstLaunchStageClaim $StageRoot $StageOwnerToken)
@@ -2289,6 +2386,9 @@ function Invoke-FirstLaunchJobBoundedProcess {
     maximumOutputBytes = $MaximumOutputBytes
     runnerToolCache = [string]$env:RUNNER_TOOL_CACHE
     expectedExecutableSha256 = $ExpectedExecutableSha256
+    launcherPath = $LauncherPath
+    packageRoot = $PackageRoot
+    expectedLauncherSha256 = $ExpectedLauncherSha256
     resultPath = $resultPath
   }
   foreach ($key in $Environment.Keys) { $request.environment[[string]$key] = [string]$Environment[$key] }
@@ -3452,6 +3552,398 @@ function Get-FirstLaunchCheckOnlyInputs {
   $knownFolders = Get-FirstLaunchCurrentKnownFolders
   return Get-FirstLaunchCheckOnlyInputsFromSealedStage -Identity $identity -StageRoot $stageRoot `
     -Runtime $runtime -RunnerSid $runnerSid -KnownFolders $knownFolders
+}
+
+function Get-FirstLaunchWindowsPathParent {
+  param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)][string] $Label)
+  $canonical = Assert-FirstLaunchCanonicalWindowsPath $Path $Label
+  $trimmed = $canonical.TrimEnd('\')
+  $separator = $trimmed.LastIndexOf('\')
+  if ($separator -lt 2) { throw "$Label must have a parent below a drive root." }
+  return $trimmed.Substring(0, $separator)
+}
+
+function Test-FirstLaunchPathsOverlap {
+  param([Parameter(Mandatory = $true)][string] $Left, [Parameter(Mandatory = $true)][string] $Right)
+  $leftFull = [IO.Path]::GetFullPath($Left).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $rightFull = [IO.Path]::GetFullPath($Right).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+  return ([string]::Equals($leftFull, $rightFull, $comparison) -or
+    $leftFull.StartsWith($rightFull + [IO.Path]::DirectorySeparatorChar, $comparison) -or
+    $rightFull.StartsWith($leftFull + [IO.Path]::DirectorySeparatorChar, $comparison))
+}
+
+function Test-FirstLaunchCheckOnlyKnownFolderBackingSupplied {
+  param([AllowNull()][string] $TestKnownFolderBackingRoot)
+  return -not [string]::IsNullOrWhiteSpace($TestKnownFolderBackingRoot)
+}
+
+function Get-FirstLaunchCheckOnlyRootPlan {
+  param(
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $Inputs,
+    [string] $TestFileSystemTempRoot,
+    [string] $TestKnownFolderBackingRoot
+  )
+  $inputKeys = @('schema', 'status', 'gate', 'candidateBuild', 'stage', 'package', 'tools', 'webView2RuntimeVersion',
+    'identity', 'knownFolders', 'profiles', 'sourceFiles', 'noLaunch')
+  if ($Inputs.Keys.Count -ne $inputKeys.Count -or @($Inputs.Keys | Where-Object { $_ -cnotin $inputKeys }).Count -gt 0 -or
+      [string]$Inputs.schema -cne 'morrow.e003.g23.check-only-inputs.v1' -or [string]$Inputs.status -cne 'verified') {
+    throw 'The verified CheckOnly input DTO does not match its exact closed schema.'
+  }
+  $gateKeys = @('sourceSha', 'gateRunId', 'gateRunAttempt')
+  if ($Inputs.gate.Keys.Count -ne $gateKeys.Count -or @($Inputs.gate.Keys | Where-Object { $_ -cnotin $gateKeys }).Count -gt 0 -or
+      [string]$Inputs.gate.sourceSha -notmatch '\A[0-9a-f]{40}\z' -or
+      [string]$Inputs.gate.gateRunId -notmatch '\A[1-9][0-9]{0,19}\z' -or [string]$Inputs.gate.gateRunAttempt -cne '1') {
+    throw 'The verified CheckOnly run identity is malformed.'
+  }
+  $candidate = Get-FirstLaunchCandidateBuildDto
+  if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot) -and
+      -not (Test-FirstLaunchSameJsonStructure $Inputs.candidateBuild $candidate)) {
+    throw 'The verified CheckOnly candidate differs from the immutable build pin.'
+  }
+  $stagePath = [IO.Path]::GetFullPath([string]$Inputs.stage.path)
+  if ([IO.Path]::GetFileName($stagePath) -cne 'stage.json' -or
+      [string]$Inputs.stage.sha256 -notmatch '\A[0-9a-f]{64}\z' -or [long]$Inputs.stage.sizeBytes -le 0) {
+    throw 'The verified Stage path or measurements are malformed.'
+  }
+  $stageRoot = [IO.Path]::GetDirectoryName($stagePath)
+  $physicalTempRoot = [IO.Path]::GetDirectoryName($stageRoot)
+  $stageName = 'morrow-e003-g23-stage-' + [string]$Inputs.gate.sourceSha + '-' + [string]$Inputs.gate.gateRunId + '-1'
+  if ([IO.Path]::GetFileName($stageRoot) -cne $stageName) { throw 'The verified Stage is not the exact run-specific direct child.' }
+  $profileRoot = Assert-FirstLaunchCanonicalWindowsPath ([string]$Inputs.profiles.root) 'Verified profile root'
+  $profileBase = Get-FirstLaunchWindowsPathParent $profileRoot 'Verified profile root'
+  if ($profileRoot.Substring($profileRoot.LastIndexOf('\') + 1) -cne 'profile') {
+    throw 'The verified profile root has an unexpected layout.'
+  }
+  $logicalTempRoot = Get-FirstLaunchWindowsPathParent $profileBase 'Verified profile base'
+  $profileBaseName = 'morrow-issue-187-' + [string]$Inputs.gate.sourceSha + '-' + [string]$Inputs.gate.gateRunId + '-1'
+  if ($profileBase -cne ($logicalTempRoot + '\' + $profileBaseName)) {
+    throw 'The verified profile plan does not match the exact run-specific RUNNER_TEMP layout.'
+  }
+  $logicalCheckOnlyRoot = $logicalTempRoot + '\morrow-e003-g23-check-only-' + [string]$Inputs.gate.sourceSha + '-' +
+    [string]$Inputs.gate.gateRunId + '-1'
+  [void](Assert-FirstLaunchCanonicalWindowsPath $logicalCheckOnlyRoot 'Private CheckOnly root')
+  $logicalStageRoot = $logicalTempRoot + '\' + $stageName
+  $logicalPackageRoot = $logicalStageRoot + '\package'
+  foreach ($disjointPath in @($logicalStageRoot, $logicalPackageRoot, $profileRoot,
+      [string]$Inputs.knownFolders.localAppData, [string]$Inputs.knownFolders.roamingAppData)) {
+    if (Test-FirstLaunchWindowsPathsOverlap $logicalCheckOnlyRoot $disjointPath) {
+      throw 'The private CheckOnly root overlaps the sealed Stage, package, profiles, or Known Folders.'
+    }
+  }
+  if (-not [string]::Equals([IO.Path]::GetFullPath([string]$Inputs.package.root),
+      [IO.Path]::GetFullPath((Join-Path $stageRoot 'package')),
+      $(if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+    throw 'The verified package path is not the exact extracted child of the sealed Stage.'
+  }
+  if (-not [string]::Equals([IO.Path]::GetFullPath([string]$Inputs.package.launcherPath),
+      [IO.Path]::GetFullPath((Join-Path ([string]$Inputs.package.root) 'windows-launch.ps1')),
+      $(if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }))) {
+    throw 'The verified launcher path is not the exact package launcher file.'
+  }
+  if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot)) {
+    if ([IO.Path]::DirectorySeparatorChar -ne '\' -or
+        -not [string]::Equals([IO.Path]::GetFullPath($physicalTempRoot), [IO.Path]::GetFullPath($logicalTempRoot), [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'CheckOnly execution requires the exact Windows RUNNER_TEMP backing directory.'
+    }
+    $actualTempRoot = [IO.Path]::GetFullPath($logicalTempRoot)
+  } else {
+    $actualTempRoot = [IO.Path]::GetFullPath($TestFileSystemTempRoot)
+    if (-not [string]::Equals($actualTempRoot, [IO.Path]::GetFullPath($physicalTempRoot), [StringComparison]::Ordinal)) {
+      throw 'The mapped hermetic RUNNER_TEMP does not contain this sealed Stage.'
+    }
+  }
+  if (-not [IO.Directory]::Exists($actualTempRoot)) { throw 'The CheckOnly RUNNER_TEMP parent is unavailable.' }
+  [void](Assert-FirstLaunchNoReparsePath $actualTempRoot 'CheckOnly RUNNER_TEMP')
+  $checkOnlyLeaf = $logicalCheckOnlyRoot.Substring($logicalCheckOnlyRoot.LastIndexOf('\') + 1)
+  $actualCheckOnlyRoot = Join-Path $actualTempRoot $checkOnlyLeaf
+  [void](Assert-FirstLaunchNewDirectoryPath $actualCheckOnlyRoot 'Exclusive CheckOnly work root')
+  $workspaceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+  if ((Test-FirstLaunchPathsOverlap $actualCheckOnlyRoot $workspaceRoot) -or
+      (Test-FirstLaunchPathsOverlap $actualCheckOnlyRoot $stageRoot) -or
+      (Test-FirstLaunchPathsOverlap $actualCheckOnlyRoot ([string]$Inputs.package.root))) {
+    throw 'The private CheckOnly work root overlaps the checkout, Stage, or package.'
+  }
+  $knownFolders = $Inputs.knownFolders
+  if (Test-FirstLaunchCheckOnlyKnownFolderBackingSupplied $TestKnownFolderBackingRoot) {
+    if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot)) { throw 'Known Folder backing is restricted to hermetic tests.' }
+    $localKnownRoot = Join-Path $TestKnownFolderBackingRoot 'local'
+    $roamingKnownRoot = Join-Path $TestKnownFolderBackingRoot 'roaming'
+  } else {
+    $localKnownRoot = [string]$knownFolders.localAppData
+    $roamingKnownRoot = [string]$knownFolders.roamingAppData
+  }
+  foreach ($knownRoot in @($localKnownRoot, $roamingKnownRoot)) {
+    if (-not [IO.Directory]::Exists($knownRoot)) { throw 'A CheckOnly Known Folder parent is unavailable.' }
+    [void](Assert-FirstLaunchNoReparsePath $knownRoot 'CheckOnly Known Folder')
+  }
+  $pilotIdentifier = [string]$Inputs.candidateBuild.application.pilotIdentifier
+  if ($pilotIdentifier -cne 'app.morrow.polaris-dados-pilot') { throw 'The CheckOnly pilot identifier is not the fixed package identifier.' }
+  return [pscustomobject]@{
+    root = $actualCheckOnlyRoot
+    logicalRoot = $logicalCheckOnlyRoot
+    tempRoot = $actualTempRoot
+    stageRoot = $stageRoot
+    packageRoot = [string]$Inputs.package.root
+    launcherPath = [string]$Inputs.package.launcherPath
+    profileBase = if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot)) { $profileBase } else { Join-Path $actualTempRoot $profileBaseName }
+    pilotStatePath = Join-Path ([string]$Inputs.package.root) 'PilotState'
+    localPilotPath = Join-Path $localKnownRoot $pilotIdentifier
+    roamingPilotPath = Join-Path $roamingKnownRoot $pilotIdentifier
+  }
+}
+
+function Assert-FirstLaunchAbsentChildPath {
+  param(
+    [Parameter(Mandatory = $true)][string] $Parent,
+    [Parameter(Mandatory = $true)][string] $Leaf,
+    [Parameter(Mandatory = $true)][string] $Label
+  )
+  if ([string]::IsNullOrWhiteSpace($Leaf) -or $Leaf.Contains('\') -or $Leaf.Contains('/')) { throw "$Label has an invalid path leaf." }
+  if (-not [IO.Directory]::Exists($Parent)) { throw "$Label parent is missing or is not a directory." }
+  [void](Assert-FirstLaunchNoReparsePath $Parent ($Label + ' parent'))
+  $matches = @([IO.Directory]::EnumerateFileSystemEntries($Parent) | Where-Object {
+    [string]::Equals([IO.Path]::GetFileName($_), $Leaf, [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($matches.Count -gt 0) { throw "$Label already exists or has a case-insensitive path alias." }
+}
+
+function Assert-FirstLaunchCheckOnlyTargetPathsAbsent {
+  param([Parameter(Mandatory = $true)][object] $RootPlan)
+  Assert-FirstLaunchAbsentChildPath ([string]$RootPlan.packageRoot) 'PilotState' 'Package PilotState'
+  Assert-FirstLaunchAbsentChildPath ([string]$RootPlan.tempRoot) ([IO.Path]::GetFileName([string]$RootPlan.profileBase)) 'Planned profile base'
+  Assert-FirstLaunchAbsentChildPath ([IO.Path]::GetDirectoryName([string]$RootPlan.localPilotPath)) `
+    ([IO.Path]::GetFileName([string]$RootPlan.localPilotPath)) 'LocalAppData pilot path'
+  Assert-FirstLaunchAbsentChildPath ([IO.Path]::GetDirectoryName([string]$RootPlan.roamingPilotPath)) `
+    ([IO.Path]::GetFileName([string]$RootPlan.roamingPilotPath)) 'RoamingAppData pilot path'
+}
+
+function ConvertFrom-FirstLaunchLauncherCheckOnlyOutput {
+  param([Parameter(Mandatory = $true)][object] $ProcessResult)
+  if ($ProcessResult.TimedOut -or $ProcessResult.OutputLimitExceeded -or [int]$ProcessResult.ExitCode -ne 0 -or
+      $ProcessResult.StdOut -isnot [string] -or $ProcessResult.StdErr -isnot [string] -or
+      [string]$ProcessResult.StdErr -cne '') {
+    throw 'The pinned CheckOnly launcher did not return a clean bounded success result.'
+  }
+  $stdout = [string]$ProcessResult.StdOut
+  try { $stdoutBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($stdout) }
+  catch { throw 'The pinned CheckOnly launcher output is not valid UTF-8 text.' }
+  if ($stdoutBytes.LongLength -le 0 -or $stdoutBytes.LongLength -gt $script:FirstLaunchCheckOnlyOutputBytes) {
+    throw 'The pinned CheckOnly launcher output is empty or exceeds its exact byte bound.'
+  }
+  if ($stdout.EndsWith("`r`n", [StringComparison]::Ordinal)) {
+    $jsonText = $stdout.Substring(0, $stdout.Length - 2)
+  } elseif ($stdout.EndsWith("`n", [StringComparison]::Ordinal)) {
+    $jsonText = $stdout.Substring(0, $stdout.Length - 1)
+  } else {
+    throw 'The pinned CheckOnly launcher output does not end in one complete line.'
+  }
+  if ([string]::IsNullOrEmpty($jsonText) -or $jsonText.Contains("`r") -or $jsonText.Contains("`n")) {
+    throw 'The pinned CheckOnly launcher output must contain exactly one JSON line.'
+  }
+  $jsonBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($jsonText)
+  $document = $null
+  try {
+    $options = [System.Text.Json.JsonDocumentOptions]::new()
+    $options.MaxDepth = 8
+    $document = [System.Text.Json.JsonDocument]::Parse([System.ReadOnlyMemory[byte]]::new($jsonBytes), $options)
+    Assert-FirstLaunchUniqueStageJsonProperties -Element $document.RootElement
+  } catch { throw 'The pinned CheckOnly launcher output is malformed JSON or repeats a property.' }
+  finally { if ($null -ne $document) { $document.Dispose() } }
+  try {
+    $result = ConvertFrom-Json -InputObject $jsonText -AsHashtable -NoEnumerate -DateKind String -ErrorAction Stop
+  } catch { throw 'The pinned CheckOnly launcher JSON could not be decoded.' }
+  $expectedKeys = @('status', 'appLaunched', 'stateWritten', 'packageVerified', 'childEnvironmentConfigured',
+    'childEnvironmentPathsArePilotStateChildren', 'stateStatus')
+  if ($result -isnot [Collections.IDictionary] -or $result.Keys.Count -ne $expectedKeys.Count -or
+      @($result.Keys | Where-Object { $_ -cnotin $expectedKeys }).Count -gt 0 -or
+      [string]$result.status -cne 'passed' -or $result.appLaunched -isnot [bool] -or $result.appLaunched -ne $false -or
+      $result.stateWritten -isnot [bool] -or $result.stateWritten -ne $false -or
+      $result.packageVerified -isnot [bool] -or $result.packageVerified -ne $true -or
+      $result.childEnvironmentConfigured -isnot [bool] -or $result.childEnvironmentConfigured -ne $true -or
+      $result.childEnvironmentPathsArePilotStateChildren -isnot [bool] -or $result.childEnvironmentPathsArePilotStateChildren -ne $true -or
+      $result.stateStatus -isnot [string] -or [string]$result.stateStatus -cne 'new') {
+    throw 'The pinned CheckOnly launcher output differs from the exact no-write result schema.'
+  }
+  return $result
+}
+
+function ConvertTo-FirstLaunchCheckOnlyReceiptBytes {
+  param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Receipt)
+  $json = ConvertTo-Json -InputObject $Receipt -Depth 16 -Compress -ErrorAction Stop
+  if ([string]::IsNullOrEmpty($json) -or $json.Contains("`r") -or $json.Contains("`n")) {
+    throw 'The CheckOnly receipt serializer did not produce one JSON line.'
+  }
+  $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json + "`n")
+  if ($bytes.LongLength -gt 64KB) { throw 'The CheckOnly receipt exceeds its strict serialized byte bound.' }
+  return ,$bytes
+}
+
+function New-FirstLaunchCheckOnlyReceipt {
+  param(
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $Inputs,
+    [Parameter(Mandatory = $true)][string] $CheckedAtUtc
+  )
+  $stageManifest = Read-FirstLaunchCanonicalStageBytes ([string]$Inputs.stage.path)
+  if ($stageManifest.Sha256 -cne [string]$Inputs.stage.sha256 -or
+      $stageManifest.SizeBytes -ne [long]$Inputs.stage.sizeBytes) {
+    throw 'The Stage bytes changed before the CheckOnly receipt was assembled.'
+  }
+  $gateKeys = @('repository', 'ref', 'workflowPath', 'workflowRef', 'sourceSha', 'gateRunId', 'gateRunAttempt', 'event')
+  if ($stageManifest.Stage.gate.Keys.Count -ne $gateKeys.Count -or
+      @($stageManifest.Stage.gate.Keys | Where-Object { $_ -cnotin $gateKeys }).Count -gt 0 -or
+      [string]$stageManifest.Stage.gate.sourceSha -cne [string]$Inputs.gate.sourceSha -or
+      [string]$stageManifest.Stage.gate.gateRunId -cne [string]$Inputs.gate.gateRunId -or
+      [string]$stageManifest.Stage.gate.gateRunAttempt -cne [string]$Inputs.gate.gateRunAttempt) {
+    throw 'The sealed Stage does not contain the exact verified CheckOnly gate identity.'
+  }
+  $receipt = [ordered]@{
+    schema = 'morrow.e003.g15.first-launch-check-only-receipt.v1'
+    status = 'passed'
+    purpose = $script:FirstLaunchPurpose
+    executionPhase = $script:FirstLaunchExecutionPhase
+    gate = Copy-FirstLaunchValue $stageManifest.Stage.gate
+    candidateBuild = Copy-FirstLaunchValue $Inputs.candidateBuild
+    stageSha256 = [string]$Inputs.stage.sha256
+    pinsVerified = $true
+    driverHashes = [ordered]@{
+      tauriDriverSha256 = [string]$Inputs.tools.tauriDriver.sha256
+      edgeDriverSha256 = [string]$Inputs.tools.edgeDriver.executableSha256
+    }
+    webView2RuntimeVersion = [string]$Inputs.webView2RuntimeVersion
+    identity = Copy-FirstLaunchValue $Inputs.identity
+    knownFolders = Copy-FirstLaunchValue $Inputs.knownFolders
+    profiles = Copy-FirstLaunchValue $Inputs.profiles
+    noLaunch = [ordered]@{ appLaunched = $false; driverServiceStarted = $false; guiTested = $false }
+    checkedAtUtc = $CheckedAtUtc
+  }
+  $receiptBytes = ConvertTo-FirstLaunchCheckOnlyReceiptBytes $receipt
+  return [pscustomobject]@{
+    receipt = $receipt
+    receiptBytes = $receiptBytes
+    receiptSha256 = Get-FirstLaunchSha256Bytes $receiptBytes
+  }
+}
+
+function Invoke-FirstLaunchCheckOnlyCore {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $Inputs,
+    [scriptblock] $ProcessRunner,
+    [scriptblock] $JobSessionFactory,
+    [scriptblock] $CheckOnlyInputsProvider,
+    [string] $TestFileSystemTempRoot,
+    [string] $TestKnownFolderBackingRoot
+  )
+  if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot) -and
+      ([IO.Path]::DirectorySeparatorChar -ne '\' -or $null -ne $ProcessRunner -or $null -ne $CheckOnlyInputsProvider -or
+       $null -ne $JobSessionFactory -or (Test-FirstLaunchCheckOnlyKnownFolderBackingSupplied $TestKnownFolderBackingRoot))) {
+    throw 'Hermetic CheckOnly seams are available only to portable fixtures.'
+  }
+  $rootPlan = Get-FirstLaunchCheckOnlyRootPlan -Inputs $Inputs -TestFileSystemTempRoot $TestFileSystemTempRoot `
+    -TestKnownFolderBackingRoot $TestKnownFolderBackingRoot
+  [void](Assert-FirstLaunchSealedStageRoot $rootPlan.stageRoot $rootPlan.stageRoot)
+  Assert-FirstLaunchCheckOnlyTargetPathsAbsent $rootPlan
+  $stageBefore = Read-FirstLaunchCanonicalStageBytes (Join-Path $rootPlan.stageRoot 'stage.json')
+  if ($stageBefore.Sha256 -cne [string]$Inputs.stage.sha256 -or
+      $stageBefore.SizeBytes -ne [long]$Inputs.stage.sizeBytes) {
+    throw 'The sealed Stage changed before CheckOnly execution.'
+  }
+  $launcherExpectedHash = [string]$Inputs.candidateBuild.package.launcherSha256
+  if ($launcherExpectedHash -notmatch '\A[0-9a-f]{64}\z') { throw 'The pinned launcher hash is malformed.' }
+  $launcherBefore = Get-FirstLaunchPlainFileMeasurement ([string]$Inputs.package.launcherPath) 'Pinned extracted CheckOnly launcher' 64KB
+  if ($launcherBefore.sha256 -cne $launcherExpectedHash) { throw 'The extracted CheckOnly launcher differs from its immutable package pin.' }
+  $launcherBytes = [IO.File]::ReadAllBytes([string]$Inputs.package.launcherPath)
+  if ($launcherBytes.LongLength -ne $launcherBefore.sizeBytes -or
+      (Get-FirstLaunchSha256Bytes $launcherBytes) -cne $launcherExpectedHash) {
+    throw 'The extracted CheckOnly launcher changed while its exact pinned bytes were read.'
+  }
+  [void](Assert-FirstLaunchNoReparsePath ([string]$Inputs.package.launcherPath) 'Pinned launcher after read')
+
+  $claim = New-FirstLaunchStageClaim ([string]$rootPlan.root)
+  $rootRemoved = $false
+  try {
+    $launcherDirectory = Join-Path $claim.stageRoot 'launcher'
+    $workingDirectory = Join-Path $claim.stageRoot 'work'
+    [void](Assert-FirstLaunchNewDirectoryPath $launcherDirectory 'Private CheckOnly launcher directory')
+    [void][IO.Directory]::CreateDirectory($launcherDirectory)
+    [void](Assert-FirstLaunchNoReparsePath $launcherDirectory 'Private CheckOnly launcher directory')
+    [void](Assert-FirstLaunchNewDirectoryPath $workingDirectory 'Private CheckOnly working directory')
+    [void][IO.Directory]::CreateDirectory($workingDirectory)
+    [void](Assert-FirstLaunchNoReparsePath $workingDirectory 'Private CheckOnly working directory')
+    $privateLauncher = Join-Path $launcherDirectory 'windows-launch.ps1'
+    Write-FirstLaunchNewFile $privateLauncher $launcherBytes
+    $privateLauncherMeasurement = Get-FirstLaunchPlainFileMeasurement $privateLauncher 'Private CheckOnly launcher copy' 64KB
+    if ($privateLauncherMeasurement.sha256 -cne $launcherExpectedHash -or
+        $privateLauncherMeasurement.sizeBytes -ne $launcherBefore.sizeBytes) {
+      throw 'The private CheckOnly launcher copy does not match the Stage package bytes.'
+    }
+    $powerShellPath = Join-Path $PSHOME 'pwsh'
+    if ([IO.Path]::DirectorySeparatorChar -eq '\') { $powerShellPath += '.exe' }
+    $powerShellMeasurement = Get-FirstLaunchPlainFileMeasurement $powerShellPath 'Authorized PowerShell host' 256MB
+    $systemRoot = [string]$env:SystemRoot
+    if ([string]::IsNullOrWhiteSpace($systemRoot)) {
+      if ([IO.Path]::DirectorySeparatorChar -eq '\') { throw 'The trusted Windows SystemRoot is missing.' }
+      $systemRoot = [IO.Path]::GetPathRoot($claim.stageRoot)
+    }
+    $environment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $environment['SystemRoot'] = $systemRoot
+    $environment['WINDIR'] = $systemRoot
+    $environment['PATH'] = [string]::Join(';', @((Join-Path $systemRoot 'System32'), $systemRoot))
+    $environment['TEMP'] = $workingDirectory
+    $environment['TMP'] = $workingDirectory
+    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $privateLauncher,
+      '-PackagePath', [string]$Inputs.package.root, '-CheckOnly')
+    $processResult = Invoke-FirstLaunchBoundedProcess -Executable $powerShellPath -Arguments $arguments `
+      -WorkingDirectory $workingDirectory -Environment $environment -TimeoutMs $script:FirstLaunchCheckOnlyTimeoutMs `
+      -MaximumOutputBytes $script:FirstLaunchCheckOnlyOutputBytes -ProcessRunner $ProcessRunner `
+      -StageRoot $claim.stageRoot -StageOwnerToken $claim.token -ProcessRole launcher-check-only `
+      -JobSessionFactory $JobSessionFactory -ExpectedExecutableSha256 $powerShellMeasurement.sha256 `
+      -LauncherPath $privateLauncher -PackageRoot ([string]$Inputs.package.root) -ExpectedLauncherSha256 $launcherExpectedHash
+    [void](ConvertFrom-FirstLaunchLauncherCheckOnlyOutput $processResult)
+    Assert-FirstLaunchCheckOnlyTargetPathsAbsent $rootPlan
+    $afterInputs = if ($null -ne $CheckOnlyInputsProvider) {
+      & $CheckOnlyInputsProvider
+    } else {
+      Get-FirstLaunchCheckOnlyInputs
+    }
+    if (-not (Test-FirstLaunchSameJsonStructure $Inputs $afterInputs)) {
+      throw 'The Stage, package, tools, runner identity, Known Folders, or planned profiles changed during CheckOnly.'
+    }
+    [void](Assert-FirstLaunchSealedStageRoot $rootPlan.stageRoot $rootPlan.stageRoot)
+    $stageAfter = Read-FirstLaunchCanonicalStageBytes (Join-Path $rootPlan.stageRoot 'stage.json')
+    if ($stageAfter.Sha256 -cne $stageBefore.Sha256 -or $stageAfter.SizeBytes -ne $stageBefore.SizeBytes) {
+      throw 'The sealed Stage bytes changed during CheckOnly.'
+    }
+    Assert-FirstLaunchCheckOnlyTargetPathsAbsent $rootPlan
+    $receiptResult = New-FirstLaunchCheckOnlyReceipt -Inputs $afterInputs -CheckedAtUtc (Get-FirstLaunchUtcMilliseconds)
+    $result = [pscustomobject]@{
+      Receipt = $receiptResult.receipt
+      ReceiptBytes = $receiptResult.receiptBytes
+      ReceiptSha256 = $receiptResult.receiptSha256
+    }
+    Remove-FirstLaunchOwnedStageRoot $claim.stageRoot $claim.token
+    $rootRemoved = $true
+    return $result
+  } catch {
+    if (-not $rootRemoved) {
+      try {
+        [void](Assert-FirstLaunchStageClaim $claim.stageRoot $claim.token)
+        Remove-FirstLaunchOwnedStageRoot $claim.stageRoot $claim.token
+        $rootRemoved = $true
+      } catch {
+        throw 'CheckOnly failed and the exact owner check refused private-root cleanup.'
+      }
+    }
+    throw
+  }
+}
+
+function Invoke-FirstLaunchCheckOnly {
+  [CmdletBinding()]
+  param()
+  $inputs = Get-FirstLaunchCheckOnlyInputs
+  return Invoke-FirstLaunchCheckOnlyCore -Inputs $inputs
 }
 
 function New-FirstLaunchStage {
