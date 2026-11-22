@@ -1868,6 +1868,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cursor_roundtrips_for_long_escaped_directories_and_rejects_unaddressable_children() {
         let root = metadata_test_root("long-cursor");
@@ -1913,6 +1914,37 @@ mod tests {
         .is_none());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cursor_hash_roundtrips_for_long_escaped_directory_without_filesystem() {
+        let directory = format!(
+            "escaped\n\"folder/{}",
+            std::iter::repeat_n("segment", 400)
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        assert!(directory.len() > 2800);
+        assert!(directory.len() < 4096);
+        let last_name = "a\n\"😀.bin";
+        let cursor = FilePageCursor {
+            version: 2,
+            generation: 307,
+            directory_hash: directory_cursor_hash(&directory),
+            last_name_base64: URL_SAFE_NO_PAD.encode(last_name.as_bytes()),
+        };
+
+        let encoded = encode_file_cursor(&cursor).unwrap();
+        assert!(encoded.len() < MAX_CURSOR_BYTES);
+        assert!(encoded.len() < directory.len());
+        let decoded = decode_file_cursor(&encoded).unwrap();
+        assert_eq!(decoded.version, cursor.version);
+        assert_eq!(decoded.generation, cursor.generation);
+        assert_eq!(decoded.directory_hash, directory_cursor_hash(&directory));
+        assert_eq!(decoded.last_name_base64, cursor.last_name_base64);
+
+        let decoded_name = URL_SAFE_NO_PAD.decode(decoded.last_name_base64).unwrap();
+        assert_eq!(decoded_name, last_name.as_bytes());
     }
 
     #[test]
@@ -2011,6 +2043,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     fn parent_for_selected_root(root: &Path) -> PathBuf {
         root.with_extension("selected")
     }
