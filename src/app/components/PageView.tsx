@@ -47,7 +47,7 @@ import { outlineShown, usePreferences } from '../platform/preferences';
 import type { FooterSection } from '../platform/preferences';
 import { readingPlace, rememberPlace } from '../readingPlace';
 import { navigate, openPage, routeHash } from '../router';
-import { openSide, usePane } from '../tabs';
+import { isSidePane, isSideTabInstance, openSide, usePane, usePaneTabId } from '../tabs';
 import { getUi, openDialog, setUi, useUi } from '../ui';
 import { getSession, run, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
@@ -147,7 +147,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const focusWhenReady = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pane = usePane();
-  const placeKey = pane === 'side' ? `${id}@side` : id;
+  const tabId = usePaneTabId();
+  const placeKey = tabId
+    ? isSideTabInstance(tabId)
+      ? `${id}@side`
+      : id
+    : pane === 'side' || isSidePane(pane)
+      ? `${id}@side`
+      : id;
   // the place is only written down once it has been put back, the empty page loading first is not it
   const placed = useRef(false);
   const prefs = usePreferences();

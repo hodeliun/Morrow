@@ -13,7 +13,8 @@ import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage
 import type { CurrentTabsSnapshot, LegacyTabsSnapshot } from './paneLayoutStorage';
 import { getPreferences } from './platform/preferences';
 
-export type PaneId = 'main' | 'side';
+export type PaneId = string;
+export type PaneRole = 'main' | 'side';
 
 export interface PaneHistory {
   hash: string;
@@ -33,11 +34,13 @@ interface TabState {
   tabs: Tab[];
   active: string;
   // the side of a split tab that navigation goes to, the one last clicked or typed in
-  pane: PaneId;
+  pane: PaneRole;
   // recently closed tabs, newest last, so they can be opened again
   closed: string[];
   // The pane layout is the sole runtime source for tab instances, visible leaves, and focus.
   layout: PaneLayout<PaneTabInstance<string>>;
+  // Runtime orientation is keyed by the persisted tab ids; it is never written as a new snapshot field.
+  physicalOrderByGroup: ReadonlyMap<string, readonly [string, string]>;
   // A >20-instance fork snapshot keeps an ordinary, bounded temporary tab strip in memory.
   projectionIds: readonly string[] | null;
   // Fork layouts keep their canonical instance order while the in-memory tab strip can evolve.
@@ -65,6 +68,37 @@ interface PanePair {
   readonly side: PaneTabInstance<string>;
 }
 
+function pairInPhysicalOrder(
+  layout: PaneLayoutState,
+  pair: PanePair,
+  physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>,
+): readonly [PaneTabInstance<string>, PaneTabInstance<string>] {
+  const order = physicalOrderByGroup?.get(pair.main.id);
+  const first = order?.[0] === pair.main.id ? pair.main : order?.[0] === pair.side.id ? pair.side : null;
+  const second = order?.[1] === pair.main.id ? pair.main : order?.[1] === pair.side.id ? pair.side : null;
+  if (first && second && first.id !== second.id) return [first, second];
+
+  const ids = new Set([pair.main.id, pair.side.id]);
+  const visible = visiblePaneLeaves(layout).flatMap((leaf) =>
+    leaf.tabId && ids.has(leaf.tabId) ? [layout.tabs.find((tab) => tab.id === leaf.tabId)!] : [],
+  );
+  return visible.length === 2 ? [visible[0]!, visible[1]!] : [pair.main, pair.side];
+}
+
+function normalizePhysicalOrderByGroup(
+  layout: PaneLayoutState,
+  physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>,
+): ReadonlyMap<string, readonly [string, string]> {
+  const normalized = new Map<string, readonly [string, string]>();
+  for (const instance of layout.tabs) {
+    const pair = pairForInstance(layout.tabs, instance);
+    if (!pair || normalized.has(pair.main.id)) continue;
+    const [first, second] = pairInPhysicalOrder(layout, pair, physicalOrderByGroup);
+    normalized.set(pair.main.id, [first.id, second.id]);
+  }
+  return normalized;
+}
+
 function pairForInstance(
   tabs: readonly PaneTabInstance<string>[],
   instance: PaneTabInstance<string>,
@@ -89,25 +123,36 @@ function projectionIdentity(
   return { id: instance.id, pane: 'main' };
 }
 
-function compatibilityTab(pair: PanePair): Tab {
+function compatibilityTab(
+  pair: PanePair,
+  layout: PaneLayoutState,
+  physicalOrderByGroup: ReadonlyMap<string, readonly [string, string]>,
+): Tab {
+  const [main, side] = pairInPhysicalOrder(layout, pair, physicalOrderByGroup);
   return {
     id: pair.main.id,
-    hash: pair.main.target,
-    back: [...pair.main.back],
-    forward: [...pair.main.forward],
-    side: { hash: pair.side.target, back: [...pair.side.back], forward: [...pair.side.forward] },
+    hash: main.target,
+    back: [...main.back],
+    forward: [...main.forward],
+    side: { hash: side.target, back: [...side.back], forward: [...side.forward] },
     ...(pair.main.pinned || pair.side.pinned ? { pinned: true } : {}),
   };
 }
 
-function projectTabs(layout: PaneLayoutState, projectionIds: readonly string[] | null = null): Tab[] {
+function projectTabs(
+  layout: PaneLayoutState,
+  projectionIds: readonly string[] | null = null,
+  physicalOrderByGroup: ReadonlyMap<string, readonly [string, string]> = normalizePhysicalOrderByGroup(
+    layout,
+  ),
+): Tab[] {
   const projected: Tab[] = [];
   const consumed = new Set<string>();
   for (const instance of layout.tabs) {
     if (consumed.has(instance.id)) continue;
     const pair = pairForInstance(layout.tabs, instance);
     if (pair) {
-      projected.push(compatibilityTab(pair));
+      projected.push(compatibilityTab(pair, layout, physicalOrderByGroup));
       consumed.add(pair.main.id);
       consumed.add(pair.side.id);
       continue;
@@ -135,6 +180,35 @@ function focusedInstance(layout: PaneLayoutState): PaneTabInstance<string> | nul
   return leaf?.tabId ? (layout.tabs.find((tab) => tab.id === leaf.tabId) ?? null) : null;
 }
 
+function selectedPaneLeaves(layout: PaneLayoutState): PaneLeaf[] {
+  const focused = focusedInstance(layout) ?? layout.tabs.find((tab) => tab.id === current().active) ?? null;
+  if (!focused) return [];
+  const pair = pairForInstance(layout.tabs, focused);
+  const ids = new Set(pair ? [pair.main.id, pair.side.id] : [focused.id]);
+  // Tree order is physical pane order. Swapping assignments must move the same editor host to the
+  // opposite surface while the first surface remains the address-bar anchor.
+  return visiblePaneLeaves(layout).filter((leaf) => leaf.tabId !== null && ids.has(leaf.tabId));
+}
+
+function resolvePaneId(pane: PaneId, layout = current().layout): PaneId | null {
+  const leaves = selectedPaneLeaves(layout);
+  if (leaves.some((leaf) => leaf.id === pane)) return pane;
+  if (pane === 'main') return leaves[0]?.id ?? null;
+  if (pane === 'side') return leaves[1]?.id ?? null;
+  return null;
+}
+
+function primaryPaneId(layout = current().layout): PaneId | null {
+  return selectedPaneLeaves(layout)[0]?.id ?? null;
+}
+
+function assignedTabForPane(pane: PaneId, layout = current().layout): PaneTabInstance<string> | null {
+  const paneId = resolvePaneId(pane, layout);
+  if (!paneId) return null;
+  const leaf = visiblePaneLeaves(layout).find((item) => item.id === paneId);
+  return leaf?.tabId ? (layout.tabs.find((tab) => tab.id === leaf.tabId) ?? null) : null;
+}
+
 function stateFromLayout(
   layout: PaneLayoutState,
   closed: readonly string[],
@@ -144,19 +218,27 @@ function stateFromLayout(
   projectionIds: readonly string[] | null = null,
   projectionKind: TabState['projectionKind'] = 'legacy-two-pane',
   projectionOrder?: readonly string[] | null,
+  physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>,
 ): TabState {
+  const normalizedPhysicalOrder = normalizePhysicalOrderByGroup(layout, physicalOrderByGroup);
   const focused = focusedInstance(layout);
   const focusedProjection = focused ? projectionIdentity(layout, focused) : null;
-  const defaultOrder = projectionKind === 'fork-layout' ? projectTabs(layout).map((tab) => tab.id) : null;
+  const defaultOrder =
+    projectionKind === 'fork-layout'
+      ? projectTabs(layout, null, normalizedPhysicalOrder).map((tab) => tab.id)
+      : null;
   const effectiveProjectionOrder = projectionOrder === undefined ? defaultOrder : projectionOrder;
   const allTabs = effectiveProjectionOrder
-    ? projectTabs(layout, effectiveProjectionOrder)
-    : projectTabs(layout);
+    ? projectTabs(layout, effectiveProjectionOrder, normalizedPhysicalOrder)
+    : projectTabs(layout, null, normalizedPhysicalOrder);
   const fallbackActive =
     focusedProjection?.id ??
     (allTabs.some((tab) => tab.id === previousActive) ? previousActive : (allTabs[0]?.id ?? ''));
   const visibleProjectionIds = projectionIds ?? (allTabs.length > MAX_TABS ? [fallbackActive] : null);
-  const tabs = visibleProjectionIds === null ? allTabs : projectTabs(layout, visibleProjectionIds);
+  const tabs =
+    visibleProjectionIds === null
+      ? allTabs
+      : projectTabs(layout, visibleProjectionIds, normalizedPhysicalOrder);
   const active =
     focusedProjection && tabs.some((tab) => tab.id === focusedProjection.id)
       ? focusedProjection.id
@@ -164,12 +246,15 @@ function stateFromLayout(
         ? previousActive
         : (tabs[0]?.id ?? '');
   const activeTab = tabs.find((tab) => tab.id === active);
-  const pane = focusedProjection?.pane === 'side' && activeTab?.side ? 'side' : 'main';
+  const selectedLeaves = focusedProjection ? selectedPaneLeaves(layout) : [];
+  const focusedPosition = selectedLeaves.findIndex((leaf) => leaf.id === layout.focusedPaneId);
+  const pane = focusedPosition === 1 && activeTab?.side ? 'side' : 'main';
   return {
     tabs,
     active,
     pane,
     layout,
+    physicalOrderByGroup: normalizedPhysicalOrder,
     projectionIds: visibleProjectionIds,
     projectionOrder: effectiveProjectionOrder,
     projectionKind,
@@ -250,51 +335,62 @@ function layoutForProjection(
   activeId: string,
   requestedPane: PaneId,
   projectionKind: TabState['projectionKind'],
+  physicalOrderByGroup: ReadonlyMap<string, readonly [string, string]>,
 ): PaneLayoutState {
   const exact = layout.tabs.find((tab) => tab.id === activeId);
   if (!exact) return layout;
   const pair = pairForInstance(layout.tabs, exact);
-  const main = pair?.main ?? exact;
-  const side = pair?.side ?? null;
+  const [first, second] = pair ? pairInPhysicalOrder(layout, pair, physicalOrderByGroup) : [exact, null];
   let next = clearMissingAssignments(layout);
   let leaves = visiblePaneLeaves(next);
-  let mainLeaf = leaves.find((leaf) => leaf.tabId === main.id) ?? leaves[0];
-  if (!mainLeaf) return next;
-  let sideLeaf = side ? leaves.find((leaf) => leaf.tabId === side.id && leaf.id !== mainLeaf!.id) : undefined;
+  let firstLeaf = leaves.find((leaf) => leaf.tabId === first.id) ?? leaves[0];
+  if (!firstLeaf) return next;
+  let secondLeaf = second
+    ? leaves.find((leaf) => leaf.tabId === second.id && leaf.id !== firstLeaf!.id)
+    : undefined;
 
-  if (side && !sideLeaf && leaves.length === 1) {
-    next = splitSinglePane(next, mainLeaf, main.id, side.id);
+  if (second && !secondLeaf && leaves.length === 1) {
+    next = splitSinglePane(next, firstLeaf, first.id, second.id);
     leaves = visiblePaneLeaves(next);
-    const splitMainLeaf = leaves.find((leaf) => leaf.tabId === main.id) ?? leaves[0];
-    if (!splitMainLeaf) return next;
-    mainLeaf = splitMainLeaf;
-    sideLeaf = leaves.find((leaf) => leaf.id !== splitMainLeaf.id && leaf.tabId === side.id);
+    const splitFirstLeaf = leaves.find((leaf) => leaf.tabId === first.id) ?? leaves[0];
+    if (!splitFirstLeaf) return next;
+    firstLeaf = splitFirstLeaf;
+    secondLeaf = leaves.find((leaf) => leaf.id !== splitFirstLeaf.id && leaf.tabId === second.id);
   }
-  if (side && !sideLeaf) {
-    sideLeaf =
-      leaves.find((leaf) => leaf.id !== mainLeaf!.id && leaf.tabId === null) ??
-      leaves.find((leaf) => leaf.id !== mainLeaf!.id);
+  if (second && !secondLeaf) {
+    secondLeaf =
+      leaves.find((leaf) => leaf.id !== firstLeaf!.id && leaf.tabId === null) ??
+      leaves.find((leaf) => leaf.id !== firstLeaf!.id);
   }
 
+  const pairIds = new Set(second ? [first.id, second.id] : [first.id]);
   const updates = new Map<string, string | null>();
   for (const leaf of leaves) {
     if (
-      (leaf.tabId === main.id && leaf.id !== mainLeaf.id) ||
-      (side && leaf.tabId === side.id && leaf.id !== sideLeaf?.id) ||
+      (leaf.tabId !== null &&
+        pairIds.has(leaf.tabId) &&
+        leaf.id !== firstLeaf.id &&
+        leaf.id !== secondLeaf?.id) ||
       // In the legacy runtime, a lone tab has no visible side; keep its former side instance
       // in layout.tabs but detach it from the two-pane projection so it can return later.
-      (!side && projectionKind === 'legacy-two-pane' && leaf.id !== mainLeaf.id && leaf.tabId !== null)
+      (!second && projectionKind === 'legacy-two-pane' && leaf.id !== firstLeaf.id && leaf.tabId !== null)
     ) {
       updates.set(leaf.id, null);
     }
   }
-  updates.set(mainLeaf.id, main.id);
-  if (side && sideLeaf) updates.set(sideLeaf.id, side.id);
+  updates.set(firstLeaf.id, first.id);
+  if (second && secondLeaf) updates.set(secondLeaf.id, second.id);
   const root = replaceLeafAssignments(next.root, updates);
-  const focusPane = requestedPane === 'side' && side && sideLeaf ? sideLeaf.id : mainLeaf.id;
+  const projected = { ...next, root };
+  const physicalLeaves = visiblePaneLeaves(projected).filter(
+    (leaf) => leaf.tabId !== null && pairIds.has(leaf.tabId),
+  );
+  const focusPane =
+    requestedPane === 'side' && physicalLeaves[1]
+      ? physicalLeaves[1].id
+      : (physicalLeaves[0]?.id ?? firstLeaf.id);
   return {
-    ...next,
-    root,
+    ...projected,
     focusedPaneId: focusPane,
   };
 }
@@ -303,7 +399,11 @@ function applyLaunchHash(layout: PaneLayoutState, activeId: string, hash: string
   const exact = layout.tabs.find((tab) => tab.id === activeId);
   if (!exact) return layout;
   const pair = pairForInstance(layout.tabs, exact);
-  const target = pair?.main ?? exact;
+  const pairIds = pair ? new Set([pair.main.id, pair.side.id]) : new Set([exact.id]);
+  const primaryLeaf = visiblePaneLeaves(layout).find(
+    (leaf) => leaf.tabId !== null && pairIds.has(leaf.tabId),
+  );
+  const target = layout.tabs.find((tab) => tab.id === primaryLeaf?.tabId) ?? pair?.main ?? exact;
   if (target.target === hash) return layout;
   const updated = {
     ...target,
@@ -343,9 +443,32 @@ function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: s
   const first = focusInstance ?? snapshot.layout.tabs[0];
   if (!first) return initialState(hash, false, raw);
   const identity = projectionIdentity(snapshot.layout, first);
-  const projected = layoutForProjection(snapshot.layout, identity.id, identity.pane, 'fork-layout');
+  const physicalOrderByGroup = normalizePhysicalOrderByGroup(snapshot.layout);
+  const pair = pairForInstance(snapshot.layout.tabs, first);
+  const selectedIds = pair ? new Set([pair.main.id, pair.side.id]) : new Set([first.id]);
+  const focusedPosition = visiblePaneLeaves(snapshot.layout)
+    .filter((leaf) => leaf.tabId !== null && selectedIds.has(leaf.tabId))
+    .findIndex((leaf) => leaf.id === snapshot.layout.focusedPaneId);
+  const requestedPane = focusedPosition === 1 ? 'side' : 'main';
+  const projected = layoutForProjection(
+    snapshot.layout,
+    identity.id,
+    requestedPane,
+    'fork-layout',
+    physicalOrderByGroup,
+  );
   const launched = applyLaunchHash(projected, identity.id, hash);
-  return stateFromLayout(launched, snapshot.closed, false, raw, identity.id, null, 'fork-layout');
+  return stateFromLayout(
+    launched,
+    snapshot.closed,
+    false,
+    raw,
+    identity.id,
+    null,
+    'fork-layout',
+    undefined,
+    physicalOrderByGroup,
+  );
 }
 
 function load(): TabState {
@@ -399,6 +522,44 @@ function nextSideId(mainId: string, tabs: readonly PaneTabInstance<string>[]): s
   return allocateSideInstanceId(mainId, new Set(tabs.map((tab) => tab.id)));
 }
 
+function legacyPersistenceView(now: TabState): {
+  readonly tabs: readonly Tab[];
+  readonly active: string;
+  readonly pane: PaneRole;
+  readonly closed: readonly string[];
+} {
+  const tabs = now.tabs.map((tab) => {
+    const instance = now.layout.tabs.find((candidate) => candidate.id === tab.id);
+    const pair = instance ? pairForInstance(now.layout.tabs, instance) : null;
+    if (!pair) return tab;
+    const [main, side] = pairInPhysicalOrder(now.layout, pair, now.physicalOrderByGroup);
+    return {
+      ...tab,
+      hash: main.target,
+      back: [...main.back],
+      forward: [...main.forward],
+      side: { hash: side.target, back: [...side.back], forward: [...side.forward] },
+    };
+  });
+  const focusedPair = now.tabs.find((tab) => tab.id === now.active);
+  const focusedPairInstance = focusedPair
+    ? now.layout.tabs.find((tab) => tab.id === focusedPair.id)
+    : undefined;
+  const pair = focusedPairInstance ? pairForInstance(now.layout.tabs, focusedPairInstance) : null;
+  const pairIds = pair ? new Set([pair.main.id, pair.side.id]) : null;
+  const focusedPosition = pairIds
+    ? visiblePaneLeaves(now.layout)
+        .filter((leaf) => leaf.tabId !== null && pairIds.has(leaf.tabId))
+        .findIndex((leaf) => leaf.id === now.layout.focusedPaneId)
+    : -1;
+  return {
+    tabs,
+    active: now.active,
+    pane: focusedPosition === 1 ? 'side' : 'main',
+    closed: now.closed,
+  };
+}
+
 function projectedOrderChanged(previous: readonly Tab[], next: readonly Tab[]): boolean {
   const nextIds = new Set(next.map((tab) => tab.id));
   const previousCommon = previous.filter((tab) => nextIds.has(tab.id)).map((tab) => tab.id);
@@ -430,6 +591,7 @@ function updateLayoutFromProjection(
   previousTabs: readonly Tab[],
   nextTabs: readonly Tab[],
   preserveExistingOrder: boolean,
+  physicalOrderByGroup: ReadonlyMap<string, readonly [string, string]>,
 ): PaneLayoutState {
   let tabs = [...base.tabs];
   const nextIds = new Set(nextTabs.map((tab) => tab.id));
@@ -463,6 +625,29 @@ function updateLayoutFromProjection(
     const pinned = projected.pinned === true;
     const previous = previousTabs.find((tab) => tab.id === projected.id);
     const pinChanged = !previous || previous.pinned !== projected.pinned;
+    const currentPair = pairForInstance(tabs, main);
+    if (currentPair) {
+      const pairLayout = { ...base, tabs };
+      const [physicalMain, physicalSide] = pairInPhysicalOrder(pairLayout, currentPair, physicalOrderByGroup);
+      const updatedMain = instanceWithTabView(
+        physicalMain,
+        projected,
+        pinChanged ? pinned : physicalMain.pinned === true,
+      );
+      const nextTabsWithMain = tabs.map((tab) => (tab.id === physicalMain.id ? updatedMain : tab));
+      if (projected.side && physicalSide) {
+        const sideView: Tab = { ...projected.side, id: projected.id, side: null };
+        const updatedSide = instanceWithTabView(
+          physicalSide,
+          sideView,
+          pinChanged ? pinned : physicalSide.pinned === true,
+        );
+        tabs = nextTabsWithMain.map((tab) => (tab.id === physicalSide.id ? updatedSide : tab));
+      } else {
+        tabs = nextTabsWithMain.filter((tab) => tab.id !== physicalSide?.id);
+      }
+      continue;
+    }
     const nextMain = instanceWithTabView(main, projected, pinChanged ? pinned : main.pinned === true);
     tabs = tabs.map((tab) => (tab.id === main!.id ? nextMain : tab));
 
@@ -495,32 +680,51 @@ function updateLayoutFromProjection(
   return clearMissingAssignments({ ...base, tabs: ordered });
 }
 
-function set(next: TabState): void {
+function set(next: TabState, keepLayout = false): void {
   const previous = current();
-  const preserveExistingOrder =
-    previous.projectionIds !== null ||
-    (previous.projectionKind === 'fork-layout' && !projectedOrderChanged(previous.tabs, next.tabs));
-  let layout = updateLayoutFromProjection(next.layout, previous.tabs, next.tabs, preserveExistingOrder);
-  layout = layoutForProjection(layout, next.active, next.pane, next.projectionKind);
+  let layout = next.layout;
+  if (!keepLayout) {
+    const preserveExistingOrder =
+      previous.projectionIds !== null ||
+      (previous.projectionKind === 'fork-layout' && !projectedOrderChanged(previous.tabs, next.tabs));
+    layout = updateLayoutFromProjection(
+      next.layout,
+      previous.tabs,
+      next.tabs,
+      preserveExistingOrder,
+      next.physicalOrderByGroup,
+    );
+    layout = layoutForProjection(
+      layout,
+      next.active,
+      next.pane,
+      next.projectionKind,
+      next.physicalOrderByGroup,
+    );
+  }
+  const projectionIds = keepLayout
+    ? next.projectionIds
+    : previous.projectionIds === null
+      ? null
+      : next.tabs.map((tab) => tab.id);
+  const projectionOrder = keepLayout
+    ? next.projectionOrder
+    : previous.projectionKind === 'fork-layout' && previous.projectionIds === null
+      ? next.tabs.map((tab) => tab.id)
+      : null;
   let committed = stateFromLayout(
     layout,
     next.closed,
     next.persistenceWritable,
     next.observedStorageRaw,
     next.active,
-    previous.projectionIds === null ? null : next.tabs.map((tab) => tab.id),
+    projectionIds,
     next.projectionKind,
-    previous.projectionKind === 'fork-layout' && previous.projectionIds === null
-      ? next.tabs.map((tab) => tab.id)
-      : null,
+    projectionOrder,
+    next.physicalOrderByGroup,
   );
   if (committed.persistenceWritable) {
-    const serialized = JSON.stringify({
-      tabs: committed.tabs,
-      active: committed.active,
-      pane: committed.pane,
-      closed: committed.closed,
-    });
+    const serialized = JSON.stringify(legacyPersistenceView(committed));
     try {
       const currentRaw = localStorage.getItem(PANE_TABS_STORAGE_KEY);
       if (currentRaw !== committed.observedStorageRaw) {
@@ -542,6 +746,32 @@ function set(next: TabState): void {
   for (const listener of listeners) listener();
 }
 
+function setLayout(
+  layout: PaneLayoutState,
+  options: {
+    readonly physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>;
+    readonly projectionIdReplacement?: readonly [string, string];
+  } = {},
+): void {
+  const now = current();
+  const replaceProjectionIds = (ids: readonly string[] | null) => {
+    const replacement = options.projectionIdReplacement;
+    return ids && replacement ? ids.map((id) => (id === replacement[0] ? replacement[1] : id)) : ids;
+  };
+  const next = stateFromLayout(
+    layout,
+    now.closed,
+    now.persistenceWritable,
+    now.observedStorageRaw,
+    now.active,
+    replaceProjectionIds(now.projectionIds),
+    now.projectionKind,
+    replaceProjectionIds(now.projectionOrder),
+    options.physicalOrderByGroup ?? now.physicalOrderByGroup,
+  );
+  set(next, true);
+}
+
 const activeTab = (now = current()): Tab => now.tabs.find((tab) => tab.id === now.active) ?? now.tabs[0]!;
 
 function updateActive(change: (tab: Tab) => Tab, extra: Partial<TabState> = {}): void {
@@ -558,10 +788,9 @@ function go(hash: string): void {
   window.location.hash = hash;
 }
 
-function visit(pane: PaneHistory, hash: string, replace: boolean): PaneHistory {
-  if (pane.hash === hash) return pane;
-  if (replace) return { ...pane, hash };
-  return { hash, back: [...pane.back, pane.hash].slice(-MAX_HISTORY), forward: [] };
+function goToPrimaryPane(): void {
+  const primary = primaryPaneId();
+  if (primary) go(routeHashForPane(primary));
 }
 
 // a mouse's back button can reach the app both as a button press and as a window app command. whichever
@@ -577,11 +806,19 @@ export function startTabs(): () => void {
   current();
   const onHash = () => {
     const hash = window.location.hash || '#/';
-    const tab = activeTab();
+    const primary = primaryPaneId();
+    const tab = primary ? assignedTabForPane(primary) : null;
     const expected = arriving === hash;
     arriving = null;
-    if (tab.hash === hash) return;
-    updateActive((item) => (expected ? { ...item, hash } : { ...item, ...visit(item, hash, false) }));
+    if (!tab || tab.target === hash) return;
+    const history = expected
+      ? { ...tab, target: hash }
+      : { ...tab, target: hash, back: [...tab.back, tab.target].slice(-MAX_HISTORY), forward: [] };
+    const now = current();
+    setLayout({
+      ...now.layout,
+      tabs: now.layout.tabs.map((item) => (item.id === tab.id ? history : item)),
+    });
   };
   // ctrl or cmd click, or a middle click, on anything that points at a page opens it in a new tab behind
   // the one you are on, with shift as well it comes to the front. alt click opens it beside the page
@@ -634,105 +871,234 @@ export function startTabs(): () => void {
 
 function paneAt(target: EventTarget | null): PaneId {
   const element = target instanceof Element ? target.closest<HTMLElement>('[data-pane]') : null;
-  return element?.dataset.pane === 'side' ? 'side' : element ? 'main' : current().pane;
+  return element?.dataset.pane === 'side'
+    ? (resolvePaneId('side') ?? targetPane())
+    : element
+      ? (resolvePaneId('main') ?? targetPane())
+      : targetPane();
 }
 
-// where navigation goes: the side of a split tab when that side was used last
+export interface PaneAssignment {
+  readonly role: PaneRole;
+  readonly paneId: PaneId;
+  readonly tabId: string;
+}
+
+/** The selected tab's two-pane projection, in primary-then-side order. */
+export function paneAssignments(layout = current().layout): PaneAssignment[] {
+  const leaves = selectedPaneLeaves(layout);
+  return leaves.flatMap((leaf, index) =>
+    leaf.tabId ? [{ role: index === 0 ? 'main' : 'side', paneId: leaf.id, tabId: leaf.tabId }] : [],
+  );
+}
+
 export function targetPane(): PaneId {
-  const now = current();
-  return now.pane === 'side' && activeTab(now).side ? 'side' : 'main';
+  return current().layout.focusedPaneId;
 }
 
-// the hash shown in the pane navigation goes to
 export function activeHash(): string {
-  const pane = targetPane();
-  return pane === 'main' ? window.location.hash || routeHashForPane('main') : routeHashForPane('side');
+  const focused = targetPane();
+  return focused === primaryPaneId() && window.location.hash
+    ? window.location.hash
+    : routeHashForPane(focused);
 }
 
 export function routeHashForPane(pane: PaneId): string {
   const now = current();
-  const projected = now.tabs.find((tab) => tab.id === now.active) ?? now.tabs[0];
-  if (!projected) return '#/';
-  const instance = now.layout.tabs.find((tab) => tab.id === projected.id);
-  if (!instance) return '#/';
-  const pair = pairForInstance(now.layout.tabs, instance);
-  if (pair) return pane === 'side' ? pair.side.target : pair.main.target;
-  return pane === 'main' ? instance.target : '#/';
+  return assignedTabForPane(pane, now.layout)?.target ?? '#/';
+}
+
+export function routeHashForTabId(tabId: string): string {
+  return current().layout.tabs.find((tab) => tab.id === tabId)?.target ?? '#/';
+}
+
+export function paneIdForTabId(tabId: string): PaneId {
+  const layout = current().layout;
+  const assigned = selectedPaneLeaves(layout).find((leaf) => leaf.tabId === tabId);
+  if (assigned) return assigned.id;
+  const cacheKey = Array.from(tabId, (character) => character.codePointAt(0)!.toString(16)).join('-');
+  const visibleIds = new Set(visiblePaneLeaves(layout).map((leaf) => leaf.id));
+  let cachedId = `morrow-cached-pane:${cacheKey}`;
+  while (visibleIds.has(cachedId)) cachedId += ':hidden';
+  return cachedId;
+}
+
+export function isPrimaryPane(pane: PaneId): boolean {
+  return resolvePaneId(pane) === primaryPaneId();
+}
+
+export function isSidePane(pane: PaneId): boolean {
+  return resolvePaneId(pane) === selectedPaneLeaves(current().layout)[1]?.id;
+}
+
+export function isPaneTabVisible(tabId: string): boolean {
+  return selectedPaneLeaves(current().layout).some((leaf) => leaf.tabId === tabId);
+}
+
+export function isSideTabInstance(tabId: string): boolean {
+  const layout = current().layout;
+  const tab = layout.tabs.find((item) => item.id === tabId);
+  return tab !== undefined && pairForInstance(layout.tabs, tab)?.side.id === tabId;
 }
 
 export function setActivePane(pane: PaneId): void {
   const now = current();
-  const next = pane === 'side' && activeTab(now).side ? 'side' : 'main';
-  if (now.pane !== next) set({ ...now, pane: next });
+  const paneId = resolvePaneId(pane, now.layout);
+  if (!paneId || paneId === now.layout.focusedPaneId) return;
+  setLayout({ ...now.layout, focusedPaneId: paneId });
 }
 
-// shows a place in the main side, replacing keeps back and forward as they are. a pinned tab keeps its
-// place, anywhere else it goes opens in a new tab beside it
-export function showInMain(hash: string, replace = false): void {
-  if (window.location.hash === hash) return;
+export function showInPane(hash: string, pane = targetPane(), replace = false): void {
+  const now = current();
+  const paneId = resolvePaneId(pane, now.layout);
+  if (!paneId) return;
+  const leaf = visiblePaneLeaves(now.layout).find((item) => item.id === paneId);
+  const tab = leaf?.tabId ? now.layout.tabs.find((item) => item.id === leaf.tabId) : null;
+  if (!tab || tab.target === hash) return;
+  const primary = primaryPaneId(now.layout);
   const place = (value: string) => (value || '#/').split('?')[0];
-  if (!replace && activeTab().pinned && place(hash) !== place(activeTab().hash)) {
+  if (!replace && paneId === primary && activeTab(now).pinned && place(hash) !== place(tab.target)) {
     openTab(hash);
     return;
   }
-  if (!replace) {
-    window.location.hash = hash;
-    return;
+  const nextHistory = replace
+    ? { ...tab, target: hash }
+    : { ...tab, target: hash, back: [...tab.back, tab.target].slice(-MAX_HISTORY), forward: [] };
+  setLayout({
+    ...now.layout,
+    focusedPaneId: paneId,
+    tabs: now.layout.tabs.map((item) => (item.id === tab.id ? nextHistory : item)),
+  });
+  if (paneId !== primary) return;
+  if (replace) {
+    history.replaceState(null, '', hash);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  } else {
+    go(hash);
   }
-  updateActive((item) => ({ ...item, hash }));
-  history.replaceState(null, '', hash);
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
 
-// shows a place in the side of the split, used by navigation while that side is active
+// Shows a place in the primary pane. A pinned tab opens another tab instead of navigating away.
+export function showInMain(hash: string, replace = false): void {
+  const now = current();
+  const primary = primaryPaneId(now.layout);
+  const primaryTarget = primary ? assignedTabForPane(primary, now.layout)?.target : undefined;
+  const place = (value: string) => (value || '#/').split('?')[0];
+  if (
+    !replace &&
+    activeTab(now).pinned &&
+    primaryTarget !== undefined &&
+    place(hash) !== place(primaryTarget)
+  ) {
+    openTab(hash);
+    return;
+  }
+  if (primary) showInPane(hash, primary, replace);
+}
+
 export function showInSide(hash: string, replace = false): void {
-  const tab = activeTab();
-  if (!tab.side) return;
-  updateActive((item) => ({ ...item, side: visit(item.side!, hash, replace) }));
+  const side = selectedPaneLeaves(current().layout)[1];
+  if (side) showInPane(hash, side.id, replace);
 }
 
 // splits the tab, the new side shows the given place and becomes where navigation goes
 export function openSide(hash = activeHash()): void {
+  const now = current();
+  const side = selectedPaneLeaves(now.layout)[1];
+  if (side?.tabId) {
+    setLayout({
+      ...now.layout,
+      focusedPaneId: side.id,
+      tabs: now.layout.tabs.map((tab) =>
+        tab.id === side.tabId ? { ...tab, target: hash, back: [], forward: [] } : tab,
+      ),
+    });
+    return;
+  }
   updateActive((item) => ({ ...item, side: { hash, back: [], forward: [] } }), { pane: 'side' });
 }
 
 export function closeSide(): void {
-  if (!activeTab().side) return;
-  updateActive((item) => ({ ...item, side: null }), { pane: 'main' });
+  const now = current();
+  const leaves = selectedPaneLeaves(now.layout);
+  const main = leaves[0];
+  const side = leaves[1];
+  if (!main || !side?.tabId) return;
+  const sideInstance = now.layout.tabs.find((tab) => tab.id === side.tabId);
+  const pair = sideInstance ? pairForInstance(now.layout.tabs, sideInstance) : null;
+  const survivorIsPinned =
+    pair?.main.pinned === true ||
+    pair?.side.pinned === true ||
+    now.layout.tabs.find((tab) => tab.id === main.tabId)?.pinned === true;
+  const projectionIdReplacement =
+    pair && main.tabId === pair.side.id ? ([pair.main.id, pair.side.id] as const) : undefined;
+  const layout = clearMissingAssignments({
+    ...now.layout,
+    focusedPaneId: main.id,
+    tabs: now.layout.tabs.flatMap((tab) => {
+      if (tab.id === side.tabId) return [];
+      if (tab.id === main.tabId && survivorIsPinned) return [{ ...tab, pinned: true }];
+      return [tab];
+    }),
+  });
+  setLayout(layout, { projectionIdReplacement });
 }
 
 export function swapSides(): void {
-  const tab = activeTab();
-  if (!tab.side) return;
-  const main: PaneHistory = { hash: tab.hash, back: tab.back, forward: tab.forward };
-  const side = tab.side;
-  updateActive((item) => ({ ...item, ...side, side: main }));
-  go(side.hash);
+  const now = current();
+  const leaves = selectedPaneLeaves(now.layout);
+  const main = leaves[0];
+  const side = leaves[1];
+  if (!main?.tabId || !side?.tabId || main.tabId === side.tabId) return;
+  const updates = new Map([
+    [main.id, side.tabId],
+    [side.id, main.tabId],
+  ]);
+  const root = replaceLeafAssignments(now.layout.root, updates);
+  const focusedPaneId =
+    now.layout.focusedPaneId === main.id
+      ? side.id
+      : now.layout.focusedPaneId === side.id
+        ? main.id
+        : now.layout.focusedPaneId;
+  const layout = { ...now.layout, root, focusedPaneId };
+  const swappedMain = layout.tabs.find((tab) => tab.id === main.tabId);
+  const pair = swappedMain ? pairForInstance(layout.tabs, swappedMain) : null;
+  const physicalOrderByGroup = new Map(now.physicalOrderByGroup);
+  if (pair) physicalOrderByGroup.set(pair.main.id, [side.tabId, main.tabId]);
+  setLayout(layout, { physicalOrderByGroup });
+  goToPrimaryPane();
 }
 
-function paneOf(tab: Tab, pane: PaneId): PaneHistory | null {
-  return pane === 'side' ? tab.side : tab;
-}
-
-export function canGo(tab: Tab, pane: PaneId, direction: 'back' | 'forward'): boolean {
-  return (paneOf(tab, pane)?.[direction].length ?? 0) > 0;
+export function canGo(_tab: Tab, pane: PaneId, direction: 'back' | 'forward'): boolean {
+  const instance = assignedTabForPane(pane);
+  return Boolean(instance && instance[direction].length > 0);
 }
 
 function step(pane: PaneId, direction: 'back' | 'forward'): void {
-  const tab = activeTab();
-  const history = paneOf(tab, pane);
-  if (!history || history[direction].length === 0) return;
-  const list = [...history[direction]];
-  const hash = list.pop()!;
-  const left = [...(direction === 'back' ? history.forward : history.back), history.hash].slice(-MAX_HISTORY);
-  const moved: PaneHistory =
-    direction === 'back' ? { hash, back: list, forward: left } : { hash, back: left, forward: list };
-  if (pane === 'side') {
-    updateActive((item) => ({ ...item, side: moved }), { pane: 'side' });
-    return;
-  }
-  updateActive((item) => ({ ...item, ...moved }), { pane: 'main' });
-  go(hash);
+  const now = current();
+  const paneId = resolvePaneId(pane, now.layout);
+  if (!paneId) return;
+  const leaf = visiblePaneLeaves(now.layout).find((item) => item.id === paneId);
+  const tab = leaf?.tabId ? now.layout.tabs.find((item) => item.id === leaf.tabId) : null;
+  if (!tab || tab[direction].length === 0) return;
+  const history = [...tab[direction]];
+  const hash = history.pop()!;
+  const next = {
+    ...tab,
+    target: hash,
+    [direction]: history,
+    [direction === 'back' ? 'forward' : 'back']: [
+      ...tab[direction === 'back' ? 'forward' : 'back'],
+      tab.target,
+    ].slice(-MAX_HISTORY),
+  };
+  setLayout({
+    ...now.layout,
+    focusedPaneId: paneId,
+    tabs: now.layout.tabs.map((item) => (item.id === tab.id ? next : item)),
+  });
+  if (paneId === primaryPaneId(now.layout)) go(hash);
 }
 
 export function goBack(pane: PaneId = targetPane()): void {
@@ -775,7 +1141,7 @@ export function activateTab(id: string): void {
   const tab = now.tabs.find((item) => item.id === id);
   if (!tab || id === now.active) return;
   set({ ...now, active: id, pane: 'main' });
-  go(tab.hash);
+  goToPrimaryPane();
 }
 
 // pinned tabs come first, in the order they were pinned
@@ -812,7 +1178,7 @@ export function closeTab(id = current().active): void {
   }
   const next = tabs[Math.min(index, tabs.length - 1)]!;
   set({ ...now, tabs, active: next.id, pane: 'main', closed });
-  go(next.hash);
+  goToPrimaryPane();
 }
 
 export function closeOtherTabs(id = current().active): void {
@@ -824,7 +1190,7 @@ export function closeOtherTabs(id = current().active): void {
   const tabs = now.tabs.filter((tab) => tab.id === id || tab.pinned);
   const closed = [...now.closed, ...gone.map((tab) => tab.hash)];
   set({ ...now, tabs, active: id, pane: 'main', closed: closed.slice(-MAX_CLOSED) });
-  go(keep.hash);
+  goToPrimaryPane();
 }
 
 export function closeTabsToRight(id = current().active): void {
@@ -837,7 +1203,7 @@ export function closeTabsToRight(id = current().active): void {
   const closed = [...now.closed, ...gone.map((tab) => tab.hash)].slice(-MAX_CLOSED);
   const stays = tabs.some((tab) => tab.id === now.active);
   set({ ...now, tabs, closed, active: stays ? now.active : id, pane: stays ? now.pane : 'main' });
-  if (!stays) go(tabs.find((tab) => tab.id === id)!.hash);
+  if (!stays) goToPrimaryPane();
 }
 
 export function reopenClosedTab(): void {
@@ -890,7 +1256,20 @@ export function getTabs(): TabState {
 
 // which side of the split a view is drawn in
 export const PaneContext = createContext<PaneId>('main');
+export const PaneTabContext = createContext<string | null>(null);
 
 export function usePane(): PaneId {
-  return useContext(PaneContext);
+  const contextPane = useContext(PaneContext);
+  return resolvePaneId(contextPane) ?? contextPane;
+}
+
+export function usePaneTabContextId(): string | null {
+  return useContext(PaneTabContext);
+}
+
+export function usePaneTabId(): string | null {
+  const contextTabId = usePaneTabContextId();
+  const pane = usePane();
+  if (contextTabId !== null) return contextTabId;
+  return assignedTabForPane(pane)?.id ?? null;
 }

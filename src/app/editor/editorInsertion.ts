@@ -9,7 +9,7 @@ import type {
   PluginEditorInsertionTargetV1,
 } from '../plugins/editorApi';
 import { getPreferences, subscribePreferences } from '../platform/preferences';
-import { activeHash, getTabs, subscribeTabs, targetPane } from '../tabs';
+import { activeHash, getTabs, isPrimaryPane, isSidePane, subscribeTabs, targetPane } from '../tabs';
 import { parseRoute } from '../router';
 import {
   canInsertPageEditorTarget,
@@ -64,6 +64,15 @@ function sameNavigation(first: NavigationSnapshot, second: NavigationSnapshot): 
     first.hash === second.hash &&
     first.pageId === second.pageId
   );
+}
+
+function paneMatches(first: string, second: string): boolean {
+  if (first === second) return true;
+  if (first === 'main') return isPrimaryPane(second);
+  if (first === 'side') return isSidePane(second);
+  if (second === 'main') return isPrimaryPane(first);
+  if (second === 'side') return isSidePane(first);
+  return false;
 }
 
 function failed(reason: PluginEditorInsertionFailureReason): PluginEditorInsertionResultV1 {
@@ -132,7 +141,7 @@ export function captureEditorInsertionTarget(
     !peer ||
     peer.session !== session ||
     !navigation ||
-    navigation.pane !== peer.pane ||
+    !paneMatches(navigation.pane, peer.pane) ||
     navigation.pageId !== peer.pageId ||
     !ownerIsCurrent(owner, ownerGeneration) ||
     getPreferences().readingMode ||
@@ -199,7 +208,7 @@ export function captureEditorInsertionTarget(
     if (!current || !sameNavigation(navigation, current)) invalidate('target-changed');
   };
   const onHashChanged = (event: HashChangeEvent) => {
-    if (navigation.pane === 'main' && hashFromUrl(event.oldURL) !== hashFromUrl(event.newURL)) {
+    if (isPrimaryPane(navigation.pane) && hashFromUrl(event.oldURL) !== hashFromUrl(event.newURL)) {
       invalidate('target-changed');
       return;
     }

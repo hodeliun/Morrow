@@ -8,6 +8,7 @@ import { linkedBlockIds } from '../../core/links';
 import type { DocNode, PageId } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
 import type { WorkspaceSession } from '../../storage/session';
+import { targetPane } from '../tabs';
 import type { PaneId } from '../tabs';
 import { registerCommit } from './commits';
 import { toast } from '../ui';
@@ -912,7 +913,7 @@ export function registerPageEditorCoordinator(
   initialDoc: DocNode,
   editable: boolean,
   onDirty: (dirty: boolean) => void,
-  pane: PaneId = 'main',
+  pane: PaneId = targetPane(),
   preserveBlockId: (id: string) => boolean = () => false,
 ): PageEditorCoordinator {
   const entry = getEntry(session, pageId, initialDoc);

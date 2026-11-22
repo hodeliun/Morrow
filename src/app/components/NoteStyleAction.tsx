@@ -30,7 +30,15 @@ import {
 import type { WorkspaceSession } from '../../storage/session';
 import type { PageId } from '../../core/model';
 import { t } from '../i18n';
-import { usePane } from '../tabs';
+import { parseRoute } from '../router';
+import {
+  isPaneTabVisible,
+  paneIdForTabId,
+  routeHashForTabId,
+  subscribeTabs,
+  usePane,
+  usePaneTabContextId,
+} from '../tabs';
 import type { PaneId } from '../tabs';
 import { isProviderManagedPage } from './pageEditability';
 
@@ -41,6 +49,7 @@ interface OpenPanel {
   readonly contextGeneration: symbol;
   readonly ownerToken: symbol;
   readonly pane: PaneId;
+  readonly tabId: string | null;
   readonly registration: PluginNoteStylePanelEntry;
   readonly activationGeneration: number;
   readonly revision: string;
@@ -50,6 +59,8 @@ interface OpenPanel {
   readonly width: 'comfortable' | 'wide' | 'full';
   readonly labels: PluginNoteStylePanelLabels;
   readonly trigger: HTMLButtonElement;
+  tabOriginInvalidated: boolean;
+  stopWatchingTabOrigin: (() => void) | null;
   closed: boolean;
 }
 
@@ -59,6 +70,8 @@ interface CurrentPageContext {
   sessionGeneration: number;
   contextGeneration: symbol;
   pane: PaneId;
+  tabId: string | null;
+  paneVisible: boolean;
   registration: PluginNoteStylePanelEntry | null;
   eligible: boolean;
 }
@@ -89,20 +102,45 @@ function releaseNoteStylePanelOwner(owner: symbol): void {
 
 function focusBelongsToPanelOrigin(panel: OpenPanel, focused: Element | null): boolean {
   const document = panel.trigger.ownerDocument;
-  const sourcePane = panel.trigger.closest<HTMLElement>('.pane[data-pane]');
-  if (sourcePane && !sourcePane.classList.contains('is-active')) return false;
+  const sourcePane = panel.trigger.closest<HTMLElement>('.pane[data-tab-instance], .pane[data-pane]');
+  if (sourcePane && (!paneIsVisible(sourcePane) || !sourcePane.classList.contains('is-active'))) return false;
   if (focused === panel.trigger) return true;
-  if (
-    document
-      .querySelector<HTMLElement>('.note-style-popover[role="dialog"]')
-      ?.contains(focused ?? null)
-  )
+  if (document.querySelector<HTMLElement>('.note-style-popover[role="dialog"]')?.contains(focused ?? null))
     return true;
   return Boolean(sourcePane && focused && sourcePane.contains(focused));
 }
 
 function originPaneIsActive(panel: OpenPanel): boolean {
-  return panel.trigger.closest<HTMLElement>('.pane[data-pane]')?.classList.contains('is-active') ?? false;
+  const pane = panel.trigger.closest<HTMLElement>('.pane[data-tab-instance], .pane[data-pane]');
+  return Boolean(pane && paneIsVisible(pane) && pane.classList.contains('is-active'));
+}
+
+function paneIsVisible(pane: HTMLElement): boolean {
+  return (
+    pane.getAttribute('aria-hidden') !== 'true' &&
+    !pane.hasAttribute('hidden') &&
+    pane.style.display !== 'none'
+  );
+}
+
+function triggerPaneIsVisible(trigger: HTMLElement): boolean {
+  const pane = trigger.closest<HTMLElement>('.pane[data-tab-instance], .pane[data-pane]');
+  return pane === null || paneIsVisible(pane);
+}
+
+function tabOriginIsCurrent(origin: Pick<OpenPanel, 'pageId' | 'pane' | 'tabId'>): boolean {
+  if (origin.tabId === null) return true;
+  try {
+    if (!isPaneTabVisible(origin.tabId) || paneIdForTabId(origin.tabId) !== origin.pane) return false;
+    const route = parseRoute(routeHashForTabId(origin.tabId));
+    return route.name === 'page' && route.id === origin.pageId;
+  } catch {
+    return false;
+  }
+}
+
+function originPaneIsVisible(panel: OpenPanel): boolean {
+  return triggerPaneIsVisible(panel.trigger);
 }
 
 function copyStyle(style: NoteStyle): NoteStyle {
@@ -150,6 +188,8 @@ function panelLabels(): PluginNoteStylePanelLabels {
 /** Host-owned page action that mounts a Documento panel into the existing Popover. */
 export function NoteStyleAction({ pageId }: { pageId: PageId }) {
   const pane = usePane();
+  const tabId = usePaneTabContextId();
+  const paneVisible = tabId === null || isPaneTabVisible(tabId);
   const preferences = usePreferences();
   const state = useWorkspace();
   const sessionGeneration = useSyncExternalStore(
@@ -189,9 +229,9 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
   const contextGeneration = useMemo(
     () =>
       Symbol(
-        `${pageId}:${session.location}:${session.isClosed}:${sessionGeneration}:${pane}:${eligible}:${registration?.generation ?? 0}`,
+        `${pageId}:${session.location}:${session.isClosed}:${sessionGeneration}:${pane}:${tabId ?? ''}:${eligible}:${registration?.generation ?? 0}`,
       ),
-    [eligible, pageId, pane, registration, session, sessionGeneration],
+    [eligible, pageId, pane, registration, session, sessionGeneration, tabId],
   );
   const currentContext: CurrentPageContext = {
     pageId,
@@ -199,6 +239,8 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
     sessionGeneration,
     contextGeneration,
     pane,
+    tabId,
+    paneVisible,
     registration,
     eligible,
   };
@@ -231,6 +273,11 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
         current.sessionGeneration === captured.sessionGeneration &&
         current.contextGeneration === captured.contextGeneration &&
         current.pane === captured.pane &&
+        current.tabId === captured.tabId &&
+        current.paneVisible &&
+        !captured.tabOriginInvalidated &&
+        tabOriginIsCurrent(captured) &&
+        originPaneIsVisible(captured) &&
         current.registration === captured.registration &&
         current.registration?.generation === captured.activationGeneration &&
         current.eligible &&
@@ -253,13 +300,13 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
       const document = captured.trigger.ownerDocument;
       const focusAtClose = document.activeElement;
       const focusWasInDialog = Boolean(
-        document
-          .querySelector<HTMLElement>('.note-style-popover[role="dialog"]')
-          ?.contains(focusAtClose),
+        document.querySelector<HTMLElement>('.note-style-popover[role="dialog"]')?.contains(focusAtClose),
       );
       const canRestoreFocus = restoreFocus && focusBelongsToPanelOrigin(captured, focusAtClose);
       panelRef.current = null;
       captured.closed = true;
+      captured.stopWatchingTabOrigin?.();
+      captured.stopWatchingTabOrigin = null;
       setPanel(null);
       if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
       focusFrame.current = null;
@@ -276,12 +323,7 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
         const focusStillOwned =
           focusBelongsToPanelOrigin(captured, focusNow) ||
           (focusWasInDialog && focusNow === document.body && originPaneIsActive(captured));
-        if (
-          mountIsActive() &&
-          scopeIsCurrent(captured) &&
-          captured.trigger.isConnected &&
-          focusStillOwned
-        )
+        if (mountIsActive() && scopeIsCurrent(captured) && captured.trigger.isConnected && focusStillOwned)
           captured.trigger.focus({ preventScroll: true });
         releaseNoteStylePanelOwner(captured.ownerToken);
       });
@@ -299,6 +341,7 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
     activePanelOwner,
     pageId,
     pane,
+    paneVisible,
     panel,
     registration,
     scopeIsCurrent,
@@ -309,6 +352,10 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
   useEffect(
     () => () => {
       if (panelRef.current) panelRef.current.closed = true;
+      if (panelRef.current) {
+        panelRef.current.stopWatchingTabOrigin?.();
+        panelRef.current.stopWatchingTabOrigin = null;
+      }
       if (panelRef.current) releaseNoteStylePanelOwner(panelRef.current.ownerToken);
       panelRef.current = null;
       if (focusFrame.current !== null) {
@@ -328,6 +375,9 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
       const existing = panelRef.current;
       if (
         !current.eligible ||
+        !current.paneVisible ||
+        !tabOriginIsCurrent(current) ||
+        !triggerPaneIsVisible(trigger) ||
         !activeRegistration?.isActive() ||
         current.session.isClosed ||
         current.session.isMutationFenced ||
@@ -339,6 +389,8 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
       if (
         existing &&
         !existing.closed &&
+        !existing.tabOriginInvalidated &&
+        tabOriginIsCurrent(existing) &&
         existing.trigger === trigger &&
         existing.contextGeneration === current.contextGeneration &&
         getActiveNoteStylePanelOwner() === existing.ownerToken
@@ -361,6 +413,7 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
         contextGeneration: current.contextGeneration,
         ownerToken: Symbol('note-style-owner'),
         pane: current.pane,
+        tabId: current.tabId,
         registration: activeRegistration,
         activationGeneration: activeRegistration.generation,
         revision: snapshot.value.revision,
@@ -370,10 +423,24 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
         width,
         labels: panelLabels(),
         trigger,
+        tabOriginInvalidated: false,
+        stopWatchingTabOrigin: null,
         closed: false,
       };
       claimNoteStylePanelOwner(next.ownerToken);
       panelRef.current = next;
+      if (next.tabId !== null) {
+        const invalidateChangedOrigin = () => {
+          if (next.closed || next.tabOriginInvalidated || tabOriginIsCurrent(next)) return;
+          next.tabOriginInvalidated = true;
+          const stop = next.stopWatchingTabOrigin;
+          next.stopWatchingTabOrigin = null;
+          stop?.();
+          closePanel(next, false);
+        };
+        next.stopWatchingTabOrigin = subscribeTabs(invalidateChangedOrigin);
+        invalidateChangedOrigin();
+      }
       setPanel(next);
     },
     [closePanel],
@@ -382,11 +449,16 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
   const visiblePanel =
     panel &&
     !panel.closed &&
+    !panel.tabOriginInvalidated &&
+    tabOriginIsCurrent(panel) &&
     panel.contextGeneration === contextGeneration &&
     panel.pageId === pageId &&
     panel.session === session &&
     panel.sessionGeneration === sessionGeneration &&
     panel.pane === pane &&
+    panel.tabId === tabId &&
+    paneVisible &&
+    originPaneIsVisible(panel) &&
     panel.registration === registration &&
     panel.ownerToken === activePanelOwner &&
     eligible &&
@@ -423,10 +495,7 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
             const shouldRestoreFocus =
               target !== null &&
               focusBelongsToPanelOrigin(visiblePanel, target) &&
-              focusBelongsToPanelOrigin(
-                visiblePanel,
-                visiblePanel.trigger.ownerDocument.activeElement,
-              );
+              focusBelongsToPanelOrigin(visiblePanel, visiblePanel.trigger.ownerDocument.activeElement);
             closePanel(visiblePanel, shouldRestoreFocus);
           }}
           label={visiblePanel.labels.title}

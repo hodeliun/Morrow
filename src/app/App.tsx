@@ -1,4 +1,14 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  cloneElement,
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import type { ReactElement } from 'react';
 import { t } from './i18n';
 import { allActions, matchesShortcut, runAction } from './actions';
 import { isExitInteractionBlocked } from './exitInteraction';
@@ -40,14 +50,68 @@ import {
   claimNavigation,
   goBack,
   PaneContext,
+  PaneTabContext,
+  paneAssignments,
+  paneIdForTabId,
   setActivePane,
   startTabs,
   useTabs,
 } from './tabs';
-import type { PaneId } from './tabs';
-import { clearPropertyHistory, getSession, getState } from './workspace';
+import type { PaneId, PaneRole } from './tabs';
+import {
+  clearPropertyHistory,
+  getSession,
+  getState,
+  getWorkspaceSessionGeneration,
+  subscribeWorkspaceSession,
+} from './workspace';
+import type { WorkspaceSession } from '../storage/session';
 
 const AUTO_BACKUP_MS = 10 * 60 * 1000;
+const mountedPaneInstances = new WeakMap<WorkspaceSession, Set<string>>();
+
+export function paneHostInstances(
+  session: WorkspaceSession,
+  registeredIds: readonly string[],
+  visibleIds: readonly string[],
+  cacheableIds: readonly string[] = registeredIds,
+): string[] {
+  const registered = new Set(registeredIds);
+  const cacheable = new Set(cacheableIds.filter((tabId) => registered.has(tabId)));
+  const mounted = mountedPaneInstances.get(session) ?? new Set<string>();
+  for (const tabId of mounted) if (!cacheable.has(tabId)) mounted.delete(tabId);
+  for (const tabId of visibleIds) if (cacheable.has(tabId)) mounted.add(tabId);
+  mountedPaneInstances.set(session, mounted);
+  return registeredIds.filter((tabId) => mounted.has(tabId));
+}
+
+export function cacheablePaneHostIds(tabs: readonly { id: string; target: string }[]): string[] {
+  return tabs.filter((tab) => parseRoute(tab.target).name === 'page').map((tab) => tab.id);
+}
+
+interface PaneHostElement {
+  readonly tabId: string;
+  readonly element: ReactElement;
+}
+
+export function paneHostChildren(
+  sessionGeneration: number,
+  visible: readonly PaneHostElement[],
+  hidden: readonly PaneHostElement[],
+  splitResizer: ReactElement,
+): ReactElement[] {
+  const children: ReactElement[] = [];
+  visible.forEach((pane, index) => {
+    if (index === 1) {
+      children.push(cloneElement(splitResizer, { key: `${sessionGeneration}:split-resizer` }));
+    }
+    children.push(cloneElement(pane.element, { key: `${sessionGeneration}:${pane.tabId}` }));
+  });
+  for (const pane of hidden) {
+    children.push(cloneElement(pane.element, { key: `${sessionGeneration}:${pane.tabId}` }));
+  }
+  return children;
+}
 
 // the assistant is only loaded for people who turned it on
 const AssistantPanel = lazy(() =>
@@ -316,34 +380,51 @@ function usePaneSize(ref: React.RefObject<HTMLElement | null>): PaneSize {
 
 // one side of the window's content, a split tab shows two of these
 function Pane({
-  pane,
+  role,
+  paneId,
+  tabId,
   route,
   active,
+  hidden = false,
   style,
 }: {
-  pane: PaneId;
+  role: PaneRole;
+  paneId: PaneId;
+  tabId: string;
   route: Route;
   active: boolean;
+  hidden?: boolean;
   style?: React.CSSProperties;
 }) {
   const ref = useRef<HTMLElement>(null);
   const size = usePaneSize(ref);
+  useLayoutEffect(() => {
+    if (!hidden) return;
+    const section = ref.current;
+    const focused = section?.ownerDocument.activeElement;
+    if (section && focused instanceof HTMLElement && section.contains(focused)) focused.blur();
+  }, [hidden]);
   return (
-    <PaneContext.Provider value={pane}>
-      <section
-        ref={ref}
-        className={`pane${active ? ' is-active' : ''}`}
-        data-pane={pane}
-        data-size={size}
-        style={style}
-        aria-label={pane === 'side' ? t('tabs.secondPage') : undefined}
-        onPointerDownCapture={() => setActivePane(pane)}
-        onFocusCapture={() => setActivePane(pane)}
-      >
-        <ErrorBoundary resetKey={routeHash(route)}>
-          <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
-        </ErrorBoundary>
-      </section>
+    <PaneContext.Provider value={paneId}>
+      <PaneTabContext.Provider value={tabId}>
+        <section
+          ref={ref}
+          className={`pane${active ? ' is-active' : ''}${hidden ? ' is-cached' : ''}`}
+          data-pane={hidden ? undefined : role}
+          data-tab-instance={tabId}
+          data-size={size}
+          style={hidden ? { display: 'none' } : style}
+          aria-hidden={hidden || undefined}
+          inert={hidden || undefined}
+          aria-label={role === 'side' ? t('tabs.secondPage') : undefined}
+          onPointerDownCapture={() => !hidden && setActivePane(paneId)}
+          onFocusCapture={() => !hidden && setActivePane(paneId)}
+        >
+          <ErrorBoundary resetKey={routeHash(route)}>
+            <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
+          </ErrorBoundary>
+        </section>
+      </PaneTabContext.Provider>
     </PaneContext.Provider>
   );
 }
@@ -481,6 +562,12 @@ export function App() {
   const ui = useUi();
   const prefs = usePreferences();
   const tabs = useTabs();
+  const sessionGeneration = useSyncExternalStore(
+    subscribeWorkspaceSession,
+    getWorkspaceSessionGeneration,
+    getWorkspaceSessionGeneration,
+  );
+  const session = getSession();
   useTheme(prefs.theme, prefs.palette);
   useEffect(() => {
     const root = document.documentElement;
@@ -514,8 +601,63 @@ export function App() {
   useSidebarPeek(!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek);
   const sliding = useSidebarSlide(prefs.sidebarOpen);
 
-  const side = tabs.tabs.find((tab) => tab.id === tabs.active)?.side ?? null;
-  const sideRoute = useMemo(() => (side ? parseRoute(side.hash) : null), [side]);
+  const visibleAssignments = paneAssignments(tabs.layout);
+  const cacheableIds = cacheablePaneHostIds(tabs.layout.tabs);
+  const cacheableSet = new Set(cacheableIds);
+  const instances = paneHostInstances(
+    session,
+    tabs.layout.tabs.map((tab) => tab.id),
+    visibleAssignments
+      .filter((assignment) => cacheableSet.has(assignment.tabId))
+      .map((assignment) => assignment.tabId),
+    cacheableIds,
+  );
+  const assignmentByTabId = new Map(visibleAssignments.map((assignment) => [assignment.tabId, assignment]));
+  const mountedIds = new Set(instances);
+  const panes = visibleAssignments.map((assignment) => {
+    const tab = tabs.layout.tabs.find((candidate) => candidate.id === assignment.tabId)!;
+    return {
+      ...assignment,
+      tab,
+      route: parseRoute(tab.target),
+      active: tabs.layout.focusedPaneId === assignment.paneId,
+      style:
+        visibleAssignments.length === 2
+          ? { flexGrow: assignment.role === 'main' ? prefs.splitShare : 1 - prefs.splitShare }
+          : undefined,
+    };
+  });
+  const hiddenInstances = tabs.layout.tabs.filter(
+    (tab) => mountedIds.has(tab.id) && !assignmentByTabId.has(tab.id),
+  );
+  const renderPane = (pane: (typeof panes)[number], hidden = false) => (
+    <Pane
+      role={pane.role}
+      paneId={pane.paneId}
+      tabId={pane.tab.id}
+      route={pane.route}
+      active={pane.active}
+      style={pane.style}
+      hidden={hidden}
+    />
+  );
+  const paneChildren = paneHostChildren(
+    sessionGeneration,
+    panes.map((pane) => ({ tabId: pane.tab.id, element: renderPane(pane) })),
+    hiddenInstances.map((tab) => {
+      const assignment = {
+        role: 'main' as const,
+        paneId: paneIdForTabId(tab.id),
+        tabId: tab.id,
+        tab,
+        route: parseRoute(tab.target),
+        active: false,
+        style: undefined,
+      };
+      return { tabId: tab.id, element: renderPane(assignment, true) };
+    }),
+    <SplitResizer />,
+  );
 
   return (
     <div
@@ -532,25 +674,7 @@ export function App() {
       <div className="scrim" aria-hidden="true" onClick={() => setUi({ mobileSidebar: false })} />
       <main className="main">
         <TabBar />
-        <div className={`panes${sideRoute ? ' is-split' : ''}`}>
-          <Pane
-            pane="main"
-            route={route}
-            active={!sideRoute || tabs.pane === 'main'}
-            style={sideRoute ? { flexGrow: prefs.splitShare } : undefined}
-          />
-          {sideRoute && (
-            <>
-              <SplitResizer />
-              <Pane
-                pane="side"
-                route={sideRoute}
-                active={tabs.pane === 'side'}
-                style={{ flexGrow: 1 - prefs.splitShare }}
-              />
-            </>
-          )}
-        </div>
+        <div className={`panes${panes.length === 2 ? ' is-split' : ''}`}>{paneChildren}</div>
       </main>
       {prefs.assistant && prefs.assistantOpen && desktop?.assistant && (
         <Suspense fallback={null}>

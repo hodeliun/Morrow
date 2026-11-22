@@ -2,13 +2,14 @@ import { useMemo, useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
 import {
   activeHash,
-  getTabs,
+  isPrimaryPane,
   routeHashForPane,
-  showInMain,
-  showInSide,
+  routeHashForTabId,
+  showInPane,
   subscribeTabs,
   targetPane,
   usePane,
+  usePaneTabContextId,
 } from './tabs';
 import type { PaneId } from './tabs';
 
@@ -93,11 +94,7 @@ export function routeHash(route: Route): string {
 export function navigate(route: Route, options: { replace?: boolean; pane?: PaneId } = {}): void {
   const hash = routeHash(route);
   const pane = options.pane ?? targetPane();
-  if (pane === 'side' && getTabs().tabs.find((tab) => tab.id === getTabs().active)?.side) {
-    showInSide(hash, options.replace);
-    return;
-  }
-  showInMain(hash, options.replace);
+  showInPane(hash, pane, options.replace);
 }
 
 export function openPage(id: PageId, find: string | null = null, anchor: string | null = null): void {
@@ -106,6 +103,7 @@ export function openPage(id: PageId, find: string | null = null, anchor: string 
 
 export function useRoute(): Route {
   const pane = usePane();
+  const tabId = usePaneTabContextId();
   const hash = useSyncExternalStore(
     (listener) => {
       window.addEventListener('hashchange', listener);
@@ -115,7 +113,12 @@ export function useRoute(): Route {
         stop();
       };
     },
-    () => (pane === 'main' ? window.location.hash || routeHashForPane('main') : routeHashForPane('side')),
+    () =>
+      tabId !== null
+        ? routeHashForTabId(tabId)
+        : isPrimaryPane(pane)
+          ? window.location.hash || routeHashForPane(pane)
+          : routeHashForPane(pane),
     () => '#/',
   );
   return useMemo(() => parseRoute(hash), [hash]);

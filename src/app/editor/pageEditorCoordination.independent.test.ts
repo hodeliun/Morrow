@@ -12,6 +12,7 @@ import { fail } from '../../core/result';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
+import { PaneContext, targetPane } from '../tabs';
 import { setSession } from '../workspace';
 import { PageEditor } from './PageEditor';
 import { commitEditors } from './commits';
@@ -78,6 +79,9 @@ async function openWorkspace(notes: NoteFixture[]) {
 interface PeerSpec {
   pageId: PageId;
   doc?: DocNode;
+  tabId?: string;
+  paneId?: string;
+  hidden?: boolean;
 }
 
 interface PageEditorHarness {
@@ -89,6 +93,7 @@ interface PageEditorHarness {
     docs?: Array<DocNode | undefined>,
     editables?: Array<boolean | undefined>,
   ): Promise<void>;
+  setPanes(paneIds: string[]): Promise<void>;
   unmount(): Promise<void>;
 }
 
@@ -99,6 +104,7 @@ function mountPageEditors(session: WorkspaceSession, peers: PeerSpec[]): PageEdi
   const editors = new Map<number, Editor>();
   const dirtyEvents = peers.map(() => [] as boolean[]);
   const initialDocs = peers.map(({ pageId, doc }) => doc ?? session.getState().docs[pageId]!);
+  let paneIds = peers.map((peer) => peer.paneId ?? 'main');
   let disposed = false;
 
   const render = async (
@@ -111,21 +117,46 @@ function mountPageEditors(session: WorkspaceSession, peers: PeerSpec[]): PageEdi
         createElement(
           Fragment,
           null,
-          ...active.map((index) =>
-            createElement(PageEditor, {
-              key: `peer-${index}`,
-              pageId: peers[index]!.pageId,
-              doc: docs[index]!,
-              editable: editables[index] ?? true,
-              find: null,
-              onExitTop: () => {},
-              onDirty: (dirty: boolean) => dirtyEvents[index]!.push(dirty),
-              onReady: (editor: Editor) => editors.set(index, editor),
-            }),
-          ),
+          ...active.map((index) => {
+            const peer = peers[index]!;
+            return createElement(
+              PaneContext.Provider,
+              { key: peer.tabId ?? `peer-${index}`, value: paneIds[index]! },
+              createElement(
+                'section',
+                {
+                  className: `pane${peer.hidden ? ' is-cached' : ''}`,
+                  'data-tab-instance': peer.tabId,
+                  'aria-hidden': peer.hidden || undefined,
+                  inert: peer.hidden || undefined,
+                  style: peer.hidden ? { display: 'none' } : undefined,
+                },
+                createElement(
+                  'div',
+                  { className: 'view' },
+                  createElement(PageEditor, {
+                    key: peer.tabId ?? `peer-${index}`,
+                    pageId: peer.pageId,
+                    doc: docs[index]!,
+                    editable: editables[index] ?? true,
+                    find: null,
+                    onExitTop: () => {},
+                    onDirty: (dirty: boolean) => dirtyEvents[index]!.push(dirty),
+                    onReady: (editor: Editor) => editors.set(index, editor),
+                  }),
+                ),
+              ),
+            );
+          }),
         ),
       );
     });
+  };
+
+  const setPanes = async (nextPaneIds: string[]): Promise<void> => {
+    if (nextPaneIds.length !== peers.length) throw new Error('Each editor host needs one pane id.');
+    paneIds = [...nextPaneIds];
+    await render();
   };
 
   const unmount = async (): Promise<void> => {
@@ -135,7 +166,7 @@ function mountPageEditors(session: WorkspaceSession, peers: PeerSpec[]): PageEdi
     disposed = true;
   };
 
-  const harness: PageEditorHarness = { container, editors, dirtyEvents, render, unmount };
+  const harness: PageEditorHarness = { container, editors, dirtyEvents, render, setPanes, unmount };
   harnesses.add(harness);
   return harness;
 }
@@ -200,6 +231,27 @@ afterEach(async () => {
 });
 
 describe('independent PageEditor coordination gates', () => {
+  it('keeps a hidden cached editor out of global find focus and actions', async () => {
+    const { session } = keepSession(await openWorkspace([{ id: NOTE_ID, path: NOTE_PATH, doc: plainDoc() }]));
+    const mounted = mountPageEditors(session, [
+      { pageId: NOTE_ID, paneId: targetPane(), tabId: 'visible-instance' },
+      {
+        pageId: NOTE_ID,
+        paneId: 'morrow-cached-pane:hidden-instance',
+        tabId: 'hidden-instance',
+        hidden: true,
+      },
+    ]);
+    await mounted.render();
+
+    await act(async () => window.dispatchEvent(new Event('morrow:find')));
+
+    expect(mounted.container.querySelectorAll('.find-bar')).toHaveLength(1);
+    expect(mounted.container.querySelector('[data-tab-instance="visible-instance"] .find-bar')).not.toBeNull();
+    expect(mounted.container.querySelector('[data-tab-instance="hidden-instance"] .find-bar')).toBeNull();
+    expect(document.activeElement?.closest('[data-tab-instance="hidden-instance"]')).toBeNull();
+  });
+
   it('loads the non-empty source into both late-filled editors without a write or dirty transition', async () => {
     const initial = docWithView();
     const { session, vault } = keepSession(
@@ -210,8 +262,8 @@ describe('independent PageEditor coordination gates', () => {
     const execute = vi.spyOn(session, 'execute');
     const apply = vi.spyOn(vault, 'apply');
     const mounted = mountPageEditors(session, [
-      { pageId: NOTE_ID },
-      { pageId: NOTE_ID },
+      { pageId: NOTE_ID, paneId: 'main-leaf', tabId: 'main-instance' },
+      { pageId: NOTE_ID, paneId: 'side-leaf', tabId: 'side-instance' },
     ]);
 
     await mounted.render();
@@ -244,8 +296,8 @@ describe('independent PageEditor coordination gates', () => {
     const execute = vi.spyOn(session, 'execute');
     const apply = vi.spyOn(vault, 'apply');
     const mounted = mountPageEditors(session, [
-      { pageId: NOTE_ID },
-      { pageId: NOTE_ID },
+      { pageId: NOTE_ID, paneId: 'main-leaf', tabId: 'main-instance' },
+      { pageId: NOTE_ID, paneId: 'side-leaf', tabId: 'side-instance' },
     ]);
     await mounted.render();
     const first = editorOf(mounted, 0);
@@ -264,6 +316,20 @@ describe('independent PageEditor coordination gates', () => {
     await act(async () => {
       second.view.dispatch(second.state.tr.insertText(' B'));
     });
+    expect(first.getText()).toBe('seed A B');
+    expect(second.getText()).toBe('seed A B');
+
+    await act(async () => {
+      first.commands.setTextSelection(2);
+      second.commands.setTextSelection(8);
+    });
+    const firstSelection = first.state.selection.from;
+    const secondSelection = second.state.selection.from;
+    await mounted.setPanes(['side-leaf', 'main-leaf']);
+    expect(editorOf(mounted, 0)).toBe(first);
+    expect(editorOf(mounted, 1)).toBe(second);
+    expect(first.state.selection.from).toBe(firstSelection);
+    expect(second.state.selection.from).toBe(secondSelection);
     expect(first.getText()).toBe('seed A B');
     expect(second.getText()).toBe('seed A B');
 

@@ -22,7 +22,7 @@ import { getLocalizedBlocks, runSlashCommandItem } from './SlashCommand';
 import { commitEditors, focusedEditor } from './commits';
 import { PageEditor } from './PageEditor';
 import { navigate } from '../router';
-import { PaneContext, closeSide, openSide, setActivePane, startTabs } from '../tabs';
+import { PaneContext, closeSide, getTabs, openSide, setActivePane, startTabs } from '../tabs';
 import { setSession } from '../workspace';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -99,7 +99,7 @@ async function openWorkspace(
 interface PageEditorHarness {
   readonly container: HTMLElement;
   readonly editor: Editor | null;
-  render(options?: { readonly editable?: boolean; readonly pane?: 'main' | 'side' }): Promise<void>;
+  render(options?: { readonly editable?: boolean; readonly pane?: string }): Promise<void>;
   unmount(): Promise<void>;
 }
 
@@ -107,12 +107,12 @@ function mountPageEditor(session: WorkspaceSession, pageId: PageId): PageEditorH
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
-  let current: { editable: boolean; pane: 'main' | 'side' } = { editable: true, pane: 'main' };
+  let current: { editable: boolean; pane: string } = { editable: true, pane: 'main' };
   let editor: Editor | null = null;
   let disposed = false;
 
   const render = async (
-    options: { readonly editable?: boolean; readonly pane?: 'main' | 'side' } = {},
+    options: { readonly editable?: boolean; readonly pane?: string } = {},
   ): Promise<void> => {
     current = { ...current, ...options };
     await act(async () => {
@@ -298,6 +298,30 @@ afterEach(async () => {
 });
 
 describe('independent editor insertion capture', () => {
+  it('captures the editor with its exact layout leaf and invalidates when the main URL changes', async () => {
+    const { pageId, session } = await openWorkspace();
+    setMainRoute(pageId);
+    const paneId = getTabs().layout.focusedPaneId;
+    const harness = mountPageEditor(session, pageId);
+    await harness.render({ pane: paneId });
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+
+    const target = capture(testOwner(), editor);
+    const previousHash = window.location.hash;
+    await act(async () => {
+      const hashChanges = waitForHashChanges(2);
+      window.location.hash = '#/tasks';
+      window.location.hash = previousHash;
+      const [leaveEvent, returnEvent] = await hashChanges;
+      expect(leaveEvent).toBeDefined();
+      expect(returnEvent).toBeDefined();
+    });
+
+    expect(target.insert('stale leaf navigation')).toMatchObject({ ok: false, reason: 'target-changed' });
+  });
+
   it('keeps slash cancel inert and confirms one inline legacy result transaction with neighbors, history, and storage preserved', async () => {
     const pageId = `inline-formula-${++idCounter}` as PageId;
     const existing = createLegacyFormulaMarker({

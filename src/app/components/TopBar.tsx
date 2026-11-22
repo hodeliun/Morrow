@@ -23,7 +23,17 @@ import { ACTION_SHORTCUTS, formatShortcut, runAction } from '../actions';
 import { toggleFavorite } from '../operations';
 import { usePreferences } from '../platform/preferences';
 import { openPage } from '../router';
-import { canGo, closeSide, goBack, goForward, swapSides, usePane, useTabs } from '../tabs';
+import {
+  canGo,
+  closeSide,
+  goBack,
+  goForward,
+  isPrimaryPane,
+  isSidePane,
+  swapSides,
+  usePane,
+  useTabs,
+} from '../tabs';
 import { setUi } from '../ui';
 import { getSession, useSaveStatus, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
@@ -118,7 +128,7 @@ function SplitButtons() {
   const pane = usePane();
   const { tabs, active } = useTabs();
   const split = Boolean(tabs.find((item) => item.id === active)?.side);
-  if (pane === 'side')
+  if (isSidePane(pane))
     return (
       <>
         <button
@@ -141,7 +151,7 @@ function SplitButtons() {
         </button>
       </>
     );
-  if (split) return null;
+  if (split || !isPrimaryPane(pane)) return null;
   return (
     <button
       type="button"
@@ -228,7 +238,7 @@ export function TopBar({
   return (
     <header className="topbar">
       <div className="topbar-nav">
-        {pane === 'main' && <SidebarToggle />}
+        {isPrimaryPane(pane) && <SidebarToggle />}
         <HistoryButtons />
       </div>
       <div className="topbar-center">
@@ -263,7 +273,7 @@ export function TopBar({
       </div>
       <div className="topbar-actions">
         {/* saving is the same for both sides of a split, so it shows once */}
-        {pane === 'main' && <SaveIndicator editing={editing ?? false} />}
+        {isPrimaryPane(pane) && <SaveIndicator editing={editing ?? false} />}
         {page && (
           <>
             <span

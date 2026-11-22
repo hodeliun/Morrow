@@ -12,7 +12,16 @@ import { VaultRepository } from '../../storage/vaultRepository';
 import { addPluginNoteStylePanel } from '../plugins/registry';
 import type { PluginNoteStylePanelHost, PluginNoteStylePanelResult } from '../plugins/registry';
 import { setPreferences } from '../platform/preferences';
-import { PaneContext } from '../tabs';
+import {
+  activateTab,
+  closeTab,
+  getTabs,
+  openTab,
+  paneIdForTabId,
+  PaneContext,
+  PaneTabContext,
+  showInMain,
+} from '../tabs';
 import { setSession } from '../workspace';
 import { NoteStyleAction } from './NoteStyleAction';
 
@@ -112,6 +121,7 @@ class DelayedStyleVault extends MemoryVault {
 let nextDatabase = 0;
 let cleanupRegistration: (() => void) | null = null;
 let activeSession: WorkspaceSession | null = null;
+const testTabIds = new Set<string>();
 
 async function open(files: Record<string, string>, vault?: MemoryVault): Promise<WorkspaceSession> {
   const opened = await WorkspaceSession.open(
@@ -130,12 +140,59 @@ function pageIdAt(session: WorkspaceSession, path: string): PageId {
   return id;
 }
 
-function action(pageId: PageId, pane: 'main' | 'side' = 'main') {
+function action(
+  pageId: PageId,
+  pane: 'main' | 'side' = 'main',
+  options: { hidden?: boolean; tabId?: string } = {},
+) {
   return createElement(
     'section',
-    { className: 'pane is-active', 'data-pane': pane },
-    createElement(PaneContext.Provider, { value: pane }, createElement(NoteStyleAction, { pageId })),
+    {
+      className: `pane${options.hidden ? ' is-cached' : ' is-active'}`,
+      'data-pane': options.hidden ? undefined : pane,
+      'data-tab-instance': options.tabId,
+      'aria-hidden': options.hidden || undefined,
+      style: options.hidden ? { display: 'none' } : undefined,
+    },
+    createElement(
+      PaneContext.Provider,
+      { value: pane },
+      createElement(
+        PaneTabContext.Provider,
+        { value: options.tabId ?? null },
+        createElement(NoteStyleAction, { pageId }),
+      ),
+    ),
   );
+}
+
+function actionForTab(pageId: PageId, tabId: string) {
+  return createElement(
+    'section',
+    {
+      className: 'pane is-active',
+      'data-pane': 'main',
+      'data-tab-instance': tabId,
+    },
+    createElement(
+      PaneContext.Provider,
+      { value: paneIdForTabId(tabId) },
+      createElement(
+        PaneTabContext.Provider,
+        { value: tabId },
+        createElement(NoteStyleAction, { pageId }),
+      ),
+    ),
+  );
+}
+
+function createTabForPage(pageId: PageId): string {
+  const before = new Set(getTabs().layout.tabs.map((tab) => tab.id));
+  openTab(`#/page/${encodeURIComponent(pageId)}`);
+  const created = getTabs().layout.tabs.find((tab) => !before.has(tab.id));
+  if (!created) throw new Error('Opening a test tab did not create a tab instance.');
+  testTabIds.add(created.id);
+  return created.id;
 }
 
 function mount() {
@@ -182,6 +239,10 @@ afterEach(async () => {
   cleanupRegistration = null;
   if (activeSession && !activeSession.isClosed) await activeSession.close();
   activeSession = null;
+  for (const tabId of testTabIds) {
+    if (getTabs().tabs.some((tab) => tab.id === tabId)) closeTab(tabId);
+  }
+  testTabIds.clear();
   document.body.replaceChildren();
   window.localStorage.clear();
   setPreferences({ locale: 'en', readingMode: false, defaultNoteStyle: undefined, pageWidths: {} });
@@ -189,6 +250,162 @@ afterEach(async () => {
 });
 
 describe('host note-style action', () => {
+  it('rejects opening the style panel from a cached hidden tab instance', async () => {
+    const session = await open({ 'Note.md': 'First note.\n' });
+    const pageId = pageIdAt(session, 'Note.md');
+    setPreferences({ defaultNoteStyle: PROFILE_STYLE, font: 'sans', width: 'wide', readingMode: false });
+    const frames: FrameRequestCallback[] = [];
+    installUiStubs(frames);
+    const app = mount();
+    const mounted: MountedPanel[] = [];
+    cleanupRegistration = registerRenderer(mounted);
+
+    try {
+      await app.render(action(pageId, 'main', { hidden: true, tabId: 'cached-instance' }));
+      const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]');
+      expect(trigger).not.toBeNull();
+      await act(async () => {
+        trigger!.click();
+        await Promise.resolve();
+      });
+      expect(mounted).toHaveLength(0);
+      expect(document.querySelectorAll('[role="dialog"][aria-label="Page style"]')).toHaveLength(0);
+      expect(document.activeElement).not.toBe(trigger);
+    } finally {
+      await app.unmount();
+    }
+  });
+
+  it('rejects a retained save after its tab leaves and returns before React renders', async () => {
+    const vault = new MemoryVault({ 'Note.md': 'First note.\n', 'Other.md': 'Second note.\n' });
+    const session = await open({}, vault);
+    const noteId = pageIdAt(session, 'Note.md');
+    const otherId = pageIdAt(session, 'Other.md');
+    const firstTabId = createTabForPage(noteId);
+    const secondTabId = createTabForPage(otherId);
+    activateTab(firstTabId);
+    setPreferences({ readingMode: false });
+    const mounted: MountedPanel[] = [];
+    cleanupRegistration = registerRenderer(mounted);
+    const app = mount();
+
+    try {
+      await app.render(actionForTab(noteId, firstTabId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+      const retainedHost = mounted[0]!.host;
+      expect(mounted[0]!.disposed).toBe(false);
+
+      let result: PluginNoteStylePanelResult | null = null;
+      await act(async () => {
+        activateTab(secondTabId);
+        activateTab(firstTabId);
+        result = await retainedHost.save(SAVED_STYLE);
+      });
+
+      expect(result).toMatchObject({ ok: false });
+      expect(vault.text('Note.md')).toBe('First note.\n');
+      expect(session.readNoteStyle(noteId)).toMatchObject({ ok: true, value: { style: null } });
+      expect(mounted[0]!.disposed).toBe(true);
+      expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+      expect(mounted).toHaveLength(2);
+      expect(mounted[1]!.disposed).toBe(false);
+
+      let oldResult: PluginNoteStylePanelResult | null = null;
+      let newResult: PluginNoteStylePanelResult | null = null;
+      await act(async () => {
+        oldResult = await retainedHost.save(SAVED_STYLE);
+        newResult = await mounted[1]!.host.save(SAVED_STYLE);
+      });
+      expect(oldResult).toMatchObject({ ok: false });
+      expect(newResult).toMatchObject({ ok: true, style: SAVED_STYLE });
+      expect(session.readNoteStyle(noteId)).toMatchObject({ ok: true, value: { style: SAVED_STYLE } });
+    } finally {
+      await app.unmount();
+      app.container.remove();
+    }
+  });
+
+  it('lets a confirmed style write finish when its tab changes after Save starts', async () => {
+    const vault = new DelayedStyleVault({ 'Note.md': 'First note.\n', 'Other.md': 'Second note.\n' });
+    const session = await open({}, vault);
+    const noteId = pageIdAt(session, 'Note.md');
+    const otherId = pageIdAt(session, 'Other.md');
+    const firstTabId = createTabForPage(noteId);
+    const secondTabId = createTabForPage(otherId);
+    activateTab(firstTabId);
+    setPreferences({ readingMode: false });
+    const mounted: MountedPanel[] = [];
+    cleanupRegistration = registerRenderer(mounted);
+    const app = mount();
+
+    try {
+      await app.render(actionForTab(noteId, firstTabId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+
+      let pending: Promise<PluginNoteStylePanelResult> | null = null;
+      await act(async () => {
+        pending = mounted[0]!.host.save(SAVED_STYLE);
+        await vault.styleWriteStarted;
+      });
+
+      let result: PluginNoteStylePanelResult | null = null;
+      await act(async () => {
+        activateTab(secondTabId);
+        activateTab(firstTabId);
+        vault.releaseStyleWrite();
+        result = await pending!;
+      });
+
+      expect(result).toMatchObject({ ok: true, style: SAVED_STYLE });
+      expect(session.readNoteStyle(noteId)).toMatchObject({ ok: true, value: { style: SAVED_STYLE } });
+    } finally {
+      await app.unmount();
+      app.container.remove();
+    }
+  });
+
+  it('rejects opening and retained callbacks when the same tab changes to another page', async () => {
+    const vault = new MemoryVault({ 'Note.md': 'First note.\n', 'Other.md': 'Second note.\n' });
+    const session = await open({}, vault);
+    const noteId = pageIdAt(session, 'Note.md');
+    const otherId = pageIdAt(session, 'Other.md');
+    const tabId = createTabForPage(noteId);
+    setPreferences({ readingMode: false });
+    const mounted: MountedPanel[] = [];
+    cleanupRegistration = registerRenderer(mounted);
+    const app = mount();
+
+    try {
+      showInMain(`#/page/${encodeURIComponent(otherId)}`);
+      await app.render(actionForTab(noteId, tabId));
+      const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!;
+      await clickAndSettle(trigger);
+      expect(mounted).toHaveLength(0);
+      expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+
+      showInMain(`#/page/${encodeURIComponent(noteId)}`);
+      await app.render(actionForTab(noteId, tabId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+      const retainedHost = mounted.at(-1)!.host;
+
+      let result: PluginNoteStylePanelResult | null = null;
+      await act(async () => {
+        showInMain(`#/page/${encodeURIComponent(otherId)}`);
+        showInMain(`#/page/${encodeURIComponent(noteId)}`);
+        result = await retainedHost.save(SAVED_STYLE);
+      });
+
+      expect(result).toMatchObject({ ok: false });
+      expect(vault.text('Note.md')).toBe('First note.\n');
+      expect(session.readNoteStyle(noteId)).toMatchObject({ ok: true, value: { style: null } });
+    } finally {
+      await app.unmount();
+      app.container.remove();
+    }
+  });
+
   it('stays absent until Documento registers, then binds two panes to separate confirmed writes', async () => {
     const session = await open({ 'Note.md': 'First note.\n', 'Other.md': 'Second note.\n' });
     const firstId = pageIdAt(session, 'Note.md');
