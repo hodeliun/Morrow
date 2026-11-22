@@ -266,6 +266,31 @@ describe('plugin loader lifecycle', () => {
     expect(h.registry.polarisDadosInlineFormulaPresentation()).toBeNull();
   });
 
+  it('registers the Dados formula slash action only while that plugin activation is live', async () => {
+    const h = await createHarness({
+      pluginId: 'polaris-dados',
+      enabled: ['polaris-dados'],
+      code: `export default (morrow) => {
+        morrow.inlineFormulas.addSlashCommand({
+          title: 'Formula result',
+          description: 'Insert a calculated result',
+          keywords: 'formula result',
+          onInvoke() {},
+        });
+      };`,
+    });
+    await h.loader.startPlugins();
+
+    const slash = await import('../editor/SlashCommand');
+    const registered = h.registry.pluginBlocks().find((item) => item.id === 'plugin:polaris-dados:inline-formula-1');
+    expect(registered).toMatchObject({ title: 'Formula result' });
+    expect(slash.getLocalizedBlocks().some((item) => item.id === registered?.id)).toBe(true);
+
+    await h.loader.setPluginEnabled('polaris-dados', false);
+    expect(h.registry.pluginBlocks().some((item) => item.id === registered?.id)).toBe(false);
+    expect(slash.getLocalizedBlocks().some((item) => item.id === registered?.id)).toBe(false);
+  });
+
   it('exposes the note-style mount only to Documento and cleans its registration on disable', async () => {
     const h = await createHarness({
       pluginId: 'polaris-documento',

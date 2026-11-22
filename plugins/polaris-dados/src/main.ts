@@ -3,6 +3,7 @@ import type { DataApi } from '../../../src/app/plugins/dataApi';
 import type { PluginEditorInsertionApiV1 } from '../../../src/app/plugins/editorApi';
 import type { SupportedLocale } from '../../../src/app/i18n';
 import type { PluginInlineFormulaPresentationMount } from '../../../src/app/plugins/registry';
+import type { PluginInlineFormulaSlashCommand } from '../../../src/app/plugins/inlineFormulaApi';
 import type { FormulaDatabasePage } from './ui/formulas';
 import { createLinkedViewInsertPicker } from './ui/insertView';
 import type { LinkedViewInsertPickerApi } from './ui/insertView';
@@ -32,6 +33,7 @@ export interface PolarisDadosPluginApi extends LinkedViewInsertPickerApi {
   readonly inlineFormulas: {
     readonly version: 1;
     registerPresentation(mount: PluginInlineFormulaPresentationMount): () => void;
+    addSlashCommand?(command: PluginInlineFormulaSlashCommand): () => void;
   };
 }
 

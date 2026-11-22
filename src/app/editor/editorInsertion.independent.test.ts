@@ -5,15 +5,20 @@ import { createRoot } from 'react-dom/client';
 import { TextSelection } from '@tiptap/pm/state';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DocNode, PageId } from '../../core/model';
+import { createLegacyFormulaMarker, LEGACY_FORMULA_NODE, legacyFormulaDocIssue, parseLegacyFormulaMarker } from '../../core/legacyFormula';
 import { encodePolarisDadosViewMarker } from '../../core/polarisDadosView';
 import type { PolarisDadosViewData } from '../../core/polarisDadosView';
 import { docToMarkdown } from '../../core/markdown/serialize';
+import { markdownToDoc } from '../../core/markdown/parse';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
 import { getPreferences, setPreferences } from '../platform/preferences';
 import { captureEditorInsertionTarget } from './editorInsertion';
 import type { EditorInsertionOwner } from './editorInsertion';
+import { addInlineFormulaSlashCommand } from '../plugins/inlineFormulaAuthoring';
+import type { PluginInlineFormulaInsertionHost } from '../plugins/inlineFormulaApi';
+import { getLocalizedBlocks, runSlashCommandItem } from './SlashCommand';
 import { commitEditors, focusedEditor } from './commits';
 import { PageEditor } from './PageEditor';
 import { navigate } from '../router';
@@ -62,12 +67,15 @@ async function openWorkspace(
   options: {
     readonly pageId?: PageId;
     readonly text?: string;
+    readonly markdown?: string;
     readonly withExistingView?: boolean;
     readonly makeCurrent?: boolean;
   } = {},
 ) {
   const pageId = options.pageId ?? `insertion-note-${++idCounter}`;
-  const initial = noteDoc(options.text ?? 'north middle south', options.withExistingView);
+  const initial = options.markdown
+    ? markdownToDoc(options.markdown)
+    : noteDoc(options.text ?? 'north middle south', options.withExistingView);
   const vault = new MemoryVault({
     [NOTE_PATH]: docToMarkdown(initial),
     '.morrow/workspace.json': JSON.stringify({
@@ -170,6 +178,11 @@ function testOwner(): TestOwner {
   };
 }
 
+function requireFormulaHost(host: PluginInlineFormulaInsertionHost | null): PluginInlineFormulaInsertionHost {
+  if (!host) throw new Error('The formula slash action did not capture its editor operation.');
+  return host;
+}
+
 type InsertionHandle = NonNullable<ReturnType<typeof captureEditorInsertionTarget>>;
 
 function capture(owner: EditorInsertionOwner, editor: Editor): InsertionHandle {
@@ -245,6 +258,7 @@ const sessions = new Set<WorkspaceSession>();
 const harnesses = new Set<PageEditorHarness>();
 const handles = new Set<InsertionHandle>();
 const stopTabListeners = new Set<() => void>();
+const formulaRegistrations = new Set<() => void>();
 let preferencesBeforeTest = getPreferences();
 
 beforeEach(() => {
@@ -257,6 +271,10 @@ afterEach(async () => {
   for (const handle of [...handles]) {
     handle.dispose();
     handles.delete(handle);
+  }
+  for (const unregister of [...formulaRegistrations]) {
+    unregister();
+    formulaRegistrations.delete(unregister);
   }
   for (const harness of [...harnesses]) {
     await harness.unmount();
@@ -280,6 +298,324 @@ afterEach(async () => {
 });
 
 describe('independent editor insertion capture', () => {
+  it('keeps slash cancel inert and confirms one inline legacy result transaction with neighbors, history, and storage preserved', async () => {
+    const pageId = `inline-formula-${++idCounter}` as PageId;
+    const existing = createLegacyFormulaMarker({
+      resultId: 'existing-result',
+      pageId,
+      formula: '1 + 1',
+      name: 'Existing result',
+    });
+    if (!existing) throw new Error('Could not create the synthetic existing formula.');
+    const originalMarkdown = `${existing.raw} **bold text** /formula *italic text*`;
+    const { session, vault } = await openWorkspace({ pageId, markdown: originalMarkdown });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+
+    const slashRangeHolder: { value: { from: number; to: number } | null } = { value: null };
+    editor.state.doc.descendants((node, position) => {
+      if (!node.isText || !node.text) return true;
+      const index = node.text.indexOf('/formula');
+      if (index < 0) return true;
+      slashRangeHolder.value = { from: position + index, to: position + index + '/formula'.length };
+      return false;
+    });
+    const slashRange = slashRangeHolder.value;
+    if (!slashRange) throw new Error('The synthetic slash command was not parsed as text.');
+    await act(async () => {
+      editor.view.dispatch(
+        editor.state.tr.setSelection(TextSelection.create(editor.state.doc, slashRange.to)),
+      );
+    });
+
+    const owner = testOwner();
+    const hostRef: { value: PluginInlineFormulaInsertionHost | null } = { value: null };
+    const unregister = addInlineFormulaSlashCommand(owner, (target) => target, {
+      title: 'Formula result',
+      description: 'Insert an inline calculated result',
+      keywords: 'formula result',
+      onInvoke: (operation) => { hostRef.value = operation; },
+    });
+    formulaRegistrations.add(unregister);
+    const commandId = `plugin:polaris-dados:inline-formula-${owner.generation}`;
+    const command = getLocalizedBlocks().find((item) => item.id === commandId);
+    expect(command).toBeDefined();
+    await act(async () => runSlashCommandItem(editor, slashRange, command!.id, { createChild: () => null }));
+
+    const retainedSlashHost = requireFormulaHost(hostRef.value);
+    expect(retainedSlashHost!.confirm({ formula: 'x', outputType: 'number' } as never)).toEqual({
+      ok: false,
+      reason: 'invalid-input',
+    });
+    retainedSlashHost!.cancel();
+    expect(docText(editor)).toContain('/formula');
+    expect(retainedSlashHost!.confirm({ formula: '2 + 3' })).toEqual({ ok: false, reason: 'already-used' });
+    expect(writes).not.toHaveBeenCalled();
+
+    hostRef.value = null;
+    await act(async () => runSlashCommandItem(editor, slashRange, command!.id, { createChild: () => null }));
+    const confirmation = requireFormulaHost(hostRef.value);
+    let documentTransactions = 0;
+    const onTransaction = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+      if (transaction.docChanged) documentTransactions++;
+    };
+    editor.on('transaction', onTransaction as never);
+    let result: ReturnType<PluginInlineFormulaInsertionHost['confirm']> | undefined;
+    await act(async () => {
+      result = confirmation!.confirm({ formula: '2 + 3', name: 'Sum' });
+    });
+    editor.off('transaction', onTransaction as never);
+
+    expect(result).toEqual({ ok: true });
+    expect(documentTransactions).toBe(1);
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(docText(editor)).not.toContain('/formula');
+    expect(editor.state.doc.toJSON()).toMatchObject({
+      type: 'doc',
+      content: [{ type: 'paragraph' }],
+    });
+    expect(legacyFormulaDocIssue(editor.state.doc.toJSON())).toBeNull();
+
+    const formulaNodes: Array<{ raw: string; fallback: string }> = [];
+    const resultIds = new Set<string>();
+    editor.state.doc.descendants((node) => {
+      if (node.type.name !== LEGACY_FORMULA_NODE) return;
+      formulaNodes.push({ raw: String(node.attrs.raw), fallback: String(node.attrs.fallback) });
+      const parsed = parseLegacyFormulaMarker(String(node.attrs.raw));
+      if (parsed) resultIds.add(parsed.resultId);
+    });
+    expect(formulaNodes).toHaveLength(2);
+    expect(resultIds.size).toBe(2);
+    const newMarker = formulaNodes.find((item) => item.fallback === 'Sum');
+    expect(newMarker).toBeDefined();
+    const payloadText = newMarker!.raw.match(/data-morrow-result="([^"]+)"/)?.[1];
+    expect(payloadText).toBeDefined();
+    expect(JSON.parse(decodeURIComponent(payloadText!))).toMatchObject({
+      pageId,
+      name: 'Sum',
+      formula: '2 + 3',
+      bindings: [],
+      outputType: 'auto',
+      format: {},
+    });
+
+    const markedText: Array<{ text: string; marks: string[] }> = [];
+    editor.state.doc.descendants((node) => {
+      if (node.isText && node.text) markedText.push({ text: node.text, marks: node.marks.map((mark) => mark.type.name) });
+    });
+    expect(markedText.some((item) => item.text.includes('bold text') && item.marks.includes('bold'))).toBe(true);
+    expect(markedText.some((item) => item.text.includes('italic text') && item.marks.includes('italic'))).toBe(true);
+
+    const insertedDoc = editor.state.doc.toJSON();
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).not.toEqual(insertedDoc);
+    expect(editor.state.doc.textContent).toContain('/formula');
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(insertedDoc);
+    await act(async () => {
+      expect(commitEditors()).toBe(true);
+      expect(await session.flush()).toBe(true);
+    });
+    const saved = vault.text(NOTE_PATH);
+    if (saved === undefined) throw new Error('The synthetic Markdown note did not persist.');
+    expect(saved).toContain(newMarker!.raw);
+    expect(legacyFormulaDocIssue(markdownToDoc(saved))).toBeNull();
+    expect(writes).toHaveBeenCalled();
+    unregister();
+    formulaRegistrations.delete(unregister);
+  });
+
+  it('separates slash typing, formula insertion, and later typing into honest undo groups', async () => {
+    const { pageId, session, vault } = await openWorkspace({ text: 'north south' });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+    await selectCursor(editor, 'north south', 'south', 0);
+    const initialDoc = editor.state.doc.toJSON();
+
+    await act(async () => { expect(editor.commands.insertContent('/formula')).toBe(true); });
+    const slashDoc = editor.state.doc.toJSON();
+    expect(docText(editor)).toContain('/formula');
+    const slashRangeHolder: { value: { from: number; to: number } | null } = { value: null };
+    editor.state.doc.descendants((node, position) => {
+      if (!node.isText || !node.text) return true;
+      const index = node.text.indexOf('/formula');
+      if (index < 0) return true;
+      slashRangeHolder.value = { from: position + index, to: position + index + '/formula'.length };
+      return false;
+    });
+    const slashRange = slashRangeHolder.value;
+    if (!slashRange) throw new Error('The newly typed slash command was not parsed as text.');
+
+    const owner = testOwner();
+    const hostRef: { value: PluginInlineFormulaInsertionHost | null } = { value: null };
+    const unregister = addInlineFormulaSlashCommand(owner, (target) => target, {
+      title: 'Formula result',
+      keywords: 'formula',
+      onInvoke: (operation) => { hostRef.value = operation; },
+    });
+    formulaRegistrations.add(unregister);
+    const command = getLocalizedBlocks().find((item) => item.id === `plugin:polaris-dados:inline-formula-${owner.generation}`);
+    if (!command) throw new Error('The formula slash command did not register.');
+    await act(async () => runSlashCommandItem(editor, slashRange, command.id, { createChild: () => null }));
+    const host = requireFormulaHost(hostRef.value);
+    const transactions: boolean[] = [];
+    const onTransaction = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+      transactions.push(transaction.docChanged);
+    };
+    editor.on('transaction', onTransaction as never);
+    let result: ReturnType<PluginInlineFormulaInsertionHost['confirm']> | undefined;
+    await act(async () => { result = host.confirm({ formula: '2 + 3', name: 'Five' }); });
+    editor.off('transaction', onTransaction as never);
+    expect(result).toEqual({ ok: true });
+    expect(transactions.filter(Boolean)).toHaveLength(1);
+    expect(transactions).toEqual([true, false]);
+    const formulaDoc = editor.state.doc.toJSON();
+
+    await act(async () => { expect(editor.commands.insertContent('!')).toBe(true); });
+    const suffixDoc = editor.state.doc.toJSON();
+    expect(suffixDoc).not.toEqual(formulaDoc);
+    expect(writes).not.toHaveBeenCalled();
+
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(formulaDoc);
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+    await act(async () => { expect(editor.commands.undo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(initialDoc);
+
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(slashDoc);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(formulaDoc);
+    await act(async () => { expect(editor.commands.redo()).toBe(true); });
+    expect(editor.state.doc.toJSON()).toEqual(suffixDoc);
+
+    await act(async () => {
+      expect(commitEditors()).toBe(true);
+      expect(await session.flush()).toBe(true);
+    });
+    const saved = vault.text(NOTE_PATH);
+    if (saved === undefined) throw new Error('The synthetic Markdown note did not persist.');
+    expect(markdownToDoc(saved)).toMatchObject({ type: 'doc' });
+    const reopened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `unexpected-reopened-page-${++idCounter}`),
+      { delayMs: 60_000 },
+    );
+    if (!reopened.ok) throw new Error(reopened.error);
+    sessions.add(reopened.value);
+    expect(docToMarkdown(reopened.value.getState().docs[pageId]!)).toBe(saved);
+    expect(reopened.value.getState().docs[pageId]!.content?.[0]?.content?.some((node) => node.type === LEGACY_FORMULA_NODE)).toBe(true);
+    expect(writes).toHaveBeenCalled();
+    unregister();
+    formulaRegistrations.delete(unregister);
+  });
+
+  it('revalidates selection and read-only changes, revokes pending hosts on plugin unload, and rejects nested paragraphs', async () => {
+    const { pageId, session, vault } = await openWorkspace({ text: '/formula' });
+    setMainRoute(pageId);
+    const writes = vi.spyOn(vault, 'apply');
+    const harness = mountPageEditor(session, pageId);
+    await harness.render();
+    const editor = harness.editor;
+    if (!editor) throw new Error('PageEditor did not mount.');
+    await focusEditor(editor);
+    const range = { from: 1, to: 9 };
+    const owner = testOwner();
+    const hostRef: { value: PluginInlineFormulaInsertionHost | null } = { value: null };
+    const unregister = addInlineFormulaSlashCommand(owner, (target) => target, {
+      title: 'Formula result',
+      keywords: 'formula',
+      onInvoke: (operation) => { hostRef.value = operation; },
+    });
+    formulaRegistrations.add(unregister);
+    const command = getLocalizedBlocks().find((item) => item.id === `plugin:polaris-dados:inline-formula-${owner.generation}`);
+    if (!command) throw new Error('The formula slash command did not register.');
+
+    await act(async () => {
+      await setPreferences({ readingMode: true });
+      runSlashCommandItem(editor, range, command.id, { createChild: () => null });
+    });
+    expect(hostRef.value).toBeNull();
+    await act(async () => setPreferences({ readingMode: false }));
+    await act(async () => editor.view.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, range.to)),
+    ));
+    await act(async () => runSlashCommandItem(editor, range, command.id, { createChild: () => null }));
+    const staleSelection = requireFormulaHost(hostRef.value);
+    await act(async () => editor.view.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, 1)),
+    ));
+    expect(staleSelection!.confirm({ formula: '2 + 3' })).toEqual({ ok: false, reason: 'selection-changed' });
+    expect(docText(editor)).toBe('/formula');
+
+    hostRef.value = null;
+    await act(async () => editor.view.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(editor.state.doc, range.to)),
+    ));
+    await act(async () => runSlashCommandItem(editor, range, command.id, { createChild: () => null }));
+    const readonlyHost = requireFormulaHost(hostRef.value);
+    await act(async () => setPreferences({ readingMode: true }));
+    expect(readonlyHost!.confirm({ formula: '2 + 3' })).toEqual({ ok: false, reason: 'read-only' });
+    await act(async () => setPreferences({ readingMode: false }));
+    expect(docText(editor)).toBe('/formula');
+
+    hostRef.value = null;
+    await act(async () => runSlashCommandItem(editor, range, command.id, { createChild: () => null }));
+    const revokedHost = requireFormulaHost(hostRef.value);
+    unregister();
+    formulaRegistrations.delete(unregister);
+    expect(revokedHost!.confirm({ formula: '2 + 3' })).toEqual({ ok: false, reason: 'already-used' });
+    expect(getLocalizedBlocks().some((item) => item.id === command.id)).toBe(false);
+    expect(writes).not.toHaveBeenCalled();
+
+    const nestedPageId = `inline-formula-nested-${++idCounter}` as PageId;
+    const nested = await openWorkspace({ pageId: nestedPageId, markdown: '/formula\n\n> /formula' });
+    const nestedHarness = mountPageEditor(nested.session, nestedPageId);
+    setMainRoute(nestedPageId);
+    await nestedHarness.render();
+    const nestedEditor = nestedHarness.editor;
+    if (!nestedEditor) throw new Error('Nested PageEditor did not mount.');
+    await focusEditor(nestedEditor);
+    const nestedRangeHolder: { value: { from: number; to: number } | null } = { value: null };
+    nestedEditor.state.doc.descendants((node, position) => {
+      if (!node.isText || !node.text) return true;
+      const index = node.text.lastIndexOf('/formula');
+      if (index < 0) return true;
+      nestedRangeHolder.value = { from: position + index, to: position + index + '/formula'.length };
+      return false;
+    });
+    const nestedRange = nestedRangeHolder.value;
+    if (!nestedRange) throw new Error('The nested synthetic slash command was not parsed.');
+    await act(async () => nestedEditor.view.dispatch(
+      nestedEditor.state.tr.setSelection(TextSelection.create(nestedEditor.state.doc, nestedRange!.to)),
+    ));
+    hostRef.value = null;
+    // Re-register with the current owner only to check the root-paragraph guard.
+    const nestedUnregister = addInlineFormulaSlashCommand(testOwner(), (target) => target, {
+      title: 'Formula result',
+      keywords: 'formula',
+      onInvoke: (operation) => { hostRef.value = operation; },
+    });
+    formulaRegistrations.add(nestedUnregister);
+    const nestedCommand = getLocalizedBlocks().find((item) => item.id === 'plugin:polaris-dados:inline-formula-1');
+    await act(async () => runSlashCommandItem(nestedEditor, nestedRange, nestedCommand!.id, { createChild: () => null }));
+    expect(hostRef.value).toBeNull();
+    expect(docText(nestedEditor)).toContain('/formula');
+    expect(writes).not.toHaveBeenCalled();
+    nestedUnregister();
+    formulaRegistrations.delete(nestedUnregister);
+  });
+
   it('keeps the captured selection across picker blur and inserts only when explicitly requested', async () => {
     const { pageId, session, vault, initialDoc } = await openWorkspace();
     setMainRoute(pageId);

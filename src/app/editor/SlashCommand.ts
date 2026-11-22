@@ -468,6 +468,10 @@ export function getLocalizedBlocks(): BlockItem[] {
   return [...BLOCK_ITEMS.map(localized), ...pluginBlocks()];
 }
 
+export function runSlashCommandItem(editor: Editor, range: Range, id: string, options: SlashOptions): void {
+  getLocalizedBlocks().find((candidate) => candidate.id === id)?.run(editor, range, options);
+}
+
 function localized(item: BlockItem): BlockItem {
   const titleKey = `slash.items.${item.id}.title` as TranslationKey;
   const descKey = `slash.items.${item.id}.description` as TranslationKey;
@@ -596,8 +600,7 @@ export const SlashCommand = Extension.create<SlashOptions>({
         },
         items: ({ query }) => slashItems(query),
         command: ({ editor, range, props }) => {
-          const item = BLOCK_ITEMS.find((candidate) => candidate.id === props.id);
-          item?.run(editor, range, options);
+          runSlashCommandItem(editor, range, props.id, options);
         },
         render: renderSuggestion(
           () => t('slash.menu.insertBlock'),

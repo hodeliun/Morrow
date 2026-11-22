@@ -1,4 +1,5 @@
-import type { EditorEvents } from '@tiptap/core';
+import type { Editor, EditorEvents } from '@tiptap/core';
+import { closeHistory } from '@tiptap/pm/history';
 import { markdownToDoc } from '../../core/markdown/parse';
 import type { DocNode } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
@@ -25,6 +26,14 @@ const INSERTION_CAPTURE_META = 'morrowPluginInsertionCapture';
 export interface EditorInsertionOwner {
   readonly generation: number;
   isActive(): boolean;
+}
+
+/** Host-only override used by narrow editor commands that replace a captured range. */
+export interface EditorInsertionCaptureOptions {
+  readonly editor?: Editor;
+  readonly range?: { readonly from: number; readonly to: number };
+  /** Parses one host-generated paragraph and inserts its inline children into a captured range. */
+  readonly inlineRange?: boolean;
 }
 
 interface NavigationSnapshot {
@@ -90,9 +99,11 @@ function pageStillWritable(session: ReturnType<typeof getSession>, pageId: strin
  */
 export function captureEditorInsertionTarget(
   owner: EditorInsertionOwner,
+  options: EditorInsertionCaptureOptions = {},
 ): PluginEditorInsertionTargetV1 | null {
-  const editor = focusedEditor();
+  const editor = options.editor ?? focusedEditor();
   if (!editor || editor.isDestroyed || !editor.view.dom.isConnected) return null;
+  if (options.editor && focusedEditor() !== editor) return null;
 
   let session: ReturnType<typeof getSession>;
   try {
@@ -106,7 +117,16 @@ export function captureEditorInsertionTarget(
   const sessionGeneration = getWorkspaceSessionGeneration();
   const capturedDoc = editor.state.doc;
   const capturedSelection = editor.state.selection;
+  const capturedRange = options.range ? { from: options.range.from, to: options.range.to } : null;
   const capturedSessionDoc = session.getState().docs[peer?.pageId ?? ''];
+
+  if (
+    capturedRange &&
+    (capturedRange.from < 0 || capturedRange.to <= capturedRange.from ||
+      capturedRange.to > capturedDoc.content.size || !capturedSelection.empty ||
+      capturedSelection.from !== capturedRange.to)
+  )
+    return null;
 
   if (
     !peer ||
@@ -241,7 +261,14 @@ export function captureEditorInsertionTarget(
     clean();
     let content: unknown[];
     try {
-      content = markdownToDoc(String(markdown)).content ?? [];
+      const parsedContent = markdownToDoc(String(markdown)).content ?? [];
+      content = parsedContent;
+      if (capturedRange && options.inlineRange) {
+        const paragraph = parsedContent[0] as DocNode | undefined;
+        if (parsedContent.length !== 1 || paragraph?.type !== 'paragraph' || !Array.isArray(paragraph.content))
+          return failed('invalid-markdown');
+        content = paragraph.content;
+      }
     } catch {
       return failed('invalid-markdown');
     }
@@ -254,16 +281,20 @@ export function captureEditorInsertionTarget(
     };
     editor.on('transaction', onAcceptedTransaction);
     try {
-      const ran = editor
-        .chain()
-        .focus()
-        .command(({ tr }) => {
-          tr.setMeta(INSERTION_CAPTURE_META, token);
-          return true;
-        })
-        .insertContent(content as never)
-        .run();
-      return ran && accepted ? { ok: true } : failed('insert-rejected');
+      const chain = editor.chain().focus().command(({ tr }) => {
+        tr.setMeta(INSERTION_CAPTURE_META, token);
+        if (capturedRange && options.inlineRange) closeHistory(tr);
+        return true;
+      });
+      const ran = capturedRange
+        ? chain.insertContentAt(capturedRange, content as never).run()
+        : chain.insertContent(content as never).run();
+      if (!ran || !accepted) return failed('insert-rejected');
+      if (capturedRange && options.inlineRange) {
+        // End the formula event before future typing, without creating another document change.
+        editor.view.dispatch(closeHistory(editor.state.tr));
+      }
+      return { ok: true };
     } catch {
       return failed('insert-rejected');
     } finally {

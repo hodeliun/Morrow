@@ -20,6 +20,13 @@ export interface LegacyFormulaPresentation {
   readonly fallback: string;
 }
 
+export interface LegacyFormulaMarkerInput {
+  readonly resultId: string;
+  readonly pageId: string;
+  readonly formula: string;
+  readonly name?: string;
+}
+
 export interface LegacyFormulaDisplayFormat {
   readonly locale?: string;
   readonly currency?: string;
@@ -76,6 +83,39 @@ export function parseLegacyFormulaPresentation(
     format: projectDisplayFormat(payload.format),
     fallback: marker.fallback,
   };
+}
+
+/** Builds the published scalar marker shape while keeping its label inert HTML text. */
+export function createLegacyFormulaMarker(input: LegacyFormulaMarkerInput): LegacyFormulaMarker | null {
+  if (
+    !input ||
+    typeof input.resultId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,64}$/.test(input.resultId) ||
+    typeof input.pageId !== 'string' ||
+    input.pageId.length === 0 ||
+    typeof input.formula !== 'string' ||
+    input.formula.length > 2000 ||
+    (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 100))
+  )
+    return null;
+
+  const name = input.name ?? '';
+  const payload = {
+    resultId: input.resultId,
+    pageId: input.pageId,
+    name,
+    formula: input.formula,
+    bindings: [],
+    outputType: 'auto',
+    format: {},
+  };
+  try {
+    const encoded = encodeURIComponent(JSON.stringify(payload)).replaceAll("'", '%27');
+    const fallback = name.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    return parseLegacyFormulaMarker(`<span data-morrow-result="${encoded}">${fallback}</span>`);
+  } catch {
+    return null;
+  }
 }
 
 /** Validates a complete opening span while retaining every source attribute as opaque text. */

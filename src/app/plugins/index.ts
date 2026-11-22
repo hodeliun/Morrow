@@ -37,6 +37,8 @@ import type { DatabaseProviderRegistration } from './providerApi';
 import { clonePluginPageProperties } from './pageInfo';
 import { selectedProviderMarker } from './providerMarker';
 import type { PluginEditorInsertionTargetV1 } from './editorApi';
+import { addInlineFormulaSlashCommand } from './inlineFormulaAuthoring';
+import type { PluginInlineFormulaSlashCommand } from './inlineFormulaApi';
 import { definePluginLocaleApi } from './localeApi';
 
 export type { PluginLocaleApi } from './localeApi';
@@ -322,6 +324,20 @@ function pluginApi(id: string, state: Running) {
           throw new Error('Only Polaris Dados can present inline formula results.');
         if (typeof mount !== 'function') throw new Error('An inline formula presentation needs a mount function.');
         return keep(addPluginInlineFormulaPresentation(id, mount));
+      },
+      addSlashCommand(command: PluginInlineFormulaSlashCommand) {
+        assertActive();
+        if (id !== 'polaris-dados')
+          throw new Error('Only Polaris Dados can add an inline formula slash command.');
+        if (!command || typeof command !== 'object' || typeof command.onInvoke !== 'function')
+          throw new Error('An inline formula slash command needs an onInvoke handler.');
+        return keep(
+          addInlineFormulaSlashCommand(
+            { generation: state.generation, isActive: ownerIsActive },
+            bindInsertionTarget,
+            command,
+          ),
+        );
       },
     },
     providers: Object.freeze({

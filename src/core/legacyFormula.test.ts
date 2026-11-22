@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { validateDoc } from './doc';
-import { legacyFormulaDocIssue, LEGACY_FORMULA_NODE, parseLegacyFormulaPresentation } from './legacyFormula';
+import {
+  createLegacyFormulaMarker,
+  legacyFormulaDocIssue,
+  LEGACY_FORMULA_NODE,
+  parseLegacyFormulaMarker,
+  parseLegacyFormulaPresentation,
+} from './legacyFormula';
 import type { DocNode } from './model';
 import { markdownToDoc } from './markdown/parse';
 import { docToClipboardMarkdown, docToMarkdown } from './markdown/serialize';
@@ -31,6 +37,39 @@ function formulaNodes(doc: DocNode): DocNode[] {
 }
 
 describe('legacy inline formula results', () => {
+  it('creates the published auto scalar payload with an inert optional label', () => {
+    const marker = createLegacyFormulaMarker({
+      resultId: 'host-generated-id',
+      pageId: 'fixture-page',
+      formula: '2 + 3',
+      name: 'A <safe> & useful label',
+    });
+
+    expect(marker).toMatchObject({ fallback: 'A <safe> & useful label', resultId: 'host-generated-id' });
+    expect(marker?.raw).toContain('data-morrow-result=');
+    expect(marker?.raw).toContain('A &lt;safe&gt; &amp; useful label');
+    expect(parseLegacyFormulaPresentation(marker!.raw, marker!.fallback)).toMatchObject({
+      formula: '2 + 3',
+      outputType: 'auto',
+      format: {},
+      fallback: 'A <safe> & useful label',
+    });
+    const emptyName = createLegacyFormulaMarker({
+      resultId: 'empty-name',
+      pageId: 'fixture-page',
+      formula: '',
+    });
+    expect(parseLegacyFormulaMarker(emptyName!.raw)?.fallback).toBe('');
+  });
+
+  it('rejects marker values outside the published scalar limits', () => {
+    const base = { resultId: 'valid-id', pageId: 'fixture-page', formula: '1' };
+    expect(createLegacyFormulaMarker({ ...base, resultId: 'contains space' })).toBeNull();
+    expect(createLegacyFormulaMarker({ ...base, formula: 'x'.repeat(2001) })).toBeNull();
+    expect(createLegacyFormulaMarker({ ...base, name: 'x'.repeat(101) })).toBeNull();
+    expect(createLegacyFormulaMarker({ ...base, pageId: '' })).toBeNull();
+  });
+
   it('projects only validated, unbound display data and omits identity and source markup', () => {
     const payload = {
       resultId: 'private-result',
