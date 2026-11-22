@@ -266,6 +266,11 @@ async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBa
         '',
         'External: [External documentation](https://example.com/docs)',
         '',
+        '<!-- morrow:block-background:#a1b2c3 -->',
+        'Legacy HEX background.',
+        '',
+        'Plain neighbor.',
+        '',
       ].join('\n'),
     },
     {

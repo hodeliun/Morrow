@@ -65,6 +65,10 @@ Segundo parágrafo.
 
 O build verifica os hashes do bundle, manifesto, README e licença de ambos os plugins dentro do ZIP extraído, além da lista SHA-256 completa do pacote. Essa verificação não abre a GUI do Windows nem equivale ao aceite visual nessa plataforma.
 
+### Fundo de bloco de uma nota do fork antigo
+
+Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parágrafo **Plain neighbor** mantém o fundo normal. Desative o Polaris Documento e alterne entre os temas claro e escuro. Edite o parágrafo vizinho, salve e reabra a nota. A cor legada deve permanecer.
+
 ## Fluxo curto
 
 1. Abra a nota `Inventory` no cofre `PilotState\DemoVault`.

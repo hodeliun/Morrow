@@ -124,6 +124,7 @@ describe('Polaris Documento Windows fixture option', () => {
     expect(links).toContain('[[Gone target|Missing: gone]]');
     expect(links).toContain('[[Never existed|Unresolved: unknown]]');
     expect(links).toContain('[External documentation](https://example.com/docs)');
+    expect(links).toContain('<!-- morrow:block-background:#a1b2c3 -->\nLegacy HEX background.\n\nPlain neighbor.');
     expect(relationDatabase).toContain('type: relation');
     expect(relation).toContain('"[[Resolved target]]"');
     expect(relation).toContain('"[[Gone target]]"');
