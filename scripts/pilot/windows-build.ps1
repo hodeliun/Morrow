@@ -1,3 +1,7 @@
+param(
+  [switch] $IncludeDocumentoDemo
+)
+
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
@@ -19,6 +23,9 @@ $tempZip = Join-Path $workDir "morrow-polaris-dados-windows-$runId-$runAttempt-$
 $commands = [System.Collections.Generic.List[object]]::new()
 $gateResults = [System.Collections.Generic.List[object]]::new()
 $versions = [ordered]@{}
+$pluginIds = @('polaris-dados')
+if ($IncludeDocumentoDemo) { $pluginIds += 'polaris-documento' }
+$pluginHashRecords = [System.Collections.Generic.List[object]]::new()
 $metadata = $null
 $packageResult = $null
 $pipelineStatus = 'failed'
@@ -143,6 +150,8 @@ function Write-BuildInfo([string] $Path, [object[]] $FileInventory, [string] $Te
     versions = $metadata.versions
     lockHashes = $metadata.lockHashes
     overlay = $metadata.overlay
+    packageOptions = $metadata.packageOptions
+    plugins = $metadata.plugins
     buildCommands = $gateResults.ToArray()
     template = [ordered]@{ path = 'DemoVault'; sha256 = $TemplateHash }
     fileInventory = @($FileInventory)
@@ -221,6 +230,10 @@ try {
       mcpResourceSource = '../dist-mcp/index.js'
       mcpResourceTarget = $resourceMapping
     }
+    packageOptions = [ordered]@{
+      documentoDemo = [bool]$IncludeDocumentoDemo
+    }
+    plugins = @($pluginIds)
   }
 
   $buildPlan = @(
@@ -232,6 +245,9 @@ try {
     @{ Label = 'tauri-windows-debug-build'; Executable = 'npm'; Arguments = @('run', 'tauri', '--', 'build', '--debug', '--no-bundle', '--config', 'src-tauri/tauri.pilot.conf.json'); WorkingDirectory = $repoRoot },
     @{ Label = 'polaris-dados-plugin-build'; Executable = 'npm'; Arguments = @('run', 'build:polaris-dados'); WorkingDirectory = $repoRoot }
   )
+  if ($IncludeDocumentoDemo) {
+    $buildPlan += @{ Label = 'polaris-documento-plugin-build'; Executable = 'npm'; Arguments = @('run', 'build:polaris-documento'); WorkingDirectory = $repoRoot }
+  }
 
   foreach ($item in $buildPlan) {
     $result = Invoke-LoggedCommand $item.Label $item.Executable $item.Arguments $item.WorkingDirectory
@@ -264,6 +280,13 @@ try {
     (Join-Path $repoRoot 'scripts/pilot/windows-launch.independent.test.ps1'),
     (Join-Path $repoRoot 'plugins/polaris-dados/TESTAR-NO-WINDOWS.md')
   )
+  if ($IncludeDocumentoDemo) {
+    $requiredSources += @(
+      (Join-Path $repoRoot 'dist/polaris-documento/main.js'),
+      (Join-Path $repoRoot 'plugins/polaris-documento/manifest.json'),
+      (Join-Path $repoRoot 'plugins/polaris-documento/README.md')
+    )
+  }
   foreach ($requiredSource in $requiredSources) {
     if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) { throw "Required build/package input is missing: $requiredSource" }
     if ((Get-Item -LiteralPath $requiredSource).Length -le 0) { throw "Required build/package input is empty: $requiredSource" }
@@ -276,16 +299,35 @@ try {
   $mcpTarget = Join-Path $packageDir 'mcp/index.js'
   New-Item -ItemType Directory -Path (Split-Path -Parent $mcpTarget) -Force | Out-Null
   Copy-Item -LiteralPath $mcpSource -Destination $mcpTarget
-  $fixtureResult = Invoke-LoggedCommand 'create-synthetic-fixture' 'node' @('scripts/pilot/create-polaris-dados-fixture.mjs', '--checkbox-demo', $fixtureDir) $repoRoot
+  $fixtureArguments = [System.Collections.Generic.List[string]]::new()
+  $fixtureArguments.Add('scripts/pilot/create-polaris-dados-fixture.mjs')
+  $fixtureArguments.Add('--checkbox-demo')
+  if ($IncludeDocumentoDemo) { $fixtureArguments.Add('--documento-demo') }
+  $fixtureArguments.Add($fixtureDir)
+  $fixtureResult = Invoke-LoggedCommand 'create-synthetic-fixture' 'node' $fixtureArguments.ToArray() $repoRoot
   if ($fixtureResult.ExitCode -ne 0) { throw "Synthetic fixture generation failed (exit $($fixtureResult.ExitCode))." }
 
-  $fixturePlugin = Join-Path $fixtureDir '.morrow/plugins/polaris-dados'
-  $fixtureComparisons = @(
-    @{ Source = (Join-Path $repoRoot 'dist/polaris-dados/main.js'); Package = (Join-Path $fixturePlugin 'main.js'); Name = 'plugin bundle' },
-    @{ Source = (Join-Path $repoRoot 'plugins/polaris-dados/manifest.json'); Package = (Join-Path $fixturePlugin 'manifest.json'); Name = 'plugin manifest' },
-    @{ Source = (Join-Path $repoRoot 'plugins/polaris-dados/README.md'); Package = (Join-Path $fixturePlugin 'README.md'); Name = 'plugin README' },
-    @{ Source = (Join-Path $repoRoot 'LICENSE'); Package = (Join-Path $fixturePlugin 'LICENSE'); Name = 'Apache-2.0 license' }
-  )
+  $fixtureStatePath = Join-Path $fixtureDir '.morrow/plugins.json'
+  $fixtureState = Get-Content -LiteralPath $fixtureStatePath -Raw | ConvertFrom-Json
+  foreach ($pluginId in $pluginIds) {
+    if ($pluginId -notin @($fixtureState.enabled)) { throw "Synthetic fixture does not enable expected plugin $pluginId." }
+  }
+  if ($IncludeDocumentoDemo) {
+    foreach ($demoFile in @('Links.md', 'Relations.md', 'Relations/Relation sample.md', 'Resolved target.md', '.trash/Gone target.md')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $fixtureDir $demoFile) -PathType Leaf)) { throw "Documento demo is missing $demoFile." }
+    }
+  }
+
+  $fixtureComparisons = [System.Collections.Generic.List[object]]::new()
+  foreach ($pluginId in $pluginIds) {
+    $fixturePlugin = Join-Path $fixtureDir ".morrow/plugins/$pluginId"
+    $sourcePlugin = Join-Path $repoRoot "plugins/$pluginId"
+    $sourceBundle = Join-Path $repoRoot "dist/$pluginId/main.js"
+    $fixtureComparisons.Add(@{ Source = $sourceBundle; Package = (Join-Path $fixturePlugin 'main.js'); Name = "$pluginId plugin bundle" })
+    $fixtureComparisons.Add(@{ Source = (Join-Path $sourcePlugin 'manifest.json'); Package = (Join-Path $fixturePlugin 'manifest.json'); Name = "$pluginId plugin manifest" })
+    $fixtureComparisons.Add(@{ Source = (Join-Path $sourcePlugin 'README.md'); Package = (Join-Path $fixturePlugin 'README.md'); Name = "$pluginId plugin README" })
+    $fixtureComparisons.Add(@{ Source = (Join-Path $repoRoot 'LICENSE'); Package = (Join-Path $fixturePlugin 'LICENSE'); Name = "$pluginId Apache-2.0 license" })
+  }
   foreach ($item in $fixtureComparisons) {
     if (-not (Test-Path -LiteralPath $item.Package -PathType Leaf)) { throw "Package is missing $($item.Name)." }
     if ((Get-Sha256 $item.Source) -ne (Get-Sha256 $item.Package)) { throw "Packaged $($item.Name) hash differs from its source." }
@@ -339,7 +381,31 @@ try {
   }
   if ((Get-Sha256 (Join-Path $extractionDir 'morrow.exe')) -ne (Get-Sha256 $exeSource)) { throw 'The extracted executable hash differs from the Windows build output.' }
   if ((Get-Sha256 (Join-Path $extractionDir 'mcp/index.js')) -ne (Get-Sha256 $mcpSource)) { throw 'The extracted Tauri MCP resource hash differs from dist-mcp/index.js.' }
-  if ((Get-Sha256 (Join-Path $extractionDir 'DemoVault/.morrow/plugins/polaris-dados/main.js')) -ne (Get-Sha256 (Join-Path $repoRoot 'dist/polaris-dados/main.js'))) { throw 'The extracted plugin bundle hash differs from the built plugin.' }
+  foreach ($pluginId in $pluginIds) {
+    $sourcePlugin = Join-Path $repoRoot "plugins/$pluginId"
+    $sourceBundle = Join-Path $repoRoot "dist/$pluginId/main.js"
+    $extractedPlugin = Join-Path $extractionDir "DemoVault/.morrow/plugins/$pluginId"
+    $assetComparisons = @(
+      @{ Source = $sourceBundle; Name = 'main.js' },
+      @{ Source = (Join-Path $sourcePlugin 'manifest.json'); Name = 'manifest.json' },
+      @{ Source = (Join-Path $sourcePlugin 'README.md'); Name = 'README.md' },
+      @{ Source = (Join-Path $repoRoot 'LICENSE'); Name = 'LICENSE' }
+    )
+    foreach ($asset in $assetComparisons) {
+      $extractedAsset = Join-Path $extractedPlugin $asset.Name
+      if (-not (Test-Path -LiteralPath $extractedAsset -PathType Leaf)) { throw "The extracted $pluginId plugin is missing $($asset.Name)." }
+      $sourceHash = Get-Sha256 $asset.Source
+      $extractedHash = Get-Sha256 $extractedAsset
+      if ($extractedHash -ne $sourceHash) { throw "The extracted $pluginId/$($asset.Name) hash differs from its source." }
+      $pluginHashRecords.Add([ordered]@{
+        plugin = $pluginId
+        file = $asset.Name
+        sourceSha256 = $sourceHash
+        extractedSha256 = $extractedHash
+        matched = $true
+      })
+    }
+  }
   $extractedSumsHashBeforeLauncherChecks = Get-Sha256 (Join-Path $extractionDir 'SHA256SUMS')
 
   $launcherTestPlan = @(
@@ -384,11 +450,12 @@ try {
     status = 'passed'
     startedAt = $packageStartedAt.ToString('o')
     verifiedAt = $packageVerifiedAt.ToString('o')
-    layout = 'windows-launch.cmd; windows-launch.ps1; morrow.exe; mcp/index.js; DemoVault template; TESTAR-NO-WINDOWS.md; BUILD-INFO.json; SHA256SUMS'
+    layout = "windows-launch.cmd; windows-launch.ps1; morrow.exe; mcp/index.js; DemoVault template; $($pluginIds -join ', '); TESTAR-NO-WINDOWS.md; BUILD-INFO.json; SHA256SUMS"
     executableLaunched = $false
     zip = [ordered]@{ name = [IO.Path]::GetFileName($tempZip); sizeBytes = $zipInfo.Length; sha256 = Get-Sha256 $tempZip }
     sha256sumsSha256 = Get-Sha256 (Join-Path $packageDir 'SHA256SUMS')
     extractedExecutableSha256 = Get-Sha256 (Join-Path $extractionDir 'morrow.exe')
+    plugins = $pluginHashRecords.ToArray()
     files = @($fileInventory)
     verification = [ordered]@{
       zipCreated = $true
@@ -398,7 +465,8 @@ try {
       sha256sumsMatched = $true
       executableHashMatched = $true
       mcpResourceHashMatched = $true
-      pluginBundleHashMatched = $true
+      pluginAssetsMatchedAfterExtraction = $true
+      documentoDemoIncluded = [bool]$IncludeDocumentoDemo
       launcherOwnPowerShell51CheckOnlyPassed = $true
       launcherIndependentPowerShell51CheckOnlyPassed = $true
       launcherOwnPowerShell7CheckOnlyPassed = $true

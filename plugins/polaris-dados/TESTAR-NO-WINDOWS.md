@@ -1,6 +1,6 @@
 # Testar o piloto Polaris Dados no Windows
 
-Este candidato experimental usa Morrow 2.2.0 e inclui o piloto Polaris Dados com edição de números, texto e caixas de seleção. O pacote Windows é compilado nativamente. Seus checks verificam o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste e aceite.
+Este candidato experimental usa Morrow 2.2.0 e inclui o piloto Polaris Dados com edição de números, texto e caixas de seleção, além de uma demonstração visual do plugin Polaris Documento. O pacote Windows é compilado nativamente. Seus checks verificam o ZIP, os hashes e o launcher em PowerShell 5.1 e 7. A abertura da interface no Windows e a paridade integral com o fork seguem pendentes de teste e aceite.
 
 ## Requisitos
 
@@ -23,6 +23,17 @@ Esses caminhos descrevem a configuração do piloto. Somente uma execução nati
 7. Em Settings/Configurações, habilite plugins locais e o plugin Polaris Dados. Se necessário, recarregue a nota.
 
 O launcher cria `PilotState\DemoVault` na primeira execução. As próximas execuções reutilizam essa cópia para manter as alterações. Se o launcher recusar uma pasta, aparecer um cofre pessoal ou surgir uma tela inesperada, feche o aplicativo e informe o que aconteceu. Não apague nem tente reparar a pasta recusada.
+
+## Demonstração visual Polaris Documento
+
+1. Em Settings/Configurações → Plugins, permita plugins locais e confirme que **Polaris Documento** está habilitado. O modelo `DemoVault` já deixa o plugin habilitado; essa preferência local ainda pode exigir sua confirmação.
+2. Na árvore de arquivos lateral de `PilotState\DemoVault`, abra `Links`. Compare os links resolvido, ausente (alvo na lixeira) e não resolvido. O link externo deve manter a aparência normal do Morrow.
+3. Abra `Relations` pela mesma árvore lateral e confira a linha `Relation sample`. Ela mostra uma relação nativa para `Resolved target` e outra para `Gone target`, cujo alvo sintético está na lixeira.
+4. Em Settings/Configurações → Appearance/Aparência → Theme/Tema, alterne entre os temas claro e escuro e confira novamente `Links` e `Relations`.
+5. Com foco no editor, use **Tab** até um chip de relação em `Relations` para conferir o contorno de foco. A navegação e as ações dos links e relações continuam pertencendo ao Morrow.
+6. Em Settings/Configurações → Plugins, desabilite **Polaris Documento**. Os estilos do plugin devem sair; os links e as relações continuam disponíveis com a apresentação padrão do Morrow. Habilite-o novamente e confirme que a apresentação do plugin voltou.
+
+O build verifica os hashes do bundle, manifesto, README e licença de ambos os plugins dentro do ZIP extraído, além da lista SHA-256 completa do pacote. Essa verificação não abre a GUI do Windows nem equivale ao aceite visual nessa plataforma.
 
 ## Fluxo curto
 

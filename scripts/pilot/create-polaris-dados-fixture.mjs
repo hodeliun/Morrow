@@ -10,12 +10,28 @@ const repositoryRoot = resolve(scriptDirectory, '../..');
 const pluginSource = resolve(repositoryRoot, 'plugins/polaris-dados');
 const bundleSource = resolve(repositoryRoot, 'dist/polaris-dados/main.js');
 const args = process.argv.slice(2);
-const includeCheckboxDemo = args[0] === '--checkbox-demo';
-if (includeCheckboxDemo) args.shift();
+const usage =
+  'Usage: node scripts/pilot/create-polaris-dados-fixture.mjs [--checkbox-demo] [--documento-demo] <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n';
+if (args.includes('--help') || args.includes('-h')) {
+  process.stdout.write(usage);
+  process.exit(0);
+}
+const options = new Set();
+const supportedOptions = new Set(['--checkbox-demo', '--documento-demo']);
+while (args[0]?.startsWith('--')) {
+  const option = args.shift();
+  if (!supportedOptions.has(option)) {
+    throw new Error(`Unknown fixture option: ${option}`);
+  }
+  if (options.has(option)) throw new Error(`Fixture option was supplied more than once: ${option}`);
+  options.add(option);
+}
+const includeCheckboxDemo = options.has('--checkbox-demo');
+const includeDocumentoDemo = options.has('--documento-demo');
 
-if (args.length < 1 || args.length > 2 || args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: node scripts/pilot/create-polaris-dados-fixture.mjs [--checkbox-demo] <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n');
-  process.exit(args.includes('--help') || args.includes('-h') ? 0 : 2);
+if (args.length < 1 || args.length > 2) {
+  process.stderr.write(usage);
+  process.exit(2);
 }
 
 const targets = args.map((item) => resolve(item));
@@ -37,6 +53,21 @@ const sourceFiles = {
 if (sourceFiles.bundle.length === 0) throw new Error('The plugin bundle is empty. Run npm run build:polaris-dados first.');
 const manifest = JSON.parse(sourceFiles.manifest.toString('utf8'));
 if (manifest.id !== 'polaris-dados') throw new Error('The plugin manifest id must be polaris-dados.');
+if (includeDocumentoDemo) {
+  const documentoSource = resolve(repositoryRoot, 'plugins/polaris-documento');
+  sourceFiles.documento = {
+    bundle: await readFile(resolve(repositoryRoot, 'dist/polaris-documento/main.js')),
+    manifest: await readFile(resolve(documentoSource, 'manifest.json')),
+    readme: await readFile(resolve(documentoSource, 'README.md')),
+  };
+  if (sourceFiles.documento.bundle.length === 0) {
+    throw new Error('The Documento plugin bundle is empty. Run npm run build:polaris-documento first.');
+  }
+  const documentoManifest = JSON.parse(sourceFiles.documento.manifest.toString('utf8'));
+  if (documentoManifest.id !== 'polaris-documento') {
+    throw new Error('The Documento plugin manifest id must be polaris-documento.');
+  }
+}
 
 const targetStates = await Promise.all(targets.map(inspectTarget));
 const firstId = process.hrtime.bigint();
@@ -44,17 +75,35 @@ let idSequence = 0n;
 const now = Date.now();
 const allocateId = (kind) => `${kind}-${firstId + idSequence++}`;
 const destinations = [];
-const pagesPerVault = includeCheckboxDemo ? 8 : 3;
+const pagesPerVault = 3 + (includeCheckboxDemo ? 5 : 0) + (includeDocumentoDemo ? 5 : 0);
 for (let index = 0; index < targets.length; index += 1) {
   const marker = index === 0 ? 'OPEN-OLD' : 'OPEN-DESTINATION';
-  destinations.push(await createVault(targets[index], targetStates[index], marker, index, allocateId, now + index * pagesPerVault, sourceFiles));
+  destinations.push(
+    await createVault(
+      targets[index],
+      targetStates[index],
+      marker,
+      index,
+      allocateId,
+      now + index * pagesPerVault,
+      sourceFiles,
+      { includeCheckboxDemo, includeDocumentoDemo },
+    ),
+  );
 }
 
-process.stdout.write(`${JSON.stringify({
-  createdAt: new Date().toISOString(),
-  idSeed: firstId.toString(),
-  vaults: destinations,
-}, null, 2)}\n`);
+process.stdout.write(
+  `${JSON.stringify(
+    {
+      createdAt: new Date().toISOString(),
+      idSeed: firstId.toString(),
+      options: { checkboxDemo: includeCheckboxDemo, documentoDemo: includeDocumentoDemo },
+      vaults: destinations,
+    },
+    null,
+    2,
+  )}\n`,
+);
 
 async function inspectTarget(target) {
   let exists = false;
@@ -70,7 +119,7 @@ async function inspectTarget(target) {
   return { exists };
 }
 
-async function createVault(target, targetState, openMarker, vaultIndex, allocateId, createdAt, files) {
+async function createVault(target, targetState, openMarker, vaultIndex, allocateId, createdAt, files, options) {
   if (!targetState.exists) await mkdir(target, { recursive: false });
   const sourceId = allocateId('polaris-source');
   const rowId = allocateId('polaris-row');
@@ -130,9 +179,23 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
   await writeExclusive(resolve(target, 'Inventory.md'), inventory);
   await writeExclusive(resolve(target, 'Inventory/Widget.md'), row);
   await writeExclusive(resolve(target, 'Views.md'), note);
-  const checkboxFiles = includeCheckboxDemo ? await createCheckboxDemo(target, workspace.pages, allocateId, createdAt + 3) : [];
+  const checkboxFiles = options.includeCheckboxDemo
+    ? await createCheckboxDemo(target, workspace.pages, allocateId, createdAt + 3)
+    : [];
+  const documentoDemo = options.includeDocumentoDemo
+    ? await createDocumentoDemo(
+        target,
+        workspace.pages,
+        allocateId,
+        createdAt + 3 + checkboxFiles.length,
+        3 + checkboxFiles.length,
+        files.documento,
+      )
+    : null;
   await writeExclusive(resolve(target, '.morrow/workspace.json'), `${JSON.stringify(workspace, null, 1)}\n`);
-  await writeExclusive(resolve(target, '.morrow/plugins.json'), `${JSON.stringify({ enabled: ['polaris-dados'] }, null, 2)}\n`);
+  const enabledPlugins = ['polaris-dados'];
+  if (options.includeDocumentoDemo) enabledPlugins.push('polaris-documento');
+  await writeExclusive(resolve(target, '.morrow/plugins.json'), `${JSON.stringify({ enabled: enabledPlugins }, null, 2)}\n`);
   await writeExclusive(resolve(pluginDirectory, 'main.js'), files.bundle);
   await writeExclusive(resolve(pluginDirectory, 'manifest.json'), files.manifest);
   await writeExclusive(resolve(pluginDirectory, 'README.md'), files.readme);
@@ -148,18 +211,140 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
     linkedViewIds: linkedViews.map((view) => view.viewId),
     linkedViewTitles: linkedViews.map((view) => view.title),
     bundleSha256: createHashFor(files.bundle),
+    ...(documentoDemo ? { documentoDemo } : {}),
     files: [
       'Inventory.md',
       'Inventory/Widget.md',
       'Views.md',
       ...checkboxFiles,
+      ...(documentoDemo?.files ?? []),
       '.morrow/workspace.json',
       '.morrow/plugins.json',
       '.morrow/plugins/polaris-dados/main.js',
       '.morrow/plugins/polaris-dados/manifest.json',
       '.morrow/plugins/polaris-dados/README.md',
       '.morrow/plugins/polaris-dados/LICENSE',
+      ...(options.includeDocumentoDemo
+        ? [
+            '.morrow/plugins/polaris-documento/main.js',
+            '.morrow/plugins/polaris-documento/manifest.json',
+            '.morrow/plugins/polaris-documento/README.md',
+            '.morrow/plugins/polaris-documento/LICENSE',
+          ]
+        : []),
     ],
+  };
+}
+
+async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBase, documentoFiles) {
+  const ids = {
+    links: allocateId('polaris-note'),
+    relations: allocateId('polaris-source'),
+    relationRow: allocateId('polaris-row'),
+    relationView: allocateId('polaris-table-view'),
+    resolved: allocateId('polaris-note'),
+    gone: allocateId('polaris-note'),
+  };
+  const pluginDirectory = resolve(target, '.morrow/plugins/polaris-documento');
+  await mkdir(pluginDirectory);
+  await mkdir(resolve(target, 'Relations'));
+  await mkdir(resolve(target, '.trash'));
+
+  const markdownFiles = [
+    {
+      path: 'Links.md',
+      id: ids.links,
+      order: orderBase,
+      text: [
+        '# Link states',
+        '',
+        'Resolved: [[Resolved target|Resolved: live]]',
+        '',
+        'Missing: [[Gone target|Missing: gone]]',
+        '',
+        'Unresolved: [[Never existed|Unresolved: unknown]]',
+        '',
+        'External: [External documentation](https://example.com/docs)',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'Relations.md',
+      id: ids.relations,
+      order: orderBase + 1,
+      text: [
+        '---',
+        'kind: database',
+        'database:',
+        '  properties:',
+        '    - id: related',
+        '      name: Related',
+        '      type: relation',
+        '      options: []',
+        '  views:',
+        `    - id: ${ids.relationView}`,
+        '      name: Table',
+        '      type: table',
+        '      filters: []',
+        '      sorts: []',
+        '      groupBy: null',
+        '      dateProp: null',
+        '      hidden: []',
+        '---',
+        '# Relations',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'Relations/Relation sample.md',
+      id: ids.relationRow,
+      order: 0,
+      text: [
+        '---',
+        'Related:',
+        '  - "[[Resolved target]]"',
+        '  - "[[Gone target]]"',
+        '---',
+        'Synthetic relation row for the Documento visual demo.',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'Resolved target.md',
+      id: ids.resolved,
+      order: orderBase + 2,
+      text: '# Resolved target\n\nSynthetic target for the Documento visual demo.\n',
+    },
+    {
+      path: '.trash/Gone target.md',
+      id: ids.gone,
+      order: orderBase + 3,
+      trashed: createdAt + 4,
+      text: '# Gone target\n\nSynthetic trashed target for the Documento visual demo.\n',
+    },
+  ];
+  for (const [index, file] of markdownFiles.entries()) {
+    await writeExclusive(resolve(target, file.path), file.text);
+    pages[file.path] = {
+      id: file.id,
+      created: createdAt + index,
+      order: file.order,
+      ...(file.trashed ? { trashed: file.trashed } : {}),
+    };
+  }
+
+  await writeExclusive(resolve(pluginDirectory, 'main.js'), documentoFiles.bundle);
+  await writeExclusive(resolve(pluginDirectory, 'manifest.json'), documentoFiles.manifest);
+  await writeExclusive(resolve(pluginDirectory, 'README.md'), documentoFiles.readme);
+  await writeExclusive(
+    resolve(pluginDirectory, 'LICENSE'),
+    await readFile(resolve(repositoryRoot, 'LICENSE')),
+  );
+
+  return {
+    ids,
+    files: markdownFiles.map((file) => file.path),
+    bundleSha256: createHashFor(documentoFiles.bundle),
   };
 }
 
