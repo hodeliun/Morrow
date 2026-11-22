@@ -238,6 +238,92 @@ describe('Polaris Dados snapshot and cell API', () => {
     await ambiguousSession.close();
   });
 
+  it('keeps number format metadata and numeric YAML values through patch, undo, redo, and reopen', async () => {
+    const format = { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' } as const;
+    const files = fixture();
+    files['Inventory.md'] = files['Inventory.md']!.replace(
+      '    - id: quantity\n      name: Quantity\n      type: number\n',
+      '    - id: quantity\n      name: Quantity\n      type: number\n      format:\n        locale: de-DE\n        precision: 1.5\n        negativeFormat: parentheses\n',
+    );
+    files['Inventory/Widget.md'] = files['Inventory/Widget.md']!.replace('Quantity: 2', 'Quantity: 2.75');
+
+    const vault = new MemoryVault(files);
+    const session = await open(vault);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    const initial = ready(api.snapshot(databaseId));
+    const quantity = initial.schema.properties.find((property) => property.id === 'quantity')!;
+    expect(quantity.format).toEqual(format);
+    expect(initial.rows.find((row) => row.id === rowId)?.properties.quantity).toBe(2.75);
+    expect(typeof initial.rows.find((row) => row.id === rowId)?.properties.quantity).toBe('number');
+
+    expect(api.patchCell({
+      databaseId,
+      rowId,
+      propertyId: 'quantity',
+      value: 3.25,
+      expectedRevision: initial.revision,
+    })).toMatchObject({ status: 'staged' });
+    const edited = ready(api.snapshot(databaseId));
+    expect(edited.rows.find((row) => row.id === rowId)?.properties.quantity).toBe(3.25);
+    expect(api.history({ databaseId, direction: 'undo', expectedRevision: edited.revision })).toMatchObject({
+      status: 'staged',
+      direction: 'undo',
+    });
+    const undone = ready(api.snapshot(databaseId));
+    expect(undone.rows.find((row) => row.id === rowId)?.properties.quantity).toBe(2.75);
+    expect(api.history({ databaseId, direction: 'redo', expectedRevision: undone.revision })).toMatchObject({
+      status: 'staged',
+      direction: 'redo',
+    });
+    expect(ready(api.snapshot(databaseId)).rows.find((row) => row.id === rowId)?.properties.quantity).toBe(3.25);
+    expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+    expect(vault.text('Inventory/Widget.md')).toMatch(/^Quantity: 3\.25$/m);
+    expect(vault.text('Inventory.md')).toBe(files['Inventory.md']);
+
+    cleanup();
+    await session.close();
+    const reopened = await open(vault);
+    const reopenedApi = apiFor(reopened);
+    const afterRestart = ready(reopenedApi.api.snapshot(idAt(reopened, 'Inventory.md')));
+    const reopenedQuantity = afterRestart.rows.find((row) => row.id === rowId)?.properties.quantity;
+    expect(afterRestart.schema.properties.find((property) => property.id === 'quantity')?.format).toEqual(format);
+    expect(reopenedQuantity).toBe(3.25);
+    expect(typeof reopenedQuantity).toBe('number');
+    reopenedApi.cleanup();
+    await reopened.close();
+  });
+
+  it('protects the original schema bytes when a number format is unsupported', async () => {
+    const files = fixture();
+    files['Inventory.md'] = files['Inventory.md']!.replace(
+      '    - id: quantity\n      name: Quantity\n      type: number\n',
+      '    - id: quantity\n      name: Quantity\n      type: number\n      format:\n        precision: 9\n',
+    );
+    const originalSchema = files['Inventory.md']!;
+    const vault = new MemoryVault(files);
+    const session = await open(vault);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const snapshot = api.snapshot(databaseId);
+
+    expect(snapshot).toMatchObject({ status: 'unsupported', diagnostic: { code: 'database-unreadable' } });
+    expect(api.patchCell({
+      databaseId,
+      rowId: idAt(session, 'Inventory/Widget.md'),
+      propertyId: 'quantity',
+      value: 3,
+      expectedRevision: snapshot.revision,
+    })).toMatchObject({ status: 'error', code: 'unsupported' });
+    expect(vault.text('Inventory.md')).toBe(originalSchema);
+    expect(await api.flush(databaseId)).toMatchObject({ status: 'error', code: 'unsupported' });
+    expect(vault.text('Inventory.md')).toBe(originalSchema);
+
+    cleanup();
+    await session.close();
+  });
+
   it('rejects generic commands that change opted-in data/schema/identity while allowing navigation metadata', async () => {
     const vault = new MemoryVault(fixture());
     const session = await open(vault);

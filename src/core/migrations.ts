@@ -4,6 +4,7 @@ import {
   COLORS,
   MAX_ICON_LENGTH,
   MAX_TITLE_LENGTH,
+  normalizeNumberFormat,
   PAGE_KINDS,
   PROP_TYPES,
   SCHEMA_VERSION,
@@ -150,6 +151,12 @@ function normalizeProperties(raw: unknown): Record<string, PropValue> {
 
 function normalizeProp(raw: Record<string, unknown>): PropDef | null {
   if (!validId(raw.id) || !PROP_TYPES.includes(raw.type as PropType)) return null;
+  // Public import/restore callers normalize data without the vault compatibility guard.
+  // Keep the supported property even when its optional display metadata is unknown;
+  // opening/editing the actual vault remains fail-closed in that guard.
+  const format = raw.type === 'number' && Object.hasOwn(raw, 'format')
+    ? normalizeNumberFormat(raw.format)
+    : null;
   return {
     id: raw.id,
     name: nameOf(raw.name, ''),
@@ -161,6 +168,7 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
         name: nameOf(option.name, ''),
         color: COLORS.includes(option.color as ColorName) ? (option.color as ColorName) : 'gray',
       })),
+    ...(format !== null ? { format } : {}),
     ...(raw.type === 'formula' && typeof raw.formula === 'string'
       ? { formula: raw.formula.slice(0, 2000) }
       : {}),

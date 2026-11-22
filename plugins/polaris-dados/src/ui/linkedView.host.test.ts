@@ -210,14 +210,14 @@ afterEach(async () => {
   await Promise.all(windows.splice(0).map((window) => window.happyDOM.abort()));
 });
 
-function mountLinked(config: LinkedViewConfig) {
+function mountLinked(config: LinkedViewConfig, snapshot = initialDataSnapshot()) {
   const window = new Window({ url: 'http://morrow.test/' });
   windows.push(window);
   const domElement = window.document.createElement('div');
   window.document.body.append(domElement);
   const element = domElement as unknown as HTMLElement;
   const controller = new AbortController();
-  const data = makeDataApi();
+  const data = makeDataApi(snapshot);
   const view = makeViewApi(config);
   const cleanup = mountPolarisDados({
     element: element as unknown as HTMLElement,
@@ -314,6 +314,46 @@ describe('Polaris Dados linked view UI', () => {
     expect(view.flushCalls).toHaveLength(1);
     expect(data.patchCalls).toHaveLength(0);
     expect(data.historyCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
+  it('renders the source number format in linked views while filtering and calculating raw values', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties.map((property) =>
+            property.id === 'quantity'
+              ? {
+                  ...property,
+                  format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' as const },
+                }
+              : property,
+          ),
+          { id: 'total', name: 'Total', type: 'formula', options: [], formula: 'Quantity * Price' },
+        ],
+      },
+      rows: [
+        { id: 'below', title: 'Below', properties: { name: 'Below', quantity: 2.75, price: 10 } },
+        { id: 'kept', title: 'Kept', properties: { name: 'Kept', quantity: 3.75, price: 5 } },
+      ],
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Inventory view',
+        columnOrder: ['quantity', 'total'],
+        filter: { propertyId: 'quantity', op: 'gte', value: 3 },
+      },
+      snapshot,
+    );
+    const { element } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+
+    expect(rows.map((row) => row.dataset.rowId)).toEqual(['kept']);
+    expect(rows[0]?.querySelector('[data-field="quantity"] [data-value-kind="number"]')?.textContent).toBe('3,8');
+    expect(rows[0]?.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('18.75');
     mounted.cleanup();
   });
 

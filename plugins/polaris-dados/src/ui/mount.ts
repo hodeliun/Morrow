@@ -2183,6 +2183,25 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     return wrapper ?? output;
   };
 
+  const formatNumberCell = (value: number, property: ProviderProperty): string => {
+    const format = property.type === 'number' ? property.format : undefined;
+    if (!format) return new Intl.NumberFormat(locale, { maximumFractionDigits: 10 }).format(value);
+
+    const formatLocale = format.locale || (typeof navigator !== 'undefined' ? navigator.language : 'en-US');
+    const precision = format.precision ?? 2;
+    try {
+      const formatter = new Intl.NumberFormat(formatLocale, {
+        maximumFractionDigits: precision,
+        ...(format.precision !== undefined ? { minimumFractionDigits: precision } : {}),
+      });
+      if (format.negativeFormat === 'parentheses' && value < 0)
+        return `(${formatter.format(Math.abs(value))})`;
+      return formatter.format(value);
+    } catch {
+      return String(value);
+    }
+  };
+
   const displayCell = (
     row: DataApiRow,
     properties: readonly ProviderProperty[],
@@ -2203,7 +2222,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
       case 'null':
         return { ...evaluated, text: messages.blank, accessibleText: messages.blank };
       case 'number': {
-        const text = new Intl.NumberFormat(locale, { maximumFractionDigits: 10 }).format(evaluated.value);
+        const text = formatNumberCell(evaluated.value, property);
         return { ...evaluated, text, accessibleText: text };
       }
       case 'boolean': {

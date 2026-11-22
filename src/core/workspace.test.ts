@@ -195,6 +195,33 @@ describe('backup and restore', () => {
     );
     expect(future.ok || future.error).toMatch(/newer version/);
   });
+
+  it('keeps number properties when restoring a backup with unknown display metadata', () => {
+    const parsed = parseBackup(
+      JSON.stringify({
+        format: 'morrow-backup',
+        schemaVersion: SCHEMA_VERSION,
+        pages: [
+          {
+            id: 'db',
+            title: 'Amounts',
+            kind: 'database',
+            database: {
+              properties: [{ id: 'amount', name: 'Amount', type: 'number', format: { precision: 9 } }],
+              views: [],
+            },
+          },
+        ],
+        docs: {},
+      }),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.pages[0]?.database?.properties).toEqual([
+      { id: 'amount', name: 'Amount', type: 'number', options: [] },
+    ]);
+  });
 });
 
 describe('reading stored data', () => {
@@ -301,6 +328,27 @@ describe('markdown files', () => {
     expect(links.map((link) => link.attrs?.id)).toEqual(['imp1', 'garden']);
     const after = run(state, { type: 'pages.insert', pages: plan.pages, docs: plan.docs });
     expect(after.pages.imp0!.parentId).toBe('garden');
+  });
+
+  it('keeps imported number properties when format metadata is unsupported', () => {
+    const text = `---
+kind: database
+database:
+  properties:
+    - id: amount
+      name: Amount
+      type: number
+      format:
+        precision: 9
+  views: []
+---
+# Amounts
+`;
+    const plan = planMarkdownImport(emptyWorkspace(), [{ name: 'amounts.md', text }], null, () => 'db', 1);
+
+    expect(plan.pages[0]?.database?.properties).toEqual([
+      { id: 'amount', name: 'Amount', type: 'number', options: [] },
+    ]);
   });
 
   it('exports the workspace as nested files with current link titles', () => {

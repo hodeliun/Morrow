@@ -48,11 +48,61 @@ export interface SelectOption {
   color: ColorName;
 }
 
+/** Display-only settings for a Markdown-declared number property. Stored values stay numeric. */
+export interface NumberPropertyFormat {
+  locale?: string;
+  precision?: number;
+  negativeFormat?: 'minus' | 'parentheses';
+}
+
+/** Validates and copies the deliberately narrow number-format shape supported by this host. */
+export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set(['locale', 'precision', 'negativeFormat']);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
+
+  const format: NumberPropertyFormat = {};
+  if (Object.hasOwn(raw, 'locale')) {
+    if (!validNumberFormatLocale(raw.locale)) return null;
+    format.locale = raw.locale;
+  }
+  if (Object.hasOwn(raw, 'precision')) {
+    if (
+      typeof raw.precision !== 'number' ||
+      !Number.isFinite(raw.precision) ||
+      raw.precision < 0 ||
+      raw.precision > 8
+    )
+      return null;
+    format.precision = raw.precision;
+  }
+  if (Object.hasOwn(raw, 'negativeFormat')) {
+    if (raw.negativeFormat !== 'minus' && raw.negativeFormat !== 'parentheses') return null;
+    format.negativeFormat = raw.negativeFormat;
+  }
+  return format;
+}
+
+function validNumberFormatLocale(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 40) return false;
+  try {
+    new Intl.NumberFormat(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface PropDef {
   id: string;
   name: string;
   type: PropType;
   options: SelectOption[];
+  format?: NumberPropertyFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set

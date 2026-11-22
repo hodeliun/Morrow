@@ -115,6 +115,57 @@ describe('vault representability guard', () => {
     ).toBeNull();
   });
 
+  it('accepts and rewrites the narrow number display format while protecting unknown shapes', () => {
+    const format = { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' } as const;
+    const source = databaseNote({
+      properties: [{ id: 'amount', name: 'Amount', type: 'number', format }],
+      views: [],
+    });
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const read = readPageText(source);
+    expect(read.database?.properties[0]?.format).toEqual(format);
+
+    const page = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: read.database,
+      extra: read.extra,
+    });
+    const saved = renderPageText(
+      composeFrontmatter(managedFrontmatter(page, 'Inventory', null), read.extra, null),
+      null,
+      read.body,
+    );
+    expect(readPageText(saved).database?.properties[0]?.format).toEqual(format);
+
+    const unsupported = [
+      { precision: -0.1 },
+      { precision: 8.1 },
+      { precision: Number.POSITIVE_INFINITY },
+      { negativeFormat: 'brackets' },
+      { locale: 'not a locale' },
+      { locale: 'en-US', currency: 'BRL' },
+    ];
+    for (const candidate of unsupported) {
+      const note = databaseNote({
+        properties: [{ id: 'amount', name: 'Amount', type: 'number', format: candidate }],
+        views: [],
+      });
+      expect(findUnrepresentablePageContent(note)).toMatch(/number property format/i);
+      expect(hasUnrepresentableDatabaseSchema(note)).toBe(true);
+    }
+
+    const nonNumber = databaseNote({
+      properties: [{ id: 'label', name: 'Label', type: 'text', format: { precision: 2 } }],
+      views: [],
+    });
+    expect(findUnrepresentablePageContent(nonNumber)).toMatch(/number property format/i);
+  });
+
   it('rejects fork-only and nested database fields before normalization', () => {
     const unsupported = `---
 kind: database

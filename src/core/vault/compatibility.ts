@@ -8,6 +8,7 @@ import {
   MAX_DOC_DEPTH,
   MAX_ICON_LENGTH,
   MAX_TITLE_LENGTH,
+  normalizeNumberFormat,
   PROP_TYPES,
   validCover,
   VIEW_TYPES,
@@ -32,7 +33,17 @@ const FILTER_OPS = new Set([
   'unchecked',
 ]);
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
-const PROPERTY_KEYS = new Set(['id', 'name', 'type', 'options', 'formula', 'display', 'max', 'wrap']);
+const PROPERTY_KEYS = new Set([
+  'id',
+  'name',
+  'type',
+  'options',
+  'format',
+  'formula',
+  'display',
+  'max',
+  'wrap',
+]);
 const OPTION_KEYS = new Set(['id', 'name', 'color']);
 const VIEW_KEYS = new Set([
   'id',
@@ -316,6 +327,9 @@ function propertyIssue(raw: unknown): string | null {
   if (!PROP_TYPES.includes(raw.type as never))
     return 'A database property type is not supported by this version.';
   if (raw.name.length > 200) return 'A database property name is too long to preserve.';
+  if (Object.hasOwn(raw, 'format') && (raw.type !== 'number' || normalizeNumberFormat(raw.format) === null)) {
+    return 'A number property format is not supported by this version.';
+  }
 
   if (raw.options !== undefined) {
     if (!Array.isArray(raw.options)) return 'A database property option list is not supported.';

@@ -403,6 +403,7 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       name: prop.name,
       type: prop.type,
       ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
+      ...(prop.type === 'number' && prop.format ? { format: { ...prop.format } } : {}),
       ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
       ...(prop.display === 'bar' ? { display: 'bar' } : {}),
       ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),

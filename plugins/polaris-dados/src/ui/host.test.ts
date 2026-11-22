@@ -669,6 +669,43 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('formats declared number properties while leaving unformatted and calculated cells unchanged', () => {
+    const properties: TestProperty[] = [
+      DEFAULT_PROPERTIES[0]!,
+      {
+        ...DEFAULT_PROPERTIES[1]!,
+        format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' },
+      },
+      DEFAULT_PROPERTIES[2]!,
+      { id: 'zero', name: 'Zero', type: 'number', options: [], format: { precision: 0 } },
+      { id: 'default-locale', name: 'Default locale', type: 'number', options: [], format: { precision: 1.5 } },
+      DEFAULT_PROPERTIES[3]!,
+    ];
+    const values = { name: 'Widget', quantity: -1234.56, price: 2.5, zero: 0, 'default-locale': 1234.56 };
+    const mounted = mountPlugin(makeDataDouble({ properties, rowProperties: values }).api, 'pt');
+    const cellText = (propertyId: string) =>
+      mounted.element.querySelector(`[data-field="${propertyId}"] [data-value-kind="number"]`)?.textContent;
+    const fractional = new Intl.NumberFormat('de-DE', {
+      maximumFractionDigits: 1.5,
+      minimumFractionDigits: 1.5,
+    }).format(Math.abs(values.quantity));
+    const fallbackLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+
+    expect(cellText('quantity')).toBe(`(${fractional})`);
+    expect(cellText('price')).toBe(new Intl.NumberFormat('pt', { maximumFractionDigits: 10 }).format(values.price));
+    expect(cellText('zero')).toBe('0');
+    expect(cellText('default-locale')).toBe(
+      new Intl.NumberFormat(fallbackLocale, {
+        maximumFractionDigits: 1.5,
+        minimumFractionDigits: 1.5,
+      }).format(values['default-locale']),
+    );
+    expect(cellText('total')).toBe(
+      new Intl.NumberFormat('pt', { maximumFractionDigits: 10 }).format(values.quantity * values.price),
+    );
+    mounted.unmount();
+  });
+
   it('limits formula dependency depth and work without changing the extracted engine', () => {
     const properties: TestProperty[] = [];
     for (let index = 0; index < 28; index += 1) {
