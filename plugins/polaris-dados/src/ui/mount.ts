@@ -11,8 +11,15 @@ import type {
   LinkedViewSnapshot,
 } from '../../../../src/app/plugins/linkedViewApi';
 import type { DatabaseProviderContext } from '../../../../src/app/plugins/providerApi';
-import type { EvaluatedCell, ProviderProperty, ReadySnapshot } from './formulas';
-import { evaluateCell } from './formulas';
+import type {
+  EvaluatedCell,
+  FormulaDatabasePage,
+  FormulaEvaluationScope,
+  FormulaDatabaseTitleResolution,
+  ProviderProperty,
+  ReadySnapshot,
+} from './formulas';
+import { createFormulaEvaluationScope, evaluateCell, resolveFormulaDatabaseTitle } from './formulas';
 import { mergePrioritizedColumnOrder, projectLinkedView, type PresentedProperty } from './linkedView';
 import { providerMessages } from './locale';
 
@@ -291,7 +298,10 @@ let nextViewFormId = 0;
 let nextCheckboxStatusId = 0;
 
 /** Mount the Polaris Dados grid into the host-owned root. */
-export function mountPolarisDados(context: DatabaseProviderContext): () => void {
+export function mountPolarisDados(
+  context: DatabaseProviderContext,
+  readDatabasePages?: () => readonly FormulaDatabasePage[],
+): () => void {
   const { element, databaseId, data, locale, editable, signal } = context;
   const transientState = context.transientState;
   const contextView: unknown = context.view;
@@ -328,6 +338,10 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
 
   let currentSnapshot: DataApiSnapshot | null = null;
   let currentViewSnapshot: LinkedViewSnapshot | null = null;
+  const formulaScopes = new WeakMap<
+    ReadySnapshot,
+    { readonly signature: string; readonly scope: FormulaEvaluationScope }
+  >();
   let draft: Draft | null = null;
   let viewDraft: LinkedViewDraft | null = null;
   let viewPanelOpen = false;
@@ -379,6 +393,23 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   }
 
   const textSchemaSignature = (snapshot: ReadySnapshot): string => JSON.stringify(snapshot.schema.properties);
+
+  const formulaScopeForRender = (snapshot: ReadySnapshot): FormulaEvaluationScope => {
+    let databaseTitle: FormulaDatabaseTitleResolution = { status: 'unavailable' };
+    if (readDatabasePages) {
+      try {
+        databaseTitle = resolveFormulaDatabaseTitle(snapshot.databaseId, readDatabasePages());
+      } catch {
+        databaseTitle = { status: 'unavailable' };
+      }
+    }
+    const signature = JSON.stringify(databaseTitle);
+    const cached = formulaScopes.get(snapshot);
+    if (cached?.signature === signature) return cached.scope;
+    const scope = createFormulaEvaluationScope(snapshot, databaseTitle);
+    formulaScopes.set(snapshot, { signature, scope });
+    return scope;
+  };
 
   const checkpointDraft = () => {
     if (draft?.kind === 'text') {
@@ -1524,6 +1555,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
   };
 
   const renderGrid = (snapshot: ReadySnapshot): HTMLTableElement => {
+    const formulaScope = formulaScopeForRender(snapshot);
     const table = document.createElement('table');
     table.className = 'polaris-dados-grid';
     table.setAttribute('aria-label', messages.table);
@@ -1547,12 +1579,13 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     table.append(head);
 
     const body = document.createElement('tbody');
-    for (const row of snapshot.rows) body.append(renderRow(snapshot, row));
+    for (const row of snapshot.rows) body.append(renderRow(snapshot, row, formulaScope));
     table.append(body);
     return table;
   };
 
   const renderLinkedGrid = (snapshot: ReadySnapshot, config: LinkedViewConfig): HTMLTableElement => {
+    const formulaScope = formulaScopeForRender(snapshot);
     const projection = projectLinkedView(snapshot, config, messages.rowTitleColumn);
     const table = document.createElement('table');
     table.className = 'polaris-dados-grid';
@@ -1582,7 +1615,9 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     table.append(head);
 
     const body = document.createElement('tbody');
-    for (const row of projection.rows) body.append(renderLinkedRow(snapshot, row, projection.properties));
+    for (const row of projection.rows) {
+      body.append(renderLinkedRow(snapshot, row, projection.properties, formulaScope));
+    }
     table.append(body);
     return table;
   };
@@ -1591,10 +1626,11 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     snapshot: ReadySnapshot,
     row: DataApiRow,
     columns: readonly PresentedProperty[],
+    formulaScope: FormulaEvaluationScope,
   ): HTMLTableRowElement => {
     const tableRow = document.createElement('tr');
     tableRow.dataset.rowId = row.id;
-    for (const column of columns) tableRow.append(renderLinkedCell(snapshot, row, column));
+    for (const column of columns) tableRow.append(renderLinkedCell(snapshot, row, column, formulaScope));
     return tableRow;
   };
 
@@ -1602,9 +1638,10 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     snapshot: ReadySnapshot,
     row: DataApiRow,
     column: PresentedProperty,
+    formulaScope: FormulaEvaluationScope,
   ): HTMLTableCellElement => {
     if (column.kind === 'property') {
-      const cell = renderCell(snapshot, row, column.property);
+      const cell = renderCell(snapshot, row, column.property, formulaScope);
       cell.dataset.columnKey = column.key;
       return cell;
     }
@@ -1620,11 +1657,15 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     return cell;
   };
 
-  const renderRow = (snapshot: ReadySnapshot, row: DataApiRow): HTMLTableRowElement => {
+  const renderRow = (
+    snapshot: ReadySnapshot,
+    row: DataApiRow,
+    formulaScope: FormulaEvaluationScope,
+  ): HTMLTableRowElement => {
     const tableRow = document.createElement('tr');
     tableRow.dataset.rowId = row.id;
     for (const property of snapshot.schema.properties) {
-      tableRow.append(renderCell(snapshot, row, property));
+      tableRow.append(renderCell(snapshot, row, property, formulaScope));
     }
     return tableRow;
   };
@@ -1633,6 +1674,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     snapshot: ReadySnapshot,
     row: DataApiRow,
     property: ProviderProperty,
+    formulaScope: FormulaEvaluationScope,
   ): HTMLTableCellElement => {
     const cell = document.createElement('td');
     cell.dataset.field = property.id;
@@ -1642,7 +1684,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     if (draft?.rowId === row.id && draft.propertyId === property.id && pendingFlush?.kind !== 'cell') {
       cell.append(renderEditor(row, property));
     } else {
-      const value = displayCell(row, snapshot.schema.properties, property);
+      const value = displayCell(row, snapshot.schema.properties, property, formulaScope);
       const canEdit =
         editable &&
         !snapshot.readonly &&
@@ -1678,6 +1720,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     if (renderedRows.some((row) => row.querySelectorAll('td').length !== snapshot.schema.properties.length))
       return false;
 
+    const formulaScope = formulaScopeForRender(snapshot);
     for (let column = 0; column < snapshot.schema.properties.length; column += 1) {
       const property = snapshot.schema.properties[column]!;
       headings[column]!.textContent = property.name;
@@ -1710,7 +1753,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
           if (cancel) cancel.disabled = busy || pendingFlush?.kind === 'cell';
           continue;
         }
-        cell.replaceWith(renderCell(snapshot, row, property));
+        cell.replaceWith(renderCell(snapshot, row, property, formulaScope));
       }
     }
     refreshNotices(snapshot);
@@ -1745,6 +1788,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     )
       return false;
 
+    const formulaScope = formulaScopeForRender(snapshot);
     table.setAttribute('aria-label', projection.title);
     const caption = table.querySelector('caption');
     if (caption) caption.textContent = projection.title;
@@ -1782,7 +1826,7 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
           if (cancel) cancel.disabled = busy || pendingFlush?.kind === 'cell';
           continue;
         }
-        cell.replaceWith(renderLinkedCell(snapshot, row, column));
+        cell.replaceWith(renderLinkedCell(snapshot, row, column, formulaScope));
       }
     }
     refreshNotices(snapshot);
@@ -2206,10 +2250,11 @@ export function mountPolarisDados(context: DatabaseProviderContext): () => void 
     row: DataApiRow,
     properties: readonly ProviderProperty[],
     property: ProviderProperty,
+    formulaScope: FormulaEvaluationScope,
   ): CellDisplay => {
     let evaluated: EvaluatedCell;
     try {
-      evaluated = evaluateCell(row, properties, property);
+      evaluated = evaluateCell(row, properties, property, formulaScope);
     } catch (error) {
       evaluated = {
         kind: 'error',

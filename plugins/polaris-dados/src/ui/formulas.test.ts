@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DataApiRow } from '../../../../src/app/plugins/dataApi';
-import { evaluateCell } from './formulas';
-import type { EvaluatedCell, ProviderProperty } from './formulas';
+import { createFormulaEvaluationScope, evaluateCell, resolveFormulaDatabaseTitle } from './formulas';
+import type { EvaluatedCell, ProviderProperty, ReadySnapshot } from './formulas';
 
 function scalar(id: string, name: string, type: 'number' | 'text' = 'number'): ProviderProperty {
   return { id, name, type, options: [] };
@@ -261,5 +261,330 @@ describe('Polaris Dados local list methods', () => {
       kind: 'error',
       message: 'Sum() is limited to 2000 values.',
     });
+  });
+});
+
+describe('Polaris Dados current-database formula projections', () => {
+  const databaseId = 'inventory-database';
+  const pages = [
+    { id: databaseId, title: 'Inventory', kind: 'database' },
+    { id: 'inventory-note', title: 'Inventory', kind: 'note' },
+  ] as const;
+
+  function readySnapshot(
+    properties: readonly ProviderProperty[],
+    rows: readonly DataApiRow[],
+    id = databaseId,
+  ): ReadySnapshot {
+    return {
+      version: 1,
+      status: 'ready',
+      databaseId: id,
+      revision: 'test-revision',
+      schema: { properties, views: [] },
+      rows,
+      history: { canUndo: false, canRedo: false },
+      readonly: false,
+      diagnostic: null,
+    } as ReadySnapshot;
+  }
+
+  function row(id: string, properties: Record<string, unknown>): DataApiRow {
+    return { id, title: id, properties: properties as DataApiRow['properties'] };
+  }
+
+  function value(
+    snapshot: ReadySnapshot,
+    properties: readonly ProviderProperty[],
+    formulaId: string,
+    scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(snapshot.databaseId, pages)),
+  ): EvaluatedCell {
+    const target = properties.find((candidate) => candidate.id === formulaId);
+    if (!target) throw new Error(`Missing test formula ${formulaId}.`);
+    return evaluateCell(snapshot.rows[0] ?? row('empty-owner', {}), properties, target, scope);
+  }
+
+  it('aggregates a backtick-named local numeric column and preserves exact empty, null, and zero rules', () => {
+    const properties = [
+      scalar('quantity', 'Order Quantity'),
+      formula('sum', 'Sum', '`Inventory`.`Order Quantity`.Sum()'),
+      formula('average', 'Average', 'Inventory["Order Quantity"].Average()'),
+      formula('avg', 'Avg', 'Inventory["Order Quantity"].Avg()'),
+      formula('min', 'Min', 'Inventory["Order Quantity"].Min()'),
+      formula('max', 'Max', 'Inventory["Order Quantity"].Max()'),
+      formula('count', 'Count', 'Inventory["Order Quantity"].Count()'),
+    ] satisfies readonly ProviderProperty[];
+    const rows = [row('r1', { quantity: 2 }), row('r2', { quantity: 0 }), row('r3', { quantity: 3 })];
+    const snapshot = readySnapshot(properties, rows);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'sum', scope)).toEqual({ kind: 'number', value: 5 });
+    expect(value(snapshot, properties, 'average', scope)).toEqual({ kind: 'number', value: 5 / 3 });
+    expect(value(snapshot, properties, 'avg', scope)).toEqual({ kind: 'number', value: 5 / 3 });
+    expect(value(snapshot, properties, 'min', scope)).toEqual({ kind: 'number', value: 0 });
+    expect(value(snapshot, properties, 'max', scope)).toEqual({ kind: 'number', value: 3 });
+    expect(value(snapshot, properties, 'count', scope)).toEqual({ kind: 'number', value: 3 });
+  });
+
+  it('counts non-null entries including zero and rejects nulls or missing values in numeric aggregates', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      formula('sum', 'Sum', 'Inventory.Quantity.Sum()'),
+      formula('average', 'Average', 'Inventory.Quantity.Average()'),
+      formula('min', 'Min', 'Inventory.Quantity.Min()'),
+      formula('max', 'Max', 'Inventory.Quantity.Max()'),
+      formula('count', 'Count', 'Inventory.Quantity.Count()'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [
+      row('zero', { quantity: 0 }),
+      row('null', { quantity: null }),
+      row('missing', {}),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'count', scope)).toEqual({ kind: 'number', value: 1 });
+    for (const formulaId of ['sum', 'average', 'min', 'max']) {
+      expect(value(snapshot, properties, formulaId, scope)).toMatchObject({
+        kind: 'error',
+        message: expect.stringContaining('only accepts finite numbers'),
+      });
+    }
+  });
+
+  it('rejects text and checkbox columns without coercion while Count ignores only null', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      scalar('memo', 'Memo', 'text'),
+      checkbox('flag', 'Flag'),
+      formula('bad-number', 'Bad numeric data', 'Inventory.Quantity.Sum()'),
+      formula('bad-column', 'Text column', 'Inventory.Memo.Sum()'),
+      formula('flag-column', 'Checkbox column', 'Inventory.Flag.Sum()'),
+      formula('count', 'Count', 'Inventory.Quantity.Count()'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [
+      row('r1', { quantity: 2, memo: '3', flag: true }),
+      row('r2', { quantity: '4', memo: '8', flag: false }),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'bad-number', scope)).toMatchObject({ kind: 'error' });
+    expect(value(snapshot, properties, 'bad-column', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('manual number columns'),
+    });
+    expect(value(snapshot, properties, 'flag-column', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('manual number columns'),
+    });
+    expect(value(snapshot, properties, 'count', scope)).toEqual({ kind: 'number', value: 2 });
+  });
+
+  it('returns fork-compatible empty aggregates and keeps the projection boundary to six methods', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      formula('sum', 'Sum', 'Inventory.Quantity.Sum()'),
+      formula('average', 'Average', 'Inventory.Quantity.Average()'),
+      formula('min', 'Min', 'Inventory.Quantity.Min()'),
+      formula('max', 'Max', 'Inventory.Quantity.Max()'),
+      formula('count', 'Count', 'Inventory.Quantity.Count()'),
+      formula('first-method', 'First method', 'Inventory.Quantity.First()'),
+      formula('first-function', 'First function', 'First(Inventory.Quantity)'),
+      formula('raw-column', 'Raw column', 'Inventory.Quantity'),
+      formula('caught-first', 'Caught First', 'IfError(Inventory.Quantity.First(), 9)'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, []);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'sum', scope)).toEqual({ kind: 'number', value: 0 });
+    for (const formulaId of ['average', 'min', 'max']) {
+      expect(value(snapshot, properties, formulaId, scope)).toEqual({ kind: 'null' });
+    }
+    expect(value(snapshot, properties, 'count', scope)).toEqual({ kind: 'number', value: 0 });
+    for (const formulaId of ['first-method', 'first-function', 'raw-column']) {
+      expect(value(snapshot, properties, formulaId, scope)).toMatchObject({ kind: 'error' });
+    }
+    expect(value(snapshot, properties, 'caught-first', scope)).toEqual({ kind: 'number', value: 9 });
+  });
+
+  it('preserves local properties and WithName aliases over a same-named database', () => {
+    const properties = [
+      scalar('inventory', 'Inventory'),
+      formula('property', 'Property', 'Inventory * 2'),
+      formula('alias', 'Alias', 'WithName(6, Inventory, Inventory + 1)'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('owner', { inventory: 4 })]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'property', scope)).toEqual({ kind: 'number', value: 8 });
+    expect(value(snapshot, properties, 'alias', scope)).toEqual({ kind: 'number', value: 7 });
+  });
+
+  it('keeps a same-named property in ordinary identifier, function, and alias contexts', () => {
+    const properties = [
+      { id: 'inventory', name: 'Inventory', type: 'multiSelect', options: [] },
+      scalar('quantity', 'Quantity'),
+      formula('fallback', 'Fallback', 'IfError(Inventory, 9)'),
+      formula('comparison', 'Comparison', 'Inventory = Inventory'),
+      formula('text', 'Text', 'ToText(Inventory)'),
+      formula('alias', 'Alias', 'WithName(Inventory, t, t.Quantity.Sum())'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('owner', { inventory: ['local', 'value'], quantity: 6 })]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'fallback', scope)).toEqual({ kind: 'list', value: ['local', 'value'] });
+    expect(value(snapshot, properties, 'comparison', scope)).toEqual({ kind: 'boolean', value: false });
+    expect(value(snapshot, properties, 'text', scope)).toEqual({ kind: 'text', value: 'local, value' });
+    expect(value(snapshot, properties, 'alias', scope)).toMatchObject({ kind: 'error' });
+  });
+
+  it('diagnoses a property that shadows the table title only when a table projection is requested', () => {
+    const properties = [
+      scalar('inventory', 'Inventory'),
+      scalar('quantity', 'Quantity'),
+      formula('ordinary', 'Ordinary property', 'IfError(Inventory, 9)'),
+      formula('projection', 'Projection', 'Inventory.Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('owner', { inventory: 4, quantity: 6 })]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'ordinary', scope)).toEqual({ kind: 'number', value: 4 });
+    expect(value(snapshot, properties, 'projection', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('current-database property has the same name'),
+    });
+  });
+
+  it('keeps projection lookup lazy and supports aliased column keys with parenthesized roots', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      formula('lazy', 'Lazy', 'IfError(7, Inventory.Quantity.Sum())'),
+      formula('with-name-key', 'WithName key', 'WithName("Quantity", q, ( Inventory )[q].Sum())'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('r1', { quantity: 2 }), row('r2', { quantity: 5 })]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'lazy', scope)).toEqual({ kind: 'number', value: 7 });
+    expect(value(snapshot, properties, 'with-name-key', scope)).toEqual({ kind: 'number', value: 7 });
+  });
+
+  it('preserves ordinary table-title identifiers outside a projection receiver', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      formula('fallback', 'Fallback', 'IfError(Inventory, 9)'),
+      formula('comparison', 'Comparison', 'IfError(Inventory = Inventory, false)'),
+      formula('text', 'Text', 'ToText(Inventory)'),
+      formula('alias', 'Alias', 'WithName(Inventory, t, t.Quantity.Sum())'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('owner', { quantity: 3 })]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'fallback', scope)).toEqual({ kind: 'number', value: 9 });
+    expect(value(snapshot, properties, 'comparison', scope)).toEqual({ kind: 'boolean', value: false });
+    expect(value(snapshot, properties, 'text', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('There is no property called'),
+    });
+    expect(value(snapshot, properties, 'alias', scope)).toMatchObject({ kind: 'error' });
+  });
+
+  it('preserves local numeric and dynamic list indexes when a table title is ambiguous', () => {
+    const properties = [
+      formula('inventory', 'Inventory', 'List(List(3, 5))'),
+      formula('numeric-index', 'Numeric index', 'Inventory[0].Sum()'),
+      formula('dynamic-index', 'Dynamic index', 'WithName(0, i, Inventory[i].Sum())'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('owner', {})]);
+    const ambiguousTitle = resolveFormulaDatabaseTitle(databaseId, [
+      ...pages,
+      { id: 'other-inventory', title: ' inventory ', kind: 'database' },
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, ambiguousTitle);
+
+    expect(value(snapshot, properties, 'numeric-index', scope)).toEqual({ kind: 'number', value: 8 });
+    expect(value(snapshot, properties, 'dynamic-index', scope)).toEqual({ kind: 'number', value: 8 });
+  });
+
+  it('reports a bracket projection collision only for a literal column name and scalar local property', () => {
+    const properties = [
+      scalar('inventory', 'Inventory'),
+      scalar('quantity', 'Quantity'),
+      formula('projection', 'Projection', 'Inventory["Quantity"].Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('owner', { inventory: 4, quantity: 6 })]);
+    const ambiguousTitle = resolveFormulaDatabaseTitle(databaseId, [
+      ...pages,
+      { id: 'other-inventory', title: 'Inventory', kind: 'database' },
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, ambiguousTitle);
+
+    expect(value(snapshot, properties, 'projection', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('current-database property has the same name as the table'),
+    });
+  });
+
+  it('diagnoses duplicate database titles without resolving a second snapshot', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      formula('sum', 'Sum', 'Inventory.Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [row('r1', { quantity: 3 })]);
+    const title = resolveFormulaDatabaseTitle(databaseId, [
+      ...pages,
+      { id: 'other-inventory', title: ' inventory ', kind: 'database' },
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, title);
+
+    expect(title).toMatchObject({
+      status: 'ambiguous',
+      competingDatabaseIds: [databaseId, 'other-inventory'],
+    });
+    expect(value(snapshot, properties, 'sum', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('ambiguous'),
+    });
+  });
+
+  it('caches each projected property within the snapshot and checks the 2,000-row limit before reading rows', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      formula('sum-one', 'Sum one', 'Inventory.Quantity.Sum()'),
+      formula('sum-two', 'Sum two', 'Inventory.Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    let reads = 0;
+    const rows = Array.from({ length: 2000 }, (_, index) => ({
+      id: `row-${index}`,
+      title: `Row ${index}`,
+      get properties() {
+        reads += 1;
+        return { quantity: 1 } as DataApiRow['properties'];
+      },
+    })) as DataApiRow[];
+    const snapshot = readySnapshot(properties, rows);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'sum-one', scope)).toEqual({ kind: 'number', value: 2000 });
+    expect(value(snapshot, properties, 'sum-two', scope)).toEqual({ kind: 'number', value: 2000 });
+    expect(reads).toBe(2000);
+
+    let oversizedRowReads = 0;
+    const oversizedRows = Array.from({ length: 2001 }, (_, index) => ({
+      id: `oversized-${index}`,
+      title: `Oversized ${index}`,
+      get properties() {
+        oversizedRowReads += 1;
+        return { quantity: 1 } as DataApiRow['properties'];
+      },
+    })) as DataApiRow[];
+    const oversized = readySnapshot(properties, oversizedRows);
+    const oversizedScope = createFormulaEvaluationScope(
+      oversized,
+      resolveFormulaDatabaseTitle(databaseId, pages),
+    );
+    expect(value(oversized, properties, 'sum-one', oversizedScope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('limited to 2000 rows'),
+    });
+    expect(oversizedRowReads).toBe(0);
   });
 });

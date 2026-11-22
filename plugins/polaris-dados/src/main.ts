@@ -2,6 +2,7 @@ import type { DatabaseProvidersApi, DatabaseProviderContext } from '../../../src
 import type { DataApi } from '../../../src/app/plugins/dataApi';
 import type { PluginEditorInsertionApiV1 } from '../../../src/app/plugins/editorApi';
 import type { SupportedLocale } from '../../../src/app/i18n';
+import type { FormulaDatabasePage } from './ui/formulas';
 import { createLinkedViewInsertPicker } from './ui/insertView';
 import type { LinkedViewInsertPickerApi } from './ui/insertView';
 import { providerMessages } from './ui/locale';
@@ -28,8 +29,11 @@ export interface PolarisDadosPluginApi extends LinkedViewInsertPickerApi {
   readonly editor: { readonly insertion: PluginEditorInsertionApiV1 };
 }
 
-export function mount(context: DatabaseProviderContext): () => void {
-  return mountPolarisDados(context);
+export function mount(
+  context: DatabaseProviderContext,
+  readDatabasePages?: () => readonly FormulaDatabasePage[],
+): () => void {
+  return mountPolarisDados(context, readDatabasePages);
 }
 
 export function activate(api: PolarisDadosPluginApi): () => void {
@@ -69,7 +73,7 @@ export function activate(api: PolarisDadosPluginApi): () => void {
     unregisterProvider = api.providers.register({
       id: POLARIS_DADOS_PROVIDER_ID,
       apiVersion: 1,
-      mount,
+      mount: (context) => mount(context, () => api.pages.list()),
     });
     unregisterCommand = api.commands.add({
       id: 'insert-view',

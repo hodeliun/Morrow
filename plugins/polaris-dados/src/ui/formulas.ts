@@ -1,6 +1,6 @@
 import type { DataApiRow, DataApiSnapshot } from '../../../../src/app/plugins/dataApi';
-import { computeRuntimeFormula } from '../engine/formula';
-import type { FormulaRowRef, FormulaRuntimeValue } from '../engine/formula';
+import { computeRuntimeFormula, parseFormula } from '../engine/formula';
+import type { Expr, FormulaRowRef, FormulaRuntimeValue, FormulaSpan } from '../engine/formula';
 
 export type ReadySnapshot = Extract<DataApiSnapshot, { status: 'ready' }>;
 export type ProviderProperty = ReadySnapshot['schema']['properties'][number];
@@ -17,6 +17,47 @@ export type EvaluatedCell =
 const MAX_FORMULA_DEPTH = 24;
 const MAX_REFERENCED_FORMULAS = 64;
 const MAX_LOCAL_LIST_VALUES = 2000;
+export const MAX_TABLE_PROJECTION_ROWS = 2000;
+
+export interface FormulaDatabasePage {
+  readonly id: string;
+  readonly title: string;
+  readonly kind: string;
+}
+
+export type FormulaDatabaseTitleResolution =
+  | { readonly status: 'resolved'; readonly title: string }
+  | { readonly status: 'ambiguous'; readonly title: string; readonly competingDatabaseIds: readonly string[] }
+  | { readonly status: 'unavailable' }
+  | { readonly status: 'missing' };
+
+interface ProjectedColumn {
+  readonly values: FormulaRuntimeValue[];
+  readonly aggregates: Map<string, ProjectionAggregateResult>;
+}
+
+type ProjectedColumnResult =
+  | { readonly status: 'ready'; readonly projection: ProjectedColumn }
+  | { readonly status: 'error'; readonly message: string };
+
+type ProjectionAggregateResult =
+  | { readonly status: 'value'; readonly value: FormulaRuntimeValue }
+  | { readonly status: 'error'; readonly message: string };
+
+/** A single immutable provider snapshot plus its bounded, shared table-column projections. */
+export interface FormulaEvaluationScope {
+  readonly snapshot: ReadySnapshot;
+  readonly databaseTitle: FormulaDatabaseTitleResolution;
+  readonly columns: Map<string, ProjectedColumnResult>;
+  readonly projectedArrays: WeakMap<FormulaRuntimeValue[], ProjectedColumn>;
+  readonly approvedProjectionSpans: Map<string, ApprovedTableProjectionSpans>;
+}
+
+interface ApprovedTableProjectionSpans {
+  readonly roots: ReadonlyMap<string, 'member' | 'string-index' | 'dynamic-index'>;
+  readonly columns: ReadonlySet<string>;
+  readonly rootByColumn: ReadonlyMap<string, string>;
+}
 
 const LOCAL_LIST_METHODS = new Set(['sum', 'average', 'avg', 'min', 'max', 'count', 'first', 'last']);
 
@@ -26,11 +67,48 @@ interface FormulaEvaluationBudget {
   evaluated: number;
 }
 
+export function resolveFormulaDatabaseTitle(
+  databaseId: string,
+  pages: readonly FormulaDatabasePage[],
+): FormulaDatabaseTitleResolution {
+  const matchingPages = pages.filter((page) => page.id === databaseId && page.kind === 'database');
+  if (matchingPages.length !== 1) return { status: 'missing' };
+
+  const title = matchingPages[0]!.title.trim();
+  if (!title) return { status: 'missing' };
+  const foldedTitle = title.toLocaleLowerCase();
+  const sameTitle = pages.filter(
+    (page) => page.kind === 'database' && page.title.trim().toLocaleLowerCase() === foldedTitle,
+  );
+  if (sameTitle.length !== 1) {
+    return {
+      status: 'ambiguous',
+      title,
+      competingDatabaseIds: sameTitle.map((page) => page.id).sort(),
+    };
+  }
+  return { status: 'resolved', title };
+}
+
+export function createFormulaEvaluationScope(
+  snapshot: ReadySnapshot,
+  databaseTitle: FormulaDatabaseTitleResolution = { status: 'unavailable' },
+): FormulaEvaluationScope {
+  return {
+    snapshot,
+    databaseTitle,
+    columns: new Map(),
+    projectedArrays: new WeakMap(),
+    approvedProjectionSpans: new Map(),
+  };
+}
+
 /** Read a direct property or evaluate its formula without changing the host snapshot. */
 export function evaluateCell(
   row: DataApiRow,
   properties: readonly ProviderProperty[],
   property: ProviderProperty,
+  scope?: FormulaEvaluationScope,
 ): EvaluatedCell {
   if (property.type !== 'formula') {
     if (!Object.hasOwn(row.properties, property.id)) return { kind: 'missing' };
@@ -41,7 +119,14 @@ export function evaluateCell(
     }
   }
 
-  return evaluateFormulaProperty(row, properties, property, { cache: new Map(), visiting: new Set(), evaluated: 0 }, 0);
+  return evaluateFormulaProperty(
+    row,
+    properties,
+    property,
+    { cache: new Map(), visiting: new Set(), evaluated: 0 },
+    0,
+    scope,
+  );
 }
 
 function evaluateFormulaProperty(
@@ -50,6 +135,7 @@ function evaluateFormulaProperty(
   property: ProviderProperty,
   budget: FormulaEvaluationBudget,
   depth: number,
+  scope?: FormulaEvaluationScope,
 ): EvaluatedCell {
   const cached = budget.cache.get(property.id);
   if (cached) return cached;
@@ -68,6 +154,8 @@ function evaluateFormulaProperty(
 
   budget.evaluated += 1;
   budget.visiting.add(property.id);
+  const projectionSpans = approvedTableProjectionSpans(property.formula, scope);
+  const shadowedProjectionRoots = new Set<string>();
   const currentRow: FormulaRowRef = { formulaKind: 'row', id: row.id, databaseId: '' };
   const resolveDataProperty = (name: string): FormulaRuntimeValue => {
     const referenced = properties.find(
@@ -75,7 +163,7 @@ function evaluateFormulaProperty(
     );
     if (!referenced) throw new Error(`There is no property called “${name}”.`);
     if (referenced.type === 'formula') {
-      const value = evaluateFormulaProperty(row, properties, referenced, budget, depth + 1);
+      const value = evaluateFormulaProperty(row, properties, referenced, budget, depth + 1, scope);
       if (value.kind === 'error') throw new Error(value.message);
       if (value.kind === 'missing' || value.kind === 'null') return null;
       if (value.kind === 'list') return [...value.value];
@@ -85,28 +173,267 @@ function evaluateFormulaProperty(
     return toRuntimeValue(row.properties[referenced.id]);
   };
   const result = computeRuntimeFormula(property.formula, {
-    resolveIdentifier(name) {
+    resolveIdentifier(name, span) {
       if (name.trim().toLowerCase() === 'thisrow') return currentRow;
+      const rootKey = spanKey(span);
+      const rootKind = projectionSpans.roots.get(rootKey);
+      if (rootKind) {
+        const localProperty = properties.find(
+          (candidate) => candidate.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase(),
+        );
+        if (localProperty) {
+          const value = resolveDataProperty(name);
+          if (formulaDatabaseTitleMatches(name, scope)) {
+            if (rootKind === 'member') shadowedProjectionRoots.add(rootKey);
+            if (rootKind === 'string-index' && !Array.isArray(value)) {
+              throw new Error(
+                `Table projection “${name}” is ambiguous because a current-database property has the same name as the table.`,
+              );
+            }
+          }
+          return value;
+        }
+        const table = resolveTableIdentifier(name, scope);
+        if (table) return table;
+      }
       return resolveDataProperty(name);
     },
     resolveProperty(name) {
       return resolveDataProperty(name);
     },
-    resolveMember(receiver, name) {
+    resolveMember(receiver, name, span) {
+      if (
+        typeof receiver === 'object' &&
+        receiver !== null &&
+        !Array.isArray(receiver) &&
+        receiver.formulaKind === 'table'
+      ) {
+        if (!scope || receiver.databaseId !== scope.snapshot.databaseId) {
+          throw new Error('Only the mounted database can be used for table projections.');
+        }
+        if (!projectionSpans.columns.has(spanKey(span))) {
+          throw new Error(
+            'Use table column projections directly with Sum, Average, Avg, Min, Max, or Count.',
+          );
+        }
+        const projectedProperty = resolveProjectedProperty(properties, name);
+        if (projectedProperty.type !== 'number') {
+          throw new Error(
+            `Table projections only support manual number columns; “${name}” is ${projectedProperty.type}.`,
+          );
+        }
+        return projectedColumn(scope, projectedProperty);
+      }
+      const rootKey = projectionSpans.rootByColumn.get(spanKey(span));
+      if (rootKey && shadowedProjectionRoots.has(rootKey)) {
+        throw new Error(
+          `Table projection “${name}” is ambiguous because a current-database property has the same name as the table.`,
+        );
+      }
       if (receiver !== currentRow) {
         throw new Error('Only the current row supports property access in a database formula.');
       }
       return resolveDataProperty(name);
     },
     invokeMethod(receiver, name, arguments_) {
+      if (Array.isArray(receiver)) {
+        const projection = scope?.projectedArrays.get(receiver);
+        if (projection) return aggregateProjection(projection, name, arguments_.length);
+      }
       return invokeLocalListMethod(receiver, name, arguments_);
     },
   });
 
   budget.visiting.delete(property.id);
-  const evaluated = result.error ? { kind: 'error' as const, message: result.error } : normalizeValue(result.value);
+  const evaluated = result.error
+    ? { kind: 'error' as const, message: result.error }
+    : normalizeValue(result.value);
   budget.cache.set(property.id, evaluated);
   return evaluated;
+}
+
+function resolveTableIdentifier(
+  name: string,
+  scope: FormulaEvaluationScope | undefined,
+): FormulaRuntimeValue | null {
+  if (!scope) return null;
+  const foldedName = name.trim().toLocaleLowerCase();
+  const resolution = scope.databaseTitle;
+  if (resolution.status === 'ambiguous' && resolution.title.toLocaleLowerCase() === foldedName) {
+    throw new Error(
+      `Table name “${name}” is ambiguous in this workspace; the formula can only project the mounted database.`,
+    );
+  }
+  if (resolution.status === 'resolved' && resolution.title.toLocaleLowerCase() === foldedName) {
+    return { formulaKind: 'table', databaseId: scope.snapshot.databaseId };
+  }
+  // Without a page title, preserve the old property-resolution path.
+  return null;
+}
+
+/** Checks an already-read page catalog without triggering its ambiguous-title diagnostic. */
+function formulaDatabaseTitleMatches(name: string, scope: FormulaEvaluationScope | undefined): boolean {
+  if (!scope) return false;
+  const resolution = scope.databaseTitle;
+  if (resolution.status !== 'resolved' && resolution.status !== 'ambiguous') return false;
+  return resolution.title.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase();
+}
+
+function resolveProjectedProperty(properties: readonly ProviderProperty[], name: string): ProviderProperty {
+  const matches = properties.filter(
+    (candidate) => candidate.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase(),
+  );
+  if (matches.length > 1) throw new Error(`Column name “${name}” is ambiguous in the mounted database.`);
+  if (matches.length === 0) throw new Error(`There is no column called “${name}” in the mounted database.`);
+  return matches[0]!;
+}
+
+function projectedColumn(scope: FormulaEvaluationScope, property: ProviderProperty): FormulaRuntimeValue[] {
+  const cached = scope.columns.get(property.id);
+  if (cached?.status === 'error') throw new Error(cached.message);
+  if (cached?.status === 'ready') return cached.projection.values;
+  if (scope.snapshot.rows.length > MAX_TABLE_PROJECTION_ROWS) {
+    const message = `Table projections are limited to ${MAX_TABLE_PROJECTION_ROWS} rows.`;
+    scope.columns.set(property.id, { status: 'error', message });
+    throw new Error(message);
+  }
+
+  const values: FormulaRuntimeValue[] = [];
+  try {
+    for (const row of scope.snapshot.rows) {
+      const rowProperties = row.properties;
+      values.push(
+        Object.hasOwn(rowProperties, property.id) ? toRuntimeValue(rowProperties[property.id]) : null,
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    scope.columns.set(property.id, { status: 'error', message });
+    throw new Error(message, { cause: error });
+  }
+  const projection: ProjectedColumn = { values, aggregates: new Map() };
+  scope.columns.set(property.id, { status: 'ready', projection });
+  scope.projectedArrays.set(values, projection);
+  return values;
+}
+
+function aggregateProjection(
+  projection: ProjectedColumn,
+  name: string,
+  argumentCount: number,
+): FormulaRuntimeValue {
+  const method = name.toLocaleLowerCase();
+  if (!['sum', 'average', 'avg', 'min', 'max', 'count'].includes(method)) {
+    throw new Error(
+      `${name}() is not available for table columns; use Sum, Average, Avg, Min, Max, or Count.`,
+    );
+  }
+  if (argumentCount !== 0) throw new Error(`${name}() takes no arguments.`);
+  const cached = projection.aggregates.get(method);
+  if (cached?.status === 'error') throw new Error(cached.message);
+  if (cached?.status === 'value') return cached.value;
+  try {
+    const value = invokeLocalListMethod(projection.values, name, []);
+    projection.aggregates.set(method, { status: 'value', value });
+    return value;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    projection.aggregates.set(method, { status: 'error', message });
+    throw new Error(message, { cause: error });
+  }
+}
+
+function approvedTableProjectionSpans(
+  source: string,
+  scope: FormulaEvaluationScope | undefined,
+): ApprovedTableProjectionSpans {
+  const cached = scope?.approvedProjectionSpans.get(source);
+  if (cached) return cached;
+  const roots = new Map<string, 'member' | 'string-index' | 'dynamic-index'>();
+  const columns = new Set<string>();
+  const rootByColumn = new Map<string, string>();
+  let expression: Expr | null = null;
+  try {
+    expression = parseFormula(source);
+  } catch {
+    // The runtime parser provides the existing syntax diagnostic.
+  }
+  if (expression) {
+    const addColumnReceiver = (candidate: Expr) => {
+      if (candidate.kind === 'member') {
+        addProjectionSpans(
+          candidate.object,
+          { start: candidate.nameStart, end: candidate.nameEnd },
+          'member',
+        );
+      } else if (
+        candidate.kind === 'call' &&
+        candidate.callee.kind === 'identifier' &&
+        candidate.callee.name.toLowerCase() === '__index' &&
+        candidate.args[1]
+      ) {
+        const key = candidate.args[1];
+        if (key.kind === 'literal' && typeof key.value === 'number') return;
+        if (key.kind === 'literal' && typeof key.value !== 'string') return;
+        if (candidate.args[0]) {
+          addProjectionSpans(
+            candidate.args[0],
+            key,
+            key.kind === 'literal' ? 'string-index' : 'dynamic-index',
+          );
+        }
+      }
+    };
+    const addProjectionSpans = (
+      root: Expr,
+      column: FormulaSpan,
+      kind: 'member' | 'string-index' | 'dynamic-index',
+    ) => {
+      const columnKey = spanKey(column);
+      columns.add(columnKey);
+      if (root.kind === 'identifier') {
+        const rootKey = spanKey(root);
+        roots.set(rootKey, kind);
+        rootByColumn.set(columnKey, rootKey);
+      }
+    };
+    const visit = (node: Expr): void => {
+      if (node.kind === 'call') {
+        if (
+          node.callee.kind === 'member' &&
+          ['sum', 'average', 'avg', 'min', 'max', 'count'].includes(node.callee.name.toLowerCase())
+        ) {
+          addColumnReceiver(node.callee.object);
+        }
+        if (node.callee.kind === 'member') visit(node.callee.object);
+        else if (node.callee.kind !== 'identifier') visit(node.callee);
+        for (const argument of node.args) visit(argument);
+        return;
+      }
+      if (node.kind === 'member') {
+        visit(node.object);
+        return;
+      }
+      if (node.kind === 'binary') {
+        visit(node.left);
+        visit(node.right);
+        return;
+      }
+      if (node.kind === 'unary') {
+        visit(node.arg);
+        return;
+      }
+      if (node.kind === 'list') for (const item of node.items) visit(item);
+    };
+    visit(expression);
+  }
+  const approved = { roots, columns, rootByColumn };
+  scope?.approvedProjectionSpans.set(source, approved);
+  return approved;
+}
+
+function spanKey(span: FormulaSpan): string {
+  return `${span.start}:${span.end}`;
 }
 
 function toRuntimeValue(value: unknown): FormulaRuntimeValue {
