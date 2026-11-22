@@ -4,6 +4,25 @@ import { docToMarkdown } from '../core/markdown/serialize';
 import { markdownToDoc } from '../core/markdown/parse';
 import { encodePolarisDadosViewMarker } from '../core/polarisDadosView';
 import { findUnrepresentablePageContent } from '../core/vault/compatibility';
+import { splitFrontmatter } from '../core/vault/frontmatter';
+import {
+  E003_CURRENT_SCHEMA3_DATABASE,
+  E003_CURRENT_SCHEMA3_DATABASE_PATH,
+  E003_FORMAT12_DATABASE,
+  E003_FORMAT12_DATABASE_PATH,
+  E003_FORMAT12_ROW,
+  E003_FORMAT12_ROW_PATH,
+  E003_FORMAT13_DATABASE,
+  E003_FORMAT13_DATABASE_PATH,
+  E003_FORMAT13_ROW,
+  E003_FORMAT13_ROW_PATH,
+  E003_FUTURE_DATABASE,
+  E003_FUTURE_DATABASE_PATH,
+  E003_FUTURE_ROW,
+  E003_FUTURE_ROW_PATH,
+  E003_PUBLISHED_NAMED_CONTROL,
+  E003_PUBLISHED_NAMED_CONTROL_PATH,
+} from './fixtures/e003-fork-compatibility';
 import { MemoryVault } from './memoryVault';
 import { WorkspaceSession } from './session';
 import { VaultRepository } from './vaultRepository';
@@ -65,6 +84,135 @@ function viewMarker(viewId = 'linked-view'): string {
     columnOrder: ['title', 'quantity', 'retired-property'],
     filter: null,
   });
+}
+
+type VaultOperations = Parameters<MemoryVault['apply']>[0];
+
+class ObservedMemoryVault extends MemoryVault {
+  readonly applyCalls: VaultOperations[] = [];
+
+  override async apply(operations: VaultOperations) {
+    this.applyCalls.push(operations);
+    return super.apply(operations);
+  }
+}
+
+function snapshotAllFiles(vault: MemoryVault) {
+  return Object.fromEntries(
+    [...vault.files.keys()]
+      .sort()
+      .map((path) => [path, { text: vault.text(path) ?? null, mtime: vault.modifiedTime(path) }]),
+  );
+}
+
+async function openObservedVault(files: Record<string, string>) {
+  const pageIds = Object.fromEntries(
+    Object.keys(files).map((path, index) => [path, `compatibility-fixture-${index + 1}`]),
+  );
+  const vault = new ObservedMemoryVault({
+    ...files,
+    '.morrow/workspace.json': registryFor(pageIds),
+    '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }, null, 1),
+  });
+  const repository = new VaultRepository(vault, newId);
+  const opened = await WorkspaceSession.open(repository, { delayMs: 0 });
+  if (!opened.ok) throw new Error(opened.error);
+  return { vault, repository, session: opened.value };
+}
+
+function expectRawSource(session: WorkspaceSession, id: string, source: string): void {
+  expect(session.getState().docs[id]).toEqual({
+    type: 'doc',
+    content: [{ type: 'rawBlock', attrs: { text: source } }],
+  });
+}
+
+async function expectProtectedStorageSample(options: {
+  files: Record<string, string>;
+  protectedPath: string;
+  reason: RegExp;
+  rowPath?: string;
+  validYaml?: boolean;
+}): Promise<void> {
+  const { files, protectedPath, reason, rowPath, validYaml = false } = options;
+  const { vault, repository, session } = await openObservedVault(files);
+  const before = snapshotAllFiles(vault);
+  try {
+    expect(session.firstRun).toBe(false);
+    expect(vault.applyCalls).toHaveLength(0);
+
+    const source = files[protectedPath]!;
+    if (validYaml) {
+      const parsed = splitFrontmatter(source);
+      expect(parsed.error).toBeNull();
+      expect(parsed.data).not.toBeNull();
+    }
+
+    const id = pageIdAt(session, protectedPath);
+    expect(session.protectedReasons.get(id)).toMatch(reason);
+    expect(session.unreadable.has(id)).toBe(true);
+    expect(session.problems.join('\n')).toMatch(reason);
+    expectRawSource(session, id, source);
+    expect(Object.hasOwn(session.getState().pages[id]!.extra, 'polarisDados')).toBe(false);
+
+    const refusedEdit = session.execute({
+      type: 'page.rename',
+      id,
+      title: 'Unsafe compatibility edit',
+      now: 40,
+    });
+    expect(refusedEdit.ok).toBe(false);
+    if (!refusedEdit.ok) expect(refusedEdit.error).toMatch(/cannot safely represent/i);
+
+    if (rowPath) {
+      const rowId = pageIdAt(session, rowPath);
+      expect(session.protectedReasons.get(rowId)).toMatch(/parent database is protected/i);
+      expect(session.unreadable.has(rowId)).toBe(true);
+      expectRawSource(session, rowId, files[rowPath]!);
+      expect(session.execute({ type: 'page.rename', id: rowId, title: 'Unsafe row edit', now: 41 }).ok).toBe(
+        false,
+      );
+
+      const row = session.getState().pages[rowId]!;
+      const changedRow = { ...row, title: 'Unsafe direct row edit' };
+      const rowBatch = {
+        pages: [changedRow],
+        docs: [],
+        removed: [],
+        state: {
+          pages: { ...session.getState().pages, [rowId]: changedRow },
+          docs: session.getState().docs,
+        },
+      };
+      expect(repository.validateWrite(rowBatch)).toMatch(/parent database is protected/i);
+      await expect(repository.write(rowBatch)).rejects.toThrow(/parent database is protected/i);
+    }
+
+    const state = session.getState();
+    const changed = { ...state.pages[id]!, title: 'Unsafe direct repository edit' };
+    const batch = {
+      pages: [changed],
+      docs: [],
+      removed: [],
+      state: { pages: { ...state.pages, [id]: changed }, docs: state.docs },
+    };
+    expect(repository.validateWrite(batch)).toMatch(/cannot safely represent/i);
+    await expect(repository.write(batch)).rejects.toThrow(/cannot safely represent/i);
+    expect(vault.applyCalls).toHaveLength(0);
+    expect(snapshotAllFiles(vault)).toEqual(before);
+
+    expect(await session.flush()).toBe(true);
+    expect(snapshotAllFiles(vault)).toEqual(before);
+    await session.markInitialized();
+    expect(vault.applyCalls).toHaveLength(0);
+    expect(snapshotAllFiles(vault)).toEqual(before);
+
+    await session.close();
+    expect(vault.applyCalls).toHaveLength(0);
+    expect(snapshotAllFiles(vault)).toEqual(before);
+  } finally {
+    if (!session.isClosed) await session.close();
+  }
 }
 
 describe('E003 #164 Morrow 2.1 representability', () => {
@@ -311,5 +459,95 @@ Synthetic row.
     expect(
       findUnrepresentablePageContent(databaseFile(['title', 'quantity'], '      futureMode: keep-me\n')),
     ).toMatch(/database view has fields/i);
+  });
+});
+
+describe('E003 #233 published and future Markdown compatibility', () => {
+  it('protects historical displayPropertyId YAML from the schema-12 source', async () => {
+    await expectProtectedStorageSample({
+      files: {
+        [E003_FORMAT12_DATABASE_PATH]: E003_FORMAT12_DATABASE,
+        [E003_FORMAT12_ROW_PATH]: E003_FORMAT12_ROW,
+      },
+      protectedPath: E003_FORMAT12_DATABASE_PATH,
+      rowPath: E003_FORMAT12_ROW_PATH,
+      reason: /database schema has unsupported fields/i,
+      validYaml: true,
+    });
+  });
+
+  it('protects published schema-13 titleAlias and displayPropertyId YAML', async () => {
+    await expectProtectedStorageSample({
+      files: {
+        [E003_FORMAT13_DATABASE_PATH]: E003_FORMAT13_DATABASE,
+        [E003_FORMAT13_ROW_PATH]: E003_FORMAT13_ROW,
+      },
+      protectedPath: E003_FORMAT13_DATABASE_PATH,
+      rowPath: E003_FORMAT13_ROW_PATH,
+      reason: /database schema has unsupported fields/i,
+      validYaml: true,
+    });
+  });
+
+  it('protects a published named-control writer output in isolation', async () => {
+    await expectProtectedStorageSample({
+      files: { [E003_PUBLISHED_NAMED_CONTROL_PATH]: E003_PUBLISHED_NAMED_CONTROL },
+      protectedPath: E003_PUBLISHED_NAMED_CONTROL_PATH,
+      reason: /Polaris data extension/i,
+    });
+  });
+
+  it('protects a synthetic future database field and its child rows', async () => {
+    await expectProtectedStorageSample({
+      files: {
+        [E003_FUTURE_DATABASE_PATH]: E003_FUTURE_DATABASE,
+        [E003_FUTURE_ROW_PATH]: E003_FUTURE_ROW,
+      },
+      protectedPath: E003_FUTURE_DATABASE_PATH,
+      rowPath: E003_FUTURE_ROW_PATH,
+      reason: /database schema has unsupported fields/i,
+      validYaml: true,
+    });
+  });
+
+  it('keeps the current schema-3 Markdown database editable', async () => {
+    const { vault, session } = await openObservedVault({
+      [E003_CURRENT_SCHEMA3_DATABASE_PATH]: E003_CURRENT_SCHEMA3_DATABASE,
+    });
+    let reopened: WorkspaceSession | undefined;
+    try {
+      expect(session.firstRun).toBe(false);
+      expect(findUnrepresentablePageContent(E003_CURRENT_SCHEMA3_DATABASE)).toBeNull();
+      const id = pageIdAt(session, E003_CURRENT_SCHEMA3_DATABASE_PATH);
+      expect(session.protectedReasons.has(id)).toBe(false);
+      expect(session.unreadable.has(id)).toBe(false);
+
+      const database = session.getState().pages[id]!.database!;
+      const edited = session.execute({
+        type: 'database.set',
+        id,
+        database: {
+          ...database,
+          views: database.views.map((view) => ({ ...view, name: 'Edited current view' })),
+        },
+        now: 50,
+      });
+      expect(edited.ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      expect(vault.applyCalls.length).toBeGreaterThan(0);
+      expect(vault.text(E003_CURRENT_SCHEMA3_DATABASE_PATH)).toContain('Edited current view');
+      await session.close();
+
+      const reopenedResult = await WorkspaceSession.open(new VaultRepository(vault, newId), {
+        delayMs: 0,
+      });
+      if (!reopenedResult.ok) throw new Error(reopenedResult.error);
+      reopened = reopenedResult.value;
+      const reopenedId = pageIdAt(reopened, E003_CURRENT_SCHEMA3_DATABASE_PATH);
+      expect(reopened.getState().pages[reopenedId]!.database!.views[0]!.name).toBe('Edited current view');
+    } finally {
+      if (!session.isClosed) await session.close();
+      if (reopened && !reopened.isClosed) await reopened.close();
+    }
   });
 });
