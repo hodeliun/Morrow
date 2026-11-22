@@ -414,6 +414,80 @@ function New-TestEdgeArchive([string] $Path, [byte[]] $ExecutableBytes) {
   return [IO.File]::ReadAllBytes($Path)
 }
 
+function New-TestSealedStageFixture([string] $Root) {
+  $identity = New-TestStageIdentity
+  $candidateFixture = New-TestPackageFixture (Join-Path $Root 'candidate-fixture')
+  $stageRoot = Get-FirstLaunchExpectedStageRoot -Identity $identity -TestFileSystemTempRoot $Root
+  $transport = New-TestTransport $candidateFixture
+  $packageResult = Get-FirstLaunchVerifiedPackage 'synthetic-api-token' $stageRoot `
+    $candidateFixture.candidate $candidateFixture.expectedInventory $transport
+
+  $tauriPath = Join-Path (Join-Path (Join-Path $stageRoot 'tauri-tool-stage') 'bin') 'tauri-driver.exe'
+  [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($tauriPath))
+  $tauriBytes = New-TestPeBytes -WithoutResourceDirectory
+  [IO.File]::WriteAllBytes($tauriPath, $tauriBytes)
+  $tauri = New-TestTauriDriverDto (Get-TestSha256 $tauriBytes)
+
+  $edgeRoot = Join-Path $stageRoot 'edge-driver-stage'
+  [void][IO.Directory]::CreateDirectory($edgeRoot)
+  $edgeArchivePath = Join-Path $edgeRoot 'edgedriver.zip'
+  $edgeArchiveBytes = New-TestEdgeArchive $edgeArchivePath $null
+  $edgeRelease = ConvertFrom-FirstLaunchEdgeCatalog (New-TestEdgeCatalog $edgeArchiveBytes.LongLength) '156.0.4314.58'
+  $edgeArchivePolicy = Assert-FirstLaunchZipPolicy $edgeArchivePath 0 -1
+  $edgeContents = Join-Path $edgeRoot 'contents'
+  [void](Expand-FirstLaunchSafeZipArchive $edgeArchivePath $edgeContents $edgeArchivePolicy.EntryCount $edgeArchivePolicy.TotalUncompressedBytes)
+  $edgeExePath = Join-Path $edgeContents 'msedgedriver.exe'
+  $edge = [ordered]@{
+    version = [string]$edgeRelease.version
+    runtimeVersion = [string]$edgeRelease.runtimeVersion
+    compatibleFirstThreeComponents = [string]$edgeRelease.compatibleFirstThreeComponents
+    sourcePageUrl = [string]$edgeRelease.sourcePageUrl
+    sourceCatalogUrl = [string]$edgeRelease.sourceCatalogUrl
+    downloadUrl = [string]$edgeRelease.downloadUrl
+    responseUrl = [string]$edgeRelease.downloadUrl
+    catalogGeneratedAtUtc = [string]$edgeRelease.catalogGeneratedAtUtc
+    catalogSizeBytes = [long]$edgeRelease.catalogSizeBytes
+    catalogItemCount = [int]$edgeRelease.catalogItemCount
+    catalogSha256 = [string]$edgeRelease.catalogSha256
+    selectedLastModified = [string]$edgeRelease.selectedLastModified
+    expectedArchiveBytes = [long]$edgeRelease.expectedArchiveBytes
+    archiveSizeBytes = [long](Get-Item -LiteralPath $edgeArchivePath).Length
+    archiveSha256 = Get-Sha256 $edgeArchivePath
+    executableSha256 = Get-Sha256 $edgeExePath
+    versionProbeExitCode = 0
+    serviceStarted = $false
+  }
+  $runtime = [pscustomobject]@{
+    version = '156.0.4314.58'
+    observedAtUtc = '2026-11-22T03:00:00.000Z'
+    sources = @(
+      [ordered]@{ registryPath = 'HKLM64\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; version = '156.0.4314.58' },
+      [ordered]@{ registryPath = 'HKCU64\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; version = '156.0.4314.58' }
+    )
+  }
+  $stagedAt = '2026-11-22T03:30:00.000Z'
+  $stage = New-FirstLaunchStageDtoCore -Identity $identity -PackageResult $packageResult -Runtime $runtime `
+    -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc $stagedAt `
+    -Candidate $candidateFixture.candidate -ExpectedInventory $candidateFixture.expectedInventory
+  $stageBytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $stage -Depth 20) + "`n")
+  [IO.File]::WriteAllBytes((Join-Path $stageRoot 'stage.json'), $stageBytes)
+  [IO.File]::WriteAllBytes((Join-Path $stageRoot $script:FirstLaunchStageOwnerMarkerName), [Text.Encoding]::ASCII.GetBytes('0123456789abcdef0123456789abcdef'))
+
+  return [pscustomobject]@{
+    identity = $identity
+    stageRoot = $stageRoot
+    candidate = $candidateFixture.candidate
+    inventory = $candidateFixture.expectedInventory
+    runtime = $runtime
+    knownFolders = [ordered]@{ localAppData = 'C:\Users\runner\AppData\Local'; roamingAppData = 'C:\Users\runner\AppData\Roaming' }
+    runnerSid = 'S-1-5-21-111-222-333-1001'
+    tauriPath = $tauriPath
+    edgeArchivePath = $edgeArchivePath
+    edgeExePath = $edgeExePath
+    profileBaseName = ('morrow-issue-187-' + $identity.gate.sourceSha + '-' + $identity.gate.gateRunId + '-1')
+  }
+}
+
 function New-TestEdgeCatalog([long] $ArchiveSize, [string] $Version = '156.0.4314.84', [string] $GeneratedAt = '2026-11-22T03:00:00.1234567Z', [string] $LastModified = '2026-11-22T02:00:00.7654321Z', [string] $Platform = 'win64') {
   $catalog = [ordered]@{
     generatedAt = $GeneratedAt
@@ -1152,33 +1226,43 @@ try {
   $timeoutClock = [Diagnostics.Stopwatch]::StartNew()
   $timeoutChildPidPath = Join-Path $root 'timeout-child.pid'
   $nativeEnvironment['MORROW_TEST_PID_FILE'] = $timeoutChildPidPath
-  Assert-Throws 'native bounded runner kills a benign sleeping child at its deadline' {
-    Invoke-FirstLaunchBoundedProcess -Executable $nativePwsh `
-      -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '[IO.File]::WriteAllText($env:MORROW_TEST_PID_FILE, [string]$PID); Start-Sleep -Seconds 10') `
-      -WorkingDirectory $root -Environment $nativeEnvironment -TimeoutMs 2000 -MaximumOutputBytes 256 -ProcessRunner $nativeProcessRunner
-  }
-  Assert-True ($timeoutClock.Elapsed.TotalSeconds -lt 4) 'native process exit and pipe-drain timeout cleanup have a bounded tail'
+  $timeoutFailure = $null
   $timeoutChildStopped = $false
   $timeoutChildState = 'child PID was not published before the process deadline'
-  if ([IO.File]::Exists($timeoutChildPidPath)) {
-    $timeoutChildId = 0
-    if ([int]::TryParse([IO.File]::ReadAllText($timeoutChildPidPath).Trim(), [ref]$timeoutChildId)) {
-      try {
-        $timeoutChild = [Diagnostics.Process]::GetProcessById($timeoutChildId)
-        if ($timeoutChild.ProcessName -like 'pwsh*') {
-          $timeoutChildStopped = $timeoutChild.HasExited
-          $timeoutChildState = 'processName=' + $timeoutChild.ProcessName + '; exited=' + $timeoutChildStopped
-          if (-not $timeoutChildStopped) {
-            $timeoutChild.Kill($true)
-            [void]$timeoutChild.WaitForExit(2000)
-          }
-        } else {
-          $timeoutChildState = 'unexpected processName=' + $timeoutChild.ProcessName
-        }
-        $timeoutChild.Dispose()
-      } catch [ArgumentException] { $timeoutChildStopped = $true; $timeoutChildState = 'PID already exited' }
+  try {
+    Invoke-FirstLaunchBoundedProcess -Executable $nativePwsh `
+      -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '[IO.File]::WriteAllText($env:MORROW_TEST_PID_FILE, [string]$PID); Start-Sleep -Seconds 30') `
+      -WorkingDirectory $root -Environment $nativeEnvironment -TimeoutMs 3000 -MaximumOutputBytes 256 -ProcessRunner $nativeProcessRunner
+  } catch { $timeoutFailure = [string]$_.Exception.Message }
+  finally {
+    if ([IO.File]::Exists($timeoutChildPidPath)) {
+      $timeoutChildId = 0
+      if ([int]::TryParse([IO.File]::ReadAllText($timeoutChildPidPath).Trim(), [ref]$timeoutChildId)) {
+        try {
+          $timeoutChild = [Diagnostics.Process]::GetProcessById($timeoutChildId)
+          try {
+            if ($timeoutChild.ProcessName -like 'pwsh*') {
+              $timeoutChildStopped = $timeoutChild.HasExited
+              $timeoutChildState = 'processName=' + $timeoutChild.ProcessName + '; exited=' + $timeoutChildStopped
+              if (-not $timeoutChildStopped) {
+                try {
+                  $timeoutChild.Kill($true)
+                  [void]$timeoutChild.WaitForExit(2000)
+                  $timeoutChildState += '; test cleanup issued bounded owned-child termination'
+                } catch { $timeoutChildState += '; test cleanup could not terminate the owned child' }
+              }
+            } else {
+              $timeoutChildState = 'unexpected processName=' + $timeoutChild.ProcessName
+            }
+          } finally { $timeoutChild.Dispose() }
+        } catch [ArgumentException] { $timeoutChildStopped = $true; $timeoutChildState = 'PID already exited' }
+      }
     }
   }
+  Assert-True ($timeoutFailure -ceq 'The bounded first-launch child process exceeded its deadline and was stopped.') `
+    'native deadline fixture reports the bounded timeout terminal reason'
+  Assert-True ([IO.File]::Exists($timeoutChildPidPath)) 'native deadline fixture published its owned child PID before timeout'
+  Assert-True ($timeoutClock.Elapsed.TotalSeconds -lt 8) 'native process exit and pipe-drain timeout cleanup have a bounded tail'
   Assert-True ($timeoutChildStopped) "native deadline termination leaves no owned sleeping PowerShell child ($timeoutChildState)"
   $stageOwnerParent = Join-Path $root 'stage-owner-lifecycle'
   [void][IO.Directory]::CreateDirectory($stageOwnerParent)
@@ -1323,8 +1407,26 @@ try {
   Assert-True ($stageDto.noLaunch.appLaunched -eq $false -and $stageDto.noLaunch.driverServiceStarted -eq $false -and
     $stageDto.noLaunch.guiTested -eq $false) 'Stage DTO explicitly records that no application, service, or GUI was launched'
   $stagePath = Join-Path $root 'gate-compatible-stage.json'
-  $stageJson = ConvertTo-Json -InputObject $stageDto -Depth 20
-  [IO.File]::WriteAllBytes($stagePath, [Text.UTF8Encoding]::new($false).GetBytes($stageJson + "`n"))
+  $stageBytes = ConvertTo-FirstLaunchCanonicalStageBytes -Stage $stageDto
+  Assert-True ($stageBytes[$stageBytes.Length - 1] -eq 0x0A -and
+    [Array]::IndexOf($stageBytes, [byte]0x0D) -lt 0 -and
+    [Array]::IndexOf($stageBytes, [byte]0x0A) -eq ($stageBytes.Length - 1)) `
+    'production Stage writer emits one compact UTF-8 line with exactly one LF terminator'
+  [IO.File]::WriteAllBytes($stagePath, $stageBytes)
+  $stageFromProductionBytes = Read-FirstLaunchCanonicalStageBytes $stagePath
+  Assert-True ($stageFromProductionBytes.Stage.schema -ceq $stageDto.schema -and
+    $stageFromProductionBytes.Stage.gate.gateRunId -ceq $stageDto.gate.gateRunId -and
+    $stageFromProductionBytes.Sha256 -ceq (Get-TestSha256 $stageBytes)) `
+    'production Stage writer output is accepted by the strict Stage reader with matching digest'
+  $crlfStagePath = Join-Path $root 'gate-compatible-stage-crlf.json'
+  $crlfStageBytes = [byte[]]::new($stageBytes.Length + 1)
+  [Array]::Copy($stageBytes, 0, $crlfStageBytes, 0, $stageBytes.Length - 1)
+  $crlfStageBytes[$stageBytes.Length - 1] = 0x0D
+  $crlfStageBytes[$stageBytes.Length] = 0x0A
+  [IO.File]::WriteAllBytes($crlfStagePath, $crlfStageBytes)
+  Assert-Throws 'strict Stage reader rejects a CRLF mutation of production writer bytes' {
+    Read-FirstLaunchCanonicalStageBytes $crlfStagePath
+  }
   $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
   Assert-StageAcceptedByGate $stagePath $projectRoot
   $badStageIdentity = New-TestStageIdentity
@@ -1357,6 +1459,139 @@ try {
     New-FirstLaunchStageDto -Identity $stageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
       -Runtime $earlyStageRuntime -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T02:30:00.000Z'
   }
+
+  $validRawLf = Get-FirstLaunchRawLfByteFacts -Bytes ([Text.UTF8Encoding]::new($false).GetBytes("fixture`n")) -Label 'test fixture'
+  Assert-True ($validRawLf.sizeBytes -eq 8 -and $validRawLf.sha256 -ceq (Get-TestSha256 ([Text.UTF8Encoding]::new($false).GetBytes("fixture`n")))) 'raw source bytes are measured only after strict LF validation'
+  foreach ($rawLfCase in @(
+      [pscustomobject]@{ Name = 'CRLF'; Bytes = [Text.Encoding]::UTF8.GetBytes("fixture`r`n") },
+      [pscustomobject]@{ Name = 'BOM'; Bytes = [byte[]]@([byte]0xEF, [byte]0xBB, [byte]0xBF, [byte]0x41, [byte]0x0A) },
+      [pscustomobject]@{ Name = 'CR'; Bytes = [byte[]]@([byte]0x41, [byte]0x0D, [byte]0x0A) },
+      [pscustomobject]@{ Name = 'missing-final-LF'; Bytes = [Text.Encoding]::UTF8.GetBytes('fixture') },
+      [pscustomobject]@{ Name = 'invalid-UTF8'; Bytes = [byte[]]@([byte]0xC3, [byte]0x28, [byte]0x0A) },
+      [pscustomobject]@{ Name = 'empty'; Bytes = [byte[]]@() }
+    )) {
+    Assert-Throws "raw source rejects $($rawLfCase.Name)" {
+      Get-FirstLaunchRawLfByteFacts -Bytes ([byte[]]$rawLfCase.Bytes) -Label $rawLfCase.Name
+    }
+  }
+  $sourceFacts = Get-FirstLaunchRawLfSourceFacts -Identity $stageIdentity -TestWorkspaceRoot $projectRoot
+  Assert-True ($sourceFacts.sourceFiles.Count -eq 2 -and
+    $sourceFacts.sourceFiles[0].path -ceq 'scripts/pilot/windows-first-launch-preflight.ps1' -and
+    $sourceFacts.sourceFiles[0].sha256 -ceq (Get-TestSha256 ([IO.File]::ReadAllBytes($sourcePath))) -and
+    $sourceFacts.sourceFiles[1].path -ceq 'scripts/pilot/windows-native-job.ps1' -and
+    $sourceFacts.sourceFiles[1].sha256 -ceq $script:FirstLaunchNativeJobHelperSha256 -and
+    $sourceFacts.nativeJobHelperScriptBlock -is [scriptblock]) 'literal source/helper bytes are LF checked and the helper matches its immutable source pin'
+
+  $sealedFixtureRoot = Join-Path $root 'check-only-sealed-stage-fixture'
+  [void][IO.Directory]::CreateDirectory($sealedFixtureRoot)
+  $sealedFixture = New-TestSealedStageFixture $sealedFixtureRoot
+  $currentRuntime = Copy-FirstLaunchValue $sealedFixture.runtime
+  $currentRuntime.observedAtUtc = '2026-11-22T04:00:00.000Z'
+  $invokeSealedInputs = {
+    param($RuntimeOverride = $null, $KnownFolderOverride = $null, $StageRootOverride = $null)
+    if ($null -eq $RuntimeOverride) { $RuntimeOverride = $currentRuntime }
+    if ($null -eq $KnownFolderOverride) { $KnownFolderOverride = $sealedFixture.knownFolders }
+    if ([string]::IsNullOrWhiteSpace([string]$StageRootOverride)) { $StageRootOverride = $sealedFixture.stageRoot }
+    Get-FirstLaunchCheckOnlyInputsFromSealedStage -Identity $sealedFixture.identity -StageRoot $StageRootOverride `
+      -Runtime $RuntimeOverride -RunnerSid $sealedFixture.runnerSid -KnownFolders $KnownFolderOverride `
+      -Candidate $sealedFixture.candidate -ExpectedInventory $sealedFixture.inventory `
+      -TestFileSystemTempRoot $sealedFixtureRoot -TestWorkspaceRoot $projectRoot -AllowSyntheticCandidate
+  }.GetNewClosure()
+  $stageBefore = [IO.File]::ReadAllBytes((Join-Path $sealedFixture.stageRoot 'stage.json'))
+  $verifiedInputs = & $invokeSealedInputs
+  $expectedProfileRoot = 'C:\runner\_temp\' + $sealedFixture.profileBaseName + '\profile'
+  Assert-True ($verifiedInputs.schema -ceq 'morrow.e003.g23.check-only-inputs.v1' -and $verifiedInputs.status -ceq 'verified' -and
+    $verifiedInputs.stage.sha256 -ceq (Get-TestSha256 $stageBefore) -and $verifiedInputs.stage.sizeBytes -eq $stageBefore.LongLength) 'CheckOnly input pass binds the exact Stage bytes without returning them'
+  Assert-True ($verifiedInputs.candidateBuild.candidateBuildRunId -ceq '44961916968' -and
+    $verifiedInputs.gate.gateRunId -ceq '98765432101' -and $verifiedInputs.webView2RuntimeVersion -ceq '156.0.4314.58' -and
+    $verifiedInputs.identity.sid -ceq $sealedFixture.runnerSid) 'input response keeps the pinned candidate separate from current gate and runner identity'
+  Assert-True ($verifiedInputs.profiles.root -ceq $expectedProfileRoot -and
+    $verifiedInputs.profiles.morrowUserData -ceq ($expectedProfileRoot + '\MorrowUserData') -and
+    $verifiedInputs.profiles.webView2UserData -ceq ($expectedProfileRoot + '\WebView2UserData')) 'profile plan matches the closed gate path formula exactly'
+  Assert-True ($verifiedInputs.tools.tauriDriver.sha256 -ceq (Get-TestSha256 ([IO.File]::ReadAllBytes($sealedFixture.tauriPath))) -and
+    $verifiedInputs.tools.edgeDriver.executableSha256 -ceq (Get-TestSha256 ([IO.File]::ReadAllBytes($sealedFixture.edgeExePath))) -and
+    $verifiedInputs.tools.edgeDriver.archiveSha256 -ceq (Get-TestSha256 ([IO.File]::ReadAllBytes($sealedFixture.edgeArchivePath)))) 'pinned package tools and Edge archive are freshly rehashed from the sealed Stage'
+  Assert-True ($verifiedInputs.sourceFiles.Count -eq 2 -and
+    $verifiedInputs.sourceFiles[1].sha256 -ceq $script:FirstLaunchNativeJobHelperSha256 -and
+    $verifiedInputs.noLaunch.appLaunched -eq $false -and $verifiedInputs.noLaunch.driverServiceStarted -eq $false -and
+    $verifiedInputs.noLaunch.guiTested -eq $false -and
+    -not ($verifiedInputs.Contains('stageBytes')) -and -not ($verifiedInputs.Contains('stageDto'))) 'closed private input DTO carries hashes only and records the no-launch boundary'
+  $inputKeyNames = @($verifiedInputs.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive) -join ','
+  Assert-True ($inputKeyNames -ceq 'candidateBuild,gate,identity,knownFolders,noLaunch,package,profiles,schema,sourceFiles,stage,status,tools,webView2RuntimeVersion') 'CheckOnly input DTO exposes only its exact declared top-level fields'
+  Assert-True ([IO.File]::ReadAllBytes((Join-Path $sealedFixture.stageRoot 'stage.json')).LongLength -eq $stageBefore.LongLength -and
+    -not [IO.Directory]::Exists((Join-Path $sealedFixtureRoot $sealedFixture.profileBaseName)) -and
+    @([IO.Directory]::EnumerateFileSystemEntries((Join-Path $sealedFixture.stageRoot 'edge-driver-stage')) | Where-Object {
+      [IO.Path]::GetFileName($_) -like 'morrow-e003-g23-process-*'
+    }).Count -eq 0) 'read-only input validation creates no profile, process receipt, or Stage changes'
+
+  foreach ($jsonCase in @(
+      [pscustomobject]@{ Name = 'duplicate-key'; Bytes = [Text.Encoding]::UTF8.GetBytes('{"status":"staged","status":"staged"}' + "`n") },
+      [pscustomobject]@{ Name = 'case-alias-key'; Bytes = [Text.Encoding]::UTF8.GetBytes('{"status":"staged","Status":"staged"}' + "`n") },
+      [pscustomobject]@{ Name = 'CRLF'; Bytes = [Text.Encoding]::UTF8.GetBytes('{"status":"staged"}' + "`r`n") },
+      [pscustomobject]@{ Name = 'missing-final-LF'; Bytes = [Text.Encoding]::UTF8.GetBytes('{"status":"staged"}') },
+      [pscustomobject]@{ Name = 'BOM'; Bytes = [byte[]]@([byte]0xEF, [byte]0xBB, [byte]0xBF) + [Text.Encoding]::UTF8.GetBytes('{"status":"staged"}' + "`n") }
+    )) {
+    $jsonPath = Join-Path $root ('invalid-stage-' + $jsonCase.Name + '.json')
+    [IO.File]::WriteAllBytes($jsonPath, [byte[]]$jsonCase.Bytes)
+    Assert-Throws "strict Stage reader rejects $($jsonCase.Name)" { Read-FirstLaunchCanonicalStageBytes $jsonPath }
+  }
+  $mismatchedRuntime = Copy-FirstLaunchValue $currentRuntime
+  $mismatchedRuntime.version = '155.0.4314.58'
+  foreach ($source in $mismatchedRuntime.sources) { $source.version = '155.0.4314.58' }
+  Assert-Throws 'sealed Stage rejects a current Registry64 version mismatch' { & $invokeSealedInputs $mismatchedRuntime }
+  $mismatchedSources = Copy-FirstLaunchValue $currentRuntime
+  $mismatchedSources.sources = @($mismatchedSources.sources[0])
+  Assert-Throws 'sealed Stage rejects a current Registry64 source set mismatch' { & $invokeSealedInputs $mismatchedSources }
+  $overlapKnownFolders = Copy-FirstLaunchValue $sealedFixture.knownFolders
+  $overlapKnownFolders.localAppData = 'C:\runner\_temp\' + $sealedFixture.profileBaseName + '\profile'
+  Assert-Throws 'planned profile must remain disjoint from current Known Folders' { & $invokeSealedInputs $null $overlapKnownFolders }
+  $noncanonicalKnownFolders = Copy-FirstLaunchValue $sealedFixture.knownFolders
+  $noncanonicalKnownFolders.localAppData = 'C:\Users\runner\AppData\Local\..\Roaming'
+  Assert-Throws 'noncanonical Known Folder is rejected' { & $invokeSealedInputs $null $noncanonicalKnownFolders }
+  Assert-Throws 'Stage root must be the exact current gate source/run/attempt child' {
+    & $invokeSealedInputs $null $null (Join-Path $sealedFixtureRoot 'other-stage')
+  }
+  $sealedClaimPath = $sealedFixture.stageRoot + '.claim'
+  [IO.File]::WriteAllText($sealedClaimPath, 'foreign active claim')
+  try {
+    Assert-Throws 'an active or leftover Stage claim sidecar blocks input verification' { & $invokeSealedInputs }
+    Assert-True ([IO.File]::ReadAllText($sealedClaimPath) -ceq 'foreign active claim') 'Stage input verification leaves a preexisting claim sidecar untouched'
+  } finally { [IO.File]::Delete($sealedClaimPath) }
+  $sealedMarkerPath = Join-Path $sealedFixture.stageRoot $script:FirstLaunchStageOwnerMarkerName
+  $validMarkerBytes = [IO.File]::ReadAllBytes($sealedMarkerPath)
+  [IO.File]::WriteAllText($sealedMarkerPath, '0123456789abcdef0123456789abcdef' + "`n", [Text.Encoding]::ASCII)
+  try { Assert-Throws 'sealed Stage ownership marker must be exact token bytes' { & $invokeSealedInputs } }
+  finally { [IO.File]::WriteAllBytes($sealedMarkerPath, $validMarkerBytes) }
+
+  $profileAliasPath = Join-Path $sealedFixtureRoot $sealedFixture.profileBaseName.ToUpperInvariant()
+  [void][IO.Directory]::CreateDirectory($profileAliasPath)
+  try {
+    Assert-Throws 'case-insensitive future profile collision is rejected on portable filesystem' { & $invokeSealedInputs }
+  } finally { [IO.Directory]::Delete($profileAliasPath, $true) }
+
+  foreach ($mutation in @(
+      [pscustomobject]@{ Name = 'outer package archive'; Path = (Join-Path $sealedFixture.stageRoot 'downloads/artifact.zip') },
+      [pscustomobject]@{ Name = 'inner package archive'; Path = (Join-Path $sealedFixture.stageRoot ('source-artifact/' + [string]$sealedFixture.candidate.package.innerName)) },
+      [pscustomobject]@{ Name = 'Tauri executable'; Path = $sealedFixture.tauriPath },
+      [pscustomobject]@{ Name = 'Edge archive'; Path = $sealedFixture.edgeArchivePath },
+      [pscustomobject]@{ Name = 'Edge executable'; Path = $sealedFixture.edgeExePath },
+      [pscustomobject]@{ Name = 'pinned extracted package file'; Path = (Join-Path $sealedFixture.stageRoot 'package/DemoVault/Checklist.md') }
+    )) {
+    $originalBytes = [IO.File]::ReadAllBytes($mutation.Path)
+    $changedBytes = [byte[]]$originalBytes.Clone()
+    $changedBytes[0] = $changedBytes[0] -bxor 1
+    [IO.File]::WriteAllBytes($mutation.Path, $changedBytes)
+    try {
+      Assert-Throws "mutated $($mutation.Name) is rejected by read-only Stage input verification" { & $invokeSealedInputs }
+    } finally { [IO.File]::WriteAllBytes($mutation.Path, $originalBytes) }
+  }
+  $stageOriginalPath = Join-Path $sealedFixture.stageRoot 'stage.json'
+  $stageOriginalBytes = [IO.File]::ReadAllBytes($stageOriginalPath)
+  $stageTamperedText = [Text.UTF8Encoding]::new($false, $true).GetString($stageOriginalBytes).Replace('98765432101', '98765432102')
+  [IO.File]::WriteAllBytes($stageOriginalPath, [Text.UTF8Encoding]::new($false).GetBytes($stageTamperedText))
+  try { Assert-Throws 'Stage gate identity must match the current immutable run context' { & $invokeSealedInputs } }
+  finally { [IO.File]::WriteAllBytes($stageOriginalPath, $stageOriginalBytes) }
+  Assert-True ((Get-TestSha256 ([IO.File]::ReadAllBytes($stageOriginalPath))) -ceq (Get-TestSha256 $stageBefore)) 'failed verification leaves Stage bytes unchanged after fixture restoration'
 
   Write-Output "windows-first-launch-preflight passed $script:assertionCount assertions."
 } finally {

@@ -117,7 +117,7 @@ function Import-FirstLaunchNeutralHelpers {
   $script:LegacyZipHelperModule = New-Module -Name MorrowFirstLaunchNeutralZipHelpers -ArgumentList $legacyPath -ScriptBlock {
     param([string] $InputPath)
     . $InputPath -LibraryOnly
-    Export-ModuleMember -Function Get-Sha256, Get-ZipEntryPath, Assert-NoPathCollision, Assert-NoReparsePath, Assert-ZipArchiveSafe, Expand-SafeZipArchive
+    Export-ModuleMember -Function Get-Sha256, Get-ZipEntryPath, Assert-NoPathCollision, Assert-NoReparsePath, Assert-ZipArchiveSafe, Expand-SafeZipArchive, Get-WindowsKnownFolderPaths
   }
   Import-Module -ModuleInfo $script:LegacyZipHelperModule -Force -ErrorAction Stop
 }
@@ -1462,8 +1462,8 @@ function Get-FirstLaunchGateIdentity {
   }
 }
 
-function Get-FirstLaunchCandidateBuildDto {
-  $candidate = $script:FirstLaunchCandidate
+function Get-FirstLaunchCandidateBuildDtoCore([object] $Candidate) {
+  $candidate = $Candidate
   return [ordered]@{
     repository = [string]$candidate.repository
     branch = [string]$candidate.branch
@@ -1510,6 +1510,10 @@ function Get-FirstLaunchCandidateBuildDto {
       appGUIWindowsTested = $false
     }
   }
+}
+
+function Get-FirstLaunchCandidateBuildDto {
+  return Get-FirstLaunchCandidateBuildDtoCore $script:FirstLaunchCandidate
 }
 
 function Get-FirstLaunchWebView2RegistryValue {
@@ -2745,14 +2749,16 @@ function Assert-FirstLaunchWebView2Dto {
   return $Runtime
 }
 
-function New-FirstLaunchStageDto {
+function New-FirstLaunchStageDtoCore {
   param(
     [Parameter(Mandatory = $true)][object] $Identity,
     [Parameter(Mandatory = $true)][object] $PackageResult,
     [Parameter(Mandatory = $true)][object] $Runtime,
     [Parameter(Mandatory = $true)][System.Collections.IDictionary] $TauriDriver,
     [Parameter(Mandatory = $true)][System.Collections.IDictionary] $EdgeDriver,
-    [string] $StagedAtUtc = (Get-FirstLaunchUtcMilliseconds)
+    [string] $StagedAtUtc = (Get-FirstLaunchUtcMilliseconds),
+    [object] $Candidate = $script:FirstLaunchCandidate,
+    [object[]] $ExpectedInventory = $script:PinnedPackageInventory
   )
   $gateKeys = @('repository', 'ref', 'workflowPath', 'workflowRef', 'sourceSha', 'gateRunId', 'gateRunAttempt', 'event')
   $runnerKeys = @('os', 'arch', 'tempRoot', 'workspace')
@@ -2767,7 +2773,7 @@ function New-FirstLaunchStageDto {
       [string]$Identity.gate.event -cne $script:FirstLaunchGateEvent -or
       [string]$Identity.gate.sourceSha -notmatch '^[0-9a-f]{40}$' -or
       [string]$Identity.gate.gateRunId -notmatch '^[1-9][0-9]{0,19}$' -or
-      [string]$Identity.gate.gateRunId -ceq [string]$script:FirstLaunchCandidate.buildRunId -or
+      [string]$Identity.gate.gateRunId -ceq [string]$Candidate.buildRunId -or
       [string]$Identity.gate.gateRunAttempt -cne '1') {
     throw 'The Stage gate identity is invalid or aliases the candidate build run.'
   }
@@ -2781,14 +2787,14 @@ function New-FirstLaunchStageDto {
   }
   if ($PackageResult.receipt.schema -cne 'morrow.e003.g23.verified-package.v1' -or
       $PackageResult.receipt.status -cne 'verified' -or
-      [string]$PackageResult.receipt.candidateBuildRunId -cne [string]$script:FirstLaunchCandidate.buildRunId -or
-      [string]$PackageResult.receipt.candidateBuildRunAttempt -cne [string]$script:FirstLaunchCandidate.buildRunAttempt -or
-      [string]$PackageResult.receipt.artifact.id -cne [string]$script:FirstLaunchCandidate.artifact.id) {
+      [string]$PackageResult.receipt.candidateBuildRunId -cne [string]$Candidate.buildRunId -or
+      [string]$PackageResult.receipt.candidateBuildRunAttempt -cne [string]$Candidate.buildRunAttempt -or
+      [string]$PackageResult.receipt.artifact.id -cne [string]$Candidate.artifact.id) {
     throw 'The verified package receipt is not bound to the fixed 2.2 candidate build.'
   }
-  $expectedInventory = Get-FirstLaunchInventory
+  $expectedInventory = Copy-FirstLaunchValue $ExpectedInventory
   if (-not (Test-FirstLaunchSameJsonValue $PackageResult.receipt.packageInventory $expectedInventory) -or
-      [string]$PackageResult.receipt.packageInventorySha256 -cne [string]$script:FirstLaunchCandidate.package.canonicalInventorySha256) {
+      [string]$PackageResult.receipt.packageInventorySha256 -cne [string]$Candidate.package.canonicalInventorySha256) {
     throw 'The verified package inventory differs from the fixed 19-file candidate invoice.'
   }
   $runtime = Assert-FirstLaunchWebView2Dto $Runtime
@@ -2859,7 +2865,7 @@ function New-FirstLaunchStageDto {
       observedAtUtc = [string]$runtime.observedAtUtc
       sources = @($runtime.sources | ForEach-Object { [ordered]@{ registryPath = [string]$_.registryPath; version = [string]$_.version } })
     }
-    candidateBuild = Get-FirstLaunchCandidateBuildDto
+    candidateBuild = Get-FirstLaunchCandidateBuildDtoCore $Candidate
     packageInventory = @($PackageResult.receipt.packageInventory | ForEach-Object {
       [ordered]@{ path = [string]$_.path; sizeBytes = [long]$_.sizeBytes; sha256 = [string]$_.sha256 }
     })
@@ -2900,6 +2906,554 @@ function New-FirstLaunchStageDto {
   }
 }
 
+function New-FirstLaunchStageDto {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][object] $Identity,
+    [Parameter(Mandatory = $true)][object] $PackageResult,
+    [Parameter(Mandatory = $true)][object] $Runtime,
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $TauriDriver,
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $EdgeDriver,
+    [string] $StagedAtUtc = (Get-FirstLaunchUtcMilliseconds)
+  )
+  return New-FirstLaunchStageDtoCore -Identity $Identity -PackageResult $PackageResult -Runtime $Runtime `
+    -TauriDriver $TauriDriver -EdgeDriver $EdgeDriver -StagedAtUtc $StagedAtUtc `
+    -Candidate $script:FirstLaunchCandidate -ExpectedInventory $script:PinnedPackageInventory
+}
+
+function ConvertTo-FirstLaunchCanonicalStageBytes {
+  param([Parameter(Mandatory = $true)][System.Collections.IDictionary] $Stage)
+  $json = ConvertTo-Json -InputObject $Stage -Depth 20 -Compress -ErrorAction Stop
+  if ([string]::IsNullOrEmpty($json) -or $json.Contains("`r") -or $json.Contains("`n")) {
+    throw 'The serialized Stage must be a single canonical JSON line.'
+  }
+  return ,([Text.UTF8Encoding]::new($false, $true).GetBytes($json + "`n"))
+}
+
+
+function Get-FirstLaunchExpectedStageRoot {
+  param([Parameter(Mandatory = $true)][object] $Identity, [string] $TestFileSystemTempRoot)
+  $stageName = 'morrow-e003-g23-stage-' + [string]$Identity.gate.sourceSha + '-' + [string]$Identity.gate.gateRunId + '-1'
+  $parent = if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot)) {
+    [string]$Identity.runner.tempRoot
+  } else {
+    [IO.Path]::GetFullPath($TestFileSystemTempRoot)
+  }
+  return [IO.Path]::GetFullPath((Join-Path $parent $stageName))
+}
+
+function Assert-FirstLaunchSealedStageRoot {
+  param([Parameter(Mandatory = $true)][string] $StageRoot, [Parameter(Mandatory = $true)][string] $ExpectedStageRoot)
+  $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+  if (-not [string]::Equals($StageRoot, [IO.Path]::GetFullPath($ExpectedStageRoot), $comparison) -or
+      -not [IO.Directory]::Exists($StageRoot)) {
+    throw 'The CheckOnly input root is not the exact existing sealed Stage for this gate run.'
+  }
+  [void](Assert-FirstLaunchNoReparsePath $StageRoot 'Sealed first-launch Stage root')
+  $rootAttributes = [IO.File]::GetAttributes($StageRoot)
+  if (($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0 -or
+      ($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'The sealed Stage root is not a plain directory.'
+  }
+  $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($StageRoot))
+  if (-not [IO.Directory]::Exists($parent)) { throw 'The sealed Stage parent directory is missing.' }
+  [void](Assert-FirstLaunchNoReparsePath $parent 'Sealed Stage parent')
+  $claimPath = $StageRoot + '.claim'
+  [void](Assert-FirstLaunchNoReparsePath $claimPath 'Stage claim sidecar')
+  $claimParent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($claimPath))
+  $claimLeaf = [IO.Path]::GetFileName($claimPath)
+  $claimAliases = @([IO.Directory]::EnumerateFileSystemEntries($claimParent) | Where-Object {
+    [string]::Equals([IO.Path]::GetFileName($_), $claimLeaf, [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($claimAliases.Count -gt 0) {
+    throw 'The Stage is still claimed or has an unexpected claim sidecar.'
+  }
+  $markerPath = Join-Path $StageRoot $script:FirstLaunchStageOwnerMarkerName
+  [void](Assert-FirstLaunchNoReparsePath $markerPath 'Sealed Stage owner marker')
+  if (-not [IO.File]::Exists($markerPath) -or [IO.Directory]::Exists($markerPath)) {
+    throw 'The sealed Stage owner marker is missing or is not a plain file.'
+  }
+  $markerBytes = [IO.File]::ReadAllBytes($markerPath)
+  $ownerToken = [Text.Encoding]::ASCII.GetString($markerBytes)
+  if ($markerBytes.Length -ne 32 -or $ownerToken -cnotmatch '\A[0-9a-f]{32}\z') {
+    throw 'The sealed Stage owner marker is malformed.'
+  }
+  return [pscustomobject]@{ stageRoot = [IO.Path]::GetFullPath($StageRoot); markerPath = $markerPath }
+}
+
+function Assert-FirstLaunchUniqueStageJsonProperties {
+  param([Parameter(Mandatory = $true)][System.Text.Json.JsonElement] $Element, [int] $Depth = 0)
+  if ($Depth -gt 32) { throw 'The canonical Stage JSON exceeds its structural depth bound.' }
+  if ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($property in $Element.EnumerateObject()) {
+      if (-not $names.Add($property.Name)) { throw 'The Stage JSON repeats or case-aliases an object property.' }
+      Assert-FirstLaunchUniqueStageJsonProperties -Element $property.Value -Depth ($Depth + 1)
+    }
+  } elseif ($Element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
+    foreach ($value in $Element.EnumerateArray()) {
+      Assert-FirstLaunchUniqueStageJsonProperties -Element $value -Depth ($Depth + 1)
+    }
+  }
+}
+
+function Read-FirstLaunchCanonicalStageBytes {
+  param([Parameter(Mandatory = $true)][string] $StagePath)
+  [void](Assert-FirstLaunchNoReparsePath $StagePath 'Canonical Stage input')
+  if (-not [IO.File]::Exists($StagePath)) { throw 'The sealed Stage manifest is missing.' }
+  $attributes = [IO.File]::GetAttributes($StagePath)
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'The Stage manifest is not a plain file.'
+  }
+  $info = Get-Item -LiteralPath $StagePath
+  if ($info.Length -le 0 -or $info.Length -gt 1MB) { throw 'The Stage manifest is empty or exceeds its exact byte bound.' }
+  $bytes = [IO.File]::ReadAllBytes($StagePath)
+  [void](Assert-FirstLaunchNoReparsePath $StagePath 'Canonical Stage input after read')
+  $after = Get-Item -LiteralPath $StagePath
+  if ($bytes.Length -le 0 -or $bytes.Length -gt 1MB -or
+      $bytes.LongLength -ne $info.Length -or $after.Length -ne $info.Length -or
+      $after.LastWriteTimeUtc -ne $info.LastWriteTimeUtc -or
+      ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) -or
+      $bytes[$bytes.Length - 1] -ne 0x0A -or
+      ($bytes.Length -gt 1 -and $bytes[$bytes.Length - 2] -eq 0x0A) -or
+      [Array]::IndexOf($bytes, [byte]0x0D) -ge 0) {
+    throw 'The Stage manifest is not bounded, UTF-8 without BOM, and canonical LF-terminated bytes.'
+  }
+  try { $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes) }
+  catch { throw 'The Stage manifest is not valid strict UTF-8.' }
+  $document = $null
+  try {
+    $options = [System.Text.Json.JsonDocumentOptions]::new()
+    $options.MaxDepth = 32
+    $document = [System.Text.Json.JsonDocument]::Parse([System.ReadOnlyMemory[byte]]::new($bytes), $options)
+    Assert-FirstLaunchUniqueStageJsonProperties -Element $document.RootElement
+  } catch { throw 'The Stage manifest is malformed JSON or has duplicate properties.' }
+  finally { if ($null -ne $document) { $document.Dispose() } }
+  try {
+    $stage = ConvertFrom-Json -InputObject $text -AsHashtable -NoEnumerate -DateKind String -ErrorAction Stop
+  } catch { throw 'The canonical Stage manifest could not be decoded.' }
+  if ($stage -isnot [Collections.IDictionary]) { throw 'The Stage manifest root must be a JSON object.' }
+  return [pscustomobject]@{ SizeBytes = [long]$bytes.LongLength; Sha256 = Get-FirstLaunchSha256Bytes $bytes; Stage = $stage }
+}
+
+function Get-FirstLaunchRawLfByteFacts {
+  param(
+    [Parameter(Mandatory = $true)][byte[]] $Bytes,
+    [Parameter(Mandatory = $true)][string] $Label,
+    [long] $MaximumBytes = 4MB
+  )
+  if ($Bytes.Length -le 0 -or $Bytes.LongLength -gt $MaximumBytes -or
+      ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) -or
+      $Bytes[$Bytes.Length - 1] -ne 0x0A -or [Array]::IndexOf($Bytes, [byte]0x0D) -ge 0) {
+    throw "The raw $Label source is not bounded, strict LF-terminated UTF-8 without a BOM or CR bytes."
+  }
+  try { [void][Text.UTF8Encoding]::new($false, $true).GetString($Bytes) }
+  catch { throw "The raw $Label source is not valid strict UTF-8." }
+  return [pscustomobject]@{ sizeBytes = [long]$Bytes.LongLength; sha256 = Get-FirstLaunchSha256Bytes $Bytes }
+}
+
+function Get-FirstLaunchPlainFileMeasurement {
+  param(
+    [Parameter(Mandatory = $true)][string] $Path,
+    [Parameter(Mandatory = $true)][string] $Label,
+    [long] $MaximumBytes = [long]::MaxValue
+  )
+  [void](Assert-FirstLaunchNoReparsePath $Path $Label)
+  if (-not [IO.File]::Exists($Path) -or [IO.Directory]::Exists($Path)) { throw "$Label is missing or is not a plain file." }
+  $attributes = [IO.File]::GetAttributes($Path)
+  if (($attributes -band [IO.FileAttributes]::Directory) -ne 0 -or
+      ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "$Label is not a plain non-reparse file."
+  }
+  $before = Get-Item -LiteralPath $Path
+  if ($before.Length -le 0 -or $before.Length -gt $MaximumBytes) { throw "$Label has an invalid size." }
+  $sha256 = Get-Sha256 $Path
+  [void](Assert-FirstLaunchNoReparsePath $Path ($Label + ' after measurement'))
+  $after = Get-Item -LiteralPath $Path
+  if ($after.Length -ne $before.Length -or $after.LastWriteTimeUtc -ne $before.LastWriteTimeUtc) {
+    throw "$Label changed during measurement."
+  }
+  return [pscustomobject]@{ path = [IO.Path]::GetFullPath($Path); sizeBytes = [long]$after.Length; sha256 = [string]$sha256 }
+}
+
+function Get-FirstLaunchCanonicalJsonValue {
+  param([Parameter(Mandatory = $true)][object] $Value)
+  if ($Value -is [System.Collections.IDictionary]) {
+    $result = [ordered]@{}
+    foreach ($key in @($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)) {
+      $result[$key] = Get-FirstLaunchCanonicalJsonValue $Value[$key]
+    }
+    return $result
+  }
+  if ($Value -is [System.Array]) {
+    $items = [Collections.Generic.List[object]]::new()
+    foreach ($item in $Value) { $items.Add((Get-FirstLaunchCanonicalJsonValue $item)) }
+    return ,($items.ToArray())
+  }
+  return $Value
+}
+
+function Test-FirstLaunchSameJsonStructure {
+  param([object] $Left, [object] $Right)
+  $leftJson = ConvertTo-Json -InputObject (Get-FirstLaunchCanonicalJsonValue $Left) -Depth 32 -Compress
+  $rightJson = ConvertTo-Json -InputObject (Get-FirstLaunchCanonicalJsonValue $Right) -Depth 32 -Compress
+  return [string]::Equals($leftJson, $rightJson, [StringComparison]::Ordinal)
+}
+
+function Get-FirstLaunchCurrentRunnerSid {
+  if ([IO.Path]::DirectorySeparatorChar -ne '\') { throw 'Windows runner SID inspection is available only on Windows.' }
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  try {
+    if ($null -eq $identity.User) { throw 'The Windows runner identity has no SID.' }
+    $sid = [string]$identity.User.Value
+    if ($sid -notmatch '^S-1-\d+(?:-\d+)+$') { throw 'The current Windows runner SID is malformed.' }
+    return $sid
+  } finally { $identity.Dispose() }
+}
+
+function Get-FirstLaunchCurrentKnownFolders {
+  if ([IO.Path]::DirectorySeparatorChar -ne '\') { throw 'Windows Known Folder inspection is available only on Windows.' }
+  $known = Get-WindowsKnownFolderPaths
+  $local = Assert-FirstLaunchCanonicalWindowsPath ([string]$known.LocalAppData) 'LocalAppData Known Folder'
+  $roaming = Assert-FirstLaunchCanonicalWindowsPath ([string]$known.RoamingAppData) 'RoamingAppData Known Folder'
+  if (-not [IO.Directory]::Exists($local) -or -not [IO.Directory]::Exists($roaming) -or
+      (Test-FirstLaunchWindowsPathsOverlap $local $roaming)) {
+    throw 'The runner Known Folder paths are missing or overlap.'
+  }
+  [void](Assert-FirstLaunchNoReparsePath $local 'LocalAppData Known Folder')
+  [void](Assert-FirstLaunchNoReparsePath $roaming 'RoamingAppData Known Folder')
+  return [ordered]@{ localAppData = $local; roamingAppData = $roaming }
+}
+
+function Get-FirstLaunchRawLfSourceFacts {
+  param([Parameter(Mandatory = $true)][object] $Identity, [string] $TestWorkspaceRoot)
+  $workspaceRoot = if ([string]::IsNullOrWhiteSpace($TestWorkspaceRoot)) {
+    [string]$Identity.runner.workspace
+  } else {
+    [IO.Path]::GetFullPath($TestWorkspaceRoot)
+  }
+  $scriptRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..' '..'))
+  $comparison = if ([IO.Path]::DirectorySeparatorChar -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+  if (-not [string]::Equals($scriptRoot, [IO.Path]::GetFullPath($workspaceRoot), $comparison)) {
+    throw 'The running preflight source is not the literal scripts/pilot file in this gate checkout.'
+  }
+  $sourcePath = Join-Path $scriptRoot 'scripts/pilot/windows-first-launch-preflight.ps1'
+  $helperPath = Join-Path $scriptRoot 'scripts/pilot/windows-native-job.ps1'
+  $runningSourcePath = Join-Path $PSScriptRoot 'windows-first-launch-preflight.ps1'
+  $runningHelperPath = Join-Path $PSScriptRoot 'windows-native-job.ps1'
+  if (-not [string]::Equals([IO.Path]::GetFullPath($sourcePath), [IO.Path]::GetFullPath($runningSourcePath), $comparison) -or
+      -not [string]::Equals([IO.Path]::GetFullPath($helperPath), [IO.Path]::GetFullPath($runningHelperPath), $comparison)) {
+    throw 'The current preflight or Job helper path does not match its literal checkout path.'
+  }
+
+  $facts = [ordered]@{}
+  foreach ($entry in @(
+      [pscustomobject]@{ Key = 'scripts/pilot/windows-first-launch-preflight.ps1'; Path = $sourcePath },
+      [pscustomobject]@{ Key = 'scripts/pilot/windows-native-job.ps1'; Path = $helperPath }
+    )) {
+    [void](Assert-FirstLaunchNoReparsePath $entry.Path ($entry.Key + ' source'))
+    if (-not [IO.File]::Exists($entry.Path)) { throw "The literal $($entry.Key) source file is missing." }
+    $info = Get-Item -LiteralPath $entry.Path
+    if ($info.Length -le 0 -or $info.Length -gt 4MB) { throw "The raw $($entry.Key) source size is outside its bound." }
+    $bytes = [IO.File]::ReadAllBytes($entry.Path)
+    [void](Assert-FirstLaunchNoReparsePath $entry.Path ($entry.Key + ' source after read'))
+    $after = Get-Item -LiteralPath $entry.Path
+    if ($bytes.LongLength -ne $info.Length -or $after.Length -ne $info.Length -or
+        $after.LastWriteTimeUtc -ne $info.LastWriteTimeUtc) { throw "The raw $($entry.Key) source changed during inspection." }
+    $measured = Get-FirstLaunchRawLfByteFacts -Bytes $bytes -Label $entry.Key
+    $facts[$entry.Key] = [ordered]@{ path = $entry.Key; sizeBytes = $measured.sizeBytes; sha256 = $measured.sha256 }
+  }
+  $helperScriptBlock = Get-FirstLaunchVerifiedNativeJobHelperScriptBlock $helperPath
+  if ([string]$facts['scripts/pilot/windows-native-job.ps1'].sha256 -cne $script:FirstLaunchNativeJobHelperSha256) {
+    throw 'The literal Job helper bytes do not match the immutable Job helper source pin.'
+  }
+  return [pscustomobject]@{
+    sourceFiles = @($facts.Values)
+    nativeJobHelperScriptBlock = $helperScriptBlock
+  }
+}
+
+function Get-FirstLaunchProfilePathPlan {
+  param(
+    [Parameter(Mandatory = $true)][object] $Identity,
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $KnownFolders,
+    [Parameter(Mandatory = $true)][string] $StageRoot,
+    [string] $TestFileSystemTempRoot
+  )
+  $tempRoot = Assert-FirstLaunchCanonicalWindowsPath ([string]$Identity.runner.tempRoot) 'RUNNER_TEMP'
+  $workspace = Assert-FirstLaunchCanonicalWindowsPath ([string]$Identity.runner.workspace) 'GITHUB_WORKSPACE'
+  $localAppData = Assert-FirstLaunchCanonicalWindowsPath ([string]$KnownFolders.localAppData) 'LocalAppData Known Folder'
+  $roamingAppData = Assert-FirstLaunchCanonicalWindowsPath ([string]$KnownFolders.roamingAppData) 'RoamingAppData Known Folder'
+  if ((Test-FirstLaunchWindowsPathsOverlap $tempRoot $workspace) -or
+      (Test-FirstLaunchWindowsPathsOverlap $localAppData $roamingAppData)) {
+    throw 'The runner workspace or Known Folders overlap an approved preparation root.'
+  }
+  foreach ($knownFolder in @($localAppData, $roamingAppData)) {
+    if ((Test-FirstLaunchWindowsPathsOverlap $knownFolder ([string]$Identity.runner.tempRoot)) -and
+        [string]::IsNullOrWhiteSpace($TestFileSystemTempRoot)) {
+      throw 'RUNNER_TEMP is inside a Windows Known Folder.'
+    }
+  }
+  $profileBaseName = 'morrow-issue-187-' + [string]$Identity.gate.sourceSha + '-' +
+    [string]$Identity.gate.gateRunId + '-1'
+  $profileBase = $tempRoot.TrimEnd('\') + '\' + $profileBaseName
+  $profileRoot = $profileBase + '\profile'
+  $profiles = [ordered]@{
+    root = $profileRoot
+    morrowUserData = $profileRoot + '\MorrowUserData'
+    webView2UserData = $profileRoot + '\WebView2UserData'
+  }
+  foreach ($profilePath in $profiles.Values) {
+    [void](Assert-FirstLaunchCanonicalWindowsPath ([string]$profilePath) 'Planned CheckOnly profile path')
+  }
+  if ($profiles.morrowUserData -ceq $profiles.webView2UserData -or
+      (Test-FirstLaunchWindowsPathsOverlap $profiles.morrowUserData $profiles.webView2UserData) -or
+      ((Test-FirstLaunchWindowsPathsOverlap $profileRoot $tempRoot) -and
+        -not $profileRoot.StartsWith($tempRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) {
+    throw 'The planned CheckOnly profile paths are overlapping or outside RUNNER_TEMP.'
+  }
+  foreach ($disjointRoot in @($workspace, $localAppData, $roamingAppData, $StageRoot)) {
+    if (Test-FirstLaunchWindowsPathsOverlap $profileRoot $disjointRoot) {
+      throw 'The planned CheckOnly profile root overlaps the workspace, Stage, or a Windows Known Folder.'
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($TestFileSystemTempRoot)) {
+    [void](Assert-NoPathCollision $profileBase 'Exclusive future CheckOnly profile root')
+  } else {
+    $testTempRoot = [IO.Path]::GetFullPath($TestFileSystemTempRoot)
+    [void](Assert-FirstLaunchNoReparsePath $testTempRoot 'Mapped hermetic RUNNER_TEMP')
+    $matchingEntries = @([IO.Directory]::EnumerateFileSystemEntries($testTempRoot) | Where-Object {
+      [string]::Equals([IO.Path]::GetFileName($_), $profileBaseName, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($matchingEntries.Count -gt 0) { throw 'The planned CheckOnly profile root or a case/alias collision already exists.' }
+  }
+  return $profiles
+}
+
+function Get-FirstLaunchEdgeArchiveExecutableMeasurement {
+  param([Parameter(Mandatory = $true)][string] $ArchivePath)
+  $archivePolicy = Assert-FirstLaunchZipPolicy $ArchivePath 0 -1
+  $stream = [IO.File]::OpenRead($ArchivePath)
+  $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $false)
+  try {
+    $exeEntries = @($archive.Entries | Where-Object { [IO.Path]::GetExtension([string]$_.FullName) -ieq '.exe' })
+    if ($exeEntries.Count -ne 1 -or [string]$exeEntries[0].FullName -cne 'msedgedriver.exe') {
+      throw 'The sealed EdgeDriver archive must contain exactly one root msedgedriver.exe and no other executable.'
+    }
+    $entry = $exeEntries[0]
+    $entryStream = $entry.Open()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $entrySha = ([BitConverter]::ToString($sha.ComputeHash($entryStream))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose(); $entryStream.Dispose() }
+    return [pscustomobject]@{
+      entryCount = [int]$archivePolicy.EntryCount
+      totalUncompressedBytes = [long]$archivePolicy.TotalUncompressedBytes
+      executableSizeBytes = [long]$entry.Length
+      executableSha256 = [string]$entrySha
+    }
+  } finally { $archive.Dispose() }
+}
+
+function Get-FirstLaunchCheckOnlyInputsFromSealedStage {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][object] $Identity,
+    [Parameter(Mandatory = $true)][string] $StageRoot,
+    [Parameter(Mandatory = $true)][object] $Runtime,
+    [Parameter(Mandatory = $true)][string] $RunnerSid,
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary] $KnownFolders,
+    [object] $Candidate = $script:FirstLaunchCandidate,
+    [object[]] $ExpectedInventory = $script:PinnedPackageInventory,
+    [string] $TestFileSystemTempRoot,
+    [string] $TestWorkspaceRoot,
+    [switch] $AllowSyntheticCandidate
+  )
+  $compiledCandidate = Copy-FirstLaunchValue $script:FirstLaunchCandidate
+  $compiledInventory = Copy-FirstLaunchValue $script:PinnedPackageInventory
+  if (-not $AllowSyntheticCandidate -and
+      (-not (Test-FirstLaunchSameJsonValue $Candidate $compiledCandidate) -or
+       -not (Test-FirstLaunchSameJsonValue $ExpectedInventory $compiledInventory))) {
+    throw 'CheckOnly input verification is restricted to the compiled 2.2 candidate and canonical inventory.'
+  }
+  if ($RunnerSid -cnotmatch '\AS-1-\d+(?:-\d+)+\z') { throw 'The current Windows runner SID is malformed.' }
+  $knownKeys = @('localAppData', 'roamingAppData')
+  if ($KnownFolders.Keys.Count -ne $knownKeys.Count -or @($KnownFolders.Keys | Where-Object { $_ -cnotin $knownKeys }).Count -gt 0) {
+    throw 'The read-only Known Folder result has unexpected or missing fields.'
+  }
+  $localAppData = Assert-FirstLaunchCanonicalWindowsPath ([string]$KnownFolders.localAppData) 'LocalAppData Known Folder'
+  $roamingAppData = Assert-FirstLaunchCanonicalWindowsPath ([string]$KnownFolders.roamingAppData) 'RoamingAppData Known Folder'
+  if (Test-FirstLaunchWindowsPathsOverlap $localAppData $roamingAppData) { throw 'The runner Known Folder paths overlap.' }
+  [void](Assert-FirstLaunchWebView2Dto $Runtime)
+
+  [void](Assert-FirstLaunchCandidateNotExpired $Candidate)
+  $expectedStageRoot = Get-FirstLaunchExpectedStageRoot -Identity $Identity -TestFileSystemTempRoot $TestFileSystemTempRoot
+  $sealed = Assert-FirstLaunchSealedStageRoot $StageRoot $expectedStageRoot
+  $stageRootFull = [string]$sealed.stageRoot
+  $stagePath = Join-Path $stageRootFull 'stage.json'
+  $manifest = Read-FirstLaunchCanonicalStageBytes $stagePath
+  $stage = $manifest.Stage
+
+  $artifactPath = Join-Path (Join-Path $stageRootFull 'downloads') 'artifact.zip'
+  $outerMeasurement = Get-FirstLaunchPlainFileMeasurement $artifactPath 'Pinned outer package archive' ([long]$Candidate.artifact.sizeBytes)
+  if ($outerMeasurement.sizeBytes -ne [long]$Candidate.artifact.sizeBytes -or
+      $outerMeasurement.sha256 -cne [string]$Candidate.package.outerSha256 -or
+      [string]$Candidate.artifact.digest -cne ('sha256:' + [string]$Candidate.package.outerSha256)) {
+    throw 'The staged outer package archive differs from the immutable artifact digest or size pin.'
+  }
+  $outerArchive = Assert-FirstLaunchZipPolicy $artifactPath 1 ([long]$Candidate.package.innerSizeBytes)
+  if ($outerArchive.Entries.Count -ne 1 -or [string]$outerArchive.Entries[0].path -cne [string]$Candidate.package.innerName -or
+      $outerArchive.Entries[0].isDirectory -ne $false) {
+    throw 'The staged outer archive does not contain the exact pinned inner package ZIP.'
+  }
+  $innerZipPath = Join-Path (Join-Path $stageRootFull 'source-artifact') ([string]$Candidate.package.innerName)
+  $innerMeasurement = Get-FirstLaunchPlainFileMeasurement $innerZipPath 'Pinned inner package archive' ([long]$Candidate.package.innerSizeBytes)
+  if ($innerMeasurement.sizeBytes -ne [long]$Candidate.package.innerSizeBytes -or
+      $innerMeasurement.sha256 -cne [string]$Candidate.package.innerSha256) {
+    throw 'The staged inner package archive differs from the immutable size or SHA-256 pin.'
+  }
+  $innerArchive = Assert-FirstLaunchZipPolicy $innerZipPath ([int]$Candidate.package.innerEntryCount) ([long]$Candidate.package.innerTotalBytes)
+  $packageRoot = Join-Path $stageRootFull 'package'
+  $package = Assert-FirstLaunchPackage $packageRoot $innerZipPath $Candidate $ExpectedInventory
+  if (-not (Test-FirstLaunchSameJsonStructure $package.packageInventory $ExpectedInventory) -or
+      [string]$package.packageInventorySha256 -cne [string]$Candidate.package.canonicalInventorySha256) {
+    throw 'The extracted package inventory differs from the immutable candidate invoice.'
+  }
+  $packageResult = [pscustomobject]@{
+    receipt = [ordered]@{
+      schema = 'morrow.e003.g23.verified-package.v1'
+      status = 'verified'
+      candidateBuildRunId = [string]$Candidate.buildRunId
+      candidateBuildRunAttempt = [string]$Candidate.buildRunAttempt
+      artifact = [ordered]@{ id = [string]$Candidate.artifact.id }
+      packageInventory = $package.packageInventory
+      packageInventorySha256 = [string]$package.packageInventorySha256
+    }
+  }
+
+  $tauriPath = Join-Path (Join-Path (Join-Path $stageRootFull 'tauri-tool-stage') 'bin') 'tauri-driver.exe'
+  $tauriMeasurement = Get-FirstLaunchPlainFileMeasurement $tauriPath 'Staged Tauri driver executable' 256MB
+  $tauriMetadata = $stage.drivers.tauriDriver
+  if ([string]$tauriMetadata.executableSha256 -cne $tauriMeasurement.sha256) {
+    throw 'The staged Tauri driver executable changed after its Stage receipt was written.'
+  }
+  [void](Assert-FirstLaunchPeX64 -ExecutablePath $tauriPath -Label 'Staged Tauri driver')
+  $tauriDriver = [ordered]@{
+    version = [string]$tauriMetadata.version
+    source = [string]$tauriMetadata.source
+    sourceUrl = [string]$tauriMetadata.sourceUrl
+    downloadUrl = [string]$tauriMetadata.downloadUrl
+    cargoVersion = [string]$tauriMetadata.cargoVersion
+    installCommand = [string]$tauriMetadata.installCommand
+    executableSha256 = [string]$tauriMeasurement.sha256
+    serviceStarted = $false
+  }
+
+  $edgeArchivePath = Join-Path (Join-Path $stageRootFull 'edge-driver-stage') 'edgedriver.zip'
+  $edgeArchiveMeasurement = Get-FirstLaunchPlainFileMeasurement $edgeArchivePath 'Staged EdgeDriver archive' $script:FirstLaunchMaxEdgeArchiveBytes
+  $edgeMetadata = $stage.drivers.edgeDriver
+  if ($edgeArchiveMeasurement.sizeBytes -ne [long]$edgeMetadata.expectedArchiveBytes -or
+      $edgeArchiveMeasurement.sizeBytes -ne [long]$edgeMetadata.archiveSizeBytes -or
+      $edgeArchiveMeasurement.sha256 -cne [string]$edgeMetadata.archiveSha256) {
+    throw 'The staged EdgeDriver archive differs from its recorded size or measured SHA-256.'
+  }
+  $edgeEntry = Get-FirstLaunchEdgeArchiveExecutableMeasurement $edgeArchivePath
+  $edgeExecutablePath = Join-Path (Join-Path (Join-Path $stageRootFull 'edge-driver-stage') 'contents') 'msedgedriver.exe'
+  $edgeExecutableMeasurement = Get-FirstLaunchPlainFileMeasurement $edgeExecutablePath 'Staged EdgeDriver executable' $script:FirstLaunchMaxEdgeArchiveBytes
+  if ($edgeExecutableMeasurement.sizeBytes -ne [long]$edgeEntry.executableSizeBytes -or
+      $edgeExecutableMeasurement.sha256 -cne [string]$edgeEntry.executableSha256 -or
+      $edgeExecutableMeasurement.sha256 -cne [string]$edgeMetadata.executableSha256) {
+    throw 'The extracted EdgeDriver executable differs from its ZIP entry or recorded SHA-256.'
+  }
+  [void](Assert-FirstLaunchPeX64 -ExecutablePath $edgeExecutablePath -Label 'Staged EdgeDriver')
+  $edgeDriver = [ordered]@{
+    version = [string]$edgeMetadata.version
+    runtimeVersion = [string]$edgeMetadata.runtimeVersion
+    compatibleFirstThreeComponents = [string]$edgeMetadata.compatibleFirstThreeComponents
+    sourcePageUrl = [string]$edgeMetadata.sourcePageUrl
+    sourceCatalogUrl = [string]$edgeMetadata.sourceCatalogUrl
+    downloadUrl = [string]$edgeMetadata.downloadUrl
+    responseUrl = [string]$edgeMetadata.responseUrl
+    catalogGeneratedAtUtc = [string]$edgeMetadata.catalogGeneratedAtUtc
+    catalogSizeBytes = [long]$edgeMetadata.catalogSizeBytes
+    catalogItemCount = [int]$edgeMetadata.catalogItemCount
+    catalogSha256 = [string]$edgeMetadata.catalogSha256
+    selectedLastModified = [string]$edgeMetadata.selectedLastModified
+    expectedArchiveBytes = [long]$edgeMetadata.expectedArchiveBytes
+    archiveSizeBytes = [long]$edgeArchiveMeasurement.sizeBytes
+    archiveSha256 = [string]$edgeArchiveMeasurement.sha256
+    executableSha256 = [string]$edgeExecutableMeasurement.sha256
+    versionProbeExitCode = [int]$edgeMetadata.versionProbeExitCode
+    serviceStarted = $false
+  }
+
+  if ([string]$stage.webView2Runtime.version -cne [string]$Runtime.version -or
+      -not (Test-FirstLaunchSameJsonStructure $stage.webView2Runtime.sources $Runtime.sources)) {
+    throw 'The staged WebView2 runtime version or Registry64 sources differ from the current read-only observation.'
+  }
+  $historicalRuntime = [pscustomobject]@{
+    version = [string]$Runtime.version
+    observedAtUtc = [string]$stage.webView2Runtime.observedAtUtc
+    sources = @($Runtime.sources)
+  }
+  $expectedStage = New-FirstLaunchStageDtoCore -Identity $Identity -PackageResult $packageResult -Runtime $historicalRuntime `
+    -TauriDriver $tauriDriver -EdgeDriver $edgeDriver -StagedAtUtc ([string]$stage.stagedAtUtc) `
+    -Candidate $Candidate -ExpectedInventory $ExpectedInventory
+  if (-not (Test-FirstLaunchSameJsonStructure $stage $expectedStage)) {
+    throw 'The sealed Stage manifest does not match the current gate, candidate, registry, and freshly measured tool inputs.'
+  }
+
+  $logicalStageRoot = ([string]$Identity.runner.tempRoot).TrimEnd('\') + '\' + (Split-Path -Leaf $stageRootFull)
+  $profiles = Get-FirstLaunchProfilePathPlan -Identity $Identity -KnownFolders $KnownFolders `
+    -StageRoot $logicalStageRoot -TestFileSystemTempRoot $TestFileSystemTempRoot
+  $sourceFacts = Get-FirstLaunchRawLfSourceFacts -Identity $Identity -TestWorkspaceRoot $TestWorkspaceRoot
+  $sourceFiles = @($sourceFacts.sourceFiles | ForEach-Object { [ordered]@{
+    path = [string]$_.path; sizeBytes = [long]$_.sizeBytes; sha256 = [string]$_.sha256
+  } })
+
+  return [ordered]@{
+    schema = 'morrow.e003.g23.check-only-inputs.v1'
+    status = 'verified'
+    gate = [ordered]@{
+      sourceSha = [string]$Identity.gate.sourceSha
+      gateRunId = [string]$Identity.gate.gateRunId
+      gateRunAttempt = [string]$Identity.gate.gateRunAttempt
+    }
+    candidateBuild = Get-FirstLaunchCandidateBuildDtoCore $Candidate
+    stage = [ordered]@{ path = [IO.Path]::GetFullPath($stagePath); sizeBytes = [long]$manifest.SizeBytes; sha256 = [string]$manifest.Sha256 }
+    package = [ordered]@{ root = [IO.Path]::GetFullPath($packageRoot); launcherPath = [IO.Path]::GetFullPath((Join-Path $packageRoot 'windows-launch.ps1')) }
+    tools = [ordered]@{
+      tauriDriver = [ordered]@{ path = [IO.Path]::GetFullPath($tauriPath); version = [string]$tauriDriver.version; sha256 = [string]$tauriMeasurement.sha256 }
+      edgeDriver = [ordered]@{
+        archivePath = [IO.Path]::GetFullPath($edgeArchivePath)
+        archiveSizeBytes = [long]$edgeArchiveMeasurement.sizeBytes
+        archiveSha256 = [string]$edgeArchiveMeasurement.sha256
+        executablePath = [IO.Path]::GetFullPath($edgeExecutablePath)
+        version = [string]$edgeDriver.version
+        executableSha256 = [string]$edgeExecutableMeasurement.sha256
+      }
+    }
+    webView2RuntimeVersion = [string]$Runtime.version
+    identity = [ordered]@{ sid = [string]$RunnerSid }
+    knownFolders = [ordered]@{ localAppData = $localAppData; roamingAppData = $roamingAppData }
+    profiles = $profiles
+    sourceFiles = $sourceFiles
+    noLaunch = [ordered]@{ appLaunched = $false; driverServiceStarted = $false; guiTested = $false }
+  }
+}
+
+function Get-FirstLaunchCheckOnlyInputs {
+  [CmdletBinding()]
+  param()
+  $identity = Get-FirstLaunchGateIdentity
+  $stageRoot = Get-FirstLaunchExpectedStageRoot -Identity $identity
+  $runtime = Get-FirstLaunchWebView2Observation
+  $runnerSid = Get-FirstLaunchCurrentRunnerSid
+  $knownFolders = Get-FirstLaunchCurrentKnownFolders
+  return Get-FirstLaunchCheckOnlyInputsFromSealedStage -Identity $identity -StageRoot $stageRoot `
+    -Runtime $runtime -RunnerSid $runnerSid -KnownFolders $knownFolders
+}
+
 function New-FirstLaunchStage {
   [CmdletBinding()]
   param([Parameter(Mandatory = $true)][string] $Token, [Parameter(Mandatory = $true)][string] $CargoPath)
@@ -2916,8 +3470,7 @@ function New-FirstLaunchStage {
     $stage = New-FirstLaunchStageDto -Identity $stageIdentity -PackageResult $package -Runtime $runtime `
       -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc (Get-FirstLaunchUtcMilliseconds)
     $stagePath = Join-Path $claim.stageRoot 'stage.json'
-    $stageText = ConvertTo-Json -InputObject $stage -Depth 20
-    $stageBytes = [Text.UTF8Encoding]::new($false).GetBytes($stageText + "`n")
+    $stageBytes = ConvertTo-FirstLaunchCanonicalStageBytes -Stage $stage
     [void](Assert-FirstLaunchStageClaim $claim.stageRoot $claim.token)
     Write-FirstLaunchNewFile $stagePath $stageBytes
     return [pscustomobject]@{
