@@ -12,6 +12,80 @@ if ($parseErrors.Count -gt 0) {
 . $sourcePath -LibraryOnly
 Add-Type -AssemblyName System.IO.Compression
 
+if (-not ('MorrowFirstLaunchTest.FakeWindowsJobSession' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+
+namespace MorrowFirstLaunchTest {
+  public sealed class FakeJobState {
+    public bool LeaveMember { get; set; }
+    public int ResumeCount { get; set; }
+    public int ObserveCount { get; set; }
+    public int MemberQueries { get; set; }
+    public int StopCount { get; set; }
+    public int DisposeCount { get; set; }
+    public int StopTimeoutMs { get; set; }
+    public int ObservationDelayMs { get; set; }
+    public int FactoryDelayMs { get; set; }
+    public FakeJobState(bool leaveMember, int observationDelayMs, int factoryDelayMs) {
+      LeaveMember = leaveMember;
+      ObservationDelayMs = observationDelayMs;
+      FactoryDelayMs = factoryDelayMs;
+    }
+  }
+
+  public static class FakeJobStateSlot {
+    public static FakeJobState Current { get; set; }
+  }
+
+  public sealed class FakeRootObservation {
+    public string state { get; set; }
+    public uint? exitCode { get; set; }
+  }
+
+  public sealed class FakeStopResult {
+    public bool jobEmpty { get; set; }
+    public bool rootExited { get; set; }
+    public bool timedOut { get; set; }
+  }
+
+  public sealed class FakeWindowsJobSession : IDisposable {
+    private readonly FakeJobState _state;
+    private bool _disposed;
+    public FakeWindowsJobSession(FakeJobState state) {
+      _state = state ?? throw new ArgumentNullException("state");
+    }
+    public void Resume() { EnsureUsable(); _state.ResumeCount++; }
+    public FakeRootObservation ObserveRoot() {
+      EnsureUsable();
+      _state.ObserveCount++;
+      if (_state.ObservationDelayMs > 0) System.Threading.Thread.Sleep(_state.ObservationDelayMs);
+      return new FakeRootObservation { state = "exited", exitCode = 0 };
+    }
+    public uint[] ListMemberIds() {
+      EnsureUsable();
+      _state.MemberQueries++;
+      return _state.LeaveMember ? new uint[] { 424242 } : new uint[0];
+    }
+    public FakeStopResult StopAndWait(int timeoutMs) {
+      EnsureUsable();
+      _state.StopCount++;
+      _state.StopTimeoutMs = timeoutMs;
+      return new FakeStopResult { jobEmpty = true, rootExited = true, timedOut = false };
+    }
+    public void Dispose() {
+      if (_disposed) return;
+      _disposed = true;
+      _state.DisposeCount++;
+    }
+    private void EnsureUsable() {
+      if (_disposed) throw new ObjectDisposedException("FakeWindowsJobSession");
+    }
+  }
+}
+'@ -Language CSharp -ErrorAction Stop
+}
+
 $script:assertionCount = 0
 function Assert-True([bool] $Condition, [string] $Label) {
   $script:assertionCount++
@@ -76,7 +150,7 @@ function Set-TestBytes([byte[]] $Target, [int] $Offset, [byte[]] $Value) {
   [Array]::Copy($Value, 0, $Target, $Offset, $Value.Length)
 }
 
-function New-TestPeBytes {
+function New-TestPeBytes([switch] $WithoutResourceDirectory) {
   $bytes = New-Object byte[] 512
   $bytes[0] = 0x4D
   $bytes[1] = 0x5A
@@ -88,9 +162,59 @@ function New-TestPeBytes {
   Set-TestBytes $bytes ($peOffset + 20) ([BitConverter]::GetBytes([uint16]240))
   $optionalOffset = $peOffset + 24
   Set-TestBytes $bytes $optionalOffset ([BitConverter]::GetBytes([uint16]0x20B))
-  Set-TestBytes $bytes ($optionalOffset + 128) ([BitConverter]::GetBytes([uint32]0x2000))
-  Set-TestBytes $bytes ($optionalOffset + 132) ([BitConverter]::GetBytes([uint32]32))
+  if (-not $WithoutResourceDirectory) {
+    Set-TestBytes $bytes ($optionalOffset + 128) ([BitConverter]::GetBytes([uint32]0x2000))
+    Set-TestBytes $bytes ($optionalOffset + 132) ([BitConverter]::GetBytes([uint32]32))
+  }
   return ,$bytes
+}
+
+function New-TestLocalProcessRunner {
+  $runner = {
+    param($Request)
+    $runnerType = Get-FirstLaunchBoundedProcessType
+    $result = $runnerType::Run(
+      [string]$Request.executable,
+      [string[]]$Request.arguments,
+      [string]$Request.workingDirectory,
+      [Collections.Generic.Dictionary[string,string]]$Request.environment,
+      [int]$Request.timeoutMs,
+      [int]$Request.maximumOutputBytes
+    )
+    return [pscustomobject]@{
+      ExitCode = [int]$result.ExitCode
+      StdOut = [string]$result.StandardOutput
+      StdErr = [string]$result.StandardError
+      TimedOut = [bool]$result.TimedOut
+      OutputLimitExceeded = [bool]$result.OutputLimitExceeded
+    }
+  }
+  return $runner.GetNewClosure()
+}
+
+function New-TestFakeJobSessionFactory([bool] $LeaveMember, [int] $ObservationDelayMs = 0, [int] $FactoryDelayMs = 0) {
+  $state = [MorrowFirstLaunchTest.FakeJobState]::new($LeaveMember, $ObservationDelayMs, $FactoryDelayMs)
+  [MorrowFirstLaunchTest.FakeJobStateSlot]::Current = $state
+  $factory = {
+    param($Launch)
+    $testState = [MorrowFirstLaunchTest.FakeJobStateSlot]::Current
+    if ($testState.FactoryDelayMs -gt 0) { Start-Sleep -Milliseconds $testState.FactoryDelayMs }
+    $request = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Launch.requestPath)) -AsHashtable -NoEnumerate
+    $receipt = [ordered]@{
+      schema = 'morrow.e003.g23.process-result.v1'
+      requestId = [string]$request.requestId
+      stageOwnerToken = [string]$request.stageOwnerToken
+      exitCode = 0
+      stdout = 'MSEdgeDriver 156.0.4314.58'
+      stderr = 'bounded-fake-stderr'
+      timedOut = $false
+      outputLimitExceeded = $false
+    }
+    $receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $receipt -Depth 4 -Compress))
+    Write-FirstLaunchNewFile $Launch.resultPath $receiptBytes
+    return [MorrowFirstLaunchTest.FakeWindowsJobSession]::new([MorrowFirstLaunchTest.FakeJobStateSlot]::Current)
+  }
+  return $factory.GetNewClosure()
 }
 
 function Copy-TestCandidate {
@@ -281,10 +405,232 @@ function New-TestTransport([object] $Fixture, [string] $Mode = 'success') {
   return $transport.GetNewClosure()
 }
 
+function New-TestEdgeArchive([string] $Path, [byte[]] $ExecutableBytes) {
+  if ($null -eq $ExecutableBytes) { $ExecutableBytes = New-TestPeBytes -WithoutResourceDirectory }
+  New-TestZip $Path @(
+    @{ Name = 'msedgedriver.exe'; Bytes = $ExecutableBytes },
+    @{ Name = 'LICENSE'; Content = 'Synthetic Microsoft Edge WebDriver license fixture.' }
+  )
+  return [IO.File]::ReadAllBytes($Path)
+}
+
+function New-TestEdgeCatalog([long] $ArchiveSize, [string] $Version = '156.0.4314.84', [string] $GeneratedAt = '2026-11-22T03:00:00.1234567Z', [string] $LastModified = '2026-11-22T02:00:00.7654321Z', [string] $Platform = 'win64') {
+  $catalog = [ordered]@{
+    generatedAt = $GeneratedAt
+    items = @(
+      [ordered]@{ name = ($Version + '/edgedriver_' + $Platform + '.zip'); isDirectory = $false; contentLength = $ArchiveSize; lastModified = $LastModified },
+      [ordered]@{ name = 'LATEST_STABLE'; isDirectory = $false; contentLength = 64; lastModified = $LastModified },
+      [ordered]@{ name = 'listing.json'; isDirectory = $false; contentLength = 1024; lastModified = $LastModified }
+    )
+  }
+  $json = ConvertTo-Json -InputObject $catalog -Depth 8 -Compress
+  return [Text.UTF8Encoding]::new($false).GetBytes($json)
+}
+
+function New-TestEdgeTransport([byte[]] $CatalogBytes, [byte[]] $ArchiveBytes, [string] $Mode = 'success') {
+  $calls = [Collections.ArrayList]::new()
+  $capturedCatalog = $CatalogBytes
+  $capturedArchive = $ArchiveBytes
+  $capturedMode = $Mode
+  $transport = {
+    param($Request)
+    [void]$calls.Add($Request)
+    if ($Request.allowAutoRedirect -ne $false -or $Request.headers.Count -ne 0) {
+      throw 'EdgeDriver requests must disable redirects and credentials.'
+    }
+    if ($Request.uri -ceq 'https://msedgedriver.microsoft.com/listing.json') {
+      $status = if ($capturedMode -eq 'catalog-redirect') { 302 } elseif ($capturedMode -eq 'catalog-error') { 503 } else { 200 }
+      $contentType = if ($capturedMode -eq 'catalog-content-type') { 'text/plain' } else { 'application/json' }
+      return [pscustomobject]@{
+        StatusCode = $status
+        Headers = [ordered]@{ 'Content-Type' = $contentType; 'Content-Length' = [string]$capturedCatalog.LongLength }
+        BodyBytes = [byte[]]$capturedCatalog
+      }
+    }
+    if ($Request.uri -match '^https://msedgedriver\.microsoft\.com/156\.0\.4314\.84/edgedriver_win64\.zip$' -and
+        -not [string]::IsNullOrEmpty([string]$Request.destination)) {
+      $status = if ($capturedMode -eq 'archive-redirect') { 302 } else { 200 }
+      $contentType = if ($capturedMode -eq 'archive-content-type') { 'text/plain' } else { 'application/zip' }
+      $bytes = [byte[]]$capturedArchive
+      $length = $bytes.LongLength
+      if ($capturedMode -eq 'archive-length-header') { $length++ }
+      return [pscustomobject]@{
+        StatusCode = $status
+        Headers = [ordered]@{ 'Content-Type' = $contentType; 'Content-Length' = [string]$length }
+        BodyBytes = $bytes
+      }
+    }
+    throw 'The EdgeDriver transport received an unexpected URL or request.'
+  }
+  return [pscustomobject]@{ Callback = $transport.GetNewClosure(); Calls = $calls }
+}
+
+function New-TestEdgeProbe([string] $Mode = 'success') {
+  $calls = [Collections.ArrayList]::new()
+  $capturedMode = $Mode
+  $probe = {
+    param($Request)
+    [void]$calls.Add($Request)
+    if ($Request.arguments.Count -ne 1 -or $Request.arguments[0] -cne '--version') {
+      throw 'The EdgeDriver probe may only invoke --version.'
+    }
+    return [pscustomobject]@{
+      ExitCode = if ($capturedMode -eq 'probe-exit') { 5 } else { 0 }
+      StdOut = if ($capturedMode -eq 'probe-pin') { 'MSEdgeDriver 156.0.4314.85 (fixture)' } elseif ($capturedMode -eq 'probe-unbranded') { 'FakeDriver 156.0.4314.84' } else { 'MSEdgeDriver 156.0.4314.84 (fixture)' }
+      StdErr = ''
+      TimedOut = ($capturedMode -eq 'probe-timeout')
+      OutputLimitExceeded = ($capturedMode -eq 'probe-output')
+    }
+  }
+  return [pscustomobject]@{ Callback = $probe.GetNewClosure(); Calls = $calls }
+}
+
+function New-TestStageIdentity {
+  return [pscustomobject]@{
+    gate = [ordered]@{
+      repository = 'hodeliun/Morrow'
+      ref = 'refs/heads/codex/e003-g07-windows-runtime'
+      workflowPath = '.github/workflows/pilot-windows-first-launch-preflight.yml'
+      workflowRef = 'hodeliun/Morrow/.github/workflows/pilot-windows-first-launch-preflight.yml@refs/heads/codex/e003-g07-windows-runtime'
+      sourceSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      gateRunId = '98765432101'
+      gateRunAttempt = '1'
+      event = 'push'
+    }
+    runner = [ordered]@{ os = 'Windows'; arch = 'X64'; tempRoot = 'C:\runner\_temp'; workspace = 'C:\morrow\checkout' }
+  }
+}
+
+function New-TestVerifiedPinnedPackage {
+  return [pscustomobject]@{
+    receipt = [ordered]@{
+      schema = 'morrow.e003.g23.verified-package.v1'
+      status = 'verified'
+      candidateBuildRunId = '44961916968'
+      candidateBuildRunAttempt = '1'
+      artifact = [ordered]@{ id = '14730062702' }
+      packageInventory = Get-FirstLaunchInventory
+      packageInventorySha256 = 'd8d4e6cb1a419cc342f9f63f43c5931cc1d3feb6041a4a1f7d104167104b9baf'
+    }
+  }
+}
+
+function New-TestTauriDriverDto([string] $Hash = ('a' * 64)) {
+  return [ordered]@{
+    version = '2.1.0'
+    source = 'crates.io'
+    sourceUrl = 'https://crates.io/crates/tauri-driver/2.1.0'
+    downloadUrl = 'https://crates.io/api/v1/crates/tauri-driver/2.1.0/download'
+    cargoVersion = 'cargo 1.91.0'
+    installCommand = 'cargo install tauri-driver --version 2.1.0 --locked --root <tool-stage>'
+    executableSha256 = $Hash
+    serviceStarted = $false
+  }
+}
+
+function Assert-StageAcceptedByGate([string] $StagePath, [string] $Workspace) {
+  $node = (Get-Command node -ErrorAction Stop).Source
+  $inline = @'
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { createBinding, FIRST_LAUNCH_CANDIDATE, WINDOWS_FIRST_LAUNCH_GATE } from './scripts/pilot/windows-first-launch-gate.mjs';
+const stagePath = process.argv[1];
+const workspacePath = process.argv[2];
+const stageBytes = readFileSync(stagePath);
+const stage = JSON.parse(stageBytes.toString('utf8'));
+const context = {
+  ...stage.gate,
+  runner: { os: stage.runner.os, arch: stage.runner.arch, tempRoot: stage.runner.tempRoot, workspace: 'C:\\morrow\\checkout' },
+};
+const sourceHashes = WINDOWS_FIRST_LAUNCH_GATE.sourcePaths.map((filePath, index) => ({
+  path: filePath, sha256: String(index + 1).padStart(64, '0'), sizeBytes: 10 + index,
+}));
+const profileRoot = path.win32.join(stage.runner.tempRoot, 'morrow-issue-187-' + stage.gate.sourceSha + '-' + stage.gate.gateRunId + '-1', 'profile');
+const digest = createHash('sha256').update(stageBytes).digest('hex');
+const checkedAtUtc = new Date(Date.parse(stage.stagedAtUtc) + 1000).toISOString();
+const receipt = {
+  schema: 'morrow.e003.g15.first-launch-check-only-receipt.v1',
+  status: 'passed', purpose: 'first-windows-launch', executionPhase: 'protected-check-only',
+  gate: stage.gate, candidateBuild: FIRST_LAUNCH_CANDIDATE, stageSha256: digest, pinsVerified: true,
+  driverHashes: {
+    tauriDriverSha256: stage.drivers.tauriDriver.executableSha256,
+    edgeDriverSha256: stage.drivers.edgeDriver.executableSha256,
+  },
+  webView2RuntimeVersion: stage.webView2Runtime.version,
+  identity: { sid: 'S-1-5-21-100-200-300-1001' },
+  knownFolders: { localAppData: 'C:\\Users\\runneradmin\\AppData\\Local', roamingAppData: 'C:\\Users\\runneradmin\\AppData\\Roaming' },
+  profiles: {
+    root: profileRoot,
+    morrowUserData: path.win32.join(profileRoot, 'MorrowUserData'),
+    webView2UserData: path.win32.join(profileRoot, 'WebView2UserData'),
+  },
+  noLaunch: { appLaunched: false, driverServiceStarted: false, guiTested: false },
+  checkedAtUtc,
+};
+const checked = createBinding({
+  context, sourceHashes, stageBytes,
+  checkOnlyReceiptBytes: Buffer.from(JSON.stringify(receipt), 'utf8'),
+  now: Date.parse('2026-11-22T04:00:00.000Z'),
+});
+process.stdout.write(checked.binding.stage.schema);
+'@
+  $start = [Diagnostics.ProcessStartInfo]::new()
+  $start.FileName = $node
+  $start.WorkingDirectory = $Workspace
+  $start.UseShellExecute = $false
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  [void]$start.ArgumentList.Add('--input-type=module')
+  [void]$start.ArgumentList.Add('-e')
+  [void]$start.ArgumentList.Add($inline)
+  [void]$start.ArgumentList.Add($StagePath)
+  [void]$start.ArgumentList.Add($Workspace)
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $start
+  if (-not $process.Start()) { throw 'The local gate DTO validator did not start.' }
+  $stdout = $process.StandardOutput.ReadToEndAsync()
+  $stderr = $process.StandardError.ReadToEndAsync()
+  if (-not $process.WaitForExit(30000)) { try { $process.Kill($true) } catch {}; throw 'The local gate DTO validator exceeded its test deadline.' }
+  $outText = $stdout.GetAwaiter().GetResult()
+  $errText = $stderr.GetAwaiter().GetResult()
+  $exitCode = $process.ExitCode
+  $process.Dispose()
+  if ($exitCode -ne 0 -or $outText -cne 'morrow.e003.g15.first-launch-stage.v1') {
+    throw "The generated Stage DTO failed the independent Node gate validator: $errText $outText"
+  }
+}
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ('morrow-first-launch-preflight-tests-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 $readOnlyTree = $null
 try {
+  $jobHelperPath = Join-Path $PSScriptRoot 'windows-native-job.ps1'
+  $verifiedJobHelperSource = Get-FirstLaunchVerifiedNativeJobHelperScriptBlock $jobHelperPath
+  Assert-True ($verifiedJobHelperSource -is [scriptblock] -and
+    $verifiedJobHelperSource.ToString().Contains('CreateAtomicSuspendedRoot')) 'native Job helper source is strict-decoded and matches its immutable SHA pin'
+  $verifiedJobModule = Import-FirstLaunchVerifiedNativeJobHelperModule $jobHelperPath
+  Assert-True ($verifiedJobModule.ExportedFunctions.ContainsKey('CreateAtomicSuspendedRoot')) 'exact pinned Job helper bytes load into the private module'
+  Remove-Module -ModuleInfo $verifiedJobModule -Force
+  $mutatedJobHelperPath = Join-Path $root 'windows-native-job-mutated.ps1'
+  [IO.File]::Copy($jobHelperPath, $mutatedJobHelperPath)
+  $mutatedJobHelperBytes = [IO.File]::ReadAllBytes($mutatedJobHelperPath)
+  $mutatedJobHelperBytes[0] = $mutatedJobHelperBytes[0] -bxor 1
+  [IO.File]::WriteAllBytes($mutatedJobHelperPath, $mutatedJobHelperBytes)
+  Assert-Throws 'mutated native Job helper is rejected before module import' {
+    Import-FirstLaunchVerifiedNativeJobHelperModule $mutatedJobHelperPath
+  }
+  Assert-True ($null -eq (Get-Module -Name MorrowFirstLaunchNativeJob)) 'mutated helper bytes are not imported into the private module'
+  if ([IO.Path]::DirectorySeparatorChar -eq '/') {
+    $linkedJobHelperPath = Join-Path $root 'windows-native-job-linked.ps1'
+    [void][IO.File]::CreateSymbolicLink($linkedJobHelperPath, $jobHelperPath)
+    Assert-Throws 'native Job helper reparse path is rejected before source read' {
+      Import-FirstLaunchVerifiedNativeJobHelperModule $linkedJobHelperPath
+    }
+    Assert-True ($null -eq (Get-Module -Name MorrowFirstLaunchNativeJob)) 'reparse helper path is rejected before private module import'
+    [IO.File]::Delete($linkedJobHelperPath)
+  }
+
   $pins = Get-FirstLaunchPins
   $inventoryPin = Get-FirstLaunchInventory
   Assert-True ($pins.sourceSha -eq 'bdf54cd4eb6f20e63664c00cf46209a5c941065e') 'candidate source pin'
@@ -562,6 +908,455 @@ try {
   $extraFile = Join-Path $tampered.packageRoot 'unlisted.txt'
   [IO.File]::WriteAllText($extraFile, 'extra', [Text.UTF8Encoding]::new($false))
   Assert-Throws 'extra package file rejected' { Assert-FirstLaunchPackageInventory $tampered.packageRoot $tamperedFixture.candidate $tamperedFixture.expectedInventory }
+
+  $precise = ConvertTo-FirstLaunchPreciseCatalogUtc '2026-11-22T03:00:00.1234567Z' 'test timestamp'
+  Assert-True ($precise.Text -ceq '2026-11-22T03:00:00.1234567Z') 'catalog timestamps preserve all seven fractional digits'
+  foreach ($invalidTimestamp in @(
+    '2026-11-22T03:00:00.123456Z',
+    '2026-11-22T03:00:00.12345678Z',
+    '2026-11-22T03:00:00.1234567+00:00',
+    '2025-02-29T03:00:00.1234567Z'
+  )) {
+    Assert-Throws "noncanonical or impossible seven-digit timestamp rejected: $invalidTimestamp" {
+      ConvertTo-FirstLaunchPreciseCatalogUtc $invalidTimestamp 'test timestamp'
+    }
+  }
+
+  $registryRequests = [Collections.ArrayList]::new()
+  $registryReader = {
+    param($Request)
+    [void]$registryRequests.Add($Request)
+    [pscustomobject]@{
+      Present = $true
+      Value = '156.0.4314.58'
+      Kind = 'REG_SZ'
+      RegistryPath = [string]$Request.registryPath
+    }
+  }.GetNewClosure()
+  $runtime = Get-FirstLaunchWebView2Observation -RegistryReader $registryReader
+  Assert-True ($registryRequests.Count -eq 2 -and @($registryRequests | Where-Object { $_.view -cne 'Registry64' }).Count -eq 0) 'WebView2 observation requests only both documented Registry64 views'
+  Assert-True ($runtime.version -ceq '156.0.4314.58' -and $runtime.sources.Count -eq 2) 'matching HKLM/HKCU WebView2 pv values are selected'
+  $badRuntimeReader = {
+    param($Request)
+    $version = if ($Request.hive -ceq 'LocalMachine') { '156.0.4314.58' } else { '155.0.4314.58' }
+    [pscustomobject]@{ Present = $true; Value = $version; Kind = 'REG_SZ'; RegistryPath = [string]$Request.registryPath }
+  }
+  Assert-Throws 'divergent WebView2 machine/user pv values fail closed' { Get-FirstLaunchWebView2Observation -RegistryReader $badRuntimeReader }
+  $badPvReader = {
+    param($Request)
+    [pscustomobject]@{ Present = $true; Value = '156.0.bad.58'; Kind = 'REG_SZ'; RegistryPath = [string]$Request.registryPath }
+  }
+  Assert-Throws 'malformed WebView2 pv fails closed' { Get-FirstLaunchWebView2Observation -RegistryReader $badPvReader }
+  $wrongKindReader = {
+    param($Request)
+    [pscustomobject]@{ Present = $true; Value = '156.0.4314.58'; Kind = 'OTHER'; RegistryPath = [string]$Request.registryPath }
+  }
+  Assert-Throws 'non-string WebView2 pv fails closed' { Get-FirstLaunchWebView2Observation -RegistryReader $wrongKindReader }
+  $missingRuntimeReader = {
+    param($Request)
+    [pscustomobject]@{ Present = $false; Value = $null; Kind = $null; RegistryPath = [string]$Request.registryPath }
+  }
+  Assert-Throws 'missing WebView2 runtime fails closed' { Get-FirstLaunchWebView2Observation -RegistryReader $missingRuntimeReader }
+
+  $systemRootForTools = Join-Path $root 'synthetic-system-root'
+  [void][IO.Directory]::CreateDirectory($systemRootForTools)
+  $env:SystemRoot = $systemRootForTools
+  $toolCache = Join-Path $root 'trusted-tool-cache'
+  $cargoDirectory = Join-Path $toolCache 'Rust/1.91.0/bin'
+  [void][IO.Directory]::CreateDirectory($cargoDirectory)
+  $cargoPath = Join-Path $cargoDirectory 'cargo.exe'
+  [IO.File]::WriteAllText($cargoPath, 'synthetic trusted cargo executable', [Text.UTF8Encoding]::new($false))
+  $env:RUNNER_TOOL_CACHE = $toolCache
+  $env:RUSTUP_HOME = ''
+  $tauriStageRoot = Join-Path $root 'tauri-stage-fixture'
+  [void][IO.Directory]::CreateDirectory($tauriStageRoot)
+  $cargoCalls = [Collections.ArrayList]::new()
+  $cargoRunner = {
+    param($Request)
+    [void]$cargoCalls.Add($Request)
+    if ($Request.executable -cne $cargoPath -or $Request.timeoutMs -le 0 -or
+        $Request.maximumOutputBytes -le 0 -or $Request.environment.ContainsKey('GITHUB_TOKEN') -or
+        $Request.environment.ContainsKey('GH_TOKEN') -or $Request.environment.ContainsKey('CARGO_REGISTRIES_CRATES_IO_INDEX')) {
+      throw 'The scoped Cargo request inherited credentials or untrusted configuration.'
+    }
+    if ($Request.arguments.Count -eq 1 -and $Request.arguments[0] -ceq '--version') {
+      return [pscustomobject]@{ ExitCode = 0; StdOut = 'cargo 1.91.0 (fixture build)'; StdErr = ''; TimedOut = $false; OutputLimitExceeded = $false }
+    }
+    if ($Request.arguments.Count -ge 1 -and $Request.arguments[0] -ceq 'install' -and $Request.arguments -ccontains '--list') {
+      return [pscustomobject]@{ ExitCode = 0; StdOut = 'tauri-driver v2.1.0:'; StdErr = ''; TimedOut = $false; OutputLimitExceeded = $false }
+    }
+    if ($Request.arguments.Count -ge 1 -and $Request.arguments[0] -ceq 'install' -and
+        $Request.arguments -ccontains 'tauri-driver') {
+      $tauriRootIndex = [Array]::IndexOf([string[]]$Request.arguments, '--root')
+      if ($Request.arguments -notcontains '--locked' -or $Request.arguments -notcontains '2.1.0' -or $tauriRootIndex -lt 0) {
+        throw 'Cargo install did not use the exact locked driver pin and private root.'
+      }
+      $privateRoot = [string]$Request.arguments[$tauriRootIndex + 1]
+      $privateExe = Join-Path (Join-Path $privateRoot 'bin') 'tauri-driver.exe'
+      [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($privateExe))
+      [IO.File]::WriteAllBytes($privateExe, [Text.Encoding]::UTF8.GetBytes('synthetic tauri-driver bytes'))
+      return [pscustomobject]@{ ExitCode = 0; StdOut = 'installed'; StdErr = ''; TimedOut = $false; OutputLimitExceeded = $false }
+    }
+    throw 'Unexpected Cargo invocation.'
+  }.GetNewClosure()
+  $tauri = Get-FirstLaunchTauriDriver -CargoPath $cargoPath -StageRoot $tauriStageRoot -ProcessRunner $cargoRunner
+  $tauriExe = Join-Path (Join-Path $tauriStageRoot 'tauri-tool-stage/bin') 'tauri-driver.exe'
+  Assert-True ($cargoCalls.Count -eq 3 -and $tauri.version -ceq '2.1.0' -and $tauri.cargoVersion -ceq 'cargo 1.91.0') 'Tauri driver 2.1.0 is selected from scoped Cargo install metadata'
+  Assert-True ($tauri.executableSha256 -ceq (Get-TestSha256 ([IO.File]::ReadAllBytes($tauriExe))) -and $tauri.serviceStarted -eq $false) 'Tauri executable hash is measured without executing the driver'
+  Assert-True ($cargoCalls[1].arguments -join ' ' -match '^install tauri-driver --version 2\.1\.0 --locked --root ') 'Tauri Cargo install uses the locked 2.1.0 command'
+  Assert-True ($cargoCalls[1].environment['CARGO_HOME'] -like ($tauriStageRoot + '*') -and
+    $cargoCalls[1].environment['HOME'] -eq $cargoCalls[1].environment['CARGO_HOME'] -and
+    $cargoCalls[1].environment['CARGO_TARGET_DIR'] -like ($tauriStageRoot + '*')) 'Cargo home, target, and working state stay under the run-private stage'
+  Assert-Throws 'Cargo outside the trusted tool cache is rejected before invocation' {
+    $untrustedCargoStage = Join-Path $root 'untrusted-cargo-stage'
+    [void][IO.Directory]::CreateDirectory($untrustedCargoStage)
+    Get-FirstLaunchTauriDriver -CargoPath '/tmp/untrusted/cargo.exe' -StageRoot $untrustedCargoStage -ProcessRunner $cargoRunner
+  }
+  $cargoCallCountBeforeConfig = $cargoCalls.Count
+  $untrustedConfigStage = Join-Path $root 'untrusted-cargo-config-stage'
+  [void][IO.Directory]::CreateDirectory((Join-Path $untrustedConfigStage '.cargo'))
+  [IO.File]::WriteAllText((Join-Path $untrustedConfigStage '.cargo/config.toml'), "[source.crates-io]`nreplace-with = 'untrusted'", [Text.UTF8Encoding]::new($false))
+  Assert-Throws 'Cargo source replacement in the working-directory ancestry is rejected' {
+    Get-FirstLaunchTauriDriver -CargoPath $cargoPath -StageRoot $untrustedConfigStage -ProcessRunner $cargoRunner
+  }
+  Assert-True ($cargoCalls.Count -eq $cargoCallCountBeforeConfig) 'Cargo source replacement is rejected before any Cargo invocation'
+
+  $edgeArchivePath = Join-Path $root 'official-edge-driver-fixture.zip'
+  $edgeArchiveBytes = New-TestEdgeArchive $edgeArchivePath
+  $edgeCatalogBytes = New-TestEdgeCatalog $edgeArchiveBytes.LongLength
+  $selectedEdge = ConvertFrom-FirstLaunchEdgeCatalog $edgeCatalogBytes '156.0.4314.58'
+  Assert-True ($selectedEdge.version -ceq '156.0.4314.84' -and
+    $selectedEdge.compatibleFirstThreeComponents -ceq '156.0.4314' -and
+    $selectedEdge.expectedArchiveBytes -eq $edgeArchiveBytes.LongLength) 'official catalog selects win64 build matching the WebView2 first three components'
+  Assert-True ($selectedEdge.catalogSha256 -ceq (Get-TestSha256 $edgeCatalogBytes) -and
+    $selectedEdge.catalogSizeBytes -eq $edgeCatalogBytes.LongLength -and $selectedEdge.catalogItemCount -eq 3) 'raw official catalog bytes, digest, size, and item count are recorded'
+  Assert-True ($selectedEdge.catalogGeneratedAtUtc -ceq '2026-11-22T03:00:00.1234567Z' -and
+    $selectedEdge.selectedLastModified -ceq '2026-11-22T02:00:00.7654321Z') 'catalog and selected item retain source timestamp precision'
+  $noCompatibleCatalog = New-TestEdgeCatalog $edgeArchiveBytes.LongLength '155.0.4314.84'
+  Assert-Throws 'catalog with no compatible x64 version fails closed' { ConvertFrom-FirstLaunchEdgeCatalog $noCompatibleCatalog '156.0.4314.58' }
+  $win32OnlyCatalog = New-TestEdgeCatalog $edgeArchiveBytes.LongLength '156.0.4314.84' '2026-11-22T03:00:00.1234567Z' '2026-11-22T02:00:00.7654321Z' 'win32'
+  Assert-Throws 'a matching win32 archive cannot satisfy the x64 driver requirement' { ConvertFrom-FirstLaunchEdgeCatalog $win32OnlyCatalog '156.0.4314.58' }
+  $badGeneratedCatalog = New-TestEdgeCatalog $edgeArchiveBytes.LongLength '156.0.4314.84' '2026-11-22T03:00:00.123456Z'
+  Assert-Throws 'catalog timestamp with lost fractional precision is rejected' { ConvertFrom-FirstLaunchEdgeCatalog $badGeneratedCatalog '156.0.4314.58' }
+  $badItemTimeCatalog = New-TestEdgeCatalog $edgeArchiveBytes.LongLength '156.0.4314.84' '2026-11-22T03:00:00.1234567Z' '2026-11-22T03:00:01.0000000Z'
+  Assert-Throws 'selected item time cannot postdate catalog generation' { ConvertFrom-FirstLaunchEdgeCatalog $badItemTimeCatalog '156.0.4314.58' }
+
+  $edgeStageRoot = Join-Path $root 'edge-stage-success'
+  [void][IO.Directory]::CreateDirectory($edgeStageRoot)
+  $edgeTransport = New-TestEdgeTransport $edgeCatalogBytes $edgeArchiveBytes
+  $edgeProbe = New-TestEdgeProbe
+  $edge = Get-FirstLaunchEdgeDriver -RuntimeVersion '156.0.4314.58' -StageRoot $edgeStageRoot `
+    -Transport $edgeTransport.Callback -ProcessRunner $edgeProbe.Callback
+  Assert-True ($edge.version -ceq '156.0.4314.84' -and $edge.runtimeVersion -ceq '156.0.4314.58' -and
+    $edge.versionProbeExitCode -eq 0 -and $edge.serviceStarted -eq $false) 'EdgeDriver Stage verifies the bounded version probe and never starts service'
+  Assert-True ($edge.archiveSizeBytes -eq $edge.expectedArchiveBytes -and
+    $edge.archiveSha256 -ceq (Get-TestSha256 $edgeArchiveBytes) -and
+    $edge.executableSha256 -ceq (Get-TestSha256 (New-TestPeBytes -WithoutResourceDirectory))) 'Edge archive and extracted AMD64 PE32+ executable receive measured size and SHA-256 pins without requiring Morrow PE resources'
+  Assert-True ($edgeTransport.Calls.Count -eq 2 -and
+    $edgeTransport.Calls[0].uri -ceq 'https://msedgedriver.microsoft.com/listing.json' -and
+    $edgeTransport.Calls[1].uri -ceq $edge.downloadUrl -and
+    @($edgeTransport.Calls | Where-Object { $_.headers.Count -ne 0 -or $_.allowAutoRedirect -ne $false }).Count -eq 0) 'Microsoft catalog and archive use unauthenticated HTTPS requests with redirects disabled'
+  Assert-True ($edgeProbe.Calls.Count -eq 1 -and $edgeProbe.Calls[0].arguments[0] -ceq '--version' -and
+    $edgeProbe.Calls[0].timeoutMs -eq 15000 -and $edgeProbe.Calls[0].maximumOutputBytes -eq 8192 -and
+    $edgeProbe.Calls[0].environment.ContainsKey('MSEDGEDRIVER_TELEMETRY_OPTOUT') -and
+    -not $edgeProbe.Calls[0].environment.ContainsKey('GITHUB_TOKEN')) 'the sole EdgeDriver probe is bounded and runs with a credential-free environment'
+  $cacheTransport = New-TestEdgeTransport $edgeCatalogBytes $edgeArchiveBytes
+  $cacheProbe = New-TestEdgeProbe
+  Assert-Throws 'existing EdgeDriver stage is not reused or overwritten' {
+    Get-FirstLaunchEdgeDriver -RuntimeVersion '156.0.4314.58' -StageRoot $edgeStageRoot `
+      -Transport $cacheTransport.Callback -ProcessRunner $cacheProbe.Callback
+  }
+  Assert-True ($cacheTransport.Calls.Count -eq 0 -and $cacheProbe.Calls.Count -eq 0) 'stage collision rejects cache reuse before network or probe'
+
+  foreach ($mode in @('catalog-redirect', 'catalog-error', 'catalog-content-type', 'archive-redirect', 'archive-content-type', 'archive-length-header')) {
+    $badStageRoot = Join-Path $root ('edge-' + $mode)
+    [void][IO.Directory]::CreateDirectory($badStageRoot)
+    $badTransport = New-TestEdgeTransport $edgeCatalogBytes $edgeArchiveBytes $mode
+    $badProbe = New-TestEdgeProbe
+    Assert-Throws "official EdgeDriver $mode response is rejected" {
+      Get-FirstLaunchEdgeDriver -RuntimeVersion '156.0.4314.58' -StageRoot $badStageRoot `
+        -Transport $badTransport.Callback -ProcessRunner $badProbe.Callback
+    }
+    Assert-True ($badProbe.Calls.Count -eq 0) "EdgeDriver $mode cannot reach the version probe"
+  }
+  $wrongArchiveCatalog = New-TestEdgeCatalog ($edgeArchiveBytes.LongLength + 1)
+  $wrongArchiveStage = Join-Path $root 'edge-wrong-catalog-size'
+  [void][IO.Directory]::CreateDirectory($wrongArchiveStage)
+  $wrongArchiveTransport = New-TestEdgeTransport $wrongArchiveCatalog $edgeArchiveBytes
+  $wrongArchiveProbe = New-TestEdgeProbe
+  Assert-Throws 'archive length differing from the catalog item is rejected' {
+    Get-FirstLaunchEdgeDriver -RuntimeVersion '156.0.4314.58' -StageRoot $wrongArchiveStage `
+      -Transport $wrongArchiveTransport.Callback -ProcessRunner $wrongArchiveProbe.Callback
+  }
+  Assert-True ($wrongArchiveProbe.Calls.Count -eq 0) 'archive size pin mismatch blocks the EdgeDriver probe'
+  $x86PeBytes = New-TestPeBytes -WithoutResourceDirectory
+  Set-TestBytes $x86PeBytes 0x84 ([BitConverter]::GetBytes([uint16]0x014C))
+  $truncatedPeBytes = New-TestPeBytes -WithoutResourceDirectory
+  $truncatedPeBytes = [byte[]]$truncatedPeBytes[0..420]
+  foreach ($fixtureCase in @(
+      [pscustomobject]@{ Name = 'x86'; Bytes = $x86PeBytes },
+      [pscustomobject]@{ Name = 'non-pe'; Bytes = [Text.Encoding]::UTF8.GetBytes('not a PE executable') },
+      [pscustomobject]@{ Name = 'truncated-pe'; Bytes = $truncatedPeBytes }
+    )) {
+    $badPeArchive = Join-Path $root ('edge-' + $fixtureCase.Name + '.zip')
+    $badPeArchiveBytes = New-TestEdgeArchive $badPeArchive ([byte[]]$fixtureCase.Bytes)
+    $badPeCatalog = New-TestEdgeCatalog $badPeArchiveBytes.LongLength
+    $badPeStage = Join-Path $root ('edge-' + $fixtureCase.Name + '-stage')
+    [void][IO.Directory]::CreateDirectory($badPeStage)
+    $badPeTransport = New-TestEdgeTransport $badPeCatalog $badPeArchiveBytes
+    $badPeProbe = New-TestEdgeProbe
+    Assert-Throws "EdgeDriver $($fixtureCase.Name) image is rejected before probe" {
+      Get-FirstLaunchEdgeDriver -RuntimeVersion '156.0.4314.58' -StageRoot $badPeStage `
+        -Transport $badPeTransport.Callback -ProcessRunner $badPeProbe.Callback
+    }
+    Assert-True ($badPeProbe.Calls.Count -eq 0) "EdgeDriver $($fixtureCase.Name) image cannot reach --version"
+  }
+  foreach ($mode in @('probe-pin', 'probe-unbranded', 'probe-exit', 'probe-timeout', 'probe-output')) {
+    $probeStageRoot = Join-Path $root ('edge-' + $mode)
+    [void][IO.Directory]::CreateDirectory($probeStageRoot)
+    $probeTransport = New-TestEdgeTransport $edgeCatalogBytes $edgeArchiveBytes
+    $badProbe = New-TestEdgeProbe $mode
+    Assert-Throws "EdgeDriver $mode probe result is rejected" {
+      Get-FirstLaunchEdgeDriver -RuntimeVersion '156.0.4314.58' -StageRoot $probeStageRoot `
+        -Transport $probeTransport.Callback -ProcessRunner $badProbe.Callback
+    }
+    Assert-True ($badProbe.Calls.Count -eq 1) "EdgeDriver $mode failure is bounded to the single --version probe"
+  }
+
+  $nativePwsh = Join-Path $PSHOME 'pwsh'
+  if ([IO.Path]::DirectorySeparatorChar -eq '\') { $nativePwsh += '.exe' }
+  Assert-True ([IO.File]::Exists($nativePwsh)) 'the native bounded-process fixture uses the current portable PowerShell executable'
+  $nativeProcessRunner = New-TestLocalProcessRunner
+  $nativeEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $nativeEnvironment['TEMP'] = $root
+  $nativeEnvironment['TMP'] = $root
+  if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+    $nativeEnvironment['SystemRoot'] = [string]$env:SystemRoot
+    $nativeEnvironment['WINDIR'] = [string]$env:SystemRoot
+    $nativeEnvironment['PATH'] = [string]::Join(';', @((Join-Path $env:SystemRoot 'System32'), $env:SystemRoot))
+  } else {
+    $nativeEnvironment['PATH'] = '/usr/bin:/bin'
+  }
+  $pipeFixture = Invoke-FirstLaunchBoundedProcess -Executable $nativePwsh `
+    -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Console]::Out.Write('bounded-stdout'); [Console]::Error.Write('bounded-stderr')") `
+    -WorkingDirectory $root -Environment $nativeEnvironment -TimeoutMs 5000 -MaximumOutputBytes 256 -ProcessRunner $nativeProcessRunner
+  Assert-True ($pipeFixture.ExitCode -eq 0 -and $pipeFixture.StdOut -ceq 'bounded-stdout' -and
+    $pipeFixture.StdErr -ceq 'bounded-stderr' -and -not $pipeFixture.TimedOut -and -not $pipeFixture.OutputLimitExceeded) 'native bounded runner drains both child pipes and returns the exit code'
+  $outputLimitClock = [Diagnostics.Stopwatch]::StartNew()
+  Assert-Throws 'native bounded runner stops a benign child after the combined pipe cap' {
+    Invoke-FirstLaunchBoundedProcess -Executable $nativePwsh `
+      -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Console]::Out.Write(('x' * 1000000))") `
+      -WorkingDirectory $root -Environment $nativeEnvironment -TimeoutMs 5000 -MaximumOutputBytes 256 -ProcessRunner $nativeProcessRunner
+  }
+  Assert-True ($outputLimitClock.Elapsed.TotalSeconds -lt 3) 'native output-limit termination and cleanup are bounded'
+  $timeoutClock = [Diagnostics.Stopwatch]::StartNew()
+  $timeoutChildPidPath = Join-Path $root 'timeout-child.pid'
+  $nativeEnvironment['MORROW_TEST_PID_FILE'] = $timeoutChildPidPath
+  Assert-Throws 'native bounded runner kills a benign sleeping child at its deadline' {
+    Invoke-FirstLaunchBoundedProcess -Executable $nativePwsh `
+      -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '[IO.File]::WriteAllText($env:MORROW_TEST_PID_FILE, [string]$PID); Start-Sleep -Seconds 10') `
+      -WorkingDirectory $root -Environment $nativeEnvironment -TimeoutMs 2000 -MaximumOutputBytes 256 -ProcessRunner $nativeProcessRunner
+  }
+  Assert-True ($timeoutClock.Elapsed.TotalSeconds -lt 4) 'native process exit and pipe-drain timeout cleanup have a bounded tail'
+  $timeoutChildStopped = $false
+  $timeoutChildState = 'child PID was not published before the process deadline'
+  if ([IO.File]::Exists($timeoutChildPidPath)) {
+    $timeoutChildId = 0
+    if ([int]::TryParse([IO.File]::ReadAllText($timeoutChildPidPath).Trim(), [ref]$timeoutChildId)) {
+      try {
+        $timeoutChild = [Diagnostics.Process]::GetProcessById($timeoutChildId)
+        if ($timeoutChild.ProcessName -like 'pwsh*') {
+          $timeoutChildStopped = $timeoutChild.HasExited
+          $timeoutChildState = 'processName=' + $timeoutChild.ProcessName + '; exited=' + $timeoutChildStopped
+          if (-not $timeoutChildStopped) {
+            $timeoutChild.Kill($true)
+            [void]$timeoutChild.WaitForExit(2000)
+          }
+        } else {
+          $timeoutChildState = 'unexpected processName=' + $timeoutChild.ProcessName
+        }
+        $timeoutChild.Dispose()
+      } catch [ArgumentException] { $timeoutChildStopped = $true; $timeoutChildState = 'PID already exited' }
+    }
+  }
+  Assert-True ($timeoutChildStopped) "native deadline termination leaves no owned sleeping PowerShell child ($timeoutChildState)"
+  $stageOwnerParent = Join-Path $root 'stage-owner-lifecycle'
+  [void][IO.Directory]::CreateDirectory($stageOwnerParent)
+  foreach ($failedPhase in @('package', 'registry', 'cargo', 'edge')) {
+    $failedStageRoot = Join-Path $stageOwnerParent ('failed-' + $failedPhase)
+    $phaseAction = {
+      param($claim, $phase)
+      [void](Assert-FirstLaunchStageClaim $claim.stageRoot $claim.token)
+      [IO.File]::WriteAllText((Join-Path $claim.stageRoot ($phase + '.partial')), 'owned partial stage bytes')
+      throw ('simulated ' + $phase + ' Stage failure')
+    }.GetNewClosure()
+    Assert-Throws "failed Stage after $failedPhase cleans only its claimed tree" {
+      Invoke-FirstLaunchOwnedStage -StageRoot $failedStageRoot -Action $phaseAction -ActionArguments @($failedPhase)
+    }
+    Assert-True (-not [IO.Directory]::Exists($failedStageRoot) -and -not [IO.File]::Exists($failedStageRoot + '.claim')) "failed $failedPhase Stage removes its exact claimed directory and claim"
+  }
+  $completedStageRoot = Join-Path $stageOwnerParent 'completed-stage'
+  $completedStageAction = {
+    param($claim)
+    [IO.File]::WriteAllText((Join-Path $claim.stageRoot 'stage.json'), 'completed DTO')
+    return 'completed'
+  }.GetNewClosure()
+  $completedStage = Invoke-FirstLaunchOwnedStage -StageRoot $completedStageRoot -Action $completedStageAction
+  Assert-True ($completedStage -ceq 'completed' -and [IO.File]::ReadAllText((Join-Path $completedStageRoot 'stage.json')) -ceq 'completed DTO' -and
+    [IO.File]::Exists((Join-Path $completedStageRoot $script:FirstLaunchStageOwnerMarkerName)) -and
+    -not [IO.File]::Exists($completedStageRoot + '.claim')) 'successful Stage retains its output and in-root owner marker, then releases its sidecar'
+  $priorStageRoot = Join-Path $stageOwnerParent 'prior-data'
+  [void][IO.Directory]::CreateDirectory($priorStageRoot)
+  $priorStageFile = Join-Path $priorStageRoot 'preserve.txt'
+  [IO.File]::WriteAllText($priorStageFile, 'preexisting bytes')
+  Assert-Throws 'Stage claim refuses a preexisting directory before acquiring ownership' {
+    Invoke-FirstLaunchOwnedStage -StageRoot $priorStageRoot -Action $completedStageAction
+  }
+  Assert-True ([IO.File]::ReadAllText($priorStageFile) -ceq 'preexisting bytes' -and
+    -not [IO.File]::Exists($priorStageRoot + '.claim')) 'preexisting stage content remains untouched when ownership cannot be acquired'
+  $claimCollisionRoot = Join-Path $stageOwnerParent 'claim-collision'
+  [IO.File]::WriteAllText($claimCollisionRoot + '.claim', 'prior claim bytes')
+  Assert-Throws 'Stage claim refuses a preexisting sidecar signal' {
+    Invoke-FirstLaunchOwnedStage -StageRoot $claimCollisionRoot -Action $completedStageAction
+  }
+  Assert-True ([IO.File]::ReadAllText($claimCollisionRoot + '.claim') -ceq 'prior claim bytes' -and
+    -not [IO.Directory]::Exists($claimCollisionRoot)) 'prior sidecar and absent root remain untouched on claim collision'
+  $raceStageRoot = Join-Path $stageOwnerParent 'race-empty-root'
+  $raceDirectoryCreator = {
+    param($path)
+    [void][IO.Directory]::CreateDirectory($path)
+    $directoryType = Get-FirstLaunchBoundedProcessType
+    $directoryType::CreateDirectoryExclusive($path)
+  }.GetNewClosure()
+  $raceError = $null
+  try { New-FirstLaunchStageClaim -StageRoot $raceStageRoot -DirectoryCreator $raceDirectoryCreator | Out-Null }
+  catch { $raceError = [string]$_.Exception.Message }
+  Assert-True ($raceError -like '*appeared before exclusive creation*' -and [IO.Directory]::Exists($raceStageRoot) -and
+    @([IO.Directory]::EnumerateFileSystemEntries($raceStageRoot)).Count -eq 0 -and
+    -not [IO.File]::Exists($raceStageRoot + '.claim') -and
+    -not [IO.File]::Exists((Join-Path $raceStageRoot $script:FirstLaunchStageOwnerMarkerName))) 'an empty foreign directory created after the sidecar claim survives an exclusive-create race'
+  $jobAction = {
+    param($claim, $jobFactory, $timeoutMs = 15000)
+    $work = Join-Path $claim.stageRoot 'job-work'
+    [void][IO.Directory]::CreateDirectory($work)
+    $executable = Join-Path $work 'msedgedriver.exe'
+    $executableBytes = [Text.Encoding]::UTF8.GetBytes('bounded fake executable path')
+    [IO.File]::WriteAllBytes($executable, $executableBytes)
+    $fakeSystemRoot = [string]$env:SystemRoot
+    if ([string]::IsNullOrWhiteSpace($fakeSystemRoot)) { $fakeSystemRoot = [IO.Path]::GetPathRoot($claim.stageRoot) }
+    $jobEnvironment = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $jobEnvironment['SystemRoot'] = $fakeSystemRoot
+    $jobEnvironment['WINDIR'] = $fakeSystemRoot
+    $jobResult = Invoke-FirstLaunchBoundedProcess -Executable $executable -Arguments @('--version') `
+      -WorkingDirectory $work -Environment $jobEnvironment -TimeoutMs $timeoutMs -MaximumOutputBytes 8192 `
+      -StageRoot $claim.stageRoot -StageOwnerToken $claim.token -ProcessRole edge-version `
+      -ExpectedExecutableSha256 (Get-TestSha256 $executableBytes) -JobSessionFactory $jobFactory
+    [IO.File]::WriteAllText((Join-Path $claim.stageRoot 'stage.json'), $jobResult.StdOut)
+    return $jobResult
+  }.GetNewClosure()
+  $emptyJobFactory = New-TestFakeJobSessionFactory $false
+  $emptyJobState = [MorrowFirstLaunchTest.FakeJobStateSlot]::Current
+  $emptyJobRoot = Join-Path $stageOwnerParent 'job-root-clean'
+  $emptyJobResult = Invoke-FirstLaunchOwnedStage -StageRoot $emptyJobRoot -Action $jobAction -ActionArguments @($emptyJobFactory)
+  Assert-True ($emptyJobResult.StdOut -ceq 'MSEdgeDriver 156.0.4314.58' -and
+    $emptyJobResult.StdErr -ceq 'bounded-fake-stderr' -and
+    [regex]::IsMatch($emptyJobResult.StdOut, '\AMSEdgeDriver 156\.0\.4314\.58\z') -and $emptyJobState.ResumeCount -eq 1 -and
+    $emptyJobState.ObserveCount -eq 1 -and $emptyJobState.MemberQueries -eq 1 -and $emptyJobState.StopCount -eq 0 -and
+    $emptyJobState.DisposeCount -eq 1) 'private Job orchestration accepts a drained root and releases its session'
+  Assert-True (@([IO.Directory]::EnumerateFileSystemEntries((Join-Path $emptyJobRoot 'job-work')) | Where-Object {
+    [IO.Path]::GetFileName($_) -like 'morrow-e003-g23-process-*'
+  }).Count -eq 0) 'completed private Job request and result receipts are removed after verification'
+  $memberJobFactory = New-TestFakeJobSessionFactory $true
+  $memberJobState = [MorrowFirstLaunchTest.FakeJobStateSlot]::Current
+  $memberJobRoot = Join-Path $stageOwnerParent 'job-root-with-descendant'
+  Assert-Throws 'private Job orchestration terminates members after the helper root exits' {
+    Invoke-FirstLaunchOwnedStage -StageRoot $memberJobRoot -Action $jobAction -ActionArguments @($memberJobFactory)
+  }
+  Assert-True ($memberJobState.ObserveCount -eq 1 -and $memberJobState.MemberQueries -eq 1 -and
+    $memberJobState.StopCount -eq 1 -and $memberJobState.StopTimeoutMs -eq 300 -and $memberJobState.DisposeCount -eq 1 -and
+    -not [IO.Directory]::Exists($memberJobRoot)) 'a live Job descendant after root exit triggers bounded tree stop before owned Stage cleanup'
+  $lateJobFactory = New-TestFakeJobSessionFactory $false 60
+  $lateJobState = [MorrowFirstLaunchTest.FakeJobStateSlot]::Current
+  $lateJobRoot = Join-Path $stageOwnerParent 'job-root-observation-past-deadline'
+  Assert-Throws 'private Job root observation completing past deadline is rejected' {
+    Invoke-FirstLaunchOwnedStage -StageRoot $lateJobRoot -Action $jobAction -ActionArguments @($lateJobFactory, 10)
+  }
+  Assert-True ($lateJobState.ObserveCount -eq 1 -and $lateJobState.MemberQueries -eq 1 -and
+    $lateJobState.StopCount -eq 1 -and $lateJobState.StopTimeoutMs -eq 300 -and $lateJobState.DisposeCount -eq 1 -and
+    -not [IO.Directory]::Exists($lateJobRoot)) 'late root observation uses bounded Job cleanup and removes only the claimed Stage'
+  $slowFactoryJob = New-TestFakeJobSessionFactory $false 0 60
+  $slowFactoryJobState = [MorrowFirstLaunchTest.FakeJobStateSlot]::Current
+  $slowFactoryJobRoot = Join-Path $stageOwnerParent 'job-factory-past-deadline'
+  Assert-Throws 'private Job factory completing past deadline is stopped before resume' {
+    Invoke-FirstLaunchOwnedStage -StageRoot $slowFactoryJobRoot -Action $jobAction -ActionArguments @($slowFactoryJob, 10)
+  }
+  Assert-True ($slowFactoryJobState.ResumeCount -eq 0 -and $slowFactoryJobState.StopCount -eq 1 -and
+    $slowFactoryJobState.StopTimeoutMs -eq 300 -and $slowFactoryJobState.DisposeCount -eq 1 -and
+    -not [IO.Directory]::Exists($slowFactoryJobRoot)) 'late Job creation cannot resume a target after the monotonic command deadline'
+  $tamperedStageRoot = Join-Path $stageOwnerParent 'tampered-owner'
+  $tamperAction = {
+    param($claim)
+    [IO.File]::WriteAllText((Join-Path $claim.stageRoot 'preserve.txt'), 'owner mismatch bytes')
+    [IO.File]::WriteAllText($claim.markerPath, ('0' * 32))
+    throw 'simulated owner marker tamper'
+  }.GetNewClosure()
+  Assert-Throws 'Stage failure cannot clean a tree after the exact owner marker changes' {
+    Invoke-FirstLaunchOwnedStage -StageRoot $tamperedStageRoot -Action $tamperAction
+  }
+  Assert-True ([IO.File]::ReadAllText((Join-Path $tamperedStageRoot 'preserve.txt')) -ceq 'owner mismatch bytes' -and
+    [IO.File]::Exists($tamperedStageRoot + '.claim')) 'owner mismatch preserves Stage tree and claim for safe inspection'
+
+  $stageRuntime = [pscustomobject]@{
+    version = '156.0.4314.58'
+    observedAtUtc = '2026-11-22T03:00:00.000Z'
+    sources = @(
+      [ordered]@{ registryPath = 'HKLM64\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; version = '156.0.4314.58' },
+      [ordered]@{ registryPath = 'HKCU64\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; version = '156.0.4314.58' }
+    )
+  }
+  $stageIdentity = New-TestStageIdentity
+  $stageDto = New-FirstLaunchStageDto -Identity $stageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
+    -Runtime $stageRuntime -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T03:30:00.000Z'
+  Assert-True ($stageDto.schema -ceq 'morrow.e003.g15.first-launch-stage.v1' -and
+    $stageDto.gate.gateRunId -ceq '98765432101' -and $stageDto.candidateBuild.candidateBuildRunId -ceq '44961916968' -and
+    $stageDto.candidateBuild.artifact.id -ceq '14730062702' -and $stageDto.packageInventory.Count -eq 19) 'Stage DTO keeps gate and candidate run identities separate and carries the pinned inventory'
+  Assert-True ($stageDto.noLaunch.appLaunched -eq $false -and $stageDto.noLaunch.driverServiceStarted -eq $false -and
+    $stageDto.noLaunch.guiTested -eq $false) 'Stage DTO explicitly records that no application, service, or GUI was launched'
+  $stagePath = Join-Path $root 'gate-compatible-stage.json'
+  $stageJson = ConvertTo-Json -InputObject $stageDto -Depth 20
+  [IO.File]::WriteAllBytes($stagePath, [Text.UTF8Encoding]::new($false).GetBytes($stageJson + "`n"))
+  $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+  Assert-StageAcceptedByGate $stagePath $projectRoot
+  $badStageIdentity = New-TestStageIdentity
+  $badStageIdentity.gate.gateRunId = '44961916968'
+  Assert-Throws 'Stage DTO rejects gate run aliasing the candidate build run' {
+    New-FirstLaunchStageDto -Identity $badStageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
+      -Runtime $stageRuntime -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T03:30:00.000Z'
+  }
+  $overlappingStageIdentity = New-TestStageIdentity
+  $overlappingStageIdentity.runner.tempRoot = 'C:\morrow\checkout\_temp'
+  Assert-Throws 'Stage DTO rejects RUNNER_TEMP overlapping the checkout' {
+    New-FirstLaunchStageDto -Identity $overlappingStageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
+      -Runtime $stageRuntime -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T03:30:00.000Z'
+  }
+  $badStageTauri = New-TestTauriDriverDto
+  $badStageTauri.extra = 'not in gate DTO'
+  Assert-Throws 'Stage DTO rejects extra driver provenance fields' {
+    New-FirstLaunchStageDto -Identity $stageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
+      -Runtime $stageRuntime -TauriDriver $badStageTauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T03:30:00.000Z'
+  }
+  $badStageRuntime = Copy-FirstLaunchValue $stageRuntime
+  $badStageRuntime.sources[1].version = '155.0.4314.58'
+  Assert-Throws 'Stage DTO rejects divergent runtime registry observations' {
+    New-FirstLaunchStageDto -Identity $stageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
+      -Runtime $badStageRuntime -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T03:30:00.000Z'
+  }
+  $earlyStageRuntime = Copy-FirstLaunchValue $stageRuntime
+  $earlyStageRuntime.observedAtUtc = '2026-11-22T02:00:00.000Z'
+  Assert-Throws 'Stage DTO rejects official catalog timestamps that postdate Stage completion' {
+    New-FirstLaunchStageDto -Identity $stageIdentity -PackageResult (New-TestVerifiedPinnedPackage) `
+      -Runtime $earlyStageRuntime -TauriDriver $tauri -EdgeDriver $edge -StagedAtUtc '2026-11-22T02:30:00.000Z'
+  }
 
   Write-Output "windows-first-launch-preflight passed $script:assertionCount assertions."
 } finally {
