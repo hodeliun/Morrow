@@ -1813,6 +1813,7 @@ mod tests {
         assert_eq!(nested.entries[0].name, "child.bin");
         assert_eq!(nested.entries[1].name, "deeper");
 
+        drop(snapshot);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1865,6 +1866,8 @@ mod tests {
             FilePageStatus::Blocked
         );
 
+        drop(reopened);
+        drop(snapshot);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1913,6 +1916,7 @@ mod tests {
         )
         .is_none());
 
+        drop(snapshot);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1983,6 +1987,7 @@ mod tests {
             FilePageStatus::IoError
         );
 
+        drop(snapshot);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2014,6 +2019,7 @@ mod tests {
         );
         close();
 
+        drop(snapshot);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(external).unwrap();
         fs::remove_file(selected).unwrap();
