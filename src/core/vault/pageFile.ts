@@ -2,7 +2,14 @@
 import { dailyTitle, parseDateKey } from '../daily';
 import { isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
-import { COLORS, displayTitle, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, validCover } from '../model';
+import {
+  COLORS,
+  displayTitle,
+  MAX_ICON_LENGTH,
+  MAX_TITLE_LENGTH,
+  normalizeDatabasePropertyFormat,
+  validCover,
+} from '../model';
 import type { DatabaseDef, PageKind, PageMeta, PropDef, PropValue, SelectOption } from '../model';
 import {
   findKey,
@@ -398,17 +405,27 @@ function scalarText(value: unknown): string | null {
 
 function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
   return {
-    properties: database.properties.map((prop) => ({
-      id: prop.id,
-      name: prop.name,
-      type: prop.type,
-      ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
-      ...(prop.type === 'number' && prop.format ? { format: { ...prop.format } } : {}),
-      ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
-      ...(prop.display === 'bar' ? { display: 'bar' } : {}),
-      ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
-      ...(prop.type === 'text' && prop.wrap ? { wrap: true } : {}),
-    })),
+    properties: database.properties.map((prop) => {
+      const format = prop.format
+        ? normalizeDatabasePropertyFormat({
+            type: prop.type,
+            format: prop.format,
+            ...(prop.display !== undefined ? { display: prop.display } : {}),
+            ...(prop.max !== undefined ? { max: prop.max } : {}),
+          })
+        : null;
+      return {
+        id: prop.id,
+        name: prop.name,
+        type: prop.type,
+        ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
+        ...(format !== null ? { format } : {}),
+        ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
+        ...(prop.display === 'bar' ? { display: 'bar' } : {}),
+        ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
+        ...(prop.type === 'text' && prop.wrap ? { wrap: true } : {}),
+      };
+    }),
     views: database.views.map((view) => ({
       id: view.id,
       name: view.name,

@@ -4,7 +4,7 @@ import {
   COLORS,
   MAX_ICON_LENGTH,
   MAX_TITLE_LENGTH,
-  normalizeNumberFormat,
+  normalizeDatabasePropertyFormat,
   PAGE_KINDS,
   PROP_TYPES,
   SCHEMA_VERSION,
@@ -154,9 +154,7 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
   // Public import/restore callers normalize data without the vault compatibility guard.
   // Keep the supported property even when its optional display metadata is unknown;
   // opening/editing the actual vault remains fail-closed in that guard.
-  const format = raw.type === 'number' && Object.hasOwn(raw, 'format')
-    ? normalizeNumberFormat(raw.format)
-    : null;
+  const format = Object.hasOwn(raw, 'format') ? normalizeDatabasePropertyFormat(raw) : null;
   return {
     id: raw.id,
     name: nameOf(raw.name, ''),

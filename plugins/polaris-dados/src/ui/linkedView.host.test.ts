@@ -332,7 +332,15 @@ describe('Polaris Dados linked view UI', () => {
                 }
               : property,
           ),
-          { id: 'total', name: 'Total', type: 'formula', options: [], formula: 'Quantity * Price' },
+          {
+            id: 'total',
+            name: 'Total',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * Price * -1',
+            format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' },
+          },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Total + 1' },
         ],
       },
       rows: [
@@ -343,7 +351,7 @@ describe('Polaris Dados linked view UI', () => {
     const mounted = mountLinked(
       {
         title: 'Inventory view',
-        columnOrder: ['quantity', 'total'],
+        columnOrder: ['quantity', 'total', 'dependent'],
         filter: { propertyId: 'quantity', op: 'gte', value: 3 },
       },
       snapshot,
@@ -353,7 +361,14 @@ describe('Polaris Dados linked view UI', () => {
 
     expect(rows.map((row) => row.dataset.rowId)).toEqual(['kept']);
     expect(rows[0]?.querySelector('[data-field="quantity"] [data-value-kind="number"]')?.textContent).toBe('3,8');
-    expect(rows[0]?.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent).toBe('18.75');
+    const formattedNegative = new Intl.NumberFormat('de-DE', {
+      maximumFractionDigits: 1.5,
+      minimumFractionDigits: 1.5,
+    }).format(18.75);
+    expect(rows[0]?.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent)
+      .toBe(`(${formattedNegative})`);
+    expect(rows[0]?.querySelector('[data-field="dependent"] [data-value-kind="number"]')?.textContent)
+      .toBe(new Intl.NumberFormat('en', { maximumFractionDigits: 10 }).format(-17.75));
     mounted.cleanup();
   });
 

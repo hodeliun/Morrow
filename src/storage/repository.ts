@@ -6,8 +6,39 @@ import type { LoadedWorkspace } from '../core/migrations';
 import { SCHEMA_VERSION } from '../core/model';
 import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
 import type { NoteStyle } from '../core/noteStyle';
+import type {
+  ExplicitMorrowNoteStyleSnapshot,
+  MorrowNoteStyleRestoreContext,
+} from '../core/vault/frontmatter';
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
+
+export interface InheritedNoteStyleRestore {
+  readonly kind: 'restore-inherited';
+  readonly pageId: PageId;
+  readonly appliedStyle: NoteStyle;
+  readonly context: MorrowNoteStyleRestoreContext;
+}
+
+export interface ExplicitNoteStyleRestore {
+  readonly kind: 'restore-explicit';
+  readonly pageId: PageId;
+  readonly appliedStyle: NoteStyle;
+  readonly context: ExplicitMorrowNoteStyleSnapshot;
+}
+
+export type NoteStyleRestore = InheritedNoteStyleRestore | ExplicitNoteStyleRestore;
+
+/** Private, in-memory source context for a later style-batch undo. */
+export type NoteStyleRestoreContext =
+  | { readonly kind: 'inherited'; readonly context: MorrowNoteStyleRestoreContext }
+  | { readonly kind: 'explicit'; readonly context: ExplicitMorrowNoteStyleSnapshot };
+
+/** Receipt returned only by the host-internal opt-in note-style write path. */
+export interface NoteStyleWriteReceipt {
+  readonly op: 'check' | 'write';
+  readonly restoreContext: NoteStyleRestoreContext | null;
+}
 
 export interface WriteBatch {
   pages: PageMeta[];
@@ -17,8 +48,10 @@ export interface WriteBatch {
   quietPageIds?: PageId[];
   /** Read-only source records that must still match before dependent pilot data is written. */
   checkPages?: PageId[];
-  /** Pages whose `morrowNoteStyle` update must fail instead of rebasing over an external edit. */
+  /** Isolated note-style lane; updates and restores fail instead of rebasing. */
   noteStylePages?: PageId[];
+  /** A typed isolated style restoration using the original inherited or explicit source context. */
+  noteStyleRestore?: NoteStyleRestore;
   snapshots?: Snapshot[];
   // the whole workspace at the time of the write, file based storage lays out pages from it
   state?: WorkspaceState;
@@ -61,6 +94,11 @@ export interface WorkspaceRepository {
   validateWrite?(batch: WriteBatch): string | null;
   // resolves only after the transaction commits, rejects on any failure
   write(batch: WriteBatch): Promise<void>;
+  /** Opt-in host path that can return a private undo context after a confirmed Markdown write. */
+  writeNoteStyle?(
+    batch: WriteBatch,
+    options: { readonly captureRestoreContext: true },
+  ): Promise<NoteStyleWriteReceipt>;
   markInitialized(): Promise<void>;
   // stores files and returns their metadata, the ids may differ from the ones passed in
   putFiles(files: StoredFile[]): Promise<FileMeta[]>;

@@ -33,6 +33,18 @@ database:
       name: Widget price subtotal
       type: formula
       formula: Inventory.Filter(CurrentValue.Name = "Widget").Price.Sum()
+    - id: demo-decimal-result
+      name: DecimalResult
+      type: formula
+      formula: Quantity * Price * -61.728
+      format:
+        locale: de-DE
+        precision: 1.5
+        negativeFormat: parentheses
+    - id: demo-decimal-raw
+      name: DecimalRawCheck
+      type: formula
+      formula: If(DecimalResult > -1234.58, 42, 17)
   views:
     - id: inventory-table-v1
       name: Table

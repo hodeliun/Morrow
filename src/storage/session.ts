@@ -1,6 +1,6 @@
 import { applyCommand } from '../core/commands';
 import type { Changes, Command } from '../core/commands';
-import { isDocEmpty } from '../core/doc';
+import { isDocEmpty, isRecord } from '../core/doc';
 import { snapshotDue } from '../core/history';
 import { emptyWorkspace } from '../core/model';
 import type {
@@ -23,9 +23,29 @@ import {
   resolveDefaultNoteStyle,
 } from '../core/noteStyle';
 import type { BasePageWidth, NoteStyle, NoteStyleFont } from '../core/noteStyle';
+import {
+  decodeExplicitMorrowNoteStyleSnapshot,
+  matchesAppliedNoteStyleValues,
+  sameNoteStyle,
+} from '../core/vault/frontmatter';
+import type {
+  ExplicitMorrowNoteStylePatch,
+  ExplicitMorrowNoteStyleSnapshot,
+  MorrowNoteStyleRestoreContext,
+} from '../core/vault/frontmatter';
 import { WorkspaceWriteError } from './repository';
 import { openRepository } from './repository';
-import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
+import type {
+  ExternalPatch,
+  ExplicitNoteStyleRestore,
+  InheritedNoteStyleRestore,
+  NoteStyleRestore,
+  NoteStyleRestoreContext,
+  NoteStyleWriteReceipt,
+  StoredFile,
+  WorkspaceRepository,
+  WriteBatch,
+} from './repository';
 import { SaveQueue } from './saveQueue';
 import type { SaveQueueOptions, SaveStatus } from './saveQueue';
 import { PilotDataHistory } from './pilotDataHistory';
@@ -38,6 +58,20 @@ import type {
 const MUTATION_FENCE_MESSAGE = 'The workspace session is preparing to close.';
 const PILOT_DATA_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const PILOT_DATA_REVISION_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:r\d+$/i;
+
+type NoteStyleHostAuthorization = { isCurrent(): boolean; onWriteStarted(): void };
+
+function isNoteStyleHostAuthorized(authorization?: NoteStyleHostAuthorization): boolean {
+  try {
+    return authorization?.isCurrent() !== false;
+  } catch {
+    return false;
+  }
+}
+
+function noteStyleHostAuthorizationFailure(): NoteStyleFailureResult {
+  return noteStyleFailure('read-only', 'The style operation is no longer authorized.');
+}
 
 export interface NoteStyleSnapshot {
   pageId: PageId;
@@ -59,6 +93,17 @@ export type NoteStyleFailureCode =
 
 export type NoteStyleResult =
   { ok: true; value: NoteStyleSnapshot } | { ok: false; code: NoteStyleFailureCode; message: string };
+type NoteStyleFailureResult = Extract<NoteStyleResult, { ok: false }>;
+
+/** Host-internal result for a style-batch caller that explicitly requests a private undo context. */
+type NoteStyleCaptureResult =
+  | {
+      ok: true;
+      value: NoteStyleSnapshot;
+      op: NoteStyleWriteReceipt['op'] | null;
+      restoreContext: NoteStyleRestoreContext | null;
+    }
+  | NoteStyleFailureResult;
 
 // the single place where commands run, state lives and changes are queued for disk
 export class WorkspaceSession {
@@ -270,21 +315,39 @@ export class WorkspaceSession {
     style: NoteStyle;
     expectedRevision: string;
     /** Internal host guard used by consumed previews; ordinary typed callers need not supply it. */
-    hostAuthorization?: { isCurrent(): boolean; onWriteStarted(): void };
+    hostAuthorization?: NoteStyleHostAuthorization;
   }): Promise<NoteStyleResult> {
+    const result = await this.setNoteStyleInternal(input, false);
+    if (!result.ok) return result;
+    return { ok: true, value: result.value };
+  }
+
+  /** @internal Host-only path; context and operation follow a confirmed source CAS. */
+  async setNoteStyleWithRestoreContext(input: {
+    pageId: PageId;
+    style: NoteStyle;
+    expectedRevision: string;
+    hostAuthorization?: NoteStyleHostAuthorization;
+  }): Promise<NoteStyleCaptureResult> {
+    return this.setNoteStyleInternal(input, true);
+  }
+
+  private async setNoteStyleInternal(
+    input: {
+      pageId: PageId;
+      style: NoteStyle;
+      expectedRevision: string;
+      hostAuthorization?: NoteStyleHostAuthorization;
+    },
+    captureRestoreContext: boolean,
+  ): Promise<NoteStyleCaptureResult> {
     const pageId = input.pageId;
     const expectedRevision = input.expectedRevision;
     const initialTargetError = this.noteStyleTargetError(pageId);
     if (initialTargetError) return initialTargetError;
     if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
     if (!isValidNoteStyleInput(input.style)) return noteStyleFailure('invalid-style', 'Invalid note style.');
-    const hasHostAuthorization = () => {
-      try {
-        return input.hostAuthorization?.isCurrent() !== false;
-      } catch {
-        return false;
-      }
-    };
+    const hasHostAuthorization = () => isNoteStyleHostAuthorized(input.hostAuthorization);
     const hostAuthorizationFailure = () =>
       noteStyleFailure('read-only', 'The style preview is no longer authorized.');
     if (!hasHostAuthorization()) return hostAuthorizationFailure();
@@ -328,7 +391,9 @@ export class WorkspaceSession {
           noteStylePages: [pageId],
           state: candidate,
         };
-        const dispatched = await this.exclusive(async (): Promise<true | false | NoteStyleResult> => {
+        let confirmedOperation: NoteStyleWriteReceipt['op'] | null = null;
+        let confirmedRestoreContext: NoteStyleRestoreContext | null = null;
+        const dispatched = await this.exclusive(async (): Promise<true | false | NoteStyleFailureResult> => {
           if (!hasHostAuthorization()) return false;
           // Establish the page-id registry first; the style write itself then has no sidecar tail
           // that could fail after the Markdown source has been confirmed.
@@ -347,7 +412,15 @@ export class WorkspaceSession {
 
           if (!hasHostAuthorization()) return false;
           input.hostAuthorization?.onWriteStarted();
-          await this.repository.write(batch);
+          if (captureRestoreContext && this.repository.writeNoteStyle) {
+            const receipt: NoteStyleWriteReceipt = await this.repository.writeNoteStyle(batch, {
+              captureRestoreContext: true,
+            });
+            confirmedOperation = receipt.op;
+            if (receipt.op === 'write') confirmedRestoreContext = receipt.restoreContext;
+          } else {
+            await this.repository.write(batch);
+          }
           return true;
         });
         if (dispatched !== true) return dispatched === false ? hostAuthorizationFailure() : dispatched;
@@ -386,6 +459,190 @@ export class WorkspaceSession {
             pageId,
             revision: this.noteStyleRevision(pageId),
             style: projectNoteStyle(confirmedPage.extra.morrowNoteStyle),
+          },
+          op: confirmedOperation,
+          restoreContext: confirmedRestoreContext,
+        };
+      });
+      return isolated.ok ? isolated.value : this.noteStyleSaveFailure();
+    } catch {
+      return this.noteStyleSaveFailure();
+    }
+  }
+
+  /** @internal Host-only path for restoring the inherited override from one confirmed write. */
+  async restoreInheritedNoteStyle(input: {
+    pageId: PageId;
+    expectedRevision: string;
+    appliedStyle: NoteStyle;
+    context: MorrowNoteStyleRestoreContext;
+    hostAuthorization?: NoteStyleHostAuthorization;
+  }): Promise<NoteStyleResult> {
+    if (!isNoteStyleHostAuthorized(input.hostAuthorization)) return noteStyleHostAuthorizationFailure();
+    if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
+    if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+    if (!isValidNoteStyleInput(input.appliedStyle))
+      return noteStyleFailure('invalid-style', 'Invalid note style.');
+    const restore: InheritedNoteStyleRestore = {
+      kind: 'restore-inherited',
+      pageId: input.pageId,
+      appliedStyle: copyNoteStyle(input.appliedStyle),
+      context: {
+        hadFrontmatter: input.context.hadFrontmatter,
+        separatorAdded: input.context.separatorAdded,
+        emptyFrontmatterHadBlankLine: input.context.emptyFrontmatterHadBlankLine,
+      },
+    };
+    return this.restoreNoteStyleFromContext({
+      pageId: input.pageId,
+      expectedRevision: input.expectedRevision,
+      restore,
+      hostAuthorization: input.hostAuthorization,
+    });
+  }
+
+  /** @internal Host-only path for restoring an explicit override from its codec snapshot. */
+  async restoreExplicitNoteStyle(input: {
+    pageId: PageId;
+    expectedRevision: string;
+    appliedStyle: NoteStyle;
+    context: ExplicitMorrowNoteStyleSnapshot;
+    hostAuthorization?: NoteStyleHostAuthorization;
+  }): Promise<NoteStyleResult> {
+    if (!isNoteStyleHostAuthorized(input.hostAuthorization)) return noteStyleHostAuthorizationFailure();
+    if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
+    if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+    if (!isValidNoteStyleInput(input.appliedStyle))
+      return noteStyleFailure('invalid-style', 'Invalid note style.');
+    const patch = decodeExplicitMorrowNoteStyleSnapshot(input.context);
+    if (!patch)
+      return noteStyleFailure('unsupported', 'The original explicit note-style context is invalid.');
+    const restore: ExplicitNoteStyleRestore = {
+      kind: 'restore-explicit',
+      pageId: input.pageId,
+      appliedStyle: copyNoteStyle(input.appliedStyle),
+      context: {
+        kind: 'explicit',
+        fields: { ...input.context.fields },
+        separatorAdded: input.context.separatorAdded,
+        separatorAnchorKey: input.context.separatorAnchorKey,
+      },
+    };
+    return this.restoreNoteStyleFromContext({
+      pageId: input.pageId,
+      expectedRevision: input.expectedRevision,
+      restore,
+      explicitPatch: patch,
+      hostAuthorization: input.hostAuthorization,
+    });
+  }
+
+  private async restoreNoteStyleFromContext(input: {
+    pageId: PageId;
+    expectedRevision: string;
+    restore: NoteStyleRestore;
+    explicitPatch?: ExplicitMorrowNoteStylePatch;
+    hostAuthorization?: NoteStyleHostAuthorization;
+  }): Promise<NoteStyleResult> {
+    const { pageId, expectedRevision, restore } = input;
+    const appliedStyle = restore.appliedStyle;
+    if (!isNoteStyleHostAuthorized(input.hostAuthorization)) return noteStyleHostAuthorizationFailure();
+    if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
+    if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+
+    const checkCurrent = (): NoteStyleResult | null => {
+      if (!isNoteStyleHostAuthorized(input.hostAuthorization)) return noteStyleHostAuthorizationFailure();
+      if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+      const targetError =
+        restore.kind === 'restore-inherited'
+          ? this.inheritedNoteStyleTargetError(pageId, appliedStyle)
+          : this.explicitNoteStyleTargetError(pageId, appliedStyle);
+      if (targetError) return targetError;
+      return expectedRevision === this.noteStyleRevision(pageId)
+        ? null
+        : noteStyleFailure(
+            'stale-revision',
+            'This note changed while its style editor was open. Reopen it to review the latest version.',
+          );
+    };
+    const initialError = checkCurrent();
+    if (initialError) return initialError;
+
+    try {
+      const isolated = await this.queue.runIsolated([pageId], async () => {
+        const currentError = checkCurrent();
+        if (currentError) return currentError;
+
+        const initialBatch = this.noteStyleRestoreBatch(restore, input.explicitPatch);
+        if (!initialBatch) return noteStyleFailure('stale-revision', 'The applied note style has changed.');
+        let refusal = this.validateNoteStyleRestore(initialBatch);
+        if (refusal) return noteStyleFailure('save-failed', refusal);
+
+        const dispatched = await this.exclusive(async (): Promise<true | NoteStyleResult> => {
+          if (!isNoteStyleHostAuthorized(input.hostAuthorization))
+            return noteStyleHostAuthorizationFailure();
+          // Initialize the registry before the one-file CAS so no sidecar write follows its ACK.
+          await this.repository.markInitialized();
+
+          const latestError = checkCurrent();
+          if (latestError) return latestError;
+
+          const latestBatch = this.noteStyleRestoreBatch(restore, input.explicitPatch);
+          if (!latestBatch) return noteStyleFailure('stale-revision', 'The applied note style has changed.');
+          refusal = this.validateNoteStyleRestore(latestBatch);
+          if (refusal) return noteStyleFailure('save-failed', refusal);
+
+          if (!isNoteStyleHostAuthorized(input.hostAuthorization))
+            return noteStyleHostAuthorizationFailure();
+          input.hostAuthorization?.onWriteStarted();
+          await this.repository.write(latestBatch);
+          return true;
+        });
+        if (dispatched !== true) return dispatched;
+
+        // Apply the confirmed inverse to the newest state, keeping other accepted edits.
+        const current = ownPage(this.state.pages, pageId);
+        if (current?.kind === 'page' && restore.kind === 'restore-inherited') {
+          if (sameNoteStyle(current.extra.morrowNoteStyle, appliedStyle)) {
+            const extra = { ...current.extra };
+            delete extra.morrowNoteStyle;
+            this.state = {
+              ...this.state,
+              pages: {
+                ...this.state.pages,
+                [pageId]: { ...current, extra },
+              },
+            };
+          }
+        } else if (
+          current?.kind === 'page' &&
+          input.explicitPatch &&
+          matchesAppliedNoteStyleValues(current.extra.morrowNoteStyle, appliedStyle) &&
+          isRecord(current.extra.morrowNoteStyle)
+        ) {
+          const extra = {
+            ...current.extra,
+            morrowNoteStyle: applyExplicitNoteStylePatch(current.extra.morrowNoteStyle, input.explicitPatch),
+          };
+          this.state = {
+            ...this.state,
+            pages: {
+              ...this.state.pages,
+              [pageId]: { ...current, extra },
+            },
+          };
+        }
+        this.bumpNoteStyleRevisions([pageId]);
+        this.refreshPilotDataRevisions(this.state);
+        for (const listener of this.listeners) listener();
+        const confirmedPage = ownPage(this.state.pages, pageId);
+        return {
+          ok: true as const,
+          value: {
+            pageId,
+            revision: this.noteStyleRevision(pageId),
+            style:
+              confirmedPage?.kind === 'page' ? projectNoteStyle(confirmedPage.extra.morrowNoteStyle) : null,
           },
         };
       });
@@ -1154,6 +1411,7 @@ export class WorkspaceSession {
     state: WorkspaceState,
     allowedPilotDataDatabaseId?: PageId,
     noteStylePages: PageId[] = [],
+    noteStyleRestore?: NoteStyleRestore,
   ): string | null {
     const pilotDataRefusal = this.validatePilotDataChanges(state, allowedPilotDataDatabaseId);
     if (pilotDataRefusal) return pilotDataRefusal;
@@ -1164,12 +1422,133 @@ export class WorkspaceSession {
       docs: [...changes.docs].flatMap((id) => (state.docs[id] ? [{ id, doc: state.docs[id]! }] : [])),
       removed: [...changes.removed].filter((id) => !state.pages[id]),
       noteStylePages,
+      ...(noteStyleRestore ? { noteStyleRestore } : {}),
       state,
     };
     return this.repository.validateWrite?.(batch) ?? null;
   }
 
-  private noteStyleTargetError(pageId: PageId): NoteStyleResult | null {
+  private inheritedNoteStyleRestoreBatch(
+    pageId: PageId,
+    appliedStyle: NoteStyle,
+    restore: InheritedNoteStyleRestore,
+  ): WriteBatch | null {
+    const current = ownPage(this.state.pages, pageId);
+    if (current?.kind !== 'page' || !sameNoteStyle(current.extra.morrowNoteStyle, appliedStyle)) return null;
+    const extra = { ...current.extra };
+    delete extra.morrowNoteStyle;
+    const page = { ...current, extra };
+    const state: WorkspaceState = {
+      ...this.state,
+      pages: { ...this.state.pages, [pageId]: page },
+    };
+    return {
+      pages: [page],
+      docs: [],
+      removed: [],
+      noteStylePages: [pageId],
+      noteStyleRestore: restore,
+      state,
+    };
+  }
+
+  private explicitNoteStyleRestoreBatch(
+    pageId: PageId,
+    appliedStyle: NoteStyle,
+    restore: ExplicitNoteStyleRestore,
+    patch: ExplicitMorrowNoteStylePatch,
+  ): WriteBatch | null {
+    const current = ownPage(this.state.pages, pageId);
+    if (
+      current?.kind !== 'page' ||
+      !matchesAppliedNoteStyleValues(current.extra.morrowNoteStyle, appliedStyle) ||
+      !isRecord(current.extra.morrowNoteStyle)
+    )
+      return null;
+    const extra = {
+      ...current.extra,
+      morrowNoteStyle: applyExplicitNoteStylePatch(current.extra.morrowNoteStyle, patch),
+    };
+    const page = { ...current, extra };
+    const state: WorkspaceState = {
+      ...this.state,
+      pages: { ...this.state.pages, [pageId]: page },
+    };
+    return {
+      pages: [page],
+      docs: [],
+      removed: [],
+      noteStylePages: [pageId],
+      noteStyleRestore: restore,
+      state,
+    };
+  }
+
+  private noteStyleRestoreBatch(
+    restore: NoteStyleRestore,
+    patch?: ExplicitMorrowNoteStylePatch,
+  ): WriteBatch | null {
+    return restore.kind === 'restore-inherited'
+      ? this.inheritedNoteStyleRestoreBatch(restore.pageId, restore.appliedStyle, restore)
+      : patch
+        ? this.explicitNoteStyleRestoreBatch(restore.pageId, restore.appliedStyle, restore, patch)
+        : null;
+  }
+
+  private validateNoteStyleRestore(batch: WriteBatch): string | null {
+    const restore = batch.noteStyleRestore;
+    if (!restore || !batch.state) return 'The note-style restoration is not isolated.';
+    const refusal = this.validateChanges(
+      {
+        pages: new Set([restore.pageId]),
+        docs: new Set(),
+        removed: new Set(),
+      },
+      batch.state,
+      undefined,
+      [restore.pageId],
+      restore,
+    );
+    return refusal;
+  }
+
+  private inheritedNoteStyleTargetError(
+    pageId: PageId,
+    appliedStyle: NoteStyle,
+  ): NoteStyleFailureResult | null {
+    const targetError = this.noteStyleTargetError(pageId);
+    if (targetError) return targetError;
+    const page = ownPage(this.state.pages, pageId);
+    if (page?.encrypted)
+      return noteStyleFailure('unsupported', 'Encrypted notes cannot restore an inherited note style.');
+    if (!this.hasWritableNoteStyleSource(pageId))
+      return noteStyleFailure('inaccessible', 'The note has no writable Markdown source.');
+    if (!page || page.kind !== 'page' || !sameNoteStyle(page.extra.morrowNoteStyle, appliedStyle))
+      return noteStyleFailure('stale-revision', 'The applied note style has changed.');
+    return null;
+  }
+
+  private explicitNoteStyleTargetError(
+    pageId: PageId,
+    appliedStyle: NoteStyle,
+  ): NoteStyleFailureResult | null {
+    const targetError = this.noteStyleTargetError(pageId);
+    if (targetError) return targetError;
+    const page = ownPage(this.state.pages, pageId);
+    if (page?.encrypted)
+      return noteStyleFailure('unsupported', 'Encrypted notes cannot restore an explicit note style.');
+    if (!this.hasWritableNoteStyleSource(pageId))
+      return noteStyleFailure('inaccessible', 'The note has no writable Markdown source.');
+    if (
+      !page ||
+      page.kind !== 'page' ||
+      !matchesAppliedNoteStyleValues(page.extra.morrowNoteStyle, appliedStyle)
+    )
+      return noteStyleFailure('stale-revision', 'The applied note style has changed.');
+    return null;
+  }
+
+  private noteStyleTargetError(pageId: PageId): NoteStyleFailureResult | null {
     if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
     const page = ownPage(this.state.pages, pageId);
     if (!page) return noteStyleFailure('page-not-found', 'That page no longer exists.');
@@ -1182,7 +1561,7 @@ export class WorkspaceSession {
     return null;
   }
 
-  private noteStyleSaveFailure(): NoteStyleResult {
+  private noteStyleSaveFailure(): NoteStyleFailureResult {
     const status = this.queue.status;
     if (status.errorCode === 'save-conflict') {
       return noteStyleFailure(
@@ -1194,7 +1573,7 @@ export class WorkspaceSession {
     return noteStyleFailure('save-failed', status.error ?? 'The note style could not be confirmed on disk.');
   }
 
-  private noteStyleCommandFailure(message: string): NoteStyleResult {
+  private noteStyleCommandFailure(message: string): NoteStyleFailureResult {
     const code = message.startsWith('Invalid note style')
       ? 'invalid-style'
       : message.startsWith('This note style') || message.startsWith('Note styles can only')
@@ -1323,8 +1702,28 @@ function hasPilotDataMarker(extra: Record<string, unknown>): boolean {
   return Object.hasOwn(extra, 'polarisDados');
 }
 
-function noteStyleFailure(code: NoteStyleFailureCode, message: string): NoteStyleResult {
+function noteStyleFailure(code: NoteStyleFailureCode, message: string): NoteStyleFailureResult {
   return { ok: false, code, message };
+}
+
+function applyExplicitNoteStylePatch(
+  current: Record<string, unknown>,
+  patch: ExplicitMorrowNoteStylePatch,
+): Record<string, unknown> {
+  const restored = { ...current };
+  for (const field of patch.remove) delete restored[field];
+  for (const [field, value] of Object.entries(patch.set)) restored[field] = value;
+  return restored;
+}
+
+function copyNoteStyle(style: NoteStyle): NoteStyle {
+  return {
+    font: style.font,
+    fontSize: style.fontSize,
+    lineHeight: style.lineHeight,
+    blockSpacing: style.blockSpacing,
+    width: style.width,
+  };
 }
 
 function ownPage(pages: Record<PageId, PageMeta>, id: PageId): PageMeta | undefined {

@@ -7,7 +7,12 @@ import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
 import type { Preferences } from '../platform/preferences';
 import { getPreferences } from '../platform/preferences';
-import { confirmNoteStyleBatchPreview, createNoteStyleBatchPreviewHost } from './noteStyleBatchPreview';
+import {
+  confirmNoteStyleBatchPreview,
+  createNoteStyleBatchPreviewHost,
+  disposeNoteStyleBatchPreviewHost,
+  readLastNoteStyleBatchReceipt,
+} from './noteStyleBatchPreview';
 import type { PluginNoteStyleBatchPreviewLease } from '../plugins/registry';
 
 const DEFAULT_STYLE: NoteStyle = {
@@ -214,6 +219,7 @@ describe('host-only note-style preview confirmation', () => {
     const session = await openSession(vault);
     const runtime = makeRuntime(session);
     const controls = createHost(runtime);
+    expect(Object.keys(controls.host).sort()).toEqual(['create', 'invalidate']);
     const stale = controls.host.create('preserve');
     if (!stale) throw new Error('The preview lease was not created.');
     runtime.setPreferences({ ...runtime.preferences(), font: 'mono' });
@@ -264,6 +270,7 @@ describe('host-only note-style preview confirmation', () => {
       expect(styleWrites(vault)).toEqual(['One.md', 'Two.md']);
       expect(vault.text('One.md')).toContain('morrowNoteStyle:');
       expect(vault.text('Two.md')).toContain('morrowNoteStyle:');
+      expect(readLastNoteStyleBatchReceipt(controls.host)?.writes).toHaveLength(2);
     } finally {
       stop();
       stopThrowing();
@@ -273,7 +280,8 @@ describe('host-only note-style preview confirmation', () => {
   });
 
   it('keeps a confirmed first note when the second source conflicts and leaves later notes unattempted', async () => {
-    const one = noteSource('One');
+    const one =
+      '---\ntitle: One\nmorrowNoteStyle:\n  font: "sans"\n  fontSize: 16.0\n---\nOne body.\n';
     const two = noteSource('Second');
     const three = noteSource('Third');
     const vault = new ConflictAfterFirstStyleWriteVault({
@@ -283,7 +291,7 @@ describe('host-only note-style preview confirmation', () => {
     });
     const session = await openSession(vault);
     const controls = createHost(makeRuntime(session));
-    const lease = controls.host.create('preserve');
+    const lease = controls.host.create('overwrite');
     if (!lease) throw new Error('The preview lease was not created.');
 
     try {
@@ -304,7 +312,252 @@ describe('host-only note-style preview confirmation', () => {
         '---\ntitle: Second\nexternal: changed\n---\nExternal edit.\n',
       );
       expect(vault.text('Third.md')).toBe(three);
+      const receipt = readLastNoteStyleBatchReceipt(controls.host);
+      expect(receipt?.writes).toHaveLength(1);
+      expect(receipt?.hasRestorableItems).toBe(true);
+      expect(receipt?.writes[0]).toMatchObject({
+        pageId: pageIdAt(session, 'One.md'),
+        title: 'One',
+        order: 1,
+        appliedStyle: DEFAULT_STYLE,
+        restoreContext: {
+          kind: 'explicit',
+          context: { fields: { font: ' "sans"', fontSize: ' 16.0' } },
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain('note-');
+      expect(JSON.stringify(result)).not.toContain('restoreContext');
     } finally {
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await session.close();
+    }
+  });
+
+  it('keeps the last write across a reported CAS check, no-op and refused leases, and profile changes', async () => {
+    const nestedStyle =
+      '---\ntitle: Two\nmorrowNoteStyle:\n  font: sans\n  fontSize: 16\n  lineHeight: 1.8\n  blockSpacing: 10\n  width: wide\n  future:\n    child: yes\n---\nTwo body.\n';
+    const vault = new ObservedVault({ 'One.md': noteSource('One'), 'Two.md': nestedStyle });
+    const session = await openSession(vault);
+    const runtime = makeRuntime(session);
+    const controls = createHost(runtime);
+
+    try {
+      const firstLease = controls.host.create('preserve');
+      if (!firstLease) throw new Error('The first preview lease was not created.');
+      const firstResult = await confirmNoteStyleBatchPreview(firstLease);
+      expect(firstResult).toMatchObject({ confirmedCount: 1, refusedCount: 0, unattemptedCount: 0 });
+      const firstReceipt = readLastNoteStyleBatchReceipt(controls.host);
+      expect(firstReceipt?.writes.map(({ title }) => title)).toEqual(['One']);
+
+      const checkLease = controls.host.create('overwrite');
+      if (!checkLease) throw new Error('The overwrite preview lease was not created.');
+      const twoId = pageIdAt(session, 'Two.md');
+      const setStyleWithRestoreContext = session.setNoteStyleWithRestoreContext.bind(session);
+      session.setNoteStyleWithRestoreContext = async (input) => {
+        if (input.pageId !== twoId) return setStyleWithRestoreContext(input);
+        // Isolate the host's `op: check` branch; the storage CAS is covered in noteStyle.test.ts.
+        const current = session.readNoteStyle(twoId);
+        if (!current.ok) return current;
+        return { ...current, op: 'check' as const, restoreContext: null };
+      };
+      const checkResult = await confirmNoteStyleBatchPreview(checkLease);
+      expect(checkResult).toMatchObject({ confirmedCount: 1, refusedCount: 0, unattemptedCount: 0 });
+      expect(styleWrites(vault)).toEqual(['One.md']);
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBe(firstReceipt);
+
+      session.setNoteStyleWithRestoreContext = setStyleWithRestoreContext;
+      const refusedLease = controls.host.create('overwrite');
+      if (!refusedLease) throw new Error('The conflict preview lease was not created.');
+      await vault.apply([
+        { op: 'write', path: 'Two.md', text: '---\ntitle: Two\nexternal: changed\n---\nExternal edit.\n' },
+      ]);
+      expect(await confirmNoteStyleBatchPreview(refusedLease)).toMatchObject({
+        confirmedCount: 0,
+        refusedCount: 1,
+        unattemptedCount: 0,
+      });
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBe(firstReceipt);
+
+      const noOpLease = controls.host.create('preserve');
+      if (!noOpLease) throw new Error('The empty preview lease was not created.');
+      expect(noOpLease.summary.candidateCount).toBe(0);
+      expect(await confirmNoteStyleBatchPreview(noOpLease)).toMatchObject({
+        confirmedCount: 0,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBe(firstReceipt);
+
+      const staleLease = controls.host.create('overwrite');
+      if (!staleLease) throw new Error('The stale preview lease was not created.');
+      const changedStyle = { ...DEFAULT_STYLE, width: 'comfortable' as const };
+      runtime.setPreferences({
+        ...runtime.preferences(),
+        width: changedStyle.width,
+        defaultNoteStyle: changedStyle,
+      });
+      expect(await confirmNoteStyleBatchPreview(staleLease)).toBeNull();
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBe(firstReceipt);
+      expect(firstReceipt?.writes[0]?.appliedStyle).toEqual(DEFAULT_STYLE);
+
+      controls.host.invalidate();
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBe(firstReceipt);
+    } finally {
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await session.close();
+    }
+  });
+
+  it('replaces the previous receipt with a confirmed write even when no restore context is available', async () => {
+    const taggedStyle =
+      '---\ntitle: Two\nmorrowNoteStyle:\n  font: !!str sans\n  fontSize: 16\n---\nTwo body.\n';
+    const vault = new ObservedVault({ 'One.md': noteSource('One'), 'Two.md': taggedStyle });
+    const session = await openSession(vault);
+    const controls = createHost(makeRuntime(session));
+
+    try {
+      const firstLease = controls.host.create('preserve');
+      if (!firstLease) throw new Error('The first preview lease was not created.');
+      expect(await confirmNoteStyleBatchPreview(firstLease)).toMatchObject({ confirmedCount: 1 });
+      const previousReceipt = readLastNoteStyleBatchReceipt(controls.host);
+      expect(previousReceipt?.writes.map(({ title }) => title)).toEqual(['One']);
+
+      const secondLease = controls.host.create('overwrite');
+      if (!secondLease) throw new Error('The overwrite preview lease was not created.');
+      const result = await confirmNoteStyleBatchPreview(secondLease);
+      expect(result).toMatchObject({ confirmedCount: 1, refusedCount: 0, unattemptedCount: 0 });
+      expect(vault.batches.flat().some((op) => op.op === 'write' && op.path === 'Two.md')).toBe(true);
+
+      const receipt = readLastNoteStyleBatchReceipt(controls.host);
+      expect(receipt).not.toBe(previousReceipt);
+      expect(receipt).toMatchObject({
+        mode: 'overwrite',
+        writes: [
+          {
+            pageId: pageIdAt(session, 'Two.md'),
+            title: 'Two',
+            order: 1,
+            appliedStyle: DEFAULT_STYLE,
+            restoreContext: null,
+          },
+        ],
+        hasRestorableItems: false,
+      });
+    } finally {
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await session.close();
+    }
+  });
+
+  it('revokes the receipt across A-to-B-to-A session changes, registration deactivation, and teardown', async () => {
+    const sessionA = await openSession(new MemoryVault({ 'One.md': noteSource('One') }));
+    const sessionB = await openSession(new MemoryVault({ 'Other.md': noteSource('Other') }));
+    const runtime = makeRuntime(sessionA);
+    const controls = createHost(runtime);
+
+    try {
+      const initialLease = controls.host.create('preserve');
+      if (!initialLease) throw new Error('The initial preview lease was not created.');
+      expect(await confirmNoteStyleBatchPreview(initialLease)).toMatchObject({ confirmedCount: 1 });
+      expect(readLastNoteStyleBatchReceipt(controls.host)).not.toBeNull();
+
+      runtime.setSession(sessionB);
+      runtime.setSession(sessionA);
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
+
+      const nextStyle = { ...DEFAULT_STYLE, font: 'mono' as const };
+      runtime.setPreferences({
+        ...runtime.preferences(),
+        font: nextStyle.font,
+        defaultNoteStyle: nextStyle,
+      });
+      const nextLease = controls.host.create('overwrite');
+      if (!nextLease) throw new Error('The replacement preview lease was not created.');
+      expect(await confirmNoteStyleBatchPreview(nextLease)).toMatchObject({ confirmedCount: 1 });
+      expect(readLastNoteStyleBatchReceipt(controls.host)).not.toBeNull();
+
+      controls.setActive(false);
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
+      controls.setActive(true);
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
+
+      const finalLease = controls.host.create('overwrite');
+      expect(finalLease).not.toBeNull();
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
+      expect(controls.host.create('overwrite')).toBeNull();
+    } finally {
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await sessionB.close();
+      await sessionA.close();
+    }
+  });
+
+  it('keeps a newer receipt when an older acknowledged write returns after a session switch', async () => {
+    const vault = new HeldApplyVault({ 'One.md': noteSource('One') });
+    vault.holdWhen((ops) => ops.some((op) => op.op === 'write' && op.path === 'One.md'));
+    const sessionA = await openSession(vault);
+    const sessionB = await openSession(new MemoryVault({ 'Two.md': noteSource('Two') }));
+    const runtime = makeRuntime(sessionA);
+    const controls = createHost(runtime);
+    const leaseA = controls.host.create('preserve');
+    if (!leaseA) throw new Error('The first preview lease was not created.');
+
+    try {
+      const executionA = confirmNoteStyleBatchPreview(leaseA);
+      await vault.held;
+      runtime.setSession(sessionB);
+      controls.host.invalidate();
+      controls.setActive(false);
+      controls.setActive(true);
+      const leaseB = controls.host.create('preserve');
+      if (!leaseB) throw new Error('The replacement preview lease was not created.');
+      expect(await confirmNoteStyleBatchPreview(leaseB)).toMatchObject({
+        confirmedCount: 1,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      const receiptB = readLastNoteStyleBatchReceipt(controls.host);
+      expect(receiptB?.writes.map(({ title }) => title)).toEqual(['Two']);
+
+      vault.release();
+
+      expect(await executionA).toMatchObject({ confirmedCount: 1, refusedCount: 0, unattemptedCount: 0 });
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBe(receiptB);
+      runtime.setSession(sessionA);
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
+    } finally {
+      vault.release();
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await sessionB.close();
+      await sessionA.close();
+    }
+  });
+
+  it('preserves the confirmation result when a scope lookup throws after the write ACK', async () => {
+    const session = await openSession(new MemoryVault({ 'One.md': noteSource('One') }));
+    const runtime = makeRuntime(session);
+    const controls = createHost(runtime);
+    const setStyleWithRestoreContext = session.setNoteStyleWithRestoreContext.bind(session);
+    session.setNoteStyleWithRestoreContext = async (input) => {
+      const result = await setStyleWithRestoreContext(input);
+      runtime.runtime.getSession = () => {
+        throw new Error('Session lookup failed after the confirmed write.');
+      };
+      return result;
+    };
+    const lease = controls.host.create('preserve');
+    if (!lease) throw new Error('The preview lease was not created.');
+
+    try {
+      expect(await confirmNoteStyleBatchPreview(lease)).toMatchObject({
+        confirmedCount: 1,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
+    } finally {
+      disposeNoteStyleBatchPreviewHost(controls.host);
       await session.close();
     }
   });
@@ -361,9 +614,9 @@ describe('host-only note-style preview confirmation', () => {
     if (!lease) throw new Error('The preview lease was not created.');
     const oneId = pageIdAt(session, 'One.md');
     let refusalCode: string | null = null;
-    const setNoteStyle = session.setNoteStyle.bind(session);
-    session.setNoteStyle = async (input) => {
-      const result = await setNoteStyle(input);
+    const setNoteStyleWithRestoreContext = session.setNoteStyleWithRestoreContext.bind(session);
+    session.setNoteStyleWithRestoreContext = async (input) => {
+      const result = await setNoteStyleWithRestoreContext(input);
       if (!result.ok) refusalCode = result.code;
       return result;
     };

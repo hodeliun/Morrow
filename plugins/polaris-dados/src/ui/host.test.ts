@@ -796,6 +796,66 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('formats implicit formula decimals while dependent formulas keep raw values', () => {
+    const total = {
+      ...DEFAULT_PROPERTIES[3]!,
+      formula: 'Quantity * Price * -6.1728',
+      format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' as const },
+    };
+    const zero = {
+      id: 'zero-result',
+      name: 'Zero result',
+      type: 'formula' as const,
+      options: [],
+      formula: '0',
+      format: { locale: 'en-US', precision: 0 },
+    };
+    const defaultLocale = {
+      id: 'default-locale',
+      name: 'Default locale',
+      type: 'formula' as const,
+      options: [],
+      formula: '12.5',
+      format: { precision: 2 },
+    };
+    const dependent: TestProperty = {
+      id: 'dependent',
+      name: 'Dependent',
+      type: 'formula',
+      options: [],
+      formula: 'Total + 5',
+    };
+    const properties: readonly TestProperty[] = [
+      ...DEFAULT_PROPERTIES.slice(0, 3),
+      total,
+      zero,
+      defaultLocale,
+      dependent,
+    ];
+    const values = { name: 'Widget', quantity: 2, price: 10 };
+    const data = makeDataDouble({ properties, rowProperties: values });
+    const mounted = mountPlugin(data.api, 'pt');
+    const cellText = (propertyId: string) =>
+      mounted.element.querySelector(`[data-field="${propertyId}"] [data-value-kind="number"]`)?.textContent;
+    const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+    const decimal = new Intl.NumberFormat('de-DE', {
+      maximumFractionDigits: 1.5,
+      minimumFractionDigits: 1.5,
+    }).format(123.456);
+
+    expect(cellText('total')).toBe(`(${decimal})`);
+    expect(cellText('zero-result')).toBe('0');
+    expect(cellText('default-locale')).toBe(
+      new Intl.NumberFormat(browserLocale, { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(12.5),
+    );
+    expect(cellText('dependent')).toBe(
+      new Intl.NumberFormat('pt', { maximumFractionDigits: 10 }).format(-118.456),
+    );
+    expect(data.current().rows[0]?.properties).toEqual(values);
+    expect(data.persisted()).toEqual(values);
+    mounted.unmount();
+  });
+
   it('limits formula dependency depth and work without changing the extracted engine', () => {
     const properties: TestProperty[] = [];
     for (let index = 0; index < 28; index += 1) {

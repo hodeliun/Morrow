@@ -5,6 +5,7 @@ import { isEffectivelyTrashed } from '../../core/tree';
 import { isValidNoteStyle, resolveDefaultNoteStyle } from '../../core/noteStyle';
 import type { NoteStyle } from '../../core/noteStyle';
 import type { WorkspaceSession } from '../../storage/session';
+import type { NoteStyleRestoreContext } from '../../storage/repository';
 import type {
   PluginNoteStyleBatchPreviewHost,
   PluginNoteStyleBatchPreviewLease,
@@ -66,6 +67,90 @@ export interface NoteStyleBatchConfirmationResult {
   readonly confirmedCount: number;
   readonly refusedCount: number;
   readonly unattemptedCount: number;
+}
+
+/** App-private receipt for the most recent confirmed style batch in one live mount. */
+export interface NoteStyleBatchReceiptItem {
+  readonly pageId: PageId;
+  readonly title: string;
+  readonly order: number;
+  readonly appliedStyle: Readonly<NoteStyle>;
+  readonly restoreContext: NoteStyleRestoreContext | null;
+}
+
+export interface NoteStyleBatchReceipt {
+  readonly mode: PluginNoteStyleBatchPreviewMode;
+  /** Every confirmed op:write; entries with null context do not support undo by themselves. */
+  readonly writes: readonly NoteStyleBatchReceiptItem[];
+  readonly hasRestorableItems: boolean;
+}
+
+interface NoteStyleBatchReceiptScope {
+  readonly session: WorkspaceSession;
+  readonly generation: number;
+  readonly lifecycleGeneration: number;
+}
+
+interface NoteStyleBatchReceiptSlot {
+  scope: NoteStyleBatchReceiptScope | null;
+  receipt: NoteStyleBatchReceipt | null;
+  readCurrentScope(): NoteStyleBatchReceiptScope | null;
+  nextBatchId: number;
+  committedBatchId: number;
+  lifecycleGeneration: number;
+  disposed: boolean;
+  cleanup: Array<() => void>;
+}
+
+const noteStyleBatchReceiptSlots = new WeakMap<PluginNoteStyleBatchPreviewHost, NoteStyleBatchReceiptSlot>();
+
+/**
+ * Reads the app-private receipt for a host mount. This module is not part of the plugin API; the
+ * public host object still exposes summary-only previews and sanitized confirmation results.
+ */
+export function readLastNoteStyleBatchReceipt(
+  host: PluginNoteStyleBatchPreviewHost,
+): NoteStyleBatchReceipt | null {
+  const slot = noteStyleBatchReceiptSlots.get(host);
+  if (!slot || slot.disposed) return null;
+  const scope = slot.readCurrentScope();
+  if (!scope || !sameReceiptScope(slot.scope, scope)) {
+    slot.receipt = null;
+    slot.scope = scope;
+    return null;
+  }
+  return slot.receipt;
+}
+
+/** Ends one host mount and revokes its private receipt. */
+export function disposeNoteStyleBatchPreviewHost(host: PluginNoteStyleBatchPreviewHost): void {
+  const slot = noteStyleBatchReceiptSlots.get(host);
+  if (!slot || slot.disposed) return;
+  try {
+    host.invalidate();
+  } catch {
+    // Revoking the receipt and subscriptions must still happen after lease cleanup errors.
+  }
+  slot.disposed = true;
+  slot.receipt = null;
+  slot.scope = null;
+  for (const cleanup of slot.cleanup.splice(0)) {
+    try {
+      cleanup();
+    } catch {
+      // Teardown must continue if a runtime listener has already been removed.
+    }
+  }
+}
+
+function sameReceiptScope(
+  first: NoteStyleBatchReceiptScope | null,
+  second: NoteStyleBatchReceiptScope | null,
+): boolean {
+  return first !== null && second !== null &&
+    first.session === second.session &&
+    first.generation === second.generation &&
+    first.lifecycleGeneration === second.lifecycleGeneration;
 }
 
 const previewConfirmations = new WeakMap<
@@ -239,6 +324,65 @@ export function createNoteStyleBatchPreviewHost(
 ): PluginNoteStyleBatchPreviewHost {
   let activeLease: { invalidate(): void } | null = null;
   let activeExecution: { invalidate(): void } | null = null;
+  const receiptSlot: NoteStyleBatchReceiptSlot = {
+    scope: null,
+    receipt: null,
+    readCurrentScope: () => null,
+    nextBatchId: 0,
+    committedBatchId: 0,
+    lifecycleGeneration: 0,
+    disposed: false,
+    cleanup: [],
+  };
+
+  receiptSlot.readCurrentScope = () => {
+    try {
+      if (receiptSlot.disposed || !isMounted() || !isRegistrationActive()) {
+        receiptSlot.receipt = null;
+        receiptSlot.lifecycleGeneration++;
+        return null;
+      }
+      const session = runtime.getSession();
+      if (session.isClosed) {
+        receiptSlot.receipt = null;
+        receiptSlot.lifecycleGeneration++;
+        return null;
+      }
+      return {
+        session,
+        generation: runtime.getSessionGeneration(),
+        lifecycleGeneration: receiptSlot.lifecycleGeneration,
+      };
+    } catch {
+      receiptSlot.receipt = null;
+      receiptSlot.lifecycleGeneration++;
+      return null;
+    }
+  };
+
+  const clearReceiptWhenScopeChanges = () => {
+    if (receiptSlot.disposed) return;
+    const scope = receiptSlot.readCurrentScope();
+    if (!sameReceiptScope(receiptSlot.scope, scope)) receiptSlot.receipt = null;
+    receiptSlot.scope = scope;
+  };
+
+  const isReceiptScopeCurrent = (captured: NoteStyleBatchReceiptScope): boolean => {
+    const scope = receiptSlot.readCurrentScope();
+    if (!scope) {
+      receiptSlot.receipt = null;
+      receiptSlot.scope = null;
+      return false;
+    }
+    if (!sameReceiptScope(receiptSlot.scope, scope)) {
+      receiptSlot.receipt = null;
+      receiptSlot.scope = scope;
+      return false;
+    }
+    if (!sameReceiptScope(captured, scope)) return false;
+    receiptSlot.scope = scope;
+    return true;
+  };
 
   const expireActiveLease = () => {
     const lease = activeLease;
@@ -252,12 +396,14 @@ export function createNoteStyleBatchPreviewHost(
     execution?.invalidate();
   };
 
-  return Object.freeze({
+  const host: PluginNoteStyleBatchPreviewHost = Object.freeze({
     invalidate,
     create(mode: PluginNoteStyleBatchPreviewMode): PluginNoteStyleBatchPreviewLease | null {
       expireActiveLease();
+      clearReceiptWhenScopeChanges();
+      if (receiptSlot.disposed) return null;
       if (activeExecution) return null;
-      if (!isMounted() || !isRegistrationActive()) return null;
+      if (!receiptSlot.readCurrentScope()) return null;
 
       let session: WorkspaceSession;
       let preferences: Preferences;
@@ -446,6 +592,14 @@ export function createNoteStyleBatchPreviewHost(
           order: target.order,
           status: 'unattempted' as NoteStyleBatchConfirmationStatus,
         }));
+        const receiptScope = receiptSlot.readCurrentScope();
+        if (!sameReceiptScope(receiptSlot.scope, receiptScope)) {
+          receiptSlot.receipt = null;
+          receiptSlot.scope = receiptScope;
+        }
+        const batchId = ++receiptSlot.nextBatchId;
+        const confirmedWriteItems: NoteStyleBatchReceiptItem[] = [];
+        let hadConfirmedWrite = false;
 
         try {
           trackExecutionSubscription(runtime.subscribeSession);
@@ -462,7 +616,7 @@ export function createNoteStyleBatchPreviewHost(
             }
 
             let writeStarted = false;
-            const result = await session.setNoteStyle({
+            const result = await session.setNoteStyleWithRestoreContext({
               pageId: target.id,
               style: capturedStyle,
               expectedRevision: target.revision,
@@ -474,7 +628,33 @@ export function createNoteStyleBatchPreviewHost(
               },
             });
 
-            if (result.ok) outcomes[index]!.status = 'confirmed';
+            if (result.ok) {
+              outcomes[index]!.status = 'confirmed';
+              if (result.op === 'write') {
+                hadConfirmedWrite = true;
+                const restoreContext = result.restoreContext === null
+                  ? null
+                  : result.restoreContext.kind === 'explicit'
+                    ? Object.freeze({
+                        kind: 'explicit' as const,
+                        context: Object.freeze({
+                          ...result.restoreContext.context,
+                          fields: Object.freeze({ ...result.restoreContext.context.fields }),
+                        }),
+                      })
+                    : Object.freeze({
+                        kind: 'inherited' as const,
+                        context: Object.freeze({ ...result.restoreContext.context }),
+                      });
+                confirmedWriteItems.push(Object.freeze({
+                  pageId: target.id,
+                  title: target.title,
+                  order: target.order,
+                  appliedStyle: Object.freeze({ ...capturedStyle }),
+                  restoreContext,
+                }));
+              }
+            }
             else if (!writeStarted && !isExecutionContextCurrent()) break;
             else {
               outcomes[index]!.status = 'refused';
@@ -488,6 +668,20 @@ export function createNoteStyleBatchPreviewHost(
         } finally {
           invalidateExecution();
           if (activeExecution === execution) activeExecution = null;
+        }
+
+        if (
+          hadConfirmedWrite &&
+          batchId > receiptSlot.committedBatchId &&
+          receiptScope &&
+          isReceiptScopeCurrent(receiptScope)
+        ) {
+          receiptSlot.receipt = Object.freeze({
+            mode,
+            writes: Object.freeze(confirmedWriteItems),
+            hasRestorableItems: confirmedWriteItems.some((item) => item.restoreContext !== null),
+          });
+          receiptSlot.committedBatchId = batchId;
         }
 
         const frozenOutcomes = Object.freeze(outcomes.map((outcome) => Object.freeze(outcome)));
@@ -504,4 +698,17 @@ export function createNoteStyleBatchPreviewHost(
       return lease;
     },
   });
+
+  noteStyleBatchReceiptSlots.set(host, receiptSlot);
+  for (const subscribe of [
+    runtime.subscribeSession,
+    runtime.subscribeRegistration ?? subscribePlugins,
+  ]) {
+    try {
+      receiptSlot.cleanup.push(subscribe(clearReceiptWhenScopeChanges));
+    } catch {
+      // Receipt reads and write completions still check session and registration identity directly.
+    }
+  }
+  return host;
 }

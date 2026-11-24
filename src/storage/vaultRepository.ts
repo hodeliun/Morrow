@@ -26,7 +26,7 @@ import type {
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { childrenOf, isEffectivelyTrashed } from '../core/tree';
-import { isValidNoteStyle } from '../core/noteStyle';
+import { isValidNoteStyle, isValidNoteStyleInput, projectNoteStyle } from '../core/noteStyle';
 import type { NoteStyle } from '../core/noteStyle';
 import {
   findUnrepresentablePageContent,
@@ -58,8 +58,15 @@ import {
 } from '../core/vault/pageFile';
 import type { PageSource } from '../core/vault/pageFile';
 import {
+  captureExplicitMorrowNoteStyleFile,
+  captureInheritedMorrowNoteStyleContext,
+  decodeExplicitMorrowNoteStyleSnapshot,
   findKey,
   isUnambiguousFrontmatter,
+  matchesAppliedNoteStyleValues,
+  restoreExplicitMorrowNoteStyleFile,
+  restoreInheritedMorrowNoteStyleFile,
+  sameNoteStyle,
   splitFrontmatter,
   updateFrontmatter,
   updateMorrowNoteStyleFile,
@@ -86,6 +93,7 @@ import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import type { LoadedWorkspace } from '../core/migrations';
 import { WorkspaceWriteError } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
+import type { NoteStyleRestoreContext, NoteStyleWriteReceipt } from './repository';
 import type { VaultBridge, VaultChange } from './vaultBridge';
 
 export const REGISTRY_PATH = `${MORROW_DIR}/workspace.json`;
@@ -311,9 +319,9 @@ export class VaultRepository implements WorkspaceRepository {
     const parentId = page?.parentId;
     return Boolean(
       placement?.file &&
-        extension(placement.file) === 'md' &&
-        this.texts.has(id) &&
-        !(parentId && (this.locked.has(parentId) || this.protectedReasons.has(parentId))),
+      extension(placement.file) === 'md' &&
+      this.texts.has(id) &&
+      !(parentId && (this.locked.has(parentId) || this.protectedReasons.has(parentId))),
     );
   }
 
@@ -323,9 +331,9 @@ export class VaultRepository implements WorkspaceRepository {
     const sourceText = page?.encrypted ? this.plainTexts.get(id) : this.texts.get(id);
     return Boolean(
       placement?.file &&
-        extension(placement.file) === 'md' &&
-        sourceText !== undefined &&
-        updateMorrowNoteStyleFile(sourceText, style) !== null,
+      extension(placement.file) === 'md' &&
+      sourceText !== undefined &&
+      updateMorrowNoteStyleFile(sourceText, style) !== null,
     );
   }
 
@@ -423,6 +431,7 @@ export class VaultRepository implements WorkspaceRepository {
       ...batch.docs.map((record) => record.id),
       ...batch.removed,
       ...(batch.noteStylePages ?? []),
+      ...(batch.noteStyleRestore ? [batch.noteStyleRestore.pageId] : []),
       ...(batch.snapshots ?? []).map((snapshot) => snapshot.pageId),
     ]);
     for (const id of touched) if (this.locked.has(id)) return this.protectionMessage(id);
@@ -436,6 +445,22 @@ export class VaultRepository implements WorkspaceRepository {
       }
     }
 
+    if (
+      batch.noteStyleRestore &&
+      ((batch.noteStylePages?.length ?? 0) !== 1 ||
+        batch.noteStylePages?.[0] !== batch.noteStyleRestore.pageId ||
+        batch.pages.length !== 1 ||
+        batch.pages[0]?.id !== batch.noteStyleRestore.pageId ||
+        batch.docs.length > 0 ||
+        batch.removed.length > 0 ||
+        (batch.checkPages?.length ?? 0) > 0 ||
+        (batch.quietPageIds?.length ?? 0) > 0 ||
+        (batch.snapshots?.length ?? 0) > 0)
+    )
+      return batch.noteStyleRestore.kind === 'restore-inherited'
+        ? 'An inherited note-style restoration requires its matching isolated note-style lane.'
+        : 'An explicit note-style restoration requires its matching isolated note-style lane.';
+
     for (const id of batch.noteStylePages ?? []) {
       const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
       const before =
@@ -447,9 +472,50 @@ export class VaultRepository implements WorkspaceRepository {
         return 'Note styles cannot be changed on opted-in Polaris Dados records.';
       if (!placement?.file || extension(placement.file) !== 'md' || !this.texts.has(id))
         return 'The page has no writable Markdown source for its note style.';
-      if (!isValidNoteStyle(page.extra.morrowNoteStyle)) return 'The saved note style is invalid.';
       if (batch.docs.some((record) => record.id === id))
         return 'A note-style write cannot include a body change.';
+      const restore = batch.noteStyleRestore;
+      if (restore) {
+        if (restore.pageId !== id || page.encrypted || before.encrypted)
+          return restore.kind === 'restore-inherited'
+            ? 'An inherited note style can only be restored on a live, unencrypted ordinary page.'
+            : 'An explicit note style can only be restored on a live, unencrypted ordinary page.';
+        if (!isValidNoteStyleInput(restore.appliedStyle)) return 'The applied note style is invalid.';
+        if (restore.kind === 'restore-inherited') {
+          if (
+            !sameNoteStyle(before.extra.morrowNoteStyle, restore.appliedStyle) ||
+            Object.hasOwn(page.extra, 'morrowNoteStyle')
+          )
+            return 'The note style no longer matches the inherited-style restoration.';
+        } else {
+          const patch = decodeExplicitMorrowNoteStyleSnapshot(restore.context);
+          const beforeStyle = before.extra.morrowNoteStyle;
+          const afterStyle = page.extra.morrowNoteStyle;
+          if (
+            !patch ||
+            !matchesAppliedNoteStyleValues(beforeStyle, restore.appliedStyle) ||
+            !isRecord(beforeStyle) ||
+            !isRecord(afterStyle) ||
+            !Object.hasOwn(page.extra, 'morrowNoteStyle')
+          )
+            return 'The note style no longer matches the explicit-style restoration.';
+          for (const field of patch.remove) {
+            if (Object.hasOwn(afterStyle, field))
+              return 'The explicit note-style restoration did not remove an originally absent field.';
+          }
+          for (const [field, value] of Object.entries(patch.set)) {
+            if (!Object.hasOwn(afterStyle, field) || !sameValue(afterStyle[field], value))
+              return 'The explicit note-style restoration did not restore an original field value.';
+          }
+          const owned = new Set([...patch.remove, ...Object.keys(patch.set)]);
+          const unknownFields = (style: Record<string, unknown>) =>
+            Object.fromEntries(Object.entries(style).filter(([field]) => !owned.has(field)));
+          if (!sameValue(unknownFields(beforeStyle), unknownFields(afterStyle)))
+            return 'The explicit note-style restoration changed unknown style fields.';
+        }
+      } else if (!isValidNoteStyle(page.extra.morrowNoteStyle)) {
+        return 'The saved note style is invalid.';
+      }
       const withoutStyle = (candidate: PageMeta) => {
         const extra = { ...candidate.extra };
         delete extra.morrowNoteStyle;
@@ -498,25 +564,8 @@ export class VaultRepository implements WorkspaceRepository {
     const state = batch.state ?? this.lastState;
     if (!state) throw new Error('Nothing to write yet.');
     const noteStyleIds = batch.noteStylePages ?? [];
-    if (noteStyleIds.length > 0) {
-      const isolated =
-        noteStyleIds.length === 1 &&
-        batch.pages.length === 1 &&
-        batch.pages[0]?.id === noteStyleIds[0] &&
-        batch.docs.length === 0 &&
-        batch.removed.length === 0 &&
-        (batch.checkPages?.length ?? 0) === 0 &&
-        (batch.quietPageIds?.length ?? 0) === 0 &&
-        (batch.snapshots?.length ?? 0) === 0;
-      if (!isolated)
-        throw new WorkspaceWriteError(
-          'unsafe-note-style',
-          'A note-style write must be isolated from other workspace changes.',
-          false,
-        );
-      const refusal = this.validateWrite(batch);
-      if (refusal) throw new Error(refusal);
-      await this.writeNoteStyleOnly(state, noteStyleIds[0]!);
+    if (batch.noteStyleRestore || noteStyleIds.length > 0) {
+      await this.writeNoteStyleBatch(batch, state, false);
       return;
     }
     const refusal = this.validateWrite(batch);
@@ -871,7 +920,12 @@ export class VaultRepository implements WorkspaceRepository {
     this.registryDirty = false;
   }
 
-  private async writeNoteStyleOnly(state: WorkspaceState, id: PageId): Promise<void> {
+  private async writeNoteStyleOnly(
+    state: WorkspaceState,
+    id: PageId,
+    restore?: NonNullable<WriteBatch['noteStyleRestore']>,
+    captureRestoreContext = false,
+  ): Promise<NoteStyleWriteReceipt> {
     const page = state.pages[id];
     const placement = this.layout.get(id);
     const baseline = this.texts.get(id);
@@ -887,42 +941,100 @@ export class VaultRepository implements WorkspaceRepository {
     const noteStylePages = new Set<PageId>([id]);
     const plannedSources = new Map<PageId, PageSource>();
     let op: VaultOp;
-    const sourceStyle = readPageText(sourceText).extra.morrowNoteStyle;
-    if (sameValue(page.extra.morrowNoteStyle, sourceStyle)) {
-      // An equal saved value still performs source CAS but does not canonicalize YAML or enqueue a retry.
-      op = { op: 'check', path: placement.file, expect: baseline, id };
-    } else {
-      const text = updateMorrowNoteStyleFile(sourceText, page.extra.morrowNoteStyle as NoteStyle);
+    let restoreContext: NoteStyleRestoreContext | null = null;
+    if (restore) {
+      const text =
+        restore.kind === 'restore-inherited'
+          ? restoreInheritedMorrowNoteStyleFile(sourceText, restore.appliedStyle, restore.context)
+          : restoreExplicitMorrowNoteStyleFile(sourceText, restore.appliedStyle, restore.context);
       if (text === null) {
         throw new WorkspaceWriteError(
           'unsafe-frontmatter',
-          'The note style was not written because its YAML could not be changed without risking another value. No files were changed.',
+          restore.kind === 'restore-inherited'
+            ? 'The inherited note style was not restored because its YAML could not be changed safely. No files were changed.'
+            : 'The explicit note style was not restored because its YAML could not be changed safely. No files were changed.',
           false,
         );
       }
       const parsed = readPageText(text);
-      if (parsed.error || !parsed.source.rawData) {
+      if (
+        parsed.error ||
+        (restore.kind === 'restore-inherited'
+          ? Object.hasOwn(parsed.extra, 'morrowNoteStyle')
+          : !Object.hasOwn(parsed.extra, 'morrowNoteStyle')) ||
+        (parsed.source.rawData === null && parsed.source.rawHead !== '')
+      ) {
         throw new WorkspaceWriteError(
           'unsafe-frontmatter',
-          'The note style was not written because its updated YAML could not be verified. No files were changed.',
+          restore.kind === 'restore-inherited'
+            ? 'The inherited note style was not restored because the updated Markdown could not be verified. No files were changed.'
+            : 'The explicit note style was not restored because the updated Markdown could not be verified. No files were changed.',
           false,
         );
       }
       plannedSources.set(id, parsed.source);
-      let written = text;
-      if (page.encrypted) {
-        const pageKey = this.keys.get(id);
-        if (!pageKey) {
+      op = { op: 'write', path: placement.file, text, expect: baseline, id };
+    } else {
+      const sourceStyle = readPageText(sourceText).extra.morrowNoteStyle;
+      if (sameValue(page.extra.morrowNoteStyle, sourceStyle)) {
+        // An equal saved value still performs source CAS but does not canonicalize YAML or enqueue a retry.
+        op = { op: 'check', path: placement.file, expect: baseline, id };
+      } else {
+        const style = page.extra.morrowNoteStyle as NoteStyle;
+        const text = updateMorrowNoteStyleFile(sourceText, style);
+        if (text === null) {
           throw new WorkspaceWriteError(
-            'page-inaccessible',
-            'This encrypted note is locked and its style cannot be saved.',
+            'unsafe-frontmatter',
+            'The note style was not written because its YAML could not be changed without risking another value. No files were changed.',
             false,
           );
         }
-        written = await encryptPage(text, pageKey);
-        this.pendingPlain.set(id, text);
+        const parsed = readPageText(text);
+        if (parsed.error || !parsed.source.rawData) {
+          throw new WorkspaceWriteError(
+            'unsafe-frontmatter',
+            'The note style was not written because its updated YAML could not be verified. No files were changed.',
+            false,
+          );
+        }
+        plannedSources.set(id, parsed.source);
+        if (captureRestoreContext && !page.encrypted) {
+          try {
+            const appliedStyle = projectNoteStyle(style);
+            if (appliedStyle) {
+              const inherited = captureInheritedMorrowNoteStyleContext(sourceText);
+              if (inherited) {
+                if (restoreInheritedMorrowNoteStyleFile(text, appliedStyle, inherited) === sourceText)
+                  restoreContext = { kind: 'inherited', context: inherited };
+              } else {
+                const explicit = captureExplicitMorrowNoteStyleFile(sourceText);
+                if (
+                  explicit &&
+                  restoreExplicitMorrowNoteStyleFile(text, appliedStyle, explicit) === sourceText
+                )
+                  restoreContext = { kind: 'explicit', context: explicit };
+              }
+            }
+          } catch {
+            // A private undo candidate must never reject a valid style write.
+            restoreContext = null;
+          }
+        }
+        let written = text;
+        if (page.encrypted) {
+          const pageKey = this.keys.get(id);
+          if (!pageKey) {
+            throw new WorkspaceWriteError(
+              'page-inaccessible',
+              'This encrypted note is locked and its style cannot be saved.',
+              false,
+            );
+          }
+          written = await encryptPage(text, pageKey);
+          this.pendingPlain.set(id, text);
+        }
+        op = { op: 'write', path: placement.file, text: written, expect: baseline, id };
       }
-      op = { op: 'write', path: placement.file, text: written, expect: baseline, id };
     }
 
     try {
@@ -937,10 +1049,67 @@ export class VaultRepository implements WorkspaceRepository {
         new Set(),
       );
       this.lastState = state;
+      return {
+        op: op.op,
+        restoreContext: op.op === 'write' ? restoreContext : null,
+      };
     } catch (error) {
       this.pendingPlain.delete(id);
       throw error;
     }
+  }
+
+  private async writeNoteStyleBatch(
+    batch: WriteBatch,
+    state: WorkspaceState,
+    captureRestoreContext: boolean,
+  ): Promise<NoteStyleWriteReceipt> {
+    const noteStyleIds = batch.noteStylePages ?? [];
+    if (batch.noteStyleRestore && noteStyleIds.length === 0) {
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        batch.noteStyleRestore.kind === 'restore-inherited'
+          ? 'An inherited note-style restoration requires its matching isolated note-style lane.'
+          : 'An explicit note-style restoration requires its matching isolated note-style lane.',
+        false,
+      );
+    }
+    const id = noteStyleIds[0];
+    const isolated =
+      id !== undefined &&
+      noteStyleIds.length === 1 &&
+      batch.pages.length === 1 &&
+      batch.pages[0]?.id === id &&
+      batch.docs.length === 0 &&
+      batch.removed.length === 0 &&
+      (batch.checkPages?.length ?? 0) === 0 &&
+      (batch.quietPageIds?.length ?? 0) === 0 &&
+      (batch.snapshots?.length ?? 0) === 0 &&
+      (!batch.noteStyleRestore || batch.noteStyleRestore.pageId === id);
+    if (!isolated)
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        'A note-style write must be isolated from other workspace changes.',
+        false,
+      );
+    const refusal = this.validateWrite(batch);
+    if (refusal) throw new WorkspaceWriteError('unsafe-note-style', refusal, false);
+    return this.writeNoteStyleOnly(state, id, batch.noteStyleRestore, captureRestoreContext);
+  }
+
+  async writeNoteStyle(
+    batch: WriteBatch,
+    _options: { readonly captureRestoreContext: true },
+  ): Promise<NoteStyleWriteReceipt> {
+    const state = batch.state ?? this.lastState;
+    if (!state) throw new Error('Nothing to write yet.');
+    if (batch.noteStyleRestore)
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        'Restore operations cannot collect a note-style application context.',
+        false,
+      );
+    return this.writeNoteStyleBatch(batch, state, true);
   }
 
   private navigationSourceDependencies(

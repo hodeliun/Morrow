@@ -3,7 +3,11 @@ import { isValidNoteStyleInput, resolveDefaultNoteStyle } from '../../core/noteS
 import type { NoteStyle } from '../../core/noteStyle';
 import { SettingsGroup } from './SettingsRows';
 import { t } from '../i18n';
-import { confirmNoteStyleBatchPreview, createNoteStyleBatchPreviewHost } from './noteStyleBatchPreview';
+import {
+  confirmNoteStyleBatchPreview,
+  createNoteStyleBatchPreviewHost,
+  disposeNoteStyleBatchPreviewHost,
+} from './noteStyleBatchPreview';
 import { documentoNoteStyleDefaultsPanel, subscribePlugins } from '../plugins/registry';
 import type {
   PluginNoteStyleDefaultsPanelHost,
@@ -220,11 +224,13 @@ export function DocumentoNoteStyleDefaultsSettings() {
     } catch {
       mountState.active = false;
       batchPreview.invalidate();
+      disposeNoteStyleBatchPreviewHost(previewHost);
       container.setAttribute('role', 'alert');
       container.textContent = labels.saveFailed;
       return () => {
         mountState.active = false;
         batchPreview.invalidate();
+        disposeNoteStyleBatchPreviewHost(previewHost);
         container.replaceChildren();
       };
     }
@@ -232,6 +238,7 @@ export function DocumentoNoteStyleDefaultsSettings() {
     return () => {
       mountState.active = false;
       batchPreview.invalidate();
+      disposeNoteStyleBatchPreviewHost(previewHost);
       try {
         if (typeof unmount === 'function') unmount();
       } finally {

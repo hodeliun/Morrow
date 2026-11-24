@@ -23,7 +23,10 @@ import { createFormulaEvaluationScope, evaluateCell, resolveFormulaDatabaseTitle
 import { mergePrioritizedColumnOrder, projectLinkedView, type PresentedProperty } from './linkedView';
 import { cellEditStartKey } from './cellEditing';
 import { providerMessages } from './locale';
-import { formatNumberCell as formatSharedNumberCell } from './numberFormatting';
+import {
+  formatFormulaNumber,
+  formatNumberCell as formatSharedNumberCell,
+} from './numberFormatting';
 
 const PROVIDER_ID = 'polaris-dados';
 
@@ -2529,6 +2532,10 @@ export function mountPolarisDados(
   };
 
   const formatNumberCell = (value: number, property: ProviderProperty): string => {
+    if (property.type === 'formula' && property.format && Object.hasOwn(property.format, 'precision')) {
+      const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+      return formatFormulaNumber(value, property.format, 'decimal', defaultLocale, 2);
+    }
     const format = property.type === 'number' ? property.format : undefined;
     const fallbackLocale = format
       ? typeof navigator !== 'undefined'

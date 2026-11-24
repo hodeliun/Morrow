@@ -11,6 +11,7 @@ import { docToMarkdown } from '../markdown/serialize';
 import { SCHEMA_VERSION, emptyWorkspace, newPageMeta } from '../model';
 import type { DatabaseDef, PropValue } from '../model';
 import { encodePolarisDadosViewMarker } from '../polarisDadosView';
+import { loadVault } from './load';
 import {
   composeFrontmatter,
   managedFrontmatter,
@@ -164,6 +165,103 @@ describe('vault representability guard', () => {
       views: [],
     });
     expect(findUnrepresentablePageContent(nonNumber)).toMatch(/number property format/i);
+  });
+
+  it('preserves explicit decimal formats on implicit formula properties without persisting results', () => {
+    const format = { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' } as const;
+    const source = databaseNote({
+      properties: [
+        { id: 'quantity', name: 'Quantity', type: 'number' },
+        { id: 'total', name: 'Total', type: 'formula', formula: 'Quantity * 2', format },
+      ],
+      views: [],
+    });
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const read = readPageText(source);
+    expect(read.database?.properties[1]?.format).toEqual(format);
+
+    const database = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: read.database,
+      extra: read.extra,
+    });
+    const saved = renderPageText(
+      composeFrontmatter(managedFrontmatter(database, 'Inventory', null), read.extra, null),
+      null,
+      read.body,
+    );
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+    expect(readPageText(saved).database?.properties[1]?.format).toEqual(format);
+
+    const row = newPageMeta({
+      id: 'row-1',
+      parentId: 'inventory',
+      title: 'Widget',
+      kind: 'page',
+      properties: { quantity: 4, total: 8 },
+    });
+    const rowText = renderPageText(
+      composeFrontmatter(managedFrontmatter(row, 'Widget', read.database), {}, null),
+      null,
+      'Row data\n',
+    );
+    expect(readPageText(rowText).data.Quantity).toBe(4);
+    expect(readPageText(rowText).data.Total).toBeUndefined();
+    expect(rowText).not.toMatch(/^Total:/m);
+  });
+
+  it('protects formula formats with incompatible result settings and retains the exact source bytes', () => {
+    const formulaProperty = (extra: Record<string, unknown>) => ({
+      id: 'total',
+      name: 'Total',
+      type: 'formula',
+      formula: 'Quantity * 2',
+      ...extra,
+    });
+    const protectedProperties = [
+      formulaProperty({ format: { locale: 'de-DE' } }),
+      formulaProperty({ format: { precision: 2, currency: 'USD' } }),
+      formulaProperty({ format: { precision: 2, percent: true } }),
+      formulaProperty({ format: { precision: 2, unexpected: 'keep me' } }),
+      formulaProperty({ format: { precision: 2 }, display: 'bar' }),
+      formulaProperty({ format: { precision: 2 }, max: 50 }),
+      formulaProperty({ format: { precision: 2 }, formulaResultType: 'number' }),
+      formulaProperty({ format: { locale: 'not a locale', precision: 2 } }),
+    ];
+
+    for (const property of protectedProperties) {
+      const source = databaseNote({ properties: [property], views: [] });
+      expect(findUnrepresentablePageContent(source), source).not.toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+    }
+
+    const protectedSource = databaseNote({
+      properties: [formulaProperty({ format: { precision: 2, currency: 'USD' } })],
+      views: [],
+    });
+    const loaded = loadVault(
+      {
+        files: [{ path: 'Inventory.md', text: protectedSource, mtime: 1, birthtime: 1 }],
+        folders: [],
+        others: [],
+        registry: null,
+        recent: null,
+      },
+      () => 'inventory',
+      1,
+    );
+
+    expect(loaded.protectedPages.get('inventory')).toMatch(/number property format/i);
+    expect(loaded.texts.get('inventory')).toBe(protectedSource);
+    expect(loaded.docs.inventory).toEqual({
+      type: 'doc',
+      content: [{ type: 'rawBlock', attrs: { text: protectedSource } }],
+    });
   });
 
   it('rejects fork-only and nested database fields before normalization', () => {

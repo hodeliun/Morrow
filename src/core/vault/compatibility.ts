@@ -27,7 +27,7 @@ import {
   MAX_DOC_DEPTH,
   MAX_ICON_LENGTH,
   MAX_TITLE_LENGTH,
-  normalizeNumberFormat,
+  normalizeDatabasePropertyFormat,
   PROP_TYPES,
   validCover,
   VIEW_TYPES,
@@ -356,7 +356,7 @@ function propertyIssue(raw: unknown): string | null {
   if (!PROP_TYPES.includes(raw.type as never))
     return 'A database property type is not supported by this version.';
   if (raw.name.length > 200) return 'A database property name is too long to preserve.';
-  if (Object.hasOwn(raw, 'format') && (raw.type !== 'number' || normalizeNumberFormat(raw.format) === null)) {
+  if (Object.hasOwn(raw, 'format') && normalizeDatabasePropertyFormat(raw) === null) {
     return 'A number property format is not supported by this version.';
   }
 

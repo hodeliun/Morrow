@@ -49,7 +49,7 @@ export interface SelectOption {
   color: ColorName;
 }
 
-/** Display-only settings for a Markdown-declared number property. Stored values stay numeric. */
+/** Display-only settings for a Markdown-declared number property or implicit formula result. */
 export interface NumberPropertyFormat {
   locale?: string;
   precision?: number;
@@ -86,6 +86,26 @@ export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | nu
     format.negativeFormat = raw.negativeFormat;
   }
   return format;
+}
+
+/** Validates the narrow number format a database property can safely preserve. */
+export function normalizeDatabasePropertyFormat(value: unknown): NumberPropertyFormat | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!Object.hasOwn(raw, 'format')) return null;
+
+  if (raw.type === 'number') return normalizeNumberFormat(raw.format);
+  if (
+    raw.type !== 'formula' ||
+    Object.hasOwn(raw, 'formulaResultType') ||
+    Object.hasOwn(raw, 'display') ||
+    Object.hasOwn(raw, 'max')
+  ) {
+    return null;
+  }
+
+  const format = normalizeNumberFormat(raw.format);
+  return format !== null && Object.hasOwn(format, 'precision') ? format : null;
 }
 
 function validNumberFormatLocale(value: unknown): value is string {

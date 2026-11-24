@@ -1,7 +1,10 @@
 import { isAlias, isMap, isPair, isScalar, parse, parseDocument, stringify } from 'yaml';
 import { isRecord } from '../doc';
-import { isValidNoteStyle } from '../noteStyle';
+import { isValidNoteStyle, isValidNoteStyleInput } from '../noteStyle';
 import type { NoteStyle } from '../noteStyle';
+
+const NOTE_STYLE_FIELDS = ['font', 'fontSize', 'lineHeight', 'blockSpacing', 'width'] as const;
+type NoteStyleField = (typeof NOTE_STYLE_FIELDS)[number];
 
 // frontmatter keys morrow reads and writes, every other key is kept exactly as it was
 export const MANAGED_KEYS = new Set(['title', 'icon', 'kind', 'tags', 'tag', 'database', 'cover']);
@@ -300,11 +303,10 @@ export function updateMorrowNoteStyleFile(text: string, style: NoteStyle): strin
     : undefined;
   const lineBreak = (split.head || source).includes('\r\n') ? '\r\n' : '\n';
   let yaml = split.yaml;
-  const styleFields = ['font', 'fontSize', 'lineHeight', 'blockSpacing', 'width'] as const;
   if (!stylePair) {
     const block = [
       'morrowNoteStyle:',
-      ...styleFields.map((field) => `  ${field}: ${encodeStyleScalar(style[field])}`),
+      ...NOTE_STYLE_FIELDS.map((field) => `  ${field}: ${encodeStyleScalar(style[field])}`),
     ].join(lineBreak);
     const separator = split.yaml.length > 0 && !split.yaml.endsWith('\n') ? lineBreak : '';
     yaml = `${split.yaml}${separator}${block}`;
@@ -314,18 +316,18 @@ export function updateMorrowNoteStyleFile(text: string, style: NoteStyle): strin
     for (const item of stylePair.value.items) {
       if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
       const key = item.key.value;
-      if (!styleFields.includes(key as (typeof styleFields)[number])) continue;
+      if (!NOTE_STYLE_FIELDS.includes(key as NoteStyleField)) continue;
       if (values.has(key) || !isScalar(item.value) || isAlias(item.value) || !item.value.range) return null;
       values.set(key, { start: item.value.range[0], end: item.value.range[1] });
     }
 
     const edits: Array<{ start: number; end: number; text: string }> = [];
-    for (const field of styleFields) {
+    for (const field of NOTE_STYLE_FIELDS) {
       const range = values.get(field);
       if (range) edits.push({ ...range, text: encodeStyleScalar(style[field]) });
     }
 
-    const missing = styleFields.filter((field) => !values.has(field));
+    const missing = NOTE_STYLE_FIELDS.filter((field) => !values.has(field));
     if (missing.length > 0) {
       const last = stylePair.value.items[stylePair.value.items.length - 1];
       const endNode = last && isPair(last) ? (last.value ?? last.key) : stylePair.key;
@@ -364,6 +366,577 @@ export function updateMorrowNoteStyleFile(text: string, style: NoteStyle): strin
   )
     return null;
   return `${bom}${updated}`;
+}
+
+/**
+ * The exact scalar source for fields present in a note's explicit style before a batch apply.
+ * Missing fields are absent from `fields`; an own property with an empty or `null` scalar stays present.
+ */
+export interface ExplicitMorrowNoteStyleSnapshot {
+  readonly kind: 'explicit';
+  readonly fields: Readonly<Partial<Record<NoteStyleField, string>>>;
+  /** True when the writer must add a line break before appended style fields. */
+  readonly separatorAdded: boolean;
+  /** The existing nested key whose line ended the YAML before that separator was added. */
+  readonly separatorAnchorKey: string | null;
+}
+
+/** Captures a safe explicit style override without normalizing its scalar spellings. */
+export function captureExplicitMorrowNoteStyleFile(text: string): ExplicitMorrowNoteStyleSnapshot | null {
+  const source = text.startsWith('\uFEFF') ? text.slice(1) : text;
+  const split = splitFrontmatter(source);
+  if (!split.head || split.error || !split.data || !isUnambiguousFrontmatter(split.yaml, split.data))
+    return null;
+
+  const document = parseDocument(split.yaml, { uniqueKeys: true });
+  if (document.errors.length > 0 || !isMap(document.contents) || document.contents.flow) return null;
+  const stylePairs = document.contents.items.filter(
+    (item) => isPair(item) && isScalar(item.key) && item.key.value === 'morrowNoteStyle',
+  );
+  if (stylePairs.length !== 1) return null;
+  const stylePair = stylePairs[0];
+  if (
+    !stylePair ||
+    !isPair(stylePair) ||
+    !isScalar(stylePair.key) ||
+    !stylePair.key.range ||
+    !isMap(stylePair.value) ||
+    stylePair.value.flow ||
+    !stylePair.value.range ||
+    hasYamlAnchorOrAlias(stylePair)
+  )
+    return null;
+
+  const fields: Partial<Record<NoteStyleField, string>> = {};
+  for (const item of stylePair.value.items) {
+    if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
+    const key = item.key.value;
+    if (key === '<<') return null;
+    if (!NOTE_STYLE_FIELDS.includes(key as NoteStyleField)) continue;
+    if (
+      Object.hasOwn(fields, key) ||
+      !isScalar(item.value) ||
+      isAlias(item.value) ||
+      hasExplicitYamlTag(item.key) ||
+      hasExplicitYamlTag(item.value) ||
+      !item.key.range ||
+      !item.value.range
+    )
+      return null;
+
+    const keyLine = lineBounds(split.yaml, item.key.range[0]);
+    const valueLine = lineBounds(split.yaml, item.value.range[0]);
+    const valueEndLine = lineBounds(split.yaml, item.value.range[1]);
+    if (
+      keyLine.start !== valueLine.start ||
+      keyLine.end !== valueLine.end ||
+      keyLine.start !== valueEndLine.start ||
+      keyLine.end !== valueEndLine.end
+    )
+      return null;
+
+    const colon = split.yaml.indexOf(':', item.key.range[1]);
+    if (
+      colon < item.key.range[1] ||
+      colon >= keyLine.end ||
+      split.yaml.slice(item.key.range[1], colon).trim() !== ''
+    )
+      return null;
+    const raw = split.yaml.slice(colon + 1, item.value.range[1]);
+    if (/[\r\n]/.test(raw) || readStyleScalarLexeme(raw) === null) return null;
+    fields[key as NoteStyleField] = raw;
+  }
+
+  const missingFields = NOTE_STYLE_FIELDS.filter((field) => !Object.hasOwn(fields, field));
+  const lastItem = stylePair.value.items[stylePair.value.items.length - 1];
+  const endNode = lastItem && isPair(lastItem) ? (lastItem.value ?? lastItem.key) : stylePair.key;
+  const offset = lineEndAfter(split.yaml, endNode?.range?.[1] ?? stylePair.key.range[1]);
+  const separatorAdded =
+    missingFields.length > 0 && offset === split.yaml.length && offset > 0 && !split.yaml.endsWith('\n');
+  const anchorKey = lastItem && isPair(lastItem) && isScalar(lastItem.key) ? lastItem.key.value : null;
+  if (separatorAdded && typeof anchorKey !== 'string') return null;
+  const separatorAnchorKey = separatorAdded && typeof anchorKey === 'string' ? anchorKey : null;
+
+  return {
+    kind: 'explicit',
+    fields,
+    separatorAdded,
+    separatorAnchorKey,
+  };
+}
+
+/** Restores an earlier explicit override while keeping the current Markdown and unrelated YAML edits. */
+export function restoreExplicitMorrowNoteStyleFile(
+  text: string,
+  appliedStyle: NoteStyle,
+  snapshot: ExplicitMorrowNoteStyleSnapshot,
+): string | null {
+  if (!isValidNoteStyleInput(appliedStyle) || !isValidExplicitStyleSnapshot(snapshot)) return null;
+
+  const bom = text.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const source = bom ? text.slice(1) : text;
+  const split = splitFrontmatter(source);
+  if (!split.head || split.error || !split.data || !isUnambiguousFrontmatter(split.yaml, split.data))
+    return null;
+  const currentStyle = split.data.morrowNoteStyle;
+  if (!isRecord(currentStyle) || !matchesAppliedNoteStyleValues(currentStyle, appliedStyle)) return null;
+
+  const document = parseDocument(split.yaml, { uniqueKeys: true });
+  if (document.errors.length > 0 || !isMap(document.contents) || document.contents.flow) return null;
+  const stylePairs = document.contents.items.filter(
+    (item) => isPair(item) && isScalar(item.key) && item.key.value === 'morrowNoteStyle',
+  );
+  if (stylePairs.length !== 1) return null;
+  const stylePair = stylePairs[0];
+  if (
+    !stylePair ||
+    !isPair(stylePair) ||
+    !isScalar(stylePair.key) ||
+    !stylePair.key.range ||
+    !isMap(stylePair.value) ||
+    stylePair.value.flow ||
+    !stylePair.value.range ||
+    hasYamlAnchorOrAlias(stylePair)
+  )
+    return null;
+
+  const currentPairs = new Map<NoteStyleField, unknown>();
+  for (const item of stylePair.value.items) {
+    if (!isPair(item) || !isScalar(item.key) || typeof item.key.value !== 'string') continue;
+    const key = item.key.value;
+    if (key === '<<') return null;
+    if (!NOTE_STYLE_FIELDS.includes(key as NoteStyleField)) continue;
+    if (
+      currentPairs.has(key as NoteStyleField) ||
+      !isScalar(item.value) ||
+      isAlias(item.value) ||
+      !item.key.range ||
+      !item.value.range
+    )
+      return null;
+    currentPairs.set(key as NoteStyleField, item);
+  }
+  if (!NOTE_STYLE_FIELDS.every((field) => currentPairs.has(field))) return null;
+
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const restoredStyle: Record<string, unknown> = { ...currentStyle };
+  for (const field of NOTE_STYLE_FIELDS) {
+    const pair = currentPairs.get(field);
+    if (
+      !pair ||
+      !isPair(pair) ||
+      !isScalar(pair.key) ||
+      !pair.key.range ||
+      !isScalar(pair.value) ||
+      !pair.value.range
+    )
+      return null;
+    if (hasExplicitYamlTag(pair.key) || hasExplicitYamlTag(pair.value)) return null;
+    const keyLine = lineBounds(split.yaml, pair.key.range[0]);
+    const valueLine = lineBounds(split.yaml, pair.value.range[0]);
+    const valueEndLine = lineBounds(split.yaml, pair.value.range[1]);
+    if (
+      keyLine.start !== valueLine.start ||
+      keyLine.end !== valueLine.end ||
+      keyLine.start !== valueEndLine.start ||
+      keyLine.end !== valueEndLine.end
+    )
+      return null;
+    const colon = split.yaml.indexOf(':', pair.key.range[1]);
+    if (
+      colon < pair.key.range[1] ||
+      colon >= keyLine.end ||
+      split.yaml.slice(pair.key.range[1], colon).trim() !== ''
+    )
+      return null;
+
+    if (Object.hasOwn(snapshot.fields, field)) {
+      const raw = snapshot.fields[field]!;
+      const priorValue = readStyleScalarLexeme(raw);
+      if (priorValue === null) return null;
+      edits.push({ start: colon + 1, end: pair.value.range[1], text: raw });
+      restoredStyle[field] = priorValue.value;
+    } else {
+      const lineStartAt = lineStart(split.yaml, pair.key.range[0]);
+      if (
+        split.yaml.slice(lineStartAt, pair.key.range[0]).trim() !== '' ||
+        split.yaml.slice(pair.value.range[1], keyLine.end).trim() !== ''
+      )
+        return null;
+      edits.push({ start: lineStartAt, end: lineEndAfter(split.yaml, pair.key.range[0]), text: '' });
+      delete restoredStyle[field];
+    }
+  }
+
+  let yaml = split.yaml;
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    yaml = `${yaml.slice(0, edit.start)}${edit.text}${yaml.slice(edit.end)}`;
+
+  if (snapshot.separatorAdded) {
+    const cleaned = removeAddedStyleSeparator(yaml, snapshot.separatorAnchorKey);
+    if (cleaned === null) return null;
+    yaml = cleaned;
+  }
+
+  const expected = { ...split.data, morrowNoteStyle: restoredStyle };
+  if (!isUnambiguousFrontmatter(yaml, expected)) return null;
+  const opening = OPEN.exec(source);
+  if (!opening) return null;
+  const rest = `\n${source.slice(opening[0].length)}`;
+  const closing = CLOSE.exec(rest);
+  if (!closing) return null;
+  const closeStart = opening[0].length + closing.index - 1;
+  const updated = `${source.slice(0, opening[0].length)}${yaml}${source.slice(closeStart)}`;
+  const verified = splitFrontmatter(updated);
+  const restoredSnapshot = captureExplicitMorrowNoteStyleFile(updated);
+  if (
+    verified.error ||
+    !verified.data ||
+    !isUnambiguousFrontmatter(verified.yaml, expected) ||
+    verified.body !== split.body ||
+    !sameExplicitStyleSnapshot(restoredSnapshot, snapshot)
+  )
+    return null;
+  return `${bom}${updated}`;
+}
+
+function isValidExplicitStyleSnapshot(value: unknown): value is ExplicitMorrowNoteStyleSnapshot {
+  if (
+    !isRecord(value) ||
+    value.kind !== 'explicit' ||
+    !isRecord(value.fields) ||
+    typeof value.separatorAdded !== 'boolean' ||
+    (value.separatorAdded ? typeof value.separatorAnchorKey !== 'string' : value.separatorAnchorKey !== null)
+  )
+    return false;
+  for (const [field, raw] of Object.entries(value.fields)) {
+    if (
+      !NOTE_STYLE_FIELDS.includes(field as NoteStyleField) ||
+      typeof raw !== 'string' ||
+      readStyleScalarLexeme(raw) === null
+    )
+      return false;
+  }
+  return true;
+}
+
+function sameExplicitStyleSnapshot(
+  value: ExplicitMorrowNoteStyleSnapshot | null,
+  expected: ExplicitMorrowNoteStyleSnapshot,
+): boolean {
+  if (!value || value.kind !== expected.kind) return false;
+  return NOTE_STYLE_FIELDS.every((field) => {
+    const hasValue = Object.hasOwn(value.fields, field);
+    const hasExpected = Object.hasOwn(expected.fields, field);
+    return hasValue === hasExpected && (!hasValue || value.fields[field] === expected.fields[field]);
+  });
+}
+
+function removeAddedStyleSeparator(yaml: string, anchorKey: string | null): string | null {
+  if (anchorKey === null) return null;
+  try {
+    const document = parseDocument(yaml, { uniqueKeys: true });
+    if (document.errors.length > 0 || !isMap(document.contents)) return null;
+    const stylePair = document.contents.items.find(
+      (item) => isPair(item) && isScalar(item.key) && item.key.value === 'morrowNoteStyle',
+    );
+    if (!isPair(stylePair) || !isMap(stylePair.value)) return null;
+    const anchor = stylePair.value.items.find(
+      (item) => isPair(item) && isScalar(item.key) && item.key.value === anchorKey,
+    );
+    if (!isPair(anchor)) return null;
+    const nodeEnd = (anchor.value ?? anchor.key).range?.[1];
+    if (nodeEnd === undefined) return null;
+    const line = lineBounds(yaml, yaml[nodeEnd - 1] === '\n' ? nodeEnd - 1 : nodeEnd);
+    const tail = yaml.slice(line.end);
+    if (!tail || !/^\s*$/.test(tail)) return yaml;
+    const lineBreak = /^(?:\r\n|\n)/.exec(tail);
+    if (!lineBreak) return yaml;
+    return `${yaml.slice(0, line.end)}${tail.slice(lineBreak[0].length)}`;
+  } catch {
+    return null;
+  }
+}
+
+function readStyleScalarLexeme(raw: string): { readonly value: unknown } | null {
+  if (/[\r\n]/.test(raw)) return null;
+  try {
+    const source = `value:${raw}\n`;
+    const document = parseDocument(source, { uniqueKeys: true });
+    if (document.errors.length > 0 || !isMap(document.contents) || document.contents.items.length !== 1)
+      return null;
+    const pair = document.contents.items[0];
+    if (
+      !pair ||
+      !isPair(pair) ||
+      !isScalar(pair.key) ||
+      pair.key.value !== 'value' ||
+      !isScalar(pair.value) ||
+      isAlias(pair.value) ||
+      !pair.value.range ||
+      hasExplicitYamlTag(pair.key) ||
+      hasExplicitYamlTag(pair.value) ||
+      hasYamlComments(pair) ||
+      hasYamlAnchorOrAlias(pair)
+    )
+      return null;
+    const start = lineBounds(source, pair.value.range[0]);
+    const end = lineBounds(source, pair.value.range[1]);
+    if (start.start !== end.start || start.end !== end.end) return null;
+    return { value: pair.value.value };
+  } catch {
+    return null;
+  }
+}
+
+/** Decodes the prior explicit scalar values for the session's in-memory restore patch. */
+export interface ExplicitMorrowNoteStylePatch {
+  readonly set: Readonly<Partial<Record<NoteStyleField, unknown>>>;
+  readonly remove: readonly NoteStyleField[];
+}
+
+export function decodeExplicitMorrowNoteStyleSnapshot(
+  snapshot: ExplicitMorrowNoteStyleSnapshot,
+): ExplicitMorrowNoteStylePatch | null {
+  if (!isValidExplicitStyleSnapshot(snapshot)) return null;
+  const set: Partial<Record<NoteStyleField, unknown>> = {};
+  const remove: NoteStyleField[] = [];
+  for (const field of NOTE_STYLE_FIELDS) {
+    if (!Object.hasOwn(snapshot.fields, field)) {
+      remove.push(field);
+      continue;
+    }
+    const decoded = readStyleScalarLexeme(snapshot.fields[field]!);
+    if (!decoded) return null;
+    set[field] = decoded.value;
+  }
+  return { set, remove };
+}
+
+export interface MorrowNoteStyleRestoreContext {
+  readonly hadFrontmatter: boolean;
+  readonly separatorAdded: boolean;
+  readonly emptyFrontmatterHadBlankLine: boolean | null;
+}
+
+/** Captures the small amount of source structure needed to undo adding an inherited note style. */
+export function captureInheritedMorrowNoteStyleContext(text: string): MorrowNoteStyleRestoreContext | null {
+  const source = text.startsWith('\uFEFF') ? text.slice(1) : text;
+  const split = splitFrontmatter(source);
+  if (split.error) return null;
+
+  if (split.head === '') {
+    if (OPEN.test(source)) return null;
+    return {
+      hadFrontmatter: false,
+      separatorAdded: false,
+      emptyFrontmatterHadBlankLine: null,
+    };
+  }
+  if (!split.data || !isUnambiguousFrontmatter(split.yaml, split.data)) return null;
+  if (Object.keys(split.data).some((key) => key.toLowerCase() === 'morrownotestyle')) return null;
+
+  const opening = OPEN.exec(source);
+  if (!opening) return null;
+  const closing = CLOSE.exec(`\n${source.slice(opening[0].length)}`);
+  if (!closing) return null;
+
+  return {
+    hadFrontmatter: true,
+    separatorAdded: split.yaml.length > 0 && !split.yaml.endsWith('\n'),
+    emptyFrontmatterHadBlankLine: split.yaml === '' ? closing.index > 0 : null,
+  };
+}
+
+/** Removes an unchanged inherited-style override while preserving the current YAML and body. */
+export function restoreInheritedMorrowNoteStyleFile(
+  text: string,
+  appliedStyle: NoteStyle,
+  context: MorrowNoteStyleRestoreContext,
+): string | null {
+  if (
+    !context ||
+    typeof context.hadFrontmatter !== 'boolean' ||
+    typeof context.separatorAdded !== 'boolean' ||
+    (context.emptyFrontmatterHadBlankLine !== null &&
+      typeof context.emptyFrontmatterHadBlankLine !== 'boolean') ||
+    (!context.hadFrontmatter && context.separatorAdded) ||
+    (!context.hadFrontmatter && context.emptyFrontmatterHadBlankLine !== null) ||
+    !isValidNoteStyleInput(appliedStyle)
+  )
+    return null;
+
+  const bom = text.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const source = bom ? text.slice(1) : text;
+  const split = splitFrontmatter(source);
+  if (split.error || !split.head || !split.data || !isUnambiguousFrontmatter(split.yaml, split.data))
+    return null;
+
+  const currentStyle = split.data.morrowNoteStyle;
+  if (!sameNoteStyle(currentStyle, appliedStyle)) return null;
+
+  const document = parseDocument(split.yaml, { uniqueKeys: true });
+  if (document.errors.length > 0 || !isMap(document.contents)) return null;
+  const stylePairs = document.contents.items.filter(
+    (item) => isPair(item) && isScalar(item.key) && item.key.value === 'morrowNoteStyle',
+  );
+  if (stylePairs.length !== 1) return null;
+  const stylePair = stylePairs[0];
+  if (
+    !stylePair ||
+    !isPair(stylePair) ||
+    !isScalar(stylePair.key) ||
+    !stylePair.key.range ||
+    stylePair.key.comment !== undefined ||
+    !isMap(stylePair.value) ||
+    stylePair.value.flow ||
+    !stylePair.value.range ||
+    hasYamlComments(stylePair.value) ||
+    hasYamlAnchorOrAlias(stylePair.key) ||
+    hasYamlAnchorOrAlias(stylePair.value) ||
+    !hasExactStyleFields(stylePair.value)
+  )
+    return null;
+
+  const start = lineStart(split.yaml, stylePair.key.range[0]);
+  const lastStyleField = stylePair.value.items[stylePair.value.items.length - 1];
+  if (
+    !lastStyleField ||
+    !isPair(lastStyleField) ||
+    !isScalar(lastStyleField.value) ||
+    !lastStyleField.value.range
+  )
+    return null;
+  const end = lastStyleField.value.range[1];
+  if (
+    split.yaml.slice(start, stylePair.key.range[0]).trim() !== '' ||
+    end <= start ||
+    end > split.yaml.length
+  )
+    return null;
+
+  let prefix = split.yaml.slice(0, start);
+  const rawSuffix = split.yaml.slice(end);
+  const { suffix, consumedTerminator } = consumeStyleLineTerminator(rawSuffix);
+  const hadSuffix = consumedTerminator || suffix.length > 0;
+  if (context.separatorAdded && !hadSuffix && prefix !== '') {
+    const withoutSeparator = removeLineBreakBefore(prefix);
+    if (withoutSeparator === null) return null;
+    prefix = withoutSeparator;
+  }
+  const yaml = `${prefix}${suffix}`;
+  if (!context.hadFrontmatter && yaml.trim() === '') {
+    const unwrapped = splitFrontmatter(split.body);
+    if (unwrapped.error || unwrapped.head !== '' || unwrapped.body !== split.body) return null;
+    return `${bom}${split.body}`;
+  }
+
+  const expected = { ...split.data };
+  delete expected.morrowNoteStyle;
+  if (!isUnambiguousFrontmatter(yaml, expected)) return null;
+  const opening = OPEN.exec(source);
+  if (!opening) return null;
+  const rest = `\n${source.slice(opening[0].length)}`;
+  const closing = CLOSE.exec(rest);
+  if (!closing) return null;
+  const closeStart = opening[0].length + closing.index - 1;
+  const closeLineEndingLength = closing[0].startsWith('\r\n') ? 2 : 1;
+  const updated =
+    yaml === '' && context.emptyFrontmatterHadBlankLine === false
+      ? `${source.slice(0, opening[0].length)}${source.slice(closeStart + closeLineEndingLength)}`
+      : `${source.slice(0, opening[0].length)}${yaml}${source.slice(closeStart)}`;
+  const verified = splitFrontmatter(updated);
+  if (
+    verified.error ||
+    !verified.data ||
+    !isUnambiguousFrontmatter(verified.yaml, expected) ||
+    verified.body !== split.body
+  )
+    return null;
+  return `${bom}${updated}`;
+}
+
+export function sameNoteStyle(a: unknown, b: unknown): boolean {
+  if (!isValidNoteStyleInput(a) || !isValidNoteStyleInput(b)) return false;
+  return NOTE_STYLE_FIELDS.every((field) => a[field] === b[field]);
+}
+
+/** Compares the five applied values while allowing unknown fields carried by a newer writer. */
+export function matchesAppliedNoteStyleValues(value: unknown, applied: NoteStyle): boolean {
+  if (!isRecord(value) || !isValidNoteStyleInput(applied)) return false;
+  return NOTE_STYLE_FIELDS.every((field) => Object.hasOwn(value, field) && value[field] === applied[field]);
+}
+
+function hasExactStyleFields(node: ReturnType<typeof parseDocument>['contents']): boolean {
+  if (!isMap(node) || node.items.length !== NOTE_STYLE_FIELDS.length) return false;
+  const fields = new Set<string>();
+  for (const item of node.items) {
+    if (
+      !isPair(item) ||
+      !isScalar(item.key) ||
+      typeof item.key.value !== 'string' ||
+      !NOTE_STYLE_FIELDS.includes(item.key.value as (typeof NOTE_STYLE_FIELDS)[number]) ||
+      fields.has(item.key.value) ||
+      !isScalar(item.value) ||
+      isAlias(item.value)
+    )
+      return false;
+    fields.add(item.key.value);
+  }
+  return NOTE_STYLE_FIELDS.every((field) => fields.has(field));
+}
+
+function hasYamlComments(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+  const candidate = node as {
+    readonly comment?: unknown;
+    readonly commentBefore?: unknown;
+    readonly key?: unknown;
+    readonly value?: unknown;
+    readonly items?: readonly unknown[];
+  };
+  if (candidate.comment !== undefined || candidate.commentBefore !== undefined) return true;
+  if (candidate.key && hasYamlComments(candidate.key)) return true;
+  if (candidate.value && hasYamlComments(candidate.value)) return true;
+  return candidate.items?.some(hasYamlComments) ?? false;
+}
+
+function hasYamlAnchorOrAlias(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (isAlias(node)) return true;
+  const candidate = node as {
+    readonly anchor?: unknown;
+    readonly key?: unknown;
+    readonly value?: unknown;
+    readonly items?: readonly unknown[];
+  };
+  if (candidate.anchor !== undefined) return true;
+  if (candidate.key && hasYamlAnchorOrAlias(candidate.key)) return true;
+  if (candidate.value && hasYamlAnchorOrAlias(candidate.value)) return true;
+  return candidate.items?.some(hasYamlAnchorOrAlias) ?? false;
+}
+
+function hasExplicitYamlTag(node: unknown): boolean {
+  return !!node && typeof node === 'object' && (node as { readonly tag?: unknown }).tag !== undefined;
+}
+
+function lineStart(source: string, offset: number): number {
+  return source.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+}
+
+function removeLineBreakBefore(source: string): string | null {
+  if (source.endsWith('\r\n')) return source.slice(0, -2);
+  if (source.endsWith('\n')) return source.slice(0, -1);
+  return null;
+}
+
+function consumeStyleLineTerminator(source: string): { suffix: string; consumedTerminator: boolean } {
+  const linePadding = /^[ \t]*/.exec(source)?.[0] ?? '';
+  const rest = source.slice(linePadding.length);
+  const lineTerminator = /^(?:\r\n|\n)/.exec(rest);
+  return lineTerminator
+    ? { suffix: rest.slice(lineTerminator[0].length), consumedTerminator: true }
+    : { suffix: rest, consumedTerminator: false };
 }
 
 function encodeStyleScalar(value: NoteStyle[keyof NoteStyle]): string {
