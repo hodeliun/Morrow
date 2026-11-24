@@ -1280,6 +1280,26 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(readFromStorage()).toBe(raw);
   });
 
+  it.each(['wheel', 'touchstart'] as const)(
+    'gates startup reading focus on %s without canceling general startup navigation',
+    async (type) => {
+      const { tabs } = await freshTabs(twoPaneForkSnapshot());
+      const stop = tabs.startTabs();
+      try {
+        let navigationRan = false;
+        let readingFocusRan = false;
+        document.body.dispatchEvent(new Event(type, { bubbles: true }));
+
+        expect(tabs.runStartupNavigation(() => (navigationRan = true))).toBe(true);
+        expect(navigationRan).toBe(true);
+        expect(tabs.runStartupReadingFocus(() => (readingFocusRan = true))).toBe(false);
+        expect(readingFocusRan).toBe(false);
+      } finally {
+        stop();
+      }
+    },
+  );
+
   it('restores the v2 snapshot exactly for Onde parei without consuming history or focus', async () => {
     const raw = twoPaneForkSnapshot();
     const { tabs, writes } = await freshTabs(raw);

@@ -80,6 +80,7 @@ const listeners = new Set<() => void>();
 let counter = 0;
 let urlAnchorPaneId: PaneId | null = null;
 let startupNavigationCancelled = false;
+let startupReadingFocusCancelled = false;
 let startupNavigationSuppressionDepth = 0;
 let activeTabsLifecycles = 0;
 const newTabId = () => `t${Date.now().toString(36)}${(counter++).toString(36)}`;
@@ -1326,6 +1327,12 @@ export function runStartupNavigation(action: () => void): boolean {
   return true;
 }
 
+/** Allows startup reading focus only before the user interacts anywhere in the workspace. */
+export function runStartupReadingFocus(action: () => void): boolean {
+  if (startupReadingFocusCancelled) return false;
+  return runStartupNavigation(action);
+}
+
 /** Restores a saved v2 workspace literally; v0 keeps its published 2.2 back-navigation behavior. */
 export function restoreLastPosition(): void {
   if (startupNavigationSuppressionDepth === 0) {
@@ -1364,11 +1371,17 @@ export function restoreLastPosition(): void {
 }
 
 export function startTabs(): () => void {
-  if (activeTabsLifecycles === 0) startupNavigationCancelled = false;
+  if (activeTabsLifecycles === 0) {
+    startupNavigationCancelled = false;
+    startupReadingFocusCancelled = false;
+  }
   activeTabsLifecycles += 1;
   current();
   const onStartupInteraction = () => {
     startupNavigationCancelled = true;
+  };
+  const onStartupReadingFocusInteraction = () => {
+    startupReadingFocusCancelled = true;
   };
   const onHash = () => {
     const hash = window.location.hash || '#/';
@@ -1438,6 +1451,8 @@ export function startTabs(): () => void {
   window.addEventListener('hashchange', onHash);
   window.addEventListener('pointerdown', onStartupInteraction, true);
   window.addEventListener('keydown', onStartupInteraction, true);
+  window.addEventListener('wheel', onStartupReadingFocusInteraction, true);
+  window.addEventListener('touchstart', onStartupReadingFocusInteraction, true);
   window.addEventListener('click', onClick, true);
   window.addEventListener('auxclick', onClick, true);
   window.addEventListener('mousedown', onMouseButton, true);
@@ -1450,6 +1465,8 @@ export function startTabs(): () => void {
     window.removeEventListener('hashchange', onHash);
     window.removeEventListener('pointerdown', onStartupInteraction, true);
     window.removeEventListener('keydown', onStartupInteraction, true);
+    window.removeEventListener('wheel', onStartupReadingFocusInteraction, true);
+    window.removeEventListener('touchstart', onStartupReadingFocusInteraction, true);
     window.removeEventListener('click', onClick, true);
     window.removeEventListener('auxclick', onClick, true);
     window.removeEventListener('mousedown', onMouseButton, true);

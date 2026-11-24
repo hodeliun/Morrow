@@ -9,13 +9,20 @@ import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
 import { setPreferences } from '../platform/preferences';
-import { flushPlaces, readingPlace } from '../readingPlace';
-import { PaneContext } from '../tabs';
+import { flushPlaces, readingPlace, rememberPlace } from '../readingPlace';
+import { matchesReadingPageRoute } from '../readingFocus';
+import { PaneContext, PaneTabContext } from '../tabs';
 import { setSession } from '../workspace';
 import { PageView } from './PageView';
 
+const focusTestState = vi.hoisted(() => ({
+  focusedTabIds: [] as Array<string | null>,
+  restoredTabIds: [] as Array<string | null>,
+}));
+
 vi.mock('../editor/PageEditor', async () => {
   const React = await import('react');
+  const { PaneTabContext } = await import('../tabs');
   const { Schema } = await import('@tiptap/pm/model');
   const schema = new Schema({
     nodes: {
@@ -25,7 +32,7 @@ vi.mock('../editor/PageEditor', async () => {
     },
   });
 
-  function makeEditor() {
+  function makeEditor(tabId: string | null) {
     const doc = schema.node('doc', null, [schema.node('paragraph')]);
     const tr = {
       setSelection() {
@@ -35,7 +42,17 @@ vi.mock('../editor/PageEditor', async () => {
     return {
       isDestroyed: false,
       state: { doc, tr },
-      view: { dispatch() {}, dom: { focus() {} } },
+      view: {
+        dispatch() {
+          focusTestState.restoredTabIds.push(tabId);
+        },
+        dom: {
+          isConnected: true,
+          focus() {
+            focusTestState.focusedTabIds.push(tabId);
+          },
+        },
+      },
       on() {},
     };
   }
@@ -48,7 +65,8 @@ vi.mock('../editor/PageEditor', async () => {
       editable: boolean;
       onReady: (editor: unknown) => void;
     }) {
-      const editor = React.useMemo(makeEditor, []);
+      const tabId = React.useContext(PaneTabContext);
+      const editor = React.useMemo(() => makeEditor(tabId), [tabId]);
       // The callback is intentionally delivered once, like the editor's ready event.
       // eslint-disable-next-line react-hooks/exhaustive-deps
       React.useEffect(() => onReady(editor), [editor]);
@@ -106,8 +124,20 @@ function mount() {
   return { container, root, render: (value: ReactNode) => root.render(value) };
 }
 
-function pageInPane(id: PageId, pane: 'main' | 'side') {
-  return createElement(PaneContext.Provider, { value: pane }, createElement(PageView, { id, find: null }));
+function pageInPane(id: PageId, pane: string, tabId: string | null = null) {
+  return createElement(
+    PaneContext.Provider,
+    { value: pane },
+    createElement(
+      PaneTabContext.Provider,
+      { value: tabId },
+      createElement(
+        'section',
+        { className: 'pane', 'data-pane-id': pane },
+        createElement(PageView, { id, find: null }),
+      ),
+    ),
+  );
 }
 
 afterEach(() => {
@@ -125,19 +155,136 @@ afterEach(() => {
     mentionsButton: false,
   });
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  focusTestState.focusedTabIds.length = 0;
+  focusTestState.restoredTabIds.length = 0;
 });
 
 describe('provider-managed PageView boundaries', () => {
+  it('restores duplicate reading positions but focuses only the saved active instance', async () => {
+    const session = await openFixture();
+    const id = pathId(session, 'Archive.md');
+    rememberPlace(id, { scroll: 111, from: 1, to: 1 });
+    rememberPlace(`${id}@side` as PageId, { scroll: 222, from: 1, to: 1 });
+    const tabs = await import('../tabs');
+    vi.spyOn(tabs, 'targetPane').mockReturnValue('pane-b');
+    vi.spyOn(tabs, 'paneAssignments').mockReturnValue([
+      { role: 'main', paneId: 'pane-a', tabId: 'instance-a' },
+      { role: 'side', paneId: 'pane-b', tabId: 'instance-b' },
+    ]);
+    vi.spyOn(tabs, 'isSideTabInstance').mockImplementation((tabId) => tabId === 'instance-b');
+    const encodedId = encodeURIComponent(id);
+    const rawRoute = `#/page/${encodedId.replace(
+      /[A-Za-z0-9]/,
+      (character) => `%${character.charCodeAt(0).toString(16).padStart(2, '0')}`,
+    )}?extra=1`;
+    vi.spyOn(tabs, 'routeHashForTabId').mockReturnValue(rawRoute);
+    const { parseRoute } = await import('../router');
+    expect(
+      matchesReadingPageRoute(parseRoute('#/page/%61?extra=1'), { id: 'a', find: null, anchor: null }),
+    ).toBe(true);
+    expect(matchesReadingPageRoute(parseRoute(rawRoute), { id, find: null, anchor: null })).toBe(true);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { container, root } = mount();
+    try {
+      await act(async () =>
+        root.render(
+          createElement(
+            Fragment,
+            null,
+            pageInPane(id, 'pane-a', 'instance-a'),
+            pageInPane(id, 'pane-b', 'instance-b'),
+          ),
+        ),
+      );
+      const scrollers = container.querySelectorAll<HTMLElement>('.page-scroll');
+      expect(scrollers).toHaveLength(2);
+
+      await act(async () => {
+        let steps = 0;
+        while (
+          (scrollers[0]?.scrollTop !== 111 || scrollers[1]?.scrollTop !== 222) &&
+          frames.length > 0 &&
+          steps++ < 20
+        )
+          frames.shift()?.(0);
+      });
+
+      expect(scrollers[0]?.scrollTop).toBe(111);
+      expect(scrollers[1]?.scrollTop).toBe(222);
+      expect(focusTestState.focusedTabIds).toEqual(['instance-b']);
+      expect([...focusTestState.restoredTabIds].sort()).toEqual(['instance-a', 'instance-b']);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('leaves an interacted panel alone while restoring the other visible panel', async () => {
+    const session = await openFixture();
+    const id = pathId(session, 'Archive.md');
+    rememberPlace(id, { scroll: 111, from: 1, to: 1 });
+    rememberPlace(`${id}@side` as PageId, { scroll: 222, from: 1, to: 1 });
+    const tabs = await import('../tabs');
+    vi.spyOn(tabs, 'targetPane').mockReturnValue('pane-b');
+    vi.spyOn(tabs, 'paneAssignments').mockReturnValue([
+      { role: 'main', paneId: 'pane-a', tabId: 'instance-a' },
+      { role: 'side', paneId: 'pane-b', tabId: 'instance-b' },
+    ]);
+    vi.spyOn(tabs, 'isSideTabInstance').mockImplementation((tabId) => tabId === 'instance-b');
+    vi.spyOn(tabs, 'routeHashForTabId').mockReturnValue(`#/page/${encodeURIComponent(id)}?extra=1`);
+
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { container, root } = mount();
+    try {
+      await act(async () =>
+        root.render(
+          createElement(
+            Fragment,
+            null,
+            pageInPane(id, 'pane-a', 'instance-a'),
+            pageInPane(id, 'pane-b', 'instance-b'),
+          ),
+        ),
+      );
+      const panes = container.querySelectorAll<HTMLElement>('.pane');
+      const scrollers = container.querySelectorAll<HTMLElement>('.page-scroll');
+      expect(panes).toHaveLength(2);
+      expect(scrollers).toHaveLength(2);
+
+      panes[0]!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      scrollers[0]!.scrollTop = 333;
+      scrollers[0]!.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await act(async () => {
+        let steps = 0;
+        while (frames.length > 0 && steps++ < 30) frames.shift()?.(0);
+      });
+
+      expect(scrollers[0]?.scrollTop).toBe(333);
+      expect(scrollers[1]?.scrollTop).toBe(222);
+      expect(readingPlace(id)?.scroll).toBe(333);
+      expect(focusTestState.restoredTabIds).toEqual(['instance-b']);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
   it('restores the same page independently in each split and stops restoring after user input', async () => {
     const session = await openFixture();
     const id = pathId(session, 'Archive.md');
-    window.localStorage.setItem(
-      'morrow.readingPlaces',
-      JSON.stringify({
-        [id]: { scroll: 111, from: 1, to: 1 },
-        [`${id}@side`]: { scroll: 222, from: 1, to: 1 },
-      }),
-    );
+    rememberPlace(id, { scroll: 111, from: 1, to: 1 });
+    rememberPlace(`${id}@side` as PageId, { scroll: 222, from: 1, to: 1 });
 
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {

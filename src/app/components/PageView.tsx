@@ -46,10 +46,29 @@ import { applyTemplateTo, deleteForever, restorePage, setArchived, trashPage } f
 import { outlineShown, usePreferences } from '../platform/preferences';
 import type { FooterSection } from '../platform/preferences';
 import { readingPlace, rememberPlace } from '../readingPlace';
-import { navigate, openPage, routeHash } from '../router';
-import { isSidePane, isSideTabInstance, openSide, usePane, usePaneTabId } from '../tabs';
+import { navigate, openPage, parseRoute, routeHash } from '../router';
+import {
+  isSidePane,
+  isSideTabInstance,
+  openSide,
+  paneAssignments,
+  routeHashForTabId,
+  runStartupReadingFocus,
+  targetPane,
+  usePane,
+  usePaneTabContextId,
+  usePaneTabId,
+} from '../tabs';
 import { getUi, openDialog, setUi, useUi } from '../ui';
-import { getSession, run, useWorkspace } from '../workspace';
+import { getSession, getWorkspaceSessionGeneration, run, useWorkspace } from '../workspace';
+import {
+  canFocusRestoredReadingPlace,
+  isCurrentReadingRestore,
+  matchesReadingPageRoute,
+  isStartupReadingFocusTarget,
+  watchReadingRestoreInteraction,
+} from '../readingFocus';
+import type { ReadingFocusLease, ReadingFocusState } from '../readingFocus';
 import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
 import { getLocale, t } from '../i18n';
@@ -148,6 +167,11 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   const scrollRef = useRef<HTMLDivElement>(null);
   const pane = usePane();
   const tabId = usePaneTabId();
+  const contextTabId = usePaneTabContextId();
+  const currentPageIdentity = useRef({ id, pane, tabId: contextTabId, find, anchor: anchor ?? null });
+  useLayoutEffect(() => {
+    currentPageIdentity.current = { id, pane, tabId: contextTabId, find, anchor: anchor ?? null };
+  });
   const placeKey = tabId
     ? isSideTabInstance(tabId)
       ? `${id}@side`
@@ -441,11 +465,80 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                       const { from, to } = current.state.selection;
                       rememberPlace(placeKey, { from, to });
                     });
-                    const startup = firstPage;
-                    firstPage = false;
+                    const assignment = paneAssignments().find((item) => item.paneId === pane);
+                    const startupFocusTarget = isStartupReadingFocusTarget(
+                      firstPage,
+                      pane,
+                      contextTabId,
+                      targetPane(),
+                      contextTabId === null ? null : (assignment?.tabId ?? null),
+                    );
+                    if (startupFocusTarget) firstPage = false;
+                    const focusLease: ReadingFocusLease = {
+                      pageId: id,
+                      paneId: pane,
+                      tabId: contextTabId,
+                      routeHash: contextTabId ? routeHashForTabId(contextTabId) : null,
+                      sessionGeneration: getWorkspaceSessionGeneration(),
+                      editor,
+                      activeElement: document.activeElement,
+                    };
                     if (!focusWhenReady.current) {
+                      const restoreInteraction = watchReadingRestoreInteraction(
+                        scrollRef.current?.closest<HTMLElement>('[data-pane-id]') ?? scrollRef.current,
+                        () => {
+                          placed.current = true;
+                        },
+                      );
                       requestAnimationFrame(() => {
-                        if (!find && !anchor) restorePlace(editor, scrollRef.current, placeKey, startup);
+                        const locallyInteracted = restoreInteraction.didInteract();
+                        restoreInteraction.dispose();
+                        const current = currentPageIdentity.current;
+                        const assignedTabId =
+                          current.tabId === null
+                            ? null
+                            : (paneAssignments().find((item) => item.paneId === current.pane)?.tabId ?? null);
+                        let startupAllowed = false;
+                        if (startupFocusTarget) {
+                          runStartupReadingFocus(() => {
+                            startupAllowed = true;
+                          });
+                        }
+                        const currentRouteHash = current.tabId ? routeHashForTabId(current.tabId) : null;
+                        const restoreState: ReadingFocusState = {
+                          pageId: current.id,
+                          paneId: current.pane,
+                          tabId: current.tabId,
+                          routeHash: currentRouteHash,
+                          sessionGeneration: getWorkspaceSessionGeneration(),
+                          editor: editorRef.current ?? editor,
+                          activeElement: document.activeElement,
+                          focusedPaneId: targetPane(),
+                          assignedTabId,
+                          startupAllowed,
+                          editorDestroyed: editor.isDestroyed,
+                          editorConnected: editor.view.dom.isConnected,
+                        };
+                        const routeStillAssigned =
+                          current.tabId === null ||
+                          (currentRouteHash !== null &&
+                            currentRouteHash === focusLease.routeHash &&
+                            matchesReadingPageRoute(parseRoute(currentRouteHash), {
+                              id: current.id,
+                              find: current.find,
+                              anchor: current.anchor,
+                            }));
+                        if (
+                          isCurrentReadingRestore(focusLease, restoreState) &&
+                          !locallyInteracted &&
+                          routeStillAssigned &&
+                          !current.find &&
+                          !current.anchor
+                        ) {
+                          const shouldFocus =
+                            startupFocusTarget && canFocusRestoredReadingPlace(focusLease, restoreState);
+                          restorePlace(editor, scrollRef.current, placeKey, shouldFocus);
+                        }
                         placed.current = true;
                       });
                       return;
