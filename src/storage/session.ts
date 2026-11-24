@@ -269,6 +269,8 @@ export class WorkspaceSession {
     pageId: PageId;
     style: NoteStyle;
     expectedRevision: string;
+    /** Internal host guard used by consumed previews; ordinary typed callers need not supply it. */
+    hostAuthorization?: { isCurrent(): boolean; onWriteStarted(): void };
   }): Promise<NoteStyleResult> {
     const pageId = input.pageId;
     const expectedRevision = input.expectedRevision;
@@ -276,6 +278,16 @@ export class WorkspaceSession {
     if (initialTargetError) return initialTargetError;
     if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
     if (!isValidNoteStyleInput(input.style)) return noteStyleFailure('invalid-style', 'Invalid note style.');
+    const hasHostAuthorization = () => {
+      try {
+        return input.hostAuthorization?.isCurrent() !== false;
+      } catch {
+        return false;
+      }
+    };
+    const hostAuthorizationFailure = () =>
+      noteStyleFailure('read-only', 'The style preview is no longer authorized.');
+    if (!hasHostAuthorization()) return hostAuthorizationFailure();
     const style: NoteStyle = {
       font: input.style.font,
       fontSize: input.style.fontSize,
@@ -286,6 +298,7 @@ export class WorkspaceSession {
 
     try {
       const isolated = await this.queue.runIsolated([pageId], async () => {
+        if (!hasHostAuthorization()) return hostAuthorizationFailure();
         const targetError = this.noteStyleTargetError(pageId);
         if (targetError) return targetError;
         if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
@@ -315,12 +328,29 @@ export class WorkspaceSession {
           noteStylePages: [pageId],
           state: candidate,
         };
-        await this.exclusive(async () => {
+        const dispatched = await this.exclusive(async (): Promise<true | false | NoteStyleResult> => {
+          if (!hasHostAuthorization()) return false;
           // Establish the page-id registry first; the style write itself then has no sidecar tail
           // that could fail after the Markdown source has been confirmed.
           await this.repository.markInitialized();
+
+          // The session can still accept edits while metadata initialization is in flight. Recheck
+          // the captured target and its revision immediately before dispatching the Markdown write.
+          const latestTargetError = this.noteStyleTargetError(pageId);
+          if (latestTargetError) return latestTargetError;
+          if (this.isMutationFenced) return noteStyleFailure('read-only', MUTATION_FENCE_MESSAGE);
+          if (expectedRevision !== this.noteStyleRevision(pageId))
+            return noteStyleFailure(
+              'stale-revision',
+              'This note changed while its style editor was open. Reopen it to review the latest version.',
+            );
+
+          if (!hasHostAuthorization()) return false;
+          input.hostAuthorization?.onWriteStarted();
           await this.repository.write(batch);
+          return true;
         });
+        if (dispatched !== true) return dispatched === false ? hostAuthorizationFailure() : dispatched;
 
         // Merge the confirmed key into the latest state so concurrent body/metadata edits survive.
         if (changes.pages.has(pageId)) {

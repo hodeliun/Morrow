@@ -11,6 +11,7 @@ import type {
   PluginNoteStyleBatchPreviewMode,
   PluginNoteStyleBatchPreviewSummary,
 } from '../plugins/registry';
+import { subscribePlugins } from '../plugins/registry';
 import {
   getWorkspaceSessionGeneration,
   getSession,
@@ -22,6 +23,8 @@ import { getPreferences, subscribePreferences } from '../platform/preferences';
 interface PreviewTarget {
   readonly id: PageId;
   readonly revision: string;
+  readonly title: string;
+  readonly order: number;
 }
 
 interface BuiltPreview {
@@ -36,6 +39,7 @@ interface PreviewRuntime {
   subscribeSession: typeof subscribeWorkspaceSession;
   getPreferences: typeof getPreferences;
   subscribePreferences: typeof subscribePreferences;
+  subscribeRegistration?: (listener: () => void) => () => void;
 }
 
 const defaultRuntime: PreviewRuntime = {
@@ -44,7 +48,37 @@ const defaultRuntime: PreviewRuntime = {
   subscribeSession: subscribeWorkspaceSession,
   getPreferences,
   subscribePreferences,
+  subscribeRegistration: subscribePlugins,
 };
+
+export type NoteStyleBatchConfirmationStatus = 'confirmed' | 'refused' | 'unattempted';
+
+export interface NoteStyleBatchConfirmationOutcome {
+  readonly title: string;
+  readonly order: number;
+  readonly status: NoteStyleBatchConfirmationStatus;
+}
+
+/** Host-internal result for the next document aggregator; contains no page identity or source data. */
+export interface NoteStyleBatchConfirmationResult {
+  readonly mode: PluginNoteStyleBatchPreviewMode;
+  readonly outcomes: readonly NoteStyleBatchConfirmationOutcome[];
+  readonly confirmedCount: number;
+  readonly refusedCount: number;
+  readonly unattemptedCount: number;
+}
+
+const previewConfirmations = new WeakMap<
+  PluginNoteStyleBatchPreviewLease,
+  { consume(): Promise<NoteStyleBatchConfirmationResult | null> }
+>();
+
+/** Consumes a host-owned preview once; this function is internal to the app and absent from plugin APIs. */
+export function confirmNoteStyleBatchPreview(
+  lease: PluginNoteStyleBatchPreviewLease,
+): Promise<NoteStyleBatchConfirmationResult | null> {
+  return previewConfirmations.get(lease)?.consume() ?? Promise.resolve(null);
+}
 
 function stylePreferenceKey(preferences: Preferences): string {
   return JSON.stringify([preferences.font, preferences.width, preferences.defaultNoteStyle]) ?? '';
@@ -167,14 +201,19 @@ function buildPreview(
       continue;
     }
 
-    targets.push({ id: page.id, revision: saved.value.revision });
+    targets.push({
+      id: page.id,
+      revision: saved.value.revision,
+      title: displayTitle(page),
+      order: targets.length + 1,
+    });
     eligibility.push([page.id, 'candidate', saved.value.revision]);
   }
 
   const summary = Object.freeze({
     mode,
     candidateCount: targets.length,
-    titles: Object.freeze(targets.slice(0, 4).map(({ id }) => displayTitle(state.pages[id]))),
+    titles: Object.freeze(targets.slice(0, 4).map(({ title }) => title)),
     ...counts,
   });
   return {
@@ -199,16 +238,25 @@ export function createNoteStyleBatchPreviewHost(
   runtime: PreviewRuntime = defaultRuntime,
 ): PluginNoteStyleBatchPreviewHost {
   let activeLease: { invalidate(): void } | null = null;
+  let activeExecution: { invalidate(): void } | null = null;
 
-  const invalidate = () => {
-    activeLease?.invalidate();
+  const expireActiveLease = () => {
+    const lease = activeLease;
     activeLease = null;
+    lease?.invalidate();
+  };
+  const invalidate = () => {
+    expireActiveLease();
+    const execution = activeExecution;
+    activeExecution = null;
+    execution?.invalidate();
   };
 
   return Object.freeze({
     invalidate,
     create(mode: PluginNoteStyleBatchPreviewMode): PluginNoteStyleBatchPreviewLease | null {
-      invalidate();
+      expireActiveLease();
+      if (activeExecution) return null;
       if (!isMounted() || !isRegistrationActive()) return null;
 
       let session: WorkspaceSession;
@@ -233,31 +281,39 @@ export function createNoteStyleBatchPreviewHost(
         preferences.font,
         preferences.width,
       );
-      const built = buildPreview(session, style, mode);
+      const capturedStyle = Object.freeze({ ...style });
+      const built = buildPreview(session, capturedStyle, mode);
       const listeners = new Set<() => void>();
       let valid = true;
+      let consumed = false;
       let cleanups: Array<() => void> = [];
+      let activeRegistration: { invalidate(): void } | null = null;
+
+      const isCapturedContextCurrent = () => {
+        try {
+          return (
+            isMounted() &&
+            isRegistrationActive() &&
+            !session.isClosed &&
+            !session.isMutationFenced &&
+            runtime.getSessionGeneration() === generation &&
+            stylePreferenceKey(runtime.getPreferences()) === styleKey &&
+            runtime.getSession() === session
+          );
+        } catch {
+          return false;
+        }
+      };
 
       const isCurrent = () => {
-        if (
-          !valid ||
-          !isMounted() ||
-          !isRegistrationActive() ||
-          session.isClosed ||
-          session.isMutationFenced ||
-          hasUnconfirmedChanges(session) ||
-          runtime.getSessionGeneration() !== generation ||
-          stylePreferenceKey(runtime.getPreferences()) !== styleKey
-        )
-          return false;
+        if (!valid || consumed || !isCapturedContextCurrent() || hasUnconfirmedChanges(session)) return false;
         try {
-          if (runtime.getSession() !== session) return false;
           return built.targets.every((target) => {
             const current = session.readNoteStyle(target.id);
             return (
               current.ok &&
               current.value.revision === target.revision &&
-              session.canUpdateNoteStyleSource(target.id, style)
+              session.canUpdateNoteStyleSource(target.id, capturedStyle)
             );
           });
         } catch {
@@ -268,8 +324,21 @@ export function createNoteStyleBatchPreviewHost(
       const expire = () => {
         if (!valid) return;
         valid = false;
-        for (const cleanup of cleanups.splice(0)) cleanup();
-        for (const listener of [...listeners]) listener();
+        if (activeLease === activeRegistration) activeLease = null;
+        for (const cleanup of cleanups.splice(0)) {
+          try {
+            cleanup();
+          } catch {
+            // One listener cannot prevent the remaining lease callbacks from being notified.
+          }
+        }
+        for (const listener of [...listeners]) {
+          try {
+            listener();
+          } catch {
+            // Plugin callbacks cannot interrupt host-side lease cleanup.
+          }
+        }
       };
 
       const onSessionChange = () => {
@@ -285,10 +354,13 @@ export function createNoteStyleBatchPreviewHost(
       };
       const onPreferenceChange = () => {
         try {
-          if (stylePreferenceKey(runtime.getPreferences()) !== styleKey) expire();
+          if (!isCapturedContextCurrent() || stylePreferenceKey(runtime.getPreferences()) !== styleKey) expire();
         } catch {
           expire();
         }
+      };
+      const onRegistrationChange = () => {
+        if (!isMounted() || !isRegistrationActive()) expire();
       };
       const onQueueChange = () => {
         if (hasUnconfirmedChanges(session)) expire();
@@ -301,6 +373,7 @@ export function createNoteStyleBatchPreviewHost(
         session.onClose(expire),
         runtime.subscribeSession(expire),
         runtime.subscribePreferences(onPreferenceChange),
+        (runtime.subscribeRegistration ?? subscribePlugins)(onRegistrationChange),
       ];
 
       const lease: PluginNoteStyleBatchPreviewLease = Object.freeze({
@@ -313,7 +386,121 @@ export function createNoteStyleBatchPreviewHost(
           return () => listeners.delete(listener);
         },
       });
-      activeLease = { invalidate: expire };
+      activeRegistration = { invalidate: expire };
+      activeLease = activeRegistration;
+
+      const consume = async (): Promise<NoteStyleBatchConfirmationResult | null> => {
+        if (consumed) return null;
+        if (!isCurrent()) {
+          consumed = true;
+          expire();
+          return null;
+        }
+
+        // Reserve the execution before notifying preview subscribers; they can synchronously reenter.
+        let executionInvalid = false;
+        const executionCleanups: Array<() => void> = [];
+        const invalidateExecution = () => {
+          if (executionInvalid) return;
+          executionInvalid = true;
+          for (const cleanup of executionCleanups.splice(0)) {
+            try {
+              cleanup();
+            } catch {
+              // A runtime subscriber cannot prevent other host guards from being released.
+            }
+          }
+        };
+        const isExecutionContextCurrent = () => {
+          if (executionInvalid) return false;
+          try {
+            if (!isCapturedContextCurrent()) {
+              invalidateExecution();
+              return false;
+            }
+            return true;
+          } catch {
+            invalidateExecution();
+            return false;
+          }
+        };
+        const observeExecutionContext = () => {
+          isExecutionContextCurrent();
+        };
+        const execution = { invalidate: invalidateExecution };
+        consumed = true;
+        activeExecution = execution;
+        const trackExecutionSubscription = (subscribe: (listener: () => void) => () => void) => {
+          if (executionInvalid) return;
+          try {
+            const cleanup = subscribe(observeExecutionContext);
+            if (executionInvalid) cleanup();
+            else executionCleanups.push(cleanup);
+          } catch {
+            invalidateExecution();
+          }
+        };
+
+        const outcomes = built.targets.map((target) => ({
+          title: target.title,
+          order: target.order,
+          status: 'unattempted' as NoteStyleBatchConfirmationStatus,
+        }));
+
+        try {
+          trackExecutionSubscription(runtime.subscribeSession);
+          trackExecutionSubscription(runtime.subscribePreferences);
+          trackExecutionSubscription(runtime.subscribeRegistration ?? subscribePlugins);
+          trackExecutionSubscription(session.subscribeMutationFence.bind(session));
+          trackExecutionSubscription(session.onClose.bind(session));
+          expire();
+          for (let index = 0; index < built.targets.length; index++) {
+            const target = built.targets[index]!;
+            if (!isExecutionContextCurrent() || hasUnconfirmedChanges(session)) {
+              invalidateExecution();
+              break;
+            }
+
+            let writeStarted = false;
+            const result = await session.setNoteStyle({
+              pageId: target.id,
+              style: capturedStyle,
+              expectedRevision: target.revision,
+              hostAuthorization: {
+                isCurrent: isExecutionContextCurrent,
+                onWriteStarted: () => {
+                  writeStarted = true;
+                },
+              },
+            });
+
+            if (result.ok) outcomes[index]!.status = 'confirmed';
+            else if (!writeStarted && !isExecutionContextCurrent()) break;
+            else {
+              outcomes[index]!.status = 'refused';
+              break;
+            }
+
+            // The preview itself expires on its first style revision; the consumed execution uses
+            // only its own captured context so it can continue to later notes in the same session.
+            if (!isExecutionContextCurrent()) break;
+          }
+        } finally {
+          invalidateExecution();
+          if (activeExecution === execution) activeExecution = null;
+        }
+
+        const frozenOutcomes = Object.freeze(outcomes.map((outcome) => Object.freeze(outcome)));
+        return Object.freeze({
+          mode,
+          outcomes: frozenOutcomes,
+          confirmedCount: outcomes.filter((outcome) => outcome.status === 'confirmed').length,
+          refusedCount: outcomes.filter((outcome) => outcome.status === 'refused').length,
+          unattemptedCount: outcomes.filter((outcome) => outcome.status === 'unattempted').length,
+        });
+      };
+
+      previewConfirmations.set(lease, { consume });
       return lease;
     },
   });
