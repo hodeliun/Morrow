@@ -139,6 +139,12 @@ Com o foco no botão de edição de **Name** em `Inventory` ou `Views`, digite `
 
 Em `Inventory`, abra o cofre de demonstração em uma pasta nova e role a grade até **Widget price subtotal**. Com **Name** igual a `Widget` e **Price** igual a `10`, o subtotal mostra **10**. A fórmula é `Inventory.Filter(CurrentValue.Name = "Widget").Price.Sum()`. Troque **Name** para `widget` e confirme com **Ctrl+Enter**. O subtotal fica em **0**. Use **Ctrl+Z** na grade para voltar a **10**. Se já alterou **Price**, o subtotal mostra o preço atual da linha. O filtro de texto compara maiúsculas e minúsculas.
 
+### Navegar na grade sem o mouse
+
+Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.
+
+Em `Inventory`, chegue até a célula calculada **Total** com as setas. Ela recebe foco para leitura. Volte para **Name**, digite um caractere para abrir o rascunho e confira que a seta esquerda passa a mover o cursor pelo texto. Pressione **Escape** para descartar. Use **Tab** para continuar pelos controles da tela.
+
 ## Edição de caixas de seleção
 
 1. Abra `Checklist` e edite **Reviewed** na linha `Unchecked`, identificada pela coluna **Sample**. Pressione **Espaço** com o foco na caixa, confirme em **Salvar** e confira **Verdadeiro** (**True**).
