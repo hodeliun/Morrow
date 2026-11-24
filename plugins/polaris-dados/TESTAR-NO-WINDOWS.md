@@ -40,6 +40,13 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 3. Reabra o painel, escolha **Monoespaçada** e **Larga**, e clique em **Salvar**. Feche e reabra a nota para confirmar que o estilo ficou salvo.
 4. Use **Restaurar** para aplicar o estilo padrão do perfil à nota. Abra duas notas em painéis diferentes e confirme que alterar uma delas preserva o estilo da outra.
 
+### Escolher o estilo padrão das notas novas
+
+1. Em **Configurações → Aparência → Padrão para novas páginas**, escolha a fonte, o tamanho, a entrelinha, o espaçamento e a largura.
+2. Clique em **Salvar padrão** e crie uma nota nova. Confira o estilo salvo na nota e compare com a aparência anterior de `Links`. Bancos novos usam largura total e o canvas mantém suas opções próprias.
+3. Mude outro valor no painel e use **Descartar alterações** para voltar ao último padrão salvo. Feche e reabra o piloto, crie outra nota e confirme que o padrão continuou disponível.
+4. Clique em **Restaurar padrão do perfil** para voltar à fonte e à largura gerais na criação de novas notas. Se criar uma nota a partir de um template com estilo próprio, confira que a nota herdou esse estilo.
+
 ### Cores HEX e estilos salvos
 
 1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.
@@ -115,6 +122,10 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 2. Abra outro rascunho em `Name`. Alterne o modo de leitura e volte ao modo de edição. O texto digitado deve continuar no rascunho.
 3. Confirme em **Save** ou **Salvar**. Confira em `Views` que as duas visualizações exibem o novo texto. Se a view `Origin low stock` estiver vazia, ajuste `Quantity` para pelo menos 3 no exercício anterior.
 4. Feche o Morrow normalmente, abra o mesmo cofre de demonstração pelo launcher e confira o texto nas duas visualizações.
+
+### Confirmar texto pelo teclado ou ao sair da célula
+
+Em `Inventory`, edite **Name**, use **Enter** para inserir uma quebra de linha e **Ctrl+Enter** para salvar. O foco deve voltar à mesma célula. Em `Views`, edite **Name** na view vinculada e clique no título da nota para confirmar sem voltar o foco à grade. Abra outro rascunho e clique em **Cancelar** para descartar. Reabra o cofre e verifique o valor salvo na origem.
 
 ## Edição de caixas de seleção
 
