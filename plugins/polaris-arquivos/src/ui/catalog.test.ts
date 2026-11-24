@@ -60,7 +60,7 @@ describe('Polaris Arquivos sidebar catalog', () => {
     const { container } = mount({ isActive: () => true, listFilesPage });
 
     await vi.waitFor(() => expect(container.textContent).toContain('cover.pdf'));
-    expect(container.querySelector('button')?.textContent).toContain('Assets');
+    expect(container.querySelector<HTMLButtonElement>('[data-focus-key="folder:Assets"]')?.textContent).toContain('Assets');
     expect(container.querySelector('.polaris-arquivos-file-name')?.textContent).toBe('cover.pdf');
 
     const folder = container.querySelector<HTMLButtonElement>('[data-focus-key="folder:Assets"]');
@@ -198,5 +198,320 @@ describe('Polaris Arquivos sidebar catalog', () => {
 
     expect(container.textContent).toBe('');
     expect(container.querySelector('section')).toBeNull();
+  });
+
+  it('filters only presentation, keeps expanded/page state, and can restore the default', async () => {
+    const readPreferences = vi.fn(() => ({
+      status: 'ready' as const,
+      value: {
+        mode: 'selected',
+        selectedExtensions: ['.PDF'],
+        hiddenExtensions: [],
+        customExtensions: [],
+        includeExtensionless: false,
+        showAttachments: false,
+      },
+    }));
+    const writePreferences = vi.fn((_value: unknown | null) => ({ status: 'saved' as const }));
+    const listFilesPage = vi.fn(async (directory: string, cursor: string | null = null, _limit = 200) => {
+      if (directory === '' && cursor === null)
+        return page('ready', [
+          entry('Assets', 'Assets', 'folder'),
+          entry('attachments', 'attachments', 'folder'),
+          entry('manual.pdf', 'manual.pdf'),
+          entry('picture.png', 'picture.png'),
+          entry('README', 'README'),
+        ], 'root-next');
+      if (directory === '' && cursor === 'root-next')
+        return page('ready', [entry('later.pdf', 'later.pdf'), entry('later.png', 'later.png')]);
+      if (directory === 'Assets') return page('ready', [entry('child.pdf', 'Assets/child.pdf')]);
+      if (directory === 'attachments') return page('ready', [entry('archive.pdf', 'attachments/archive.pdf')]);
+      return page('empty');
+    });
+    const { container } = mount({ isActive: () => true, listFilesPage, readPreferences, writePreferences });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('manual.pdf'));
+    expect(container.textContent).not.toContain('picture.png');
+    expect(container.textContent).not.toContain('README');
+    expect(container.querySelector('[data-focus-key="more:"]')).not.toBeNull();
+
+    container.querySelector<HTMLButtonElement>('[data-focus-key="folder:Assets"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('child.pdf'));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    await vi.waitFor(() => expect(listFilesPage).toHaveBeenCalledWith('attachments', null, 200));
+    await vi.waitFor(() => expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull());
+    expect(container.querySelector<HTMLButtonElement>('[data-focus-key="folder:Assets"]')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).not.toContain('picture.png');
+
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-reset"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('picture.png'));
+    expect(writePreferences).toHaveBeenLastCalledWith(null);
+    expect(container.querySelector<HTMLButtonElement>('[data-focus-key="folder:Assets"]')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-focus-key="more:"]')).not.toBeNull();
+
+    container.querySelector<HTMLButtonElement>('[data-focus-key="more:"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('later.png'));
+    expect(container.textContent).toContain('later.pdf');
+    expect(container.textContent).toContain('child.pdf');
+    expect(readPreferences).toHaveBeenCalledOnce();
+  });
+
+  it('hides the attachments folder from the first page before settings are opened', async () => {
+    const readPreferences = vi.fn(() => ({ status: 'ready' as const, value: null }));
+    const listFilesPage = vi.fn(async () =>
+      page('ready', [entry('attachments', 'attachments', 'folder'), entry('notes.pdf', 'notes.pdf')]),
+    );
+    const { container } = mount({ isActive: () => true, listFilesPage, readPreferences });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('notes.pdf'));
+    expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull();
+    expect(container.querySelector('.polaris-arquivos-settings')).toBeNull();
+    expect(listFilesPage).toHaveBeenCalledOnce();
+    expect(readPreferences).toHaveBeenCalledOnce();
+  });
+
+  it('keeps attachments hidden while discovery is pending and restores expansion when toggled back on', async () => {
+    const scanPending = deferred<VaultFilePage>();
+    let rootCalls = 0;
+    const listFilesPage = vi.fn(async (directory: string) => {
+      if (directory === '') {
+        rootCalls += 1;
+        if (rootCalls === 1)
+          return page('ready', [entry('attachments', 'attachments', 'folder'), entry('notes.pdf', 'notes.pdf')]);
+        return scanPending.promise;
+      }
+      if (directory === 'attachments')
+        return page('ready', [entry('Nested', 'attachments/Nested', 'folder'), entry('photo.pdf', 'attachments/photo.pdf')]);
+      return page('empty');
+    });
+    const { container } = mount({
+      isActive: () => true,
+      listFilesPage,
+      readPreferences: () => ({ status: 'ready', value: null }),
+      writePreferences: () => ({ status: 'saved' }),
+    }, 'en');
+
+    await vi.waitFor(() => expect(container.textContent).toContain('notes.pdf'));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('Discovering extensions'));
+    expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull();
+
+    const attachmentSwitch = () => container.querySelector<HTMLInputElement>('[data-focus-key="attachments"]')!;
+    attachmentSwitch().click();
+    const folder = container.querySelector<HTMLButtonElement>('[data-focus-key="folder:attachments"]');
+    expect(folder).not.toBeNull();
+    folder!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('photo.pdf'));
+    expect(container.querySelector('[data-focus-key="folder:attachments/Nested"]')).not.toBeNull();
+
+    attachmentSwitch().click();
+    expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull();
+    attachmentSwitch().click();
+    const restoredFolder = container.querySelector<HTMLButtonElement>('[data-focus-key="folder:attachments"]');
+    expect(restoredFolder?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-focus-key="folder:attachments/Nested"]')).not.toBeNull();
+    expect(container.textContent).toContain('photo.pdf');
+
+    scanPending.resolve(page('ready', [entry('attachments', 'attachments', 'folder')]));
+    await vi.waitFor(() => expect(container.textContent).not.toContain('Discovering extensions'));
+  });
+
+  it('hides attachments in partial discovery while retaining their discovered types and folder state', async () => {
+    let rootCalls = 0;
+    let attachmentCalls = 0;
+    const listFilesPage = vi.fn(async (directory: string) => {
+      if (directory === '') {
+        rootCalls += 1;
+        return page('ready', [
+          entry('attachments', 'attachments', 'folder'),
+          entry('Blocked', 'Blocked', 'folder'),
+          ...(rootCalls === 1 ? [entry('notes.pdf', 'notes.pdf')] : []),
+        ]);
+      }
+      if (directory === 'attachments') {
+        attachmentCalls += 1;
+        return attachmentCalls === 1
+          ? page('ready', [entry('hidden.qzx', 'attachments/hidden.qzx')])
+          : page('ready', [entry('Nested', 'attachments/Nested', 'folder'), entry('photo.pdf', 'attachments/photo.pdf')]);
+      }
+      if (directory === 'Blocked') return page('blocked');
+      return page('empty');
+    });
+    const { container } = mount({
+      isActive: () => true,
+      listFilesPage,
+      readPreferences: () => ({ status: 'ready', value: null }),
+      writePreferences: () => ({ status: 'saved' }),
+    }, 'en');
+
+    await vi.waitFor(() => expect(container.textContent).toContain('notes.pdf'));
+    expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull();
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('Some folders could not be checked'));
+    expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Show .qzx"]')).not.toBeNull();
+
+    const attachmentSwitch = () => container.querySelector<HTMLInputElement>('[data-focus-key="attachments"]')!;
+    attachmentSwitch().click();
+    const folder = container.querySelector<HTMLButtonElement>('[data-focus-key="folder:attachments"]');
+    expect(folder).not.toBeNull();
+    folder!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('photo.pdf'));
+    expect(container.querySelector('[data-focus-key="folder:attachments/Nested"]')).not.toBeNull();
+
+    attachmentSwitch().click();
+    expect(container.querySelector('[data-focus-key="folder:attachments"]')).toBeNull();
+    attachmentSwitch().click();
+    expect(container.querySelector<HTMLButtonElement>('[data-focus-key="folder:attachments"]')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-focus-key="folder:attachments/Nested"]')).not.toBeNull();
+    expect(container.textContent).toContain('photo.pdf');
+  });
+
+  it('discovers nested types only when settings open, searches them, and adds a custom type immediately', async () => {
+    const scanRoot = deferred<VaultFilePage>();
+    let calls = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const listFilesPage = vi.fn(async (directory: string, _cursor: string | null = null, _limit = 200) => {
+      calls += 1;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        if (calls === 1) return page('ready', [entry('Cold', 'Cold', 'folder'), entry('manual.pdf', 'manual.pdf')]);
+        if (calls === 2) return await scanRoot.promise;
+        if (directory === 'Cold') return page('ready', [entry('rare.abcxyz', 'Cold/rare.abcxyz')]);
+        return page('empty');
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    const writePreferences = vi.fn(() => ({ status: 'saved' as const }));
+    const { container } = mount({
+      isActive: () => true,
+      listFilesPage,
+      readPreferences: () => ({ status: 'ready', value: null }),
+      writePreferences,
+    }, 'en');
+
+    await vi.waitFor(() => expect(container.textContent).toContain('manual.pdf'));
+    expect(listFilesPage).toHaveBeenCalledTimes(1);
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('Discovering extensions'));
+    expect(listFilesPage).toHaveBeenCalledTimes(2);
+
+    const extensionInput = container.querySelector<HTMLInputElement>('[data-focus-key="extension-add"]')!;
+    extensionInput.value = '.qzx';
+    extensionInput.dispatchEvent(new Event('input', { bubbles: true }));
+    container.querySelector<HTMLButtonElement>('.polaris-arquivos-add-button')!.click();
+    const firstSearch = container.querySelector<HTMLInputElement>('[data-focus-key="extension-search"]')!;
+    firstSearch.value = 'qzx';
+    firstSearch.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(() => {
+      const custom = container.querySelector<HTMLInputElement>('[aria-label="Show .qzx"]');
+      expect(custom?.checked).toBe(true);
+    });
+    expect(writePreferences).toHaveBeenCalled();
+
+    scanRoot.resolve(page('ready', [entry('Cold', 'Cold', 'folder'), entry('manual.pdf', 'manual.pdf')]));
+    await vi.waitFor(() => expect(listFilesPage).toHaveBeenCalledWith('Cold', null, 200));
+    await vi.waitFor(() => expect(container.textContent).not.toContain('Discovering extensions'));
+    const search = container.querySelector<HTMLInputElement>('[data-focus-key="extension-search"]')!;
+    search.value = 'abcxyz';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="Show .abcxyz"]')).not.toBeNull());
+    expect(container.querySelector('[data-focus-key="folder:Cold"]')).toBeNull();
+    expect(maxInFlight).toBe(1);
+  });
+
+  it('restores saved filters when the plugin is mounted again', async () => {
+    let stored: unknown | null = null;
+    const readPreferences = vi.fn(() => ({ status: 'ready' as const, value: stored }));
+    const writePreferences = vi.fn((value: unknown | null) => {
+      stored = value;
+      return { status: 'saved' as const };
+    });
+    const listFilesPage = vi.fn(async () => page('empty'));
+    const host = { isActive: () => true, listFilesPage, readPreferences, writePreferences };
+    const first = mount(host, 'en');
+    await vi.waitFor(() => expect(first.container.textContent).toContain('This folder is empty'));
+    first.container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    const add = first.container.querySelector<HTMLInputElement>('[data-focus-key="extension-add"]')!;
+    add.value = '.qzx';
+    add.dispatchEvent(new Event('input', { bubbles: true }));
+    first.container.querySelector<HTMLButtonElement>('.polaris-arquivos-add-button')!.click();
+    expect(stored).toMatchObject({ customExtensions: ['qzx'], selectedExtensions: expect.arrayContaining(['qzx']) });
+    first.dispose();
+    first.container.remove();
+
+    const second = mount(host, 'en');
+    await vi.waitFor(() => expect(second.container.textContent).toContain('This folder is empty'));
+    second.container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    const search = second.container.querySelector<HTMLInputElement>('[data-focus-key="extension-search"]')!;
+    search.value = 'qzx';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(() => {
+      const custom = second.container.querySelector<HTMLInputElement>('[aria-label="Show .qzx"]');
+      expect(custom?.checked).toBe(true);
+    });
+    expect(readPreferences).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels global discovery when the filter panel closes and guards repeated cursors', async () => {
+    const pending = deferred<VaultFilePage>();
+    let calls = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const listFilesPage = vi.fn(async (_directory: string, _cursor: string | null = null, _limit = 200) => {
+      calls += 1;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        if (calls === 1) return page('ready', [entry('Deep', 'Deep', 'folder')]);
+        if (calls === 2) return await pending.promise;
+        if (calls === 3) return page('ready', [entry('Deep', 'Deep', 'folder')]);
+        return page('ready', [entry('late.qzx', 'Deep/late.qzx')]);
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    const { container } = mount({
+      isActive: () => true,
+      listFilesPage,
+      readPreferences: () => ({
+        status: 'ready',
+        value: { mode: 'selected', selectedExtensions: ['qzx'], customExtensions: ['qzx'] },
+      }),
+    }, 'en');
+    await vi.waitFor(() => expect(container.textContent).toContain('Deep'));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    await vi.waitFor(() => expect(listFilesPage).toHaveBeenCalledTimes(2));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-close"]')!.click();
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    expect(listFilesPage).toHaveBeenCalledTimes(2);
+    pending.resolve(page('ready', [entry('Deep', 'Deep', 'folder')]));
+    await vi.waitFor(() => expect(listFilesPage).toHaveBeenCalledTimes(4));
+    await vi.waitFor(() => expect(container.textContent).not.toContain('Discovering extensions'));
+    expect(maxInFlight).toBe(1);
+    expect(container.querySelector('[data-focus-key="folder:Deep"]')).not.toBeNull();
+  });
+
+  it('stops a repeated metadata cursor and reports partial discovery', async () => {
+    let rootCalls = 0;
+    const listFilesPage = vi.fn(async (_directory: string, cursor: string | null = null, _limit = 200) => {
+      if (cursor === null) {
+        rootCalls += 1;
+        return rootCalls === 1 ? page('ready') : page('ready', [], 'loop');
+      }
+      return page('ready', [], 'loop');
+    });
+    const { container } = mount({
+      isActive: () => true,
+      listFilesPage,
+      readPreferences: () => ({ status: 'ready', value: null }),
+    }, 'en');
+    await vi.waitFor(() => expect(container.textContent).toContain('This folder is empty'));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="settings-toggle"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('Some folders could not be checked'));
+    expect(listFilesPage).toHaveBeenCalledTimes(3);
   });
 });

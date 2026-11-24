@@ -78,8 +78,15 @@ describe('Polaris Arquivos sidebar catalog registration', () => {
       resolveFirst = resolve;
     });
     const firstList = vi.fn(() => firstPending);
+    const firstReadPreferences = vi.fn(() => ({ status: 'ready' as const, value: { mode: 'selected' } }));
+    const firstWritePreferences = vi.fn(() => ({ status: 'saved' as const }));
     const ownerIsActive = () => true;
-    const sessionHost = { isActive: () => true, listFilesPage: firstList };
+    const sessionHost = {
+      isActive: () => true,
+      listFilesPage: firstList,
+      readPreferences: firstReadPreferences,
+      writePreferences: firstWritePreferences,
+    };
     const removeFirst = addPluginSidebarFileCatalog(
       'polaris-arquivos',
       20,
@@ -89,6 +96,7 @@ describe('Polaris Arquivos sidebar catalog registration', () => {
     );
     cleanups.push(removeFirst);
     const first = polarisArquivosSidebarFileCatalog();
+    expect(first!.host.readPreferences!()).toEqual({ status: 'ready', value: { mode: 'selected' } });
     const pendingFromFirst = first!.host.listFilesPage!('Media', null, 200);
     expect(firstList).toHaveBeenCalledOnce();
 
@@ -99,17 +107,21 @@ describe('Polaris Arquivos sidebar catalog registration', () => {
       nextCursor: null,
       error: null,
     }));
+    const secondReadPreferences = vi.fn(() => ({ status: 'ready' as const, value: { mode: 'all' } }));
     const removeSecond = addPluginSidebarFileCatalog(
       'polaris-arquivos',
       21,
       () => {},
-      { isActive: () => true, listFilesPage: secondList },
+      { isActive: () => true, listFilesPage: secondList, readPreferences: secondReadPreferences },
       ownerIsActive,
     );
     cleanups.push(removeSecond);
     const second = polarisArquivosSidebarFileCatalog();
 
     expect(first?.isActive()).toBe(false);
+    expect(first!.host.readPreferences!()).toEqual({ status: 'unavailable' });
+    expect(first!.host.writePreferences!(null)).toEqual({ status: 'unavailable' });
+    expect(firstWritePreferences).not.toHaveBeenCalled();
     expect((await first!.host.listFilesPage!('Media', null, 200)).status).toBe('stale');
     expect(firstList).toHaveBeenCalledOnce();
     resolveFirst({
@@ -124,6 +136,8 @@ describe('Polaris Arquivos sidebar catalog registration', () => {
     const current = await second!.host.listFilesPage!('Media', null, 200);
     expect(current.entries[0]?.name).toBe('current.pdf');
     expect(secondList).toHaveBeenCalledOnce();
+    expect(second!.host.readPreferences!()).toEqual({ status: 'ready', value: { mode: 'all' } });
+    expect(secondReadPreferences).toHaveBeenCalledOnce();
     removeSecond();
     expect((await second!.host.listFilesPage!('Media', null, 200)).status).toBe('stale');
     expect(secondList).toHaveBeenCalledOnce();

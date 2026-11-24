@@ -34,6 +34,10 @@ import type {
   PluginSidebarFileCatalogMount,
 } from './registry';
 import { createDataApi } from './dataApi';
+import {
+  readFileCatalogPreference,
+  writeFileCatalogPreference,
+} from '../platform/fileCatalogPreferences';
 import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
 import type { DatabaseProviderRegistration } from './providerApi';
 import { clonePluginPageProperties } from './pageInfo';
@@ -329,6 +333,9 @@ function pluginApi(id: string, state: Running) {
     if (typeof mount !== 'function') throw new Error('A sidebar file catalog needs a mount function.');
 
     const bridge = desktop?.vault;
+    const catalogLocation = session.location;
+    const catalogPlatform = desktop?.platform ??
+      (typeof navigator !== 'undefined' ? `${navigator.platform} ${navigator.userAgent}` : '');
     const host = Object.freeze({
       isActive: ownerIsActive,
       ...(typeof bridge?.listFilesPage === 'function'
@@ -364,6 +371,26 @@ function pluginApi(id: string, state: Running) {
                   nextCursor: null,
                   error: error instanceof Error ? error.message : 'The folder could not be read.',
                 };
+              }
+            },
+          }
+        : {}),
+      ...(catalogLocation
+        ? {
+            readPreferences() {
+              if (!ownerIsActive()) return { status: 'unavailable' as const };
+              try {
+                return readFileCatalogPreference(window.localStorage, catalogLocation, catalogPlatform);
+              } catch {
+                return { status: 'unavailable' as const };
+              }
+            },
+            writePreferences(value: unknown | null) {
+              if (!ownerIsActive()) return { status: 'unavailable' as const };
+              try {
+                return writeFileCatalogPreference(window.localStorage, catalogLocation, catalogPlatform, value);
+              } catch {
+                return { status: 'unavailable' as const };
               }
             },
           }

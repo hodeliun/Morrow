@@ -9,6 +9,10 @@ import type { LegacyFormulaPresentation } from '../../core/legacyFormula';
 import type { SupportedLocale } from '../i18n';
 import type { PluginInlineFormulaEditAction } from './inlineFormulaApi';
 import type { VaultFilePage } from '../platform/desktop';
+import type {
+  FileCatalogPreferenceReadResult,
+  FileCatalogPreferenceWriteResult,
+} from '../platform/fileCatalogPreferences';
 
 export type PluginInlineColorKind = 'text' | 'bg';
 
@@ -107,7 +111,7 @@ export interface PluginInlineFormulaPresentationEntry {
   isActive(): boolean;
 }
 
-/** Read-only capability mounted by Polaris Arquivos inside the host sidebar. */
+/** Read-only vault listing with profile-only filters scoped to the active Polaris Arquivos registration. */
 export interface PluginSidebarFileCatalogHost {
   readonly isActive: () => boolean;
   readonly listFilesPage?: (
@@ -115,6 +119,8 @@ export interface PluginSidebarFileCatalogHost {
     cursor?: string | null,
     limit?: number,
   ) => Promise<VaultFilePage>;
+  readonly readPreferences?: () => FileCatalogPreferenceReadResult;
+  readonly writePreferences?: (value: unknown | null) => FileCatalogPreferenceWriteResult;
 }
 
 export type PluginSidebarFileCatalogMount = (
@@ -320,6 +326,8 @@ export function addPluginSidebarFileCatalog(
     error: null,
   });
   const listFilesPage = host.listFilesPage;
+  const readPreferences = host.readPreferences;
+  const writePreferences = host.writePreferences;
   const guardedHost: PluginSidebarFileCatalogHost = Object.freeze({
     isActive: registrationIsActive,
     ...(typeof listFilesPage === 'function'
@@ -332,6 +340,32 @@ export function addPluginSidebarFileCatalog(
             } catch (error) {
               if (!registrationIsActive()) return stalePage();
               throw error;
+            }
+          },
+        }
+      : {}),
+    ...(typeof readPreferences === 'function'
+      ? {
+          readPreferences(): FileCatalogPreferenceReadResult {
+            if (!registrationIsActive()) return { status: 'unavailable' };
+            try {
+              const result = readPreferences();
+              return registrationIsActive() ? result : { status: 'unavailable' };
+            } catch {
+              return { status: 'unavailable' };
+            }
+          },
+        }
+      : {}),
+    ...(typeof writePreferences === 'function'
+      ? {
+          writePreferences(value: unknown | null): FileCatalogPreferenceWriteResult {
+            if (!registrationIsActive()) return { status: 'unavailable' };
+            try {
+              const result = writePreferences(value);
+              return registrationIsActive() ? result : { status: 'unavailable' };
+            } catch {
+              return { status: 'unavailable' };
             }
           },
         }
