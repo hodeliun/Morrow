@@ -817,6 +817,8 @@ export const es: TranslationSchema = {
     columns: 'Columnas',
     defaultBackground: 'Fondo predeterminado',
     colourBackground: 'Fondo {colour}',
+    blockBackground: 'fondo del bloque',
+    customBlockBackground: 'Fondo personalizado del bloque',
     equation: 'Ecuación en línea',
     heading: 'Encabezado',
     clearFormatting: 'Quitar el formato',

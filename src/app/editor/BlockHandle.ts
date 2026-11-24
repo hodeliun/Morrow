@@ -6,12 +6,15 @@ import { dropPoint } from '@tiptap/pm/transform';
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { selectedBlocks } from './BlockSelect';
+import type { BlockMenuOrigin } from './blockMenuOrigin';
 
 const MOVABLE_ITEMS = new Set(['listItem', 'taskItem']);
 
 export interface BlockMenuRequest {
   pos: number;
   rect: DOMRect;
+  /** Captured by the owning PageEditor at the moment this request is opened. */
+  origin?: BlockMenuOrigin;
   // several blocks the selected words run across, which turn together
   range?: { from: number; to: number };
 }

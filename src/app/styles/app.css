@@ -1471,6 +1471,13 @@ input[type='checkbox']:checked::after {
   letter-spacing: 0.02em;
 }
 
+.menu-control-documento {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
 /* dialogs */
 
 .dialog-backdrop {

@@ -3,6 +3,7 @@ import type { Placement } from '@floating-ui/dom';
 import { ChevronRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 export type MenuEntry =
@@ -17,6 +18,8 @@ export type MenuEntry =
     }
   // a row that opens more choices beside the menu, the way nested menus work everywhere
   | { label: string; icon?: LucideIcon; checked?: boolean; submenu: MenuEntry[] }
+  // Polaris Documento mounts its existing HEX input into a bounded submenu slot.
+  | { documentoControl: ReactNode; onKeyboardExit: () => void }
   | { separator: true }
   | { heading: string; title?: string };
 
@@ -28,11 +31,25 @@ interface MenuProps {
   label: string;
   // set on a submenu: picking in it closes the whole menu, not only the submenu
   onPicked?: () => void;
+  focusOnOpen?: boolean;
+  canFocus?: () => boolean;
 }
 
-export function Menu({ anchor, entries, onClose, placement = 'bottom-start', label, onPicked }: MenuProps) {
+const allowMenuFocus = () => true;
+
+export function Menu({
+  anchor,
+  entries,
+  onClose,
+  placement = 'bottom-start',
+  label,
+  onPicked,
+  focusOnOpen = true,
+  canFocus = allowMenuFocus,
+}: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const isSubmenu = onPicked !== undefined;
+  const hasDocumentoControl = entries.some((entry) => 'documentoControl' in entry);
   const [open, setOpen] = useState<{ index: number; button: HTMLButtonElement; focus: boolean } | null>(null);
   const closeRef = useRef(onClose);
   useEffect(() => {
@@ -52,9 +69,12 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
       element.style.left = `${x}px`;
       element.style.top = `${y}px`;
       element.style.visibility = 'visible';
+      if (canFocus() && hasDocumentoControl && focusOnOpen)
+        element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
     });
-    element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, [anchor, placement]);
+    if (canFocus() && !hasDocumentoControl)
+      element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, [anchor, placement, hasDocumentoControl, focusOnOpen, canFocus]);
 
   useEffect(() => {
     const trigger = anchor instanceof HTMLElement ? anchor : null;
@@ -74,30 +94,41 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
       window.removeEventListener('blur', onBlurWindow);
       window.removeEventListener('resize', onBlurWindow);
       // give focus back to whatever opened the menu
-      if (trigger?.isConnected && document.activeElement === document.body)
+      if (canFocus() && trigger?.isConnected && document.activeElement === document.body)
         trigger.focus({ preventScroll: true });
     };
-  }, [anchor, isSubmenu]);
+  }, [anchor, isSubmenu, canFocus]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     // keys pressed in a submenu reach this menu too through react, they belong to the submenu
     if (!ref.current?.contains(event.target as Node)) return;
-    const buttons = Array.from(
-      ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [],
+    if (!canFocus()) {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    const targets = Array.from(
+      ref.current?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), [data-menu-control="documento"] input:not(:disabled)',
+      ) ?? [],
     );
-    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const active = document.activeElement as HTMLElement;
+    const index = targets.indexOf(active);
+    const inDocumentoControl = Boolean(active.closest?.('[data-menu-control="documento"]'));
+    if (inDocumentoControl && event.key !== 'Escape' && event.key !== 'Tab') return;
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      buttons[(index + 1) % buttons.length]?.focus();
+      targets[(index + 1) % targets.length]?.focus();
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
-      buttons[(index - 1 + buttons.length) % buttons.length]?.focus();
+      targets[(index - 1 + targets.length) % targets.length]?.focus();
     } else if (event.key === 'Home') {
       event.preventDefault();
-      buttons[0]?.focus();
+      targets[0]?.focus();
     } else if (event.key === 'End') {
       event.preventDefault();
-      buttons[buttons.length - 1]?.focus();
+      targets[targets.length - 1]?.focus();
     } else if (event.key === 'ArrowRight') {
       const button = document.activeElement as HTMLButtonElement;
       const index = Number(button?.dataset.submenuIndex);
@@ -109,6 +140,17 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
       event.preventDefault();
       event.stopPropagation();
       onClose();
+    } else if (event.key === 'Tab' && inDocumentoControl) {
+      const next = index + (event.shiftKey ? -1 : 1);
+      if (next >= 0 && next < targets.length) {
+        event.preventDefault();
+        targets[next]?.focus();
+      } else {
+        event.preventDefault();
+        event.stopPropagation();
+        const control = entries.find((entry) => 'documentoControl' in entry);
+        if (control && 'onKeyboardExit' in control) control.onKeyboardExit();
+      }
     } else if (event.key === 'Escape' || event.key === 'Tab') {
       event.preventDefault();
       event.stopPropagation();
@@ -134,6 +176,12 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
               {entry.heading}
             </div>
           );
+        if ('documentoControl' in entry)
+          return (
+            <div key={index} className="menu-control-documento" data-menu-control="documento" role="none">
+              {entry.documentoControl}
+            </div>
+          );
         const Icon = entry.icon;
         if ('submenu' in entry)
           return (
@@ -145,8 +193,16 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
               aria-expanded={open?.index === index}
               data-submenu-index={index}
               className={`menu-item${open?.index === index ? ' is-open' : ''}`}
-              onMouseEnter={(event) => setOpen({ index, button: event.currentTarget, focus: false })}
-              onClick={(event) => setOpen({ index, button: event.currentTarget, focus: true })}
+              onMouseEnter={(event) => {
+                if (canFocus()) setOpen({ index, button: event.currentTarget, focus: false });
+              }}
+              onClick={(event) => {
+                if (!canFocus()) {
+                  onClose();
+                  return;
+                }
+                setOpen({ index, button: event.currentTarget, focus: true });
+              }}
             >
               <span className="menu-icon">{Icon && <Icon size={15} strokeWidth={1.75} />}</span>
               <span className="menu-label">{entry.label}</span>
@@ -164,8 +220,12 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
             aria-checked={entry.checked}
             className={`menu-item${entry.danger ? ' is-danger' : ''}`}
             disabled={entry.disabled}
-            onMouseEnter={() => setOpen(null)}
+            onMouseEnter={() => canFocus() && setOpen(null)}
             onClick={() => {
+              if (!canFocus()) {
+                onClose();
+                return;
+              }
               (onPicked ?? onClose)();
               entry.onSelect();
             }}
@@ -186,8 +246,10 @@ export function Menu({ anchor, entries, onClose, placement = 'bottom-start', lab
           focus={open.focus}
           onClose={() => {
             setOpen(null);
-            open.button.focus({ preventScroll: true });
+            if (canFocus()) open.button.focus({ preventScroll: true });
           }}
+          canFocus={canFocus}
+          focusOnOpen={open.focus}
           onPicked={onPicked ?? onClose}
         />
       )}
@@ -203,7 +265,7 @@ function Submenu({
   ...props
 }: Omit<MenuProps, 'placement'> & { anchor: HTMLElement; focus: boolean; onPicked: () => void }) {
   useLayoutEffect(() => {
-    if (!focus) props.anchor.focus({ preventScroll: true });
-  }, [focus, props.anchor]);
+    if (!focus && (props.canFocus ?? allowMenuFocus)()) props.anchor.focus({ preventScroll: true });
+  }, [focus, props.anchor, props.canFocus]);
   return <Menu {...props} placement="right-start" />;
 }

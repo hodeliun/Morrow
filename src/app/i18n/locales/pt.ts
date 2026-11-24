@@ -817,6 +817,8 @@ export const pt: TranslationSchema = {
     columns: 'Colunas',
     defaultBackground: 'Fundo padrão',
     colourBackground: 'Fundo {colour}',
+    blockBackground: 'fundo do bloco',
+    customBlockBackground: 'Fundo personalizado do bloco',
     equation: 'Equação embutida',
     heading: 'Título',
     clearFormatting: 'Limpar a formatação',

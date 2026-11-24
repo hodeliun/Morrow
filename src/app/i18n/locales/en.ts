@@ -810,6 +810,8 @@ export const en = {
     columns: 'Columns',
     defaultBackground: 'Default background',
     colourBackground: '{colour} background',
+    blockBackground: 'block background',
+    customBlockBackground: 'Custom block background',
     equation: 'Equation inline',
     heading: 'Heading',
     clearFormatting: 'Clear formatting',

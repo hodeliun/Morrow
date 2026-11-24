@@ -4,7 +4,7 @@ import { EditorState, TextSelection } from '@tiptap/pm/state';
 import type { Fragment, Node as ProseNode, Slice } from '@tiptap/pm/model';
 import { EditorContent } from '@tiptap/react';
 import katex from 'katex';
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { docToClipboardMarkdown } from '../../core/markdown/serialize';
@@ -24,7 +24,7 @@ import { viewName } from '../i18n/labels';
 import { Popover } from '../components/Popover';
 import { createPage, openToday } from '../operations';
 import { navigate, openPage } from '../router';
-import { targetPane, usePane } from '../tabs';
+import { targetPane, usePane, usePaneTabId } from '../tabs';
 import { getSession, getState } from '../workspace';
 import type { BlockMenuRequest } from './BlockHandle';
 import { focusedEditor, setFocusedEditor } from './commits';
@@ -44,6 +44,7 @@ import {
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
 import { anchorSlice, isBlockAnchor } from '../../core/anchors';
+import { captureBlockMenuOrigin, isBlockMenuRequestCurrent } from './blockMenuOrigin';
 
 interface Props {
   pageId: PageId;
@@ -310,17 +311,18 @@ function ReminderTime({
 export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onDirty, onReady }: Props) {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [blockMenu, setBlockMenu] = useState<BlockMenuRequest | null>(null);
-  // the blocks a menu was opened for can be deleted from the keyboard while it is open, then it closes
-  useEffect(() => {
-    if (!editor || !blockMenu) return;
-    const close = ({ transaction }: { transaction: { docChanged: boolean } }) => {
-      if (transaction.docChanged) setBlockMenu(null);
-    };
-    editor.on('transaction', close);
-    return () => {
-      editor.off('transaction', close);
-    };
-  }, [editor, blockMenu]);
+  const pane = usePane();
+  const tabId = usePaneTabId();
+  const blockMenuOwner = useRef({ pageId, pane, tabId });
+  useLayoutEffect(() => {
+    blockMenuOwner.current = { pageId, pane, tabId };
+  }, [pageId, pane, tabId]);
+  const openBlockMenu = useCallback((targetEditor: Editor, request: BlockMenuRequest) => {
+    const owner = blockMenuOwner.current;
+    const origin = captureBlockMenuOrigin(targetEditor, owner.pageId, owner.pane, owner.tabId);
+    if (!origin || !isBlockMenuRequestCurrent(origin)) return;
+    setBlockMenu({ ...request, origin });
+  }, []);
   const [dateMenu, setDateMenu] = useState<{
     date: Date;
     anchor: HTMLElement;
@@ -329,7 +331,6 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   const [timePicker, setTimePicker] = useState<{ date: Date; anchor: HTMLElement } | null>(null);
   // the find bar opens with the words picked on the page, n changes so pressing it again refills it
   const [finding, setFinding] = useState<{ text: string; n: number } | null>(null);
-  const pane = usePane();
   const coordinatorRef = useRef<ReturnType<typeof registerPageEditorCoordinator> | null>(null);
   // the editor that already holds its page
   const filled = useRef<Editor | null>(null);
@@ -442,7 +443,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           createChild: (kind) => createPage({ parentId: pageId, kind, open: false }),
           openDate: (date) => openToday(date),
           dateMenu: (date, anchor, time) => setDateMenu({ date, anchor, time }),
-          onBlockMenu: setBlockMenu,
+          onBlockMenu: (request) => openBlockMenu(instance, request),
           resolvePage: (title) => pageIdByTitle(getState(), title),
           linkedViewContext: { session, pageId },
         }),
@@ -470,7 +471,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
             const node = at && at.inside >= 0 ? view.state.doc.nodeAt(at.inside) : null;
             if (!at || node?.type.name !== 'image') return false;
             event.preventDefault();
-            setBlockMenu({
+            openBlockMenu(instance, {
               pos: at.inside,
               rect: new DOMRect(event.clientX, event.clientY, 0, 0),
             });
@@ -627,7 +628,11 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       <EditorContent editor={editor} className="editor-surface" />
       {editable && (
         <>
-          <FormattingMenu editor={editor} pageId={pageId} onBlockMenu={setBlockMenu} />
+          <FormattingMenu
+            editor={editor}
+            pageId={pageId}
+            onBlockMenu={(request) => openBlockMenu(editor, request)}
+          />
           <LinkMenu editor={editor} />
           <TableMenu editor={editor} />
         </>
@@ -648,14 +653,20 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           onClose={() => setTimePicker(null)}
         />
       )}
-      {blockMenu && (
-        <BlockMenu
-          editor={editor}
-          request={blockMenu}
-          pageTitle={displayTitle(getState().pages[pageId])}
-          onClose={() => setBlockMenu(null)}
-        />
-      )}
+      {blockMenu &&
+        (!blockMenu.origin ||
+          (blockMenu.origin.editor === editor &&
+            blockMenu.origin.pageId === pageId &&
+            blockMenu.origin.paneId === pane &&
+            blockMenu.origin.tabId === tabId &&
+            isBlockMenuRequestCurrent(blockMenu.origin))) && (
+          <BlockMenu
+            editor={editor}
+            request={blockMenu}
+            pageTitle={displayTitle(getState().pages[pageId])}
+            onClose={() => setBlockMenu(null)}
+          />
+        )}
     </div>
   );
 }

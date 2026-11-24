@@ -59,10 +59,10 @@ import {
 import { ListLettered } from './icons';
 import { columnAt, moveColumn } from './ColumnGrip';
 import type { LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { pageIdFromHref } from '../../core/links';
 import { isHexBlockBackground } from '../../core/markdown/blockBackground';
-import { COLORS, normalizeInlineColor } from '../../core/model';
+import { BACKGROUND_HEX, COLORS, inlineColorHex, normalizeInlineColor } from '../../core/model';
 import type { ColorName, InlineColor } from '../../core/model';
 import { formatShortcut } from '../actions';
 import { Menu } from '../components/Menu';
@@ -72,20 +72,36 @@ import type { MenuEntry } from '../components/Menu';
 import { copyImageFile, downloadFile } from '../platform/attachments';
 import { copyText, desktop, openExternal } from '../platform/desktop';
 import { attachSelection } from '../assistant/selection';
-import { setPreferences, usePreferences } from '../platform/preferences';
+import {
+  getPreferences,
+  setPreferences,
+  subscribePreferences,
+  usePreferences,
+} from '../platform/preferences';
 import { activeRoute, openPage } from '../router';
 import { moveBlock, selectedTextBlocks } from './BlockHandle';
 import { editMathNear } from './Extras';
 import type { BlockMenuRequest } from './BlockHandle';
+import type { BlockMenuOrigin } from './blockMenuOrigin';
+import {
+  isBlockMenuOwnerCurrent,
+  isBlockMenuRequestCurrent,
+  subscribeBlockMenuOrigin,
+} from './blockMenuOrigin';
 import { clearBlockSelection, selectedBlocks } from './BlockSelect';
 import type { BlockRange } from './BlockSelect';
 import { turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
 import { openDialog, toast } from '../ui';
-import { getSession } from '../workspace';
+import { getSession, getWorkspaceSessionGeneration, subscribeWorkspaceSession } from '../workspace';
 import { colorLabel } from '../i18n/labels';
 import { documentoInlineColorControl, subscribePlugins } from '../plugins/registry';
-import { createInlineColorControlHost } from './inlineColorControlHost';
+import type { PluginInlineColorControlEntry } from '../plugins/registry';
+import {
+  createBlockBackgroundControlHost,
+  createInlineColorControlHost,
+  representableBlockBackgroundOwners,
+} from './inlineColorControlHost';
 
 function ToolButton({
   label,
@@ -347,6 +363,125 @@ function DocumentoInlineColorControl({
   ]);
 
   return <span ref={root} className="documento-inline-color-control" />;
+}
+
+function DocumentoBlockBackgroundControl({
+  editor,
+  registration,
+  origin,
+  ownerPositions,
+  color,
+  onDone,
+}: {
+  editor: Editor;
+  registration: PluginInlineColorControlEntry;
+  origin?: BlockMenuOrigin;
+  ownerPositions: readonly number[];
+  color: InlineColor | null;
+  onDone: () => void;
+}) {
+  const root = useRef<HTMLSpanElement>(null);
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+
+  const label = t('editor.customBlockBackground');
+  const inputLabel = t('editor.hexColorFor', { target: t('editor.blockBackground') });
+  const invalidMessage = t('editor.invalidHexColor');
+  const initialColor = inlineColorHex(color, BACKGROUND_HEX) ?? BACKGROUND_HEX.yellow;
+
+  useEffect(() => {
+    if (!registration || !root.current || ownerPositions.length === 0) {
+      onDoneRef.current();
+      return;
+    }
+
+    let session: ReturnType<typeof getSession>;
+    try {
+      session = getSession();
+    } catch {
+      onDoneRef.current();
+      return;
+    }
+    const sessionGeneration = getWorkspaceSessionGeneration();
+    const capturedBlockRange = selectedBlocks(editor.state);
+    let live = true;
+    let mounted: ReturnType<typeof createBlockBackgroundControlHost> = null;
+    const cleanups: Array<() => void> = [];
+    let invalidate = () => {};
+    const clean = () => {
+      if (!live) return;
+      live = false;
+      mounted?.dispose();
+      for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+      editor.off('destroy', invalidate);
+    };
+    invalidate = () => {
+      if (!live) return;
+      clean();
+      onDoneRef.current();
+    };
+    const isSessionActive = () => {
+      try {
+        return (
+          live &&
+          getSession() === session &&
+          getWorkspaceSessionGeneration() === sessionGeneration &&
+          !session.isClosed &&
+          !session.isMutationFenced &&
+          !getPreferences().readingMode &&
+          (!origin || isBlockMenuOwnerCurrent(origin))
+        );
+      } catch {
+        return false;
+      }
+    };
+    const isTargetSelectionCurrent = () => {
+      if (origin) return isBlockMenuRequestCurrent(origin);
+      const current = selectedBlocks(editor.state);
+      return current?.from === capturedBlockRange?.from && current?.to === capturedBlockRange?.to;
+    };
+    mounted = createBlockBackgroundControlHost({
+      editor,
+      registration,
+      color: initialColor,
+      label,
+      inputLabel,
+      invalidMessage,
+      isSessionActive,
+      isLeaseActive: () => live && registration.isActive() && (!origin || isBlockMenuOwnerCurrent(origin)),
+      isTargetSelectionCurrent,
+      apply: (nextColor) => {
+        setBlockBackground(editor, [...ownerPositions], nextColor);
+        return true;
+      },
+      onFinish: () => onDoneRef.current(),
+      onInvalidate: invalidate,
+    });
+    if (!mounted) {
+      clean();
+      onDoneRef.current();
+      return;
+    }
+    const unmountControl = registration.mount(root.current, mounted.host);
+    if (typeof unmountControl === 'function') cleanups.push(unmountControl);
+
+    cleanups.push(
+      subscribePreferences(() => {
+        if (getPreferences().readingMode) invalidate();
+      }),
+      subscribeWorkspaceSession(invalidate),
+      session.subscribeMutationFence(() => {
+        if (session.isMutationFenced) invalidate();
+      }),
+      session.onClose(invalidate),
+    );
+    editor.on('destroy', invalidate);
+    return clean;
+  }, [registration, editor, origin, ownerPositions, initialColor, label, inputLabel, invalidMessage]);
+
+  return <span ref={root} className="documento-block-background-control-slot" />;
 }
 
 function ColorPanel({ editor, onDone }: { editor: Editor; onDone: () => void }) {
@@ -1217,7 +1352,7 @@ function intoColumns(editor: Editor, from: number, to: number, count: number): v
 
 // a background on the whole block, not only its words. an item of a list gets one of its own, the list
 // around it keeps what it had. a whole list coloured takes the colour off its items so it shows evenly
-export function setBlockBackground(editor: Editor, positions: number[], color: ColorName | null): void {
+export function setBlockBackground(editor: Editor, positions: number[], color: InlineColor | null): void {
   const { tr, doc } = editor.state;
   const done = new Set<number>();
   for (const pos of positions) {
@@ -1340,6 +1475,35 @@ export function BlockMenu({
   pageTitle: string;
   onClose: () => void;
 }) {
+  const origin = request.origin;
+  const canFocus = useCallback(
+    () => !origin || (origin.editor === editor && isBlockMenuRequestCurrent(origin)),
+    [editor, origin],
+  );
+  const colorRegistration = useSyncExternalStore(
+    subscribePlugins,
+    documentoInlineColorControl,
+    documentoInlineColorControl,
+  );
+  useLayoutEffect(() => {
+    if (!origin) return;
+    const close = () => onClose();
+    const closeIfStale = () => {
+      if (!canFocus()) close();
+    };
+    const onTransaction = () => {
+      if (!isBlockMenuRequestCurrent(origin)) close();
+    };
+    editor.on('transaction', onTransaction);
+    editor.on('destroy', close);
+    const stopOrigin = subscribeBlockMenuOrigin(origin, closeIfStale);
+    closeIfStale();
+    return () => {
+      editor.off('transaction', onTransaction);
+      editor.off('destroy', close);
+      stopOrigin();
+    };
+  }, [canFocus, editor, onClose, origin]);
   const picked = request.range ?? selectedBlocks(editor.state);
   const range = picked && request.pos >= picked.from && request.pos < picked.to ? picked : null;
   const turn = (target: TurnTarget) => () =>
@@ -1363,9 +1527,21 @@ export function BlockMenu({
     }
     return positions;
   };
+  const backgroundOwners = colourable ? representableBlockBackgroundOwners(editor, blockPositions()) : [];
+  const backgroundOwnerPositions = backgroundOwners.map((owner) => owner.position);
   const background = range
     ? null
-    : ((editor.state.doc.nodeAt(request.pos)?.attrs.backgroundColor as ColorName | null | undefined) ?? null);
+    : (backgroundOwners[0]?.color ??
+      normalizeInlineColor(editor.state.doc.nodeAt(request.pos)?.attrs.backgroundColor));
+  const clearBackground = () => {
+    const positions = blockPositions().flatMap((position) => {
+      const node = editor.state.doc.nodeAt(position);
+      return node?.type.name === 'details' && node.firstChild?.type.name === 'detailsSummary'
+        ? [position, position + 1]
+        : [position];
+    });
+    setBlockBackground(editor, positions, null);
+  };
   const entries: MenuEntry[] = [
     { heading: t('editor.turnInto') },
     {
@@ -1468,7 +1644,7 @@ export function BlockMenu({
               {
                 label: t('editor.defaultBackground'),
                 checked: !range && background === null,
-                onSelect: () => setBlockBackground(editor, blockPositions(), null),
+                onSelect: clearBackground,
               },
               ...COLORS.map((color) => ({
                 label: t('editor.colourBackground', { colour: colorLabel(color) }),
@@ -1476,6 +1652,27 @@ export function BlockMenu({
                 checked: background === color,
                 onSelect: () => setBlockBackground(editor, blockPositions(), color),
               })),
+              ...(colorRegistration && backgroundOwners.length
+                ? [
+                    {
+                      documentoControl: (
+                        <DocumentoBlockBackgroundControl
+                          editor={editor}
+                          registration={colorRegistration}
+                          origin={origin}
+                          ownerPositions={backgroundOwnerPositions}
+                          color={backgroundOwners[0]?.color ?? null}
+                          onDone={onClose}
+                        />
+                      ),
+                      onKeyboardExit: () => {
+                        const restoreFocus = canFocus();
+                        onClose();
+                        if (restoreFocus && !editor.isDestroyed) editor.commands.focus();
+                      },
+                    },
+                  ]
+                : []),
             ],
           },
           { separator: true as const },
@@ -1734,6 +1931,7 @@ export function BlockMenu({
       anchor={request.rect}
       entries={shown}
       onClose={onClose}
+      canFocus={canFocus}
       placement="left-start"
       label={t('editor.blockOptions')}
     />
