@@ -39,7 +39,7 @@ import { CoverBanner, CoverPicker } from './Cover';
 import { DailyNav, MadeThisDay } from './DailyNav';
 import { Emoji } from './Emoji';
 import { LockedPage } from './EncryptDialog';
-import { PageProperties } from './PageProperties';
+import { PageProperties, visiblePageExtraKeys } from './PageProperties';
 import { PageTags } from './TagsView';
 import { NoteStyleAction } from './NoteStyleAction';
 import { applyTemplateTo, deleteForever, restorePage, setArchived, trashPage } from '../operations';
@@ -253,7 +253,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
     !database &&
     nativeEditable &&
     !unreadable &&
-    Object.keys(page.extra).length === 0 &&
+    visiblePageExtraKeys(page, state).length === 0 &&
     addingFor !== id;
 
   if (page.kind === 'canvas') {

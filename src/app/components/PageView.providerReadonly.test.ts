@@ -4,11 +4,13 @@ import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PageId } from '../../core/model';
+import { readPageText } from '../../core/vault/pageFile';
 import { E003_POLARIS_DADOS_FIXTURE } from '../../storage/fixtures/e003-polaris-dados';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
 import { setPreferences } from '../platform/preferences';
+import { t } from '../i18n';
 import { flushPlaces, readingPlace, rememberPlace } from '../readingPlace';
 import { matchesReadingPageRoute } from '../readingFocus';
 import { PaneContext, PaneTabContext } from '../tabs';
@@ -102,8 +104,11 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let nextId = 0;
 const newId = () => `page-view-provider-${++nextId}`;
 
-async function openFixture(files: Record<string, string> = E003_POLARIS_DADOS_FIXTURE) {
-  const opened = await WorkspaceSession.open(new VaultRepository(new MemoryVault(files), newId));
+async function openFixture(
+  files: Record<string, string> = E003_POLARIS_DADOS_FIXTURE,
+  vault: MemoryVault = new MemoryVault(files),
+) {
+  const opened = await WorkspaceSession.open(new VaultRepository(vault, newId));
   if (!opened.ok) throw new Error(opened.error);
   setSession(opened.value);
   return opened.value;
@@ -138,6 +143,13 @@ function pageInPane(id: PageId, pane: string, tabId: string | null = null) {
       ),
     ),
   );
+}
+
+function changeInput(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('HTML input value setter is unavailable.');
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 afterEach(() => {
@@ -419,6 +431,41 @@ describe('provider-managed PageView boundaries', () => {
       expect(nativePage.classList).toContain('width-wide');
       expect(nativePage.hasAttribute('data-polaris-note-style')).toBe(false);
       expect(nativePage.style.getPropertyValue('--polaris-note-font-size')).toBe('');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('offers the header action for a style-only note and creates its first visible extra', async () => {
+    const original = `---\nmorrowNoteStyle:\n  font: serif\n  fontSize: 19\n  lineHeight: 1.8\n  blockSpacing: 12\n  width: comfortable\n---\nStyled body\n`;
+    const vault = new MemoryVault({ 'Style-only.md': original });
+    const session = await openFixture({ 'Style-only.md': original }, vault);
+    const id = pathId(session, 'Style-only.md');
+    const { container, root } = mount();
+    try {
+      await act(async () => root.render(pageInPane(id, 'main')));
+      const addProperty = [...container.querySelectorAll<HTMLButtonElement>('.page-header-actions .add-icon')].find(
+        (button) => button.textContent?.includes(t('page.addProperty')),
+      );
+      expect(addProperty).toBeDefined();
+
+      await act(async () => addProperty!.click());
+      const nameInput = container.querySelector<HTMLInputElement>('.row-prop-new input[name="name"]');
+      expect(nameInput).not.toBeNull();
+      await act(async () => {
+        changeInput(nameInput!, 'status');
+        container.querySelector<HTMLFormElement>('.row-prop-new')!.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        );
+        expect(await session.flush()).toBe(true);
+      });
+
+      expect(session.getState().pages[id]?.extra.status).toBe('');
+      const saved = readPageText(vault.text('Style-only.md')!);
+      expect(saved.extra.status).toBe('');
+      expect(saved.extra.morrowNoteStyle).toEqual(readPageText(original).extra.morrowNoteStyle);
     } finally {
       await act(async () => root.unmount());
       container.remove();

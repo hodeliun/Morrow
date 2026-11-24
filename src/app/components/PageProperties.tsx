@@ -2,7 +2,7 @@ import { Check, Columns3, ExternalLink, Palette, Pencil, Plus, X } from 'lucide-
 import { useMemo, useState } from 'react';
 import { stringify } from 'yaml';
 import { displayTitle } from '../../core/model';
-import type { DatabaseDef, PageId, PageMeta, PropDef } from '../../core/model';
+import type { DatabaseDef, PageId, PageMeta, PropDef, WorkspaceState } from '../../core/model';
 import { inferFrontmatterType } from '../../core/properties';
 import { findKey, MANAGED_KEYS } from '../../core/vault/frontmatter';
 import { RECURRENCE_KEYS } from '../../core/recurring';
@@ -27,6 +27,17 @@ import { t } from '../i18n';
 import { propLabel } from '../i18n/labels';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const NOTE_STYLE_KEY = 'morrowNoteStyle';
+
+export function visiblePageExtraKeys(page: PageMeta, state: WorkspaceState): string[] {
+  const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
+  return Object.keys(page.extra).filter(
+    (key) =>
+      key !== 'polarisDados' &&
+      key !== NOTE_STYLE_KEY &&
+      !(isTemplate && RECURRENCE_KEYS.includes(key.toLowerCase())),
+  );
+}
 
 // the properties at the top of a page: its database values, then any other frontmatter it has, such as the
 // properties of a note written in obsidian, shown and edited as plain values
@@ -55,10 +66,7 @@ export function PageProperties({
   const [extraMenu, setExtraMenu] = useState<{ key: string; anchor: HTMLElement } | null>(null);
   const chosenTypes = usePropertyTypes();
   // a template's repeat settings have their own bar under its title
-  const extraKeys = Object.keys(page.extra).filter(
-    (key) =>
-      key !== 'polarisDados' && !(isTemplate(page) && RECURRENCE_KEYS.includes(key.toLowerCase())),
-  );
+  const extraKeys = visiblePageExtraKeys(page, getState());
   const props = database?.database.properties ?? [];
   const showNaming = editable && (naming || adding);
   if (props.length === 0 && extraKeys.length === 0 && !showNaming && !(database && editable)) return null;
@@ -68,7 +76,7 @@ export function PageProperties({
   const addKey = (name: string): boolean => {
     const clean = name.trim();
     if (!clean) return false;
-    if (MANAGED_KEYS.has(clean) || clean.length > 200) {
+    if (MANAGED_KEYS.has(clean) || clean === NOTE_STYLE_KEY || clean.length > 200) {
       toast(t('toasts.propNameUsed', { name: clean }), { tone: 'error' });
       return false;
     }
@@ -266,9 +274,6 @@ function literalRowProperty(value: unknown): string {
   if (typeof value === 'object') return JSON.stringify(value) ?? String(value);
   return String(value);
 }
-
-const isTemplate = (page: PageMeta) =>
-  page.parentId !== null && page.parentId === findTemplatesPage(getState())?.id;
 
 // the kinds of value a property outside a database can hold. its type is the shape of its value
 type ExtraType = 'text' | 'number' | 'select' | 'multiSelect' | 'date' | 'checkbox' | 'url';
