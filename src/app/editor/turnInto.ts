@@ -359,13 +359,94 @@ export const IndentedLines = Extension.create({
   },
 });
 
-// tab never leaves the page. where a line can't be indented or outdented any further it stays put, rather
-// than the browser moving focus to the next button on the page
+function focusColumnResizeHandle(editor: Editor, last: boolean): void {
+  const { state } = editor;
+  const { selection } = state;
+  if (editor.isDestroyed || !editor.isEditable || !selection.empty || selection.$from.parent.type.name !== 'paragraph')
+    return;
+
+  const { $from } = selection;
+  let columnsDepth = 0;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const name = $from.node(depth).type.name;
+    // Lists, tables, and code blocks have their own higher-priority Tab behavior. Leave those paths alone
+    // even when their current keymap declines the event.
+    if (
+      [
+        'bulletList',
+        'orderedList',
+        'taskList',
+        'listItem',
+        'taskItem',
+        'table',
+        'tableRow',
+        'tableCell',
+        'tableHeader',
+        'codeBlock',
+      ].includes(name)
+    ) {
+      return;
+    }
+    // Keep the nearest group as the focus target, while checking every ancestor. A valid columns group
+    // can live in a table cell, whose own Tab handlers sometimes decline at the first/last cell.
+    if (name === 'columns' && columnsDepth === 0) {
+      columnsDepth = depth;
+    }
+  }
+  if (columnsDepth === 0) return;
+
+  const columns = $from.node(columnsDepth);
+  const position = $from.before(columnsDepth);
+  if (columns.childCount < 2 || columns.childCount > 7 || state.doc.nodeAt(position) !== columns) return;
+  const wrapper = editor.view.nodeDOM(position);
+  if (
+    !(wrapper instanceof HTMLElement) ||
+    !editor.view.dom.contains(wrapper) ||
+    !wrapper.classList.contains('columns-editor')
+  ) {
+    return;
+  }
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const narrowMedia =
+    typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 720px)').matches;
+  if (
+    narrowMedia ||
+    (viewportWidth > 0 && viewportWidth <= 720) ||
+    wrapper.closest<HTMLElement>('.pane')?.dataset.size === 'narrow'
+  ) {
+    return;
+  }
+
+  const handles = Array.from(wrapper.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && child.classList.contains('column-layout-resize-handle'),
+  );
+  if (handles.length !== columns.childCount - 1) return;
+  const handle = last ? handles[handles.length - 1] : handles[0];
+  if (!handle || handle.hidden || handle.tabIndex !== 0 || handle.getAttribute('role') !== 'separator') return;
+  try {
+    handle.focus({ preventScroll: true });
+  } catch {
+    handle.focus();
+  }
+}
+
+// tab never leaves the page. Where a line can't be indented or outdented any further it stays put. From a
+// paragraph in a resizable columns group, send focus to that group's first or last separator instead.
 export const KeepTab = Extension.create({
   name: 'keepTab',
   priority: 1,
   addKeyboardShortcuts() {
-    return { Tab: () => true, 'Shift-Tab': () => true };
+    return {
+      Tab: ({ editor }) => {
+        focusColumnResizeHandle(editor, false);
+        return true;
+      },
+      'Shift-Tab': ({ editor }) => {
+        focusColumnResizeHandle(editor, true);
+        return true;
+      },
+    };
   },
 });
 

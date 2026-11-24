@@ -362,6 +362,20 @@ function evaluateFormulaProperty(
       message: `Formula “${property.name}” declared as ${property.formulaResultType} must return a finite number or null.`,
     };
   }
+  if (property.formulaResultType === 'number' && evaluated.kind === 'number') {
+    const { min, max, step } = property.format ?? {};
+    if (min !== undefined && evaluated.value < min) {
+      evaluated = { kind: 'error', message: `${property.name} must be at least ${min}.` };
+    } else if (max !== undefined && evaluated.value > max) {
+      evaluated = { kind: 'error', message: `${property.name} must be at most ${max}.` };
+    } else if (step !== undefined) {
+      const base = min ?? 0;
+      const steps = (evaluated.value - base) / step;
+      if (Math.abs(steps - Math.round(steps)) > 1e-8) {
+        evaluated = { kind: 'error', message: `${property.name} must use steps of ${step}.` };
+      }
+    }
+  }
   budget.cache.set(property.id, evaluated);
   return evaluated;
 }

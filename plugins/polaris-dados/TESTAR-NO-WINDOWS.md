@@ -189,6 +189,10 @@ Abra `Weighted columns`. Em uma janela larga, compare a quinta coluna, com peso 
 
 Abra Weighted columns em uma janela larga. Passe o cursor pela divisória entre a quarta e a quinta colunas e arraste para a direita. As duas colunas mudam de largura durante o gesto. Pressione Escape antes de soltar para cancelar. Arraste de novo e solte para gravar. Use **Ctrl+Z** para restaurar as proporções anteriores e **Ctrl+Shift+Z** para refazer. Feche e reabra a nota. O texto das sete colunas permanece.
 
+### Ajustar ou restaurar colunas pelo teclado
+
+Abra Weighted columns em uma janela larga, coloque o cursor dentro de uma coluna e use **Tab** para focar a primeira divisória. Use **Shift+Tab** a partir da coluna para alcançar a última. As setas esquerda e direita transferem dois pontos percentuais entre as colunas, dentro dos limites do par. **Home** e **End** vão aos limites. Pressione **R** na divisória ou use **Restaurar larguras iguais** para voltar à distribuição igual. Use **Ctrl+Z** e **Ctrl+Shift+Z** para desfazer e refazer o ajuste na mesma nota.
+
 ### Conferir o resultado numérico declarado em uma fórmula
 
 Em Inventory, Thirds divide Quantity por 3 e exibe duas casas. Com Quantity em **2**, confira **0.67** e a fórmula dependente ThirdsRawCheck em **2**. Altere Quantity para **3** e confira **1.00** e **3** na origem e na primeira tabela de Views.
@@ -204,6 +208,14 @@ Em Inventory, mude Quantity de **2** para **3**. QuantityText passa de **Qty two
 ### Conferir resultado booleano declarado
 
 Em Inventory, verifique IsHeavy como **False** e IsHeavyOrBlank como **Blank** com Quantity em 2. Ao mudar Quantity para **3**, os dois mostram **True**. IsHeavyRawCheck passa de **17** para **42** usando os valores originais. Em português, os rótulos correspondentes são **Falso**, **Vazio** e **Verdadeiro**. Confira na primeira tabela de Views.
+
+### Conferir limites de uma fórmula numérica
+
+Em Inventory, BoundedThirds mostra **0.67** e BoundedThirdsRaw mostra **2**. Mude Quantity de **2** para **3**. Os resultados passam para **1.00** e **3**, pois o máximo é inclusivo. Com Quantity em **4**, o resultado ultrapassa o máximo e a fórmula dependente também mostra o erro. Confira na primeira tabela de Views.
+
+### Conferir o passo de uma fórmula numérica
+
+Em Inventory, SteppedRatio aceita **0.1**, **0.3** e **0.5**, com âncora 0.1 e passo 0.2. Mude Quantity de **2** para **3**. O resultado sai do erro e mostra **0.3**. A fórmula dependente SteppedRatioRaw mostra **3**. Com Quantity em **3.1**, o cálculo original resulta em 0.31 e volta a dar erro. Confira na primeira tabela de Views.
 
 ### Navegar na grade sem o mouse
 

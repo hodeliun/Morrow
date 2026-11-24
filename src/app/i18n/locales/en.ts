@@ -810,6 +810,8 @@ export const en = {
     moveColumnLeft: 'Move column left',
     moveColumnRight: 'Move column right',
     resizeColumnPair: 'Resize columns {left} and {right}',
+    columnPairValueText: 'Column {left} is {value}% of the full layout',
+    restoreEqualColumnWidths: 'Restore equal column widths',
     replaceMatches: 'Matches',
     replaceTo: 'to',
     replaceFrom: 'First match to replace',

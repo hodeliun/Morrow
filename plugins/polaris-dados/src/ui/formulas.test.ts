@@ -134,8 +134,43 @@ describe('Polaris Dados formula row context', () => {
       checkbox('flag', 'Flag'),
       scalar('label', 'Label', 'text'),
       scalar('optional', 'Optional'),
-      { ...formula('decimal', 'Decimal', '7 / 3'), formulaResultType: 'number' },
+      {
+        ...formula('decimal', 'Decimal', '7 / 3'),
+        formulaResultType: 'number',
+        format: { min: 2, max: 3 },
+      },
       formula('raw-check', 'Raw check', 'Decimal * 3'),
+      {
+        ...formula('minimum-inclusive', 'Minimum inclusive', '2'),
+        formulaResultType: 'number',
+        format: { min: 2 },
+      },
+      {
+        ...formula('maximum-inclusive', 'Maximum inclusive', '2'),
+        formulaResultType: 'number',
+        format: { max: 2 },
+      },
+      {
+        ...formula('above-max', 'Above max', '1.004'),
+        formulaResultType: 'number',
+        format: { max: 1, precision: 2 },
+      },
+      formula('above-max-dependent', 'Above max dependent', 'prop("Above max") + 1'),
+      {
+        ...formula('min-first', 'Minimum first', '1'),
+        formulaResultType: 'number',
+        format: { min: 2, max: 0 },
+      },
+      {
+        ...formula('max-after-min', 'Maximum after minimum', '3'),
+        formulaResultType: 'number',
+        format: { min: 2, max: 0 },
+      },
+      {
+        ...formula('null-impossible-bounds', 'Null with impossible bounds', 'thisRow.Optional'),
+        formulaResultType: 'number',
+        format: { min: 2, max: 0 },
+      },
       { ...formula('null', 'Null number', 'thisRow.Optional'), formulaResultType: 'number' },
       { ...formula('boolean', 'Boolean number', 'thisRow.Flag'), formulaResultType: 'number' },
       { ...formula('text', 'Text number', 'thisRow.Label'), formulaResultType: 'number' },
@@ -147,6 +182,25 @@ describe('Polaris Dados formula row context', () => {
 
     expect(evaluate(properties, rowProperties, 'decimal')).toEqual({ kind: 'number', value: 7 / 3 });
     expect(evaluate(properties, rowProperties, 'raw-check')).toEqual({ kind: 'number', value: 7 });
+    expect(evaluate(properties, rowProperties, 'minimum-inclusive')).toEqual({ kind: 'number', value: 2 });
+    expect(evaluate(properties, rowProperties, 'maximum-inclusive')).toEqual({ kind: 'number', value: 2 });
+    expect(evaluate(properties, rowProperties, 'above-max')).toEqual({
+      kind: 'error',
+      message: 'Above max must be at most 1.',
+    });
+    expect(evaluate(properties, rowProperties, 'above-max-dependent')).toEqual({
+      kind: 'error',
+      message: 'Above max must be at most 1.',
+    });
+    expect(evaluate(properties, rowProperties, 'min-first')).toEqual({
+      kind: 'error',
+      message: 'Minimum first must be at least 2.',
+    });
+    expect(evaluate(properties, rowProperties, 'max-after-min')).toEqual({
+      kind: 'error',
+      message: 'Maximum after minimum must be at most 0.',
+    });
+    expect(evaluate(properties, rowProperties, 'null-impossible-bounds')).toEqual({ kind: 'null' });
     expect(evaluate(properties, rowProperties, 'null')).toEqual({ kind: 'null' });
     for (const [formulaId, name] of [
       ['boolean', 'Boolean number'],
@@ -166,6 +220,127 @@ describe('Polaris Dados formula row context', () => {
       kind: 'error',
       message: 'Formula “Boolean number” declared as number must return a finite number or null.',
     });
+  });
+
+  it('checks explicit number steps against the raw value after bounds without snapping', () => {
+    const properties = [
+      scalar('optional', 'Optional'),
+      {
+        ...formula('tenths', 'Tenths', '0.3'),
+        formulaResultType: 'number',
+        format: { precision: 1, step: 0.1 },
+      },
+      formula('tenths-times-ten', 'Tenths times ten', 'prop("Tenths") * 10'),
+      {
+        ...formula('off-step', 'Off step', '0.31'),
+        formulaResultType: 'number',
+        format: { precision: 1, step: 0.1 },
+      },
+      {
+        ...formula('negative-anchor', 'Negative anchor', '-0.1'),
+        formulaResultType: 'number',
+        format: { min: -0.1, step: 0.2 },
+      },
+      {
+        ...formula('positive-from-negative-anchor', 'Positive from negative anchor', '0.1'),
+        formulaResultType: 'number',
+        format: { min: -0.1, step: 0.2 },
+      },
+      {
+        ...formula('off-negative-anchor', 'Off negative anchor', '0'),
+        formulaResultType: 'number',
+        format: { min: -0.1, step: 0.2 },
+      },
+      {
+        ...formula('min-anchored', 'Min anchored', '0.3'),
+        formulaResultType: 'number',
+        format: { min: 0.1, step: 0.2 },
+      },
+      {
+        ...formula('off-min-anchor', 'Off min anchor', '0.2'),
+        formulaResultType: 'number',
+        format: { min: 0.1, step: 0.2 },
+      },
+      {
+        ...formula('max-is-not-anchor', 'Max is not anchor', '0.1'),
+        formulaResultType: 'number',
+        format: { max: 0.3, step: 0.2 },
+      },
+      {
+        ...formula('within-tolerance', 'Within tolerance', '1.000000005'),
+        formulaResultType: 'number',
+        format: { precision: 0, step: 1 },
+      },
+      {
+        ...formula('outside-tolerance', 'Outside tolerance', '1.00000002'),
+        formulaResultType: 'number',
+        format: { precision: 0, step: 1 },
+      },
+      {
+        ...formula('max-precedes-step', 'Max precedes step', '0.31'),
+        formulaResultType: 'number',
+        format: { min: 0.2, max: 0.3, step: 0.2 },
+      },
+      {
+        ...formula('min-precedes-step', 'Min precedes step', '0.1'),
+        formulaResultType: 'number',
+        format: { min: 0.2, max: 0.3, step: 0.2 },
+      },
+      {
+        ...formula('null-step', 'Null step', 'thisRow.Optional'),
+        formulaResultType: 'number',
+        format: { step: 0.1 },
+      },
+      {
+        ...formula('overflow-step', 'Overflow step', '1e308'),
+        formulaResultType: 'number',
+        format: { step: 1e-9 },
+      },
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { optional: null };
+
+    expect(evaluate(properties, rowProperties, 'tenths')).toEqual({ kind: 'number', value: 0.3 });
+    expect(evaluate(properties, rowProperties, 'tenths-times-ten')).toEqual({ kind: 'number', value: 3 });
+    expect(evaluate(properties, rowProperties, 'off-step')).toEqual({
+      kind: 'error',
+      message: 'Off step must use steps of 0.1.',
+    });
+    expect(evaluate(properties, rowProperties, 'negative-anchor')).toEqual({ kind: 'number', value: -0.1 });
+    expect(evaluate(properties, rowProperties, 'positive-from-negative-anchor')).toEqual({
+      kind: 'number',
+      value: 0.1,
+    });
+    expect(evaluate(properties, rowProperties, 'off-negative-anchor')).toEqual({
+      kind: 'error',
+      message: 'Off negative anchor must use steps of 0.2.',
+    });
+    expect(evaluate(properties, rowProperties, 'min-anchored')).toEqual({ kind: 'number', value: 0.3 });
+    expect(evaluate(properties, rowProperties, 'off-min-anchor')).toEqual({
+      kind: 'error',
+      message: 'Off min anchor must use steps of 0.2.',
+    });
+    expect(evaluate(properties, rowProperties, 'max-is-not-anchor')).toEqual({
+      kind: 'error',
+      message: 'Max is not anchor must use steps of 0.2.',
+    });
+    expect(evaluate(properties, rowProperties, 'within-tolerance')).toEqual({
+      kind: 'number',
+      value: 1.000000005,
+    });
+    expect(evaluate(properties, rowProperties, 'outside-tolerance')).toEqual({
+      kind: 'error',
+      message: 'Outside tolerance must use steps of 1.',
+    });
+    expect(evaluate(properties, rowProperties, 'max-precedes-step')).toEqual({
+      kind: 'error',
+      message: 'Max precedes step must be at most 0.3.',
+    });
+    expect(evaluate(properties, rowProperties, 'min-precedes-step')).toEqual({
+      kind: 'error',
+      message: 'Min precedes step must be at least 0.2.',
+    });
+    expect(evaluate(properties, rowProperties, 'null-step')).toEqual({ kind: 'null' });
+    expect(evaluate(properties, rowProperties, 'overflow-step')).toEqual({ kind: 'number', value: 1e308 });
   });
 
   it('validates explicit currency results before caching while dependent formulas use the raw amount', () => {

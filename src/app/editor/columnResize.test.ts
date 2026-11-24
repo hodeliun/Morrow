@@ -7,10 +7,13 @@ import { docToMarkdown } from '../../core/markdown/serialize';
 import { parseLegacyColumnWidths } from '../../core/columnWidths';
 import { BlockHandle } from './BlockHandle';
 import { ColumnGrip } from './ColumnGrip';
-import { ownsUndo } from './commits';
+import { focusedEditor, ownsUndo, setFocusedEditor, undoRedo } from './commits';
 import {
+  columnPairPercentageBounds,
   hasColumnWidthChange,
   resizeColumnPairByPointer,
+  resizeColumnPairByPercentagePoints,
+  resizeColumnPairToLimit,
   serializeColumnWidthResize,
   startingColumnWidths,
 } from './columnResize';
@@ -137,6 +140,7 @@ const editors: Editor[] = [];
 
 afterEach(() => {
   for (const editor of editors.splice(0)) editor.destroy();
+  setFocusedEditor(null);
   document.body.replaceChildren();
   vi.restoreAllMocks();
 });
@@ -172,6 +176,36 @@ describe('column pointer resizing', () => {
     expect(parseLegacyColumnWidths(compacted, 7)).toEqual([1.1, 0.9, 1, 1, 1, 1, 1]);
   });
 
+  it('moves two percentage points of the full layout within the selected pair and exposes its limits', () => {
+    const before = [100, 100, 100, 100];
+    const decreased = resizeColumnPairByPercentagePoints(before, 1, -2, 700, 80)!;
+    expect(decreased).toEqual([100, 92, 108, 100]);
+    expect(decreased[1]! + decreased[2]!).toBe(before[1]! + before[2]!);
+    expect(decreased[0]).toBe(before[0]);
+    expect(decreased[3]).toBe(before[3]);
+
+    const increased = resizeColumnPairByPercentagePoints(decreased, 1, 2, 700, 80)!;
+    expect(increased).toEqual(before);
+    expect(columnPairPercentageBounds(before, 1, 700, 80)).toEqual({
+      minimum: 11.43,
+      maximum: 38.57,
+      current: 25,
+    });
+
+    expect(resizeColumnPairToLimit(before, 1, 'minimum', 700, 80)).toEqual([
+      100,
+      45.72,
+      154.28,
+      100,
+    ]);
+    expect(resizeColumnPairToLimit(before, 1, 'maximum', 700, 80)).toEqual([
+      100,
+      154.28,
+      45.72,
+      100,
+    ]);
+  });
+
   it('previews without document changes, commits one undoable 2–7 column edit, and preserves neighbors', () => {
     for (const { count, source, pair } of [
       { count: 2, source: null, pair: '1-2' },
@@ -182,6 +216,11 @@ describe('column pointer resizing', () => {
       const grid = setColumnLayoutRects(editor);
       window.dispatchEvent(new Event('resize'));
       const handle = resizeHandle(editor, pair);
+      const layoutHandles = Array.from(
+        editor.view.dom.querySelectorAll<HTMLDivElement>('.column-layout-resize-handle'),
+      );
+      expect(layoutHandles).toHaveLength(count - 1);
+      expect(layoutHandles.every((item) => item.tabIndex === 0)).toBe(true);
       expect(handle.classList.contains('column-layout-resize-handle')).toBe(true);
       expect(handle.classList.contains('column-resize-handle')).toBe(false);
       expect(handle.hidden).toBe(false);
@@ -290,6 +329,189 @@ describe('column pointer resizing', () => {
     expect(otherEditor.state.doc.firstChild?.attrs.widths).toBe('040.00, 060.00');
   });
 
+  it('supports keyboard separators and restores explicit equal weights through the focused editor history', () => {
+    const source = '100.00, 100.00';
+    const { editor } = createEditor(2, source);
+    const { editor: otherEditor } = createEditor(2, '040.00, 060.00');
+    editors.push(editor, otherEditor);
+    const grid = setColumnLayoutRects(editor);
+    setColumnLayoutRects(otherEditor);
+    window.dispatchEvent(new Event('resize'));
+    const originalChildren = editor.state.doc.firstChild?.content.toJSON();
+
+    setFocusedEditor(otherEditor);
+    otherEditor.view.focus();
+    const handle = resizeHandle(editor);
+    expect(handle.hidden).toBe(false);
+    expect(handle.tabIndex).toBe(0);
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('vertical');
+    expect(handle.getAttribute('aria-valuenow')).toBe('50');
+    expect(handle.getAttribute('aria-valuemin')).toBe('20.98');
+    expect(handle.getAttribute('aria-valuemax')).toBe('79.02');
+    expect(handle.getAttribute('aria-keyshortcuts')).toContain('ArrowLeft');
+
+    // Simulate browser Tab landing on the separator from a different focused pane.
+    handle.focus();
+    expect(document.activeElement).toBe(handle);
+    expect(focusedEditor()).toBe(editor);
+    expect(ownsUndo(handle)).toBe(false);
+
+    const decrease = new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true });
+    handle.dispatchEvent(decrease);
+    expect(decrease.defaultPrevented).toBe(true);
+    expect(parseLegacyColumnWidths(String(editor.state.doc.firstChild?.attrs.widths), 2)).toEqual([96, 104]);
+    expect(grid.getAttribute('data-widths')).toBe(editor.state.doc.firstChild?.attrs.widths);
+    const afterDecrease = editor.state.doc.firstChild?.attrs.widths;
+    undoRedo('undo');
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(source);
+    undoRedo('redo');
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(afterDecrease);
+
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    expect(parseLegacyColumnWidths(String(editor.state.doc.firstChild?.attrs.widths), 2)).toEqual([92, 108]);
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    expect(parseLegacyColumnWidths(String(editor.state.doc.firstChild?.attrs.widths), 2)).toEqual([96, 104]);
+    const increase = new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
+    handle.dispatchEvent(increase);
+    expect(increase.defaultPrevented).toBe(true);
+    expect(parseLegacyColumnWidths(String(editor.state.doc.firstChild?.attrs.widths), 2)).toEqual([100, 100]);
+
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+    expect(parseLegacyColumnWidths(String(editor.state.doc.firstChild?.attrs.widths), 2)).toEqual([41.96, 158.04]);
+    expect(handle.getAttribute('aria-valuenow')).toBe('20.98');
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+    const endWidths = editor.state.doc.firstChild?.attrs.widths;
+    expect(parseLegacyColumnWidths(String(endWidths), 2)).toEqual([158.04, 41.96]);
+    expect(handle.getAttribute('aria-valuenow')).toBe('79.02');
+
+    const restore = new KeyboardEvent('keydown', { key: 'r', bubbles: true, cancelable: true });
+    handle.dispatchEvent(restore);
+    expect(restore.defaultPrevented).toBe(true);
+    expect(editor.state.doc.firstChild?.attrs.widths).toBeNull();
+    expect(grid.hasAttribute('data-widths')).toBe(false);
+    expect(editor.state.doc.firstChild?.content.toJSON()).toEqual(originalChildren);
+    expect(document.activeElement).toBe(handle);
+
+    undoRedo('undo');
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(endWidths);
+    expect(grid.getAttribute('data-widths')).toBe(endWidths);
+    expect(focusedEditor()).toBe(editor);
+    expect(otherEditor.state.doc.firstChild?.attrs.widths).toBe('040.00, 060.00');
+    undoRedo('redo');
+    expect(editor.state.doc.firstChild?.attrs.widths).toBeNull();
+    expect(otherEditor.state.doc.firstChild?.attrs.widths).toBe('040.00, 060.00');
+  });
+
+  it('keeps the editor as undo owner when the restore button disappears', () => {
+    const source = '050.00, 050.00';
+    const { editor } = createEditor(2, source);
+    const { editor: otherEditor } = createEditor(2, '040.00, 060.00');
+    editors.push(editor, otherEditor);
+    const grid = setColumnLayoutRects(editor);
+    setColumnLayoutRects(otherEditor);
+    window.dispatchEvent(new Event('resize'));
+    const originalChildren = editor.state.doc.firstChild?.content.toJSON();
+    setFocusedEditor(otherEditor);
+    otherEditor.view.focus();
+
+    const resetButton = editor.view.dom.querySelector<HTMLButtonElement>('.column-width-reset');
+    if (!resetButton) throw new Error('The restore-widths button was not mounted.');
+    expect(resetButton.hidden).toBe(false);
+    expect(resetButton.tabIndex).toBe(0);
+    expect(resetButton.getAttribute('aria-label')).toBe(resetButton.textContent);
+    resetButton.focus();
+    expect(focusedEditor()).toBe(editor);
+    resetButton.click();
+
+    const firstHandle = resizeHandle(editor);
+    expect(editor.state.doc.firstChild?.attrs.widths).toBeNull();
+    expect(grid.hasAttribute('data-widths')).toBe(false);
+    expect(editor.state.doc.firstChild?.content.toJSON()).toEqual(originalChildren);
+    expect(resetButton.hidden).toBe(true);
+    expect(document.activeElement).toBe(firstHandle);
+    expect(focusedEditor()).toBe(editor);
+    undoRedo('undo');
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(source);
+    expect(grid.getAttribute('data-widths')).toBe(source);
+    expect(otherEditor.state.doc.firstChild?.attrs.widths).toBe('040.00, 060.00');
+    undoRedo('redo');
+    expect(editor.state.doc.firstChild?.attrs.widths).toBeNull();
+    expect(grid.hasAttribute('data-widths')).toBe(false);
+  });
+
+  it('blocks every group adjustment during a drag and cancels from another divider or reset button', () => {
+    const source = '020.00, 040.00, 040.00';
+    const { editor } = createEditor(3, source);
+    editors.push(editor);
+    const grid = setColumnLayoutRects(editor);
+    window.dispatchEvent(new Event('resize'));
+    const firstHandle = resizeHandle(editor, '1-2');
+    const secondHandle = resizeHandle(editor, '2-3');
+    const resetButton = editor.view.dom.querySelector<HTMLButtonElement>('.column-width-reset');
+    if (!resetButton) throw new Error('The restore-widths button was not mounted.');
+    const committedTemplate = grid.style.getPropertyValue('--column-grid-template');
+    let committedTransactions = 0;
+    editor.on('transaction', ({ transaction }) => {
+      if (transaction.docChanged) committedTransactions++;
+    });
+
+    firstHandle.dispatchEvent(pointerEvent('pointerdown', { pointerId: 81, clientX: 100 }));
+    window.dispatchEvent(pointerEvent('pointermove', { pointerId: 81, clientX: 140 }));
+    const previewTemplate = grid.style.getPropertyValue('--column-grid-template');
+    expect(previewTemplate).not.toBe(committedTemplate);
+
+    const blockedAdjustment = new KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      bubbles: true,
+      cancelable: true,
+    });
+    secondHandle.dispatchEvent(blockedAdjustment);
+    expect(blockedAdjustment.defaultPrevented).toBe(true);
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(source);
+    expect(grid.getAttribute('data-widths')).toBe(source);
+    expect(grid.style.getPropertyValue('--column-grid-template')).toBe(previewTemplate);
+    expect(committedTransactions).toBe(0);
+
+    secondHandle.focus();
+    secondHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(grid.style.getPropertyValue('--column-grid-template')).toBe(committedTemplate);
+    expect(editor.view.dom.querySelector('.columns-editor')?.classList.contains('is-resizing')).toBe(false);
+    window.dispatchEvent(pointerEvent('pointerup', { pointerId: 81, clientX: 140 }));
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(source);
+    expect(committedTransactions).toBe(0);
+
+    secondHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    expect(parseLegacyColumnWidths(String(editor.state.doc.firstChild?.attrs.widths), 3)).toEqual([20, 42, 38]);
+    expect(committedTransactions).toBe(1);
+    const resizedWidths = editor.state.doc.firstChild?.attrs.widths;
+    const resizedTemplate = grid.style.getPropertyValue('--column-grid-template');
+    expect(resetButton.hidden).toBe(false);
+
+    firstHandle.dispatchEvent(pointerEvent('pointerdown', { pointerId: 82, clientX: 100 }));
+    window.dispatchEvent(pointerEvent('pointermove', { pointerId: 82, clientX: 140 }));
+    const secondPreviewTemplate = grid.style.getPropertyValue('--column-grid-template');
+    expect(secondPreviewTemplate).not.toBe(resizedTemplate);
+
+    resetButton.focus();
+    resetButton.click();
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(resizedWidths);
+    expect(grid.getAttribute('data-widths')).toBe(resizedWidths);
+    expect(grid.style.getPropertyValue('--column-grid-template')).toBe(secondPreviewTemplate);
+    expect(committedTransactions).toBe(1);
+
+    resetButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(grid.style.getPropertyValue('--column-grid-template')).toBe(resizedTemplate);
+    window.dispatchEvent(pointerEvent('pointerup', { pointerId: 82, clientX: 140 }));
+    expect(editor.state.doc.firstChild?.attrs.widths).toBe(resizedWidths);
+    expect(committedTransactions).toBe(1);
+
+    resetButton.click();
+    expect(editor.state.doc.firstChild?.attrs.widths).toBeNull();
+    expect(grid.hasAttribute('data-widths')).toBe(false);
+    expect(committedTransactions).toBe(2);
+  });
+
   it('cancels stale and narrow drags, and keeps block handles targeted inside the wrapper', async () => {
     const onMenu = vi.fn();
     const { editor } = createEditor(2, null, { onMenu });
@@ -339,6 +561,15 @@ describe('column pointer resizing', () => {
 
     handle.dispatchEvent(pointerEvent('pointerdown', { pointerId: 22, clientX: 100 }));
     window.dispatchEvent(pointerEvent('pointermove', { pointerId: 22, clientX: 240 }));
+    const shortcutDuringDrag = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    handle.dispatchEvent(shortcutDuringDrag);
+    expect(shortcutDuringDrag.defaultPrevented).toBe(true);
+    expect((editor.getJSON() as DocNode).content?.[0]?.attrs?.widths ?? null).toBeNull();
     handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     window.dispatchEvent(pointerEvent('pointerup', { pointerId: 22, clientX: 240 }));
     expect((editor.getJSON() as DocNode).content?.[0]?.attrs?.widths ?? null).toBeNull();
@@ -369,7 +600,12 @@ describe('column pointer resizing', () => {
     editors.push(narrowEditor);
     const narrowGrid = setColumnLayoutRects(narrowEditor);
     window.dispatchEvent(new Event('resize'));
-    expect(resizeHandle(narrowEditor).hidden).toBe(true);
+    const narrowHandle = resizeHandle(narrowEditor);
+    const narrowReset = narrowEditor.view.dom.querySelector<HTMLButtonElement>('.column-width-reset');
+    expect(narrowHandle.hidden).toBe(true);
+    expect(narrowHandle.tabIndex).toBe(-1);
+    expect(narrowReset?.hidden).toBe(true);
+    expect(narrowReset?.tabIndex).toBe(-1);
 
     const viewportWidth = window.innerWidth;
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
@@ -392,6 +628,11 @@ describe('column pointer resizing', () => {
     window.dispatchEvent(pointerEvent('pointerup', { pointerId: 31, clientX: 240 }));
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(resizeHandle(readonlyEditor).hidden).toBe(true);
+    expect(resizeHandle(readonlyEditor).tabIndex).toBe(-1);
+    const readonlyReset = readonlyEditor.view.dom.querySelector<HTMLButtonElement>('.column-width-reset');
+    expect(readonlyReset?.hidden).toBe(true);
+    expect(readonlyReset?.tabIndex).toBe(-1);
+    expect(document.activeElement).not.toBe(resizeHandle(readonlyEditor));
     expect((readonlyEditor.getJSON() as DocNode).content?.[0]?.attrs?.widths ?? null).toBeNull();
     expect(narrowGrid.style.getPropertyValue('--column-grid-template')).toContain('1fr');
   });

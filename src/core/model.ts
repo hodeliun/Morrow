@@ -49,29 +49,48 @@ export interface SelectOption {
   color: ColorName;
 }
 
-/** Display-only settings for a Markdown-declared number property or explicit numeric formula result. */
+/** Display settings for a Markdown-declared number property or explicit numeric formula result. */
 export interface NumberPropertyFormat {
   locale?: string;
   precision?: number;
   negativeFormat?: 'minus' | 'parentheses';
 }
 
-/** Narrow formula format that adds currency to the shared decimal display options. */
+/** Narrow formula format for the optional constraints supported by each declared result kind. */
 export interface FormulaResultNumberFormat extends NumberPropertyFormat {
   currency?: string;
+  min?: number;
+  max?: number;
+  step?: number;
 }
 
 /** Validates and copies the deliberately narrow number-format shape supported by this host. */
 export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | null {
+  return normalizeNumberFormatShape(value, false);
+}
+
+function normalizeNumberFormulaFormat(value: unknown): FormulaResultNumberFormat | null {
+  return normalizeNumberFormatShape(value, true);
+}
+
+function normalizeNumberFormatShape(
+  value: unknown,
+  allowFormulaNumberConstraints: boolean,
+): FormulaResultNumberFormat | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return null;
 
   const raw = value as Record<string, unknown>;
-  const allowedKeys = new Set(['locale', 'precision', 'negativeFormat']);
+  const allowedKeys = new Set([
+    'locale',
+    'precision',
+    'negativeFormat',
+    ...(allowFormulaNumberConstraints ? ['min', 'max', 'step'] : []),
+  ]);
   if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
 
-  const format: NumberPropertyFormat = {};
+  const format: FormulaResultNumberFormat = {};
   if (Object.hasOwn(raw, 'locale')) {
     if (!validNumberFormatLocale(raw.locale)) return null;
     format.locale = raw.locale;
@@ -90,6 +109,19 @@ export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | nu
     if (raw.negativeFormat !== 'minus' && raw.negativeFormat !== 'parentheses') return null;
     format.negativeFormat = raw.negativeFormat;
   }
+  if (allowFormulaNumberConstraints) {
+    for (const key of ['min', 'max'] as const) {
+      if (!Object.hasOwn(raw, key)) continue;
+      const bound = raw[key];
+      if (typeof bound !== 'number' || !Number.isFinite(bound) || bound < -1e12 || bound > 1e12) return null;
+      format[key] = bound;
+    }
+    if (Object.hasOwn(raw, 'step')) {
+      const step = raw.step;
+      if (typeof step !== 'number' || !Number.isFinite(step) || step < 1e-9 || step > 1e12) return null;
+      format.step = step;
+    }
+  }
   return format;
 }
 
@@ -105,7 +137,10 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
   if (raw.type !== 'formula' || Object.hasOwn(raw, 'display') || Object.hasOwn(raw, 'max')) return null;
 
   if (Object.hasOwn(raw, 'formulaResultType')) {
-    if (raw.formulaResultType === 'number' || raw.formulaResultType === 'percent') {
+    if (raw.formulaResultType === 'number') {
+      return normalizeNumberFormulaFormat(raw.format);
+    }
+    if (raw.formulaResultType === 'percent') {
       // Decimal and percentage formulas cannot also declare currency metadata.
       return normalizeNumberFormat(raw.format);
     }

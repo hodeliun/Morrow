@@ -6,6 +6,14 @@ import { parseLegacyColumnWidths } from '../../core/columnWidths';
 const WIDTH_PRECISION = 100;
 const MAX_WIDTH_CENTS = 1000 * WIDTH_PRECISION;
 
+type PairResizeState = {
+  pairCents: number;
+  totalCents: number;
+  startLeftCents: number;
+  minimumLeftCents: number;
+  maximumLeftCents: number;
+};
+
 export function startingColumnWidths(value: unknown, count: number): number[] | null {
   if (!Number.isInteger(count) || count < 2 || count > 7) return null;
   if (value === null || value === undefined) return Array.from({ length: count }, () => 100);
@@ -19,13 +27,76 @@ export function resizeColumnPairByPointer(
   availableWidth: number,
   minimumColumnPixels: number,
 ): number[] | null {
+  const state = pairResizeState(widths, pairIndex, availableWidth, minimumColumnPixels);
+  if (
+    state === null ||
+    !Number.isFinite(deltaPixels) ||
+    !Number.isFinite(availableWidth) ||
+    availableWidth <= 0
+  ) {
+    return null;
+  }
+
+  const deltaCents = (deltaPixels / availableWidth) * state.totalCents;
+  const leftCents = clampLeftCents(state, state.startLeftCents + deltaCents);
+  return replacePairWidths(widths, pairIndex, state.pairCents, leftCents);
+}
+
+export function resizeColumnPairByPercentagePoints(
+  widths: readonly number[],
+  pairIndex: number,
+  deltaPercentagePoints: number,
+  availableWidth: number,
+  minimumColumnPixels: number,
+): number[] | null {
+  const state = pairResizeState(widths, pairIndex, availableWidth, minimumColumnPixels);
+  if (state === null || !Number.isFinite(deltaPercentagePoints)) return null;
+
+  const deltaCents = (deltaPercentagePoints / 100) * state.totalCents;
+  const leftCents = clampLeftCents(state, state.startLeftCents + deltaCents);
+  return replacePairWidths(widths, pairIndex, state.pairCents, leftCents);
+}
+
+export function resizeColumnPairToLimit(
+  widths: readonly number[],
+  pairIndex: number,
+  limit: 'minimum' | 'maximum',
+  availableWidth: number,
+  minimumColumnPixels: number,
+): number[] | null {
+  const state = pairResizeState(widths, pairIndex, availableWidth, minimumColumnPixels);
+  if (state === null) return null;
+  const leftCents = limit === 'minimum' ? state.minimumLeftCents : state.maximumLeftCents;
+  return replacePairWidths(widths, pairIndex, state.pairCents, leftCents);
+}
+
+export function columnPairPercentageBounds(
+  widths: readonly number[],
+  pairIndex: number,
+  availableWidth: number,
+  minimumColumnPixels: number,
+): { minimum: number; maximum: number; current: number } | null {
+  const state = pairResizeState(widths, pairIndex, availableWidth, minimumColumnPixels);
+  if (state === null) return null;
+  return {
+    minimum: (state.minimumLeftCents / state.totalCents) * 100,
+    maximum: (state.maximumLeftCents / state.totalCents) * 100,
+    current: (state.startLeftCents / state.totalCents) * 100,
+  };
+}
+
+function pairResizeState(
+  widths: readonly number[],
+  pairIndex: number,
+  availableWidth: number,
+  minimumColumnPixels: number,
+): PairResizeState | null {
   if (
     widths.length < 2 ||
     widths.length > 7 ||
     !Number.isInteger(pairIndex) ||
     pairIndex < 0 ||
     pairIndex >= widths.length - 1 ||
-    !Number.isFinite(deltaPixels) ||
     !Number.isFinite(availableWidth) ||
     availableWidth <= 0 ||
     !Number.isFinite(minimumColumnPixels) ||
@@ -44,14 +115,26 @@ export function resizeColumnPairByPointer(
   const minimumCents = Math.max(1, operationalMinimumCents, pairCents - MAX_WIDTH_CENTS);
   const maximumCents = Math.min(MAX_WIDTH_CENTS, pairCents - minimumCents);
 
-  // Existing tracks can be narrower than today's operational minimum. Keep their current
-  // position reachable and constrain further movement toward the valid range without snapping.
-  const minimumLeftCents = Math.min(startLeftCents, minimumCents);
-  const maximumLeftCents = Math.max(startLeftCents, maximumCents);
-  const deltaCents = (deltaPixels / availableWidth) * totalCents;
-  const leftCents = Math.round(
-    Math.min(maximumLeftCents, Math.max(minimumLeftCents, startLeftCents + deltaCents)),
-  );
+  // Keep an existing narrow track reachable and let keyboard and pointer input share limits.
+  return {
+    pairCents,
+    totalCents,
+    startLeftCents,
+    minimumLeftCents: Math.min(startLeftCents, minimumCents),
+    maximumLeftCents: Math.max(startLeftCents, maximumCents),
+  };
+}
+
+function clampLeftCents(state: PairResizeState, targetLeftCents: number): number {
+  return Math.round(Math.min(state.maximumLeftCents, Math.max(state.minimumLeftCents, targetLeftCents)));
+}
+
+function replacePairWidths(
+  widths: readonly number[],
+  pairIndex: number,
+  pairCents: number,
+  leftCents: number,
+): number[] | null {
   const rightCents = pairCents - leftCents;
   if (
     leftCents < 1 ||
@@ -61,7 +144,6 @@ export function resizeColumnPairByPointer(
   ) {
     return null;
   }
-
   const resized = [...widths];
   resized[pairIndex] = leftCents / WIDTH_PRECISION;
   resized[pairIndex + 1] = rightCents / WIDTH_PRECISION;
@@ -150,7 +232,7 @@ export function createColumnWidthsTransaction(
   transaction: Transaction,
   position: number,
   sourceNode: ProseMirrorNode,
-  widths: string,
+  widths: string | null,
 ): Transaction | null {
   const currentNode = transaction.doc.nodeAt(position);
   if (
@@ -159,7 +241,7 @@ export function createColumnWidthsTransaction(
     currentNode.childCount < 2 ||
     currentNode.childCount > 7 ||
     currentNode.attrs.widths === widths ||
-    !parseLegacyColumnWidths(widths, currentNode.childCount)
+    (widths !== null && !parseLegacyColumnWidths(widths, currentNode.childCount))
   ) {
     return null;
   }

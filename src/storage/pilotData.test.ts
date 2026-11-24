@@ -116,6 +116,19 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: number
       format:
         precision: 0
+    - id: decimal-bounded
+      name: Decimal bounded
+      type: formula
+      formula: Quantity / 4
+      formulaResultType: number
+      format:
+        min: 0
+        max: 1
+        step: 0.25
+    - id: decimal-bounded-raw-check
+      name: Decimal bounded raw check
+      type: formula
+      formula: prop("Decimal bounded") * 4
     - id: currency-total
       name: Currency total
       type: formula
@@ -251,6 +264,10 @@ describe('Polaris Dados snapshot and cell API', () => {
     const optionalProperty = initial.schema.properties.find((property) => property.id === 'optional-completion')!;
     const localeOnlyDecimal = initial.schema.properties.find((property) => property.id === 'decimal-locale-only')!;
     const zeroPrecisionDecimal = initial.schema.properties.find((property) => property.id === 'decimal-zero-precision')!;
+    const boundedDecimal = initial.schema.properties.find((property) => property.id === 'decimal-bounded')!;
+    const boundedDecimalRawCheck = initial.schema.properties.find(
+      (property) => property.id === 'decimal-bounded-raw-check',
+    )!;
     const currencyTotalProperty = initial.schema.properties.find((property) => property.id === 'currency-total')!;
     const currencyRawCheckProperty = initial.schema.properties.find((property) => property.id === 'currency-raw-check')!;
     const currencyJpyProperty = initial.schema.properties.find((property) => property.id === 'currency-jpy')!;
@@ -288,6 +305,10 @@ describe('Polaris Dados snapshot and cell API', () => {
     });
     expect(localeOnlyDecimal.format).not.toHaveProperty('precision');
     expect(zeroPrecisionDecimal).toMatchObject({ formulaResultType: 'number', format: { precision: 0 } });
+    expect(boundedDecimal).toMatchObject({
+      formulaResultType: 'number',
+      format: { min: 0, max: 1, step: 0.25 },
+    });
     expect(currencyTotalProperty).toMatchObject({ type: 'formula', formulaResultType: 'currency' });
     expect(currencyTotalProperty).not.toHaveProperty('format');
     expect(currencyJpyProperty).toMatchObject({ formulaResultType: 'currency', format: { currency: 'JPY' } });
@@ -320,6 +341,14 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(evaluateCell(widget, initial.schema.properties, currencyRawCheckProperty, evaluation)).toEqual({
       kind: 'number',
       value: 7,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, boundedDecimal, evaluation)).toEqual({
+      kind: 'number',
+      value: 0.5,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, boundedDecimalRawCheck, evaluation)).toEqual({
+      kind: 'number',
+      value: 2,
     });
     expect(evaluateCell(widget, initial.schema.properties, currencyJpyProperty, evaluation)).toEqual({
       kind: 'number',
@@ -379,6 +408,8 @@ describe('Polaris Dados snapshot and cell API', () => {
     });
     expect(widget.properties).not.toHaveProperty('completion');
     expect(widget.properties).not.toHaveProperty('completion-raw-check');
+    expect(widget.properties).not.toHaveProperty('decimal-bounded');
+    expect(widget.properties).not.toHaveProperty('decimal-bounded-raw-check');
 
     expect(api.patchCell({
       databaseId,
@@ -441,6 +472,10 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: 'number',
       format: { precision: 0 },
     });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'decimal-bounded')).toMatchObject({
+      formulaResultType: 'number',
+      format: { min: 0, max: 1, step: 0.25 },
+    });
     expect(afterRestart.schema.properties.find((property) => property.id === 'currency-total')).toMatchObject({
       formulaResultType: 'currency',
     });
@@ -470,6 +505,8 @@ describe('Polaris Dados snapshot and cell API', () => {
     });
     expect(reopenedWidget.properties).not.toHaveProperty('completion');
     expect(reopenedWidget.properties).not.toHaveProperty('completion-raw-check');
+    expect(reopenedWidget.properties).not.toHaveProperty('decimal-bounded');
+    expect(reopenedWidget.properties).not.toHaveProperty('decimal-bounded-raw-check');
     expect(reopenedWidget.properties).not.toHaveProperty('currency-total');
     expect(reopenedWidget.properties).not.toHaveProperty('currency-raw-check');
     expect(reopenedWidget.properties).not.toHaveProperty('text-result');

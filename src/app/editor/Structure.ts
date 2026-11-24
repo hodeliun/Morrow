@@ -13,15 +13,20 @@ import { getPreferences } from '../platform/preferences';
 import type { DateFormat } from '../platform/preferences';
 import { legacyColumnGridTemplate, parseLegacyColumnWidths } from '../../core/columnWidths';
 import {
+  columnPairPercentageBounds,
   closeColumnWidthResizeHistory,
   createColumnWidthsTransaction,
   hasColumnWidthChange,
   resizeColumnPairByPointer,
+  resizeColumnPairByPercentagePoints,
+  resizeColumnPairToLimit,
   serializeColumnWidthResize,
   startingColumnWidths,
 } from './columnResize';
+import { setFocusedEditor } from './commits';
 
 const COLUMN_GAP = 28;
+const KEYBOARD_COLUMN_STEP_PERCENTAGE_POINTS = 2;
 
 function minColumnWidthFor(count: number): number {
   if (count >= 6) return 50;
@@ -87,7 +92,7 @@ export const Columns = Node.create({
   },
 
   addNodeView() {
-    return ({ node, view, getPos }) => {
+    return ({ node, view, getPos, editor }) => {
       let currentNode = node;
       let previewWidths: number[] | null = null;
       let drag: {
@@ -110,6 +115,13 @@ export const Columns = Node.create({
       dom.append(contentDOM);
 
       const handles: HTMLDivElement[] = [];
+      const restoreButton = document.createElement('button');
+      restoreButton.type = 'button';
+      restoreButton.className = 'column-width-reset';
+      restoreButton.contentEditable = 'false';
+      restoreButton.hidden = true;
+      restoreButton.addEventListener('focus', () => setFocusedEditor(editor));
+      restoreButton.addEventListener('click', () => restoreEqualWidths(handles[0] ?? null));
       let observedPane: HTMLElement | null = null;
       let paneObserver: MutationObserver | null = null;
 
@@ -158,6 +170,14 @@ export const Columns = Node.create({
       const trackTemplate = (widths: readonly number[]): string =>
         widths.map((width) => `minmax(0, ${width}fr)`).join(' ');
 
+      const focusControl = (control: HTMLElement) => {
+        try {
+          control.focus({ preventScroll: true });
+        } catch {
+          control.focus();
+        }
+      };
+
       const paint = () => {
         observeCurrentPane();
         const count = currentNode.childCount;
@@ -180,21 +200,60 @@ export const Columns = Node.create({
         const active = canResize();
         const contentRect = contentDOM.getBoundingClientRect();
         const rootRect = dom.getBoundingClientRect();
+        const available = availableWidth();
+        restoreButton.hidden = !active || committedWidths === null;
+        restoreButton.tabIndex = restoreButton.hidden ? -1 : 0;
+        restoreButton.textContent = t('editor.restoreEqualColumnWidths');
+        restoreButton.setAttribute('aria-label', t('editor.restoreEqualColumnWidths'));
+        if (!active && document.activeElement === restoreButton) restoreButton.blur();
         const total = visualWidths.reduce((sum, width) => sum + width, 0);
-        const available = Math.max(0, contentRect.width - COLUMN_GAP * (count - 1));
+        const usableWidth = Math.max(0, contentRect.width - COLUMN_GAP * (count - 1));
         let leftShare = 0;
         for (let index = 0; index < handles.length; index++) {
           leftShare += visualWidths[index]!;
           const handle = handles[index]!;
           const boundary =
             total > 0
-              ? (leftShare / total) * available + COLUMN_GAP * index + COLUMN_GAP / 2
+              ? (leftShare / total) * usableWidth + COLUMN_GAP * index + COLUMN_GAP / 2
               : 0;
           const offset = contentRect.width > 0 ? contentRect.left - rootRect.left + boundary : 0;
           handle.style.left = contentRect.width > 0 ? `${offset}px` : `${(leftShare / total) * 100}%`;
           handle.hidden = !active;
+          handle.tabIndex = active ? 0 : -1;
           handle.setAttribute('aria-label', t('editor.resizeColumnPair', { left: index + 1, right: index + 2 }));
-          handle.setAttribute('aria-valuenow', String(Number(visualWidths[index]!.toFixed(2))));
+          const bounds =
+            available === null
+              ? null
+              : columnPairPercentageBounds(
+                  visualWidths,
+                  index,
+                  available,
+                  minColumnWidthFor(count),
+                );
+          const formatPercentage = (value: number | undefined): string =>
+            value === undefined ? '0' : String(Number(value.toFixed(2)));
+          handle.setAttribute('aria-valuemin', formatPercentage(bounds?.minimum));
+          handle.setAttribute('aria-valuemax', formatPercentage(bounds?.maximum ?? 100));
+          handle.setAttribute('aria-valuenow', formatPercentage(bounds?.current));
+          handle.setAttribute(
+            'aria-valuetext',
+            t('editor.columnPairValueText', {
+              left: index + 1,
+              right: index + 2,
+              value: formatPercentage(bounds?.current),
+            }),
+          );
+          handle.setAttribute(
+            'aria-keyshortcuts',
+            'ArrowLeft ArrowDown ArrowRight ArrowUp Home End R',
+          );
+        }
+        if (
+          !active &&
+          document.activeElement instanceof HTMLElement &&
+          handles.includes(document.activeElement as HTMLDivElement)
+        ) {
+          document.activeElement.blur();
         }
         dom.classList.toggle('is-resizing', drag !== null);
       };
@@ -227,6 +286,64 @@ export const Columns = Node.create({
         releasePointerCapture(state);
         dom.classList.remove('is-resizing');
         if (repaint) paint();
+      };
+
+      function commitWidths(widths: string | null, focusTarget: HTMLElement | null): boolean {
+        if (drag !== null || !canResize()) return false;
+        const position = positionOfCurrentNode();
+        if (position === null || view.state.doc.nodeAt(position) !== currentNode) return false;
+        const transaction = createColumnWidthsTransaction(view.state.tr, position, currentNode, widths);
+        if (!transaction) return false;
+        view.dispatch(transaction);
+        view.dispatch(closeColumnWidthResizeHistory(view.state.tr));
+        if (!view.isDestroyed) {
+          if (focusTarget) focusControl(focusTarget);
+          else view.focus();
+        }
+        return true;
+      }
+
+      function restoreEqualWidths(focusTarget: HTMLElement | null): boolean {
+        if (drag !== null) return false;
+        return commitWidths(null, focusTarget);
+      }
+
+      const changePairFromKeyboard = (
+        pairIndex: number,
+        action: 'decrease' | 'increase' | 'minimum' | 'maximum',
+        handle: HTMLDivElement,
+      ) => {
+        if (drag !== null || !canResize()) return;
+        const widths = startingColumnWidths(currentNode.attrs.widths, currentNode.childCount);
+        const available = availableWidth();
+        if (widths === null || available === null) return;
+        const after =
+          action === 'minimum' || action === 'maximum'
+            ? resizeColumnPairToLimit(
+                widths,
+                pairIndex,
+                action === 'minimum' ? 'minimum' : 'maximum',
+                available,
+                minColumnWidthFor(currentNode.childCount),
+              )
+            : resizeColumnPairByPercentagePoints(
+                widths,
+                pairIndex,
+                action === 'decrease'
+                  ? -KEYBOARD_COLUMN_STEP_PERCENTAGE_POINTS
+                  : KEYBOARD_COLUMN_STEP_PERCENTAGE_POINTS,
+                available,
+                minColumnWidthFor(currentNode.childCount),
+              );
+        if (after === null || !hasColumnWidthChange(widths, after)) return;
+        const encoded = serializeColumnWidthResize(
+          typeof currentNode.attrs.widths === 'string' ? currentNode.attrs.widths : null,
+          currentNode.childCount,
+          widths,
+          after,
+          pairIndex,
+        );
+        if (encoded !== null) commitWidths(encoded, handle);
       };
 
       const dragIsCurrent = (state: NonNullable<typeof drag>): boolean => {
@@ -302,11 +419,8 @@ export const Columns = Node.create({
           state.sourceNode,
           encoded,
         );
-        if (transaction) {
-          view.dispatch(transaction);
-          view.dispatch(closeColumnWidthResizeHistory(view.state.tr));
-          if (!view.isDestroyed) view.focus();
-        } else paint();
+        if (transaction) commitWidths(encoded, null);
+        else paint();
       }
 
       function onPointerCancel(event: PointerEvent): void {
@@ -388,19 +502,46 @@ export const Columns = Node.create({
         handle.tabIndex = -1;
         handle.contentEditable = 'false';
         handle.hidden = true;
+        handle.addEventListener('focus', () => setFocusedEditor(editor));
         handle.addEventListener('pointerdown', (event) => startDrag(index, handle, event));
         handle.addEventListener('keydown', (event) => {
-          if (event.key !== 'Escape' || drag?.handle !== handle) return;
+          if (drag !== null) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.key === 'Escape') cancelDrag(drag.pointerId);
+            return;
+          }
+          if (!canResize() || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+          const action =
+            event.key === 'ArrowLeft' || event.key === 'ArrowDown'
+              ? 'decrease'
+              : event.key === 'ArrowRight' || event.key === 'ArrowUp'
+                ? 'increase'
+                : event.key === 'Home'
+                  ? 'minimum'
+                  : event.key === 'End'
+                    ? 'maximum'
+                    : event.key.toLowerCase() === 'r'
+                      ? 'restore'
+                      : null;
+          if (action === null) return;
           event.preventDefault();
           event.stopPropagation();
-          cancelDrag(drag.pointerId);
+          if (action === 'restore') restoreEqualWidths(handle);
+          else changePairFromKeyboard(index, action, handle);
         });
         handle.addEventListener('lostpointercapture', (event) => {
           cancelDrag((event as PointerEvent).pointerId);
         });
         handles.push(handle);
       }
-      dom.append(...handles);
+      restoreButton.addEventListener('keydown', (event) => {
+        if (drag === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === 'Escape') cancelDrag(drag.pointerId);
+      });
+      dom.append(...handles, restoreButton);
 
       paint();
       const resizeObserver =

@@ -525,6 +525,45 @@ describe('vault representability guard', () => {
           format: { precision: 0 },
         },
         {
+          id: 'decimal-bounds',
+          name: 'Decimal bounds',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+          format: {
+            locale: 'fr-FR',
+            precision: 2,
+            negativeFormat: 'parentheses',
+            min: -1e12,
+            max: 1e12,
+            step: 0.25,
+          },
+        },
+        {
+          id: 'decimal-min-step-boundary',
+          name: 'Decimal minimum step boundary',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+          format: { step: 1e-9 },
+        },
+        {
+          id: 'decimal-max-step-boundary',
+          name: 'Decimal maximum step boundary',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+          format: { step: 1e12 },
+        },
+        {
+          id: 'decimal-conflicting-bounds',
+          name: 'Decimal conflicting bounds',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+          format: { min: 3, max: 2 },
+        },
+        {
           id: 'decimal-default-format',
           name: 'Decimal default format',
           type: 'formula',
@@ -575,6 +614,35 @@ describe('vault representability guard', () => {
     expect(loaded.database?.properties.find((property) => property.id === 'decimal-zero-precision')).toMatchObject({
       formulaResultType: 'number',
       format: { precision: 0 },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'decimal-bounds')).toMatchObject({
+      formulaResultType: 'number',
+      format: {
+        locale: 'fr-FR',
+        precision: 2,
+        negativeFormat: 'parentheses',
+        min: -1e12,
+        max: 1e12,
+        step: 0.25,
+      },
+    });
+    expect(
+      loaded.database?.properties.find((property) => property.id === 'decimal-min-step-boundary'),
+    ).toMatchObject({
+      formulaResultType: 'number',
+      format: { step: 1e-9 },
+    });
+    expect(
+      loaded.database?.properties.find((property) => property.id === 'decimal-max-step-boundary'),
+    ).toMatchObject({
+      formulaResultType: 'number',
+      format: { step: 1e12 },
+    });
+    expect(
+      loaded.database?.properties.find((property) => property.id === 'decimal-conflicting-bounds'),
+    ).toMatchObject({
+      formulaResultType: 'number',
+      format: { min: 3, max: 2 },
     });
 
     const editedDatabase = structuredClone(loaded.database!);
@@ -953,7 +1021,7 @@ describe('vault representability guard', () => {
       type: 'formula',
       formula: 'Quantity / 8',
       formulaResultType: 'number',
-      format: { locale: 'en-US' },
+      format: { locale: 'en-US', step: 1 },
     };
     const numberProtectedSources = [
       databaseNote({ properties: [numberFormula], views: [] }, { omitMarker: true }),
@@ -1041,6 +1109,15 @@ describe('vault representability guard', () => {
         '      format:\n        locale: en-US\n        precision: 1.5\n',
         '      format:\n        locale: en-US\n        precision: 1.5\n      format:\n        locale: en-US\n        precision: 1.5\n',
       ),
+      validYaml
+        .replace('formulaResultType: percent', 'formulaResultType: number')
+        .replace(
+          '        precision: 1.5\n',
+          '        precision: 1.5\n        min: 0\n        min: 1\n',
+        ),
+      validYaml
+        .replace('formulaResultType: percent', 'formulaResultType: number')
+        .replace('        precision: 1.5\n', '        precision: 1.5\n        step: 0.1\n        step: 0.2\n'),
     ];
 
     for (const yaml of ambiguousYaml) {
@@ -1188,6 +1265,7 @@ describe('vault representability guard', () => {
       'polarisDados:',
       '  version: 1',
       '  provider: polaris-dados',
+      'bounds: &bounds {min: -1000000000000, max: 1000000000000, step: 0.1}',
       'hiddenDatabase: &typedDatabase',
       '  properties: &typedProperties',
       '    - id: formula-source',
@@ -1199,6 +1277,7 @@ describe('vault representability guard', () => {
       '      type: *formulaType',
       '      formula: Quantity / 8',
       '      formulaResultType: &numberType number',
+      '      format: *bounds',
       '    - id: currency-source',
       '      name: Currency source',
       '      type: *formulaType',
@@ -1260,7 +1339,7 @@ describe('vault representability guard', () => {
       '---',
       'kind: database',
       'polarisDados: { version: 1, provider: polaris-dados }',
-      'defaults: &result {type: formula, formulaResultType: number}',
+      'defaults: &result {type: formula, formulaResultType: number, format: {min: 0, max: 5, step: 0.25}}',
     ].join('\n') + '\n';
     const footer = '---\nOriginal database body\n';
     const typed = '{!!merge <<: *result, id: ratio, name: Ratio, formula: "7 / 3"}';
@@ -1302,6 +1381,7 @@ describe('vault representability guard', () => {
     expect(readPageText(validMerge).database?.properties[0]).toMatchObject({
       type: 'formula',
       formulaResultType: 'number',
+      format: { min: 0, max: 5, step: 0.25 },
     });
     assertLocked(prefix + database(typed) + database(legacy) + footer);
 
@@ -1446,6 +1526,27 @@ describe('vault representability guard', () => {
       formulaProperty({ format: { precision: 2 }, formulaResultType: 'text' }),
       formulaProperty({ format: { locale: 'not a locale', precision: 2 } }),
       formulaProperty({ formulaResultType: 'number', format: { currency: 'USD' } }),
+      formulaProperty({ formulaResultType: 'number', format: { min: -1e12 - 1 } }),
+      formulaProperty({ formulaResultType: 'number', format: { max: 1e12 + 1 } }),
+      formulaProperty({ formulaResultType: 'number', format: { min: Number.POSITIVE_INFINITY } }),
+      formulaProperty({ formulaResultType: 'number', format: { min: '0' } }),
+      formulaProperty({ formulaResultType: 'number', format: { min: 0, step: 0 } }),
+      formulaProperty({ formulaResultType: 'number', format: { step: 1e-10 } }),
+      formulaProperty({ formulaResultType: 'number', format: { step: 1e12 + 1 } }),
+      formulaProperty({ formulaResultType: 'number', format: { step: Number.POSITIVE_INFINITY } }),
+      formulaProperty({ formulaResultType: 'number', format: { step: '1' } }),
+      formulaProperty({ formulaResultType: 'percent', format: { min: 0 } }),
+      formulaProperty({ formulaResultType: 'percent', format: { step: 1 } }),
+      formulaProperty({ formulaResultType: 'currency', format: { max: 5 } }),
+      formulaProperty({ formulaResultType: 'currency', format: { step: 1 } }),
+      formulaProperty({ formulaResultType: 'text', format: { min: 0 } }),
+      formulaProperty({ formulaResultType: 'text', format: { step: 1 } }),
+      formulaProperty({ formulaResultType: 'checkbox', format: { min: 0 } }),
+      formulaProperty({ formulaResultType: 'checkbox', format: { step: 1 } }),
+      { id: 'manual-number', name: 'Manual number', type: 'number', format: { min: 0 } },
+      { id: 'manual-number-step', name: 'Manual number step', type: 'number', format: { step: 1 } },
+      formulaProperty({ format: { max: 5 } }),
+      formulaProperty({ format: { step: 1 } }),
       formulaProperty({ formulaResultType: 'number', display: 'bar' }),
       formulaProperty({ formulaResultType: 'number', max: 50 }),
       formulaProperty({ formulaResultType: 'number', step: 1 }),
@@ -1458,7 +1559,7 @@ describe('vault representability guard', () => {
     }
 
     const protectedSource = databaseNote({
-      properties: [formulaProperty({ format: { currency: 'US1' } })],
+      properties: [formulaProperty({ formulaResultType: 'number', format: { step: 0 } })],
       views: [],
     });
     const loaded = loadVault(

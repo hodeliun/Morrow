@@ -134,6 +134,35 @@ database:
       name: IsHeavyRawCheck
       type: formula
       formula: If(IsHeavy = false, If(Empty(IsHeavyOrBlank), 17, 23), 42)
+    - id: demo-explicit-bounds
+      name: BoundedThirds
+      type: formula
+      formula: Quantity / 3
+      formulaResultType: number
+      format:
+        min: 0.5
+        max: 1
+        precision: 2
+        locale: en-US
+    - id: demo-explicit-bounds-dependent
+      name: BoundedThirdsRaw
+      type: formula
+      formula: BoundedThirds * 3
+    - id: demo-explicit-step
+      name: SteppedRatio
+      type: formula
+      formula: Quantity / 10
+      formulaResultType: number
+      format:
+        min: 0.1
+        max: 0.5
+        step: 0.2
+        precision: 1
+        locale: en-US
+    - id: demo-explicit-step-dependent
+      name: SteppedRatioRaw
+      type: formula
+      formula: SteppedRatio * 10
   views:
     - id: inventory-table-v1
       name: Table

@@ -1072,6 +1072,108 @@ describe('Polaris Dados provider module', () => {
         format: { locale: 'de-DE', precision: 2, negativeFormat: 'parentheses' },
       },
       {
+        id: 'decimal-bounded',
+        name: 'Decimal bounded',
+        type: 'formula',
+        options: [],
+        formula: '7 / 3',
+        formulaResultType: 'number',
+        format: { locale: 'de-DE', precision: 2, negativeFormat: 'parentheses', min: 2, max: 3 },
+      },
+      {
+        id: 'decimal-bounded-raw-check',
+        name: 'Decimal bounded raw check',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Decimal bounded") * 3',
+      },
+      {
+        id: 'step-valid',
+        name: 'Step valid',
+        type: 'formula',
+        options: [],
+        formula: '0.3',
+        formulaResultType: 'number',
+        format: { locale: 'de-DE', precision: 1, step: 0.1 },
+      },
+      {
+        id: 'step-valid-raw-check',
+        name: 'Step valid raw check',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Step valid") * 10',
+      },
+      {
+        id: 'step-invalid',
+        name: 'Step invalid',
+        type: 'formula',
+        options: [],
+        formula: '0.31',
+        formulaResultType: 'number',
+        format: { locale: 'de-DE', precision: 1, step: 0.1 },
+      },
+      {
+        id: 'step-bound-priority',
+        name: 'Step bound priority',
+        type: 'formula',
+        options: [],
+        formula: '0.31',
+        formulaResultType: 'number',
+        format: { min: 0.2, max: 0.3, step: 0.2 },
+      },
+      {
+        id: 'step-null',
+        name: 'Step null',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow.Optional',
+        formulaResultType: 'number',
+        format: { step: 0.1 },
+      },
+      {
+        id: 'step-max-not-anchor',
+        name: 'Step max not anchor',
+        type: 'formula',
+        options: [],
+        formula: '0.1',
+        formulaResultType: 'number',
+        format: { max: 0.3, step: 0.2 },
+      },
+      {
+        id: 'raw-max-failure',
+        name: 'Raw max failure',
+        type: 'formula',
+        options: [],
+        formula: '1.004',
+        formulaResultType: 'number',
+        format: { precision: 2, max: 1 },
+      },
+      {
+        id: 'raw-max-dependent',
+        name: 'Raw max dependent',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Raw max failure") + 1',
+      },
+      {
+        id: 'min-first',
+        name: 'Minimum first',
+        type: 'formula',
+        options: [],
+        formula: '1',
+        formulaResultType: 'number',
+        format: { min: 2, max: 0 },
+      },
+      {
+        id: 'null-impossible-bounds',
+        name: 'Null impossible bounds',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow.Optional',
+        formulaResultType: 'number',
+        format: { min: 2, max: 0 },
+      },
+      {
         id: 'decimal-null',
         name: 'Decimal null',
         type: 'formula',
@@ -1246,6 +1348,26 @@ describe('Polaris Dados provider module', () => {
     expect(cell('decimal-locale').textContent).toBe('2,33');
     expect(cell('decimal-zero').textContent).toBe('2');
     expect(cell('decimal-negative').textContent).toBe('(2,33)');
+    expect(cell('decimal-bounded').textContent).toBe('2,33');
+    expect(cell('decimal-bounded-raw-check').textContent).toBe('7');
+    expect(cell('step-valid').textContent).toBe('0,3');
+    expect(cell('step-valid-raw-check').textContent).toBe('3');
+    expect(cell('step-invalid').querySelector('code')?.textContent).toBe('Step invalid must use steps of 0.1.');
+    expect(cell('step-bound-priority').querySelector('code')?.textContent).toBe(
+      'Step bound priority must be at most 0.3.',
+    );
+    expect(cell('step-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell('step-max-not-anchor').querySelector('code')?.textContent).toBe(
+      'Step max not anchor must use steps of 0.2.',
+    );
+    expect(cell('raw-max-failure').querySelector('code')?.textContent).toBe(
+      'Raw max failure must be at most 1.',
+    );
+    expect(cell('raw-max-dependent').querySelector('code')?.textContent).toBe(
+      'Raw max failure must be at most 1.',
+    );
+    expect(cell('min-first').querySelector('code')?.textContent).toBe('Minimum first must be at least 2.');
+    expect(cell('null-impossible-bounds').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
     expect(cell('decimal-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
     expect(cell('decimal-times-three').textContent).toBe('7');
     expect(cell('currency-default').textContent).toBe(
