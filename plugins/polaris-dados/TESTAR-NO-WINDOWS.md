@@ -120,11 +120,12 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 1. Abra a nota `Resolved target` e clique em **Escolher layout dos painéis** na barra de abas.
 2. Experimente **Um painel**, **Duas colunas**, **Um à esquerda, dois à direita** e **Dois por dois**.
 3. Num painel vazio, clique em **Abrir uma nota ou banco aqui**. Escolha `Inventory` e confira se o banco abriu no painel que você escolheu. Preencha outros painéis com notas.
-4. Volte a duas colunas e depois à grade. Durante a mesma sessão, as notas e os bancos desanexados voltam aos painéis. A gravação desse layout entre sessões será entregue na #289.
+4. Volte a duas colunas e depois à grade. Confira se as notas e os bancos desanexados voltam aos painéis.
+5. Em **Configurações → Geral → Ao abrir o Morrow**, escolha **Onde parei**. Volte à grade, selecione o painel que quer retomar e feche o aplicativo normalmente. Abra o mesmo `PilotState\DemoVault` e confira o arranjo, as abas e o painel selecionado.
 
 ## Catálogo na barra lateral
 
-Em pacotes com o Polaris Arquivos, procure a seção **Arquivos** (**Files** em inglês) logo abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e `LEIAME` e abra **Subpasta** para ver `Planilha.csv`. Navegue para outra nota e confira se as pastas continuam expandidas. O botão **Arquivos** no menu principal abre a página de anexos e das notas que os usam.
+Em pacotes com o Polaris Arquivos, procure a seção **Arquivos** (**Files** em inglês) logo abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e abra **Subpasta** para ver `Planilha.csv`. Abra **Filtrar arquivos** na seção e ative **Incluir arquivos sem extensão** para mostrar `LEIAME`. Navegue para outra nota e confira se as pastas continuam expandidas. O botão **Arquivos** no menu principal abre a página de anexos e das notas que os usam.
 
 ## Verificações opcionais da base 2.2
 
