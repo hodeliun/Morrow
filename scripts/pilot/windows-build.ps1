@@ -1,5 +1,6 @@
 param(
-  [switch] $IncludeDocumentoDemo
+  [switch] $IncludeDocumentoDemo,
+  [switch] $IncludeArquivosDemo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +26,7 @@ $gateResults = [System.Collections.Generic.List[object]]::new()
 $versions = [ordered]@{}
 $pluginIds = @('polaris-dados')
 if ($IncludeDocumentoDemo) { $pluginIds += 'polaris-documento' }
+if ($IncludeArquivosDemo) { $pluginIds += 'polaris-arquivos' }
 $pluginHashRecords = [System.Collections.Generic.List[object]]::new()
 $metadata = $null
 $packageResult = $null
@@ -235,6 +237,7 @@ try {
     }
     plugins = @($pluginIds)
   }
+  if ($IncludeArquivosDemo) { $metadata.packageOptions['arquivosDemo'] = $true }
 
   $buildPlan = @(
     @{ Label = 'npm-ci'; Executable = 'npm'; Arguments = @('ci'); WorkingDirectory = $repoRoot },
@@ -247,6 +250,9 @@ try {
   )
   if ($IncludeDocumentoDemo) {
     $buildPlan += @{ Label = 'polaris-documento-plugin-build'; Executable = 'npm'; Arguments = @('run', 'build:polaris-documento'); WorkingDirectory = $repoRoot }
+  }
+  if ($IncludeArquivosDemo) {
+    $buildPlan += @{ Label = 'polaris-arquivos-plugin-build'; Executable = 'npm'; Arguments = @('run', 'build:polaris-arquivos'); WorkingDirectory = $repoRoot }
   }
 
   foreach ($item in $buildPlan) {
@@ -287,6 +293,13 @@ try {
       (Join-Path $repoRoot 'plugins/polaris-documento/README.md')
     )
   }
+  if ($IncludeArquivosDemo) {
+    $requiredSources += @(
+      (Join-Path $repoRoot 'dist/polaris-arquivos/main.js'),
+      (Join-Path $repoRoot 'plugins/polaris-arquivos/manifest.json'),
+      (Join-Path $repoRoot 'plugins/polaris-arquivos/README.md')
+    )
+  }
   foreach ($requiredSource in $requiredSources) {
     if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) { throw "Required build/package input is missing: $requiredSource" }
     if ((Get-Item -LiteralPath $requiredSource).Length -le 0) { throw "Required build/package input is empty: $requiredSource" }
@@ -303,6 +316,7 @@ try {
   $fixtureArguments.Add('scripts/pilot/create-polaris-dados-fixture.mjs')
   $fixtureArguments.Add('--checkbox-demo')
   if ($IncludeDocumentoDemo) { $fixtureArguments.Add('--documento-demo') }
+  if ($IncludeArquivosDemo) { $fixtureArguments.Add('--arquivos-demo') }
   $fixtureArguments.Add($fixtureDir)
   $fixtureResult = Invoke-LoggedCommand 'create-synthetic-fixture' 'node' $fixtureArguments.ToArray() $repoRoot
   if ($fixtureResult.ExitCode -ne 0) { throw "Synthetic fixture generation failed (exit $($fixtureResult.ExitCode))." }
@@ -315,6 +329,11 @@ try {
   if ($IncludeDocumentoDemo) {
     foreach ($demoFile in @('Links.md', 'Relations.md', 'Relations/Relation sample.md', 'Resolved target.md', '.trash/Gone target.md')) {
       if (-not (Test-Path -LiteralPath (Join-Path $fixtureDir $demoFile) -PathType Leaf)) { throw "Documento demo is missing $demoFile." }
+    }
+  }
+  if ($IncludeArquivosDemo) {
+    foreach ($demoFile in @('Material/LEIAME', 'Material/Inventario.txt', 'Material/Subpasta/Planilha.csv')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $fixtureDir $demoFile) -PathType Leaf)) { throw "Arquivos demo is missing $demoFile." }
     }
   }
 
@@ -473,6 +492,7 @@ try {
       launcherIndependentPowerShell7CheckOnlyPassed = $true
     }
   }
+  if ($IncludeArquivosDemo) { $packageResult.verification['arquivosDemoIncluded'] = $true }
 
   New-Item -ItemType Directory -Path $candidateDir -Force | Out-Null
   $candidateZip = Join-Path $candidateDir ([IO.Path]::GetFileName($tempZip))

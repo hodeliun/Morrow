@@ -1,0 +1,7 @@
+{
+  "id": "polaris-arquivos",
+  "name": "Polaris Arquivos",
+  "version": "0.1.0",
+  "description": "Browse file and folder names from the active vault in the sidebar.",
+  "author": "Polaris"
+}

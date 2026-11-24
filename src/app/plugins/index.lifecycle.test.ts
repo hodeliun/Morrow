@@ -5,6 +5,7 @@ import type * as PluginRegistry from './registry';
 import type * as PluginProviders from './providerRegistry';
 import type * as Preferences from '../platform/preferences';
 import type { WorkspaceSession } from '../../storage/session';
+import type { VaultFilePage } from '../platform/desktop';
 
 const SETTINGS_FILE = '.morrow/plugins.json';
 const PLUGINS_FOLDER = '.morrow/plugins';
@@ -86,6 +87,7 @@ interface Harness {
   files: Map<string, string>;
   readText: ReturnType<typeof vi.fn>;
   apply: ReturnType<typeof vi.fn>;
+  listFilesPage: ReturnType<typeof vi.fn>;
   delayRead(path: string, promise: Promise<string | null>, started?: () => void): void;
   clearReadDelay(path: string): void;
   loader: typeof PluginLoader;
@@ -143,6 +145,15 @@ async function createHarness(
     });
     return results;
   });
+  const listFilesPage = vi.fn(
+    async (_directory: string, _cursor: string | null = null, _limit = 200): Promise<VaultFilePage> => ({
+      generation: 1,
+      status: 'empty',
+      entries: [],
+      nextCursor: null,
+      error: null,
+    }),
+  );
   const vault = {
     readText,
     apply,
@@ -155,6 +166,7 @@ async function createHarness(
         .filter((file) => file.startsWith(`${path}/`))
         .map((file) => ({ path: file, size: files.get(file)?.length ?? 0, mtime: 0 })),
     ),
+    listFilesPage,
   };
   window.morrow = {
     platform: 'linux',
@@ -178,6 +190,7 @@ async function createHarness(
     files,
     readText,
     apply,
+    listFilesPage,
     delayRead(path, promise, started) {
       delayedReads.set(path, { promise, started });
     },
@@ -312,6 +325,88 @@ describe('plugin loader lifecycle', () => {
     await h.loader.setPluginEnabled('polaris-documento', false);
     expect(registration?.isActive()).toBe(false);
     expect(h.registry.documentoNoteStylePanel()).toBeNull();
+  });
+
+  it('revokes pending file pages on reload and binds the same relative path to the next workspace session', async () => {
+    const h = await createHarness({
+      pluginId: 'polaris-arquivos',
+      enabled: ['polaris-arquivos'],
+      code: 'export default (morrow) => morrow.sidebar.fileCatalog.add(() => {});',
+    });
+    await h.loader.startPlugins();
+    const first = h.registry.polarisArquivosSidebarFileCatalog();
+    expect(first?.isActive()).toBe(true);
+
+    const firstGate = deferred<VaultFilePage>();
+    h.listFilesPage.mockReturnValueOnce(firstGate.promise);
+    const oldDuringReload = first!.host.listFilesPage!('Media', null, 999);
+    expect(h.listFilesPage).toHaveBeenLastCalledWith('Media', null, 200);
+    await h.loader.reloadPlugin('polaris-arquivos');
+    const second = h.registry.polarisArquivosSidebarFileCatalog();
+    expect(first?.isActive()).toBe(false);
+    expect(second?.isActive()).toBe(true);
+    expect(second?.generation).toBeGreaterThan(first?.generation ?? 0);
+
+    h.listFilesPage.mockResolvedValueOnce({
+      generation: 2,
+      status: 'ready',
+      entries: [{ name: 'same.pdf', path: 'Media/same.pdf', kind: 'file', size: 2, modified: null }],
+      nextCursor: null,
+      error: null,
+    });
+    const reloadedPage = await second!.host.listFilesPage!('Media', null, 200);
+    expect(reloadedPage.generation).toBe(2);
+    expect(reloadedPage.entries[0]?.path).toBe('Media/same.pdf');
+
+    const switchGate = deferred<VaultFilePage>();
+    h.listFilesPage.mockReturnValueOnce(switchGate.promise);
+    const oldDuringSwitch = second!.host.listFilesPage!('Media', null, 200);
+    const { openRepository } = await import('../../storage/repository');
+    const { WorkspaceSession } = await import('../../storage/session');
+    const nextDatabase = `plugin-loader-next-vault-${databaseSequence++}`;
+    const nextOpen = await WorkspaceSession.open(await openRepository(nextDatabase));
+    if (!nextOpen.ok) throw new Error(nextOpen.error);
+    const nextSession = nextOpen.value;
+    const workspace = await import('../workspace');
+    workspace.setSession(nextSession);
+    expect(second?.isActive()).toBe(false);
+    expect(h.registry.polarisArquivosSidebarFileCatalog()).toBeNull();
+
+    h.loader.stopPlugins();
+    await h.loader.startPlugins();
+    const third = h.registry.polarisArquivosSidebarFileCatalog();
+    expect(third?.isActive()).toBe(true);
+    h.listFilesPage.mockResolvedValueOnce({
+      generation: 3,
+      status: 'ready',
+      entries: [{ name: 'same.pdf', path: 'Media/same.pdf', kind: 'file', size: 3, modified: null }],
+      nextCursor: null,
+      error: null,
+    });
+    const nextVaultPage = await third!.host.listFilesPage!('Media', null, 200);
+    expect(nextVaultPage.generation).toBe(3);
+    expect(nextVaultPage.entries[0]?.path).toBe('Media/same.pdf');
+
+    firstGate.resolve({
+      generation: 1,
+      status: 'ready',
+      entries: [{ name: 'same.pdf', path: 'Media/same.pdf', kind: 'file', size: 1, modified: null }],
+      nextCursor: null,
+      error: null,
+    });
+    switchGate.resolve({
+      generation: 2,
+      status: 'ready',
+      entries: [{ name: 'same.pdf', path: 'Media/same.pdf', kind: 'file', size: 2, modified: null }],
+      nextCursor: null,
+      error: null,
+    });
+    expect((await oldDuringReload).status).toBe('stale');
+    expect((await oldDuringSwitch).status).toBe('stale');
+
+    await h.session.close();
+    await nextSession.close();
+    await deleteDatabase(nextDatabase);
   });
 
   it('deduplicates startup before settings I/O and ignores a stopped pending startup', async () => {

@@ -122,6 +122,10 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 3. Num painel vazio, clique em **Abrir uma nota ou banco aqui**. Escolha `Inventory` e confira se o banco abriu no painel que você escolheu. Preencha outros painéis com notas.
 4. Volte a duas colunas e depois à grade. Durante a mesma sessão, as notas e os bancos desanexados voltam aos painéis. A gravação desse layout entre sessões será entregue na #289.
 
+## Catálogo na barra lateral
+
+Em pacotes com o Polaris Arquivos, procure **Polaris Arquivos** abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e `LEIAME` e abra **Subpasta** para ver `Planilha.csv`. Navegue para outra nota e confira se as pastas continuam expandidas. O catálogo permite consultar os nomes. A página **Arquivos** do Morrow continua exibindo os anexos e as notas que os usam.
+
 ## Verificações opcionais da base 2.2
 
 Use somente conteúdo sintético. O modo de leitura é uma preferência global. Para conferir a restauração de rolagem em divisão, ative **Reading mode / Modo de leitura**, abra a mesma nota longa nos dois painéis e defina posições de rolagem diferentes. Navegue para fora da nota e reabra-a em cada painel. Confirme que cada painel restaura sua própria posição.

@@ -49,7 +49,7 @@ jobs:
 
       - name: Run build gates and package verification
         shell: pwsh
-        run: pwsh -NoProfile -File scripts/pilot/windows-build.ps1 -IncludeDocumentoDemo
+        run: pwsh -NoProfile -File scripts/pilot/windows-build.ps1 -IncludeDocumentoDemo -IncludeArquivosDemo
 
       - name: Upload build evidence
         if: always()

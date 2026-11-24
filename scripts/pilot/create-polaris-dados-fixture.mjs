@@ -11,13 +11,13 @@ const pluginSource = resolve(repositoryRoot, 'plugins/polaris-dados');
 const bundleSource = resolve(repositoryRoot, 'dist/polaris-dados/main.js');
 const args = process.argv.slice(2);
 const usage =
-  'Usage: node scripts/pilot/create-polaris-dados-fixture.mjs [--checkbox-demo] [--documento-demo] <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n';
+  'Usage: node scripts/pilot/create-polaris-dados-fixture.mjs [--checkbox-demo] [--documento-demo] [--arquivos-demo] <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n';
 if (args.includes('--help') || args.includes('-h')) {
   process.stdout.write(usage);
   process.exit(0);
 }
 const options = new Set();
-const supportedOptions = new Set(['--checkbox-demo', '--documento-demo']);
+const supportedOptions = new Set(['--checkbox-demo', '--documento-demo', '--arquivos-demo']);
 while (args[0]?.startsWith('--')) {
   const option = args.shift();
   if (!supportedOptions.has(option)) {
@@ -28,6 +28,7 @@ while (args[0]?.startsWith('--')) {
 }
 const includeCheckboxDemo = options.has('--checkbox-demo');
 const includeDocumentoDemo = options.has('--documento-demo');
+const includeArquivosDemo = options.has('--arquivos-demo');
 
 if (args.length < 1 || args.length > 2) {
   process.stderr.write(usage);
@@ -68,6 +69,21 @@ if (includeDocumentoDemo) {
     throw new Error('The Documento plugin manifest id must be polaris-documento.');
   }
 }
+if (includeArquivosDemo) {
+  const arquivosSource = resolve(repositoryRoot, 'plugins/polaris-arquivos');
+  sourceFiles.arquivos = {
+    'main.js': await readFile(resolve(repositoryRoot, 'dist/polaris-arquivos/main.js')),
+    'manifest.json': await readFile(resolve(arquivosSource, 'manifest.json')),
+    'README.md': await readFile(resolve(arquivosSource, 'README.md')),
+    LICENSE: sourceFiles.license,
+  };
+  if (!sourceFiles.arquivos['main.js'].length) {
+    throw new Error('The Arquivos plugin bundle is empty. Run npm run build:polaris-arquivos first.');
+  }
+  if (JSON.parse(sourceFiles.arquivos['manifest.json'].toString('utf8')).id !== 'polaris-arquivos') {
+    throw new Error('The Arquivos plugin manifest id must be polaris-arquivos.');
+  }
+}
 
 const targetStates = await Promise.all(targets.map(inspectTarget));
 const firstId = process.hrtime.bigint();
@@ -97,7 +113,11 @@ process.stdout.write(
     {
       createdAt: new Date().toISOString(),
       idSeed: firstId.toString(),
-      options: { checkboxDemo: includeCheckboxDemo, documentoDemo: includeDocumentoDemo },
+      options: {
+        checkboxDemo: includeCheckboxDemo,
+        documentoDemo: includeDocumentoDemo,
+        ...(includeArquivosDemo ? { arquivosDemo: true } : {}),
+      },
       vaults: destinations,
     },
     null,
@@ -195,6 +215,8 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
   await writeExclusive(resolve(target, '.morrow/workspace.json'), `${JSON.stringify(workspace, null, 1)}\n`);
   const enabledPlugins = ['polaris-dados'];
   if (options.includeDocumentoDemo) enabledPlugins.push('polaris-documento');
+  const arquivosFiles = files.arquivos ? await createArquivosDemo(target, files.arquivos, openMarker) : [];
+  if (arquivosFiles.length) enabledPlugins.push('polaris-arquivos');
   await writeExclusive(resolve(target, '.morrow/plugins.json'), `${JSON.stringify({ enabled: enabledPlugins }, null, 2)}\n`);
   await writeExclusive(resolve(pluginDirectory, 'main.js'), files.bundle);
   await writeExclusive(resolve(pluginDirectory, 'manifest.json'), files.manifest);
@@ -218,6 +240,7 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
       'Views.md',
       ...checkboxFiles,
       ...(documentoDemo?.files ?? []),
+      ...arquivosFiles,
       '.morrow/workspace.json',
       '.morrow/plugins.json',
       '.morrow/plugins/polaris-dados/main.js',
@@ -234,6 +257,20 @@ async function createVault(target, targetState, openMarker, vaultIndex, allocate
         : []),
     ],
   };
+}
+
+async function createArquivosDemo(target, pluginAssets, marker) {
+  const pluginDirectory = '.morrow/plugins/polaris-arquivos';
+  await mkdir(resolve(target, pluginDirectory));
+  await mkdir(resolve(target, 'Material/Subpasta'), { recursive: true });
+  const files = [
+    ...Object.entries(pluginAssets).map(([name, bytes]) => [`${pluginDirectory}/${name}`, bytes]),
+    ['Material/LEIAME', `Arquivo sintético do piloto. ${marker}\n`],
+    ['Material/Inventario.txt', 'Material de demonstração\n'],
+    ['Material/Subpasta/Planilha.csv', 'produto,quantidade\nExemplo,2\n'],
+  ];
+  for (const [path, content] of files) await writeExclusive(resolve(target, path), content);
+  return files.map(([path]) => path);
 }
 
 async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBase, documentoFiles) {

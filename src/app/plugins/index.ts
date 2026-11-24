@@ -16,13 +16,14 @@ import { getPreferences } from '../platform/preferences';
 import { getLocale } from '../i18n';
 import { activeRoute, openPage } from '../router';
 import { toast } from '../ui';
-import { getSession, getState, run } from '../workspace';
+import { getSession, getState, run, subscribeWorkspaceSession } from '../workspace';
 import {
   addPluginAction,
   addPluginBlock,
   addPluginInlineColorControl,
   addPluginInlineFormulaPresentation,
   addPluginNoteStylePanel,
+  addPluginSidebarFileCatalog,
   pluginActions,
   pluginBlocks,
 } from './registry';
@@ -30,6 +31,7 @@ import type {
   PluginInlineColorControlMount,
   PluginInlineFormulaPresentationMount,
   PluginNoteStylePanelMount,
+  PluginSidebarFileCatalogMount,
 } from './registry';
 import { createDataApi } from './dataApi';
 import { getDatabaseProvider, registerDatabaseProvider } from './providerRegistry';
@@ -40,6 +42,7 @@ import type { PluginEditorInsertionTargetV1 } from './editorApi';
 import { addInlineFormulaSlashCommand } from './inlineFormulaAuthoring';
 import type { PluginInlineFormulaEditAction, PluginInlineFormulaSlashCommand } from './inlineFormulaApi';
 import { definePluginLocaleApi } from './localeApi';
+import type { VaultFilePage } from '../platform/desktop';
 
 export type { PluginLocaleApi } from './localeApi';
 
@@ -312,6 +315,74 @@ function pluginApi(id: string, state: Running) {
       kind: page.kind,
     };
   };
+  const staleFilePage = (generation = 0): VaultFilePage => ({
+    generation,
+    status: 'stale',
+    entries: [],
+    nextCursor: null,
+    error: null,
+  });
+  const registerSidebarFileCatalog = (mount: PluginSidebarFileCatalogMount) => {
+    assertActive();
+    if (id !== 'polaris-arquivos')
+      throw new Error('Only Polaris Arquivos can register a sidebar file catalog.');
+    if (typeof mount !== 'function') throw new Error('A sidebar file catalog needs a mount function.');
+
+    const bridge = desktop?.vault;
+    const host = Object.freeze({
+      isActive: ownerIsActive,
+      ...(typeof bridge?.listFilesPage === 'function'
+        ? {
+            async listFilesPage(
+              directory: string,
+              cursor: string | null = null,
+              limit = 200,
+            ): Promise<VaultFilePage> {
+              if (!ownerIsActive()) return staleFilePage();
+              if (typeof directory !== 'string')
+                return {
+                  generation: 0,
+                  status: 'blocked',
+                  entries: [],
+                  nextCursor: null,
+                  error: 'This folder cannot be listed.',
+                };
+              const pageLimit = Number.isFinite(limit) ? Math.floor(limit) : 200;
+              try {
+                const page = await bridge.listFilesPage(
+                  directory,
+                  cursor,
+                  Math.min(200, Math.max(1, pageLimit)),
+                );
+                return ownerIsActive() ? page : staleFilePage(page.generation);
+              } catch (error) {
+                if (!ownerIsActive()) return staleFilePage();
+                return {
+                  generation: 0,
+                  status: 'ioError',
+                  entries: [],
+                  nextCursor: null,
+                  error: error instanceof Error ? error.message : 'The folder could not be read.',
+                };
+              }
+            },
+          }
+        : {}),
+    });
+    const unregister = addPluginSidebarFileCatalog(id, state.generation, mount, host, ownerIsActive);
+    let unsubscribeSession = () => {};
+    let unsubscribeClose = () => {};
+    const cleanup = keep(() => {
+      unsubscribeSession();
+      unsubscribeClose();
+      unregister();
+    });
+    unsubscribeSession = subscribeWorkspaceSession(() => {
+      if (!ownerIsActive()) cleanup();
+    });
+    unsubscribeClose = session.onClose(cleanup);
+    return cleanup;
+  };
   const plugin = {
     version: desktop?.version ?? '',
     plugin: id,
@@ -483,6 +554,13 @@ function pluginApi(id: string, state: Running) {
             throw new Error('Only Polaris Documento can add a note-style panel.');
           if (typeof mount !== 'function') throw new Error('A note-style panel needs a mount function.');
           return keep(addPluginNoteStylePanel(id, mount));
+        },
+      },
+    },
+    sidebar: {
+      fileCatalog: {
+        add(mount: PluginSidebarFileCatalogMount) {
+          return registerSidebarFileCatalog(mount);
         },
       },
     },

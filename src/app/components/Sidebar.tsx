@@ -30,7 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Fragment, memo, useDeferredValue, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { displayTitle } from '../../core/model';
 import type { PageId, PageMeta, WorkspaceState } from '../../core/model';
 import { collectTasks } from '../../core/tasks';
@@ -66,6 +66,7 @@ import { canMoveTreePage, isProviderManagedPage } from './pageEditability';
 import { Emoji } from './Emoji';
 import { Logo } from './primitives';
 import { PAGE_DRAG_TYPE } from '../editor/PageLink';
+import { polarisArquivosSidebarFileCatalog, subscribePlugins } from '../plugins/registry';
 
 type DropZone = 'before' | 'inside' | 'after';
 
@@ -407,31 +408,34 @@ export function Sidebar() {
         );
       }),
     pages: (
-      <section className="sidebar-section" aria-label={t('sidebar.pagesHeading')}>
-        <div className="sidebar-heading-row">
-          <h2 className="sidebar-heading">{t('sidebar.pagesHeading')}</h2>
-          <button
-            type="button"
-            className="icon-button small"
-            aria-label={t('sidebar.newPageAria')}
-            aria-haspopup="menu"
-            title={t('sidebar.newPageTitle', { shortcut: formatShortcut('Alt+N') })}
-            onClick={(event) => setNewMenu(event.currentTarget)}
-          >
-            <Plus size={15} strokeWidth={1.75} />
-          </button>
-        </div>
-        {live.length === 0 ? (
-          <div className="sidebar-empty">
-            <p>{t('sidebar.noPages')}</p>
-            <button type="button" className="link-button" onClick={() => createPage()}>
-              {t('sidebar.createFirstPage')}
+      <>
+        <section className="sidebar-section" aria-label={t('sidebar.pagesHeading')}>
+          <div className="sidebar-heading-row">
+            <h2 className="sidebar-heading">{t('sidebar.pagesHeading')}</h2>
+            <button
+              type="button"
+              className="icon-button small"
+              aria-label={t('sidebar.newPageAria')}
+              aria-haspopup="menu"
+              title={t('sidebar.newPageTitle', { shortcut: formatShortcut('Alt+N') })}
+              onClick={(event) => setNewMenu(event.currentTarget)}
+            >
+              <Plus size={15} strokeWidth={1.75} />
             </button>
           </div>
-        ) : (
-          <PageTree state={state} activeId={activeId} expanded={prefs.expanded} />
-        )}
-      </section>
+          {live.length === 0 ? (
+            <div className="sidebar-empty">
+              <p>{t('sidebar.noPages')}</p>
+              <button type="button" className="link-button" onClick={() => createPage()}>
+                {t('sidebar.createFirstPage')}
+              </button>
+            </div>
+          ) : (
+            <PageTree state={state} activeId={activeId} expanded={prefs.expanded} />
+          )}
+        </section>
+        <SidebarFileCatalogSlot />
+      </>
     ),
   };
   const bottomItems: Record<BottomItem, React.ReactNode> = {
@@ -592,6 +596,43 @@ export function Sidebar() {
       />
     </aside>
   );
+}
+
+function SidebarFileCatalogSlot() {
+  const registration = useSyncExternalStore(
+    subscribePlugins,
+    polarisArquivosSidebarFileCatalog,
+    polarisArquivosSidebarFileCatalog,
+  );
+  const container = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const target = container.current;
+    if (!target || !registration?.isActive()) return;
+
+    target.removeAttribute('role');
+    target.replaceChildren();
+    let unmount: void | (() => void);
+    try {
+      unmount = registration.mount(target, registration.host);
+    } catch {
+      target.setAttribute('role', 'alert');
+      target.textContent = 'The file catalog could not be mounted.';
+    }
+
+    return () => {
+      try {
+        if (typeof unmount === 'function') unmount();
+      } catch {
+        // A plugin cleanup cannot take down the host sidebar.
+      } finally {
+        target.replaceChildren();
+      }
+    };
+  }, [registration]);
+
+  if (!registration?.isActive()) return null;
+  return <div ref={container} data-sidebar-plugin-slot="polaris-arquivos" style={{ display: 'contents' }} />;
 }
 
 type TopItem = (typeof SIDEBAR_GROUPS.top)[number];

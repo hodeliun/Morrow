@@ -8,6 +8,7 @@ import type { NoteStyleFailureCode } from '../../storage/session';
 import type { LegacyFormulaPresentation } from '../../core/legacyFormula';
 import type { SupportedLocale } from '../i18n';
 import type { PluginInlineFormulaEditAction } from './inlineFormulaApi';
+import type { VaultFilePage } from '../platform/desktop';
 
 export type PluginInlineColorKind = 'text' | 'bg';
 
@@ -106,6 +107,29 @@ export interface PluginInlineFormulaPresentationEntry {
   isActive(): boolean;
 }
 
+/** Read-only capability mounted by Polaris Arquivos inside the host sidebar. */
+export interface PluginSidebarFileCatalogHost {
+  readonly isActive: () => boolean;
+  readonly listFilesPage?: (
+    directory: string,
+    cursor?: string | null,
+    limit?: number,
+  ) => Promise<VaultFilePage>;
+}
+
+export type PluginSidebarFileCatalogMount = (
+  container: HTMLElement,
+  host: PluginSidebarFileCatalogHost,
+) => void | (() => void);
+
+export interface PluginSidebarFileCatalogEntry {
+  readonly owner: 'polaris-arquivos';
+  readonly generation: number;
+  readonly mount: PluginSidebarFileCatalogMount;
+  readonly host: PluginSidebarFileCatalogHost;
+  isActive(): boolean;
+}
+
 interface PluginNoteStylePanelRegistration extends PluginNoteStylePanelEntry {
   deactivate(): void;
 }
@@ -115,6 +139,10 @@ interface PluginInlineFormulaPresentationRegistration extends PluginInlineFormul
 }
 
 interface PluginInlineColorControlRegistration extends PluginInlineColorControlEntry {
+  deactivate(): void;
+}
+
+interface PluginSidebarFileCatalogRegistration extends PluginSidebarFileCatalogEntry {
   deactivate(): void;
 }
 
@@ -134,6 +162,8 @@ let noteStylePanel: PluginNoteStylePanelRegistration | null = null;
 let noteStylePanelGeneration = 0;
 let inlineFormulaPresentation: PluginInlineFormulaPresentationRegistration | null = null;
 let inlineFormulaPresentationGeneration = 0;
+let sidebarFileCatalog: PluginSidebarFileCatalogRegistration | null = null;
+let sidebarFileCatalogGeneration = 0;
 const inlineFormulaListeners = new Set<() => void>();
 const listeners = new Set<() => void>();
 let version = 0;
@@ -262,6 +292,79 @@ export function addPluginInlineFormulaPresentation(
 
 export function polarisDadosInlineFormulaPresentation(): PluginInlineFormulaPresentationEntry | null {
   return inlineFormulaPresentation?.isActive() ? inlineFormulaPresentation : null;
+}
+
+export function addPluginSidebarFileCatalog(
+  owner: string,
+  generation: number,
+  mount: PluginSidebarFileCatalogMount,
+  host: PluginSidebarFileCatalogHost,
+  ownerIsActive: () => boolean,
+): () => void {
+  if (owner !== 'polaris-arquivos') throw new Error('Only Polaris Arquivos can add a sidebar file catalog.');
+  if (typeof mount !== 'function') throw new Error('A sidebar file catalog needs a mount function.');
+  if (!host || typeof host.isActive !== 'function') throw new Error('A sidebar file catalog needs an active host.');
+  if (typeof ownerIsActive !== 'function') throw new Error('A sidebar file catalog needs an owner guard.');
+
+  sidebarFileCatalog?.deactivate();
+  let active = true;
+  sidebarFileCatalogGeneration = Math.max(sidebarFileCatalogGeneration + 1, generation);
+  let registration: PluginSidebarFileCatalogRegistration | null = null;
+  const registrationIsActive = () =>
+    active && registration !== null && sidebarFileCatalog === registration && ownerIsActive() && host.isActive();
+  const stalePage = (currentGeneration = 0): VaultFilePage => ({
+    generation: currentGeneration,
+    status: 'stale',
+    entries: [],
+    nextCursor: null,
+    error: null,
+  });
+  const listFilesPage = host.listFilesPage;
+  const guardedHost: PluginSidebarFileCatalogHost = Object.freeze({
+    isActive: registrationIsActive,
+    ...(typeof listFilesPage === 'function'
+      ? {
+          async listFilesPage(directory: string, cursor?: string | null, limit?: number): Promise<VaultFilePage> {
+            if (!registrationIsActive()) return stalePage();
+            try {
+              const page = await listFilesPage(directory, cursor, limit);
+              return registrationIsActive() ? page : stalePage(page.generation);
+            } catch (error) {
+              if (!registrationIsActive()) return stalePage();
+              throw error;
+            }
+          },
+        }
+      : {}),
+  });
+  registration = {
+    owner: 'polaris-arquivos',
+    generation: sidebarFileCatalogGeneration,
+    mount,
+    host: guardedHost,
+    isActive: registrationIsActive,
+    deactivate: () => {
+      active = false;
+    },
+  };
+  sidebarFileCatalog = registration;
+  changed();
+
+  return () => {
+    if (!registration.isActive()) {
+      // A replaced registration is already inactive and cannot remove its successor.
+      if (sidebarFileCatalog !== registration) return;
+      registration.deactivate();
+    } else {
+      registration.deactivate();
+    }
+    if (sidebarFileCatalog === registration) sidebarFileCatalog = null;
+    changed();
+  };
+}
+
+export function polarisArquivosSidebarFileCatalog(): PluginSidebarFileCatalogEntry | null {
+  return sidebarFileCatalog?.isActive() ? sidebarFileCatalog : null;
 }
 
 export function subscribeInlineFormulaPresentation(listener: () => void): () => void {
