@@ -4,6 +4,7 @@ import type {
   PluginNoteStyleBatchPreviewLease,
   PluginNoteStyleBatchPreviewMode,
   PluginNoteStyleBatchPreviewSummary,
+  PluginNoteStyleBatchUndoResult,
   PluginNoteStyleDefaultsPanelMount,
 } from '../../../src/app/plugins/registry';
 import { mountNoteStylePanel } from './noteStylePanel';
@@ -65,8 +66,10 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
   status.tabIndex = -1;
   const result = document.createElement('div');
   result.className = 'note-style-batch-result';
+  const undoActions = document.createElement('div');
+  undoActions.className = 'note-style-batch-undo-actions';
 
-  root.append(heading, help, modeField, previewButton, status, result);
+  root.append(heading, help, modeField, previewButton, status, result, undoActions);
   container.append(root);
 
   let active = true;
@@ -75,13 +78,62 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
   let confirmationOpen = false;
   let busy = false;
   let confirmationRun = 0;
+  let undoRun = 0;
+  let undoButton: HTMLButtonElement | null = null;
 
   const confirmation = host.batchPreviewConfirmation;
+  const undo = host.batchPreviewUndo;
+  const supportsUndo = Boolean(
+    undo &&
+      undo.labels &&
+      typeof undo.labels.action === 'string' &&
+      typeof undo.isAvailable === 'function' &&
+      typeof undo.subscribeAvailability === 'function' &&
+      typeof undo.undo === 'function',
+  );
+  const isUndoAvailable = () => {
+    if (!supportsUndo || !undo) return false;
+    try {
+      return undo.isAvailable();
+    } catch {
+      return false;
+    }
+  };
 
   const syncControls = () => {
     mode.disabled = busy || confirmationOpen;
     previewButton.disabled = busy || confirmationOpen;
+    for (const button of root.querySelectorAll<HTMLButtonElement>(
+      'button[data-note-style-batch-action]',
+    )) {
+      const action = button.dataset.noteStyleBatchAction;
+      button.disabled = busy || (
+        confirmationOpen && action !== 'confirm' && action !== 'cancel-confirmation'
+      );
+    }
+    if (undoButton) undoButton.disabled = busy || confirmationOpen;
     root.dataset.busy = String(busy);
+  };
+
+  const syncUndoAvailability = () => {
+    if (!active || !supportsUndo || !undo) return;
+    const available = isUndoAvailable();
+
+    if (available && !undoButton) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'button small';
+      button.dataset.noteStyleBatchAction = 'undo';
+      button.textContent = undo.labels.action;
+      undoActions.append(button);
+      undoButton = button;
+    } else if (!available && undoButton) {
+      const hadUndoFocus = document.activeElement === undoButton;
+      undoButton.remove();
+      undoButton = null;
+      if (hadUndoFocus) status.focus();
+    }
+    if (undoButton) undoButton.disabled = busy || confirmationOpen;
   };
 
   const detachLease = () => {
@@ -92,6 +144,8 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
 
   const clearResult = (message: string) => {
     result.replaceChildren();
+    result.removeAttribute('data-note-style-batch-mode');
+    result.removeAttribute('data-note-style-batch-candidate-count');
     status.textContent = message;
   };
 
@@ -254,6 +308,63 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
       : confirmation!.labels.complete;
   };
 
+  const renderUndoResult = (undoResult: PluginNoteStyleBatchUndoResult) => {
+    result.replaceChildren();
+    result.removeAttribute('data-note-style-batch-mode');
+    result.removeAttribute('data-note-style-batch-candidate-count');
+
+    const title = document.createElement('h4');
+    title.className = 'note-style-batch-result-title';
+    title.dataset.noteStyleBatchResultTitle = 'true';
+    title.tabIndex = -1;
+    title.textContent = undo!.labels.resultTitle;
+    result.append(title);
+
+    const counts: Array<[string, string, number]> = [
+      ['restored', undo!.labels.restoredCount, undoResult.restoredCount],
+      ['skipped', undo!.labels.skippedCount, undoResult.skippedCount],
+      ['refused', undo!.labels.refusedCount, undoResult.refusedCount],
+      ['unattempted', undo!.labels.unattemptedCount, undoResult.unattemptedCount],
+    ];
+    const total = counts.reduce((sum, [, , count]) => sum + count, 0);
+    const countList = document.createElement('ul');
+    countList.className = 'note-style-batch-result-counts';
+    for (const [kind, label, value] of counts) {
+      const item = document.createElement('li');
+      item.dataset.noteStyleBatchResultCount = kind;
+      item.textContent = `${label}: ${value}`;
+      countList.append(item);
+    }
+    const totalItem = document.createElement('li');
+    totalItem.dataset.noteStyleBatchResultCount = 'total';
+    totalItem.dataset.noteStyleBatchResultTotal = String(total);
+    totalItem.textContent = `Total: ${total}`;
+    countList.append(totalItem);
+    result.append(countList);
+
+    const outcomeLabels: Record<PluginNoteStyleBatchUndoResult['outcomes'][number]['status'], string> = {
+      restored: undo!.labels.noteRestored,
+      skipped: undo!.labels.noteSkipped,
+      refused: undo!.labels.noteRefused,
+      unattempted: undo!.labels.noteUnattempted,
+    };
+    const outcomes = document.createElement('ol');
+    outcomes.className = 'note-style-batch-outcomes';
+    for (const outcome of undoResult.outcomes) {
+      const item = document.createElement('li');
+      item.dataset.noteStyleBatchUndoOutcome = outcome.status;
+      item.dataset.noteStyleBatchOrder = String(outcome.order);
+      item.textContent = `${outcome.title}: ${outcomeLabels[outcome.status]}`;
+      outcomes.append(item);
+    }
+    result.append(outcomes);
+
+    status.textContent = undoResult.skippedCount > 0 || undoResult.refusedCount > 0 ||
+      undoResult.unattemptedCount > 0
+      ? undo!.labels.partial
+      : undo!.labels.complete;
+  };
+
   const expirePreview = () => {
     const current = lease;
     if (!current) return;
@@ -265,7 +376,7 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
     detachLease();
     confirmationOpen = false;
     syncControls();
-    if (active && !current.isCurrent()) {
+    if (active && !current.isCurrent() && !busy) {
       clearResult(host.batchPreviewLabels.stale);
       if (returnToPreview) previewButton.focus();
     }
@@ -368,6 +479,48 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
     }
   };
 
+  const undoLastBatch = async () => {
+    if (!active || busy || confirmationOpen || !supportsUndo || !undo) return;
+    if (!isUndoAvailable()) {
+      syncUndoAvailability();
+      return;
+    }
+
+    const hadPanelFocus = root.contains(document.activeElement);
+    busy = true;
+    confirmationOpen = false;
+    detachLease();
+    status.textContent = undo.labels.progress;
+    syncControls();
+    if (hadPanelFocus) status.focus();
+    const runId = ++undoRun;
+
+    try {
+      const undoResult = await undo.undo();
+      if (!active || runId !== undoRun) return;
+      const shouldFocusResult = root.contains(document.activeElement);
+      busy = false;
+      syncUndoAvailability();
+      syncControls();
+      if (!undoResult) {
+        clearResult(undo.labels.unavailable);
+        if (shouldFocusResult) status.focus();
+        return;
+      }
+      renderUndoResult(undoResult);
+      if (shouldFocusResult)
+        result.querySelector<HTMLElement>('[data-note-style-batch-result-title]')?.focus();
+    } catch {
+      if (!active || runId !== undoRun) return;
+      const shouldFocusRetry = root.contains(document.activeElement);
+      busy = false;
+      syncUndoAvailability();
+      syncControls();
+      clearResult(undo.labels.error);
+      if (shouldFocusRetry) (undoButton ?? status).focus();
+    }
+  };
+
   const onChange = () => {
     if (!active || busy) return;
     if (lease || confirmationOpen) {
@@ -395,18 +548,36 @@ const mountNoteStyleDefaultsPanelImpl: PluginNoteStyleDefaultsPanelMount = (cont
       case 'confirm':
         void confirmPreview();
         break;
+      case 'undo':
+        void undoLastBatch();
+        break;
     }
   };
 
   mode.addEventListener('change', onChange);
   root.addEventListener('click', onClick);
+  let stopUndoAvailability: (() => void) | null = null;
+  if (supportsUndo && undo) {
+    try {
+      stopUndoAvailability = undo.subscribeAvailability(() => {
+        syncUndoAvailability();
+        syncControls();
+      });
+    } catch {
+      stopUndoAvailability = null;
+    }
+    syncUndoAvailability();
+  }
 
   return () => {
     if (!active) return;
     active = false;
     confirmationRun++;
+    undoRun++;
     mode.removeEventListener('change', onChange);
     root.removeEventListener('click', onClick);
+    stopUndoAvailability?.();
+    stopUndoAvailability = null;
     detachLease();
     host.batchPreview.invalidate();
     unmountDefaults?.();

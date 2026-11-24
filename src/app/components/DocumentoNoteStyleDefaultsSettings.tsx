@@ -3,10 +3,14 @@ import { isValidNoteStyleInput, resolveDefaultNoteStyle } from '../../core/noteS
 import type { NoteStyle } from '../../core/noteStyle';
 import { SettingsGroup } from './SettingsRows';
 import { t } from '../i18n';
+import { getSession, getWorkspaceSessionGeneration } from '../workspace';
 import {
   confirmNoteStyleBatchPreview,
   createNoteStyleBatchPreviewHost,
   disposeNoteStyleBatchPreviewHost,
+  isLastNoteStyleBatchUndoAvailable,
+  subscribeLastNoteStyleBatchUndoAvailability,
+  undoLastNoteStyleBatch,
 } from './noteStyleBatchPreview';
 import { documentoNoteStyleDefaultsPanel, subscribePlugins } from '../plugins/registry';
 import type {
@@ -14,6 +18,8 @@ import type {
   PluginNoteStyleBatchPreviewLabels,
   PluginNoteStyleBatchPreviewConfirmationLabels,
   PluginNoteStyleBatchPreviewLease,
+  PluginNoteStyleBatchUndoLabels,
+  PluginNoteStyleBatchUndoResult,
   PluginNoteStylePanelLabels,
   PluginNoteStylePanelResult,
 } from '../plugins/registry';
@@ -27,6 +33,19 @@ function copyStyle(style: Readonly<NoteStyle>): NoteStyle {
     blockSpacing: style.blockSpacing,
     width: style.width,
   };
+}
+
+function sanitizeBatchUndoResult(result: PluginNoteStyleBatchUndoResult): PluginNoteStyleBatchUndoResult {
+  const outcomes = Object.freeze(result.outcomes.map(({ title, order, status }) =>
+    Object.freeze({ title, order, status }),
+  ));
+  return Object.freeze({
+    outcomes,
+    restoredCount: outcomes.filter(({ status }) => status === 'restored').length,
+    skippedCount: outcomes.filter(({ status }) => status === 'skipped').length,
+    refusedCount: outcomes.filter(({ status }) => status === 'refused').length,
+    unattemptedCount: outcomes.filter(({ status }) => status === 'unattempted').length,
+  });
 }
 
 function labelsFor(locale: ReturnType<typeof usePreferences>['locale']): PluginNoteStylePanelLabels {
@@ -125,6 +144,23 @@ export function DocumentoNoteStyleDefaultsSettings() {
       complete: translate('pageStyle.batchPreview.confirmation.complete'),
       partial: translate('pageStyle.batchPreview.confirmation.partial'),
     });
+    const undoLabels: PluginNoteStyleBatchUndoLabels = Object.freeze({
+      action: translate('pageStyle.batchPreview.undo.action'),
+      progress: translate('pageStyle.batchPreview.undo.progress'),
+      resultTitle: translate('pageStyle.batchPreview.undo.resultTitle'),
+      restoredCount: translate('pageStyle.batchPreview.undo.restoredCount'),
+      skippedCount: translate('pageStyle.batchPreview.undo.skippedCount'),
+      refusedCount: translate('pageStyle.batchPreview.undo.refusedCount'),
+      unattemptedCount: translate('pageStyle.batchPreview.undo.unattemptedCount'),
+      noteRestored: translate('pageStyle.batchPreview.undo.noteRestored'),
+      noteSkipped: translate('pageStyle.batchPreview.undo.noteSkipped'),
+      noteRefused: translate('pageStyle.batchPreview.undo.noteRefused'),
+      noteUnattempted: translate('pageStyle.batchPreview.undo.noteUnattempted'),
+      complete: translate('pageStyle.batchPreview.undo.complete'),
+      partial: translate('pageStyle.batchPreview.undo.partial'),
+      error: translate('pageStyle.batchPreview.undo.error'),
+      unavailable: translate('pageStyle.batchPreview.undo.unavailable'),
+    });
     const previewHost = createNoteStyleBatchPreviewHost(
       () => mountState.active,
       () => registration.isActive(),
@@ -160,6 +196,45 @@ export function DocumentoNoteStyleDefaultsSettings() {
         return confirmNoteStyleBatchPreview(lease);
       },
     });
+    const isMountActive = () => mountState.active && registration.isActive();
+    const batchPreviewUndo = Object.freeze({
+      labels: undoLabels,
+      isAvailable() {
+        return isMountActive() && isLastNoteStyleBatchUndoAvailable(previewHost);
+      },
+      subscribeAvailability(listener: () => void) {
+        if (!isMountActive() || typeof listener !== 'function') return () => {};
+        return subscribeLastNoteStyleBatchUndoAvailability(previewHost, listener);
+      },
+      async undo() {
+        if (!isMountActive()) return null;
+        let session: ReturnType<typeof getSession>;
+        let generation: number;
+        try {
+          session = getSession();
+          generation = getWorkspaceSessionGeneration();
+        } catch {
+          return null;
+        }
+        const isCapturedScopeCurrent = () => {
+          try {
+            return !session.isClosed &&
+              getSession() === session &&
+              getWorkspaceSessionGeneration() === generation;
+          } catch {
+            return false;
+          }
+        };
+        try {
+          const result = await undoLastNoteStyleBatch(previewHost);
+          if (!isMountActive() || !isCapturedScopeCurrent() || !result) return null;
+          return sanitizeBatchUndoResult(result);
+        } catch {
+          if (!isMountActive() || !isCapturedScopeCurrent()) return null;
+          throw new Error(undoLabels.error);
+        }
+      },
+    });
     const unavailable = (): PluginNoteStylePanelResult => ({
       ok: false as const,
       code: 'save-failed',
@@ -191,6 +266,7 @@ export function DocumentoNoteStyleDefaultsSettings() {
       batchPreview,
       batchPreviewLabels,
       batchPreviewConfirmation,
+      batchPreviewUndo,
       async save(style: NoteStyle) {
         if (!mountState.active || !registration.isActive() || !isValidNoteStyleInput(style))
           return unavailable();

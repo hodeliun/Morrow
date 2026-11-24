@@ -63,6 +63,40 @@ class HeldFirstStyleWriteVault extends MemoryVault {
   }
 }
 
+class HeldFirstStyleRestoreVault extends MemoryVault {
+  private armed = false;
+  private held = false;
+  private enteredResolve!: () => void;
+  private releaseResolve!: () => void;
+  private readonly gate = new Promise<void>((resolve) => {
+    this.releaseResolve = resolve;
+  });
+  readonly restoreStarted = new Promise<void>((resolve) => {
+    this.enteredResolve = resolve;
+  });
+
+  release(): void {
+    this.releaseResolve();
+  }
+
+  arm(): void {
+    this.armed = true;
+  }
+
+  override async apply(ops: VaultOp[]): Promise<VaultOpResult[]> {
+    if (
+      this.armed &&
+      !this.held &&
+      ops.some((op) => op.op === 'write' && op.path === 'One.md' && !op.text.includes('morrowNoteStyle:'))
+    ) {
+      this.held = true;
+      this.enteredResolve();
+      await this.gate;
+    }
+    return super.apply(ops);
+  }
+}
+
 const noteSource = (title: string) => `---\ntitle: ${title}\n---\n${title} body.\n`;
 
 async function settleAsyncWork(): Promise<void> {
@@ -187,6 +221,179 @@ describe('Documento default note-style settings', () => {
     await act(async () => root?.render(createElement(DocumentoNoteStyleDefaultsSettings)));
 
     expect(container.querySelector('.settings-group-wrap')).toBeNull();
+  });
+
+  it.each([
+    ['pt', 'Desfazer último lote'],
+    ['en', 'Undo last batch'],
+    ['es', 'Deshacer último lote'],
+  ] as const)('provides optional undo labels in %s', async (locale, action) => {
+    const opened = await WorkspaceSession.open(new VaultRepository(new MemoryVault(), () => `undo-labels-${locale}`), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    setSession(session);
+    setPreferences({ locale, font: 'serif', width: 'wide', defaultNoteStyle: undefined });
+    disposePanel = addPluginNoteStyleDefaultsPanel('polaris-documento', (_panelRoot, host) => {
+      retainedHost = host;
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+
+    try {
+      await act(async () => root?.render(createElement(DocumentoNoteStyleDefaultsSettings)));
+      const undo = retainedHost?.batchPreviewUndo;
+      expect(undo).toBeDefined();
+      expect(undo?.labels).toMatchObject({
+        action,
+        progress: expect.any(String),
+        resultTitle: expect.any(String),
+        restoredCount: expect.any(String),
+        skippedCount: expect.any(String),
+        refusedCount: expect.any(String),
+        unattemptedCount: expect.any(String),
+        noteRestored: expect.any(String),
+        noteSkipped: expect.any(String),
+        noteRefused: expect.any(String),
+        noteUnattempted: expect.any(String),
+        complete: expect.any(String),
+        partial: expect.any(String),
+        error: expect.any(String),
+        unavailable: expect.any(String),
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('exposes a mount-scoped, sanitized undo result and cancellable availability subscription', async () => {
+    const source = noteSource('One');
+    const vault = new MemoryVault({ 'One.md': source });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'undo-host-bridge'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    setSession(session);
+    setPreferences({ locale: 'en', font: 'serif', width: 'wide', defaultNoteStyle: undefined });
+    disposePanel = addPluginNoteStyleDefaultsPanel('polaris-documento', (panelRoot, host) => {
+      retainedHost = host;
+      return mountNoteStyleDefaultsPanel(panelRoot, host);
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+
+    try {
+      await act(async () => root?.render(createElement(DocumentoNoteStyleDefaultsSettings)));
+      const host = retainedHost;
+      const undo = host?.batchPreviewUndo;
+      if (!host?.batchPreviewConfirmation || !undo)
+        throw new Error('The active Documento mount did not receive the optional undo port.');
+      expect(undo.isAvailable()).toBe(false);
+      let updates = 0;
+      const unsubscribe = undo.subscribeAvailability(() => updates++);
+      const unsubscribeThrowing = undo.subscribeAvailability(() => {
+        throw new Error('Observer failure must not escape the host notification.');
+      });
+      const lease = host.batchPreview.create('overwrite');
+      if (!lease) throw new Error('The active Documento mount could not create a preview.');
+      const confirmation = await host.batchPreviewConfirmation.confirm(lease);
+      unsubscribeThrowing();
+      expect(confirmation?.confirmedCount).toBe(1);
+      expect(undo.isAvailable()).toBe(true);
+      expect(updates).toBe(1);
+
+      let teardownUpdates = 0;
+      const unsubscribeBeforeTeardown = undo.subscribeAvailability(() => teardownUpdates++);
+      unsubscribe();
+      const stoppedAt = updates;
+      const result = await undo.undo();
+      expect(result).toEqual({
+        outcomes: [{ title: 'One', order: 1, status: 'restored' }],
+        restoredCount: 1,
+        skippedCount: 0,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(Object.keys(result ?? {}).sort()).toEqual([
+        'outcomes',
+        'refusedCount',
+        'restoredCount',
+        'skippedCount',
+        'unattemptedCount',
+      ]);
+      expect(Object.keys(result?.outcomes[0] ?? {}).sort()).toEqual(['order', 'status', 'title']);
+      expect(JSON.stringify(result)).not.toMatch(/undo-host-bridge|pageId|revision|session|style|error/i);
+      expect(undo.isAvailable()).toBe(false);
+      expect(updates).toBe(stoppedAt);
+      expect(teardownUpdates).toBe(2);
+      expect(vault.text('One.md')).toBe(source);
+
+      await act(async () => {
+        disposePanel?.();
+        disposePanel = null;
+        await Promise.resolve();
+      });
+      expect(teardownUpdates).toBe(3);
+      expect(undo.isAvailable()).toBe(false);
+      unsubscribeBeforeTeardown();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('hides an undo result when the active session changes away and back before it resolves', async () => {
+    const source = noteSource('One');
+    const vault = new HeldFirstStyleRestoreVault({ 'One.md': source });
+    const opened = await WorkspaceSession.open(new VaultRepository(vault, () => 'undo-session-a'), {
+      delayMs: 0,
+    });
+    if (!opened.ok) throw new Error(opened.error);
+    const sessionA = opened.value;
+    const otherOpened = await WorkspaceSession.open(
+      new VaultRepository(new MemoryVault({ 'Other.md': noteSource('Other') }), () => 'undo-session-b'),
+      { delayMs: 0 },
+    );
+    if (!otherOpened.ok) throw new Error(otherOpened.error);
+    const sessionB = otherOpened.value;
+    setSession(sessionA);
+    setPreferences({ locale: 'en', font: 'serif', width: 'wide', defaultNoteStyle: undefined });
+    disposePanel = addPluginNoteStyleDefaultsPanel('polaris-documento', (panelRoot, host) => {
+      retainedHost = host;
+      return mountNoteStyleDefaultsPanel(panelRoot, host);
+    });
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+
+    try {
+      await act(async () => root?.render(createElement(DocumentoNoteStyleDefaultsSettings)));
+      const host = retainedHost;
+      if (!host?.batchPreviewConfirmation || !host.batchPreviewUndo)
+        throw new Error('The active Documento mount did not receive the undo port.');
+      const lease = host.batchPreview.create('overwrite');
+      if (!lease) throw new Error('The active Documento mount could not create a preview.');
+      await host.batchPreviewConfirmation.confirm(lease);
+
+      vault.arm();
+      const pendingUndo = host.batchPreviewUndo.undo();
+      await vault.restoreStarted;
+      await act(async () => {
+        setSession(sessionB);
+        setSession(sessionA);
+        await Promise.resolve();
+      });
+      vault.release();
+      await expect(pendingUndo).resolves.toBeNull();
+      expect(vault.text('One.md')).toBe(source);
+    } finally {
+      vault.release();
+      await sessionA.close();
+      await sessionB.close();
+    }
   });
 
   it('binds the confirmation port to the active mount and preserves unknown YAML', async () => {

@@ -116,7 +116,15 @@ interface NoteStyleBatchReceiptSlot {
   scope: NoteStyleBatchReceiptScope | null;
   receipt: NoteStyleBatchReceipt | null;
   readonly confirmationReservations: Map<WorkspaceSession, NoteStyleBatchExecution>;
+  readonly availabilityListeners: Set<() => void>;
+  availabilityState: boolean | null;
+  availabilitySession: WorkspaceSession | null;
+  availabilityScope: NoteStyleBatchReceiptScope | null;
+  availabilitySessionCleanup: Array<() => void>;
   activeUndo: NoteStyleBatchExecution | null;
+  notifyAvailability(): void;
+  refreshAvailability(forceNotify?: boolean): boolean;
+  syncAvailabilitySession(scope: NoteStyleBatchReceiptScope | null): void;
   invalidatePreview(): void;
   readonly runtime: PreviewRuntime;
   readCurrentScope(): NoteStyleBatchReceiptScope | null;
@@ -138,13 +146,34 @@ export function readLastNoteStyleBatchReceipt(
 ): NoteStyleBatchReceipt | null {
   const slot = noteStyleBatchReceiptSlots.get(host);
   if (!slot || slot.disposed) return null;
-  const scope = slot.readCurrentScope();
-  if (!scope || !sameReceiptScope(slot.scope, scope)) {
-    slot.receipt = null;
-    slot.scope = scope;
-    return null;
-  }
+  slot.refreshAvailability();
   return slot.receipt;
+}
+
+/** Reads only whether an app-private receipt can be consumed; never returns the receipt itself. */
+export function isLastNoteStyleBatchUndoAvailable(
+  host: PluginNoteStyleBatchPreviewHost,
+): boolean {
+  const slot = noteStyleBatchReceiptSlots.get(host);
+  if (!slot || slot.disposed) return false;
+  return slot.refreshAvailability();
+}
+
+/** Observes receipt availability without exposing its private contents. */
+export function subscribeLastNoteStyleBatchUndoAvailability(
+  host: PluginNoteStyleBatchPreviewHost,
+  listener: () => void,
+): () => void {
+  const slot = noteStyleBatchReceiptSlots.get(host);
+  if (!slot || slot.disposed || typeof listener !== 'function') return () => {};
+  slot.refreshAvailability();
+  slot.availabilityListeners.add(listener);
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    slot.availabilityListeners.delete(listener);
+  };
 }
 
 /** Ends one host mount and revokes its private receipt. */
@@ -154,6 +183,10 @@ export function disposeNoteStyleBatchPreviewHost(host: PluginNoteStyleBatchPrevi
   slot.disposed = true;
   slot.receipt = null;
   slot.scope = null;
+  slot.syncAvailabilitySession(null);
+  slot.availabilityState = false;
+  slot.notifyAvailability();
+  slot.availabilityListeners.clear();
   try {
     host.invalidate();
   } catch {
@@ -178,6 +211,29 @@ function sameReceiptScope(
     first.session === second.session &&
     first.generation === second.generation &&
     first.lifecycleGeneration === second.lifecycleGeneration;
+}
+
+/** Shared admission guard for the public availability read and one-shot undo execution. */
+function canStartNoteStyleBatchUndo(
+  slot: NoteStyleBatchReceiptSlot,
+  scope: NoteStyleBatchReceiptScope | null,
+): boolean {
+  if (
+    !scope ||
+    slot.disposed ||
+    !sameReceiptScope(slot.scope, scope) ||
+    !slot.receipt?.hasRestorableItems ||
+    slot.activeUndo ||
+    slot.confirmationReservations.has(scope.session)
+  )
+    return false;
+
+  const session = scope.session;
+  try {
+    return !session.isClosed && !session.isMutationFenced && !hasUnconfirmedChanges(session);
+  } catch {
+    return false;
+  }
 }
 
 const previewConfirmations = new WeakMap<
@@ -354,7 +410,23 @@ export function createNoteStyleBatchPreviewHost(
     scope: null,
     receipt: null,
     confirmationReservations: new Map(),
+    availabilityListeners: new Set(),
+    availabilityState: null,
+    availabilitySession: null,
+    availabilityScope: null,
+    availabilitySessionCleanup: [],
     activeUndo: null,
+    notifyAvailability() {
+      for (const listener of [...receiptSlot.availabilityListeners]) {
+        try {
+          listener();
+        } catch {
+          // A plugin observer must not interrupt a confirmed write or receipt lifecycle change.
+        }
+      }
+    },
+    refreshAvailability: () => false,
+    syncAvailabilitySession: () => {},
     invalidatePreview: () => {},
     runtime,
     readCurrentScope: () => null,
@@ -390,28 +462,97 @@ export function createNoteStyleBatchPreviewHost(
     }
   };
 
+  receiptSlot.syncAvailabilitySession = (scope) => {
+    const session = scope?.session ?? null;
+    const sameScope = scope === null
+      ? receiptSlot.availabilityScope === null
+      : receiptSlot.availabilityScope !== null && sameReceiptScope(receiptSlot.availabilityScope, scope);
+    if (sameScope) return;
+    for (const cleanup of receiptSlot.availabilitySessionCleanup.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // Rebinding must continue if a session listener was already removed.
+      }
+    }
+    receiptSlot.availabilitySession = session;
+    receiptSlot.availabilityScope = scope;
+    if (!session || receiptSlot.disposed) return;
+
+    const observeSessionAvailability = (forceNotify = false) => () => {
+      if (
+        receiptSlot.disposed ||
+        receiptSlot.availabilitySession !== session ||
+        !receiptSlot.availabilityScope ||
+        !sameReceiptScope(receiptSlot.availabilityScope, scope)
+      )
+        return;
+      try {
+        receiptSlot.refreshAvailability(forceNotify);
+      } catch {
+        // Session lifecycle notifications cannot interrupt writes or close.
+      }
+    };
+    const attach = (
+      subscribe: (listener: () => void) => () => void,
+      listener = observeSessionAvailability(),
+    ) => {
+      try {
+        const cleanup = subscribe(listener);
+        if (receiptSlot.disposed || receiptSlot.availabilitySession !== session) cleanup();
+        else receiptSlot.availabilitySessionCleanup.push(cleanup);
+      } catch {
+        // Availability reads still apply the shared admission guard if a listener cannot attach.
+      }
+    };
+    attach((listener) => session.queue.subscribe(listener));
+    attach((listener) => session.subscribeMutationFence(listener));
+    attach((listener) => session.onClose(listener), observeSessionAvailability(true));
+  };
+
+  receiptSlot.refreshAvailability = (forceNotify = false) => {
+    if (receiptSlot.disposed) {
+      const changed = receiptSlot.availabilityState !== false;
+      receiptSlot.receipt = null;
+      receiptSlot.scope = null;
+      receiptSlot.syncAvailabilitySession(null);
+      receiptSlot.availabilityState = false;
+      if (forceNotify || changed) receiptSlot.notifyAvailability();
+      return false;
+    }
+
+    const hadReceipt = receiptSlot.receipt !== null;
+    const previousScope = receiptSlot.scope;
+    const scope = receiptSlot.readCurrentScope();
+    const scopeChanged = !sameReceiptScope(previousScope, scope);
+    if (scopeChanged) {
+      receiptSlot.receipt = null;
+      receiptSlot.scope = scope;
+    }
+    receiptSlot.syncAvailabilitySession(scope);
+
+    const available = canStartNoteStyleBatchUndo(receiptSlot, scope);
+    const changed = receiptSlot.availabilityState !== available;
+    receiptSlot.availabilityState = available;
+    if (forceNotify || changed || (scopeChanged && hadReceipt)) receiptSlot.notifyAvailability();
+    return receiptSlot.availabilityState === true;
+  };
+
   const clearReceiptWhenScopeChanges = () => {
     if (receiptSlot.disposed) return;
-    const scope = receiptSlot.readCurrentScope();
-    if (!sameReceiptScope(receiptSlot.scope, scope)) receiptSlot.receipt = null;
-    receiptSlot.scope = scope;
+    receiptSlot.refreshAvailability();
   };
 
   const isReceiptScopeCurrent = (captured: NoteStyleBatchReceiptScope): boolean => {
+    const previousScope = receiptSlot.scope;
     const scope = receiptSlot.readCurrentScope();
-    if (!scope) {
-      receiptSlot.receipt = null;
-      receiptSlot.scope = null;
-      return false;
-    }
-    if (!sameReceiptScope(receiptSlot.scope, scope)) {
+    if (!sameReceiptScope(previousScope, scope)) {
       receiptSlot.receipt = null;
       receiptSlot.scope = scope;
-      return false;
     }
-    if (!sameReceiptScope(captured, scope)) return false;
-    receiptSlot.scope = scope;
-    return true;
+    receiptSlot.syncAvailabilitySession(scope);
+    receiptSlot.availabilityState = canStartNoteStyleBatchUndo(receiptSlot, scope);
+    return Boolean(scope && sameReceiptScope(captured, scope));
   };
 
   const expireActiveLease = () => {
@@ -656,8 +797,6 @@ export function createNoteStyleBatchPreviewHost(
         };
         if (receiptSlot.activeUndo || receiptSlot.confirmationReservations.has(leaseScope.session))
           return null;
-        consumed = true;
-        receiptSlot.confirmationReservations.set(leaseScope.session, execution);
         const trackExecutionSubscription = (subscribe: (listener: () => void) => () => void) => {
           if (executionInvalid) return;
           try {
@@ -668,6 +807,31 @@ export function createNoteStyleBatchPreviewHost(
             invalidateExecution();
           }
         };
+        const trackSessionExecutionGuards = () => {
+          const invalidateIfUnavailable = () => {
+            try {
+              if (session.isClosed || session.isMutationFenced) invalidateExecution();
+            } catch {
+              invalidateExecution();
+            }
+          };
+          invalidateIfUnavailable();
+          trackExecutionSubscription((listener) => session.subscribeMutationFence(listener));
+          trackExecutionSubscription((listener) => session.onClose(listener));
+          invalidateIfUnavailable();
+        };
+
+        consumed = true;
+        receiptSlot.confirmationReservations.set(leaseScope.session, execution);
+        trackSessionExecutionGuards();
+        trackExecutionSubscription(runtime.subscribeSession);
+        trackExecutionSubscription(runtime.subscribePreferences);
+        trackExecutionSubscription(runtime.subscribeRegistration ?? subscribePlugins);
+        isExecutionContextCurrent();
+        // Subscribe before notifying availability listeners: they can synchronously open and
+        // release a mutation fence, and that revocation must remain sticky for this execution.
+        receiptSlot.refreshAvailability();
+        isExecutionContextCurrent();
 
         const outcomes = built.targets.map((target) => ({
           title: target.title,
@@ -683,12 +847,9 @@ export function createNoteStyleBatchPreviewHost(
         const confirmedWriteItems: NoteStyleBatchReceiptItem[] = [];
         let hadConfirmedWrite = false;
 
+        let executionThrew = false;
+        let executionError: unknown;
         try {
-          trackExecutionSubscription(runtime.subscribeSession);
-          trackExecutionSubscription(runtime.subscribePreferences);
-          trackExecutionSubscription(runtime.subscribeRegistration ?? subscribePlugins);
-          trackExecutionSubscription(session.subscribeMutationFence.bind(session));
-          trackExecutionSubscription(session.onClose.bind(session));
           expire();
           for (let index = 0; index < built.targets.length; index++) {
             const target = built.targets[index]!;
@@ -747,10 +908,18 @@ export function createNoteStyleBatchPreviewHost(
             // only its own captured context so it can continue to later notes in the same session.
             if (!isExecutionContextCurrent()) break;
           }
+        } catch (error) {
+          executionThrew = true;
+          executionError = error;
         } finally {
           invalidateExecution();
           if (receiptSlot.confirmationReservations.get(leaseScope.session) === execution)
             receiptSlot.confirmationReservations.delete(leaseScope.session);
+        }
+
+        if (executionThrew) {
+          receiptSlot.refreshAvailability(true);
+          throw executionError;
         }
 
         if (
@@ -766,6 +935,7 @@ export function createNoteStyleBatchPreviewHost(
           });
           receiptSlot.committedBatchId = batchId;
         }
+        receiptSlot.refreshAvailability(true);
 
         const frozenOutcomes = Object.freeze(outcomes.map((outcome) => Object.freeze(outcome)));
         return Object.freeze({
@@ -793,6 +963,7 @@ export function createNoteStyleBatchPreviewHost(
       // Receipt reads and write completions still check session and registration identity directly.
     }
   }
+  receiptSlot.refreshAvailability();
   return host;
 }
 
@@ -803,23 +974,12 @@ export function undoLastNoteStyleBatch(
   const slot = noteStyleBatchReceiptSlots.get(host);
   if (!slot || slot.disposed) return Promise.resolve(null);
 
-  const scope = slot.readCurrentScope();
-  if (!scope || !sameReceiptScope(slot.scope, scope)) {
-    slot.receipt = null;
-    slot.scope = scope;
-    return Promise.resolve(null);
-  }
-  if (slot.activeUndo || slot.confirmationReservations.has(scope.session)) return Promise.resolve(null);
-  slot.scope = scope;
+  if (!slot.refreshAvailability()) return Promise.resolve(null);
+  const scope = slot.scope;
+  if (!scope || !canStartNoteStyleBatchUndo(slot, scope)) return Promise.resolve(null);
   const receipt = slot.receipt;
   const session = scope.session;
-  if (
-    !receipt?.hasRestorableItems ||
-    session.isClosed ||
-    session.isMutationFenced ||
-    hasUnconfirmedChanges(session)
-  )
-    return Promise.resolve(null);
+  if (!receipt) return Promise.resolve(null);
 
   let executionInvalid = false;
   const executionCleanups: Array<() => void> = [];
@@ -835,7 +995,7 @@ export function undoLastNoteStyleBatch(
     }
   };
   const execution = { kind: 'undo' as const, scope, invalidate: invalidateExecution };
-  if (slot.activeUndo || slot.confirmationReservations.has(session)) return Promise.resolve(null);
+  if (!canStartNoteStyleBatchUndo(slot, scope)) return Promise.resolve(null);
   slot.activeUndo = execution;
   // Consume before the first await. A second undo can never reuse this receipt.
   slot.receipt = null;
@@ -843,14 +1003,9 @@ export function undoLastNoteStyleBatch(
   const isExecutionScopeCurrent = (): boolean => {
     if (executionInvalid) return false;
     try {
-      const current = slot.readCurrentScope();
-      if (!current || !sameReceiptScope(slot.scope, current)) {
-        slot.receipt = null;
-        slot.scope = current;
-        invalidateExecution();
-        return false;
-      }
-      slot.scope = current;
+      slot.refreshAvailability();
+      if (executionInvalid) return false;
+      const current = slot.scope;
       if (!sameReceiptScope(scope, current)) {
         invalidateExecution();
         return false;
@@ -878,6 +1033,19 @@ export function undoLastNoteStyleBatch(
       invalidateExecution();
     }
   };
+  const trackSessionExecutionGuards = () => {
+    const invalidateIfUnavailable = () => {
+      try {
+        if (session.isClosed || session.isMutationFenced) invalidateExecution();
+      } catch {
+        invalidateExecution();
+      }
+    };
+    invalidateIfUnavailable();
+    trackExecutionSubscription((listener) => session.subscribeMutationFence(listener));
+    trackExecutionSubscription((listener) => session.onClose(listener));
+    invalidateIfUnavailable();
+  };
   const orderedWrites = receipt.writes.slice().sort((a, b) => a.order - b.order);
   const outcomes = orderedWrites
     .map((item) => ({
@@ -886,13 +1054,17 @@ export function undoLastNoteStyleBatch(
       status: 'unattempted' as NoteStyleBatchUndoStatus,
     }));
 
+  // The receipt and execution reservation are already consumed. Install sticky guards before
+  // availability or preview callbacks can synchronously fence and then unfence the session.
+  trackSessionExecutionGuards();
+  trackExecutionSubscription(slot.runtime.subscribeSession);
+  trackExecutionSubscription(slot.runtime.subscribeRegistration ?? subscribePlugins);
+  slot.refreshAvailability();
+  isExecutionScopeCurrent();
+
   return (async (): Promise<NoteStyleBatchUndoResult> => {
     try {
       slot.invalidatePreview();
-      trackExecutionSubscription(slot.runtime.subscribeSession);
-      trackExecutionSubscription(slot.runtime.subscribeRegistration ?? subscribePlugins);
-      trackExecutionSubscription(session.subscribeMutationFence.bind(session));
-      trackExecutionSubscription(session.onClose.bind(session));
 
       for (let index = 0; index < outcomes.length; index++) {
         const item = orderedWrites[index]!;
@@ -960,7 +1132,10 @@ export function undoLastNoteStyleBatch(
       }
     } finally {
       invalidateExecution();
-      if (slot.activeUndo === execution) slot.activeUndo = null;
+      if (slot.activeUndo === execution) {
+        slot.activeUndo = null;
+        slot.refreshAvailability(true);
+      }
     }
 
     const frozenOutcomes = Object.freeze(outcomes.map((outcome) => Object.freeze(outcome)));

@@ -57,6 +57,10 @@ Use o cofre `PilotState\DemoVault`. Em **Configurações → Aparência**, salve
 
 O resultado traz as contagens de **Confirmadas**, **Recusadas** e **Não tentadas**, com detalhes por página. Em caso de recusa, gere outra prévia. Abra uma das notas confirmadas e confira o estilo e os demais campos YAML.
 
+### Desfazer o último lote de estilos
+
+Após aplicar o estilo às notas de demonstração, mantenha **Configurações → Aparência** aberto e acione **Desfazer último lote**. Confira as contagens e os detalhes por página. Abra novamente uma nota restaurada e confira seu estilo anterior. A nota que recebeu uma alteração de estilo depois do lote aparece em **Ignoradas** quando o estilo atual já difere do aplicado. Use Desfazer no mesmo painel em que aplicou o lote. A ação pode ser usada uma vez por lote.
+
 ### Cores HEX e estilos salvos
 
 1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.

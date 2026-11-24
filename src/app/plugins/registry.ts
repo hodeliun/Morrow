@@ -192,10 +192,54 @@ export interface PluginNoteStyleBatchPreviewConfirmation {
   ): Promise<PluginNoteStyleBatchConfirmationResult | null>;
 }
 
+export type PluginNoteStyleBatchUndoStatus = 'restored' | 'skipped' | 'refused' | 'unattempted';
+
+export interface PluginNoteStyleBatchUndoOutcome {
+  readonly title: string;
+  readonly order: number;
+  readonly status: PluginNoteStyleBatchUndoStatus;
+}
+
+/** Sanitized per-note result; it contains no note identity, source, revision, session, or error. */
+export interface PluginNoteStyleBatchUndoResult {
+  readonly outcomes: readonly PluginNoteStyleBatchUndoOutcome[];
+  readonly restoredCount: number;
+  readonly skippedCount: number;
+  readonly refusedCount: number;
+  readonly unattemptedCount: number;
+}
+
+export interface PluginNoteStyleBatchUndoLabels {
+  readonly action: string;
+  readonly progress: string;
+  readonly resultTitle: string;
+  readonly restoredCount: string;
+  readonly skippedCount: string;
+  readonly refusedCount: string;
+  readonly unattemptedCount: string;
+  readonly noteRestored: string;
+  readonly noteSkipped: string;
+  readonly noteRefused: string;
+  readonly noteUnattempted: string;
+  readonly complete: string;
+  readonly partial: string;
+  readonly error: string;
+  readonly unavailable: string;
+}
+
+/** Optional, mount-scoped undo capability for the most recently confirmed style batch. */
+export interface PluginNoteStyleBatchPreviewUndo {
+  readonly labels: PluginNoteStyleBatchUndoLabels;
+  isAvailable(): boolean;
+  subscribeAvailability(listener: () => void): () => void;
+  undo(): Promise<PluginNoteStyleBatchUndoResult | null>;
+}
+
 export interface PluginNoteStyleDefaultsPanelHost extends PluginNoteStylePanelHost {
   readonly batchPreview: PluginNoteStyleBatchPreviewHost;
   readonly batchPreviewLabels: PluginNoteStyleBatchPreviewLabels;
   readonly batchPreviewConfirmation?: PluginNoteStyleBatchPreviewConfirmation;
+  readonly batchPreviewUndo?: PluginNoteStyleBatchPreviewUndo;
 }
 
 export interface PluginNoteStyleDefaultsPanelMount {

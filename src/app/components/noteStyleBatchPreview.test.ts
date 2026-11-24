@@ -14,7 +14,9 @@ import {
   confirmNoteStyleBatchPreview,
   createNoteStyleBatchPreviewHost,
   disposeNoteStyleBatchPreviewHost,
+  isLastNoteStyleBatchUndoAvailable,
   readLastNoteStyleBatchReceipt,
+  subscribeLastNoteStyleBatchUndoAvailability,
   undoLastNoteStyleBatch,
 } from './noteStyleBatchPreview';
 
@@ -88,6 +90,29 @@ class FailOnceNoteWriteVault extends ObservedPreviewVault {
     }
     return super.apply(ops);
   }
+}
+
+class ToggleFailingPreviewVault extends ObservedPreviewVault {
+  failWrites = false;
+
+  override async apply(ops: VaultOp[]): Promise<VaultOpResult[]> {
+    if (this.failWrites) {
+      this.operationBatches.push(ops.map((op) => ({ ...op })));
+      throw new Error('simulated storage failure');
+    }
+    return super.apply(ops);
+  }
+}
+
+const noteSource = (title: string) => `---\ntitle: ${title}\n---\n${title} body.\n`;
+
+async function openPreviewSession(vault: MemoryVault): Promise<WorkspaceSession> {
+  let id = 0;
+  const opened = await WorkspaceSession.open(new VaultRepository(vault, () => `availability-${++id}`), {
+    delayMs: 0,
+  });
+  if (!opened.ok) throw new Error(opened.error);
+  return opened.value;
 }
 
 class HeldStyleWriteVault extends ObservedPreviewVault {
@@ -1256,6 +1281,296 @@ describe('existing note-style preview', () => {
       expect(undone?.outcomes.map(({ status }) => status)).toEqual(['restored', 'restored']);
     } finally {
       await session.close();
+    }
+  });
+
+  it('keeps a confirmation fence revocation sticky across its availability notification', async () => {
+    const vault = new ObservedPreviewVault({ 'One.md': noteSource('One') });
+    const session = await openPreviewSession(vault);
+    const runtime = makeRuntime(session);
+    const { host } = createHost(runtime.runtime);
+    let stopAvailability = () => {};
+
+    try {
+      const initial = host.create('overwrite');
+      if (!initial) throw new Error('The initial style preview was not created.');
+      expect(await confirmNoteStyleBatchPreview(initial)).toMatchObject({ confirmedCount: 1 });
+
+      const nextPreferences = {
+        ...getPreferences(),
+        font: OTHER_STYLE.font,
+        width: OTHER_STYLE.width,
+        defaultNoteStyle: OTHER_STYLE,
+      };
+      runtime.setPreferences(nextPreferences);
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The second style preview was not created.');
+      const sourceBefore = vault.text('One.md');
+      const batchesBefore = vault.operationBatches.length;
+      let fenced = false;
+      stopAvailability = subscribeLastNoteStyleBatchUndoAvailability(host, () => {
+        if (fenced) return;
+        fenced = true;
+        session.beginMutationFence()();
+      });
+
+      const result = await confirmNoteStyleBatchPreview(preview);
+
+      expect(fenced).toBe(true);
+      expect(result).toMatchObject({ confirmedCount: 0, refusedCount: 0, unattemptedCount: 1 });
+      expect(vault.operationBatches.slice(batchesBefore).flat().filter(
+        (op) => op.op === 'write' && op.path === 'One.md',
+      )).toEqual([]);
+      expect(vault.text('One.md')).toBe(sourceBefore);
+    } finally {
+      stopAvailability();
+      disposeNoteStyleBatchPreviewHost(host);
+      await session.close();
+    }
+  });
+
+  it('keeps an undo fence revocation sticky across its availability notification', async () => {
+    const vault = new ObservedPreviewVault({ 'One.md': noteSource('One') });
+    const session = await openPreviewSession(vault);
+    const { host } = createHost(makeRuntime(session).runtime);
+    let stopAvailability = () => {};
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      expect(await confirmNoteStyleBatchPreview(preview)).toMatchObject({ confirmedCount: 1 });
+
+      const sourceBefore = vault.text('One.md');
+      const batchesBefore = vault.operationBatches.length;
+      let fenced = false;
+      stopAvailability = subscribeLastNoteStyleBatchUndoAvailability(host, () => {
+        if (fenced) return;
+        fenced = true;
+        session.beginMutationFence()();
+      });
+
+      const result = await undoLastNoteStyleBatch(host);
+
+      expect(fenced).toBe(true);
+      expect(result).toMatchObject({ restoredCount: 0, skippedCount: 0, refusedCount: 0, unattemptedCount: 1 });
+      expect(vault.operationBatches.slice(batchesBefore).flat().filter(
+        (op) => op.op === 'write' && op.path === 'One.md',
+      )).toEqual([]);
+      expect(vault.text('One.md')).toBe(sourceBefore);
+    } finally {
+      stopAvailability();
+      disposeNoteStyleBatchPreviewHost(host);
+      await session.close();
+    }
+  });
+
+  it('keeps a receipt through transient save and fence states, then revokes it on close', async () => {
+    const vault = new ToggleFailingPreviewVault({ 'One.md': noteSource('One') });
+    const session = await openPreviewSession(vault);
+    const runtime = makeRuntime(session);
+    const { host } = createHost(runtime.runtime);
+    const pageId = Object.keys(session.getState().pages).find(
+      (id) => session.pathOf(id) === 'One.md',
+    );
+    if (!pageId) throw new Error('The fixture note did not load.');
+    let stopAvailability = () => {};
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      expect(await confirmNoteStyleBatchPreview(preview)).toMatchObject({ confirmedCount: 1 });
+      const receipt = readLastNoteStyleBatchReceipt(host);
+      expect(receipt?.hasRestorableItems).toBe(true);
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+
+      const snapshots: boolean[] = [];
+      let openedReentrantFence = false;
+      const reentrantFence = { release: null as (() => void) | null };
+      stopAvailability = subscribeLastNoteStyleBatchUndoAvailability(host, () => {
+        const available = isLastNoteStyleBatchUndoAvailable(host);
+        snapshots.push(available);
+        if (available && !openedReentrantFence) {
+          openedReentrantFence = true;
+          reentrantFence.release = session.beginMutationFence();
+        }
+      });
+
+      const releaseFence = session.beginMutationFence();
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(await undoLastNoteStyleBatch(host)).toBeNull();
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+      releaseFence();
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+      reentrantFence.release?.();
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+
+      expect(
+        session.execute({
+          type: 'page.setDoc',
+          id: pageId,
+          doc: {
+            type: 'doc',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Pending body edit.' }] }],
+          },
+          now: 5,
+        }).ok,
+      ).toBe(true);
+      expect(session.saveStatus.state).toBe('pending');
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+
+      vault.failWrites = true;
+      expect(await session.flush()).toBe(false);
+      expect(session.saveStatus.state).toBe('error');
+      expect(session.queue.hasNonQuietPendingChanges()).toBe(true);
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+
+      vault.failWrites = false;
+      expect(await session.flush()).toBe(true);
+      expect(session.saveStatus.state).toBe('saved');
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+
+      expect(session.execute({ type: 'page.markOpened', id: pageId, now: 6 }).ok).toBe(true);
+      expect(session.queue.hasPending()).toBe(true);
+      expect(session.queue.hasNonQuietPendingChanges()).toBe(false);
+      vault.failWrites = true;
+      expect(await session.flush()).toBe(false);
+      expect(session.saveStatus.state).toBe('error');
+      expect(session.queue.hasPending()).toBe(true);
+      expect(session.queue.hasNonQuietPendingChanges()).toBe(false);
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+
+      vault.failWrites = false;
+      expect(await session.flush()).toBe(true);
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+      expect(snapshots).toContain(false);
+      expect(snapshots.at(-1)).toBe(true);
+
+      await session.close();
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(readLastNoteStyleBatchReceipt(host)).toBeNull();
+      expect(snapshots.at(-1)).toBe(false);
+    } finally {
+      stopAvailability();
+      disposeNoteStyleBatchPreviewHost(host);
+      await session.close();
+    }
+  });
+
+  it('blocks and re-enables undo while a body write moves from saving to saved', async () => {
+    const vault = new HeldStyleWriteVault({ 'One.md': noteSource('One') });
+    const session = await openPreviewSession(vault);
+    const runtime = makeRuntime(session);
+    const { host } = createHost(runtime.runtime);
+    const pageId = Object.keys(session.getState().pages).find(
+      (id) => session.pathOf(id) === 'One.md',
+    );
+    if (!pageId) throw new Error('The fixture note did not load.');
+    let stopAvailability = () => {};
+    let releaseHeldWrite: (() => void) | null = null;
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      expect(await confirmNoteStyleBatchPreview(preview)).toMatchObject({ confirmedCount: 1 });
+      const receipt = readLastNoteStyleBatchReceipt(host);
+      expect(receipt?.hasRestorableItems).toBe(true);
+
+      const snapshots: boolean[] = [];
+      stopAvailability = subscribeLastNoteStyleBatchUndoAvailability(host, () => {
+        snapshots.push(isLastNoteStyleBatchUndoAvailable(host));
+      });
+      const held = vault.holdNextWrite('One.md');
+      releaseHeldWrite = held.release;
+      expect(
+        session.execute({
+          type: 'page.setDoc',
+          id: pageId,
+          doc: {
+            type: 'doc',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Held body edit.' }] }],
+          },
+          now: 7,
+        }).ok,
+      ).toBe(true);
+
+      const flushing = session.flush();
+      await held.started;
+      expect(session.saveStatus.state).toBe('saving');
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(await undoLastNoteStyleBatch(host)).toBeNull();
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+      expect(snapshots).toContain(false);
+
+      held.release();
+      releaseHeldWrite = null;
+      expect(await flushing).toBe(true);
+      expect(session.saveStatus.state).toBe('saved');
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+      expect(readLastNoteStyleBatchReceipt(host)).toBe(receipt);
+      expect(snapshots.at(-1)).toBe(true);
+    } finally {
+      releaseHeldWrite?.();
+      stopAvailability();
+      disposeNoteStyleBatchPreviewHost(host);
+      await session.close();
+    }
+  });
+
+  it('rebinds availability listeners to the current session and ignores a closed former session', async () => {
+    const sessionA = await openPreviewSession(new MemoryVault({ 'One.md': noteSource('One') }));
+    const sessionB = await openPreviewSession(new MemoryVault({ 'Two.md': noteSource('Two') }));
+    const runtime = makeRuntime(sessionA);
+    const { host } = createHost(runtime.runtime);
+    const snapshots: boolean[] = [];
+    const observations: Array<[boolean, boolean]> = [];
+    let switchBackToA = true;
+    const stopAvailability = subscribeLastNoteStyleBatchUndoAvailability(host, () => {
+      const available = isLastNoteStyleBatchUndoAvailable(host);
+      const hasReceipt = readLastNoteStyleBatchReceipt(host) !== null;
+      snapshots.push(available);
+      observations.push([available, hasReceipt]);
+      if (!available && !hasReceipt && switchBackToA) {
+        switchBackToA = false;
+        runtime.setSession(sessionA);
+      }
+    });
+
+    try {
+      const first = host.create('overwrite');
+      if (!first) throw new Error('The first session preview was not created.');
+      expect(await confirmNoteStyleBatchPreview(first)).toMatchObject({ confirmedCount: 1 });
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+
+      runtime.setSession(sessionB);
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(readLastNoteStyleBatchReceipt(host)).toBeNull();
+      expect(observations.at(-1)).toEqual([false, false]);
+      runtime.setSession(sessionB);
+      const next = host.create('overwrite');
+      if (!next) throw new Error('The replacement session preview was not created.');
+      expect(await confirmNoteStyleBatchPreview(next)).toMatchObject({ confirmedCount: 1 });
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+      const beforeClosingA = snapshots.length;
+
+      await sessionA.close();
+      expect(snapshots).toHaveLength(beforeClosingA);
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(true);
+      expect(readLastNoteStyleBatchReceipt(host)).not.toBeNull();
+
+      await sessionB.close();
+      expect(isLastNoteStyleBatchUndoAvailable(host)).toBe(false);
+      expect(readLastNoteStyleBatchReceipt(host)).toBeNull();
+      expect(snapshots.at(-1)).toBe(false);
+    } finally {
+      stopAvailability();
+      disposeNoteStyleBatchPreviewHost(host);
+      await sessionA.close();
+      await sessionB.close();
     }
   });
 });

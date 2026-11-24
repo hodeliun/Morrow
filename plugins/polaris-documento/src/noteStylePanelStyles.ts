@@ -81,6 +81,17 @@ export const noteStylePanelStyles = String.raw`
   gap: 6px;
 }
 
+.note-style-batch-undo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.note-style-batch-undo-actions:empty {
+  display: none;
+}
+
 .note-style-batch-result-title {
   margin: 0;
   color: var(--text);
