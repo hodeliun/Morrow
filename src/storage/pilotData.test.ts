@@ -77,9 +77,9 @@ function ready(snapshot: DataApiSnapshot) {
 }
 
 describe('Polaris Dados snapshot and cell API', () => {
-  it('roundtrips an opted-in percentage declaration, raw formulas, and edited input', async () => {
+  it('roundtrips opted-in numeric result declarations, raw formulas, and edited input', async () => {
     const files = fixture();
-    const percentageProperties = `    - id: optional
+    const typedFormulaProperties = `    - id: optional
       name: Optional
       type: number
     - id: completion
@@ -102,6 +102,20 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: percent
       format:
         locale: de-DE
+    - id: decimal-locale-only
+      name: Decimal locale only
+      type: formula
+      formula: 7 / 3
+      formulaResultType: number
+      format:
+        locale: fr-FR
+    - id: decimal-zero-precision
+      name: Decimal zero precision
+      type: formula
+      formula: 7 / 3
+      formulaResultType: number
+      format:
+        precision: 0
     - id: invalid-completion
       name: Invalid completion
       type: formula
@@ -112,7 +126,7 @@ describe('Polaris Dados snapshot and cell API', () => {
       type: formula
       formula: prop("Invalid completion") + 1
 `;
-    files['Inventory.md'] = files['Inventory.md']!.replace('  views:', `${percentageProperties}  views:`);
+    files['Inventory.md'] = files['Inventory.md']!.replace('  views:', `${typedFormulaProperties}  views:`);
     files['Inventory/Widget.md'] = files['Inventory/Widget.md']!.replace('Price: null', 'Price: null\nOptional: null');
 
     const parsed = readPageText(files['Inventory.md']!);
@@ -155,6 +169,8 @@ describe('Polaris Dados snapshot and cell API', () => {
     const completionProperty = initial.schema.properties.find((property) => property.id === 'completion')!;
     const rawCheckProperty = initial.schema.properties.find((property) => property.id === 'completion-raw-check')!;
     const optionalProperty = initial.schema.properties.find((property) => property.id === 'optional-completion')!;
+    const localeOnlyDecimal = initial.schema.properties.find((property) => property.id === 'decimal-locale-only')!;
+    const zeroPrecisionDecimal = initial.schema.properties.find((property) => property.id === 'decimal-zero-precision')!;
     const invalidProperty = initial.schema.properties.find((property) => property.id === 'invalid-completion')!;
     const dependentProperty = initial.schema.properties.find((property) => property.id === 'invalid-dependent')!;
 
@@ -166,6 +182,12 @@ describe('Polaris Dados snapshot and cell API', () => {
     });
     expect(optionalProperty).toMatchObject({ formulaResultType: 'percent', format: { locale: 'de-DE' } });
     expect(optionalProperty.format).not.toHaveProperty('precision');
+    expect(localeOnlyDecimal).toMatchObject({
+      formulaResultType: 'number',
+      format: { locale: 'fr-FR' },
+    });
+    expect(localeOnlyDecimal.format).not.toHaveProperty('precision');
+    expect(zeroPrecisionDecimal).toMatchObject({ formulaResultType: 'number', format: { precision: 0 } });
     expect(widget.properties.optional).toBeNull();
     expect(Object.hasOwn(missingPrice.properties, 'optional')).toBe(false);
 
@@ -226,6 +248,19 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(afterRestart.schema.properties.find((property) => property.id === 'completion')).toMatchObject({
       formulaResultType: 'percent',
       format: { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' },
+    });
+    expect(
+      afterRestart.schema.properties.find((property) => property.id === 'decimal-locale-only'),
+    ).toMatchObject({
+      formulaResultType: 'number',
+      format: { locale: 'fr-FR' },
+    });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'decimal-locale-only')?.format).not.toHaveProperty(
+      'precision',
+    );
+    expect(afterRestart.schema.properties.find((property) => property.id === 'decimal-zero-precision')).toMatchObject({
+      formulaResultType: 'number',
+      format: { precision: 0 },
     });
     expect(reopenedWidget.properties).not.toHaveProperty('completion');
     expect(reopenedWidget.properties).not.toHaveProperty('completion-raw-check');

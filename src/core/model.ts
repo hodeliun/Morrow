@@ -105,9 +105,11 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
   if (raw.type !== 'formula' || Object.hasOwn(raw, 'display') || Object.hasOwn(raw, 'max')) return null;
 
   if (Object.hasOwn(raw, 'formulaResultType')) {
-    // Explicit percentage formulas use the same narrow decimal options as numbers,
+    // Explicit numeric formulas use the same narrow decimal options as numbers,
     // but cannot also declare currency or progress-bar metadata.
-    return raw.formulaResultType === 'percent' ? normalizeNumberFormat(raw.format) : null;
+    return raw.formulaResultType === 'number' || raw.formulaResultType === 'percent'
+      ? normalizeNumberFormat(raw.format)
+      : null;
   }
 
   const format = normalizeFormulaResultNumberFormat(raw.format);
@@ -168,8 +170,8 @@ export interface PropDef {
   format?: FormulaResultNumberFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
-  // an explicit numeric result whose display is a percentage; calculation remains unscaled
-  formulaResultType?: 'percent';
+  // an explicit numeric result whose display format is declared; calculation remains unscaled
+  formulaResultType?: 'number' | 'percent';
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;

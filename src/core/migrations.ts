@@ -170,8 +170,8 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
     ...(raw.type === 'formula' && typeof raw.formula === 'string'
       ? { formula: raw.formula.slice(0, 2000) }
       : {}),
-    ...(raw.type === 'formula' && raw.formulaResultType === 'percent'
-      ? { formulaResultType: 'percent' as const }
+    ...(raw.type === 'formula' && (raw.formulaResultType === 'number' || raw.formulaResultType === 'percent')
+      ? { formulaResultType: raw.formulaResultType }
       : {}),
     ...(raw.display === 'bar' ? { display: 'bar' as const } : {}),
     ...(raw.wrap === true && raw.type === 'text' ? { wrap: true } : {}),

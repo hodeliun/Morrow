@@ -79,6 +79,18 @@ database:
       name: RateRawCheck
       type: formula
       formula: Rate * 4
+    - id: demo-number-result
+      name: Thirds
+      type: formula
+      formula: Quantity / 3
+      formulaResultType: number
+      format:
+        locale: en-US
+        precision: 2
+    - id: demo-number-raw
+      name: ThirdsRawCheck
+      type: formula
+      formula: Thirds * 3
   views:
     - id: inventory-table-v1
       name: Table

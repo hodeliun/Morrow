@@ -440,7 +440,7 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
-  it('renders explicit percentage results and raw dependency and error values in linked views', () => {
+  it('renders typed number and percentage results with raw dependencies in linked views', () => {
     const original = initialDataSnapshot();
     const snapshot: ReadySnapshot = {
       ...original,
@@ -458,6 +458,16 @@ describe('Polaris Dados linked view UI', () => {
             formulaResultType: 'percent',
             format: { locale: 'de-DE', precision: 1 },
           },
+          {
+            id: 'decimal',
+            name: 'Decimal',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'number',
+            format: { locale: 'de-DE' },
+          },
+          { id: 'decimal-times-three', name: 'Decimal times three', type: 'formula', options: [], formula: 'Decimal * 3' },
           { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Percent + 1' },
           {
             id: 'above-100',
@@ -499,6 +509,8 @@ describe('Polaris Dados linked view UI', () => {
         title: 'Percent view',
         columnOrder: [
           'percent',
+          'decimal',
+          'decimal-times-three',
           'dependent',
           'above-100',
           'null-percent',
@@ -523,6 +535,8 @@ describe('Polaris Dados linked view UI', () => {
     expect(rows.map((row) => row.dataset.rowId)).toEqual(['widget', 'gadget']);
     expect(cell(rows[0]!, 'percent').textContent).toBe(localizedPercent(0.5));
     expect(cell(rows[1]!, 'percent').textContent).toBe(localizedPercent(0.125));
+    expect(cell(rows[0]!, 'decimal').textContent).toBe('2,33');
+    expect(cell(rows[0]!, 'decimal-times-three').textContent).toBe('7');
     expect(cell(rows[0]!, 'dependent').textContent).toBe('1.5');
     expect(cell(rows[1]!, 'dependent').textContent).toBe('1.125');
     expect(cell(rows[0]!, 'above-100').textContent).toBe('800%');

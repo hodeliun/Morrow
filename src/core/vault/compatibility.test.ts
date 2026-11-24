@@ -457,7 +457,7 @@ describe('vault representability guard', () => {
     expect(rowText).not.toMatch(/^Fractional total:/m);
   });
 
-  it('roundtrips explicit percentage declarations and their optional formats on opted-in databases', () => {
+  it('roundtrips explicit numeric and percentage declarations with optional formats', () => {
     const databaseSchema = {
       properties: [
         { id: 'quantity', name: 'Quantity', type: 'number' },
@@ -509,6 +509,29 @@ describe('vault representability guard', () => {
           formulaResultType: 'percent',
         },
         {
+          id: 'decimal-locale-only',
+          name: 'Decimal locale only',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+          format: { locale: 'de-DE' },
+        },
+        {
+          id: 'decimal-zero-precision',
+          name: 'Decimal zero precision',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+          format: { precision: 0 },
+        },
+        {
+          id: 'decimal-default-format',
+          name: 'Decimal default format',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'number',
+        },
+        {
           id: 'ratio-raw-check',
           name: 'Ratio raw check',
           type: 'formula',
@@ -542,6 +565,17 @@ describe('vault representability guard', () => {
     expect(loaded.database?.properties.find((property) => property.id === 'ratio-default-format')).not.toHaveProperty(
       'format',
     );
+    expect(loaded.database?.properties.find((property) => property.id === 'decimal-locale-only')).toMatchObject({
+      formulaResultType: 'number',
+      format: { locale: 'de-DE' },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'decimal-locale-only')?.format).not.toHaveProperty(
+      'precision',
+    );
+    expect(loaded.database?.properties.find((property) => property.id === 'decimal-zero-precision')).toMatchObject({
+      formulaResultType: 'number',
+      format: { precision: 0 },
+    });
 
     const editedDatabase = structuredClone(loaded.database!);
     editedDatabase.properties[1]!.format = {
@@ -571,7 +605,7 @@ describe('vault representability guard', () => {
     expect(readPageText(edited).database).toEqual(editedDatabase);
   });
 
-  it('requires the valid Polaris Dados marker and protects percent schemas the host cannot preserve', () => {
+  it('requires the valid Polaris Dados marker and protects typed schemas the host cannot preserve', () => {
     const formula = {
       id: 'ratio',
       name: 'Ratio',
@@ -587,7 +621,7 @@ describe('vault representability guard', () => {
       databaseNote(schema, { marker: { version: 1, provider: 'polaris-dados', future: true } }),
       ...[
         { ...formula, type: 'number' },
-        { ...formula, formulaResultType: 'number' },
+        { ...formula, formulaResultType: 'currency' },
         { ...formula, display: 'bar' },
         { ...formula, max: 50 },
         { ...formula, format: { locale: 'en-US', currency: 'USD' } },
@@ -599,8 +633,29 @@ describe('vault representability guard', () => {
         { ...formula, type: 'percent', formulaResultType: undefined },
       ].map((property) => databaseNote({ properties: [property], views: [] })),
     ];
+    const numberFormula = {
+      id: 'decimal',
+      name: 'Decimal',
+      type: 'formula',
+      formula: 'Quantity / 8',
+      formulaResultType: 'number',
+      format: { locale: 'en-US' },
+    };
+    const numberProtectedSources = [
+      databaseNote({ properties: [numberFormula], views: [] }, { omitMarker: true }),
+      databaseNote(
+        { properties: [numberFormula], views: [] },
+        { marker: { version: 2, provider: 'polaris-dados' } },
+      ),
+      databaseNote({
+        properties: [{ ...numberFormula, format: { locale: 'en-US', currency: 'USD' } }],
+        views: [],
+      }),
+      databaseNote({ properties: [{ ...numberFormula, display: 'bar' }], views: [] }),
+      databaseNote({ properties: [{ ...numberFormula, min: 0 }], views: [] }),
+    ];
 
-    for (const protectedSource of protectedSources) {
+    for (const protectedSource of [...protectedSources, ...numberProtectedSources]) {
       expect(findUnrepresentablePageContent(protectedSource), protectedSource).not.toBeNull();
       expect(hasUnrepresentableDatabaseSchema(protectedSource), protectedSource).toBe(true);
     }
@@ -612,7 +667,12 @@ describe('vault representability guard', () => {
     expect(findUnrepresentablePageContent(unmarkedNativeDatabase)).toBeNull();
     expect(hasUnrepresentableDatabaseSchema(unmarkedNativeDatabase)).toBe(false);
 
-    for (const protectedSource of [protectedSources[0]!, protectedSources[1]!]) {
+    for (const protectedSource of [
+      protectedSources[0]!,
+      protectedSources[1]!,
+      numberProtectedSources[0]!,
+      numberProtectedSources[1]!,
+    ]) {
       const loaded = loadVault(
         {
           files: [{ path: 'Inventory.md', text: protectedSource, mtime: 1, birthtime: 1 }],
@@ -633,7 +693,7 @@ describe('vault representability guard', () => {
     }
   });
 
-  it('rejects ambiguous frontmatter only when a database declares a typed percentage formula', () => {
+  it('rejects ambiguous frontmatter only when a database declares a typed formula result', () => {
     const validYaml = [
       'kind: database',
       'polarisDados:',
@@ -704,6 +764,251 @@ describe('vault representability guard', () => {
     expect(hasUnrepresentableDatabaseSchema(legacySource)).toBe(false);
   });
 
+  it('finds typed declarations hidden by repeated database or properties mappings in either order', () => {
+    const prefix = [
+      'kind: database',
+      'polarisDados:',
+      '  version: 1',
+      '  provider: polaris-dados',
+    ].join('\n');
+    const property = (resultType: 'number' | 'percent', includeMarker = true) =>
+      [
+        '    - id: ratio',
+        '      name: Ratio',
+        '      type: formula',
+        '      formula: Quantity / 8',
+        ...(includeMarker ? [`      formulaResultType: ${resultType}`] : []),
+      ].join('\n');
+    const database = (properties: string) => `database:\n  properties:\n${properties}\n  views: []\n`;
+    const legacyProperties = property('number', false);
+    const typedOrders = (resultType: 'number' | 'percent') => [
+      `${database(property(resultType))}${database(legacyProperties)}`,
+      `${database(legacyProperties)}${database(property(resultType))}`,
+      `database:\n  properties:\n${property(resultType)}\n  properties:\n${legacyProperties}\n  views: []\n`,
+      `database:\n  properties:\n${legacyProperties}\n  properties:\n${property(resultType)}\n  views: []\n`,
+    ];
+
+    for (const resultType of ['number', 'percent'] as const) {
+      for (const yaml of typedOrders(resultType)) {
+        const source = `---\n${prefix}\n${yaml}---\nOriginal database body\n`;
+        expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
+        expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+      }
+    }
+  });
+
+  it('resolves YAML aliases in hidden database, properties, and typed scalar declarations', () => {
+    const source = [
+      '---',
+      'kind: database',
+      'polarisDados:',
+      '  version: 1',
+      '  provider: polaris-dados',
+      'hiddenDatabase: &typedDatabase',
+      '  properties: &typedProperties',
+      '    - id: formula-source',
+      '      name: Formula source',
+      '      type: &formulaType formula',
+      '      formula: Quantity / 8',
+      '    - id: ratio',
+      '      name: Ratio',
+      '      type: *formulaType',
+      '      formula: Quantity / 8',
+      '      formulaResultType: &numberType number',
+      '    - id: ratio-alias',
+      '      name: Ratio alias',
+      '      type: *formulaType',
+      '      formula: Quantity / 8',
+      '      formulaResultType: *numberType',
+      '  views: []',
+      'database: *typedDatabase',
+      'database:',
+      '  properties: *typedProperties',
+      '  views: []',
+      'database:',
+      '  properties:',
+      '    - id: legacy',
+      '      name: Legacy',
+      '      type: formula',
+      '      formula: Quantity / 8',
+      '  views: []',
+      '---',
+      'Original database body',
+      '',
+    ].join('\n');
+
+    expect(findUnrepresentablePageContent(source)).toMatch(/ambiguous yaml frontmatter/i);
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(true);
+  });
+
+  it('follows YAML merge keys and rejects resolved key collisions only for typed formulas', () => {
+    const prefix = [
+      '---',
+      'kind: database',
+      'polarisDados: { version: 1, provider: polaris-dados }',
+      'defaults: &result {type: formula, formulaResultType: number}',
+    ].join('\n') + '\n';
+    const footer = '---\nOriginal database body\n';
+    const typed = '{!!merge <<: *result, id: ratio, name: Ratio, formula: "7 / 3"}';
+    const legacy = '{id: ratio, name: Ratio, type: formula, formula: "7 / 3"}';
+    const database = (property: string) => `database: {properties: [${property}]}\n`;
+    const assertLocked = (source: string) => {
+      expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
+      expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+      let nextId = 0;
+      const loaded = loadVault(
+        {
+          files: [
+            { path: 'Inventory.md', text: source, mtime: 1, birthtime: 1 },
+            { path: 'Inventory/Child.md', text: 'Child', mtime: 1, birthtime: 1 },
+          ],
+          folders: [],
+          others: [],
+          registry: null,
+          recent: null,
+        },
+        () => `guard-fixture-${++nextId}`,
+        1,
+      );
+      const inventoryId = loaded.pages.find((page) => page.kind === 'database')!.id;
+      expect(loaded.protectedPages.get(inventoryId)).toMatch(/ambiguous yaml frontmatter/i);
+      expect(loaded.texts.get(inventoryId)).toBe(source);
+      expect(loaded.docs[inventoryId]).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: source } }],
+      });
+    };
+    const assertAllowed = (source: string) => {
+      expect(findUnrepresentablePageContent(source), source).toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(source), source).toBe(false);
+    };
+
+    const validMerge = prefix + database(typed) + footer;
+    assertAllowed(validMerge);
+    expect(readPageText(validMerge).database?.properties[0]).toMatchObject({
+      type: 'formula',
+      formulaResultType: 'number',
+    });
+    assertLocked(prefix + database(typed) + database(legacy) + footer);
+
+    const untaggedMerge = '{<<: *result, id: ratio, name: Ratio, type: formula, formula: "7 / 3"}';
+    assertAllowed(prefix + database(untaggedMerge) + database(legacy) + footer);
+
+    const databaseKey = ['rootKey: &databaseKey database', '? *databaseKey'].join('\n');
+    const aliasedDatabase = `${databaseKey}\n: {properties: [${typed}]}\n`;
+    assertAllowed(prefix + aliasedDatabase + footer);
+    assertLocked(prefix + aliasedDatabase + database(legacy) + footer);
+    const literalThenAliasLegacy = `${database(typed)}${databaseKey}\n: {properties: [${legacy}]}\n`;
+    assertLocked(prefix + literalThenAliasLegacy + footer);
+
+    const markerAlias = [
+      'markerKey: &markerKey polarisDados',
+      '? *markerKey',
+      ': {version: 2, provider: unsupported}',
+      'polarisDados: {version: 1, provider: polaris-dados}',
+    ].join('\n');
+    assertLocked(
+      `---\nkind: database\n${markerAlias}\ndefaults: &result {type: formula, formulaResultType: number}\n${database(typed)}${footer}`,
+    );
+    assertAllowed(`---\nkind: database\n${markerAlias}\n${database(legacy)}${footer}`);
+
+    const aliasedResultKey = [
+      'resultKey: &resultKey formulaResultType',
+      'database:',
+      '  properties:',
+      '    - id: ratio',
+      '      name: Ratio',
+      '      type: formula',
+      '      formula: 7 / 3',
+      '      ? *resultKey',
+      '      : currency',
+      '      formulaResultType: number',
+    ].join('\n');
+    assertLocked(`---\nkind: database\npolarisDados: { version: 1, provider: polaris-dados }\n${aliasedResultKey}\n${footer}`);
+  });
+
+  it('matches scalar key projections for direct maps and real merge sources', () => {
+    const prefix = [
+      '---',
+      'kind: database',
+      'polarisDados: { version: 1, provider: polaris-dados }',
+      'defaults: &result {type: formula, formulaResultType: number}',
+    ].join('\n') + '\n';
+    const footer = '---\nOriginal database body\n';
+    const typed = '{!!merge <<: *result, id: ratio, name: Ratio, formula: "7 / 3"}';
+    const legacy = '{id: ratio, name: Ratio, type: formula, formula: "7 / 3"}';
+    const database = (property: string) => `database: {properties: [${property}]}\n`;
+    const assertAllowed = (source: string) => {
+      expect(findUnrepresentablePageContent(source), source).toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(source), source).toBe(false);
+    };
+    const assertLocked = (source: string) => {
+      expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
+      expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+    };
+
+    for (const extra of [
+      'info: {1: old, "1": new}\n',
+      'info: {true: old, "true": new}\n',
+      'info: {null: old, "": new}\n',
+    ]) {
+      assertLocked(prefix + extra + database(typed) + footer);
+    }
+    assertAllowed(prefix + 'info: {1: old, "1": new}\n' + database(legacy) + footer);
+
+    const keyAlias = [
+      'stash:',
+      '  ? &key !!merge <<',
+      '  : {junk: unrelated}',
+      'result: &res {type: formula, formulaResultType: number}',
+      'database:',
+      '  properties:',
+      '    - ? *key',
+      '      : *res',
+      '      id: ratio',
+      '      name: Ratio',
+      '      type: formula',
+      '      formula: "7 / 3"',
+    ].join('\n') + '\n';
+    assertAllowed(`---\nkind: database\npolarisDados: { version: 1, provider: polaris-dados }\n${keyAlias}${database(legacy)}${footer}`);
+    const typedFromRes = '{!!merge <<: *res, id: ratio, name: Ratio, formula: "7 / 3"}';
+    const directSymbolCollision = `---\nkind: database\npolarisDados: { version: 1, provider: polaris-dados }\n${keyAlias}info:\n  ? *key\n  : old\n  "Symbol(<<)": new\n${database(typedFromRes)}${footer}`;
+    assertLocked(directSymbolCollision);
+
+    assertAllowed(prefix + 'info: {!!merge <<: {null: old, "": new}}\n' + database(typed) + footer);
+    assertLocked(prefix + 'info: {!!merge <<: {null: old, "null": new}}\n' + database(typed) + footer);
+    const mergeSourceSymbolKey = [
+      '---',
+      'kind: database',
+      'polarisDados: { version: 1, provider: polaris-dados }',
+      'defaults: &result {type: formula, formulaResultType: number}',
+      'stash:',
+      '  ? &key !!merge <<',
+      '  : {junk: unrelated}',
+      'info:',
+      '  !!merge <<:',
+      '    ? *key',
+      '    : old',
+      '    "Symbol(<<)": new',
+      database(typed).trimEnd(),
+      footer.trimEnd(),
+    ].join('\n');
+    assertAllowed(mergeSourceSymbolKey);
+
+    const secondResult = 'alternate: &alternate {type: formula, formulaResultType: percent}\n';
+    const sequenceMerge = (override: boolean) =>
+      `{!!merge <<: [*result, *alternate], id: ratio, name: Ratio, formula: "7 / 3"${
+        override ? ', type: formula, formulaResultType: percent' : ''
+      }}`;
+    const earlierMergeWins = prefix + secondResult + database(sequenceMerge(false)) + footer;
+    assertAllowed(earlierMergeWins);
+    expect(readPageText(earlierMergeWins).database?.properties[0]?.formulaResultType).toBe('number');
+
+    const directOverrideWins = prefix + secondResult + database(sequenceMerge(true)) + footer;
+    assertAllowed(directOverrideWins);
+    expect(readPageText(directOverrideWins).database?.properties[0]?.formulaResultType).toBe('percent');
+  });
+
   it('protects formula formats with incompatible result settings and retains the exact source bytes', () => {
     const formulaProperty = (extra: Record<string, unknown>) => ({
       id: 'total',
@@ -724,8 +1029,12 @@ describe('vault representability guard', () => {
       formulaProperty({ format: { precision: 2, unexpected: 'keep me' } }),
       formulaProperty({ format: { precision: 2 }, display: 'bar' }),
       formulaProperty({ format: { precision: 2 }, max: 50 }),
-      formulaProperty({ format: { precision: 2 }, formulaResultType: 'number' }),
+      formulaProperty({ format: { precision: 2 }, formulaResultType: 'text' }),
       formulaProperty({ format: { locale: 'not a locale', precision: 2 } }),
+      formulaProperty({ formulaResultType: 'number', format: { currency: 'USD' } }),
+      formulaProperty({ formulaResultType: 'number', display: 'bar' }),
+      formulaProperty({ formulaResultType: 'number', max: 50 }),
+      formulaProperty({ formulaResultType: 'number', step: 1 }),
     ];
 
     for (const property of protectedProperties) {

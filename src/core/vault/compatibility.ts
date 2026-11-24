@@ -1,5 +1,6 @@
 // Detect Markdown data the upstream model cannot represent before pageFile normalizes it.
 import MarkdownIt from 'markdown-it';
+import { isAlias, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 import { isRecord, validateDoc, walk } from '../doc';
 import {
   inspectBlockBackgroundMarkers,
@@ -130,8 +131,8 @@ export function findUnrepresentablePageContent(
   if (data) {
     const metadataIssue = pageMetadataIssue(data);
     if (metadataIssue) return metadataIssue;
-    const percentageFrontmatterIssue = typedPercentageFrontmatterIssue(split.yaml, data);
-    if (percentageFrontmatterIssue) return percentageFrontmatterIssue;
+    const typedFormulaFrontmatterIssue = typedNumericFormulaFrontmatterIssue(split.yaml, data);
+    if (typedFormulaFrontmatterIssue) return typedFormulaFrontmatterIssue;
     const extraIssue = unknownFrontmatterIssue(data);
     if (extraIssue) return extraIssue;
   }
@@ -144,19 +145,187 @@ export function hasUnrepresentableDatabaseSchema(text: string): boolean {
   const split = splitFrontmatter(text);
   const data = split.data;
   if (!data || data.kind !== 'database') return false;
-  if (typedPercentageFrontmatterIssue(split.yaml, data)) return true;
+  if (typedNumericFormulaFrontmatterIssue(split.yaml, data)) return true;
   return databaseMetadataIssue(data) !== null;
 }
 
-function typedPercentageFrontmatterIssue(yaml: string, data: Record<string, unknown>): string | null {
+function typedNumericFormulaFrontmatterIssue(yaml: string, data: Record<string, unknown>): string | null {
+  // A conflicting kind/database pair is already rejected by databaseMetadataIssue above.
+  if (data.kind !== 'database') return null;
   const database = data.database;
-  if (!isRecord(database) || !Array.isArray(database.properties)) return null;
-  const declaresPercent = database.properties.some(
-    (property) =>
-      isRecord(property) && property.type === 'formula' && property.formulaResultType === 'percent',
+  const effectiveDeclaration =
+    isRecord(database) &&
+    Array.isArray(database.properties) &&
+    database.properties.some(isTypedNumericFormulaProperty);
+  const yamlInspection = inspectTypedNumericFormulaYaml(yaml, effectiveDeclaration);
+  const declaresTypedFormula = effectiveDeclaration || yamlInspection.declaresTypedFormula;
+  if (
+    !declaresTypedFormula ||
+    (!yamlInspection.hasResolvedKeyCollision && isUnambiguousFrontmatter(yaml, data))
+  ) {
+    return null;
+  }
+  return 'The Polaris Dados typed formula result schema has ambiguous YAML frontmatter.';
+}
+
+function isTypedNumericFormulaProperty(property: unknown): boolean {
+  return (
+    isRecord(property) &&
+    property.type === 'formula' &&
+    (property.formulaResultType === 'number' || property.formulaResultType === 'percent')
   );
-  if (!declaresPercent || isUnambiguousFrontmatter(yaml, data)) return null;
-  return 'The Polaris Dados percentage schema has ambiguous YAML frontmatter.';
+}
+
+interface TypedFormulaYamlInspection {
+  readonly declaresTypedFormula: boolean;
+  readonly hasResolvedKeyCollision: boolean;
+}
+
+/** Checks every YAML mapping occurrence so an overwritten database/property cannot hide a typed declaration. */
+function inspectTypedNumericFormulaYaml(yaml: string, effectiveDeclaration: boolean): TypedFormulaYamlInspection {
+  let document: ReturnType<typeof parseDocument>;
+  try {
+    document = parseDocument(yaml, { uniqueKeys: false });
+  } catch {
+    return { declaresTypedFormula: false, hasResolvedKeyCollision: false };
+  }
+  if (document.errors.length > 0) return { declaresTypedFormula: false, hasResolvedKeyCollision: false };
+
+  let declaresTypedFormula = false;
+  for (const database of yamlValuesForKey(document.contents, 'database', document)) {
+    for (const properties of yamlValuesForKey(database, 'properties', document)) {
+      if (!isSeq(properties)) continue;
+      for (const property of properties.items) {
+        const hasFormulaType = yamlValuesForKey(property, 'type', document).some(
+          (value) => isYamlString(value, 'formula', document),
+        );
+        if (!hasFormulaType) continue;
+        const hasTypedResult = yamlValuesForKey(property, 'formulaResultType', document).some(
+          (value) => isYamlString(value, 'number', document) || isYamlString(value, 'percent', document),
+        );
+        if (hasTypedResult) declaresTypedFormula = true;
+      }
+    }
+  }
+  return {
+    declaresTypedFormula,
+    hasResolvedKeyCollision:
+      (effectiveDeclaration || declaresTypedFormula) && hasResolvedYamlKeyCollision(document.contents, document),
+  };
+}
+
+function yamlValuesForKey(
+  node: unknown,
+  key: string,
+  document: ReturnType<typeof parseDocument>,
+): unknown[] {
+  const pending = [node];
+  const visited = new WeakSet<object>();
+  while (pending.length > 0) {
+    const resolved = resolveYamlAlias(pending.pop(), document);
+    if (!isMap(resolved) || visited.has(resolved)) continue;
+    visited.add(resolved);
+    const direct: unknown[] = [];
+    const mergeSources: unknown[] = [];
+    for (const pair of resolved.items) {
+      if (isYamlString(pair.key, key, document)) direct.push(resolveYamlAlias(pair.value, document));
+      else if (isYamlMergeKey(pair.key)) mergeSources.push(pair.value);
+    }
+    if (direct.length > 0) return direct;
+
+    // YAML merges supply only keys absent from the destination; earlier sequence maps win.
+    for (let sourceIndex = mergeSources.length - 1; sourceIndex >= 0; sourceIndex -= 1) {
+      const mergeSource = mergeSources[sourceIndex];
+      const source = resolveYamlAlias(mergeSource, document);
+      if (isSeq(source)) {
+        for (let itemIndex = source.items.length - 1; itemIndex >= 0; itemIndex -= 1) {
+          pending.push(source.items[itemIndex]);
+        }
+      } else {
+        pending.push(source);
+      }
+    }
+  }
+  return [];
+}
+
+function isYamlString(node: unknown, value: string, document: ReturnType<typeof parseDocument>): boolean {
+  const resolved = resolveYamlAlias(node, document);
+  return isScalar(resolved) && typeof resolved.value === 'string' && resolved.value === value;
+}
+
+function isYamlMergeKey(node: unknown): boolean {
+  return isScalar(node) && node.tag === 'tag:yaml.org,2002:merge';
+}
+
+/** Detects scalar/alias key collisions that the parser's unique-key check does not report. */
+function hasResolvedYamlKeyCollision(
+  node: unknown,
+  document: ReturnType<typeof parseDocument>,
+): boolean {
+  type Context = 'direct' | 'merge';
+  const pending: { node: unknown; context: Context }[] = [{ node, context: 'direct' }];
+  const visitedDirect = new WeakSet<object>();
+  const visitedMerge = new WeakSet<object>();
+  while (pending.length > 0) {
+    const visit = pending.pop()!;
+    const resolved = resolveYamlAlias(visit.node, document);
+    if (!isMap(resolved) && !isSeq(resolved)) continue;
+    const visited = visit.context === 'merge' ? visitedMerge : visitedDirect;
+    if (visited.has(resolved)) continue;
+    visited.add(resolved);
+
+    if (isSeq(resolved)) {
+      for (const item of resolved.items) pending.push({ node: item, context: visit.context });
+      continue;
+    }
+
+    const keys = new Set<string | symbol>();
+    for (const pair of resolved.items) {
+      if (isYamlMergeKey(pair.key)) {
+        pending.push({ node: pair.value, context: 'merge' });
+        continue;
+      }
+      const key = resolvedYamlScalarKey(pair.key, document, visit.context);
+      if (key !== undefined) {
+        if (keys.has(key)) return true;
+        keys.add(key);
+      }
+      pending.push({ node: pair.value, context: 'direct' });
+    }
+  }
+  return false;
+}
+
+function resolvedYamlScalarKey(
+  node: unknown,
+  document: ReturnType<typeof parseDocument>,
+  context: 'direct' | 'merge',
+): string | symbol | undefined {
+  const resolved = resolveYamlAlias(node, document);
+  if (!isScalar(resolved)) return undefined;
+  const value = resolved.value;
+  if (value === null) return context === 'merge' ? 'null' : '';
+  if (typeof value === 'symbol') return context === 'merge' ? value : String(value);
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'undefined'
+  ) {
+    return String(value);
+  }
+  return undefined;
+}
+
+function resolveYamlAlias(node: unknown, document: ReturnType<typeof parseDocument>): unknown {
+  if (!isAlias(node)) return node;
+  try {
+    return node.resolve(document);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The readers for these files keep only the fields listed below. */
@@ -382,7 +551,7 @@ function propertyIssue(raw: unknown, polarisDadosOptIn: boolean): string | null 
     Object.hasOwn(raw, 'formulaResultType') &&
     (!polarisDadosOptIn ||
       raw.type !== 'formula' ||
-      raw.formulaResultType !== 'percent' ||
+      (raw.formulaResultType !== 'number' && raw.formulaResultType !== 'percent') ||
       Object.hasOwn(raw, 'display') ||
       Object.hasOwn(raw, 'max'))
   ) {

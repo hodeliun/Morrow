@@ -128,6 +128,46 @@ describe('Polaris Dados formula row context', () => {
     });
   });
 
+  it('validates explicit number results before caching while dependent formulas use the raw number', () => {
+    const properties = [
+      scalar('amount', 'Amount'),
+      checkbox('flag', 'Flag'),
+      scalar('label', 'Label', 'text'),
+      scalar('optional', 'Optional'),
+      { ...formula('decimal', 'Decimal', '7 / 3'), formulaResultType: 'number' },
+      formula('raw-check', 'Raw check', 'Decimal * 3'),
+      { ...formula('null', 'Null number', 'thisRow.Optional'), formulaResultType: 'number' },
+      { ...formula('boolean', 'Boolean number', 'thisRow.Flag'), formulaResultType: 'number' },
+      { ...formula('text', 'Text number', 'thisRow.Label'), formulaResultType: 'number' },
+      { ...formula('list', 'List number', 'List(1, 2)'), formulaResultType: 'number' },
+      { ...formula('division-zero', 'Division zero number', '1 / 0'), formulaResultType: 'number' },
+      formula('dependent', 'Dependent', 'prop("Boolean number") + 1'),
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { amount: 0, flag: false, label: 'done', optional: null };
+
+    expect(evaluate(properties, rowProperties, 'decimal')).toEqual({ kind: 'number', value: 7 / 3 });
+    expect(evaluate(properties, rowProperties, 'raw-check')).toEqual({ kind: 'number', value: 7 });
+    expect(evaluate(properties, rowProperties, 'null')).toEqual({ kind: 'null' });
+    for (const [formulaId, name] of [
+      ['boolean', 'Boolean number'],
+      ['text', 'Text number'],
+      ['list', 'List number'],
+    ] as const) {
+      expect(evaluate(properties, rowProperties, formulaId)).toEqual({
+        kind: 'error',
+        message: `Formula “${name}” declared as number must return a finite number or null.`,
+      });
+    }
+    expect(evaluate(properties, rowProperties, 'division-zero')).toEqual({
+      kind: 'error',
+      message: 'Division by zero is not allowed',
+    });
+    expect(evaluate(properties, rowProperties, 'dependent')).toEqual({
+      kind: 'error',
+      message: 'Formula “Boolean number” declared as number must return a finite number or null.',
+    });
+  });
+
   it('resolves an explicit property named thisRow and keeps the bare identifier contextual', () => {
     const properties = [
       scalar('legacy', 'thisRow', 'text'),

@@ -933,7 +933,7 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
-  it('formats explicit percent results while dependencies and edits keep raw formula values', async () => {
+  it('formats explicit number and percent results while dependencies keep raw formula values', async () => {
     const properties: readonly TestProperty[] = [
       ...DEFAULT_PROPERTIES.slice(0, 3),
       { id: 'optional', name: 'Optional', type: 'number', options: [] },
@@ -944,6 +944,64 @@ describe('Polaris Dados provider module', () => {
         options: [],
         formula: 'Quantity / 8',
         formulaResultType: 'percent',
+      },
+      {
+        id: 'decimal',
+        name: 'Decimal result',
+        type: 'formula',
+        options: [],
+        formula: '7 / 3',
+        formulaResultType: 'number',
+      },
+      {
+        id: 'decimal-locale',
+        name: 'Decimal locale',
+        type: 'formula',
+        options: [],
+        formula: '7 / 3',
+        formulaResultType: 'number',
+        format: { locale: 'de-DE' },
+      },
+      {
+        id: 'decimal-zero',
+        name: 'Decimal zero precision',
+        type: 'formula',
+        options: [],
+        formula: '7 / 3',
+        formulaResultType: 'number',
+        format: { precision: 0 },
+      },
+      {
+        id: 'decimal-negative',
+        name: 'Decimal negative',
+        type: 'formula',
+        options: [],
+        formula: '-7 / 3',
+        formulaResultType: 'number',
+        format: { locale: 'de-DE', precision: 2, negativeFormat: 'parentheses' },
+      },
+      {
+        id: 'decimal-null',
+        name: 'Decimal null',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow.Optional',
+        formulaResultType: 'number',
+      },
+      {
+        id: 'decimal-times-three',
+        name: 'Decimal times three',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Decimal result") * 3',
+      },
+      {
+        id: 'invalid-number',
+        name: 'Invalid number',
+        type: 'formula',
+        options: [],
+        formula: 'false',
+        formulaResultType: 'number',
       },
       { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Percent + 1' },
       {
@@ -1007,6 +1065,17 @@ describe('Polaris Dados provider module', () => {
     );
     expect(cell('percent').textContent).toBe('37.5%');
     expect(cell('dependent').querySelector('[data-value-kind="number"]')?.textContent).toBe('1.375');
+    expect(cell('decimal').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, { maximumFractionDigits: 2 }).format(7 / 3),
+    );
+    expect(cell('decimal-locale').textContent).toBe('2,33');
+    expect(cell('decimal-zero').textContent).toBe('2');
+    expect(cell('decimal-negative').textContent).toBe('(2,33)');
+    expect(cell('decimal-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell('decimal-times-three').textContent).toBe('7');
+    expect(cell('invalid-number').querySelector('code')?.textContent).toBe(
+      'Formula “Invalid number” declared as number must return a finite number or null.',
+    );
     expect(cell('zero-percent').textContent).toBe('0%');
     expect(cell('negative-percent').textContent).toBe('(37.5%)');
     expect(cell('above-100').textContent).toBe('600%');

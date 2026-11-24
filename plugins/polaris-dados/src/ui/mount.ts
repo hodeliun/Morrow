@@ -2564,6 +2564,10 @@ export function mountPolarisDados(
   };
 
   const formatNumberCell = (value: number, property: ProviderProperty): string => {
+    if (property.type === 'formula' && property.formulaResultType === 'number') {
+      const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+      return formatFormulaNumber(value, property.format ?? {}, 'decimal', defaultLocale, 2);
+    }
     if (property.type === 'formula' && property.formulaResultType === 'percent') {
       const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
       return formatFormulaNumber(value, property.format ?? {}, 'percent', defaultLocale, 2);

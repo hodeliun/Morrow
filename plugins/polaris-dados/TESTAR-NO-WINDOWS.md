@@ -181,6 +181,10 @@ Abra `Seven equal columns` em `PilotState\DemoVault`. A terceira coluna está va
 
 Abra `Weighted columns`. Em uma janela larga, compare a quinta coluna, com peso 20, e a quarta, com peso 10. Edite o texto da sétima e reabra a nota para conferir. Com a janela estreita, as colunas aparecem empilhadas.
 
+### Conferir o resultado numérico declarado em uma fórmula
+
+Em Inventory, Thirds divide Quantity por 3 e exibe duas casas. Com Quantity em **2**, confira **0.67** e a fórmula dependente ThirdsRawCheck em **2**. Altere Quantity para **3** e confira **1.00** e **3** na origem e na primeira tabela de Views.
+
 ### Navegar na grade sem o mouse
 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.
