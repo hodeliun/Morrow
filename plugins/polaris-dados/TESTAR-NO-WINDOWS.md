@@ -129,7 +129,7 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 
 ### Divisórias dos painéis
 
-No layout **Dois por dois**, arraste a divisória central e depois uma divisória horizontal. Pressione **Esc** durante outro arraste para cancelar. Com a divisória em foco, use as setas no eixo da divisão, **Home** para 20% e **End** para 80%. Com **Onde parei**, feche e reabra para conferir as proporções gravadas.
+No layout **Dois por dois**, arraste a divisória central e depois uma divisória horizontal. Pressione **Esc** durante outro arraste para cancelar. Com a divisória em foco, use as setas no eixo da divisão, **Home** para 20% e **End** para 80%. Com **Onde parei**, feche e reabra para conferir as proporções gravadas. Se a mesma nota estiver em dois painéis e tiver uma posição de leitura salva, o aplicativo pode ativar o primeiro ao reabrir. [Correção #304](https://github.com/hodeliun/Morrow/issues/304).
 
 ## Catálogo na barra lateral
 
