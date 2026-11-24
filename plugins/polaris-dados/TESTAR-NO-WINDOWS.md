@@ -177,6 +177,10 @@ Em Inventory, com Quantity em **2**, Rate mostra **25.0%** e RateRawCheck mostra
 
 Abra `Seven equal columns` em `PilotState\DemoVault`. A terceira coluna está vazia. Acrescente uma palavra na sétima coluna, mude de nota e reabra para confirmar a edição. Este fluxo está na base do Morrow e funciona com Polaris Documento desativado.
 
+### Criar seis ou sete colunas
+
+Em uma nota de teste, coloque o cursor em um parágrafo vazio no corpo da página e digite `/layout`. Em português, também é possível buscar `/colunas`. Escolha **6 colunas** ou **7 colunas** com as setas e pressione **Enter**. Use **Ctrl+Z** para recuperar o comando, e **Ctrl+Shift+Z** para refazer a inserção. Digite na primeira coluna, feche a nota e reabra para confirmar a gravação.
+
 ### Conferir as proporções gravadas de uma nota
 
 Abra `Weighted columns`. Em uma janela larga, compare a quinta coluna, com peso 20, e a quarta, com peso 10. Edite o texto da sétima e reabra a nota para conferir. Com a janela estreita, as colunas aparecem empilhadas.
@@ -184,6 +188,10 @@ Abra `Weighted columns`. Em uma janela larga, compare a quinta coluna, com peso 
 ### Conferir o resultado numérico declarado em uma fórmula
 
 Em Inventory, Thirds divide Quantity por 3 e exibe duas casas. Com Quantity em **2**, confira **0.67** e a fórmula dependente ThirdsRawCheck em **2**. Altere Quantity para **3** e confira **1.00** e **3** na origem e na primeira tabela de Views.
+
+### Conferir a moeda declarada como tipo de uma fórmula
+
+Em Inventory, CurrencyTyped usa BRL e duas casas fixas. Mude Quantity de **2** para **3**. CurrencyTyped passa de **(R$2.47)** para **(R$3.70)**. CurrencyTypedRawCheck vai de **42** para **17**, comparando o valor original. CurrencyTypedJPY mantém duas casas, de **¥2.00** para **¥3.00**. Confira também na primeira tabela de Views.
 
 ### Navegar na grade sem o mouse
 

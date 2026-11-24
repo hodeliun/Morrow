@@ -1,6 +1,8 @@
 import { Extension } from '@tiptap/core';
 import type { Editor, Range } from '@tiptap/core';
 import { PluginKey } from '@tiptap/pm/state';
+import type { EditorState } from '@tiptap/pm/state';
+import { closeHistory } from '@tiptap/pm/history';
 import Suggestion from '@tiptap/suggestion';
 import {
   CalendarDays,
@@ -84,6 +86,80 @@ const SAMPLE_DIAGRAM = `flowchart LR
   Review --> Done`;
 
 const chain = (editor: Editor, range: Range) => editor.chain().focus().deleteRange(range);
+
+const EQUAL_COLUMN_COMMANDS = new Set(['columns6', 'columns7']);
+
+function isWholeRootParagraphSlashRange(
+  editor: Editor,
+  range: Range,
+  state: EditorState = editor.state,
+): boolean {
+  if (!editor.isEditable || !Number.isInteger(range.from) || !Number.isInteger(range.to)) return false;
+  if (range.from < 0 || range.to <= range.from || range.to > state.doc.content.size) return false;
+
+  const { selection, doc } = state;
+  if (!selection.empty || selection.from !== range.to) return false;
+
+  const $from = doc.resolve(range.from);
+  const $to = doc.resolve(range.to);
+  if ($from.depth !== 1 || $to.depth !== 1 || $from.parent !== $to.parent) return false;
+
+  const paragraph = $from.parent;
+  let containsTextOnly = paragraph.childCount > 0;
+  paragraph.forEach((child) => {
+    if (!child.isText) containsTextOnly = false;
+  });
+  const query = doc.textBetween(range.from, range.to, '\uFFFC', '\uFFFC');
+  const hasNonDefaultParagraphAttributes = Object.entries(paragraph.attrs).some(([name, value]) => {
+    const defaultValue = paragraph.type.spec.attrs?.[name]?.default;
+    return value !== defaultValue;
+  });
+  return (
+    paragraph.type.name === 'paragraph' &&
+    containsTextOnly &&
+    !hasNonDefaultParagraphAttributes &&
+    range.from === $from.start() &&
+    range.to === $from.end() &&
+    paragraph.textContent === query &&
+    query.startsWith('/')
+  );
+}
+
+function isCurrentEqualWidthCommand(editor: Editor, range: Range, count: 6 | 7): boolean {
+  const state = editor.state;
+  const suggestion = SLASH_COMMAND_PLUGIN_KEY.getState(state) as
+    | { active: boolean; query: string | null; range: Range }
+    | undefined;
+  const currentRange = suggestion?.range;
+  if (
+    !suggestion?.active ||
+    !currentRange ||
+    suggestion.query === null ||
+    currentRange.from !== range.from ||
+    currentRange.to !== range.to ||
+    !isWholeRootParagraphSlashRange(editor, currentRange, state)
+  ) {
+    return false;
+  }
+
+  const query = state.doc.textBetween(currentRange.from + 1, currentRange.to, '\uFFFC', '\uFFFC');
+  return (
+    suggestion.query === query &&
+    slashItems(query, editor, currentRange, state).some((item) => item.id === `columns${count}`)
+  );
+}
+
+function runEqualWidthColumns(editor: Editor, range: Range, count: 6 | 7): void {
+  // An old menu item may still be clickable during a React update; re-run the live filter at dispatch time.
+  if (!isCurrentEqualWidthCommand(editor, range, count)) return;
+  chain(editor, range)
+    .setColumns(count)
+    .command(({ tr }) => {
+      closeHistory(tr);
+      return true;
+    })
+    .run();
+}
 
 // in the first line of a list item a block command changes only that item, the rest of the list stays.
 // asking a list item for the list it is already in is left to the usual toggle, which takes it out
@@ -391,6 +467,22 @@ export const BLOCK_ITEMS: BlockItem[] = [
     run: (e, r) => chain(e, r).setColumns(5).run(),
   },
   {
+    id: 'columns6',
+    title: '6 columns',
+    description: 'Six blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split',
+    run: (e, r) => runEqualWidthColumns(e, r, 6),
+  },
+  {
+    id: 'columns7',
+    title: '7 columns',
+    description: 'Seven blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split',
+    run: (e, r) => runEqualWidthColumns(e, r, 7),
+  },
+  {
     id: 'toc',
     title: 'Table of contents',
     description: 'Every heading on this page',
@@ -524,7 +616,11 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
     'slash.sections.basic',
   ],
   ['media', ['image', 'file', 'embedMedia'], 'slash.sections.media'],
-  ['layout', ['columns2', 'columns3', 'columns4', 'columns5', 'table', 'toc'], 'slash.sections.layout'],
+  [
+    'layout',
+    ['columns2', 'columns3', 'columns4', 'columns5', 'columns6', 'columns7', 'table', 'toc'],
+    'slash.sections.layout',
+  ],
   [
     'pagesAndData',
     ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas'],
@@ -577,8 +673,21 @@ export function filterBlocks(query: string): BlockItem[] {
     .map((entry) => entry.item);
 }
 
-const slashItems = (query: string): MenuItem[] =>
-  query.length > 40 || /^\s|\s{2}/.test(query) ? [] : filterBlocks(query).slice(0, 40);
+function slashItems(
+  query: string,
+  editor?: Editor,
+  range?: Range,
+  state?: EditorState,
+): MenuItem[] {
+  if (query.length > 40 || /^\s|\s{2}/.test(query)) return [];
+  const items = filterBlocks(query).slice(0, 40);
+  if (editor && range && isWholeRootParagraphSlashRange(editor, range, state)) return items;
+  return items.filter((item) => !EQUAL_COLUMN_COMMANDS.has(item.id));
+}
+
+export function getSlashCommandItems(query: string, editor: Editor, range: Range): MenuItem[] {
+  return slashItems(query, editor, range);
+}
 
 export const SlashCommand = Extension.create<SlashOptions>({
   name: 'slashCommand',
@@ -600,9 +709,15 @@ export const SlashCommand = Extension.create<SlashOptions>({
         allow: ({ state, range }) => {
           const parent = state.selection.$from.parent;
           if (parent.type.name === 'codeBlock') return false;
-          return slashItems(state.doc.textBetween(range.from + 1, range.to, ' ')).length > 0;
+          return slashItems(state.doc.textBetween(range.from + 1, range.to, ' '), this.editor, range, state).length > 0;
         },
-        items: ({ query }) => slashItems(query),
+        items: ({ query, editor }) => {
+          const suggestion = SLASH_COMMAND_PLUGIN_KEY.getState(editor.state) as
+            | { active: boolean; query: string | null; range: Range }
+            | undefined;
+          const range = suggestion?.active && suggestion.query === query ? suggestion.range : undefined;
+          return slashItems(query, editor, range);
+        },
         command: ({ editor, range, props }) => {
           runSlashCommandItem(editor, range, props.id, options);
         },

@@ -11,6 +11,7 @@ import { MemoryVault } from './memoryVault';
 import { WorkspaceSession } from './session';
 import { VaultRepository } from './vaultRepository';
 import { createExtensions } from '../app/editor/extensions';
+import { runSlashCommandItem } from '../app/editor/SlashCommand';
 
 const NOTE_ID = 'seven-column-note';
 const NOTE_PATH = 'Seven columns.md';
@@ -86,6 +87,86 @@ async function open(vault: MemoryVault): Promise<WorkspaceSession> {
 }
 
 describe('published equal-width column layouts', () => {
+  it('authors six and seven equal columns between existing groups and saves bare markup with metadata and anchors', async () => {
+    const existingColumns = (label: string) => {
+      const anchor = label.toLowerCase();
+      return `<div data-columns>\n<div data-column>\n\n${label} one ^${anchor}-one\n\n</div>\n<div data-column>\n\n${label} two ^${anchor}-two\n\n</div>\n</div>`;
+    };
+
+    for (const count of [6, 7]) {
+      const source = `---\ntitle: Seven columns\ntags:\n  - fixture\ncustom:\n  keep: true\n---\nBefore ^before\n\n${existingColumns('Prior')}\n\n/layout\n\n${existingColumns('Later')}\n\nAfter ^after\n`;
+      const vault = new ObservedMemoryVault({
+        [NOTE_PATH]: source,
+        '.morrow/workspace.json': registryFor(NOTE_PATH),
+        '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }),
+      });
+      let session = await open(vault);
+      let editor: Editor | null = null;
+      try {
+        editor = makeEditor(session.getState().docs[NOTE_ID]);
+        const end = textEnd(editor, '/layout');
+        editor.commands.setTextSelection(end);
+        runSlashCommandItem(editor, { from: end - '/layout'.length, to: end }, `columns${count}`, {
+          createChild: () => null,
+        });
+
+        const groups = Array.from({ length: editor.state.doc.childCount }, (_, index) => editor!.state.doc.child(index)).filter(
+          (node) => node.type.name === 'columns',
+        );
+        expect(groups).toHaveLength(3);
+        expect(groups[1]!.childCount).toBe(count);
+        expect(editor.state.selection.$from.node(1)).toBe(groups[1]);
+        expect(editor.state.selection.$from.node(2)).toBe(groups[1]!.child(0));
+        expect(groups[1]!.attrs.widths).toBeNull();
+
+        expect(editor.commands.undo()).toBe(true);
+        expect(textEnd(editor, '/layout')).toBe(end);
+        expect(Array.from({ length: editor.state.doc.childCount }, (_, index) => editor!.state.doc.child(index)).filter(
+          (node) => node.type.name === 'columns',
+        )).toHaveLength(2);
+        expect(editor.commands.redo()).toBe(true);
+        expect(editor.state.selection.$from.node(1).childCount).toBe(count);
+        expect(editor.state.selection.$from.node(2)).toBe(editor.state.selection.$from.node(1).child(0));
+
+        const updated = session.execute({
+          type: 'page.setDoc',
+          id: NOTE_ID,
+          doc: editor.getJSON() as DocNode,
+          now: 2,
+        });
+        if (!updated.ok) throw new Error(updated.error);
+        expect(await session.flush()).toBe(true);
+      } finally {
+        editor?.destroy();
+        await session.close();
+      }
+
+      const saved = vault.text(NOTE_PATH)!;
+      expect(saved).toContain('custom:\n  keep: true');
+      expect(saved).toContain('Before ^before');
+      expect(saved).toContain('Prior one ^prior-one');
+      expect(saved).toContain('Later two ^later-two');
+      expect(saved).toContain('After ^after');
+      expect((saved.match(/<div data-columns>/g) ?? []).length).toBe(3);
+      expect(saved).not.toContain('data-widths=');
+
+      session = await open(vault);
+      try {
+        const reopenedGroups = session
+          .getState()
+          .docs[NOTE_ID]!
+          .content?.filter((node) => node.type === 'columns');
+        expect(reopenedGroups).toHaveLength(3);
+        expect(reopenedGroups?.[1]?.content).toHaveLength(count);
+        expect(readPageText(saved).tags).toEqual(['fixture']);
+        expect(readPageText(saved).extra.custom).toEqual({ keep: true });
+        expect(session.protectedReasons.has(NOTE_ID)).toBe(false);
+      } finally {
+        await session.close();
+      }
+    }
+  });
+
   it('checks two through seven columns in the real editor schema and repairs valid empty columns', () => {
     for (let count = 2; count <= 7; count++) {
       const imported = markdownToDoc(markdownColumnLayout(count, count - 1));

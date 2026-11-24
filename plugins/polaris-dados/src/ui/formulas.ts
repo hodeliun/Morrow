@@ -330,7 +330,9 @@ function evaluateFormulaProperty(
     ? { kind: 'error' as const, message: result.error }
     : normalizeValue(result.value);
   if (
-    (property.formulaResultType === 'number' || property.formulaResultType === 'percent') &&
+    (property.formulaResultType === 'number' ||
+      property.formulaResultType === 'percent' ||
+      property.formulaResultType === 'currency') &&
     evaluated.kind !== 'number' &&
     evaluated.kind !== 'null' &&
     evaluated.kind !== 'error'

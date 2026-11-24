@@ -168,6 +168,48 @@ describe('Polaris Dados formula row context', () => {
     });
   });
 
+  it('validates explicit currency results before caching while dependent formulas use the raw amount', () => {
+    const properties = [
+      scalar('amount', 'Amount'),
+      checkbox('flag', 'Flag'),
+      scalar('label', 'Label', 'text'),
+      scalar('optional', 'Optional'),
+      { ...formula('currency', 'Currency', '7 / 3'), formulaResultType: 'currency' },
+      formula('raw-check', 'Raw check', 'Currency * 3'),
+      { ...formula('zero', 'Zero currency', '0'), formulaResultType: 'currency' },
+      { ...formula('null', 'Null currency', 'thisRow.Optional'), formulaResultType: 'currency' },
+      { ...formula('boolean', 'Boolean currency', 'thisRow.Flag'), formulaResultType: 'currency' },
+      { ...formula('text', 'Text currency', 'thisRow.Label'), formulaResultType: 'currency' },
+      { ...formula('list', 'List currency', 'List(1, 2)'), formulaResultType: 'currency' },
+      { ...formula('non-finite', 'Non-finite currency', '1e308 * 1e308'), formulaResultType: 'currency' },
+      formula('dependent', 'Dependent', 'prop("Boolean currency") + 1'),
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { amount: 0, flag: false, label: 'done', optional: null };
+
+    expect(evaluate(properties, rowProperties, 'currency')).toEqual({ kind: 'number', value: 7 / 3 });
+    expect(evaluate(properties, rowProperties, 'raw-check')).toEqual({ kind: 'number', value: 7 });
+    expect(evaluate(properties, rowProperties, 'zero')).toEqual({ kind: 'number', value: 0 });
+    expect(evaluate(properties, rowProperties, 'null')).toEqual({ kind: 'null' });
+    for (const [formulaId, name] of [
+      ['boolean', 'Boolean currency'],
+      ['text', 'Text currency'],
+      ['list', 'List currency'],
+    ] as const) {
+      expect(evaluate(properties, rowProperties, formulaId)).toEqual({
+        kind: 'error',
+        message: `Formula “${name}” declared as currency must return a finite number or null.`,
+      });
+    }
+    expect(evaluate(properties, rowProperties, 'non-finite')).toEqual({
+      kind: 'error',
+      message: 'This formula produced a number outside the supported range',
+    });
+    expect(evaluate(properties, rowProperties, 'dependent')).toEqual({
+      kind: 'error',
+      message: 'Formula “Boolean currency” declared as currency must return a finite number or null.',
+    });
+  });
+
   it('resolves an explicit property named thisRow and keeps the bare identifier contextual', () => {
     const properties = [
       scalar('legacy', 'thisRow', 'text'),

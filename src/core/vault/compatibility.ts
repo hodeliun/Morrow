@@ -131,7 +131,7 @@ export function findUnrepresentablePageContent(
   if (data) {
     const metadataIssue = pageMetadataIssue(data);
     if (metadataIssue) return metadataIssue;
-    const typedFormulaFrontmatterIssue = typedNumericFormulaFrontmatterIssue(split.yaml, data);
+    const typedFormulaFrontmatterIssue = typedFormulaResultFrontmatterIssue(split.yaml, data);
     if (typedFormulaFrontmatterIssue) return typedFormulaFrontmatterIssue;
     const extraIssue = unknownFrontmatterIssue(data);
     if (extraIssue) return extraIssue;
@@ -145,19 +145,19 @@ export function hasUnrepresentableDatabaseSchema(text: string): boolean {
   const split = splitFrontmatter(text);
   const data = split.data;
   if (!data || data.kind !== 'database') return false;
-  if (typedNumericFormulaFrontmatterIssue(split.yaml, data)) return true;
+  if (typedFormulaResultFrontmatterIssue(split.yaml, data)) return true;
   return databaseMetadataIssue(data) !== null;
 }
 
-function typedNumericFormulaFrontmatterIssue(yaml: string, data: Record<string, unknown>): string | null {
+function typedFormulaResultFrontmatterIssue(yaml: string, data: Record<string, unknown>): string | null {
   // A conflicting kind/database pair is already rejected by databaseMetadataIssue above.
   if (data.kind !== 'database') return null;
   const database = data.database;
   const effectiveDeclaration =
     isRecord(database) &&
     Array.isArray(database.properties) &&
-    database.properties.some(isTypedNumericFormulaProperty);
-  const yamlInspection = inspectTypedNumericFormulaYaml(yaml, effectiveDeclaration);
+    database.properties.some(isTypedFormulaResultProperty);
+  const yamlInspection = inspectTypedFormulaResultYaml(yaml, effectiveDeclaration);
   const declaresTypedFormula = effectiveDeclaration || yamlInspection.declaresTypedFormula;
   if (
     !declaresTypedFormula ||
@@ -168,11 +168,13 @@ function typedNumericFormulaFrontmatterIssue(yaml: string, data: Record<string, 
   return 'The Polaris Dados typed formula result schema has ambiguous YAML frontmatter.';
 }
 
-function isTypedNumericFormulaProperty(property: unknown): boolean {
+function isTypedFormulaResultProperty(property: unknown): boolean {
   return (
     isRecord(property) &&
     property.type === 'formula' &&
-    (property.formulaResultType === 'number' || property.formulaResultType === 'percent')
+    (property.formulaResultType === 'number' ||
+      property.formulaResultType === 'percent' ||
+      property.formulaResultType === 'currency')
   );
 }
 
@@ -182,7 +184,7 @@ interface TypedFormulaYamlInspection {
 }
 
 /** Checks every YAML mapping occurrence so an overwritten database/property cannot hide a typed declaration. */
-function inspectTypedNumericFormulaYaml(yaml: string, effectiveDeclaration: boolean): TypedFormulaYamlInspection {
+function inspectTypedFormulaResultYaml(yaml: string, effectiveDeclaration: boolean): TypedFormulaYamlInspection {
   let document: ReturnType<typeof parseDocument>;
   try {
     document = parseDocument(yaml, { uniqueKeys: false });
@@ -201,7 +203,10 @@ function inspectTypedNumericFormulaYaml(yaml: string, effectiveDeclaration: bool
         );
         if (!hasFormulaType) continue;
         const hasTypedResult = yamlValuesForKey(property, 'formulaResultType', document).some(
-          (value) => isYamlString(value, 'number', document) || isYamlString(value, 'percent', document),
+          (value) =>
+            isYamlString(value, 'number', document) ||
+            isYamlString(value, 'percent', document) ||
+            isYamlString(value, 'currency', document),
         );
         if (hasTypedResult) declaresTypedFormula = true;
       }
@@ -551,7 +556,9 @@ function propertyIssue(raw: unknown, polarisDadosOptIn: boolean): string | null 
     Object.hasOwn(raw, 'formulaResultType') &&
     (!polarisDadosOptIn ||
       raw.type !== 'formula' ||
-      (raw.formulaResultType !== 'number' && raw.formulaResultType !== 'percent') ||
+      (raw.formulaResultType !== 'number' &&
+        raw.formulaResultType !== 'percent' &&
+        raw.formulaResultType !== 'currency') ||
       Object.hasOwn(raw, 'display') ||
       Object.hasOwn(raw, 'max'))
   ) {

@@ -91,6 +91,26 @@ database:
       name: ThirdsRawCheck
       type: formula
       formula: Thirds * 3
+    - id: demo-explicit-currency-result
+      name: CurrencyTyped
+      type: formula
+      formula: Quantity * -1.234567
+      formulaResultType: currency
+      format:
+        locale: en-US
+        negativeFormat: parentheses
+    - id: demo-explicit-currency-raw
+      name: CurrencyTypedRawCheck
+      type: formula
+      formula: If(CurrencyTyped < -2.4695, 17, 42)
+    - id: demo-explicit-currency-jpy
+      name: CurrencyTypedJPY
+      type: formula
+      formula: Quantity
+      formulaResultType: currency
+      format:
+        currency: JPY
+        locale: en-US
   views:
     - id: inventory-table-v1
       name: Table

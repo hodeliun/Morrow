@@ -605,6 +605,134 @@ describe('vault representability guard', () => {
     expect(readPageText(edited).database).toEqual(editedDatabase);
   });
 
+  it('roundtrips explicit currency formula results and protects unsupported shapes', () => {
+    const databaseSchema = {
+      properties: [
+        { id: 'default-currency', name: 'Default currency', type: 'formula', formula: '7 / 3', formulaResultType: 'currency' },
+        { id: 'empty-format', name: 'Empty format', type: 'formula', formula: '7 / 3', formulaResultType: 'currency', format: {} },
+        {
+          id: 'locale-only',
+          name: 'Locale only',
+          type: 'formula',
+          formula: '7 / 3',
+          formulaResultType: 'currency',
+          format: { locale: 'fr-FR' },
+        },
+        {
+          id: 'jpy',
+          name: 'JPY',
+          type: 'formula',
+          formula: '12.5',
+          formulaResultType: 'currency',
+          format: { currency: 'JPY' },
+        },
+        {
+          id: 'zero-precision',
+          name: 'Zero precision',
+          type: 'formula',
+          formula: '-7 / 3',
+          formulaResultType: 'currency',
+          format: { currency: 'USD', precision: 0 },
+        },
+        {
+          id: 'configured',
+          name: 'Configured',
+          type: 'formula',
+          formula: '-7 / 3',
+          formulaResultType: 'currency',
+          format: { currency: 'EUR', locale: 'de-DE', precision: 3, negativeFormat: 'parentheses' },
+        },
+      ],
+      views: [],
+    };
+    const source = databaseNote(databaseSchema);
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.properties.find((property) => property.id === 'default-currency')).toMatchObject({
+      formulaResultType: 'currency',
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'default-currency')).not.toHaveProperty(
+      'format',
+    );
+    expect(loaded.database?.properties.find((property) => property.id === 'empty-format')).toMatchObject({
+      formulaResultType: 'currency',
+      format: {},
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'locale-only')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { locale: 'fr-FR' },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'jpy')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'JPY' },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'zero-precision')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'USD', precision: 0 },
+    });
+
+    const databasePage = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: loaded.database!,
+      extra: loaded.extra,
+    });
+    const saved = renderPageText(
+      composeFrontmatter(managedFrontmatter(databasePage, 'Inventory', null), loaded.extra, loaded.source, databasePage),
+      loaded.source,
+      loaded.body,
+    );
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+    expect(readPageText(saved).database).toEqual(loaded.database);
+
+    const currency = databaseSchema.properties.find((property) => property.id === 'default-currency')!;
+    const invalidCurrencyProperties = [
+      { ...currency, type: 'number' },
+      { ...currency, format: { currency: 'US1' } },
+      { ...currency, format: { locale: 'not a locale' } },
+      { ...currency, format: { precision: 9 } },
+      { ...currency, format: { currency: 'USD', unexpected: true } },
+      { ...currency, display: 'bar' },
+      { ...currency, max: 50 },
+      { ...currency, min: 0 },
+      { ...currency, step: 1 },
+    ];
+    for (const property of invalidCurrencyProperties) {
+      const invalid = databaseNote({ properties: [property], views: [] });
+      expect(findUnrepresentablePageContent(invalid), invalid).not.toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(invalid), invalid).toBe(true);
+    }
+    const invalidCurrencySource = databaseNote({
+      properties: [{ ...currency, format: { currency: 'US1' } }],
+      views: [],
+    });
+    const protectedCurrency = loadVault(
+      {
+        files: [{ path: 'Inventory.md', text: invalidCurrencySource, mtime: 1, birthtime: 1 }],
+        folders: [],
+        others: [],
+        registry: null,
+        recent: null,
+      },
+      () => 'inventory',
+      1,
+    );
+    expect(protectedCurrency.protectedPages.get('inventory')).toMatch(/number property format/i);
+    expect(protectedCurrency.texts.get('inventory')).toBe(invalidCurrencySource);
+    expect(protectedCurrency.docs.inventory).toEqual({
+      type: 'doc',
+      content: [{ type: 'rawBlock', attrs: { text: invalidCurrencySource } }],
+    });
+    const unmarked = databaseNote({ properties: [currency], views: [] }, { omitMarker: true });
+    expect(findUnrepresentablePageContent(unmarked)).not.toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(unmarked)).toBe(true);
+  });
+
   it('requires the valid Polaris Dados marker and protects typed schemas the host cannot preserve', () => {
     const formula = {
       id: 'ratio',
@@ -621,7 +749,7 @@ describe('vault representability guard', () => {
       databaseNote(schema, { marker: { version: 1, provider: 'polaris-dados', future: true } }),
       ...[
         { ...formula, type: 'number' },
-        { ...formula, formulaResultType: 'currency' },
+        { ...formula, formulaResultType: 'text' },
         { ...formula, display: 'bar' },
         { ...formula, max: 50 },
         { ...formula, format: { locale: 'en-US', currency: 'USD' } },
@@ -771,7 +899,7 @@ describe('vault representability guard', () => {
       '  version: 1',
       '  provider: polaris-dados',
     ].join('\n');
-    const property = (resultType: 'number' | 'percent', includeMarker = true) =>
+    const property = (resultType: 'number' | 'percent' | 'currency', includeMarker = true) =>
       [
         '    - id: ratio',
         '      name: Ratio',
@@ -781,14 +909,14 @@ describe('vault representability guard', () => {
       ].join('\n');
     const database = (properties: string) => `database:\n  properties:\n${properties}\n  views: []\n`;
     const legacyProperties = property('number', false);
-    const typedOrders = (resultType: 'number' | 'percent') => [
+    const typedOrders = (resultType: 'number' | 'percent' | 'currency') => [
       `${database(property(resultType))}${database(legacyProperties)}`,
       `${database(legacyProperties)}${database(property(resultType))}`,
       `database:\n  properties:\n${property(resultType)}\n  properties:\n${legacyProperties}\n  views: []\n`,
       `database:\n  properties:\n${legacyProperties}\n  properties:\n${property(resultType)}\n  views: []\n`,
     ];
 
-    for (const resultType of ['number', 'percent'] as const) {
+    for (const resultType of ['number', 'percent', 'currency'] as const) {
       for (const yaml of typedOrders(resultType)) {
         const source = `---\n${prefix}\n${yaml}---\nOriginal database body\n`;
         expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
@@ -815,6 +943,16 @@ describe('vault representability guard', () => {
       '      type: *formulaType',
       '      formula: Quantity / 8',
       '      formulaResultType: &numberType number',
+      '    - id: currency-source',
+      '      name: Currency source',
+      '      type: *formulaType',
+      '      formula: Quantity / 8',
+      '      formulaResultType: &currencyType currency',
+      '    - id: currency-alias',
+      '      name: Currency alias',
+      '      type: *formulaType',
+      '      formula: Quantity / 8',
+      '      formulaResultType: *currencyType',
       '    - id: ratio-alias',
       '      name: Ratio alias',
       '      type: *formulaType',

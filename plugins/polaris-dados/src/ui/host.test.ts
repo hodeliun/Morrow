@@ -989,6 +989,71 @@ describe('Polaris Dados provider module', () => {
         formulaResultType: 'number',
       },
       {
+        id: 'currency-default',
+        name: 'Default currency',
+        type: 'formula',
+        options: [],
+        formula: '7 / 3',
+        formulaResultType: 'currency',
+      },
+      {
+        id: 'currency-raw-check',
+        name: 'Currency raw check',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Default currency") * 3',
+      },
+      {
+        id: 'currency-jpy',
+        name: 'JPY result',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity - 1',
+        formulaResultType: 'currency',
+        format: { currency: 'JPY' },
+      },
+      {
+        id: 'currency-locale',
+        name: 'Currency locale',
+        type: 'formula',
+        options: [],
+        formula: '-7 / 3',
+        formulaResultType: 'currency',
+        format: { currency: 'EUR', locale: 'de-DE', negativeFormat: 'parentheses' },
+      },
+      {
+        id: 'currency-zero-precision',
+        name: 'Currency zero precision',
+        type: 'formula',
+        options: [],
+        formula: '0',
+        formulaResultType: 'currency',
+        format: { currency: 'BRL', precision: 0 },
+      },
+      {
+        id: 'currency-null',
+        name: 'Currency null',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow.Optional',
+        formulaResultType: 'currency',
+      },
+      {
+        id: 'invalid-currency',
+        name: 'Invalid currency',
+        type: 'formula',
+        options: [],
+        formula: 'false',
+        formulaResultType: 'currency',
+      },
+      {
+        id: 'invalid-currency-dependent',
+        name: 'Invalid currency dependent',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Invalid currency") + 1',
+      },
+      {
         id: 'decimal-times-three',
         name: 'Decimal times three',
         type: 'formula',
@@ -1073,6 +1138,36 @@ describe('Polaris Dados provider module', () => {
     expect(cell('decimal-negative').textContent).toBe('(2,33)');
     expect(cell('decimal-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
     expect(cell('decimal-times-three').textContent).toBe('7');
+    expect(cell('currency-default').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, { style: 'currency', currency: 'BRL' }).format(7 / 3),
+    );
+    expect(cell('currency-raw-check').textContent).toBe('7');
+    expect(cell('currency-jpy').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'JPY',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(2),
+    );
+    expect(cell('currency-locale').textContent).toBe(
+      `(${new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(7 / 3)})`,
+    );
+    expect(cell('currency-zero-precision').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'BRL',
+        maximumFractionDigits: 0,
+        minimumFractionDigits: 0,
+      }).format(0),
+    );
+    expect(cell('currency-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell('invalid-currency').querySelector('code')?.textContent).toBe(
+      'Formula “Invalid currency” declared as currency must return a finite number or null.',
+    );
+    expect(cell('invalid-currency-dependent').querySelector('code')?.textContent).toBe(
+      'Formula “Invalid currency” declared as currency must return a finite number or null.',
+    );
     expect(cell('invalid-number').querySelector('code')?.textContent).toBe(
       'Formula “Invalid number” declared as number must return a finite number or null.',
     );
@@ -1103,6 +1198,14 @@ describe('Polaris Dados provider module', () => {
     await settle();
 
     expect(cell('percent').textContent).toBe('50%');
+    expect(cell('currency-jpy').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'JPY',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(3),
+    );
     expect(cell('dependent').textContent).toBe('1.5');
     expect(cell('negative-percent').textContent).toBe('(50.0%)');
     expect(cell('above-100').textContent).toBe('800%');

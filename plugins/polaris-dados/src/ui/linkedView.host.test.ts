@@ -468,6 +468,71 @@ describe('Polaris Dados linked view UI', () => {
             format: { locale: 'de-DE' },
           },
           { id: 'decimal-times-three', name: 'Decimal times three', type: 'formula', options: [], formula: 'Decimal * 3' },
+          {
+            id: 'currency-default',
+            name: 'Default currency',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'currency',
+          },
+          {
+            id: 'currency-raw-check',
+            name: 'Currency raw check',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Default currency") * 3',
+          },
+          {
+            id: 'currency-jpy',
+            name: 'JPY result',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity - 1',
+            formulaResultType: 'currency',
+            format: { currency: 'JPY' },
+          },
+          {
+            id: 'currency-locale-only',
+            name: 'Currency locale only',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'currency',
+            format: { locale: 'de-DE' },
+          },
+          {
+            id: 'currency-zero-precision',
+            name: 'Currency zero precision',
+            type: 'formula',
+            options: [],
+            formula: '0',
+            formulaResultType: 'currency',
+            format: { currency: 'USD', precision: 0 },
+          },
+          {
+            id: 'null-currency',
+            name: 'Null currency',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow["Optional"]',
+            formulaResultType: 'currency',
+          },
+          {
+            id: 'invalid-currency',
+            name: 'Invalid currency',
+            type: 'formula',
+            options: [],
+            formula: '"done"',
+            formulaResultType: 'currency',
+          },
+          {
+            id: 'invalid-currency-dependent',
+            name: 'Invalid currency dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Invalid currency") + 1',
+          },
           { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Percent + 1' },
           {
             id: 'above-100',
@@ -511,6 +576,14 @@ describe('Polaris Dados linked view UI', () => {
           'percent',
           'decimal',
           'decimal-times-three',
+          'currency-default',
+          'currency-raw-check',
+          'currency-jpy',
+          'currency-locale-only',
+          'currency-zero-precision',
+          'null-currency',
+          'invalid-currency',
+          'invalid-currency-dependent',
           'dependent',
           'above-100',
           'null-percent',
@@ -531,12 +604,41 @@ describe('Polaris Dados linked view UI', () => {
         minimumFractionDigits: 1,
       }).format(value);
     const typeError = 'Formula “Invalid percent” declared as percent must return a finite number or null.';
+    const currencyTypeError =
+      'Formula “Invalid currency” declared as currency must return a finite number or null.';
+    const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
 
     expect(rows.map((row) => row.dataset.rowId)).toEqual(['widget', 'gadget']);
     expect(cell(rows[0]!, 'percent').textContent).toBe(localizedPercent(0.5));
     expect(cell(rows[1]!, 'percent').textContent).toBe(localizedPercent(0.125));
     expect(cell(rows[0]!, 'decimal').textContent).toBe('2,33');
     expect(cell(rows[0]!, 'decimal-times-three').textContent).toBe('7');
+    expect(cell(rows[0]!, 'currency-default').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, { style: 'currency', currency: 'BRL' }).format(7 / 3),
+    );
+    expect(cell(rows[0]!, 'currency-raw-check').textContent).toBe('7');
+    expect(cell(rows[0]!, 'currency-jpy').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'JPY',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(3),
+    );
+    expect(cell(rows[0]!, 'currency-locale-only').textContent).toBe(
+      new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'BRL' }).format(7 / 3),
+    );
+    expect(cell(rows[0]!, 'currency-zero-precision').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 0,
+        minimumFractionDigits: 0,
+      }).format(0),
+    );
+    expect(cell(rows[0]!, 'null-currency').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell(rows[0]!, 'invalid-currency').querySelector('code')?.textContent).toBe(currencyTypeError);
+    expect(cell(rows[0]!, 'invalid-currency-dependent').querySelector('code')?.textContent).toBe(currencyTypeError);
     expect(cell(rows[0]!, 'dependent').textContent).toBe('1.5');
     expect(cell(rows[1]!, 'dependent').textContent).toBe('1.125');
     expect(cell(rows[0]!, 'above-100').textContent).toBe('800%');

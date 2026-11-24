@@ -49,14 +49,14 @@ export interface SelectOption {
   color: ColorName;
 }
 
-/** Display-only settings for a Markdown-declared number property or implicit formula result. */
+/** Display-only settings for a Markdown-declared number property or explicit numeric formula result. */
 export interface NumberPropertyFormat {
   locale?: string;
   precision?: number;
   negativeFormat?: 'minus' | 'parentheses';
 }
 
-/** Display-only number settings supported on an implicit numeric formula result. */
+/** Narrow formula format that adds currency to the shared decimal display options. */
 export interface FormulaResultNumberFormat extends NumberPropertyFormat {
   currency?: string;
 }
@@ -105,11 +105,11 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
   if (raw.type !== 'formula' || Object.hasOwn(raw, 'display') || Object.hasOwn(raw, 'max')) return null;
 
   if (Object.hasOwn(raw, 'formulaResultType')) {
-    // Explicit numeric formulas use the same narrow decimal options as numbers,
-    // but cannot also declare currency or progress-bar metadata.
-    return raw.formulaResultType === 'number' || raw.formulaResultType === 'percent'
-      ? normalizeNumberFormat(raw.format)
-      : null;
+    if (raw.formulaResultType === 'number' || raw.formulaResultType === 'percent') {
+      // Decimal and percentage formulas cannot also declare currency metadata.
+      return normalizeNumberFormat(raw.format);
+    }
+    return raw.formulaResultType === 'currency' ? normalizeFormulaResultNumberFormat(raw.format) : null;
   }
 
   const format = normalizeFormulaResultNumberFormat(raw.format);
@@ -170,8 +170,8 @@ export interface PropDef {
   format?: FormulaResultNumberFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
-  // an explicit numeric result whose display format is declared; calculation remains unscaled
-  formulaResultType?: 'number' | 'percent';
+  // an explicit numeric or currency result; calculation remains unscaled
+  formulaResultType?: 'number' | 'percent' | 'currency';
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;

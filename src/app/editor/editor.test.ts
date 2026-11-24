@@ -1,6 +1,9 @@
 // @vitest-environment happy-dom
 import { Editor } from '@tiptap/core';
 import { CellSelection } from '@tiptap/pm/tables';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { EditorContent } from '@tiptap/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DocNode } from '../../core/model';
 import { markdownToDoc } from '../../core/markdown/parse';
@@ -19,7 +22,12 @@ import {
 } from './EditorMenus';
 import { createExtensions } from './extensions';
 import { tagDecorations } from './Extras';
-import { BLOCK_ITEMS } from './SlashCommand';
+import {
+  BLOCK_ITEMS,
+  getLocalizedBlocks,
+  getSlashCommandItems,
+  runSlashCommandItem,
+} from './SlashCommand';
 import type { DecorationSet } from '@tiptap/pm/view';
 
 // code blocks watch the vault's pages for bases, there is no vault open here
@@ -71,7 +79,212 @@ afterEach(() => {
 
 const p = (text: string) => ({ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] });
 
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+function textRange(target: Editor, text: string): { from: number; to: number } {
+  let range: { from: number; to: number } | null = null;
+  target.state.doc.descendants((node, pos) => {
+    if (node.isText && node.text === text) {
+      range = { from: pos, to: pos + node.nodeSize };
+      return false;
+    }
+    return true;
+  });
+  if (!range) throw new Error(`Could not find text: ${text}`);
+  return range;
+}
+
 describe('the editor', () => {
+  it('offers six and seven columns only for a current editable root slash paragraph', async () => {
+    const opened: Editor[] = [];
+    const unmounts: Array<() => void> = [];
+    const create = (content: unknown) => {
+      const target = make(content);
+      opened.push(target);
+      return target;
+    };
+    const mount = (target: Editor) => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      act(() => root.render(createElement(EditorContent, { editor: target })));
+      unmounts.push(() => {
+        act(() => root.unmount());
+        container.remove();
+      });
+    };
+    const slashOptions = { createChild: () => null };
+
+    try {
+      const canceled = create({ type: 'doc', content: [p('')] });
+      mount(canceled);
+      await act(async () => {
+        canceled.view.focus();
+        canceled.commands.setTextSelection(1);
+        type(canceled, '/layout');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+      const canceledRange = textRange(canceled, '/layout');
+      const offered = getSlashCommandItems('layout', canceled, canceledRange).map((item) => item.id);
+      expect(offered).toContain('columns6');
+      expect(offered).toContain('columns7');
+      const canceledButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.suggestion-menu button'));
+      const sixTitle = getLocalizedBlocks().find((item) => item.id === 'columns6')?.title;
+      const sevenTitle = getLocalizedBlocks().find((item) => item.id === 'columns7')?.title;
+      expect(canceledButtons.some((button) => button.textContent?.includes(sixTitle ?? '6 columns'))).toBe(true);
+      expect(canceledButtons.some((button) => button.textContent?.includes(sevenTitle ?? '7 columns'))).toBe(true);
+      const canceledBefore = json(canceled);
+      act(() => {
+        canceled.view.dom.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        );
+      });
+      expect(json(canceled)).toEqual(canceledBefore);
+      expect(document.querySelector('.suggestion-menu[role="listbox"]')).toBeNull();
+
+      const staleClick = create({ type: 'doc', content: [p('')] });
+      mount(staleClick);
+      await act(async () => {
+        staleClick.view.focus();
+        staleClick.commands.setTextSelection(1);
+        type(staleClick, '/layout');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+      const staleSevenTitle = getLocalizedBlocks().find((item) => item.id === 'columns7')?.title;
+      const staleSevenButton = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('.suggestion-menu button'),
+      ).find((button) => button.textContent?.includes(staleSevenTitle ?? '7 columns'));
+      if (!staleSevenButton) throw new Error('The seven-column command is not in the slash menu.');
+      const staleClickRange = textRange(staleClick, '/layout');
+      act(() => {
+        staleClick.view.dispatch(
+          staleClick.state.tr.insertText('/canvas', staleClickRange.from, staleClickRange.to),
+        );
+        // Click the old row before React commits the updated suggestion list.
+        expect(document.body.contains(staleSevenButton)).toBe(true);
+        staleSevenButton.click();
+      });
+      expect(json(staleClick).content?.[0]?.content?.[0]?.text).toBe('/canvas');
+      expect(json(staleClick).content?.[0]?.type).toBe('paragraph');
+      act(() => {
+        staleClick.view.dom.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        );
+      });
+
+      const attributed = create({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            attrs: { blockId: 'slash-layout', backgroundColor: '#2f80ed', embedTitle: false },
+            content: [],
+          },
+        ],
+      });
+      mount(attributed);
+      await act(async () => {
+        attributed.view.focus();
+        attributed.commands.setTextSelection(1);
+        type(attributed, '/layout');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+      const attributedRange = textRange(attributed, '/layout');
+      const attributedItems = getSlashCommandItems('layout', attributed, attributedRange).map(
+        (item) => item.id,
+      );
+      expect(attributedItems).toContain('columns2');
+      expect(attributedItems).toContain('columns5');
+      expect(attributedItems).not.toContain('columns6');
+      expect(attributedItems).not.toContain('columns7');
+      const attributedBefore = json(attributed);
+      runSlashCommandItem(attributed, attributedRange, 'columns7', slashOptions);
+      expect(json(attributed)).toEqual(attributedBefore);
+      act(() => {
+        attributed.view.dom.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+        );
+      });
+
+      const selected = create({ type: 'doc', content: [p('')] });
+      mount(selected);
+      await act(async () => {
+        selected.view.focus();
+        selected.commands.setTextSelection(1);
+        type(selected, '/layout');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      });
+      const slashDoc = json(selected);
+      const selectedSevenTitle = getLocalizedBlocks().find((item) => item.id === 'columns7')?.title;
+      if (!selectedSevenTitle) throw new Error('The seven-column command is missing.');
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.suggestion-menu button'));
+      const sevenIndex = buttons.findIndex((button) => button.textContent?.includes(selectedSevenTitle));
+      if (sevenIndex < 0) throw new Error('The seven-column command is not in the slash menu.');
+      for (let index = 0; index < sevenIndex; index++) {
+        act(() => {
+          selected.view.dom.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }),
+          );
+        });
+      }
+      act(() => {
+        selected.view.dom.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+        );
+      });
+      expect(json(selected).content?.[0]?.type).toBe('columns');
+      expect(json(selected).content?.[0]?.content).toHaveLength(7);
+      expect(document.querySelector('.suggestion-menu[role="listbox"]')).toBeNull();
+      const createdDoc = json(selected);
+      expect(selected.commands.undo()).toBe(true);
+      expect(json(selected)).toEqual(slashDoc);
+      expect(selected.commands.redo()).toBe(true);
+      expect(json(selected)).toEqual(createdDoc);
+      expect(selected.state.selection.$from.node(1).childCount).toBe(7);
+
+      const nested = create({
+        type: 'doc',
+        content: [
+          {
+            type: 'columns',
+            content: [
+              { type: 'column', content: [p('/layout')] },
+              { type: 'column', content: [p('Neighbor')] },
+            ],
+          },
+        ],
+      });
+      const nestedRange = textRange(nested, '/layout');
+      nested.commands.setTextSelection(nestedRange.to);
+      const nestedBefore = json(nested);
+      expect(getSlashCommandItems('layout', nested, nestedRange).map((item) => item.id)).not.toContain('columns6');
+      runSlashCommandItem(nested, nestedRange, 'columns6', slashOptions);
+      expect(json(nested)).toEqual(nestedBefore);
+
+      const readOnly = create({ type: 'doc', content: [p('/layout')] });
+      const readOnlyRange = textRange(readOnly, '/layout');
+      readOnly.commands.setTextSelection(readOnlyRange.to);
+      readOnly.setEditable(false);
+      const readOnlyBefore = json(readOnly);
+      expect(getSlashCommandItems('layout', readOnly, readOnlyRange).map((item) => item.id)).not.toContain('columns7');
+      runSlashCommandItem(readOnly, readOnlyRange, 'columns7', slashOptions);
+      expect(json(readOnly)).toEqual(readOnlyBefore);
+
+      const stale = create({ type: 'doc', content: [p('/layout')] });
+      const staleRange = textRange(stale, '/layout');
+      stale.commands.setTextSelection(staleRange.from + 1);
+      const staleBefore = json(stale);
+      expect(getSlashCommandItems('layout', stale, staleRange).map((item) => item.id)).not.toContain('columns6');
+      runSlashCommandItem(stale, staleRange, 'columns6', slashOptions);
+      expect(json(stale)).toEqual(staleBefore);
+    } finally {
+      for (const unmount of unmounts.reverse()) unmount();
+      for (const target of opened) target.destroy();
+      document.body.replaceChildren();
+      editor = null;
+    }
+  });
+
   it('turns a line into a toggle titled with it when > is typed in front of it', () => {
     const target = make({ type: 'doc', content: [p('Shopping list')] });
     target.commands.setTextSelection(1);

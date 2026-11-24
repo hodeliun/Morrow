@@ -116,6 +116,53 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: number
       format:
         precision: 0
+    - id: currency-total
+      name: Currency total
+      type: formula
+      formula: 7 / 3
+      formulaResultType: currency
+    - id: currency-raw-check
+      name: Currency raw check
+      type: formula
+      formula: prop("Currency total") * 3
+    - id: currency-jpy
+      name: JPY total
+      type: formula
+      formula: "12.5"
+      formulaResultType: currency
+      format:
+        currency: JPY
+    - id: currency-locale-only
+      name: Currency locale only
+      type: formula
+      formula: 7 / 3
+      formulaResultType: currency
+      format:
+        locale: fr-FR
+    - id: currency-zero-precision
+      name: Currency zero precision
+      type: formula
+      formula: 7 / 3
+      formulaResultType: currency
+      format:
+        currency: USD
+        precision: 0
+    - id: optional-currency
+      name: Optional currency
+      type: formula
+      formula: thisRow.Optional
+      formulaResultType: currency
+      format:
+        locale: de-DE
+    - id: invalid-currency
+      name: Invalid currency
+      type: formula
+      formula: '"done"'
+      formulaResultType: currency
+    - id: invalid-currency-dependent
+      name: Invalid currency dependent
+      type: formula
+      formula: prop("Invalid currency") + 1
     - id: invalid-completion
       name: Invalid completion
       type: formula
@@ -171,6 +218,16 @@ describe('Polaris Dados snapshot and cell API', () => {
     const optionalProperty = initial.schema.properties.find((property) => property.id === 'optional-completion')!;
     const localeOnlyDecimal = initial.schema.properties.find((property) => property.id === 'decimal-locale-only')!;
     const zeroPrecisionDecimal = initial.schema.properties.find((property) => property.id === 'decimal-zero-precision')!;
+    const currencyTotalProperty = initial.schema.properties.find((property) => property.id === 'currency-total')!;
+    const currencyRawCheckProperty = initial.schema.properties.find((property) => property.id === 'currency-raw-check')!;
+    const currencyJpyProperty = initial.schema.properties.find((property) => property.id === 'currency-jpy')!;
+    const currencyLocaleProperty = initial.schema.properties.find((property) => property.id === 'currency-locale-only')!;
+    const currencyZeroProperty = initial.schema.properties.find((property) => property.id === 'currency-zero-precision')!;
+    const optionalCurrencyProperty = initial.schema.properties.find((property) => property.id === 'optional-currency')!;
+    const invalidCurrencyProperty = initial.schema.properties.find((property) => property.id === 'invalid-currency')!;
+    const invalidCurrencyDependentProperty = initial.schema.properties.find(
+      (property) => property.id === 'invalid-currency-dependent',
+    )!;
     const invalidProperty = initial.schema.properties.find((property) => property.id === 'invalid-completion')!;
     const dependentProperty = initial.schema.properties.find((property) => property.id === 'invalid-dependent')!;
 
@@ -188,6 +245,14 @@ describe('Polaris Dados snapshot and cell API', () => {
     });
     expect(localeOnlyDecimal.format).not.toHaveProperty('precision');
     expect(zeroPrecisionDecimal).toMatchObject({ formulaResultType: 'number', format: { precision: 0 } });
+    expect(currencyTotalProperty).toMatchObject({ type: 'formula', formulaResultType: 'currency' });
+    expect(currencyTotalProperty).not.toHaveProperty('format');
+    expect(currencyJpyProperty).toMatchObject({ formulaResultType: 'currency', format: { currency: 'JPY' } });
+    expect(currencyLocaleProperty).toMatchObject({ formulaResultType: 'currency', format: { locale: 'fr-FR' } });
+    expect(currencyZeroProperty).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'USD', precision: 0 },
+    });
     expect(widget.properties.optional).toBeNull();
     expect(Object.hasOwn(missingPrice.properties, 'optional')).toBe(false);
 
@@ -201,6 +266,39 @@ describe('Polaris Dados snapshot and cell API', () => {
       value: 17,
     });
     expect(evaluateCell(widget, initial.schema.properties, optionalProperty, evaluation)).toEqual({ kind: 'null' });
+    expect(evaluateCell(widget, initial.schema.properties, currencyTotalProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 7 / 3,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, currencyRawCheckProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 7,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, currencyJpyProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 12.5,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, currencyLocaleProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 7 / 3,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, currencyZeroProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 7 / 3,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, optionalCurrencyProperty, evaluation)).toEqual({
+      kind: 'null',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, invalidCurrencyProperty, evaluation)).toMatchObject({
+      kind: 'error',
+      message: 'Formula “Invalid currency” declared as currency must return a finite number or null.',
+    });
+    expect(
+      evaluateCell(widget, initial.schema.properties, invalidCurrencyDependentProperty, evaluation),
+    ).toMatchObject({
+      kind: 'error',
+      message: 'Formula “Invalid currency” declared as currency must return a finite number or null.',
+    });
     expect(evaluateCell(missingPrice, initial.schema.properties, optionalProperty, evaluation)).toEqual({ kind: 'null' });
     expect(evaluateCell(widget, initial.schema.properties, invalidProperty, evaluation)).toMatchObject({
       kind: 'error',
@@ -262,8 +360,28 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: 'number',
       format: { precision: 0 },
     });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'currency-total')).toMatchObject({
+      formulaResultType: 'currency',
+    });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'currency-total')).not.toHaveProperty(
+      'format',
+    );
+    expect(afterRestart.schema.properties.find((property) => property.id === 'currency-jpy')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'JPY' },
+    });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'currency-locale-only')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { locale: 'fr-FR' },
+    });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'currency-zero-precision')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'USD', precision: 0 },
+    });
     expect(reopenedWidget.properties).not.toHaveProperty('completion');
     expect(reopenedWidget.properties).not.toHaveProperty('completion-raw-check');
+    expect(reopenedWidget.properties).not.toHaveProperty('currency-total');
+    expect(reopenedWidget.properties).not.toHaveProperty('currency-raw-check');
     reopenedApi.cleanup();
     await reopened.close();
   });

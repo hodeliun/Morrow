@@ -2572,6 +2572,10 @@ export function mountPolarisDados(
       const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
       return formatFormulaNumber(value, property.format ?? {}, 'percent', defaultLocale, 2);
     }
+    if (property.type === 'formula' && property.formulaResultType === 'currency') {
+      const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+      return formatFormulaNumber(value, property.format ?? {}, 'currency', defaultLocale, 2);
+    }
     if (
       property.type === 'formula' &&
       property.format &&

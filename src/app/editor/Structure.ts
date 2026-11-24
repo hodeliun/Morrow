@@ -76,11 +76,12 @@ export const Columns = Node.create({
         (count) =>
         ({ chain, state }) => {
           const start = state.selection.from;
+          const columnCount = Math.min(7, Math.max(2, count));
           return (
             chain()
               .insertContent({
                 type: 'columns',
-                content: Array.from({ length: Math.min(5, Math.max(2, count)) }, () => ({
+                content: Array.from({ length: columnCount }, () => ({
                   type: 'column',
                   content: [{ type: 'paragraph' }],
                 })),
@@ -88,14 +89,20 @@ export const Columns = Node.create({
               // typing carries on in the first column
               .command(({ tr }) => {
                 let target: number | null = null;
-                tr.doc.nodesBetween(Math.max(0, start - 2), tr.doc.content.size, (node, pos) => {
-                  if (target !== null) return false;
-                  if (node.type.name === 'column') {
-                    target = pos + 2;
-                    return false;
-                  }
-                  return true;
-                });
+                if (columnCount >= 6) {
+                  const insertedAt = tr.mapping.map(start, -1);
+                  if (tr.doc.nodeAt(insertedAt)?.type.name === 'columns') target = insertedAt + 2;
+                } else {
+                  // Keep the existing 2–5 cursor behavior unchanged.
+                  tr.doc.nodesBetween(Math.max(0, start - 2), tr.doc.content.size, (node, pos) => {
+                    if (target !== null) return false;
+                    if (node.type.name === 'column') {
+                      target = pos + 2;
+                      return false;
+                    }
+                    return true;
+                  });
+                }
                 if (target !== null) tr.setSelection(TextSelection.near(tr.doc.resolve(target)));
                 return true;
               })

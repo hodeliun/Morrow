@@ -1133,6 +1133,16 @@ export const en = {
         description: 'Five blocks side by side',
         keywords: 'columns layout side by side split wide',
       },
+      columns6: {
+        title: '6 columns',
+        description: 'Six blocks side by side',
+        keywords: 'columns layout side by side split',
+      },
+      columns7: {
+        title: '7 columns',
+        description: 'Seven blocks side by side',
+        keywords: 'columns layout side by side split',
+      },
       toc: {
         title: 'Table of contents',
         description: 'Every heading on this page',
