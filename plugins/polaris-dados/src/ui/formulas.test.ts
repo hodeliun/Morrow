@@ -343,6 +343,88 @@ describe('Polaris Dados formula row context', () => {
     expect(evaluate(properties, rowProperties, 'overflow-step')).toEqual({ kind: 'number', value: 1e308 });
   });
 
+  it('checks explicit percent bounds and steps against the raw fraction before caching', () => {
+    const properties = [
+      scalar('optional', 'Optional'),
+      {
+        ...formula('bounded-percent', 'Bounded percent', '0.25'),
+        formulaResultType: 'percent',
+        format: { precision: 0, min: -0.5, max: 0.5, step: 0.25 },
+      },
+      formula('percent-raw-check', 'Percent raw check', 'prop("Bounded percent") * 4'),
+      {
+        ...formula('rounded-over-max', 'Rounded over max', '0.504'),
+        formulaResultType: 'percent',
+        format: { precision: 0, max: 0.5, step: 0.25 },
+      },
+      formula('rounded-over-max-dependent', 'Rounded over max dependent', 'prop("Rounded over max") + 1'),
+      {
+        ...formula('negative-anchor-percent', 'Negative anchor percent', '0.1'),
+        formulaResultType: 'percent',
+        format: { min: -0.1, step: 0.2 },
+      },
+      {
+        ...formula('off-negative-anchor-percent', 'Off negative anchor percent', '0'),
+        formulaResultType: 'percent',
+        format: { min: -0.1, step: 0.2 },
+      },
+      {
+        ...formula('within-percent-tolerance', 'Within percent tolerance', '0.250000002'),
+        formulaResultType: 'percent',
+        format: { step: 0.25 },
+      },
+      {
+        ...formula('outside-percent-tolerance', 'Outside percent tolerance', '0.250000003'),
+        formulaResultType: 'percent',
+        format: { step: 0.25 },
+      },
+      {
+        ...formula('negative-percent-unbounded', 'Negative percent unbounded', '-0.25'),
+        formulaResultType: 'percent',
+      },
+      {
+        ...formula('above-100-percent-unbounded', 'Above 100 percent unbounded', '1.25'),
+        formulaResultType: 'percent',
+      },
+      {
+        ...formula('null-percent-bounded', 'Null percent bounded', 'thisRow.Optional'),
+        formulaResultType: 'percent',
+        format: { min: 0, max: 0, step: 1 },
+      },
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { optional: null };
+
+    expect(evaluate(properties, rowProperties, 'bounded-percent')).toEqual({ kind: 'number', value: 0.25 });
+    expect(evaluate(properties, rowProperties, 'percent-raw-check')).toEqual({ kind: 'number', value: 1 });
+    expect(evaluate(properties, rowProperties, 'rounded-over-max')).toEqual({
+      kind: 'error',
+      message: 'Rounded over max must be at most 0.5.',
+    });
+    expect(evaluate(properties, rowProperties, 'rounded-over-max-dependent')).toEqual({
+      kind: 'error',
+      message: 'Rounded over max must be at most 0.5.',
+    });
+    expect(evaluate(properties, rowProperties, 'negative-anchor-percent')).toEqual({ kind: 'number', value: 0.1 });
+    expect(evaluate(properties, rowProperties, 'off-negative-anchor-percent')).toEqual({
+      kind: 'error',
+      message: 'Off negative anchor percent must use steps of 0.2.',
+    });
+    expect(evaluate(properties, rowProperties, 'within-percent-tolerance')).toEqual({
+      kind: 'number',
+      value: 0.250000002,
+    });
+    expect(evaluate(properties, rowProperties, 'outside-percent-tolerance')).toEqual({
+      kind: 'error',
+      message: 'Outside percent tolerance must use steps of 0.25.',
+    });
+    expect(evaluate(properties, rowProperties, 'negative-percent-unbounded')).toEqual({ kind: 'number', value: -0.25 });
+    expect(evaluate(properties, rowProperties, 'above-100-percent-unbounded')).toEqual({
+      kind: 'number',
+      value: 1.25,
+    });
+    expect(evaluate(properties, rowProperties, 'null-percent-bounded')).toEqual({ kind: 'null' });
+  });
+
   it('validates explicit currency results before caching while dependent formulas use the raw amount', () => {
     const properties = [
       scalar('amount', 'Amount'),

@@ -362,7 +362,10 @@ function evaluateFormulaProperty(
       message: `Formula “${property.name}” declared as ${property.formulaResultType} must return a finite number or null.`,
     };
   }
-  if (property.formulaResultType === 'number' && evaluated.kind === 'number') {
+  if (
+    (property.formulaResultType === 'number' || property.formulaResultType === 'percent') &&
+    evaluated.kind === 'number'
+  ) {
     const { min, max, step } = property.format ?? {};
     if (min !== undefined && evaluated.value < min) {
       evaluated = { kind: 'error', message: `${property.name} must be at least ${min}.` };

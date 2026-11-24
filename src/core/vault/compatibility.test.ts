@@ -509,6 +509,38 @@ describe('vault representability guard', () => {
           formulaResultType: 'percent',
         },
         {
+          id: 'ratio-bounds',
+          name: 'Ratio bounds',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { min: -1e12, max: 1e12, step: 0.05 },
+        },
+        {
+          id: 'ratio-conflicting-bounds',
+          name: 'Ratio conflicting bounds',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { min: 3, max: 2, step: 0.25 },
+        },
+        {
+          id: 'ratio-min-step-boundary',
+          name: 'Ratio minimum step boundary',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { step: 1e-9 },
+        },
+        {
+          id: 'ratio-max-step-boundary',
+          name: 'Ratio maximum step boundary',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { step: 1e12 },
+        },
+        {
           id: 'decimal-locale-only',
           name: 'Decimal locale only',
           type: 'formula',
@@ -604,6 +636,22 @@ describe('vault representability guard', () => {
     expect(loaded.database?.properties.find((property) => property.id === 'ratio-default-format')).not.toHaveProperty(
       'format',
     );
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-bounds')).toMatchObject({
+      formulaResultType: 'percent',
+      format: { min: -1e12, max: 1e12, step: 0.05 },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-conflicting-bounds')).toMatchObject({
+      formulaResultType: 'percent',
+      format: { min: 3, max: 2, step: 0.25 },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-min-step-boundary')).toMatchObject({
+      formulaResultType: 'percent',
+      format: { step: 1e-9 },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-max-step-boundary')).toMatchObject({
+      formulaResultType: 'percent',
+      format: { step: 1e12 },
+    });
     expect(loaded.database?.properties.find((property) => property.id === 'decimal-locale-only')).toMatchObject({
       formulaResultType: 'number',
       format: { locale: 'de-DE' },
@@ -1106,6 +1154,10 @@ describe('vault representability guard', () => {
         '      formulaResultType: currency\n      formulaResultType: percent\n',
       ),
       validYaml.replace(
+        '        precision: 1.5\n',
+        '        precision: 1.5\n        step: 0.1\n        step: 0.2\n',
+      ),
+      validYaml.replace(
         '      format:\n        locale: en-US\n        precision: 1.5\n',
         '      format:\n        locale: en-US\n        precision: 1.5\n      format:\n        locale: en-US\n        precision: 1.5\n',
       ),
@@ -1293,6 +1345,18 @@ describe('vault representability guard', () => {
       '      type: *formulaType',
       '      formula: Quantity / 8',
       '      formulaResultType: *numberType',
+      '    - id: percent-source',
+      '      name: Percent source',
+      '      type: *formulaType',
+      '      formula: Quantity / 8',
+      '      formulaResultType: &percentType percent',
+      '      format: *bounds',
+      '    - id: percent-alias',
+      '      name: Percent alias',
+      '      type: *formulaType',
+      '      formula: Quantity / 8',
+      '      formulaResultType: *percentType',
+      '      format: *bounds',
       '    - id: text-source',
       '      name: Text source',
       '      type: *formulaType',
@@ -1501,6 +1565,20 @@ describe('vault representability guard', () => {
     const directOverrideWins = prefix + secondResult + database(sequenceMerge(true)) + footer;
     assertAllowed(directOverrideWins);
     expect(readPageText(directOverrideWins).database?.properties[0]?.formulaResultType).toBe('percent');
+
+    const percentPrefix = [
+      '---',
+      'kind: database',
+      'polarisDados: { version: 1, provider: polaris-dados }',
+      'defaults: &result {type: formula, formulaResultType: percent, format: {min: -1, max: 1, step: 0.25}}',
+    ].join('\n') + '\n';
+    const validPercentMerge = percentPrefix + database(typed) + footer;
+    assertAllowed(validPercentMerge);
+    expect(readPageText(validPercentMerge).database?.properties[0]).toMatchObject({
+      formulaResultType: 'percent',
+      format: { min: -1, max: 1, step: 0.25 },
+    });
+    assertLocked(percentPrefix + database(typed) + database(legacy) + footer);
   });
 
   it('protects formula formats with incompatible result settings and retains the exact source bytes', () => {
@@ -1535,8 +1613,12 @@ describe('vault representability guard', () => {
       formulaProperty({ formulaResultType: 'number', format: { step: 1e12 + 1 } }),
       formulaProperty({ formulaResultType: 'number', format: { step: Number.POSITIVE_INFINITY } }),
       formulaProperty({ formulaResultType: 'number', format: { step: '1' } }),
-      formulaProperty({ formulaResultType: 'percent', format: { min: 0 } }),
-      formulaProperty({ formulaResultType: 'percent', format: { step: 1 } }),
+      formulaProperty({ formulaResultType: 'percent', format: { min: -1e12 - 1 } }),
+      formulaProperty({ formulaResultType: 'percent', format: { max: 1e12 + 1 } }),
+      formulaProperty({ formulaResultType: 'percent', format: { step: 0 } }),
+      formulaProperty({ formulaResultType: 'percent', format: { step: 1e-10 } }),
+      formulaProperty({ formulaResultType: 'percent', format: { step: '0.1' } }),
+      formulaProperty({ formulaResultType: 'percent', format: { currency: 'USD' } }),
       formulaProperty({ formulaResultType: 'currency', format: { max: 5 } }),
       formulaProperty({ formulaResultType: 'currency', format: { step: 1 } }),
       formulaProperty({ formulaResultType: 'text', format: { min: 0 } }),
@@ -1579,6 +1661,28 @@ describe('vault representability guard', () => {
     expect(loaded.docs.inventory).toEqual({
       type: 'doc',
       content: [{ type: 'rawBlock', attrs: { text: protectedSource } }],
+    });
+
+    const protectedPercentSource = databaseNote({
+      properties: [formulaProperty({ formulaResultType: 'percent', format: { min: 0, step: 0 } })],
+      views: [],
+    });
+    const protectedPercentPage = loadVault(
+      {
+        files: [{ path: 'Inventory.md', text: protectedPercentSource, mtime: 1, birthtime: 1 }],
+        folders: [],
+        others: [],
+        registry: null,
+        recent: null,
+      },
+      () => 'inventory',
+      1,
+    );
+    expect(protectedPercentPage.protectedPages.get('inventory')).toMatch(/number property format/i);
+    expect(protectedPercentPage.texts.get('inventory')).toBe(protectedPercentSource);
+    expect(protectedPercentPage.docs.inventory).toEqual({
+      type: 'doc',
+      content: [{ type: 'rawBlock', attrs: { text: protectedPercentSource } }],
     });
   });
 

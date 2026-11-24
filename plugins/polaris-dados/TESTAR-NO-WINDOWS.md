@@ -217,6 +217,10 @@ Em Inventory, BoundedThirds mostra **0.67** e BoundedThirdsRaw mostra **2**. Mud
 
 Em Inventory, SteppedRatio aceita **0.1**, **0.3** e **0.5**, com âncora 0.1 e passo 0.2. Mude Quantity de **2** para **3**. O resultado sai do erro e mostra **0.3**. A fórmula dependente SteppedRatioRaw mostra **3**. Com Quantity em **3.1**, o cálculo original resulta em 0.31 e volta a dar erro. Confira na primeira tabela de Views.
 
+### Conferir os limites e o passo de um percentual
+
+Em Inventory, BoundedPercent aceita resultados de **20%** a **50%** a cada cinco pontos percentuais. Mude Quantity para **2.5**. A coluna mostra **25%** e RawPercent mostra **0.25**. Com **2.55**, o resultado cai fora do passo. Com **5.04**, o resultado original excede o máximo. Confira os mesmos resultados na primeira tabela de Views.
+
 ### Navegar na grade sem o mouse
 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.

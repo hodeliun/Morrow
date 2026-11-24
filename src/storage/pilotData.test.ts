@@ -227,7 +227,14 @@ describe('Polaris Dados snapshot and cell API', () => {
     const editedSchema = structuredClone(parsed.database);
     const completion = editedSchema.properties.find((property) => property.id === 'completion');
     if (!completion) throw new Error('Expected an explicit percentage formula.');
-    completion.format = { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' };
+    completion.format = {
+      locale: 'fr-FR',
+      precision: 2.25,
+      negativeFormat: 'parentheses',
+      min: 0,
+      max: 1,
+      step: 0.25,
+    };
     const databasePage = newPageMeta({
       id: 'inventory',
       parentId: null,
@@ -249,6 +256,7 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(files['Inventory.md']).toContain('formulaResultType: percent');
     expect(files['Inventory.md']).toContain('precision: 2.25');
     expect(files['Inventory.md']).toContain('negativeFormat: parentheses');
+    expect(files['Inventory.md']).toContain('step: 0.25');
 
     const vault = new MemoryVault(files);
     const session = await open(vault);
@@ -295,7 +303,14 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(completionProperty).toMatchObject({
       type: 'formula',
       formulaResultType: 'percent',
-      format: { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' },
+      format: {
+        locale: 'fr-FR',
+        precision: 2.25,
+        negativeFormat: 'parentheses',
+        min: 0,
+        max: 1,
+        step: 0.25,
+      },
     });
     expect(optionalProperty).toMatchObject({ formulaResultType: 'percent', format: { locale: 'de-DE' } });
     expect(optionalProperty.format).not.toHaveProperty('precision');
@@ -457,7 +472,7 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(reopenedWidget.properties.quantity).toBe(3);
     expect(afterRestart.schema.properties.find((property) => property.id === 'completion')).toMatchObject({
       formulaResultType: 'percent',
-      format: { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' },
+      format: { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses', min: 0, max: 1, step: 0.25 },
     });
     expect(
       afterRestart.schema.properties.find((property) => property.id === 'decimal-locale-only'),

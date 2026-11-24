@@ -163,6 +163,21 @@ database:
       name: SteppedRatioRaw
       type: formula
       formula: SteppedRatio * 10
+    - id: demo-explicit-percent-step
+      name: BoundedPercent
+      type: formula
+      formula: Quantity / 10
+      formulaResultType: percent
+      format:
+        min: 0.2
+        max: 0.5
+        step: 0.05
+        precision: 0
+        locale: en-US
+    - id: demo-explicit-percent-step-dependent
+      name: RawPercent
+      type: formula
+      formula: BoundedPercent
   views:
     - id: inventory-table-v1
       name: Table

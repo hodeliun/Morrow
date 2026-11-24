@@ -141,8 +141,8 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
       return normalizeNumberFormulaFormat(raw.format);
     }
     if (raw.formulaResultType === 'percent') {
-      // Decimal and percentage formulas cannot also declare currency metadata.
-      return normalizeNumberFormat(raw.format);
+      // Percentage constraints use the same raw decimal values as number formulas.
+      return normalizeNumberFormulaFormat(raw.format);
     }
     return raw.formulaResultType === 'currency' ? normalizeFormulaResultNumberFormat(raw.format) : null;
   }

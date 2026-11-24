@@ -1037,6 +1037,38 @@ describe('Polaris Dados provider module', () => {
         formulaResultType: 'percent',
       },
       {
+        id: 'percent-bounded-display',
+        name: 'Percent bounded display',
+        type: 'formula',
+        options: [],
+        formula: '0.496',
+        formulaResultType: 'percent',
+        format: { locale: 'en-US', precision: 0, max: 0.5 },
+      },
+      {
+        id: 'percent-bounded-raw-check',
+        name: 'Percent bounded raw check',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Percent bounded display") * 100',
+      },
+      {
+        id: 'percent-raw-max-failure',
+        name: 'Percent raw max failure',
+        type: 'formula',
+        options: [],
+        formula: '0.504',
+        formulaResultType: 'percent',
+        format: { locale: 'en-US', precision: 0, max: 0.5 },
+      },
+      {
+        id: 'percent-raw-max-dependent',
+        name: 'Percent raw max dependent',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Percent raw max failure") + 1',
+      },
+      {
         id: 'decimal',
         name: 'Decimal result',
         type: 'formula',
@@ -1323,6 +1355,14 @@ describe('Polaris Dados provider module', () => {
     );
     expect(cell('percent').textContent).toBe('37.5%');
     expect(cell('dependent').querySelector('[data-value-kind="number"]')?.textContent).toBe('1.375');
+    expect(cell('percent-bounded-display').textContent).toBe('50%');
+    expect(cell('percent-bounded-raw-check').textContent).toBe('49.6');
+    expect(cell('percent-raw-max-failure').querySelector('code')?.textContent).toBe(
+      'Percent raw max failure must be at most 0.5.',
+    );
+    expect(cell('percent-raw-max-dependent').querySelector('code')?.textContent).toBe(
+      'Percent raw max failure must be at most 0.5.',
+    );
     expect(cell('typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('False');
     expect(cell('typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('No');
     expect(cell('typed-checkbox-false-check').textContent).toBe('false');

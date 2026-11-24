@@ -562,6 +562,38 @@ describe('Polaris Dados linked view UI', () => {
             format: { locale: 'de-DE', precision: 1 },
           },
           {
+            id: 'bounded-percent',
+            name: 'Bounded percent',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity / 8',
+            formulaResultType: 'percent',
+            format: { locale: 'en-US', precision: 0, min: 0.125, max: 0.5, step: 0.125 },
+          },
+          {
+            id: 'bounded-percent-raw-check',
+            name: 'Bounded percent raw check',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Bounded percent") * 100',
+          },
+          {
+            id: 'percent-raw-max-failure',
+            name: 'Percent raw max failure',
+            type: 'formula',
+            options: [],
+            formula: '0.504',
+            formulaResultType: 'percent',
+            format: { locale: 'en-US', precision: 0, max: 0.5 },
+          },
+          {
+            id: 'percent-raw-max-dependent',
+            name: 'Percent raw max dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Percent raw max failure") + 1',
+          },
+          {
             id: 'decimal',
             name: 'Decimal',
             type: 'formula',
@@ -792,6 +824,10 @@ describe('Polaris Dados linked view UI', () => {
           'typed-text-empty',
           'typed-text-null',
           'percent',
+          'bounded-percent',
+          'bounded-percent-raw-check',
+          'percent-raw-max-failure',
+          'percent-raw-max-dependent',
           'decimal',
           'decimal-bounded',
           'decimal-bounded-raw-check',
@@ -866,6 +902,16 @@ describe('Polaris Dados linked view UI', () => {
     expect(cell(rows[0]!, 'typed-text-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
     expect(cell(rows[0]!, 'percent').textContent).toBe(localizedPercent(0.5));
     expect(cell(rows[1]!, 'percent').textContent).toBe(localizedPercent(0.125));
+    expect(cell(rows[0]!, 'bounded-percent').textContent).toBe('50%');
+    expect(cell(rows[1]!, 'bounded-percent').textContent).toBe('13%');
+    expect(cell(rows[0]!, 'bounded-percent-raw-check').textContent).toBe('50');
+    expect(cell(rows[1]!, 'bounded-percent-raw-check').textContent).toBe('12.5');
+    expect(cell(rows[0]!, 'percent-raw-max-failure').querySelector('code')?.textContent).toBe(
+      'Percent raw max failure must be at most 0.5.',
+    );
+    expect(cell(rows[0]!, 'percent-raw-max-dependent').querySelector('code')?.textContent).toBe(
+      'Percent raw max failure must be at most 0.5.',
+    );
     expect(cell(rows[0]!, 'decimal').textContent).toBe('2,33');
     expect(cell(rows[0]!, 'decimal-bounded').textContent).toBe('2,33');
     expect(cell(rows[0]!, 'decimal-bounded-raw-check').textContent).toBe('7');
@@ -941,6 +987,8 @@ describe('Polaris Dados linked view UI', () => {
     expect(cell(updatedRows[0]!, 'typed-checkbox-false-check').textContent).toBe('false');
     expect(cell(updatedRows[0]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two ');
     expect(cell(updatedRows[0]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('9');
+    expect(cell(updatedRows[0]!, 'bounded-percent').textContent).toBe('25%');
+    expect(cell(updatedRows[0]!, 'bounded-percent-raw-check').textContent).toBe('25');
     expect(mounted.data.patchCalls).toMatchObject([
       { databaseId: DATABASE_ID, rowId: 'widget', propertyId: 'quantity', value: 2 },
     ]);
