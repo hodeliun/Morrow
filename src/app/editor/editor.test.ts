@@ -38,6 +38,8 @@ function make(content: unknown): Editor {
     extensions: createExtensions({
       onBlockMenu: () => {},
       resolvePage: () => null,
+      resolveTarget: () => null,
+      subscribe: () => () => {},
       openTag: () => {},
       createChild: () => null,
       openDate: () => {},
@@ -94,6 +96,17 @@ describe('the editor', () => {
     const summary = json(target).content![0]!.content![0]!;
     expect(summary.attrs?.level).toBe(2);
     expect(summary.content![0]!.text).toBe('Plans');
+  });
+
+  it('keeps supported legacy toggle summary links and HEX backgrounds in the editor schema', () => {
+    const imported = markdownToDoc(
+      '<details open>\n<summary data-block-background="#123abc" data-morrow-summary-format="markdown"><h2>Plan [[Other|internal]]</h2></summary>\n\nBody\n\n</details>',
+    );
+    const target = make(imported);
+    const summary = json(target).content?.[0]?.content?.[0];
+    expect(summary?.attrs?.backgroundColor).toBe('#123abc');
+    expect(summary?.content?.[1]?.type).toBe('pageLink');
+    expect(docToMarkdown(json(target))).toContain('data-block-background="#123abc"');
   });
 
   it('returns editor focus when Escape closes the inline color panel', async () => {

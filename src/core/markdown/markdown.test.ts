@@ -5,9 +5,16 @@ import { loadVault, makeResolver, resolveMarkdownPageLink } from '../vault/load'
 import type { Resolver, VaultScan } from '../vault/load';
 import type { Placement } from '../vault/layout';
 import { scanMarkdownDestination } from './markdownLinkDestination';
-import { inspectBlockBackgroundMarkers, markdownHrefPath, markdownToDoc, markdownToPage } from './parse';
+import {
+  inspectBlockBackgroundMarkers,
+  markdownHrefPath,
+  markdownToDoc,
+  markdownToDocWithDetailsHtmlBlocks,
+  markdownToPage,
+} from './parse';
 import { docToMarkdown } from './serialize';
 import { formatBlockBackgroundMarker, parseBlockBackgroundMarker } from './blockBackground';
+import { classifyDetailsHtmlBlock, matchingDetailsClose, readToggleSummaryHeader } from './toggleSummary';
 
 const text = (value: string, marks?: string[]): DocNode =>
   marks
@@ -194,7 +201,9 @@ describe('markdown import', () => {
         },
       ],
     };
-    const summary = markdownToDoc(docToMarkdown(doc)).content![0]!.content![0]!;
+    const markdown = docToMarkdown(doc);
+    expect(markdown).toContain('data-morrow-summary-format="markdown"');
+    const summary = markdownToDoc(markdown).content![0]!.content![0]!;
     expect(summary.content).toEqual([
       text('See '),
       {
@@ -205,6 +214,229 @@ describe('markdown import', () => {
       text(' '),
       text('now', ['bold']),
     ]);
+  });
+
+  it('round trips a published HEX title background, links, marks, heading and open state', () => {
+    const source = `<details open>
+<summary data-block-background="#1A2B3C" data-morrow-summary-format="markdown"><h3>See **bold** [the plan](https://example.org/plan?a=1&b=2) and [[Other|internal]]</h3></summary>
+
+Inside.
+
+</details>
+`;
+    const options = { resolvePage: (target: string) => (target === 'Other' ? 'other-page' : null) };
+    const parsed = markdownToDoc(source, options);
+    const toggle = parsed.content![0]!;
+    const summary = toggle.content![0]!;
+    expect(toggle.attrs?.open).toBe(true);
+    expect(summary.attrs).toEqual({ level: 3, backgroundColor: '#1a2b3c' });
+    expect(summary.content).toEqual([
+      text('See '),
+      text('bold', ['bold']),
+      text(' '),
+      {
+        type: 'text',
+        text: 'the plan',
+        marks: [{ type: 'link', attrs: { href: 'https://example.org/plan?a=1&b=2' } }],
+      },
+      text(' and '),
+      { type: 'pageLink', attrs: { id: 'other-page', label: 'internal', alias: 'internal' } },
+    ]);
+
+    const markdown = docToMarkdown(parsed, { linkTarget: (id) => (id === 'other-page' ? 'Other' : null) });
+    expect(markdown).toContain(
+      '<summary data-block-background="#1a2b3c" data-morrow-summary-format="markdown"><h3>',
+    );
+    expect(markdownToDoc(markdown, options)).toEqual(parsed);
+  });
+
+  it('round trips code literals, literal entities, underline, highlight and color in a toggle title', () => {
+    const doc: DocNode = {
+      type: 'doc',
+      content: [
+        {
+          type: 'details',
+          attrs: { open: true },
+          content: [
+            {
+              type: 'detailsSummary',
+              attrs: { level: 2, backgroundColor: '#1a2b3c' },
+              content: [
+                text('HTML-looking code: '),
+                {
+                  type: 'text',
+                  text: '</summary> </details> &lt; &amp;',
+                  marks: [{ type: 'code' }],
+                },
+                text(' and literal entity &lt;; plain </summary> after and </details> after; '),
+                { type: 'text', text: 'underlined', marks: [{ type: 'underline' }] },
+                text(', '),
+                {
+                  type: 'text',
+                  text: 'highlighted',
+                  marks: [{ type: 'highlight', attrs: { color: '#abcdef' } }],
+                },
+                text(', '),
+                {
+                  type: 'text',
+                  text: 'colored',
+                  marks: [{ type: 'textColor', attrs: { color: '#fedcba' } }],
+                },
+              ],
+            },
+            { type: 'detailsContent', content: [p(text('Body'))] },
+          ],
+        },
+      ],
+    };
+
+    const markdown = docToMarkdown(doc);
+    expect(markdown).toContain('`</summary> </details> &lt; &amp;`');
+    expect(markdown).toContain('plain \\</summary> after and \\</details> after');
+    expect(markdown).toContain('<u>underlined</u>');
+    expect(markdown).toContain('<mark style="background: #abcdef">highlighted</mark>');
+    expect(markdown).toContain('<span style="color: #fedcba">colored</span>');
+    expect(markdownToDoc(markdown)).toEqual(doc);
+  });
+
+  it('uses backslash parity to distinguish escaped tag text from real summary tags', () => {
+    const oddEscaped = `<details>\n<summary>Odd: \\</summary> after</summary>\n\nBody\n\n</details>`;
+    const oddHeader = readToggleSummaryHeader(oddEscaped);
+    expect(oddHeader).not.toBeNull();
+    expect(oddEscaped.slice(oddHeader!.titleStart, oddHeader!.titleEnd)).toBe('Odd: \\</summary> after');
+
+    const evenEscaped = `<details>\n<summary>Even: \\\\</summary>\n\nBody\n\n</details>`;
+    const evenHeader = readToggleSummaryHeader(evenEscaped);
+    expect(evenHeader).not.toBeNull();
+    expect(evenEscaped.slice(evenHeader!.titleStart, evenHeader!.titleEnd)).toBe('Even: \\\\');
+  });
+
+  it('keeps source after a details close tag when it cannot be attached to the toggle', () => {
+    const suffix = '<span data-keep="yes">Tail</span>';
+    const source = `<details>\n<summary>Title</summary>\n\nBody.\n\n</details>${suffix}\n`;
+    expect(markdownToDoc(source).content?.[1]).toEqual({ type: 'rawBlock', attrs: { text: suffix } });
+  });
+
+  it.each([
+    ['without summary metadata', '<summary>Title</summary>'],
+    ['with a styled summary', '<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>'],
+  ])('keeps a raw HTML close after a backslash outside the toggle %s', (_name, summary) => {
+    const source = `<details open>\n${summary}\n\n<p>Path</p>\\</details>\n\nOutside\n`;
+    const parsed = markdownToDoc(source);
+    const toggle = parsed.content?.[0];
+    expect(toggle?.type).toBe('details');
+    expect(JSON.stringify(toggle?.content?.[1])).toContain('<p>Path</p>');
+    expect(JSON.stringify(toggle?.content?.[1])).not.toContain('Outside');
+    expect(parsed.content?.[1]).toEqual({ type: 'paragraph', content: [text('Outside')] });
+  });
+
+  it('does not treat a details close inside raw-text HTML as structural', () => {
+    const source = `<details open>\n<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>\n\n<textarea>literal </details></textarea>\n\nInside toggle.\n\n</details>\n\nOutside\n`;
+    const parsed = markdownToDoc(source);
+    const toggle = parsed.content?.[0];
+    expect(toggle?.type).toBe('details');
+    expect(toggle?.attrs?.open).toBe(true);
+    expect(toggle?.content?.[1]?.content?.[0]).toEqual({
+      type: 'rawBlock',
+      attrs: { text: '<textarea>literal </details></textarea>' },
+    });
+    expect(toggle?.content?.[1]?.content?.[1]).toEqual({ type: 'paragraph', content: [text('Inside toggle.')] });
+    expect(parsed.content?.[1]).toEqual({ type: 'paragraph', content: [text('Outside')] });
+    expect(markdownToDoc(docToMarkdown(parsed))).toEqual(parsed);
+  });
+
+  it.each(['textarea', 'title', 'script', 'style', 'iframe', 'noembed', 'noframes', 'noscript', 'xmp'])(
+    'skips an embedded details close inside raw-text <%s>',
+    (element) => {
+      const source = `<${element}>literal </details></${element}>\n</details>\n`;
+      const closing = matchingDetailsClose(source);
+      expect(closing).not.toBeNull();
+      expect(source.slice(closing!.start, closing!.end)).toBe('</details>');
+    },
+  );
+
+  it('does not scan past comments or unterminated opaque input for a details close', () => {
+    const commented = `<!-- literal </details> -->\n</details>`;
+    const close = matchingDetailsClose(commented);
+    expect(close).not.toBeNull();
+    expect(commented.slice(close!.start, close!.end)).toBe('</details>');
+    expect(matchingDetailsClose('<!-- no comment end </details>')).toBeNull();
+    expect(matchingDetailsClose('<plaintext>literal </details>')).toBeNull();
+  });
+
+  it('classifies wrapper-owned and self-closing details tags as raw HTML', () => {
+    const wrapper = '<div>\n<details>\n</div>';
+    expect(classifyDetailsHtmlBlock(wrapper, false).kind).toBe('raw');
+    expect(classifyDetailsHtmlBlock('<details/>', false).kind).toBe('raw');
+    expect(classifyDetailsHtmlBlock('<details>', false).kind).toBe('open');
+    expect(markdownToDoc(wrapper).content?.[0]).toEqual({ type: 'rawBlock', attrs: { text: wrapper } });
+  });
+
+  it('reports details ownership from the builder without treating quote raw HTML as a close', () => {
+    const source = `<details open>\n<summary>Toggle</summary>\n\nBefore.\n\n> </details>\n\n<!-- comment without an end\n`;
+    const parsed = markdownToDocWithDetailsHtmlBlocks(source);
+    const quotedClose = parsed.detailsHtmlBlocks.find((block) => block.source.includes('</details>'));
+    const unfinishedComment = parsed.detailsHtmlBlocks.find((block) => block.source.includes('<!-- comment'));
+
+    expect(quotedClose).toMatchObject({
+      structure: { kind: 'raw' },
+      detailsOwner: true,
+      immediateDetailsOwner: false,
+    });
+    expect(unfinishedComment).toMatchObject({
+      structure: { kind: 'raw' },
+      detailsOwner: true,
+      immediateDetailsOwner: true,
+    });
+    expect(parsed.doc.content?.[0]?.type).toBe('details');
+  });
+
+  it('ignores close-tag text in inline code when reading a styled summary and its details close', () => {
+    const source = `<details open>
+<summary data-block-background="#2f80ed">Code: \`</summary>\` and \`</details>\` **title**</summary>
+
+Body.
+
+</details>
+`;
+    const parsed = markdownToDoc(source);
+    const toggle = parsed.content![0]!;
+    const summary = toggle.content![0]!;
+    expect(toggle.attrs?.open).toBe(true);
+    expect(summary.attrs?.backgroundColor).toBe('#2f80ed');
+    expect(summary.content).toEqual([
+      text('Code: '),
+      text('</summary>', ['code']),
+      text(' and '),
+      text('</details>', ['code']),
+      text(' '),
+      text('title', ['bold']),
+    ]);
+    expect(toggle.content?.[1]?.content?.[0]?.content?.[0]?.text).toBe('Body.');
+  });
+
+  it('keeps native H4-H6 details summary levels', () => {
+    for (const level of [4, 5, 6]) {
+      const parsed = markdownToDoc(`<details><summary><h${level}>Native</h${level}></summary>\n\nBody\n\n</details>`);
+      expect(parsed.content?.[0]?.content?.[0]?.attrs?.level).toBe(level);
+    }
+  });
+
+  it('refuses unsupported details summary content instead of silently serializing it', () => {
+    expect(() =>
+      docToMarkdown({
+        type: 'doc',
+        content: [
+          {
+            type: 'details',
+            content: [
+              { type: 'detailsSummary', content: [{ type: 'inlineMath', attrs: { latex: 'x' } }] },
+              { type: 'detailsContent', content: [p(text('Body'))] },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/toggle summaries can contain only text and non-embedded page links/i);
   });
 
   it('keeps a callout icon, or no icon, in its obsidian metadata', () => {

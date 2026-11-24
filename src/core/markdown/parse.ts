@@ -7,6 +7,8 @@ import { LEGACY_FORMULA_NODE, legacyFormulaInlineRule } from '../legacyFormula';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
 import { parseBlockBackgroundMarker, supportsHexBlockBackgroundOwner } from './blockBackground';
 import { scanMarkdownDestination } from './markdownLinkDestination';
+import { classifyDetailsHtmlBlock, readToggleSummaryHeader } from './toggleSummary';
+import type { DetailsHtmlBlockClassification } from './toggleSummary';
 import {
   ALIGN_PATTERN,
   BACKGROUND_PATTERN,
@@ -33,6 +35,23 @@ export interface ParseOptions {
   keepUnresolved?: boolean;
   /** @internal Nested HTML wrappers disable marker interpretation until their format is supported. */
   allowLegacyBlockBackgrounds?: boolean;
+}
+
+/** A block as classified by the Markdown builder, with its real owner context. */
+export interface ParsedDetailsHtmlBlock {
+  source: string;
+  structure: DetailsHtmlBlockClassification;
+  /** A detailsContent node is an ancestor in the document being built. */
+  detailsOwner: boolean;
+  /** The builder is directly inside detailsContent, rather than a quote/list/table. */
+  immediateDetailsOwner: boolean;
+  /** Summary tag consumed as this block's heading by htmlBlock, if any. */
+  consumedSummaryStart: number | null;
+}
+
+interface ParseReportContext {
+  detailsHtmlBlocks: ParsedDetailsHtmlBlock[];
+  inheritedDetailsOwner: boolean;
 }
 
 export interface WikiLink {
@@ -412,7 +431,24 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   return parseMarkdownToDoc(source, options).doc;
 }
 
-function parseMarkdownToDoc(source: string, options: ParseOptions = {}): ParsedMarkdownDoc {
+/**
+ * Parses a page and returns the details HTML blocks as the builder actually handled them.
+ * Compatibility checks use this instead of reconstructing toggle ownership from source text.
+ */
+export function markdownToDocWithDetailsHtmlBlocks(
+  source: string,
+  options: ParseOptions = {},
+): { doc: DocNode; detailsHtmlBlocks: ParsedDetailsHtmlBlock[] } {
+  const detailsHtmlBlocks: ParsedDetailsHtmlBlock[] = [];
+  const parsed = parseMarkdownToDoc(source, options, { detailsHtmlBlocks, inheritedDetailsOwner: false });
+  return { doc: parsed.doc, detailsHtmlBlocks };
+}
+
+function parseMarkdownToDoc(
+  source: string,
+  options: ParseOptions = {},
+  report?: ParseReportContext,
+): ParsedMarkdownDoc {
   const text = source.length > MAX_INPUT ? source.slice(0, MAX_INPUT) : source;
   const tokens = md.parse(text.replace(/\r\n?/g, '\n'), {});
   const hasBlockBackground = /<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/i.test(text);
@@ -622,7 +658,7 @@ function parseMarkdownToDoc(source: string, options: ParseOptions = {}): ParsedM
               note({ type: 'a' });
               break;
             }
-            htmlBlock(token.content, options, { push, top, close, stack });
+            htmlBlock(token.content, options, { push, top, close, stack }, report);
           }
         }
         break;
@@ -732,8 +768,35 @@ interface Builder {
 const NOTION_ICON = /^<img\s[^>]*src=["'](?:notion:\/\/custom_emoji\/|\/icons\/)[^>]*>\s*/i;
 
 // toggles and notion asides become blocks, any other html is kept exactly as written
-function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
+function htmlBlock(
+  source: string,
+  options: ParseOptions,
+  b: Builder,
+  report?: ParseReportContext,
+): void {
   const html = source.trim();
+  const immediateDetailsOwner = b.top().type === 'detailsContent';
+  const detailsStructure = classifyDetailsHtmlBlock(html, immediateDetailsOwner);
+  const detailsOwner =
+    report?.inheritedDetailsOwner === true || b.stack.some((node) => node.type === 'detailsContent');
+  const parsedBlock: ParsedDetailsHtmlBlock = {
+    source: html,
+    structure: detailsStructure,
+    detailsOwner,
+    immediateDetailsOwner,
+    consumedSummaryStart: null,
+  };
+  report?.detailsHtmlBlocks.push(parsedBlock);
+  if (detailsStructure.kind === 'close') {
+    const closing = detailsStructure.close;
+    const bodyPrefix = html.slice(0, closing.start).trim();
+    if (bodyPrefix) b.push({ type: 'rawBlock', attrs: { text: bodyPrefix } });
+    b.close();
+    b.close();
+    const suffix = html.slice(closing.end);
+    if (suffix.trim()) b.push({ type: 'rawBlock', attrs: { text: suffix } });
+    return;
+  }
   if (NOTION_ICON.test(html) && !html.replace(NOTION_ICON, '').trim()) return;
   // an empty line kept on purpose, the way morrow writes one
   if (/^<br\s*\/?>$/i.test(html)) {
@@ -764,39 +827,79 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
       return;
     }
   }
-  const details = /^<details[^>]*>/i.exec(html);
+  const details =
+    detailsStructure.kind === 'open'
+      ? html.slice(detailsStructure.tag.start, detailsStructure.tag.end)
+      : null;
   const aside = /^<aside[^>]*>/i.exec(html);
   if (details) {
-    const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(html);
-    const title = decodeEntities((summary?.[1] ?? '').replace(/<[^>]+>/g, '')).trim();
+    const header = readToggleSummaryHeader(html);
+    const summaryMatch = header ? null : /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(html);
+    parsedBlock.consumedSummaryStart = header?.summary.start ?? summaryMatch?.index ?? null;
+    const titleMarkup = header ? html.slice(header.titleStart, header.titleEnd) : (summaryMatch?.[1] ?? '');
+    const title = decodeEntities(titleMarkup.replace(/<[^>]+>/g, '')).trim();
     // <summary><h2>…</h2></summary> is a toggle heading
-    const level = toggleLevel(Number(/^\s*<h([1-6])\b/i.exec(summary?.[1] ?? '')?.[1]));
+    const level = header?.level ?? toggleLevel(Number(/^\s*<h([1-6])\b/i.exec(titleMarkup)?.[1]));
+    const richTitle = header ? parseToggleSummaryInline(titleMarkup, options) : null;
+    const summaryAttrs = {
+      ...(level ? { level } : {}),
+      ...(header?.backgroundColor ? { backgroundColor: header.backgroundColor } : {}),
+    };
     const body: DocNode = { type: 'detailsContent', content: [] };
     const node: DocNode = {
       type: 'details',
-      attrs: { open: /^<details\b[^>]*\sopen\b/i.test(details[0]) },
+      attrs: { open: header?.open ?? /^<details\b[^>]*\sopen\b/i.test(details) },
       content: [
         {
           type: 'detailsSummary',
-          ...(level ? { attrs: { level } } : {}),
-          content: summaryContent(title, options),
+          ...(Object.keys(summaryAttrs).length ? { attrs: summaryAttrs } : {}),
+          content: richTitle ?? summaryContent(title, options),
         },
         body,
       ],
     };
     b.push(node);
-    const after = html.slice(summary ? summary.index + summary[0].length : details[0].length);
-    const closed = /<\/details>\s*$/i.test(after);
-    const inner = after.replace(/<\/details>\s*$/i, '').trim();
+    const summaryEnd = header
+      ? header.summaryClose.end
+      : summaryMatch
+        ? summaryMatch.index + summaryMatch[0].length
+        : details.length;
+    const after = html.slice(summaryEnd);
+    const closing =
+      detailsStructure.kind === 'open' && detailsStructure.close
+        ? {
+            start: detailsStructure.close.start - summaryEnd,
+            end: detailsStructure.close.end - summaryEnd,
+          }
+        : null;
+    const closeStart = closing?.start ?? after.length;
+    const closed = closing !== null;
+    const inner = (closed ? after.slice(0, closeStart) : after).trim();
     if (inner)
       body.content!.push(
-        ...(markdownToDoc(inner, { ...options, allowLegacyBlockBackgrounds: false }).content ?? []),
+        ...(parseNestedMarkdown(
+          inner,
+          { ...options, allowLegacyBlockBackgrounds: false },
+          report,
+          true,
+        ).content ?? []),
       );
     if (!closed) b.stack.push(node, body);
-  } else if (/^<\/details>/i.test(html)) {
+    else if (closing) {
+      const suffix = after.slice(closing.end);
+      if (suffix.trim()) b.push({ type: 'rawBlock', attrs: { text: suffix } });
+    }
+  } else if (/^<\/details\s*>/i.test(html)) {
+    const close = /^<\/details\s*>/i.exec(html)![0];
     if (b.top().type === 'detailsContent') {
       b.close();
       b.close();
+      const suffix = source.slice(source.indexOf(html) + close.length).replace(/\n+$/, '');
+      if (suffix.trim()) b.push({ type: 'rawBlock', attrs: { text: suffix } });
+    } else {
+      // A closing fragment outside a known details owner is not a structural command.
+      // Preserve it as opaque source instead of dropping an HTML suffix on import.
+      b.push({ type: 'rawBlock', attrs: { text: source.replace(/\n+$/, '') } });
     }
   } else if (aside) {
     const closed = /<\/aside>\s*$/i.test(html);
@@ -818,13 +921,28 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
     if (emoji) inner = inner.slice(emoji[0].length);
     if (inner)
       node.content!.push(
-        ...(markdownToDoc(inner, { ...options, allowLegacyBlockBackgrounds: false }).content ?? []),
+        ...(parseNestedMarkdown(
+          inner,
+          { ...options, allowLegacyBlockBackgrounds: false },
+          report,
+          detailsOwner,
+        ).content ?? []),
       );
     b.push(node);
     if (!closed) b.stack.push(node);
   } else if (/^<\/aside>/i.test(html)) {
     if (b.top().type === 'callout') b.close();
   } else if (html) b.push({ type: 'rawBlock', attrs: { text: source.replace(/\n+$/, '') } });
+}
+
+function parseNestedMarkdown(
+  source: string,
+  options: ParseOptions,
+  report: ParseReportContext | undefined,
+  inheritedDetailsOwner: boolean,
+): DocNode {
+  if (!report) return markdownToDoc(source, options);
+  return parseMarkdownToDoc(source, options, { ...report, inheritedDetailsOwner }).doc;
 }
 
 // a toggle's title is written as markdown, so links and bold in it come back as they were. it only holds
@@ -838,6 +956,50 @@ function summaryContent(title: string, options: ParseOptions): DocNode[] {
     return { type: 'text', text, ...(child.marks?.length ? { marks: child.marks } : {}) };
   });
   return mergeText(nodes.filter((child) => child.text));
+}
+
+/** Parses only the inline forms that detailsSummary can retain without flattening. */
+export function parseToggleSummaryInline(source: string, options: ParseOptions = {}): DocNode[] | null {
+  if (/[\r\n]/.test(source)) return null;
+  const token = md.parseInline(source, {})[0];
+  const children = token?.children ?? [];
+  if (
+    children.some(
+      (child) =>
+        child.type === 'hardbreak' ||
+        (child.type === 'html_inline' && !isSupportedSummaryHtml(child.content)),
+    )
+  ) {
+    return null;
+  }
+  const nodes = inlineNodes(children, options);
+  if (
+    nodes.some(
+      (node) =>
+        (node.type !== 'text' && node.type !== 'pageLink') ||
+        (node.type === 'pageLink' && node.attrs?.embed === true),
+    )
+  ) {
+    return null;
+  }
+  return nodes;
+}
+
+function isSupportedSummaryHtml(source: string): boolean {
+  const tag = source.trim().toLowerCase();
+  return (
+    tag === '<u>' ||
+    tag === '</u>' ||
+    tag === '<mark>' ||
+    tag === '</mark>' ||
+    /^<mark\s+style\s*=\s*(["'])\s*background(?:-color)?\s*:\s*#[\da-f]{3}(?:[\da-f]{3})?\s*;?\s*\1\s*>$/i.test(
+      tag,
+    ) ||
+    /^<span\s+style\s*=\s*(["'])\s*color\s*:\s*#[\da-f]{3}(?:[\da-f]{3})?\s*;?\s*\1\s*>$/i.test(
+      tag,
+    ) ||
+    tag === '</span>'
+  );
 }
 
 // first level one heading becomes the page title

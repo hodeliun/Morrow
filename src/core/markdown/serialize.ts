@@ -49,6 +49,7 @@ export function docToMarkdown(doc: DocNode, options: SerializeOptions = {}): str
   const viewIssue = polarisDadosViewDocIssue(doc);
   if (viewIssue) throw new TypeError(viewIssue);
   assertSupportedCustomBlockBackgrounds(doc);
+  assertSupportedToggleSummaries(doc);
   const formulaIssue = legacyFormulaDocIssue(doc);
   if (formulaIssue) throw new TypeError(formulaIssue);
   const out = blocks(doc.content ?? [], options, ['doc']).trim();
@@ -186,16 +187,28 @@ function block(node: DocNode, options: SerializeOptions, ancestors: string[]): s
     }
     case 'details': {
       const [summary, content] = node.content ?? [];
-      const text = summary ? escapeHtml(inline(summary.content ?? [], options)) : '';
+      // `inline` serializes from typed text/mark nodes: ordinary text is escaped, supported
+      // formatting emits its own allowlisted delimiters, and code spans stay opaque to HTML scans.
+      const text = summary ? inline(summary.content ?? [], options) : '';
       // a toggle heading wraps its title in a heading tag, which browsers and other apps show as one
       const level = toggleLevel(summary?.attrs?.level);
       const title = level ? `<h${level}>${text}</h${level}>` : text;
+      const summaryBackground = normalizeInlineColor(summary?.attrs?.backgroundColor);
+      if (summaryBackground && !isHexBlockBackground(summaryBackground)) {
+        throw new TypeError('Toggle summary backgrounds require a six-digit HEX color.');
+      }
+      const summaryBackgroundAttr = summaryBackground
+        ? ` data-block-background="${summaryBackground}"`
+        : '';
+      const summaryFormatAttr = summary && (!level || summary.content?.some((child) => child.type !== 'text'))
+        ? ' data-morrow-summary-format="markdown"'
+        : '';
       const body = content
         ? blocks(content.content ?? [], options, [...ancestors, 'details', 'detailsContent'])
         : '';
       // an open toggle is written open, so it is still open when the page comes back
       return `<details${node.attrs?.open === true ? ' open' : ''}>
-<summary>${title}</summary>
+<summary${summaryBackgroundAttr}${summaryFormatAttr}>${title}</summary>
 
 ${body}
 
@@ -380,6 +393,22 @@ function assertSupportedCustomBlockBackgrounds(
       node.type === 'taskItem' && index === 0,
     ),
   );
+}
+
+function assertSupportedToggleSummaries(node: DocNode, parentType: string | null = null): void {
+  if (node.type === 'detailsSummary') {
+    if (
+      parentType !== 'details' ||
+      (node.content ?? []).some(
+        (child) =>
+          (child.type !== 'text' && child.type !== 'pageLink') ||
+          (child.type === 'pageLink' && child.attrs?.embed === true),
+      )
+    ) {
+      throw new TypeError('Toggle summaries can contain only text and non-embedded page links.');
+    }
+  }
+  node.content?.forEach((child) => assertSupportedToggleSummaries(child, node.type));
 }
 
 // a table row is one line of markdown, so what sits in a cell is written on that line: text, pictures as
@@ -590,10 +619,6 @@ function codeSpan(text: string): string {
   const fence = '`'.repeat(longestRun(text, '`') + 1);
   const padded = text.startsWith('`') || text.endsWith('`') ? ` ${text} ` : text;
   return `${fence}${padded}${fence}`;
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // escapes only what would turn into formatting, so files stay pleasant to read in other editors

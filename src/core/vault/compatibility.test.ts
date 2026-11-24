@@ -498,6 +498,37 @@ database:
     );
   });
 
+  it('allows only the direct, representable legacy toggle summary attributes', () => {
+    const valid = `<details open>
+<summary data-block-background="#1A2B3C" data-morrow-summary-format="markdown"><h2>**Plan** [[Other|internal]] and [web](https://example.org)</h2></summary>
+
+Body.
+
+</details>
+`;
+    expect(findUnrepresentablePageContent(valid)).toBeNull();
+    const parsed = markdownToDoc(valid);
+    expect(parsed.content?.[0]?.content?.[0]?.attrs).toEqual({
+      level: 2,
+      backgroundColor: '#1a2b3c',
+    });
+    expect(findUnrepresentablePageContent(docToMarkdown(parsed))).toBeNull();
+
+    for (const invalid of [
+      valid.replace(' data-morrow-summary-format="markdown"', ' data-morrow-summary-format="markdown" data-morrow-summary-format="markdown"'),
+      valid.replace('data-block-background="#1A2B3C"', 'data-block-background="#1A2B3C" class="future"'),
+      valid.replace('<summary data-block-background', '<summary data-future="opaque" data-block-background'),
+      `<details open><summary data-block-background="#123456">Before <img src="missing.png"></summary>Body</details>`,
+      `<details open>prefix<summary data-morrow-summary-format="markdown">Title</summary>Body</details>`,
+      `<details open>\n<summary data-block-background="#123456">Incomplete`,
+      `<summary data-block-background="#123456">Orphan</summary>`,
+      `<p data-block-background="#123456">Outside the summary</p>`,
+      `\`data-morrow-summary-format\``,
+    ]) {
+      expect(findUnrepresentablePageContent(invalid), invalid).not.toBeNull();
+    }
+  });
+
   it('round-trips linked views beside official 2.2 markers and protects mixed future raw notes', () => {
     const viewMarker = encodePolarisDadosViewMarker({
       version: 1,

@@ -1328,3 +1328,188 @@ describe('E003 #233 published and future Markdown compatibility', () => {
     }
   });
 });
+
+describe('#300 reversible toggle compatibility boundaries', () => {
+  const unsupportedToggles: Array<[string, string, RegExp]> = [
+    [
+      'a summary heading with unrepresented attributes',
+      `<details>\n<summary data-block-background="#1a2b3c" data-morrow-summary-format="markdown"><h3 id="keep-anchor" class="keep">Title</h3></summary>\n\nBody.\n\n</details>\n`,
+      /toggle summary/i,
+    ],
+    [
+      'a summary-like tag inside an HTML comment',
+      `<details>\n<!-- <summary class="presentation">Hidden</summary> -->\n\nBody.\n\n</details>`,
+      /toggle summary/i,
+    ],
+    [
+      'a source comment before a summary heading with an ID',
+      `<details>\n<!-- preserve this comment -->\n<summary><h2 id="important">Title</h2></summary>\n\nBody.\n\n</details>`,
+      /toggle summary/i,
+    ],
+    [
+      'a colored summary nested in a list item',
+      `- Item\n  <details>\n  <summary data-block-background="#2f80ed">Nested</summary>\n\n  Body.\n\n  </details>\n`,
+      /toggle summary background/i,
+    ],
+    [
+      'HTML appended after its details close tag',
+      `<details>\n<summary>Title</summary>\n\nBody.\n\n</details><span data-keep="yes">Tail</span>\n`,
+      /toggle close tag/i,
+    ],
+    [
+      'an unterminated raw-text element inside a toggle',
+      `<details>\n<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>\n\n<textarea>Missing close: </details>\n\nOutside\n`,
+      /unterminated opaque HTML/i,
+    ],
+    [
+      'an EOF comment that hides a toggle close',
+      `<details>\n<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>\n\nInside.\n\n<!-- comment without an end\n</details>\n\nOutside\n`,
+      /unterminated opaque HTML/i,
+    ],
+    [
+      'an EOF comment after a quote-owned close literal',
+      `<details>\n<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>\n\nInside.\n\n> </details>\n\n<!-- comment without an end\n`,
+      /unterminated opaque HTML/i,
+    ],
+  ];
+
+  it.each(unsupportedToggles)('keeps %s read-only without a vault write', async (_name, source, reason) => {
+    const notePath = 'Toggle.md';
+    const { vault, session } = await openObservedVault({ [notePath]: source });
+    const before = snapshotAllFiles(vault);
+    try {
+      const id = pageIdAt(session, notePath);
+      expect(session.protectedReasons.get(id)).toMatch(reason);
+      expect(session.unreadable.has(id)).toBe(true);
+      expectRawSource(session, id, source);
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(await session.flush()).toBe(true);
+      expect(vault.applyCalls).toHaveLength(0);
+      expect(snapshotAllFiles(vault)).toEqual(before);
+    } finally {
+      if (!session.isClosed) await session.close();
+    }
+  });
+
+  it('accepts escaped closing-tag literals only when the title round-trips them as text', () => {
+    const source = `<details open>\n<summary data-block-background="#1a2b3c"><h2>Before \\</summary> after and \\</details> after</h2></summary>\n\nBody.\n\n</details>\n`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const parsed = markdownToDoc(source);
+    const summary = parsed.content?.[0]?.content?.[0];
+    expect(JSON.stringify(summary?.content)).toContain('Before </summary> after and </details> after');
+
+    const saved = docToMarkdown(parsed);
+    expect(saved).toContain('Before \\</summary> after and \\</details> after');
+    expect(markdownToDoc(saved)).toEqual(parsed);
+  });
+
+  it('keeps a quote-owned raw closing-tag literal inside a toggle until the real owner close', () => {
+    const source = `<details open>\n<summary>Toggle</summary>\n\nBefore.\n\n> </details>\n\nStill inside.\n\n</details>\n\nOutside\n`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const parsed = markdownToDoc(source);
+    expect(parsed.content?.[0]?.type).toBe('details');
+    expect(JSON.stringify(parsed.content?.[0]?.content?.[1])).toContain('</details>');
+    expect(JSON.stringify(parsed.content?.[0]?.content?.[1])).toContain('Still inside.');
+    expect(parsed.content?.[1]?.content?.[0]?.text).toBe('Outside');
+    expect(markdownToDoc(docToMarkdown(parsed))).toEqual(parsed);
+  });
+
+  it('keeps an attributed summary inside an opaque wrapper editable', async () => {
+    const source = `<details>\n<summary data-block-background="#123456">A</summary>\n\n<div>\n<summary class="presentation">Opaque</summary>\n</div>\n\n</details>`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const parsed = markdownToDoc(source);
+    expect(parsed.content?.[0]?.content?.[1]?.content?.[0]).toEqual({
+      type: 'rawBlock',
+      attrs: { text: '<div>\n<summary class="presentation">Opaque</summary>\n</div>' },
+    });
+    expect(markdownToDoc(docToMarkdown(parsed))).toEqual(parsed);
+
+    const { vault, session } = await openObservedVault({ 'Toggle.md': source });
+    try {
+      const id = pageIdAt(session, 'Toggle.md');
+      expect(session.protectedReasons.get(id) ?? null).toBeNull();
+      const doc = session.getState().docs[id]!;
+      const edited: DocNode = {
+        ...doc,
+        content: [
+          ...doc.content!,
+          { type: 'paragraph', content: [{ type: 'text', text: 'Editable sibling.' }] },
+        ],
+      };
+      expect(session.execute({ type: 'page.setDoc', id, doc: edited, now: 51 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      expect(vault.text('Toggle.md')).toContain('<summary class="presentation">Opaque</summary>');
+      expect(vault.text('Toggle.md')).toContain('Editable sibling.');
+    } finally {
+      if (!session.isClosed) await session.close();
+    }
+  });
+
+  it.each([
+    ['without summary metadata', '<summary>Title</summary>'],
+    ['with a styled summary', '<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>'],
+  ])('keeps the raw HTML body close and following paragraph representable %s', (_name, summary) => {
+    const source = `<details open>\n${summary}\n\n<p>Path</p>\\</details>\n\nOutside\n`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const parsed = markdownToDoc(source);
+    expect(parsed.content?.[0]?.type).toBe('details');
+    expect(JSON.stringify(parsed.content?.[0]?.content?.[1])).toContain('<p>Path</p>');
+    expect(JSON.stringify(parsed.content?.[0]?.content?.[1])).not.toContain('Outside');
+    expect(parsed.content?.[1]).toEqual({ type: 'paragraph', content: [{ type: 'text', text: 'Outside' }] });
+  });
+
+  it('allows a raw-text textarea in the body without absorbing the later paragraph', () => {
+    const source = `<details open>\n<summary data-block-background="#1a2b3c"><h2>Title</h2></summary>\n\n<textarea>literal </details></textarea>\n\nInside toggle.\n\n</details>\n\nOutside\n`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const parsed = markdownToDoc(source);
+    expect(parsed.content?.[0]?.content?.[1]?.content?.[0]).toEqual({
+      type: 'rawBlock',
+      attrs: { text: '<textarea>literal </details></textarea>' },
+    });
+    expect(parsed.content?.[0]?.content?.[1]?.content?.[1]?.content?.[0]?.text).toBe('Inside toggle.');
+    expect(parsed.content?.[1]?.content?.[0]?.text).toBe('Outside');
+  });
+
+  it('keeps sibling plaintext after a completed toggle editable', async () => {
+    const source = `<details open>\n<summary>Title</summary>\n\nInside.\n\n</details>\n\n<plaintext>Sibling raw content\n`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const { vault, session } = await openObservedVault({ 'Toggle.md': source });
+    try {
+      const id = pageIdAt(session, 'Toggle.md');
+      expect(session.protectedReasons.get(id) ?? null).toBeNull();
+      const doc = session.getState().docs[id]!;
+      expect(doc.content?.[0]?.type).toBe('details');
+      expect(doc.content?.[1]).toEqual({
+        type: 'paragraph',
+        content: [{ type: 'text', text: '<plaintext>Sibling raw content' }],
+      });
+      const edited: DocNode = {
+        ...doc,
+        content: [
+          doc.content![0]!,
+          { type: 'paragraph', content: [{ type: 'text', text: 'Editable before raw sibling.' }] },
+          ...doc.content!.slice(1),
+        ],
+      };
+      expect(session.execute({ type: 'page.setDoc', id, doc: edited, now: 50 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      expect(vault.text('Toggle.md')).toContain('<plaintext>Sibling raw content');
+      expect(vault.text('Toggle.md')).toContain('Editable before raw sibling.');
+    } finally {
+      if (!session.isClosed) await session.close();
+    }
+  });
+
+  it.each([
+    ['a details tag inside a raw wrapper', `<div>\n<details>\n</div>\n\n<!-- unfinished sibling comment`],
+    ['a self-closing details tag', `<details/>\n\n<!-- unfinished sibling comment`],
+  ])('does not treat %s as an open parser-owned toggle', (_name, source) => {
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+  });
+});

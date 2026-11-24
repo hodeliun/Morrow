@@ -670,6 +670,7 @@ const BlockBackground = Extension.create({
 // a toggle's title can be a heading, the way notion's toggle headings fold a whole section away. the level
 // lives on the title, so opening and closing the toggle never touches it
 const ToggleSummary = DetailsSummary.extend({
+  content: '(text | pageLink)*',
   addAttributes() {
     return {
       level: {
@@ -679,6 +680,17 @@ const ToggleSummary = DetailsSummary.extend({
           return level >= 1 && level <= 6 ? level : null;
         },
         renderHTML: (attributes) => (attributes.level ? { 'data-level': String(attributes.level) } : {}),
+      },
+      backgroundColor: {
+        default: null,
+        parseHTML: (element) => {
+          const color = normalizeInlineColor(element.getAttribute('data-block-background'));
+          return isHexBlockBackground(color) ? color : null;
+        },
+        renderHTML: (attributes) => {
+          const color = normalizeInlineColor(attributes.backgroundColor);
+          return isHexBlockBackground(color) ? { 'data-block-background': color } : {};
+        },
       },
     };
   },

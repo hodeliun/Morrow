@@ -43,6 +43,12 @@ export function supportsHexBlockBackgroundOwner(
 ): boolean {
   const parentType = ancestorTypes.at(-1);
   const listContainerType = ancestorTypes.at(-2);
+  if (ownerType === 'detailsSummary') {
+    return (
+      parentType === 'details' &&
+      ancestorTypes.slice(0, -1).every((ancestor) => SUPPORTED_HEX_BACKGROUND_NON_LIST_ANCESTORS.has(ancestor))
+    );
+  }
   const directListParagraph =
     ownerType === 'paragraph' && (parentType === 'listItem' || parentType === 'taskItem');
   if (directListParagraph) {

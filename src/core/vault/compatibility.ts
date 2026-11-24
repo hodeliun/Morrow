@@ -1,7 +1,20 @@
 // Detect Markdown data the upstream model cannot represent before pageFile normalizes it.
 import MarkdownIt from 'markdown-it';
 import { isRecord, validateDoc, walk } from '../doc';
-import { inspectBlockBackgroundMarkers, markdownToDoc } from '../markdown/parse';
+import {
+  inspectBlockBackgroundMarkers,
+  markdownToDoc,
+  markdownToDocWithDetailsHtmlBlocks,
+  parseToggleSummaryInline,
+} from '../markdown/parse';
+import type { ParsedDetailsHtmlBlock } from '../markdown/parse';
+import { supportsHexBlockBackgroundOwner } from '../markdown/blockBackground';
+import {
+  inspectToggleMarkup,
+  isSupportedDetailsTag,
+  isSupportedSummaryTag,
+  toggleExtensionAttributeNames,
+} from '../markdown/toggleSummary';
 import type { DocNode } from '../model';
 import {
   countLegacyFormulaNodes,
@@ -643,15 +656,38 @@ function unsupportedMarkerIssue(
     allowedViewMarkers.set(marker.comment, remaining - 1);
   }
   const parsedTokens = markerMarkdown.parse(body, {});
+  const hasDetailsMarkup = /<\/?details\b/i.test(body);
+  let detailsParse: ReturnType<typeof markdownToDocWithDetailsHtmlBlocks> | null = null;
+  if (hasDetailsMarkup) {
+    try {
+      detailsParse = markdownToDocWithDetailsHtmlBlocks(body);
+    } catch {
+      return 'A toggle summary is not in a structure this version can safely preserve.';
+    }
+  }
+  const toggleIssue = toggleSummaryIssue(parsedTokens, detailsParse?.detailsHtmlBlocks ?? []);
+  if (toggleIssue.issue) return toggleIssue.issue;
+  let parsedDocument: DocNode | null = detailsParse?.doc ?? null;
+  if (toggleIssue.blockBackgroundCount > 0 || viewIds.size > 0) {
+    try {
+      parsedDocument ??= markdownToDoc(body);
+    } catch {
+      return toggleIssue.blockBackgroundCount > 0
+        ? 'A toggle summary background is not in a structure this version can safely preserve.'
+        : 'The page contains a Polaris Dados view this version cannot safely represent.';
+    }
+  }
+  if (
+    toggleIssue.blockBackgroundCount > 0 &&
+    parsedDocument &&
+    hasUnsupportedToggleSummaryBackgroundOwner(parsedDocument)
+  ) {
+    return 'A toggle summary background is not in a structure this version can safely preserve.';
+  }
   const formulaIssue = legacyFormulaIssue(body, parsedTokens);
   if (formulaIssue) return formulaIssue;
   if (viewIds.size > 0) {
-    let parsed: DocNode;
-    try {
-      parsed = markdownToDoc(body);
-    } catch {
-      return 'The page contains a Polaris Dados view this version cannot safely represent.';
-    }
+    const parsed = parsedDocument!;
     if (!validateDoc(parsed).ok) {
       return 'The page contains a Polaris Dados view this version cannot safely represent.';
     }
@@ -665,10 +701,13 @@ function unsupportedMarkerIssue(
       return 'The page contains a Polaris Dados view this version cannot safely represent.';
     }
   }
-  if (hasUnsupportedMorrowDataAttribute(body, parsedTokens)) {
+  if (hasUnsupportedMorrowDataAttribute(body, parsedTokens, toggleIssue.summaryFormatCount)) {
     return 'The page contains a Polaris data extension this version cannot safely edit.';
   }
-  if (/\bdata-(?:widths|block-background|block-id)\b/i.test(body)) {
+  if (
+    countAttribute(body, 'data-block-background') !== toggleIssue.blockBackgroundCount ||
+    /\bdata-(?:widths|block-id)\b/i.test(body)
+  ) {
     return 'The page contains a layout or block identifier this version cannot safely edit.';
   }
   return null;
@@ -755,6 +794,7 @@ function hasMarkedLegacyFormula(doc: DocNode): boolean {
 function hasUnsupportedMorrowDataAttribute(
   body: string,
   tokens: ReturnType<typeof markerMarkdown.parse>,
+  allowedSummaryFormatCount = 0,
 ): boolean {
   const formulaSpans: string[] = [];
   for (const token of tokens) {
@@ -775,7 +815,165 @@ function hasUnsupportedMorrowDataAttribute(
     cursor = start + span.length;
   }
   remaining += body.slice(cursor);
+  if (countAttribute(remaining, 'data-morrow-summary-format') !== allowedSummaryFormatCount) return true;
+  remaining = remaining.replace(/\bdata-morrow-summary-format\b/gi, ' '.repeat('data-morrow-summary-format'.length));
   return /\bdata-morrow-[\w-]+\b/i.test(remaining);
+}
+
+function toggleSummaryIssue(
+  tokens: ReturnType<typeof markerMarkdown.parse>,
+  htmlBlocks: ParsedDetailsHtmlBlock[],
+): {
+  issue: string | null;
+  summaryFormatCount: number;
+  blockBackgroundCount: number;
+} {
+  let summaryFormatCount = 0;
+  let blockBackgroundCount = 0;
+  for (const token of tokens) {
+    if (token.type === 'inline') {
+      for (const child of token.children ?? []) {
+        if (child.type !== 'html_inline') continue;
+        const inlineTags = inspectToggleMarkup(child.content);
+        if (
+          inlineTags.detailsTags.some((tag) => tag.attributes.length > 0) ||
+          inlineTags.summaryTags.some((tag) => tag.attributes.length > 0)
+        ) {
+          return {
+            issue: 'Toggle attributes are supported only on a direct summary in a Markdown HTML block.',
+            summaryFormatCount,
+            blockBackgroundCount,
+          };
+        }
+      }
+    }
+  }
+
+  for (const block of htmlBlocks) {
+    const inspected = inspectToggleMarkup(block.source);
+    const structure = block.structure;
+    const recognizedOpenTags = new Set(
+      structure.kind === 'open'
+        ? structure.events.flatMap((event) => (event.kind === 'open' ? [event.tag.start] : []))
+        : [],
+    );
+    const structuralHeaders = inspected.headers.filter((header) =>
+      recognizedOpenTags.has(header.details.start),
+    );
+
+    if (
+      structure.kind === 'open' &&
+      block.consumedSummaryStart !== null &&
+      !structuralHeaders.some((header) => header.summary.start === block.consumedSummaryStart)
+    ) {
+      return {
+        issue: 'A toggle summary is not in a structure this version can safely preserve.',
+        summaryFormatCount,
+        blockBackgroundCount,
+      };
+    }
+
+    if (block.detailsOwner && inspected.unterminatedOpaqueStarts.length > 0) {
+      return {
+        issue: 'A toggle contains an unterminated opaque HTML element this version cannot safely preserve.',
+        summaryFormatCount,
+        blockBackgroundCount,
+      };
+    }
+
+    if (
+      structure.kind === 'close' &&
+      block.source.slice(structure.close.end).trim()
+    ) {
+      return {
+        issue: 'A toggle close tag has trailing HTML this version cannot safely preserve.',
+        summaryFormatCount,
+        blockBackgroundCount,
+      };
+    }
+
+    if (
+      structure.kind === 'open' &&
+      structure.close &&
+      block.source.slice(structure.close.end).trim()
+    ) {
+      return {
+        issue: 'A toggle close tag has trailing HTML this version cannot safely preserve.',
+        summaryFormatCount,
+        blockBackgroundCount,
+      };
+    }
+
+    for (const details of inspected.detailsTags.filter((tag) => recognizedOpenTags.has(tag.start))) {
+      if (details.attributes.length > 0 && !isSupportedDetailsTag(details)) {
+        return {
+          issue: 'A details block uses attributes this version cannot safely preserve.',
+          summaryFormatCount,
+          blockBackgroundCount,
+        };
+      }
+    }
+    const representedSummaries = new Set<number>();
+    for (const header of structuralHeaders) {
+      const summary = header.summary;
+      representedSummaries.add(summary.start);
+      if (!header.supported || !isSupportedSummaryTag(summary)) {
+        return {
+          issue: 'A toggle summary uses attributes this version cannot safely preserve.',
+          summaryFormatCount,
+          blockBackgroundCount,
+        };
+      }
+      for (const name of toggleExtensionAttributeNames(summary)) {
+        if (name === 'data-morrow-summary-format') summaryFormatCount++;
+        if (name === 'data-block-background') blockBackgroundCount++;
+      }
+    }
+    for (const summary of inspected.summaryTags) {
+      if (
+        summary.attributes.length === 0 ||
+        representedSummaries.has(summary.start) ||
+        summary.start !== block.consumedSummaryStart
+      ) {
+        continue;
+      }
+      return {
+        issue: 'A toggle summary uses attributes this version cannot safely preserve.',
+        summaryFormatCount,
+        blockBackgroundCount,
+      };
+    }
+    for (const header of structuralHeaders) {
+      const title = block.source.slice(header.titleStart, header.titleEnd);
+      if (!parseToggleSummaryInline(title)) {
+        return {
+          issue: 'A toggle summary uses inline content this version cannot safely preserve.',
+          summaryFormatCount,
+          blockBackgroundCount,
+        };
+      }
+    }
+  }
+  return { issue: null, summaryFormatCount, blockBackgroundCount };
+}
+
+function hasUnsupportedToggleSummaryBackgroundOwner(node: DocNode): boolean {
+  const visit = (current: DocNode, ancestors: string[]): boolean => {
+    if (
+      current.type === 'detailsSummary' &&
+      current.attrs?.backgroundColor != null &&
+      !supportsHexBlockBackgroundOwner(current.type, ancestors)
+    ) {
+      return true;
+    }
+    return (current.content ?? []).some((child) => visit(child, [...ancestors, current.type]));
+  };
+  return visit(node, []);
+}
+
+function countAttribute(source: string, name: string): number {
+  const pattern = new RegExp(`\\b${name}\\b`, 'gi');
+  return [...source.matchAll(pattern)].length;
 }
 
 function hasOverdeepPolarisDadosView(body: string): boolean {
