@@ -127,6 +127,10 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 4. Volte a duas colunas e depois à grade. Confira se as notas e os bancos desanexados voltam aos painéis.
 5. Em **Configurações → Geral → Ao abrir o Morrow**, escolha **Onde parei**. Volte à grade, selecione o painel que quer retomar e feche o aplicativo normalmente. Abra o mesmo `PilotState\DemoVault` e confira o arranjo, as abas e o painel selecionado.
 
+### Divisórias dos painéis
+
+No layout **Dois por dois**, arraste a divisória central e depois uma divisória horizontal. Pressione **Esc** durante outro arraste para cancelar. Com a divisória em foco, use as setas no eixo da divisão, **Home** para 20% e **End** para 80%. Com **Onde parei**, feche e reabra para conferir as proporções gravadas.
+
 ## Catálogo na barra lateral
 
 Em pacotes com o Polaris Arquivos, procure a seção **Arquivos** (**Files** em inglês) logo abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e abra **Subpasta** para ver `Planilha.csv`. Abra **Filtrar arquivos** na seção e ative **Incluir arquivos sem extensão** para mostrar `LEIAME`. Navegue para outra nota e confira se as pastas continuam expandidas. O botão **Arquivos** no menu principal abre a página de anexos e das notas que os usam.
