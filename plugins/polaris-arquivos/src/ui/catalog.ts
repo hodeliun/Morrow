@@ -1,4 +1,10 @@
-import type { VaultFileMetadata, VaultFilePage } from '../../../../src/app/platform/desktop';
+import type {
+  VaultCatalogFileAction,
+  VaultCatalogFileActionResult,
+  VaultCatalogFileActionStatus,
+  VaultFileMetadata,
+  VaultFilePage,
+} from '../../../../src/app/platform/desktop';
 import type { SupportedLocale } from '../../../../src/app/i18n';
 import type { PluginSidebarFileCatalogHost } from '../../../../src/app/plugins/registry';
 import {
@@ -56,6 +62,17 @@ interface Messages {
   preferenceInvalid: string;
   preferenceUnavailable: string;
   moreTypes: string;
+  openFile: string;
+  revealFile: string;
+  actionRunning: string;
+  fileMissing: string;
+  actionBlocked: string;
+  noAssociation: string;
+  invalidResource: string;
+  actionStale: string;
+  actionUnavailable: string;
+  actionFailed: string;
+  refreshFolder: string;
 }
 
 const messages: Record<SupportedLocale, Messages> = {
@@ -95,6 +112,17 @@ const messages: Record<SupportedLocale, Messages> = {
     preferenceInvalid: 'As preferências salvas estão inválidas. O catálogo usará os padrões até que possam ser salvas novamente.',
     preferenceUnavailable: 'Não foi possível acessar o armazenamento local. Os filtros valem apenas nesta sessão.',
     moreTypes: 'Refine a busca para ver mais extensões.',
+    openFile: 'Abrir no aplicativo do sistema',
+    revealFile: 'Mostrar na pasta',
+    actionRunning: 'Executando ação…',
+    fileMissing: 'O arquivo não existe mais no cofre. Atualize a pasta e tente novamente.',
+    actionBlocked: 'Este tipo de arquivo está bloqueado para abertura direta. Você ainda pode mostrar a pasta.',
+    noAssociation: 'Nenhum aplicativo do sistema foi associado a este tipo. Você pode mostrar a pasta.',
+    invalidResource: 'O arquivo mudou ou não é mais seguro usar. Atualize a pasta e tente novamente.',
+    actionStale: 'A sessão do cofre mudou. Atualize o catálogo antes de tentar novamente.',
+    actionUnavailable: 'A ação de arquivo está indisponível.',
+    actionFailed: 'O sistema não concluiu a ação. Tente a outra ação ou atualize a pasta.',
+    refreshFolder: 'Atualizar pasta',
   },
   en: {
     title: 'Files',
@@ -132,6 +160,17 @@ const messages: Record<SupportedLocale, Messages> = {
     preferenceInvalid: 'Saved preferences are invalid. The catalog will use defaults until they can be saved again.',
     preferenceUnavailable: 'Local storage is unavailable. Filters apply only for this session.',
     moreTypes: 'Search to narrow the list of extensions.',
+    openFile: 'Open with the system app',
+    revealFile: 'Show in folder',
+    actionRunning: 'Working…',
+    fileMissing: 'The file is no longer in the vault. Refresh this folder and try again.',
+    actionBlocked: 'This file type is blocked from direct opening. You can still show its folder.',
+    noAssociation: 'No system app is associated with this file type. You can show its folder.',
+    invalidResource: 'The file changed or is no longer safe to use. Refresh this folder and try again.',
+    actionStale: 'The vault session changed. Refresh the catalog before trying again.',
+    actionUnavailable: 'File actions are unavailable.',
+    actionFailed: 'The system could not complete that action. Try the other action or refresh the folder.',
+    refreshFolder: 'Refresh folder',
   },
   es: {
     title: 'Archivos',
@@ -169,6 +208,17 @@ const messages: Record<SupportedLocale, Messages> = {
     preferenceInvalid: 'Las preferencias guardadas no son válidas. El catálogo usará los valores predeterminados hasta poder guardarlas de nuevo.',
     preferenceUnavailable: 'No se puede acceder al almacenamiento local. Los filtros solo se aplican durante esta sesión.',
     moreTypes: 'Afina la búsqueda para ver más extensiones.',
+    openFile: 'Abrir con la aplicación del sistema',
+    revealFile: 'Mostrar en la carpeta',
+    actionRunning: 'Procesando…',
+    fileMissing: 'El archivo ya no está en la bóveda. Actualiza esta carpeta e inténtalo de nuevo.',
+    actionBlocked: 'Este tipo de archivo está bloqueado para abrirse directamente. Aún puedes mostrar su carpeta.',
+    noAssociation: 'No hay una aplicación del sistema asociada a este tipo. Puedes mostrar su carpeta.',
+    invalidResource: 'El archivo cambió o ya no es seguro usarlo. Actualiza la carpeta e inténtalo de nuevo.',
+    actionStale: 'La sesión de la bóveda cambió. Actualiza el catálogo antes de volver a intentarlo.',
+    actionUnavailable: 'Las acciones de archivo no están disponibles.',
+    actionFailed: 'El sistema no pudo completar la acción. Prueba la otra acción o actualiza la carpeta.',
+    refreshFolder: 'Actualizar carpeta',
   },
 };
 
@@ -182,6 +232,14 @@ interface DirectoryState {
   errorMessage: string | null;
   retryCursor: string | null;
   retryAppend: boolean;
+}
+
+type FileActionFailureStatus = Exclude<VaultCatalogFileActionStatus, 'opened' | 'revealed'>;
+
+interface FileActionState {
+  path: string;
+  action: VaultCatalogFileAction;
+  status: FileActionFailureStatus | 'loading';
 }
 
 const newDirectoryState = (): DirectoryState => ({
@@ -207,6 +265,25 @@ function failureMessage(page: VaultFilePage, text: Messages): string {
       return text.stale;
     default:
       return text.ioError;
+  }
+}
+
+function fileActionFailureMessage(status: FileActionFailureStatus, text: Messages): string {
+  switch (status) {
+    case 'notFound':
+      return text.fileMissing;
+    case 'blocked':
+      return text.actionBlocked;
+    case 'noAssociation':
+      return text.noAssociation;
+    case 'invalidResource':
+      return text.invalidResource;
+    case 'stale':
+      return text.actionStale;
+    case 'unavailable':
+      return text.actionUnavailable;
+    default:
+      return text.actionFailed;
   }
 }
 
@@ -249,6 +326,8 @@ export function mountFileCatalog(
   let nextRequest = 0;
   let disposed = false;
   let searchSelection: { start: number; end: number } | null = null;
+  let fileActionState: FileActionState | null = null;
+  let fileActionToken = 0;
 
   const stateFor = (directory: string) => directories.get(directory) ?? newDirectoryState();
   const update = (directory: string, state: DirectoryState) => directories.set(directory, state);
@@ -593,10 +672,36 @@ export function mountFileCatalog(
           row.append(childList);
         }
       } else {
-        const name = document.createElement('span');
-        name.className = 'polaris-arquivos-name polaris-arquivos-file-name';
-        name.textContent = entry.name;
-        row.append(name);
+        row.classList.add('polaris-arquivos-file-row');
+        const actionDisabled = fileActionState?.status === 'loading';
+        const open = makeAction(
+          entry.name,
+          'polaris-arquivos-name polaris-arquivos-file-name polaris-arquivos-file-action polaris-arquivos-file-open',
+          `file-action:open:${entry.path}`,
+          () => void actOnFile(entry.path, 'open'),
+          actionDisabled,
+        );
+        open.setAttribute('aria-label', `${text.openFile}: ${entry.name}`);
+        const actions = document.createElement('div');
+        actions.className = 'polaris-arquivos-file-actions';
+        if (typeof host.actOnFile === 'function') {
+          const reveal = makeAction(
+            '↗',
+            'polaris-arquivos-file-action polaris-arquivos-file-reveal',
+            `file-action:reveal:${entry.path}`,
+            () => void actOnFile(entry.path, 'reveal'),
+            actionDisabled,
+          );
+          reveal.setAttribute('aria-label', `${text.revealFile}: ${entry.name}`);
+          reveal.title = `${text.revealFile}: ${entry.name}`;
+          actions.append(reveal);
+          row.append(open, actions);
+        } else {
+          const name = document.createElement('span');
+          name.className = 'polaris-arquivos-name polaris-arquivos-file-name';
+          name.textContent = entry.name;
+          row.append(name);
+        }
       }
       list.append(row);
     }
@@ -627,6 +732,46 @@ export function mountFileCatalog(
       list.append(action);
     }
   };
+
+  async function actOnFile(path: string, action: VaultCatalogFileAction): Promise<void> {
+    const generation = leaseGeneration;
+    const act = host.actOnFile;
+    if (disposed || !isActive(host) || generation === null || typeof act !== 'function') return;
+    const token = ++fileActionToken;
+    fileActionState = { path, action, status: 'loading' };
+    render();
+    let result: VaultCatalogFileActionResult;
+    try {
+      result = await act(path, generation, action);
+    } catch {
+      result = { generation, status: 'failed' };
+    }
+    if (disposed || !isActive(host) || token !== fileActionToken) return;
+    if (result.generation !== generation) result = { generation: result.generation, status: 'stale' };
+    if (result.status === 'opened' || result.status === 'revealed') {
+      fileActionState = null;
+    } else {
+      fileActionState = { path, action, status: result.status };
+    }
+    render();
+  }
+
+  function refreshCatalog(): void {
+    fileActionToken += 1;
+    fileActionState = null;
+    leaseGeneration = null;
+    discoveryToken += 1;
+    discoveryStatus = 'idle';
+    discoveryRestartRequested = false;
+    discoveredFiles.clear();
+    discoveredExtensions.clear();
+    visibleFiles = [];
+    extensionOptions = null;
+    expanded.clear();
+    directories.clear();
+    render();
+    void load('', null, false);
+  }
 
   function render() {
     if (disposed) return;
@@ -662,6 +807,33 @@ export function mountFileCatalog(
     heading.append(title, settingsButton);
     section.append(heading);
     renderSettings(section);
+
+    if (fileActionState) {
+      const notice = document.createElement('div');
+      notice.className = 'polaris-arquivos-action-status';
+      notice.setAttribute('role', fileActionState.status === 'loading' ? 'status' : 'alert');
+      const name = fileActionState.path.slice(fileActionState.path.lastIndexOf('/') + 1);
+      const message = fileActionState.status === 'loading'
+        ? text.actionRunning
+        : fileActionFailureMessage(fileActionState.status, text);
+      notice.append(document.createTextNode(`${name}: ${message}`));
+      if (fileActionState.status === 'notFound' || fileActionState.status === 'invalidResource') {
+        const directory = fileActionState.path.includes('/')
+          ? fileActionState.path.slice(0, fileActionState.path.lastIndexOf('/'))
+          : '';
+        notice.append(
+          makeAction(text.refreshFolder, 'polaris-arquivos-retry', `refresh:${directory}`, () => {
+            fileActionState = null;
+            void load(directory, null, false);
+          }),
+        );
+      } else if (fileActionState.status === 'stale') {
+        notice.append(
+          makeAction(text.refreshFolder, 'polaris-arquivos-retry', 'refresh:catalog', refreshCatalog),
+        );
+      }
+      section.append(notice);
+    }
 
     const rootList = document.createElement('ul');
     rootList.className = 'polaris-arquivos-tree';

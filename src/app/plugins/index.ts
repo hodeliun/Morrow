@@ -46,7 +46,11 @@ import type { PluginEditorInsertionTargetV1 } from './editorApi';
 import { addInlineFormulaSlashCommand } from './inlineFormulaAuthoring';
 import type { PluginInlineFormulaEditAction, PluginInlineFormulaSlashCommand } from './inlineFormulaApi';
 import { definePluginLocaleApi } from './localeApi';
-import type { VaultFilePage } from '../platform/desktop';
+import type {
+  VaultCatalogFileAction,
+  VaultCatalogFileActionResult,
+  VaultFilePage,
+} from '../platform/desktop';
 
 export type { PluginLocaleApi } from './localeApi';
 
@@ -371,6 +375,30 @@ function pluginApi(id: string, state: Running) {
                   nextCursor: null,
                   error: error instanceof Error ? error.message : 'The folder could not be read.',
                 };
+              }
+            },
+          }
+        : {}),
+      ...(typeof bridge?.catalogFileAction === 'function'
+        ? {
+            async actOnFile(
+              path: string,
+              generation: number,
+              action: VaultCatalogFileAction,
+            ): Promise<VaultCatalogFileActionResult> {
+              if (!ownerIsActive()) return { generation, status: 'stale' };
+              if (
+                typeof path !== 'string' ||
+                !Number.isSafeInteger(generation) ||
+                generation < 0 ||
+                (action !== 'open' && action !== 'reveal')
+              )
+                return { generation, status: 'invalidResource' };
+              try {
+                const result = await bridge.catalogFileAction!(path, generation, action);
+                return ownerIsActive() ? result : { generation: result.generation, status: 'stale' };
+              } catch {
+                return ownerIsActive() ? { generation, status: 'failed' } : { generation, status: 'stale' };
               }
             },
           }

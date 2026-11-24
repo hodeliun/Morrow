@@ -779,6 +779,33 @@ async fn vault_files_page(
 }
 
 #[tauri::command]
+async fn vault_catalog_file_action<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    generation: u64,
+    action: vault::VaultCatalogFileAction,
+) -> Res<vault::VaultCatalogFileActionResult> {
+    blocking(move || {
+        vault::catalog_file_action(generation, &path, action, |target, action| match action {
+            vault::VaultCatalogFileAction::Open => app
+                .opener()
+                .open_path(target.to_string_lossy().into_owned(), None::<&str>)
+                .map_err(|error| match error {
+                    tauri_plugin_opener::Error::Io(error) => {
+                        vault::catalog_open_failure(error.raw_os_error(), cfg!(windows))
+                    }
+                    _ => vault::VaultCatalogFileActionFailure::Failed,
+                }),
+            vault::VaultCatalogFileAction::Reveal => app
+                .opener()
+                .reveal_item_in_dir(target)
+                .map_err(|_| vault::VaultCatalogFileActionFailure::Failed),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 async fn vault_reveal<R: Runtime>(app: AppHandle<R>, path: Option<String>) -> Res<()> {
     let target = match path.filter(|path| !path.is_empty()) {
         Some(path) => vault::resolve(&path)?,
@@ -1328,6 +1355,7 @@ pub fn run() {
             vault_exists,
             vault_list,
             vault_files_page,
+            vault_catalog_file_action,
             vault_reveal,
             vault_open_file,
             vault_open_link,

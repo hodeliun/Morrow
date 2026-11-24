@@ -21,6 +21,24 @@ export interface VaultFilePage {
   error: string | null;
 }
 
+export type VaultCatalogFileAction = 'open' | 'reveal';
+
+export type VaultCatalogFileActionStatus =
+  | 'opened'
+  | 'revealed'
+  | 'notFound'
+  | 'blocked'
+  | 'noAssociation'
+  | 'invalidResource'
+  | 'stale'
+  | 'unavailable'
+  | 'failed';
+
+export interface VaultCatalogFileActionResult {
+  generation: number;
+  status: VaultCatalogFileActionStatus;
+}
+
 export interface DesktopVaultApi {
   state(): Promise<{
     current: string | null;
@@ -46,6 +64,12 @@ export interface DesktopVaultApi {
   list(path: string): Promise<Array<{ path: string; size: number; mtime: number }>>;
   // one page of immediate file/folder metadata from the active session; unlike list(), it never recurses
   listFilesPage(directory: string, cursor?: string | null, limit?: number): Promise<VaultFilePage>;
+  // explicit catalog actions accept only a relative file identity tied to the page's vault generation
+  catalogFileAction?(
+    path: string,
+    generation: number,
+    action: VaultCatalogFileAction,
+  ): Promise<VaultCatalogFileActionResult>;
   reveal(path?: string): Promise<void>;
   openFile(path: string): Promise<boolean>;
   openLink?(href: string, pagePath: string | null): Promise<boolean>;

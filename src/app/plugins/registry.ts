@@ -13,6 +13,10 @@ import type {
   FileCatalogPreferenceReadResult,
   FileCatalogPreferenceWriteResult,
 } from '../platform/fileCatalogPreferences';
+import type {
+  VaultCatalogFileAction,
+  VaultCatalogFileActionResult,
+} from '../platform/desktop';
 
 export type PluginInlineColorKind = 'text' | 'bg';
 
@@ -119,6 +123,11 @@ export interface PluginSidebarFileCatalogHost {
     cursor?: string | null,
     limit?: number,
   ) => Promise<VaultFilePage>;
+  readonly actOnFile?: (
+    path: string,
+    generation: number,
+    action: VaultCatalogFileAction,
+  ) => Promise<VaultCatalogFileActionResult>;
   readonly readPreferences?: () => FileCatalogPreferenceReadResult;
   readonly writePreferences?: (value: unknown | null) => FileCatalogPreferenceWriteResult;
 }
@@ -326,6 +335,7 @@ export function addPluginSidebarFileCatalog(
     error: null,
   });
   const listFilesPage = host.listFilesPage;
+  const actOnFile = host.actOnFile;
   const readPreferences = host.readPreferences;
   const writePreferences = host.writePreferences;
   const guardedHost: PluginSidebarFileCatalogHost = Object.freeze({
@@ -340,6 +350,25 @@ export function addPluginSidebarFileCatalog(
             } catch (error) {
               if (!registrationIsActive()) return stalePage();
               throw error;
+            }
+          },
+        }
+      : {}),
+    ...(typeof actOnFile === 'function'
+      ? {
+          async actOnFile(
+            path: string,
+            generation: number,
+            action: VaultCatalogFileAction,
+          ): Promise<VaultCatalogFileActionResult> {
+            if (!registrationIsActive()) return { generation, status: 'stale' };
+            try {
+              const result = await actOnFile(path, generation, action);
+              return registrationIsActive() ? result : { generation: result.generation, status: 'stale' };
+            } catch {
+              return registrationIsActive()
+                ? { generation, status: 'failed' }
+                : { generation, status: 'stale' };
             }
           },
         }

@@ -69,6 +69,40 @@ pub struct VaultFilePage {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum VaultCatalogFileAction {
+    Open,
+    Reveal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VaultCatalogFileActionStatus {
+    Opened,
+    Revealed,
+    NotFound,
+    Blocked,
+    NoAssociation,
+    InvalidResource,
+    Stale,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultCatalogFileActionResult {
+    pub generation: u64,
+    pub status: VaultCatalogFileActionStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultCatalogFileActionFailure {
+    NoAssociation,
+    Failed,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FilePageStatus {
@@ -96,10 +130,25 @@ struct OpenSnapshot {
     metadata_root: Option<CapabilityDir>,
 }
 
+struct AdmittedCatalogFileAction {
+    generation: u64,
+    target: PathBuf,
+    action: VaultCatalogFileAction,
+}
+
 const MAX_PAGE_SIZE: usize = 200;
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_CURSOR_BYTES: usize = 8192;
 const MAX_CURSOR_NAME_BYTES: usize = 1024;
+
+// The same active-content blocklist shipped by Electron at 778c6b6. Office and PSD data files
+// remain eligible for the operating system's default handler; active types require explicit app choice.
+const BLOCKED_CATALOG_OPEN_EXTENSIONS: &[&str] = &[
+    "app", "appimage", "apk", "bash", "bat", "cjs", "cmd", "com", "command", "desktop", "dmg",
+    "exe", "hta", "html", "htm", "jar", "js", "jse", "lnk", "mjs", "msi", "msp", "mht", "mhtml",
+    "pif", "pkg", "ps1", "ps1xml", "psm1", "psd1", "pl", "py", "rb", "reg", "run", "scr", "sh",
+    "svg", "url", "vbe", "vbs", "wsf", "wsh", "xsl", "xslt", "xhtml",
+];
 
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
@@ -781,6 +830,194 @@ fn metadata_directory(
         current = next;
     }
     Ok(current)
+}
+
+fn action_status_for_page(status: FilePageStatus) -> VaultCatalogFileActionStatus {
+    match status {
+        FilePageStatus::NotFound => VaultCatalogFileActionStatus::NotFound,
+        FilePageStatus::Unavailable => VaultCatalogFileActionStatus::Unavailable,
+        FilePageStatus::Stale => VaultCatalogFileActionStatus::Stale,
+        FilePageStatus::IoError => VaultCatalogFileActionStatus::Failed,
+        FilePageStatus::Blocked => VaultCatalogFileActionStatus::InvalidResource,
+        FilePageStatus::Ready | FilePageStatus::Empty => {
+            VaultCatalogFileActionStatus::InvalidResource
+        }
+    }
+}
+
+fn catalog_file_target(
+    snapshot: &OpenSnapshot,
+    relative: &str,
+) -> std::result::Result<PathBuf, VaultCatalogFileActionStatus> {
+    if relative.is_empty()
+        || relative.len() > 4096
+        || relative.contains('\0')
+        || relative.contains('\\')
+        || relative.starts_with('/')
+    {
+        return Err(VaultCatalogFileActionStatus::InvalidResource);
+    }
+    let (directory, name) = relative.rsplit_once('/').unwrap_or(("", relative));
+    if relative.split('/').any(|part| {
+        part.is_empty()
+            || part == "."
+            || part == ".."
+            || part.contains(':')
+            || part.starts_with('.')
+            || part.contains(TEMP_MARK)
+            || part.contains(".morrow-move-")
+    }) {
+        return Err(VaultCatalogFileActionStatus::InvalidResource);
+    }
+    let Some(canonical_relative) = relative_child_path(&snapshot.real_root, directory, name) else {
+        return Err(VaultCatalogFileActionStatus::InvalidResource);
+    };
+    if canonical_relative != relative {
+        return Err(VaultCatalogFileActionStatus::InvalidResource);
+    }
+    let parent = metadata_directory(snapshot, directory).map_err(action_status_for_page)?;
+    let info = parent
+        .symlink_metadata(name)
+        .map_err(|error| action_status_for_page(path_error_status(&error)))?;
+    if info.is_symlink() || !info.is_file() {
+        return Err(VaultCatalogFileActionStatus::InvalidResource);
+    }
+
+    let absolute = snapshot.real_root.join(relative);
+    // Keep the same Windows drive-prefix normalization used when the vault was opened.
+    let canonical = dunce::canonicalize(&absolute)
+        .map_err(|error| action_status_for_page(path_error_status(&error)))?;
+    if !canonical.starts_with(&snapshot.real_root)
+        || to_relative(&snapshot.real_root, &canonical) != relative
+    {
+        return Err(VaultCatalogFileActionStatus::InvalidResource);
+    }
+    Ok(canonical)
+}
+
+fn catalog_open_blocked(relative: &str) -> bool {
+    let extension = Path::new(relative)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    BLOCKED_CATALOG_OPEN_EXTENSIONS.contains(&extension.as_str())
+}
+
+pub fn catalog_open_failure(
+    raw_os_error: Option<i32>,
+    is_windows: bool,
+) -> VaultCatalogFileActionFailure {
+    if is_windows && raw_os_error == Some(1155) {
+        VaultCatalogFileActionFailure::NoAssociation
+    } else {
+        VaultCatalogFileActionFailure::Failed
+    }
+}
+
+#[cfg(test)]
+fn catalog_file_action_from_snapshot(
+    snapshot: &OpenSnapshot,
+    relative: &str,
+    action: VaultCatalogFileAction,
+    dispatch: impl FnOnce(
+        &Path,
+        VaultCatalogFileAction,
+    ) -> std::result::Result<(), VaultCatalogFileActionFailure>,
+) -> VaultCatalogFileActionResult {
+    let failure = |status| VaultCatalogFileActionResult {
+        generation: snapshot.generation,
+        status,
+    };
+    let admitted = match admit_catalog_file_action_from_snapshot(snapshot, relative, action) {
+        Ok(admitted) => admitted,
+        Err(status) => return failure(status),
+    };
+    match dispatch(&admitted.target, admitted.action) {
+        Ok(()) => failure(match action {
+            VaultCatalogFileAction::Open => VaultCatalogFileActionStatus::Opened,
+            VaultCatalogFileAction::Reveal => VaultCatalogFileActionStatus::Revealed,
+        }),
+        Err(VaultCatalogFileActionFailure::NoAssociation) => {
+            failure(VaultCatalogFileActionStatus::NoAssociation)
+        }
+        Err(VaultCatalogFileActionFailure::Failed) => failure(VaultCatalogFileActionStatus::Failed),
+    }
+}
+
+fn admit_catalog_file_action_from_snapshot(
+    snapshot: &OpenSnapshot,
+    relative: &str,
+    action: VaultCatalogFileAction,
+) -> std::result::Result<AdmittedCatalogFileAction, VaultCatalogFileActionStatus> {
+    let target = catalog_file_target(snapshot, relative)?;
+    if action == VaultCatalogFileAction::Open && catalog_open_blocked(relative) {
+        return Err(VaultCatalogFileActionStatus::Blocked);
+    }
+    Ok(AdmittedCatalogFileAction {
+        generation: snapshot.generation,
+        target,
+        action,
+    })
+}
+
+fn catalog_file_action_result(
+    generation: u64,
+    action: VaultCatalogFileAction,
+    dispatch: std::result::Result<(), VaultCatalogFileActionFailure>,
+) -> VaultCatalogFileActionResult {
+    let status = match dispatch {
+        Ok(()) => match action {
+            VaultCatalogFileAction::Open => VaultCatalogFileActionStatus::Opened,
+            VaultCatalogFileAction::Reveal => VaultCatalogFileActionStatus::Revealed,
+        },
+        Err(VaultCatalogFileActionFailure::NoAssociation) => {
+            VaultCatalogFileActionStatus::NoAssociation
+        }
+        Err(VaultCatalogFileActionFailure::Failed) => VaultCatalogFileActionStatus::Failed,
+    };
+    VaultCatalogFileActionResult { generation, status }
+}
+
+pub fn catalog_file_action(
+    generation: u64,
+    relative: &str,
+    action: VaultCatalogFileAction,
+    dispatch: impl FnOnce(
+        &Path,
+        VaultCatalogFileAction,
+    ) -> std::result::Result<(), VaultCatalogFileActionFailure>,
+) -> VaultCatalogFileActionResult {
+    let rejected = |status| VaultCatalogFileActionResult {
+        generation: current_generation(),
+        status,
+    };
+    let admitted = {
+        let Ok(_transition) = TRANSITION.lock() else {
+            return rejected(VaultCatalogFileActionStatus::Failed);
+        };
+        let snapshot = match metadata_snapshot(generation) {
+            Ok(snapshot) => snapshot,
+            Err(status) => return rejected(action_status_for_page(status)),
+        };
+        match admit_catalog_file_action_from_snapshot(&snapshot, relative, action) {
+            Ok(admitted) => admitted,
+            Err(status) => return rejected(status),
+        }
+    };
+
+    // Native open/reveal can wait on a desktop portal. The action was explicitly admitted
+    // against this generation and canonical target; never hold TRANSITION over that wait.
+    let result = catalog_file_action_result(
+        admitted.generation,
+        admitted.action,
+        dispatch(&admitted.target, admitted.action),
+    );
+    if current_generation() == admitted.generation {
+        result
+    } else {
+        rejected(VaultCatalogFileActionStatus::Stale)
+    }
 }
 
 fn metadata_for_directory(
@@ -1988,6 +2225,315 @@ mod tests {
         );
 
         drop(snapshot);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn catalog_file_actions_validate_relative_files_and_mock_the_native_boundary() {
+        let root = metadata_test_root("catalog-actions");
+        let snapshot = metadata_snapshot_for(&root, 17);
+        let compatible = [
+            "report.doc",
+            "report.docx",
+            "budget.xls",
+            "budget.xlsx",
+            "slides.ppt",
+            "slides.pptx",
+            "document.odt",
+            "sheet.ods",
+            "slides.odp",
+            "document.rtf",
+            "image.psd",
+        ];
+        let blocked = [
+            "script.js",
+            "install.ps1",
+            "active.svg",
+            "installer.exe",
+            "bundle.psd1",
+        ];
+        for name in compatible.into_iter().chain(blocked) {
+            fs::write(root.join(name), b"synthetic").unwrap();
+        }
+
+        let mut opened = Vec::new();
+        for name in compatible {
+            let result = catalog_file_action_from_snapshot(
+                &snapshot,
+                name,
+                VaultCatalogFileAction::Open,
+                |target, action| {
+                    assert_eq!(action, VaultCatalogFileAction::Open);
+                    opened.push(target.file_name().unwrap().to_string_lossy().into_owned());
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result.status,
+                VaultCatalogFileActionStatus::Opened,
+                "{name}"
+            );
+        }
+        assert_eq!(opened.len(), compatible.len());
+
+        let mut dispatched = false;
+        for name in blocked {
+            let result = catalog_file_action_from_snapshot(
+                &snapshot,
+                name,
+                VaultCatalogFileAction::Open,
+                |_, _| {
+                    dispatched = true;
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result.status,
+                VaultCatalogFileActionStatus::Blocked,
+                "{name}"
+            );
+        }
+        assert!(
+            !dispatched,
+            "blocked active types never reach the native opener"
+        );
+
+        let reveal = catalog_file_action_from_snapshot(
+            &snapshot,
+            "script.js",
+            VaultCatalogFileAction::Reveal,
+            |target, action| {
+                assert_eq!(action, VaultCatalogFileAction::Reveal);
+                assert_eq!(target.file_name().unwrap(), "script.js");
+                Ok(())
+            },
+        );
+        assert_eq!(reveal.status, VaultCatalogFileActionStatus::Revealed);
+
+        let no_association = catalog_file_action_from_snapshot(
+            &snapshot,
+            "report.docx",
+            VaultCatalogFileAction::Open,
+            |_, _| Err(VaultCatalogFileActionFailure::NoAssociation),
+        );
+        assert_eq!(
+            no_association.status,
+            VaultCatalogFileActionStatus::NoAssociation
+        );
+
+        let mut missing_dispatched = false;
+        let missing = catalog_file_action_from_snapshot(
+            &snapshot,
+            "removed.docx",
+            VaultCatalogFileAction::Open,
+            |_, _| {
+                missing_dispatched = true;
+                Ok(())
+            },
+        );
+        assert_eq!(missing.status, VaultCatalogFileActionStatus::NotFound);
+        assert!(
+            !missing_dispatched,
+            "a removed file never reaches the native opener"
+        );
+
+        for relative in [
+            "../outside.docx",
+            "/outside.docx",
+            "nested\\outside.docx",
+            ".morrow/workspace.json",
+            "C:/outside.docx",
+        ] {
+            let result = catalog_file_action_from_snapshot(
+                &snapshot,
+                relative,
+                VaultCatalogFileAction::Open,
+                |_, _| {
+                    dispatched = true;
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result.status,
+                VaultCatalogFileActionStatus::InvalidResource,
+                "{relative}"
+            );
+        }
+        assert!(
+            !dispatched,
+            "noncanonical paths never reach the native opener"
+        );
+
+        assert_eq!(
+            catalog_open_failure(Some(1155), true),
+            VaultCatalogFileActionFailure::NoAssociation
+        );
+        assert_eq!(
+            catalog_open_failure(Some(5), true),
+            VaultCatalogFileActionFailure::Failed
+        );
+        assert_eq!(
+            catalog_open_failure(Some(1155), false),
+            VaultCatalogFileActionFailure::Failed
+        );
+
+        drop(snapshot);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_file_action_rejects_symlinks_even_when_they_were_not_in_the_listing() {
+        let root = metadata_test_root("catalog-action-symlink");
+        let external = metadata_test_root("catalog-action-symlink-outside");
+        fs::write(external.join("outside.docx"), b"synthetic").unwrap();
+        std::os::unix::fs::symlink(external.join("outside.docx"), root.join("linked.docx"))
+            .unwrap();
+        let snapshot = metadata_snapshot_for(&root, 18);
+        let mut dispatched = false;
+        let result = catalog_file_action_from_snapshot(
+            &snapshot,
+            "linked.docx",
+            VaultCatalogFileAction::Open,
+            |_, _| {
+                dispatched = true;
+                Ok(())
+            },
+        );
+        assert_eq!(result.status, VaultCatalogFileActionStatus::InvalidResource);
+        assert!(!dispatched);
+
+        drop(snapshot);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn catalog_file_action_refuses_a_revoked_vault_generation_before_dispatch() {
+        let _lifecycle = lifecycle_guard();
+        close();
+        let root = metadata_test_root("catalog-action-stale");
+        fs::write(root.join("report.docx"), b"synthetic").unwrap();
+        let generation = open(root.to_str().unwrap(), |_| {}).unwrap();
+        let mut dispatched = false;
+
+        let stale = catalog_file_action(
+            generation.saturating_sub(1),
+            "report.docx",
+            VaultCatalogFileAction::Open,
+            |_, _| {
+                dispatched = true;
+                Ok(())
+            },
+        );
+        assert_eq!(stale.status, VaultCatalogFileActionStatus::Stale);
+        assert!(!dispatched);
+
+        close();
+        let revoked = catalog_file_action(
+            generation,
+            "report.docx",
+            VaultCatalogFileAction::Open,
+            |_, _| {
+                dispatched = true;
+                Ok(())
+            },
+        );
+        assert_eq!(revoked.status, VaultCatalogFileActionStatus::Stale);
+        assert!(!dispatched);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn catalog_native_dispatch_does_not_hold_the_vault_transition_lock() {
+        let _lifecycle = lifecycle_guard();
+        close();
+        let parent = metadata_test_root("catalog-action-transition");
+        let root = parent.join("first-vault");
+        let next_root = parent.join("next-vault");
+        let list_file = parent.join("vaults.json");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&next_root).unwrap();
+        fs::write(root.join("report.docx"), b"synthetic").unwrap();
+        let root_text = root.to_string_lossy().into_owned();
+        let next_root_text = next_root.to_string_lossy().into_owned();
+        write_list_at(
+            &list_file,
+            &VaultList {
+                current: Some(root_text.clone()),
+                recent: vec![(root_text, 0.0)],
+            },
+        )
+        .unwrap();
+        let generation = open(root.to_str().unwrap(), |_| {}).unwrap();
+
+        let (dispatch_entered, dispatch_entered_rx) = mpsc::channel();
+        let (release_dispatch, release_dispatch_rx) = mpsc::channel();
+        let action = std::thread::spawn(move || {
+            catalog_file_action(
+                generation,
+                "report.docx",
+                VaultCatalogFileAction::Open,
+                move |target, _| {
+                    dispatch_entered.send(target.to_path_buf()).unwrap();
+                    release_dispatch_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .unwrap();
+                    Ok(())
+                },
+            )
+        });
+        assert_eq!(
+            dispatch_entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .file_name()
+                .unwrap(),
+            "report.docx"
+        );
+
+        let (transition_done, transition_done_rx) = mpsc::channel();
+        let transition = std::thread::spawn(move || {
+            let selected = select_at(&next_root_text, &list_file);
+            close();
+            transition_done.send(selected).unwrap();
+        });
+        let transition_before_native_return =
+            transition_done_rx.recv_timeout(Duration::from_secs(5));
+        release_dispatch.send(()).unwrap();
+        let result = action.join().unwrap();
+        transition.join().unwrap();
+        let selected = transition_before_native_return
+            .expect("select and close must finish while native dispatch is waiting");
+
+        assert!(selected.ok);
+        assert!(selected.current_changed);
+        assert_eq!(result.status, VaultCatalogFileActionStatus::Stale);
+        assert!(current().is_none());
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn catalog_file_target_uses_matching_windows_canonical_prefixes() {
+        let _lifecycle = lifecycle_guard();
+        close();
+        let root = metadata_test_root("catalog-windows-prefix");
+        fs::write(root.join("report.docx"), b"synthetic").unwrap();
+        let generation = open(root.to_str().unwrap(), |_| {}).unwrap();
+        let snapshot = metadata_snapshot(generation).unwrap();
+        let target = catalog_file_target(&snapshot, "report.docx").unwrap();
+
+        assert_eq!(snapshot.real_root, dunce::canonicalize(&root).unwrap());
+        assert_eq!(
+            target,
+            dunce::canonicalize(root.join("report.docx")).unwrap()
+        );
+        assert!(target.starts_with(&snapshot.real_root));
+        assert_eq!(to_relative(&snapshot.real_root, &target), "report.docx");
+
+        drop(snapshot);
+        close();
         fs::remove_dir_all(root).unwrap();
     }
 

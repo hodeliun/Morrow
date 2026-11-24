@@ -80,6 +80,73 @@ describe('Polaris Arquivos sidebar catalog', () => {
     expect(listFilesPage).toHaveBeenCalledWith('', 'root-next', 200);
   });
 
+  it('offers explicit open and reveal actions for files and keeps the alternate action available after no association', async () => {
+    const actOnFile = vi
+      .fn()
+      .mockResolvedValueOnce({ generation: 7, status: 'noAssociation' })
+      .mockResolvedValueOnce({ generation: 7, status: 'revealed' });
+    const listFilesPage = vi.fn(async () =>
+      page('ready', [entry('Assets', 'Assets', 'folder'), entry('Report.docx', 'Report.docx')]),
+    );
+    const { container } = mount({ isActive: () => true, listFilesPage, actOnFile }, 'en');
+
+    await vi.waitFor(() => expect(container.textContent).toContain('Report.docx'));
+    const open = container.querySelector<HTMLButtonElement>(
+      '[data-focus-key="file-action:open:Report.docx"]',
+    );
+    const reveal = container.querySelector<HTMLButtonElement>(
+      '[data-focus-key="file-action:reveal:Report.docx"]',
+    );
+    expect(open?.textContent).toBe('Report.docx');
+    expect(open?.getAttribute('aria-label')).toBe('Open with the system app: Report.docx');
+    expect(open?.type).toBe('button');
+    expect(open?.tabIndex).toBe(0);
+    expect(reveal?.getAttribute('aria-label')).toBe('Show in folder: Report.docx');
+    expect(reveal?.type).toBe('button');
+    expect(reveal?.tabIndex).toBe(0);
+    expect(open?.closest('.polaris-arquivos-file-row')?.querySelectorAll('.polaris-arquivos-file-action'))
+      .toHaveLength(2);
+    expect(container.querySelector('[data-focus-key="file-action:open:Assets"]')).toBeNull();
+
+    open!.focus();
+    open!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('No system app is associated'));
+    expect(actOnFile).toHaveBeenLastCalledWith('Report.docx', 7, 'open');
+    expect((document.activeElement as HTMLElement).dataset.focusKey).toBe('file-action:open:Report.docx');
+    expect(container.querySelector('[data-focus-key="file-action:reveal:Report.docx"]')).not.toBeNull();
+
+    container.querySelector<HTMLButtonElement>('[data-focus-key="file-action:reveal:Report.docx"]')!.focus();
+    container.querySelector<HTMLButtonElement>('[data-focus-key="file-action:reveal:Report.docx"]')!.click();
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).toBeNull());
+    expect(actOnFile).toHaveBeenLastCalledWith('Report.docx', 7, 'reveal');
+    expect((document.activeElement as HTMLElement).dataset.focusKey).toBe('file-action:reveal:Report.docx');
+  });
+
+  it('does not show file actions when the host has no catalog action capability', async () => {
+    const listFilesPage = vi.fn(async () => page('ready', [entry('Report.docx', 'Report.docx')]));
+    const { container } = mount({ isActive: () => true, listFilesPage });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('Report.docx'));
+    expect(container.querySelector('.polaris-arquivos-file-action')).toBeNull();
+  });
+
+  it('reports a file removed after listing and refreshes that directory', async () => {
+    const actOnFile = vi.fn(async () => ({ generation: 7, status: 'notFound' as const }));
+    const listFilesPage = vi
+      .fn(async () => page('ready', [entry('Gone.psd', 'Gone.psd')]))
+      .mockResolvedValueOnce(page('ready', [entry('Gone.psd', 'Gone.psd')]))
+      .mockResolvedValueOnce(page('empty'));
+    const { container } = mount({ isActive: () => true, listFilesPage, actOnFile }, 'en');
+
+    await vi.waitFor(() => expect(container.textContent).toContain('Gone.psd'));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="file-action:open:Gone.psd"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('no longer in the vault'));
+    container.querySelector<HTMLButtonElement>('[data-focus-key="refresh:"]')!.click();
+    await vi.waitFor(() => expect(container.textContent).toContain('This folder is empty'));
+    expect(listFilesPage).toHaveBeenCalledTimes(2);
+    expect(actOnFile).toHaveBeenCalledWith('Gone.psd', 7, 'open');
+  });
+
   it('keeps the load-more action keyboard-focusable while loading and restores focus when pagination ends', async () => {
     const nextPage = deferred<VaultFilePage>();
     const lastPage = deferred<VaultFilePage>();

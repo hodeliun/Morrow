@@ -3,7 +3,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { DesktopBridge, VaultFilePage } from './desktop';
+import type { DesktopBridge, VaultCatalogFileActionResult, VaultFilePage } from './desktop';
 import { getExitPreparer } from '../exitPreparationRegistry';
 import {
   createCloseProtocolCoordinator,
@@ -370,6 +370,28 @@ export function tauriBridge(): DesktopBridge | null {
           };
         }
         return result;
+      },
+      async catalogFileAction(path, generation, action): Promise<VaultCatalogFileActionResult> {
+        const epoch = vaultEpoch;
+        const stale = (): VaultCatalogFileActionResult => ({
+          generation: vaultGeneration ?? generation,
+          status: 'stale',
+        });
+        if (vaultGeneration === null || vaultGeneration !== generation) return stale();
+        try {
+          const result = await invoke<VaultCatalogFileActionResult>('vault_catalog_file_action', {
+            path,
+            generation,
+            action,
+          });
+          return vaultEpoch === epoch && vaultGeneration === generation && result.generation === generation
+            ? result
+            : stale();
+        } catch {
+          return vaultEpoch === epoch && vaultGeneration === generation
+            ? { generation, status: 'failed' }
+            : stale();
+        }
       },
       // a folder that can't be shown, such as a phone's own storage, says why rather than doing nothing
       reveal: (path) =>

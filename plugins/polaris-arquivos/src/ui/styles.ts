@@ -174,6 +174,13 @@ export const fileCatalogStyles = `
   font-size: var(--text-sm);
 }
 
+.polaris-arquivos-file-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+}
+
 .polaris-arquivos-row:hover {
   background: var(--hover);
   color: var(--text);
@@ -212,7 +219,73 @@ export const fileCatalogStyles = `
 
 .polaris-arquivos-file-name {
   display: block;
+  flex: 1 1 auto;
+  width: 0;
   padding: 5px 6px 5px 23px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.polaris-arquivos-file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding-right: 3px;
+}
+
+.polaris-arquivos-file-action {
+  color: var(--accent-strong);
+  font-size: var(--text-xs);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-line);
+  text-underline-offset: 2px;
+}
+
+.polaris-arquivos-file-open {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  text-decoration-color: transparent;
+}
+
+.polaris-arquivos-file-open:hover {
+  text-decoration-color: var(--accent-line);
+}
+
+.polaris-arquivos-file-reveal {
+  width: 24px;
+  min-height: 22px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  text-decoration: none;
+}
+
+.polaris-arquivos-file-reveal:hover {
+  background: var(--hover);
+}
+
+.polaris-arquivos-file-action[aria-disabled='true'] {
+  color: var(--text-faint);
+  cursor: wait;
+}
+
+.polaris-arquivos-action-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 2px 4px 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }
 
 .polaris-arquivos-message {
@@ -240,7 +313,8 @@ export const fileCatalogStyles = `
 
 .polaris-arquivos-folder-button:focus-visible,
 .polaris-arquivos-more:focus-visible,
-.polaris-arquivos-retry:focus-visible {
+.polaris-arquivos-retry:focus-visible,
+.polaris-arquivos-file-action:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

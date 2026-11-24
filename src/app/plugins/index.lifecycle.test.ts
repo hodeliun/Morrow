@@ -5,7 +5,7 @@ import type * as PluginRegistry from './registry';
 import type * as PluginProviders from './providerRegistry';
 import type * as Preferences from '../platform/preferences';
 import type { WorkspaceSession } from '../../storage/session';
-import type { VaultFilePage } from '../platform/desktop';
+import type { VaultCatalogFileActionResult, VaultFilePage } from '../platform/desktop';
 
 const SETTINGS_FILE = '.morrow/plugins.json';
 const PLUGINS_FOLDER = '.morrow/plugins';
@@ -88,6 +88,7 @@ interface Harness {
   readText: ReturnType<typeof vi.fn>;
   apply: ReturnType<typeof vi.fn>;
   listFilesPage: ReturnType<typeof vi.fn>;
+  catalogFileAction: ReturnType<typeof vi.fn>;
   delayRead(path: string, promise: Promise<string | null>, started?: () => void): void;
   clearReadDelay(path: string): void;
   loader: typeof PluginLoader;
@@ -154,6 +155,12 @@ async function createHarness(
       error: null,
     }),
   );
+  const catalogFileAction = vi.fn(
+    async (_path: string, generation: number, action: 'open' | 'reveal'): Promise<VaultCatalogFileActionResult> => ({
+      generation,
+      status: action === 'open' ? 'opened' : 'revealed',
+    }),
+  );
   const vault = {
     readText,
     apply,
@@ -167,6 +174,7 @@ async function createHarness(
         .map((file) => ({ path: file, size: files.get(file)?.length ?? 0, mtime: 0 })),
     ),
     listFilesPage,
+    catalogFileAction,
   };
   window.morrow = {
     platform: 'linux',
@@ -191,6 +199,7 @@ async function createHarness(
     readText,
     apply,
     listFilesPage,
+    catalogFileAction,
     delayRead(path, promise, started) {
       delayedReads.set(path, { promise, started });
     },
@@ -338,9 +347,13 @@ describe('plugin loader lifecycle', () => {
     expect(first?.isActive()).toBe(true);
 
     const firstGate = deferred<VaultFilePage>();
+    const firstActionGate = deferred<VaultCatalogFileActionResult>();
     h.listFilesPage.mockReturnValueOnce(firstGate.promise);
+    h.catalogFileAction.mockReturnValueOnce(firstActionGate.promise);
     const oldDuringReload = first!.host.listFilesPage!('Media', null, 999);
+    const oldActionDuringReload = first!.host.actOnFile!('Media/same.docx', 1, 'open');
     expect(h.listFilesPage).toHaveBeenLastCalledWith('Media', null, 200);
+    expect(h.catalogFileAction).toHaveBeenLastCalledWith('Media/same.docx', 1, 'open');
     await h.loader.reloadPlugin('polaris-arquivos');
     const second = h.registry.polarisArquivosSidebarFileCatalog();
     expect(first?.isActive()).toBe(false);
@@ -357,10 +370,18 @@ describe('plugin loader lifecycle', () => {
     const reloadedPage = await second!.host.listFilesPage!('Media', null, 200);
     expect(reloadedPage.generation).toBe(2);
     expect(reloadedPage.entries[0]?.path).toBe('Media/same.pdf');
+    await expect(second!.host.actOnFile!('Media/same.pdf', 2, 'reveal')).resolves.toMatchObject({
+      generation: 2,
+      status: 'revealed',
+    });
+    expect(h.catalogFileAction).toHaveBeenLastCalledWith('Media/same.pdf', 2, 'reveal');
 
     const switchGate = deferred<VaultFilePage>();
+    const switchActionGate = deferred<VaultCatalogFileActionResult>();
     h.listFilesPage.mockReturnValueOnce(switchGate.promise);
+    h.catalogFileAction.mockReturnValueOnce(switchActionGate.promise);
     const oldDuringSwitch = second!.host.listFilesPage!('Media', null, 200);
+    const oldActionDuringSwitch = second!.host.actOnFile!('Media/same.pdf', 2, 'open');
     const { openRepository } = await import('../../storage/repository');
     const { WorkspaceSession } = await import('../../storage/session');
     const nextDatabase = `plugin-loader-next-vault-${databaseSequence++}`;
@@ -401,8 +422,12 @@ describe('plugin loader lifecycle', () => {
       nextCursor: null,
       error: null,
     });
+    switchActionGate.resolve({ generation: 2, status: 'opened' });
     expect((await oldDuringReload).status).toBe('stale');
+    firstActionGate.resolve({ generation: 1, status: 'opened' });
+    expect((await oldActionDuringReload).status).toBe('stale');
     expect((await oldDuringSwitch).status).toBe('stale');
+    expect((await oldActionDuringSwitch).status).toBe('stale');
 
     await h.session.close();
     await nextSession.close();

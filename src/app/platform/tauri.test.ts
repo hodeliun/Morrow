@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VaultFilePage } from './desktop';
+import type { VaultCatalogFileActionResult, VaultFilePage } from './desktop';
 import { tauriBridge } from './tauri';
 
 const mocks = vi.hoisted(() => ({
@@ -74,6 +74,45 @@ afterEach(() => {
 });
 
 describe('Tauri vault metadata session', () => {
+  it('binds explicit catalog actions to the listed vault generation and stales pending results after close', async () => {
+    const pending = deferred<VaultCatalogFileActionResult>();
+    const actionArguments: Array<Record<string, unknown>> = [];
+    let actionIndex = 0;
+    mocks.invoke.mockImplementation((command, args) => {
+      if (command === 'vault_open')
+        return Promise.resolve({ ok: true, root: '/synthetic-vault', generation: 31, sessionGeneration: 31 });
+      if (command === 'vault_catalog_file_action') {
+        actionArguments.push(args as Record<string, unknown>);
+        actionIndex += 1;
+        return actionIndex === 1
+          ? Promise.resolve({ generation: 31, status: 'noAssociation' })
+          : pending.promise;
+      }
+      if (command === 'vault_close') return Promise.resolve(undefined);
+      return Promise.resolve(undefined);
+    });
+
+    const vault = openVaultApi();
+    await vault.open();
+    await expect(vault.catalogFileAction!('Media/Report.docx', 31, 'open')).resolves.toEqual({
+      generation: 31,
+      status: 'noAssociation',
+    });
+    const opening = vault.catalogFileAction!('Media/Report.docx', 31, 'open');
+    expect(actionArguments[0]).toEqual({ path: 'Media/Report.docx', generation: 31, action: 'open' });
+    expect(actionArguments[1]).toEqual({ path: 'Media/Report.docx', generation: 31, action: 'open' });
+
+    await vault.close();
+    pending.resolve({ generation: 31, status: 'opened' });
+    await expect(opening).resolves.toEqual({ generation: 31, status: 'stale' });
+
+    await expect(vault.catalogFileAction!('Media/Report.docx', 31, 'reveal')).resolves.toEqual({
+      generation: 31,
+      status: 'stale',
+    });
+    expect(actionArguments).toHaveLength(2);
+  });
+
   it('ignores an older open response and a late open response after close', async () => {
     const olderOpen = deferred<OpenResult>();
     const newerOpen = deferred<OpenResult>();
