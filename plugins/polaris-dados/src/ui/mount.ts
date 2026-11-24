@@ -322,6 +322,7 @@ let nextCheckboxStatusId = 0;
 export function mountPolarisDados(
   context: DatabaseProviderContext,
   readDatabasePages?: () => readonly FormulaDatabasePage[],
+  openPage?: (pageId: string) => void,
 ): () => void {
   const { element, databaseId, data, locale, editable, signal } = context;
   const transientState = context.transientState;
@@ -3389,7 +3390,87 @@ export function mountPolarisDados(
     return true;
   };
 
+  const openLinkedRowFromTitle = (event: KeyboardEvent): boolean => {
+    if (
+      event.defaultPrevented ||
+      event.repeat ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      event.key !== 'Enter' ||
+      !event.altKey ||
+      event.shiftKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.getModifierState('AltGraph') ||
+      !openPage ||
+      !view ||
+      disposed ||
+      signal.aborted ||
+      busy ||
+      draft ||
+      viewDraft ||
+      pendingFlush ||
+      viewPendingFlush ||
+      viewBusy ||
+      viewMutationInFlight
+    ) {
+      return false;
+    }
+
+    const target = event.target;
+    if (!(target instanceof document.defaultView!.HTMLTableCellElement)) return false;
+    if (
+      document.activeElement !== target ||
+      !element.contains(target) ||
+      !target.matches('td[data-row-title="true"]')
+    )
+      return false;
+    const table = target.closest<HTMLTableElement>('table.polaris-dados-grid');
+    const row = target.closest<HTMLTableRowElement>('tr[data-row-id]');
+    if (
+      !table ||
+      !container.contains(table) ||
+      !row ||
+      row.closest('table') !== table ||
+      !row.closest('tbody')
+    )
+      return false;
+    const rowId = row.dataset.rowId;
+    if (!rowId || !row.contains(target)) return false;
+
+    let latestView: LinkedViewSnapshot;
+    let latestData: DataApiSnapshot;
+    try {
+      latestView = view.snapshot();
+      latestData = data.snapshot(databaseId);
+    } catch {
+      return false;
+    }
+    if (
+      latestView.status !== 'ready' ||
+      latestView.sourceDatabaseId !== databaseId ||
+      latestView.sourceStatus.status !== 'available' ||
+      latestData.status !== 'ready' ||
+      latestData.databaseId !== databaseId
+    ) {
+      return false;
+    }
+    const projection = projectLinkedView(latestData, latestView.config, messages.rowTitleColumn);
+    if (!projection.rows.some((candidate) => candidate.id === rowId)) return false;
+    if (![...table.querySelectorAll<HTMLTableRowElement>('tbody tr')].some((candidate) => candidate === row))
+      return false;
+
+    try {
+      openPage(rowId);
+    } catch {
+      return false;
+    }
+    event.preventDefault();
+    return true;
+  };
+
   const onRootKeyDown = (event: KeyboardEvent) => {
+    if (openLinkedRowFromTitle(event)) return;
     if (navigateGridArrow(event)) return;
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
     const activeElement = document.activeElement;

@@ -26,7 +26,7 @@ import { MemoryVault } from '../../../../src/storage/memoryVault';
 import { WorkspaceSession } from '../../../../src/storage/session';
 import { VaultRepository } from '../../../../src/storage/vaultRepository';
 import { createLinkedViewApi } from '../../../../src/app/plugins/linkedViewApi';
-import type { LinkedViewApi } from '../../../../src/app/plugins/linkedViewApi';
+import type { LinkedViewApi, LinkedViewSnapshot } from '../../../../src/app/plugins/linkedViewApi';
 import { registerDatabaseProvider } from '../../../../src/app/plugins/providerRegistry';
 import { PageEditor } from '../../../../src/app/editor/PageEditor';
 import { ProviderDatabaseView } from '../../../../src/app/components/database/ProviderDatabaseView';
@@ -337,6 +337,8 @@ function mountRoot(
     readonly editable?: boolean;
     readonly mountState?: ProviderMountState;
     readonly snapshotTransform?: (snapshot: DataApiSnapshot) => DataApiSnapshot;
+    readonly viewSnapshotTransform?: (snapshot: LinkedViewSnapshot) => LinkedViewSnapshot;
+    readonly openPage?: (pageId: string) => void;
   } = {},
 ): MountedRoot {
   const window = options.window ?? new Window({ url: 'http://morrow.test/' });
@@ -400,6 +402,15 @@ function mountRoot(
   const view = options.viewId
     ? makeViewHandle(fixture, options.viewId, () => !controller.signal.aborted)
     : undefined;
+  const providerView: LinkedViewApi | undefined = view
+    ? {
+        ...view.api,
+        snapshot() {
+          const snapshot = view.api.snapshot();
+          return options.viewSnapshotTransform?.(snapshot) ?? snapshot;
+        },
+      }
+    : undefined;
   const transientState = options.mountState?.bind(
     {
       session: fixture.session,
@@ -419,9 +430,9 @@ function mountRoot(
     editable: options.editable ?? true,
     signal: controller.signal,
     ...(transientState ? { transientState } : {}),
-    ...(view ? { view: view.api } : {}),
+    ...(providerView ? { view: providerView } : {}),
   };
-  const cleanup = mountPolarisDados(context);
+  const cleanup = mountPolarisDados(context, undefined, options.openPage);
   const root: MountedRoot = {
     window,
     element,
@@ -3016,5 +3027,218 @@ describe('Polaris Dados four-arrow grid navigation', () => {
     expect(emptyGridArrow.defaultPrevented).toBe(true);
     expect(empty.element.querySelectorAll('tbody tr')).toHaveLength(0);
     expect(window.document.activeElement).toBe(empty.element);
+  });
+});
+
+describe('Polaris Dados linked-row open shortcut', () => {
+  it('opens the focused visible row by stable ID across duplicate titles and readonly views without writing Markdown', async () => {
+    const fixture = await openGridNavigationFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const opened: string[] = [];
+    const duplicateTitles = (snapshot: DataApiSnapshot): DataApiSnapshot =>
+      snapshot.status === 'ready'
+        ? { ...snapshot, rows: snapshot.rows.map((row) => ({ ...row, title: 'Same title' })) }
+        : snapshot;
+    const source = mountRoot(fixture, {
+      window,
+      snapshotTransform: duplicateTitles,
+      openPage: (pageId) => opened.push(`source:${pageId}`),
+    });
+    const filteredView = mountRoot(fixture, {
+      window,
+      viewId: VIEW_ONE,
+      snapshotTransform: duplicateTitles,
+      openPage: (pageId) => opened.push(`filtered:${pageId}`),
+    });
+    const orderedView = mountRoot(fixture, {
+      window,
+      viewId: VIEW_TWO,
+      snapshotTransform: duplicateTitles,
+      openPage: (pageId) => opened.push(`ordered:${pageId}`),
+    });
+    const readonlyView = mountRoot(fixture, {
+      window,
+      viewId: VIEW_ONE,
+      editable: false,
+      snapshotTransform: duplicateTitles,
+      openPage: (pageId) => opened.push(`readonly:${pageId}`),
+    });
+    const withoutApi = mountRoot(fixture, {
+      window,
+      viewId: VIEW_ONE,
+      snapshotTransform: duplicateTitles,
+    });
+    const originalFiles = [ROW_PATH, SECOND_ROW_PATH, NOTE_PATH].map((path) => fixture.vault.text(path));
+    const applyCount = fixture.vault.applyCount;
+
+    expect(
+      [...filteredView.element.querySelectorAll<HTMLTableRowElement>('tbody tr')].map(
+        (row) => row.dataset.rowId,
+      ),
+    ).toEqual([SECOND_ROW_ID]);
+    const filteredTitle = filteredView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    const orderedFirstTitle = orderedView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${ROW_ID}"] td[data-row-title]`,
+    );
+    if (!filteredTitle || !orderedFirstTitle) throw new Error('The linked row titles did not render.');
+    expect(filteredTitle.textContent).toBe(orderedFirstTitle.textContent);
+
+    filteredTitle.focus();
+    const filteredOpen = dispatchFocusedCellKeydown(filteredView, {
+      key: 'Enter',
+      altKey: true,
+      altGraph: false,
+    });
+    expect(filteredOpen.defaultPrevented).toBe(true);
+    expect(opened).toEqual([`filtered:${SECOND_ROW_ID}`]);
+
+    orderedFirstTitle.focus();
+    const orderedOpen = dispatchFocusedCellKeydown(orderedView, {
+      key: 'Enter',
+      altKey: true,
+      altGraph: false,
+    });
+    expect(orderedOpen.defaultPrevented).toBe(true);
+    expect(opened).toEqual([`filtered:${SECOND_ROW_ID}`, `ordered:${ROW_ID}`]);
+
+    const readonlyTitle = readonlyView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!readonlyTitle) throw new Error('The readonly linked title did not render.');
+    readonlyTitle.focus();
+    const readonlyOpen = dispatchFocusedCellKeydown(readonlyView, {
+      key: 'Enter',
+      altKey: true,
+      altGraph: false,
+    });
+    expect(readonlyOpen.defaultPrevented).toBe(true);
+    expect(opened).toEqual([`filtered:${SECOND_ROW_ID}`, `ordered:${ROW_ID}`, `readonly:${SECOND_ROW_ID}`]);
+
+    const missingApiTitle = withoutApi.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!missingApiTitle) throw new Error('The fallback linked title did not render.');
+    missingApiTitle.focus();
+    const missingApiOpen = dispatchFocusedCellKeydown(withoutApi, {
+      key: 'Enter',
+      altKey: true,
+      altGraph: false,
+    });
+    expect(missingApiOpen.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(3);
+
+    const sourceFormula = source.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!sourceFormula) throw new Error('The source formula cell did not render.');
+    sourceFormula.focus();
+    const sourceOpen = dispatchFocusedCellKeydown(source, { key: 'Enter', altKey: true, altGraph: false });
+    expect(sourceOpen.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(3);
+    expect([ROW_PATH, SECOND_ROW_PATH, NOTE_PATH].map((path) => fixture.vault.text(path))).toEqual(
+      originalFiles,
+    );
+    expect(fixture.vault.applyCount).toBe(applyCount);
+    expect(fixture.textPatchCalls).toBe(0);
+  });
+
+  it('leaves extra modifiers, stale projections, drafts, composition, repeats, and consumed events alone', async () => {
+    const fixture = await openGridNavigationFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const opened: string[] = [];
+    let filterExcludesSecond = false;
+    let removeSecond = false;
+    const root = mountRoot(fixture, {
+      window,
+      viewId: VIEW_ONE,
+      openPage: (pageId) => opened.push(pageId),
+      snapshotTransform(snapshot) {
+        return snapshot.status === 'ready' && removeSecond
+          ? { ...snapshot, rows: snapshot.rows.filter((row) => row.id !== SECOND_ROW_ID) }
+          : snapshot;
+      },
+      viewSnapshotTransform(snapshot) {
+        return snapshot.status === 'ready' && filterExcludesSecond
+          ? {
+              ...snapshot,
+              config: { ...snapshot.config, filter: { propertyId: 'quantity', op: 'gte', value: 6 } },
+            }
+          : snapshot;
+      },
+    });
+    const title = root.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!title) throw new Error('The linked title did not render.');
+
+    root.element.focus();
+    const unfocused = dispatchCellKeydown(root, title, { key: 'Enter', altKey: true, altGraph: false });
+    expect(unfocused.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(0);
+
+    const formula = root.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!formula) throw new Error('The linked formula did not render.');
+    formula.focus();
+    const otherCell = dispatchFocusedCellKeydown(root, { key: 'Enter', altKey: true, altGraph: false });
+    expect(otherCell.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(0);
+
+    title.focus();
+    for (const options of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { repeat: true },
+      { isComposing: true },
+      { keyCode: 229 },
+      { altGraph: true },
+    ]) {
+      const ignored = dispatchCellKeydown(root, title, { key: 'Enter', altKey: true, ...options });
+      expect(ignored.defaultPrevented).toBe(false);
+      expect(opened).toHaveLength(0);
+    }
+
+    title.addEventListener('keydown', (event) => event.preventDefault(), { capture: true, once: true });
+    const consumed = dispatchCellKeydown(root, title, { key: 'Enter', altKey: true, altGraph: false });
+    expect(consumed.defaultPrevented).toBe(true);
+    expect(opened).toHaveLength(0);
+
+    filterExcludesSecond = true;
+    title.focus();
+    const filteredOut = dispatchCellKeydown(root, title, { key: 'Enter', altKey: true, altGraph: false });
+    expect(filteredOut.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(0);
+
+    filterExcludesSecond = false;
+    removeSecond = true;
+    const removed = dispatchCellKeydown(root, title, { key: 'Enter', altKey: true, altGraph: false });
+    expect(removed.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(0);
+
+    removeSecond = false;
+    const editMessage = root.element.querySelector<HTMLButtonElement>(
+      `button[data-action="edit"][data-row-id="${SECOND_ROW_ID}"][data-field="message"]`,
+    );
+    if (!editMessage) throw new Error('The linked text edit button did not render.');
+    editMessage.click();
+    const draftTitle = root.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!draftTitle) throw new Error('The linked title did not render during the draft.');
+    draftTitle.focus();
+    const duringDraft = dispatchCellKeydown(root, draftTitle, {
+      key: 'Enter',
+      altKey: true,
+      altGraph: false,
+    });
+    expect(duringDraft.defaultPrevented).toBe(false);
+    expect(opened).toHaveLength(0);
+    root.element.querySelector<HTMLButtonElement>('button[data-action="cancel"]')?.click();
   });
 });

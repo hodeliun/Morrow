@@ -15,6 +15,9 @@ import { createFormulaAuthoringController, formulaAuthoringMessages } from './ui
 export const POLARIS_DADOS_PROVIDER_ID = 'polaris-dados';
 
 export interface PolarisDadosPluginApi extends LinkedViewInsertPickerApi {
+  readonly pages: LinkedViewInsertPickerApi['pages'] & {
+    readonly open?: (pageId: string) => void;
+  };
   readonly data: DataApi;
   readonly providers: DatabaseProvidersApi;
   readonly locale: SupportedLocale;
@@ -41,8 +44,9 @@ export interface PolarisDadosPluginApi extends LinkedViewInsertPickerApi {
 export function mount(
   context: DatabaseProviderContext,
   readDatabasePages?: () => readonly FormulaDatabasePage[],
+  openPage?: (pageId: string) => void,
 ): () => void {
-  return mountPolarisDados(context, readDatabasePages);
+  return mountPolarisDados(context, readDatabasePages, openPage);
 }
 
 export function activate(api: PolarisDadosPluginApi): () => void {
@@ -91,7 +95,12 @@ export function activate(api: PolarisDadosPluginApi): () => void {
     unregisterProvider = api.providers.register({
       id: POLARIS_DADOS_PROVIDER_ID,
       apiVersion: 1,
-      mount: (context) => mount(context, () => api.pages.list()),
+      mount: (context) =>
+        mount(
+          context,
+          () => api.pages.list(),
+          typeof api.pages.open === 'function' ? (pageId) => api.pages.open!(pageId) : undefined,
+        ),
     });
     unregisterCommand = api.commands.add({
       id: 'insert-view',
