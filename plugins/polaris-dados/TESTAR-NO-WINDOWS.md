@@ -131,6 +131,10 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 
 Em pacotes com o Polaris Arquivos, procure a seção **Arquivos** (**Files** em inglês) logo abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e abra **Subpasta** para ver `Planilha.csv`. Abra **Filtrar arquivos** na seção e ative **Incluir arquivos sem extensão** para mostrar `LEIAME`. Navegue para outra nota e confira se as pastas continuam expandidas. O botão **Arquivos** no menu principal abre a página de anexos e das notas que os usam.
 
+### Abrir ou mostrar um arquivo do catálogo
+
+Na seção **Arquivos**, expanda **Material** e clique em `Inventario.txt` para abri-lo no aplicativo do sistema. Use **Mostrar na pasta** ao lado do nome para localizá-lo no Explorador. O Windows usa o aplicativo associado à extensão.
+
 ## Verificações opcionais da base 2.2
 
 Use somente conteúdo sintético. O modo de leitura é uma preferência global. Para conferir a restauração de rolagem em divisão, ative **Reading mode / Modo de leitura**, abra a mesma nota longa nos dois painéis e defina posições de rolagem diferentes. Navegue para fora da nota e reabra-a em cada painel. Confirme que cada painel restaura sua própria posição.
