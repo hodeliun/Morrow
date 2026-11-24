@@ -1,14 +1,13 @@
 import { Editor, Extension } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
-import { Fragment } from '@tiptap/pm/model';
 import { EditorState, TextSelection } from '@tiptap/pm/state';
-import type { Node as ProseNode, Slice } from '@tiptap/pm/model';
+import type { Fragment, Node as ProseNode, Slice } from '@tiptap/pm/model';
 import { EditorContent } from '@tiptap/react';
 import katex from 'katex';
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { docToMarkdown } from '../../core/markdown/serialize';
+import { docToClipboardMarkdown } from '../../core/markdown/serialize';
 import { docToHtml } from '../../core/site';
 import { displayTitle } from '../../core/model';
 import type { DocNode, PageId } from '../../core/model';
@@ -21,17 +20,31 @@ import type { MenuEntry } from '../components/Menu';
 import { dateLocale, t } from '../i18n';
 import { addReminder, remindersFor, removeReminders } from '../reminders';
 import { toast } from '../ui';
+import { viewName } from '../i18n/labels';
 import { Popover } from '../components/Popover';
 import { createPage, openToday } from '../operations';
 import { navigate, openPage } from '../router';
-import { targetPane, usePane } from '../tabs';
-import { getSession, getState, run } from '../workspace';
+import { targetPane, usePane, usePaneTabId } from '../tabs';
+import { getSession, getState } from '../workspace';
 import type { BlockMenuRequest } from './BlockHandle';
-import { registerCommit, setFocusedEditor } from './commits';
-import { BlockMenu, FormattingMenu, LinkMenu, openHref, TableMenu } from './EditorMenus';
+import { focusedEditor, setFocusedEditor } from './commits';
+import { registerPageEditorCoordinator } from './pageEditorCoordination';
+import { revealAt } from './Blocks';
+import { pageIdFromHref } from '../../core/links';
+import { openTab } from '../tabs';
+import {
+  BlockMenu,
+  FormattingMenu,
+  isCopiedBlockId,
+  LinkMenu,
+  noteMouseButton,
+  openHref,
+  TableMenu,
+} from './EditorMenus';
 import { FindBar } from './FindBar';
 import { createExtensions } from './extensions';
 import { anchorSlice, isBlockAnchor } from '../../core/anchors';
+import { captureBlockMenuOrigin, isBlockMenuRequestCurrent } from './blockMenuOrigin';
 
 interface Props {
   pageId: PageId;
@@ -45,8 +58,6 @@ interface Props {
   onDirty: (dirty: boolean) => void;
   onReady?: (editor: Editor) => void;
 }
-
-const COMMIT_DELAY_MS = 250;
 
 const EmbeddedDatabase = lazy(() =>
   import('../components/database/EmbeddedDatabase').then((module) => ({ default: module.EmbeddedDatabase })),
@@ -62,12 +73,23 @@ function mountEmbed(
   hostId: PageId,
   element: HTMLElement,
   editable: boolean,
+  anchor: string | null,
+  setAnchor: (anchor: string | null) => void,
 ): (() => void) | null {
   const state = getState();
   const page = state.pages[id];
   if (!page || id === hostId) return null;
+  if (anchor && Object.hasOwn(page.extra, 'polarisDados')) return null;
   const canvas = page.kind === 'canvas' && !page.encrypted && !isEffectivelyTrashed(state.pages, id);
   if (!page.database && !canvas) return null;
+  // after # a database names the view to show, anything else is a part of the page shown as text
+  const wanted = anchor?.toLowerCase();
+  const view = wanted
+    ? (page.database?.views.find((item) =>
+        [item.name, viewName(item)].some((name) => name.toLowerCase() === wanted),
+      ) ?? null)
+    : null;
+  if (anchor && !view) return null;
   // react gets a box of its own inside the embed, so when the embed is emptied before the deferred unmount
   // below runs, react still finds its nodes where it left them
   const host = document.createElement('div');
@@ -77,7 +99,7 @@ function mountEmbed(
   root.render(
     <Suspense fallback={null}>
       {page.database ? (
-        <EmbeddedDatabase pageId={id} editable={editable} />
+        <EmbeddedDatabase pageId={id} editable={editable} viewId={view?.id ?? null} onPickView={setAnchor} />
       ) : (
         <EmbeddedCanvas pageId={id} editable={editable} />
       )}
@@ -115,28 +137,6 @@ function embedHtml(id: PageId, hostId: PageId, anchor: string | null): string | 
 
 // the editor adds an empty line after a list or table that ends a page, so there is somewhere to type.
 // that line is never saved, so on its own it is not an edit
-function withoutTrailingEmpty(doc: ProseNode): ProseNode {
-  let count = doc.childCount;
-  while (
-    count > 0 &&
-    doc.child(count - 1).type.name === 'paragraph' &&
-    doc.child(count - 1).content.size === 0
-  )
-    count--;
-  if (count === doc.childCount) return doc;
-  const children: ProseNode[] = [];
-  for (let i = 0; i < count; i++) children.push(doc.child(i));
-  return doc.copy(Fragment.from(children));
-}
-
-function sameContent(editor: Editor, saved: DocNode): boolean {
-  try {
-    return withoutTrailingEmpty(editor.schema.nodeFromJSON(saved)).eq(withoutTrailingEmpty(editor.state.doc));
-  } catch {
-    return false;
-  }
-}
-
 // what other apps get as plain text. words from inside one block copy as they read, more than one block
 // copies as markdown, so a list pastes as a list rather than lines with gaps between them
 // colours, highlights and underlines have no markdown of their own and are written as html tags, which
@@ -155,9 +155,14 @@ function withoutHtmlMarks(node: DocNode): DocNode {
 function plainTextOf(slice: Slice): string {
   let node: ProseNode | Fragment = slice.content;
   while (node.childCount === 1 && !node.firstChild!.isTextblock) node = node.firstChild!;
-  if (node.childCount === 1 && node.firstChild!.isTextblock) return node.firstChild!.textContent;
+  if (node.childCount === 1 && node.firstChild!.isTextblock) {
+    const textblock = node.firstChild!;
+    return textblock.textBetween(0, textblock.content.size, '', (leaf) =>
+      leaf.type.name === 'legacyFormula' ? String(leaf.attrs.fallback ?? '') : leaf.textContent,
+    );
+  }
   const state = getState();
-  return docToMarkdown(
+  return docToClipboardMarkdown(
     { type: 'doc', content: ((slice.content.toJSON() ?? []) as DocNode[]).map(withoutHtmlMarks) },
     {
       titleOf: (id) => (state.pages[id] ? displayTitle(state.pages[id]) : null),
@@ -167,7 +172,12 @@ function plainTextOf(slice: Slice): string {
 }
 
 // a date in a page opens its day's note, or reminds you on that day
-function dateMenuEntries(pageId: PageId, date: Date, pickTime: () => void): MenuEntry[] {
+function dateMenuEntries(
+  pageId: PageId,
+  date: Date,
+  scheduled: string | null,
+  pickTime: () => void,
+): MenuEntry[] {
   const key = dateKey(date);
   const set = remindersFor(pageId, key)[0];
   const time = (hour: number, minute = 0) =>
@@ -179,7 +189,19 @@ function dateMenuEntries(pageId: PageId, date: Date, pickTime: () => void): Menu
     (hour) => new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour).getTime() > Date.now(),
   );
   const setAt = set ? new Date(set.at) : null;
-  const custom = setAt && (setAt.getMinutes() !== 0 || ![9, 13, 18].includes(setAt.getHours()));
+  // a time written with the date, @today 17:05, is offered first
+  const [scheduledHour, scheduledMinute] = scheduled ? scheduled.split(':').map(Number) : [];
+  const scheduledAt =
+    scheduled && scheduledHour !== undefined
+      ? new Date(date.getFullYear(), date.getMonth(), date.getDate(), scheduledHour, scheduledMinute ?? 0)
+      : null;
+  const atScheduled =
+    !!setAt &&
+    !!scheduledAt &&
+    setAt.getHours() === scheduledAt.getHours() &&
+    setAt.getMinutes() === scheduledAt.getMinutes();
+  const custom =
+    setAt && !atScheduled && (setAt.getMinutes() !== 0 || ![9, 13, 18].includes(setAt.getHours()));
   const endOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59).getTime();
   return [
     {
@@ -188,10 +210,25 @@ function dateMenuEntries(pageId: PageId, date: Date, pickTime: () => void): Menu
       onSelect: () => openToday(date),
     },
     ...(hours.length || set || endOfDay > Date.now() ? [{ heading: t('reminders.remindMe') }] : []),
+    ...(scheduledAt && scheduledAt.getTime() > Date.now()
+      ? [
+          {
+            label: t('reminders.atScheduled', {
+              time: time(scheduledAt.getHours(), scheduledAt.getMinutes()),
+            }),
+            icon: Bell,
+            checked: atScheduled,
+            onSelect: () => {
+              addReminder(pageId, key, scheduledAt.getHours(), scheduledAt.getMinutes());
+              toast(t('reminders.set', { time: time(scheduledAt.getHours(), scheduledAt.getMinutes()) }));
+            },
+          },
+        ]
+      : []),
     ...hours.map((hour) => ({
       label: t('reminders.atHour', { time: time(hour) }),
       icon: Bell,
-      checked: !!set && new Date(set.at).getHours() === hour,
+      checked: !!setAt && !atScheduled && setAt.getHours() === hour && setAt.getMinutes() === 0,
       onSelect: () => {
         addReminder(pageId, key, hour);
         toast(t('reminders.set', { time: time(hour) }));
@@ -274,12 +311,27 @@ function ReminderTime({
 export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onDirty, onReady }: Props) {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [blockMenu, setBlockMenu] = useState<BlockMenuRequest | null>(null);
-  const [dateMenu, setDateMenu] = useState<{ date: Date; anchor: HTMLElement } | null>(null);
+  const pane = usePane();
+  const tabId = usePaneTabId();
+  const blockMenuOwner = useRef({ pageId, pane, tabId });
+  useLayoutEffect(() => {
+    blockMenuOwner.current = { pageId, pane, tabId };
+  }, [pageId, pane, tabId]);
+  const openBlockMenu = useCallback((targetEditor: Editor, request: BlockMenuRequest) => {
+    const owner = blockMenuOwner.current;
+    const origin = captureBlockMenuOrigin(targetEditor, owner.pageId, owner.pane, owner.tabId);
+    if (!origin || !isBlockMenuRequestCurrent(origin)) return;
+    setBlockMenu({ ...request, origin });
+  }, []);
+  const [dateMenu, setDateMenu] = useState<{
+    date: Date;
+    anchor: HTMLElement;
+    time: string | null;
+  } | null>(null);
   const [timePicker, setTimePicker] = useState<{ date: Date; anchor: HTMLElement } | null>(null);
   // the find bar opens with the words picked on the page, n changes so pressing it again refills it
   const [finding, setFinding] = useState<{ text: string; n: number } | null>(null);
-  const pane = usePane();
-  const committed = useRef<DocNode>(doc);
+  const coordinatorRef = useRef<ReturnType<typeof registerPageEditorCoordinator> | null>(null);
   // the editor that already holds its page
   const filled = useRef<Editor | null>(null);
   const callbacks = useRef({ onExitTop, onDirty, onReady });
@@ -288,22 +340,17 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   });
 
   useEffect(() => {
-    let dirty = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    // what this page holds as the editor is made, the editor is filled with it once it is in the window
-    committed.current = doc;
-
-    const commit = () => {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      if (!dirty || instance.isDestroyed) return;
-      dirty = false;
-      callbacks.current.onDirty(false);
-      if (sameContent(instance, committed.current)) return;
-      const next = instance.getJSON() as DocNode;
-      committed.current = next;
-      run({ type: 'page.setDoc', id: pageId, doc: next, now: Date.now() });
-    };
+    const session = getSession();
+    const coordinator = registerPageEditorCoordinator(
+      session,
+      pageId,
+      session.getState().docs[pageId] ?? doc,
+      editable,
+      (dirty) => callbacks.current.onDirty(dirty),
+      pane,
+      isCopiedBlockId,
+    );
+    coordinatorRef.current = coordinator;
 
     const shortcuts = Extension.create({
       name: 'morrowShortcuts',
@@ -331,8 +378,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
             return true;
           },
           'Mod-s': () => {
-            commit();
-            void getSession().flush();
+            if (coordinator.commit()) void session.flush();
             return true;
           },
           // backspace at the start of the first line goes back up into the title, the way enter there
@@ -373,7 +419,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
         ...createExtensions({
           getTitle: titleOf,
           getIcon: (id) => getState().pages[id]?.icon ?? null,
-          subscribe: (listener) => getSession().subscribe(listener),
+          subscribe: (listener) => session.subscribe(listener),
           open: (id, target) => openPage(id, null, target),
           findPages: (query) =>
             findPagesByTitle(getState(), query, 8)
@@ -392,13 +438,16 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           createFromTarget: (target) => createPage({ title: target.split('/').pop() || target, open: false }),
           openTag: (tag) => navigate({ name: 'tag', tag }),
           renderEmbed: (id, target) => embedHtml(id, pageId, target),
-          mountEmbed: (id, element, canEdit) => mountEmbed(id, pageId, element, canEdit),
+          mountEmbed: (id, element, canEdit, anchor, setAnchor) =>
+            mountEmbed(id, pageId, element, canEdit, anchor, setAnchor),
           createChild: (kind) => createPage({ parentId: pageId, kind, open: false }),
           openDate: (date) => openToday(date),
-          dateMenu: (date, anchor) => setDateMenu({ date, anchor }),
-          onBlockMenu: setBlockMenu,
+          dateMenu: (date, anchor, time) => setDateMenu({ date, anchor, time }),
+          onBlockMenu: (request) => openBlockMenu(instance, request),
           resolvePage: (title) => pageIdByTitle(getState(), title),
+          linkedViewContext: { session, pageId },
         }),
+        coordinator.extension,
         shortcuts,
       ],
       // the editor starts empty and gets the page once it is in the window, see below
@@ -407,6 +456,14 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
         attributes: { class: 'prose', 'aria-label': 'Page content' },
         clipboardTextSerializer: (slice) => plainTextOf(slice),
         handleDOMEvents: {
+          mousedown: (_view, event) => {
+            noteMouseButton(instance, event);
+            return false;
+          },
+          keydown: (_view, event) => {
+            noteMouseButton(instance, event);
+            return false;
+          },
           // right click on a picture shows the same options as its handle, with copy and open
           contextmenu: (view, event) => {
             if (!(event.target instanceof Element) || !event.target.closest('.image-block')) return false;
@@ -414,7 +471,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
             const node = at && at.inside >= 0 ? view.state.doc.nodeAt(at.inside) : null;
             if (!at || node?.type.name !== 'image') return false;
             event.preventDefault();
-            setBlockMenu({
+            openBlockMenu(instance, {
               pos: at.inside,
               rect: new DOMRect(event.clientX, event.clientY, 0, 0),
             });
@@ -422,41 +479,36 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           },
         },
         handleClickOn: (_view, _pos, node, _nodePos, event) => {
-          // ctrl or cmd click follows links like a browser would
+          // ctrl or cmd click follows links like a browser would, a page opening in a tab behind this one
           const href = node.marks?.find((mark) => mark.type.name === 'link')?.attrs.href;
           if (href && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
-            openHref(String(href));
+            const page = pageIdFromHref(String(href));
+            if (page) openTab(`#/page/${encodeURIComponent(page)}`, { background: !event.shiftKey });
+            else openHref(String(href));
             return true;
           }
           return false;
         },
       },
-      // only real edits count, tiptap also reports an update when nothing in the page changed
-      onUpdate: ({ transaction, appendedTransactions }) => {
-        if (!transaction.docChanged && !appendedTransactions.some((tr) => tr.docChanged)) return;
-        if (!dirty) callbacks.current.onDirty(true);
-        dirty = true;
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(commit, COMMIT_DELAY_MS);
-      },
+      onUpdate: coordinator.handleUpdate,
     });
 
+    coordinator.attach(instance);
     instance.on('focus', () => setFocusedEditor(instance));
-    const unregister = registerCommit(commit);
     setEditor(instance);
     callbacks.current.onReady?.(instance);
 
     return () => {
-      commit();
-      unregister();
-      setFocusedEditor(null);
+      coordinator.dispose();
+      if (focusedEditor() === instance) setFocusedEditor(null);
+      if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
       setEditor(null);
       setBlockMenu(null);
       // menus unregister their plugins during the same unmount, destroy once they are done
       setTimeout(() => instance.destroy(), 0);
     };
-    // the editor is rebuilt only when the page changes, later doc updates are synced below
+    // the editor is rebuilt only when the page changes, later doc updates are observed by the coordinator
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageId]);
 
@@ -466,7 +518,8 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
   useLayoutEffect(() => {
     if (!editor || editor.isDestroyed || filled.current === editor) return;
     filled.current = editor;
-    const content = committed.current;
+    const coordinator = coordinatorRef.current;
+    const content = coordinator?.content() ?? doc;
     try {
       editor.view.updateState(
         EditorState.create({ doc: editor.schema.nodeFromJSON(content), plugins: editor.state.plugins }),
@@ -475,18 +528,26 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       // content the schema does not take as it is goes through tiptap, which mends what it can
       editor.commands.setContent(content as JSONContent, { emitUpdate: false });
     }
-  }, [editor]);
+    coordinator?.ready();
+  }, [editor, doc]);
 
-  // content changed outside this editor, for example a task ticked in the tasks view
+  // the coordinator verifies props against its captured session, then observes its accepted document
   useEffect(() => {
-    if (!editor || editor.isDestroyed || doc === committed.current) return;
-    committed.current = doc;
-    editor.commands.setContent(doc as JSONContent, { emitUpdate: false });
+    if (!editor || editor.isDestroyed) return;
+    coordinatorRef.current?.observeSessionDoc(doc);
   }, [doc, editor]);
 
   useEffect(() => {
-    if (editor && !editor.isDestroyed) editor.setEditable(editable, false);
+    if (editor && !editor.isDestroyed) {
+      editor.setEditable(editable, false);
+      coordinatorRef.current?.setEditable(editable);
+      editor.view.dom.dispatchEvent(new Event('morrow:linked-view-context'));
+    }
   }, [editor, editable]);
+
+  useLayoutEffect(() => {
+    coordinatorRef.current?.setPane(pane);
+  }, [pane]);
 
   // opens with the search match selected and in view
   useEffect(() => {
@@ -503,20 +564,28 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
     });
     const match = found as { from: number; to: number } | null;
     if (match) {
+      // a match inside a folded toggle opens the toggle, so it can be seen
+      editor.view.dispatch(revealAt(editor.state.tr, match.from));
       editor.chain().focus().setTextSelection(match).scrollIntoView().run();
     }
     navigate({ name: 'page', id: pageId, find: null }, { replace: true, pane });
   }, [editor, find, pageId, pane]);
 
-  // opens at the heading or block a link pointed at, briefly lit so the eye finds it
+  // opens at the heading or block a link pointed at, briefly lit so the eye finds it. file:id opens at the
+  // picture or file it names, from the pages listed under a file in Files
   useEffect(() => {
     if (!editor || !anchor) return;
     let target: number | null = null;
+    const fileId = anchor.startsWith('file:') ? anchor.slice(5) : null;
+    const usesFile = (node: ProseNode): boolean =>
+      ['image', 'fileAttachment'].includes(node.type.name) && node.attrs.fileId === fileId;
     editor.state.doc.descendants((node, pos) => {
       if (target !== null) return false;
-      const hit = isBlockAnchor(anchor)
-        ? node.attrs.blockId === anchor.slice(1)
-        : node.type.name === 'heading' && foldText(node.textContent.trim()) === foldText(anchor.trim());
+      const hit = fileId
+        ? usesFile(node)
+        : isBlockAnchor(anchor)
+          ? node.attrs.blockId === anchor.slice(1)
+          : node.type.name === 'heading' && foldText(node.textContent.trim()) === foldText(anchor.trim());
       if (hit) target = pos;
       return !hit;
     });
@@ -559,7 +628,11 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
       <EditorContent editor={editor} className="editor-surface" />
       {editable && (
         <>
-          <FormattingMenu editor={editor} pageId={pageId} />
+          <FormattingMenu
+            editor={editor}
+            pageId={pageId}
+            onBlockMenu={(request) => openBlockMenu(editor, request)}
+          />
           <LinkMenu editor={editor} />
           <TableMenu editor={editor} />
         </>
@@ -569,7 +642,7 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           anchor={dateMenu.anchor}
           label={t('reminders.dateMenu')}
           onClose={() => setDateMenu(null)}
-          entries={dateMenuEntries(pageId, dateMenu.date, () => setTimePicker(dateMenu))}
+          entries={dateMenuEntries(pageId, dateMenu.date, dateMenu.time, () => setTimePicker(dateMenu))}
         />
       )}
       {timePicker && (
@@ -580,14 +653,20 @@ export function PageEditor({ pageId, doc, editable, find, anchor, onExitTop, onD
           onClose={() => setTimePicker(null)}
         />
       )}
-      {blockMenu && (
-        <BlockMenu
-          editor={editor}
-          request={blockMenu}
-          pageTitle={displayTitle(getState().pages[pageId])}
-          onClose={() => setBlockMenu(null)}
-        />
-      )}
+      {blockMenu &&
+        (!blockMenu.origin ||
+          (blockMenu.origin.editor === editor &&
+            blockMenu.origin.pageId === pageId &&
+            blockMenu.origin.paneId === pane &&
+            blockMenu.origin.tabId === tabId &&
+            isBlockMenuRequestCurrent(blockMenu.origin))) && (
+          <BlockMenu
+            editor={editor}
+            request={blockMenu}
+            pageTitle={displayTitle(getState().pages[pageId])}
+            onClose={() => setBlockMenu(null)}
+          />
+        )}
     </div>
   );
 }

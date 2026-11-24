@@ -13,7 +13,8 @@
 .prose {
   outline: none;
   font-family: var(--font-serif);
-  font-size: 18px;
+  /* text size from settings scales the writing, everything in it is sized in em */
+  font-size: calc(18px * var(--text-scale, 1));
   line-height: 1.7;
   color: var(--text);
   min-height: 40vh;
@@ -25,7 +26,7 @@
 
 .font-sans .prose {
   font-family: var(--font-ui);
-  font-size: 16px;
+  font-size: calc(16px * var(--text-scale, 1));
   line-height: 1.68;
 }
 
@@ -184,6 +185,10 @@
   margin: 0;
 }
 
+.prose ol[type='a'] {
+  list-style-type: lower-alpha;
+}
+
 /* a list or a toggle keeps the same room from the text around it as any other block. inside a list item
    a nested list stays snug under its line */
 :is(.prose, .prose :not(li, li > div)) > p + :is(ul, ol, .toggle),
@@ -251,6 +256,29 @@
   line-height: 1.5;
 }
 
+/* a column dragged to a width keeps it, the table can then be wider than the page and scrolls */
+.prose .tableWrapper {
+  overflow-x: auto;
+}
+.prose th,
+.prose td {
+  position: relative;
+}
+.prose .column-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: -1px;
+  right: -2px;
+  width: 4px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
+}
+.prose.resize-cursor,
+.ProseMirror.resize-cursor {
+  cursor: col-resize;
+}
+
 .prose th,
 .prose td {
   border: 1px solid var(--border-strong);
@@ -291,6 +319,16 @@
 .prose .is-block-selected {
   background: var(--selection);
   border-radius: 4px;
+}
+
+/* a picture or a video covers its own background, so a picked one is ringed */
+.prose .image-block.is-block-selected {
+  box-shadow: 0 0 0 4px var(--selection);
+}
+
+/* while blocks are picked in the margin, a video's player lets the mouse's moves through */
+.is-picking-blocks iframe {
+  pointer-events: none;
 }
 
 /* blocks with a background of their own show the pick over it, a divider around its line */
@@ -429,6 +467,12 @@
   height: 18px;
   background: var(--border);
   margin: 0 3px;
+}
+
+/* the heading levels the toolbar's heading button opens, in a row in place of the other buttons */
+.heading-panel {
+  display: flex;
+  gap: 1px;
 }
 
 .link-form {
@@ -616,7 +660,7 @@
 
 @media (max-width: 800px) {
   .prose {
-    font-size: 17px;
+    font-size: calc(17px * var(--text-scale, 1));
   }
 
   .block-handle {
@@ -931,4 +975,161 @@
   font-family: var(--font-mono);
   font-size: 0.75em;
   color: var(--text-faint);
+}
+
+/* the box /embed opens for a link or a path */
+.embed-prompt {
+  display: flex;
+  padding: 4px;
+  width: min(360px, calc(100vw - 16px));
+  z-index: 60;
+}
+.embed-prompt .link-input {
+  flex: 1;
+}
+
+/* an empty page's offer to start from a template, above where the writing goes */
+.template-start {
+  margin: 4px 0 8px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.template-start .link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* a block dragged by its handle: a light copy under the pointer, the blocks faded where they were, and a line
+   where they will land. both are moved with transforms, once a frame */
+.block-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 200;
+  max-width: 320px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--popover);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  font: var(--text-sm) / 1.4 var(--font-ui);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+  pointer-events: none;
+  will-change: transform;
+}
+.block-drag-ghost[data-count]::after {
+  content: attr(data-count);
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: var(--text-xs);
+}
+.block-drop-line {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 199;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  will-change: transform;
+}
+.is-drag-source {
+  opacity: 0.4;
+}
+html.is-dragging-blocks,
+html.is-dragging-blocks * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* replacing only some of the matches, from one number to another */
+.find-range-label {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.find-input.find-number {
+  flex: 0 0 56px;
+  width: 56px;
+}
+
+/* words kept picked while more are picked elsewhere with ctrl held, shown like the selection */
+.prose .is-extra-selection {
+  background: var(--selection);
+  border-radius: 2px;
+}
+
+/* the grip on top of a column, dragged left or right to put the column in another place */
+.column-grip {
+  position: absolute;
+  z-index: 5;
+  width: 22px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  opacity: 0;
+  pointer-events: none;
+  cursor: grab;
+  transition: opacity 120ms var(--ease);
+}
+.column-grip.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.column-grip:hover {
+  background: var(--hover);
+  color: var(--text-muted);
+}
+.prose .column.is-column-drop-before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.prose .column.is-column-drop-after {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+@media (pointer: coarse) {
+  .column-grip {
+    display: none;
+  }
+}
+
+/* a picture set to one side of the page */
+.prose .image-block.is-align-left {
+  text-align: left;
+}
+.prose .image-block.is-align-right {
+  text-align: right;
+}
+.prose .image-block.is-align-left img,
+.prose .image-block.is-align-right img {
+  margin: 0;
+}
+
+/* :name: for a picture of your own, drawn as the picture in place of its letters */
+.prose .custom-emoji {
+  display: inline-block;
+  width: 1.3em;
+  height: 1.3em;
+  vertical-align: -0.28em;
+  overflow: hidden;
+  color: transparent;
+  font-size: inherit;
+  letter-spacing: -1em;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  white-space: nowrap;
+}
+.custom-emoji-img {
+  object-fit: contain;
 }

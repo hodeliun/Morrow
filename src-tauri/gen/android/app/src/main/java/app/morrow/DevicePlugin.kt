@@ -2,7 +2,9 @@ package app.morrow
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -23,6 +25,11 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 
 @InvokeArg
+class FolderArgs {
+  var path: String = ""
+}
+
+@InvokeArg
 class ThemeArgs {
   var dark: Boolean = false
   var color: String = "#f8f8f7"
@@ -35,7 +42,8 @@ class ThemeArgs {
     Permission(
       strings = [Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE],
       alias = "storage"
-    )
+    ),
+    Permission(strings = [Manifest.permission.ACCESS_LOCAL_NETWORK], alias = "localNetwork")
   ]
 )
 class DevicePlugin(private val activity: Activity) : Plugin(activity) {
@@ -85,6 +93,45 @@ class DevicePlugin(private val activity: Activity) : Plugin(activity) {
   @PermissionCallback
   fun storagePermissionResult(invoke: Invoke) = answer(invoke)
 
+  // android 17 lets an app reach other devices on the network only once it is allowed to, earlier ones always
+  private fun localNetworkGranted(): Boolean =
+    Build.VERSION.SDK_INT < 37 || getPermissionState("localNetwork") == PermissionState.GRANTED
+
+  private fun answerLocalNetwork(invoke: Invoke) {
+    val result = JSObject()
+    result.put("granted", localNetworkGranted())
+    invoke.resolve(result)
+  }
+
+  private var multicast: WifiManager.MulticastLock? = null
+
+  // without it the phone drops the broadcasts other devices send to say where they are
+  private fun holdMulticast() {
+    if (multicast?.isHeld == true) return
+    try {
+      val wifi = activity.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+      multicast = wifi?.createMulticastLock("morrow-sync")?.apply {
+        setReferenceCounted(false)
+        acquire()
+      }
+    } catch (ex: Exception) {
+      // pairing by address still works without it
+    }
+  }
+
+  @Command
+  fun localNetworkAccess(invoke: Invoke) = answerLocalNetwork(invoke)
+
+  @Command
+  fun requestLocalNetworkAccess(invoke: Invoke) {
+    holdMulticast()
+    if (localNetworkGranted()) return answerLocalNetwork(invoke)
+    requestPermissionForAlias("localNetwork", invoke, "localNetworkResult")
+  }
+
+  @PermissionCallback
+  fun localNetworkResult(invoke: Invoke) = answerLocalNetwork(invoke)
+
   @Command
   fun pickFolder(invoke: Invoke) {
     try {
@@ -123,6 +170,68 @@ class DevicePlugin(private val activity: Activity) : Plugin(activity) {
     } catch (ex: Exception) {
       invoke.reject(ex.message ?: "Could not read the folder that was picked.")
     }
+  }
+
+  // a folder on the phone opened in its file manager. folders inside morrow's own storage can't be shown
+  // by other apps, those answer that it is private
+  @Command
+  fun openFolder(invoke: Invoke) {
+    val args = invoke.parseArgs(FolderArgs::class.java)
+    val result = JSObject()
+    val file = java.io.File(args.path)
+    val folder = (if (file.isDirectory) file else file.parentFile)?.absolutePath ?: args.path
+    val root = Environment.getExternalStorageDirectory().absolutePath
+    if (!folder.startsWith(root)) {
+      result.put("opened", false)
+      result.put("private", true)
+      invoke.resolve(result)
+      return
+    }
+    val relative = folder.removePrefix(root).trimStart('/')
+    val uri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:$relative")
+    val tries = listOf(
+      Intent(Intent.ACTION_VIEW).setDataAndType(uri, DocumentsContract.Document.MIME_TYPE_DIR),
+      Intent(Intent.ACTION_VIEW, uri),
+      Intent("android.provider.action.BROWSE", uri)
+    )
+    var opened = false
+    for (intent in tries) {
+      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+      try {
+        activity.startActivity(intent)
+        opened = true
+        break
+      } catch (ex: Exception) {
+        // the next way of asking, some file managers only answer one of them
+      }
+    }
+    result.put("opened", opened)
+    result.put("private", false)
+    invoke.resolve(result)
+  }
+
+  // the phone's own documents folder, where new vaults go once morrow may keep files outside its storage
+  @Command
+  fun documentsFolder(invoke: Invoke) {
+    val result = JSObject()
+    result.put(
+      "path",
+      Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS).absolutePath
+    )
+    invoke.resolve(result)
+  }
+
+  // what was shared with morrow from another app since the page last asked, once
+  @Command
+  fun takeShared(invoke: Invoke) {
+    val result = JSObject()
+    result.put("text", MainActivity.shared)
+    MainActivity.shared = null
+    val files = app.tauri.plugin.JSArray()
+    MainActivity.sharedFiles.forEach { files.put(it) }
+    MainActivity.sharedFiles.clear()
+    result.put("files", files)
+    invoke.resolve(result)
   }
 
   @Command

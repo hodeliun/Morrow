@@ -4,6 +4,7 @@
 #![cfg_attr(mobile, allow(dead_code, unused_mut))]
 
 mod ai;
+mod close_protocol;
 mod cloud;
 #[cfg(target_os = "android")]
 mod device;
@@ -16,7 +17,7 @@ mod vault;
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{
     AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -30,12 +31,11 @@ const KEEP_BACKUPS: usize = 20;
 const MAX_BACKUP_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PASTED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const FILE_SCHEME: &str = "morrow-file";
+static VAULT_TRANSITIONS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // the window's first colours, before the interface says which theme it uses
 const LIGHT: tauri::window::Color = tauri::window::Color(0xf8, 0xf8, 0xf7, 0xff);
 const DARK: tauri::window::Color = tauri::window::Color(0x20, 0x20, 0x20, 0xff);
-
-static READY_TO_CLOSE: AtomicBool = AtomicBool::new(false);
 
 type Res<T> = Result<T, String>;
 
@@ -84,25 +84,99 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 // ---- the app
 
 #[tauri::command]
-fn close_ready<R: Runtime>(app: AppHandle<R>) {
-    READY_TO_CLOSE.store(true, Ordering::SeqCst);
-    if let Some(window) = main_window(&app) {
-        let _ = window.close();
-    }
+fn close_protocol_snapshot(
+    protocol: tauri::State<'_, Mutex<close_protocol::CloseProtocol>>,
+) -> Res<close_protocol::CloseSnapshot> {
+    protocol
+        .lock()
+        .map(|protocol| protocol.snapshot())
+        .map_err(|error| format!("close protocol state is unavailable: {error}"))
 }
 
 #[tauri::command]
-fn set_theme<R: Runtime>(window: WebviewWindow<R>, theme: String) {
-    let color = if theme == "dark" { DARK } else { LIGHT };
-    let _ = window.set_background_color(Some(color));
+fn close_protocol_ack<R: Runtime>(
+    app: AppHandle<R>,
+    generation: u64,
+    decision: close_protocol::CloseDecision,
+) -> Res<close_protocol::CloseAckDisposition> {
+    let disposition = app
+        .state::<Mutex<close_protocol::CloseProtocol>>()
+        .lock()
+        .map_err(|error| format!("close protocol state is unavailable: {error}"))?
+        .acknowledge(generation, decision);
+
+    if disposition == close_protocol::CloseAckDisposition::Armed {
+        let window = main_window(&app).ok_or_else(|| "main window is unavailable".to_string())?;
+        window.close().map_err(|error| error.to_string())?;
+    }
+
+    Ok(disposition)
+}
+
+#[tauri::command]
+fn close_protocol_cancel<R: Runtime>(
+    app: AppHandle<R>,
+    generation: u64,
+) -> Res<close_protocol::CloseCancelDisposition> {
+    app.state::<Mutex<close_protocol::CloseProtocol>>()
+        .lock()
+        .map(|mut protocol| protocol.cancel(generation))
+        .map_err(|error| format!("close protocol state is unavailable: {error}"))
+}
+
+#[tauri::command]
+fn set_theme<R: Runtime>(window: WebviewWindow<R>, theme: String, color: Option<String>) {
+    // the page's own colour when it sends one, a colour theme changes it
+    let page = color.filter(|hex| {
+        hex.len() == 7 && hex.starts_with('#') && hex[1..].chars().all(|c| c.is_ascii_hexdigit())
+    });
+    let background = page
+        .as_deref()
+        .and_then(|hex| {
+            let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+            Some(tauri::window::Color(
+                channel(1)?,
+                channel(3)?,
+                channel(5)?,
+                0xff,
+            ))
+        })
+        .unwrap_or(if theme == "dark" { DARK } else { LIGHT });
+    let _ = window.set_background_color(Some(background));
     #[cfg(target_os = "android")]
     {
         let dark = theme == "dark";
         // the colour of the page itself, so the strips beside the notch and behind the status bar read as
         // part of it
-        let hex = if dark { "#191919" } else { "#ffffff" };
+        let hex = page.unwrap_or_else(|| if dark { "#191919" } else { "#ffffff" }.to_string());
         device::set_theme(window.app_handle(), dark, hex);
     }
+}
+
+#[derive(serde::Serialize)]
+struct SpellLanguages {
+    chosen: Vec<String>,
+    system: Vec<String>,
+    // the system checks in all its languages by itself and there is nothing to pick, as on macos
+    automatic: bool,
+}
+
+#[tauri::command]
+fn spell_languages() -> SpellLanguages {
+    SpellLanguages {
+        chosen: native::chosen_spell_languages(),
+        system: native::system_spell_languages(),
+        automatic: !cfg!(any(target_os = "linux", windows)),
+    }
+}
+
+// true when the languages only apply once morrow opens again
+#[tauri::command]
+fn set_spell_languages<R: Runtime>(
+    window: WebviewWindow<R>,
+    languages: Vec<String>,
+) -> Result<bool, String> {
+    native::set_spell_languages(&window, &languages)
 }
 
 #[tauri::command]
@@ -122,10 +196,147 @@ fn copy_text<R: Runtime>(app: AppHandle<R>, text: String) -> bool {
     app.clipboard().write_text(text).is_ok()
 }
 
-// text and html together, so pictures copied with the words reach other apps too
+const CLIPBOARD_MEDIA: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "mp3", "wav", "ogg", "m4a", "flac",
+    "mp4", "webm", "mov", "m4v", "pdf",
+];
+
+// pictures, sound, video and pdfs copied in the file manager, by path
 #[tauri::command]
-fn copy_rich<R: Runtime>(app: AppHandle<R>, text: String, html: String) -> bool {
-    app.clipboard().write_html(html, Some(text)).is_ok()
+fn clipboard_files() -> Vec<String> {
+    native::clipboard_files()
+        .into_iter()
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| CLIPBOARD_MEDIA.contains(&ext.to_ascii_lowercase().as_str()))
+        })
+        .collect()
+}
+
+// one of those files, read only while it is still on the clipboard, so the page can't read any other file
+#[tauri::command]
+fn read_clipboard_file(path: String) -> Res<Response> {
+    if !clipboard_files().contains(&path) {
+        return Err("Not on the clipboard.".into());
+    }
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size > 100 * 1024 * 1024 {
+        return Err("Too large.".into());
+    }
+    Ok(Response::new(
+        std::fs::read(&path).map_err(|error| error.to_string())?,
+    ))
+}
+
+// text and html together, so pictures copied with the words reach other apps too. this comes just after
+// the web view wrote its own copy, and on windows the clipboard can still be held by it for a moment, so a
+// write that fails is tried again rather than leaving the copy without its pictures
+#[tauri::command]
+async fn copy_rich<R: Runtime>(app: AppHandle<R>, text: String, html: String) -> bool {
+    for _ in 0..12 {
+        if app
+            .clipboard()
+            .write_html(html.clone(), Some(text.clone()))
+            .is_ok()
+        {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+    false
+}
+
+// a calendar subscribed to by its address, such as the secret .ics link google calendar or outlook give.
+// fetched here rather than in the page, which those servers refuse. webcal:// is the same as https://
+#[tauri::command]
+async fn fetch_calendar(url: String) -> Res<String> {
+    let lower = url.to_ascii_lowercase();
+    let url = if lower.starts_with("webcal://") {
+        format!("https://{}", &url["webcal://".len()..])
+    } else if lower.starts_with("https://") || lower.starts_with("http://") {
+        url
+    } else {
+        return Err("Not allowed.".into());
+    };
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Morrow/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("The calendar answered {}.", response.status()));
+    }
+    if response.content_length().unwrap_or(0) > 8 * 1024 * 1024 {
+        return Err("Too large.".into());
+    }
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("Too large.".into());
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if !text.trim_start().starts_with("BEGIN:VCALENDAR") {
+        return Err("Not a calendar.".into());
+    }
+    Ok(text)
+}
+
+// a picture another app put on the clipboard as a file on this computer, the way word, outlook and
+// libreoffice copy the pictures among words. read only when the clipboard's html names that very file, so
+// the page can't read any other one
+#[tauri::command]
+fn read_pasted_picture(src: String) -> Res<Response> {
+    #[cfg(mobile)]
+    {
+        let _ = src;
+        Err("Not available on this phone.".into())
+    }
+    #[cfg(desktop)]
+    read_pasted_file(&src)
+}
+
+#[cfg(desktop)]
+fn read_pasted_file(src: &str) -> Res<Response> {
+    let src = src.to_string();
+    let html = arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get().html())
+        .map_err(|error| error.to_string())?;
+    if !html.contains(&src) && !html.contains(&src.replace('&', "&amp;")) {
+        return Err("Not on the clipboard.".into());
+    }
+    let path = url::Url::parse(&src)
+        .ok()
+        .filter(|url| url.scheme() == "file")
+        .and_then(|url| url.to_file_path().ok())
+        .ok_or_else(|| "Not a file.".to_string())?;
+    let picture = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            [
+                "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "tif", "tiff",
+            ]
+            .contains(&ext.to_ascii_lowercase().as_str())
+        });
+    if !picture {
+        return Err("Not a picture.".into());
+    }
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size as usize > MAX_PASTED_IMAGE_BYTES {
+        return Err("Too large.".into());
+    }
+    Ok(Response::new(
+        std::fs::read(&path).map_err(|error| error.to_string())?,
+    ))
 }
 
 // a picture pasted from the web or another app is saved into the vault, so it stays when its link expires.
@@ -397,6 +608,41 @@ async fn vault_choose<R: Runtime>(app: AppHandle<R>, start: Option<String>) -> O
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+// what another app shared with morrow on android, nothing anywhere else
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn take_shared<R: Runtime>(app: AppHandle<R>) -> Value {
+    let shared = device::take_shared(&app).await;
+    json!({ "text": shared.text, "files": shared.files })
+}
+
+#[cfg(not(target_os = "android"))]
+#[tauri::command]
+fn take_shared() -> Value {
+    json!({ "text": null, "files": [] })
+}
+
+// a file shared from another app, read once from where the phone copied it and then let go. only files in
+// that one folder of morrow's cache can be read this way
+#[tauri::command]
+fn read_shared_file<R: Runtime>(app: AppHandle<R>, path: String) -> Res<Response> {
+    let folder = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("shared");
+    let file = Path::new(&path);
+    let inside = file.parent().is_some_and(|parent| {
+        parent.canonicalize().ok() == folder.canonicalize().ok() && folder.exists()
+    });
+    if !inside || !file.is_file() {
+        return Err("Not a shared file.".into());
+    }
+    let bytes = std::fs::read(file).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(file);
+    Ok(Response::new(bytes))
+}
+
 // on android a folder that is already on the phone can be opened, once morrow may read files outside its own
 // storage. the person is asked for that here, the first time a folder is opened
 #[cfg(target_os = "android")]
@@ -426,39 +672,56 @@ async fn vault_copy_into(dir: String) -> Res<Value> {
 }
 
 #[tauri::command]
-async fn vault_create_default() -> Res<String> {
+async fn vault_create_default<R: Runtime>(app: AppHandle<R>) -> Res<String> {
+    // on a phone a new vault goes in its documents folder, where a file manager and a computer can reach it,
+    // once morrow is allowed files outside its own storage. it asks, and keeps to its own storage if not
+    #[cfg(target_os = "android")]
+    if device::storage_access(&app, true).await.unwrap_or(false) {
+        if let Some(documents) = device::documents_folder(&app).await {
+            return blocking(move || vault::create_default_in(&documents)).await?;
+        }
+    }
+    let _ = &app;
     blocking(vault::create_default).await?
 }
 
 #[tauri::command]
-async fn vault_select(dir: String) -> Res<Value> {
+async fn vault_select(dir: String) -> Res<vault::VaultTransitionResult> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
     blocking(move || vault::select(&dir)).await
 }
 
 #[tauri::command]
-async fn vault_forget(dir: String) -> Res<()> {
-    blocking(move || vault::forget(&dir)).await?
+async fn vault_forget(dir: String) -> Res<vault::VaultTransitionResult> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    blocking(move || vault::forget(&dir)).await
+}
+
+#[tauri::command]
+async fn vault_reorder(order: Vec<String>) -> Res<vault::VaultTransitionResult> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    blocking(move || vault::reorder(&order)).await
 }
 
 #[tauri::command]
 async fn vault_open<R: Runtime>(app: AppHandle<R>) -> Res<Value> {
+    // Reserve the session on the command thread before spawn_blocking can delay it
+    // behind a close/select transition.
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    let reservation = vault::reserve_current_open()?;
+    let handle = app.clone();
     blocking(move || {
-        let state = vault::state();
-        let Some(current) = state["current"].as_str().map(String::from) else {
-            return Ok(json!({ "ok": false, "root": null }));
-        };
-        let handle = app.clone();
-        vault::open(&current, move |changes| {
+        vault::open_reserved(reservation, move |changes| {
             to_window(&handle, "vault:changes", changes)
-        })?;
-        Ok(json!({ "ok": true, "root": current }))
+        })
     })
     .await?
 }
 
 #[tauri::command]
-fn vault_close() {
-    vault::close();
+async fn vault_close() -> Res<()> {
+    let _transition = VAULT_TRANSITIONS.lock().await;
+    blocking(vault::close).await
 }
 
 #[tauri::command]
@@ -505,11 +768,53 @@ async fn vault_list(path: String) -> Res<Vec<Value>> {
 }
 
 #[tauri::command]
-fn vault_reveal<R: Runtime>(app: AppHandle<R>, path: Option<String>) -> Res<()> {
+async fn vault_files_page(
+    directory: String,
+    generation: u64,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> Res<vault::VaultFilePage> {
+    blocking(move || vault::list_metadata_page(generation, &directory, cursor.as_deref(), limit))
+        .await
+}
+
+#[tauri::command]
+async fn vault_catalog_file_action<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    generation: u64,
+    action: vault::VaultCatalogFileAction,
+) -> Res<vault::VaultCatalogFileActionResult> {
+    blocking(move || {
+        vault::catalog_file_action(generation, &path, action, |target, action| match action {
+            vault::VaultCatalogFileAction::Open => app
+                .opener()
+                .open_path(target.to_string_lossy().into_owned(), None::<&str>)
+                .map_err(|error| match error {
+                    tauri_plugin_opener::Error::Io(error) => {
+                        vault::catalog_open_failure(error.raw_os_error(), cfg!(windows))
+                    }
+                    _ => vault::VaultCatalogFileActionFailure::Failed,
+                }),
+            vault::VaultCatalogFileAction::Reveal => app
+                .opener()
+                .reveal_item_in_dir(target)
+                .map_err(|_| vault::VaultCatalogFileActionFailure::Failed),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn vault_reveal<R: Runtime>(app: AppHandle<R>, path: Option<String>) -> Res<()> {
     let target = match path.filter(|path| !path.is_empty()) {
         Some(path) => vault::resolve(&path)?,
         None => vault::current().ok_or("No vault is open.")?,
     };
+    // a phone has no file manager to reveal a file in, the folder opens in the one it has
+    #[cfg(target_os = "android")]
+    return device::open_folder(&app, &target).await;
+    #[cfg(not(target_os = "android"))]
     app.opener()
         .reveal_item_in_dir(target)
         .map_err(|error| error.to_string())
@@ -604,8 +909,18 @@ async fn sync_status() -> Res<Value> {
 }
 
 #[tauri::command]
-async fn sync_enable(enabled: bool) -> Res<()> {
+async fn sync_enable<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Res<()> {
+    if enabled {
+        allow_local_network(&app).await;
+    }
     blocking(move || sync::set_enabled(enabled)).await
+}
+
+// a phone asks to reach the other devices on its network before syncing with them
+#[allow(unused_variables)]
+async fn allow_local_network<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(target_os = "android")]
+    sync::LOCAL_NETWORK_ALLOWED.store(device::local_network(app, true).await, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -614,7 +929,8 @@ async fn sync_name(name: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn sync_start_pairing() -> Res<String> {
+async fn sync_start_pairing<R: Runtime>(app: AppHandle<R>) -> Res<String> {
+    allow_local_network(&app).await;
     blocking(sync::start_pairing).await
 }
 
@@ -624,7 +940,8 @@ async fn sync_stop_pairing() -> Res<()> {
 }
 
 #[tauri::command]
-async fn sync_pair(target: Value, code: String) -> Value {
+async fn sync_pair<R: Runtime>(app: AppHandle<R>, target: Value, code: String) -> Value {
+    allow_local_network(&app).await;
     sync::pair(target, code).await
 }
 
@@ -852,6 +1169,40 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         });
     #[cfg(desktop)]
     let builder = builder.decorations(cfg!(target_os = "macos"));
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(&native::browser_args());
+    #[cfg(windows)]
+    let (builder, spelling_profile) = {
+        let pilot_debug = cfg!(debug_assertions)
+            && app.config().identifier == native::POLARIS_DADOS_PILOT_IDENTIFIER;
+        // The launcher sets this only for its isolated Windows pilot. Read it once, then use the
+        // selected PathBuf for both Tauri's WebView2 data directory and spelling preferences.
+        let pilot_profile = pilot_debug
+            .then(|| std::env::var_os("WEBVIEW2_USER_DATA_FOLDER"))
+            .flatten()
+            .map(PathBuf::from);
+        let app_local_profile = if pilot_debug {
+            None
+        } else {
+            app.path().app_local_data_dir().ok()
+        };
+        match native::select_webview_profile(
+            &app.config().identifier,
+            cfg!(debug_assertions),
+            app_local_profile,
+            pilot_profile,
+        ) {
+            native::WebviewProfile::Isolated(profile) => {
+                (builder.data_directory(profile.clone()), Some(profile))
+            }
+            native::WebviewProfile::AppLocal(profile) => (builder, Some(profile)),
+            native::WebviewProfile::Skip => (builder, None),
+        }
+    };
+    #[cfg(windows)]
+    if let Some(profile) = spelling_profile.as_deref() {
+        native::prepare_spelling(profile);
+    }
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
@@ -868,22 +1219,26 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
     let closing = app.clone();
     window.on_window_event(move |event| {
-        // the interface writes pending edits and a backup before the window closes, for five seconds at most
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            if READY_TO_CLOSE.load(Ordering::SeqCst) {
-                vault::close();
-                return;
-            }
-            api.prevent_close();
-            command(&closing, "app.prepareToClose");
-            let later = closing.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                READY_TO_CLOSE.store(true, Ordering::SeqCst);
-                if let Some(window) = main_window(&later) {
-                    let _ = window.close();
+            let action = match closing
+                .state::<Mutex<close_protocol::CloseProtocol>>()
+                .lock()
+            {
+                Ok(mut protocol) => protocol.on_close_requested(),
+                Err(_) => {
+                    api.prevent_close();
+                    return;
                 }
-            });
+            };
+
+            match action {
+                close_protocol::CloseRequestAction::Pending { generation } => {
+                    api.prevent_close();
+                    to_window(&closing, "morrow:close-requested", generation);
+                }
+                close_protocol::CloseRequestAction::Allow => vault::close(),
+                close_protocol::CloseRequestAction::Blocked => api.prevent_close(),
+            }
         }
     });
     Ok(())
@@ -891,7 +1246,8 @@ fn create_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let mut builder =
+        tauri::Builder::default().manage(Mutex::new(close_protocol::CloseProtocol::default()));
     #[cfg(desktop)]
     {
         builder = builder
@@ -916,7 +1272,8 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(serve_file(&request)));
         })
         .setup(|app| {
-            paths::init_data_dir(app.path().app_config_dir().ok());
+            paths::init_data_dir(&app.config().identifier, app.path().app_config_dir().ok())?;
+            ai::init_keychain_identity(&app.config().identifier)?;
             // a phone keeps vaults in the app's own storage, synced with a computer over the network
             #[cfg(mobile)]
             paths::set_documents_dir(app.path().app_data_dir().ok().map(|dir| dir.join("Vaults")));
@@ -928,6 +1285,10 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     if let Some(name) = device::name(&handle).await {
                         sync::set_default_name(&name);
+                    }
+                    // sync turned on before android asked about the local network asks now
+                    if sync::status()["enabled"].as_bool() == Some(true) {
+                        allow_local_network(&handle).await;
                     }
                 });
             }
@@ -952,12 +1313,20 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            close_ready,
+            close_protocol_snapshot,
+            close_protocol_ack,
+            close_protocol_cancel,
             set_theme,
             set_zoom,
+            spell_languages,
+            set_spell_languages,
             open_external,
             copy_text,
             copy_rich,
+            clipboard_files,
+            read_clipboard_file,
+            read_pasted_picture,
+            fetch_calendar,
             fetch_image,
             show_data_folder,
             show_backups,
@@ -973,6 +1342,9 @@ pub fn run() {
             vault_create_default,
             vault_select,
             vault_forget,
+            vault_reorder,
+            take_shared,
+            read_shared_file,
             vault_open,
             vault_close,
             vault_scan,
@@ -982,6 +1354,8 @@ pub fn run() {
             vault_create_file,
             vault_exists,
             vault_list,
+            vault_files_page,
+            vault_catalog_file_action,
             vault_reveal,
             vault_open_file,
             vault_open_link,
@@ -1033,7 +1407,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("clip.mp4");
         std::fs::write(&file, (0u8..=255).collect::<Vec<_>>()).unwrap();
-        let path = file.to_string_lossy().trim_start_matches('/').to_string();
+        // the way the interface writes a path into an address: forward slashes on every system, C:/folder
+        // on windows, and no slash at the start
+        let address = |file: &Path| {
+            file.to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+                .to_string()
+        };
+        let path = address(&file);
         let request = |range: Option<&str>| {
             let mut builder = tauri::http::Request::builder()
                 .uri(format!("morrow-file://localhost/local/{path}"));
@@ -1056,10 +1438,7 @@ mod tests {
         let text = dir.join("secret.txt");
         std::fs::write(&text, "no").unwrap();
         let other = tauri::http::Request::builder()
-            .uri(format!(
-                "morrow-file://localhost/local/{}",
-                text.to_string_lossy().trim_start_matches('/')
-            ))
+            .uri(format!("morrow-file://localhost/local/{}", address(&text)))
             .body(Vec::new())
             .unwrap();
         assert_eq!(serve_file(&other).status(), 404);

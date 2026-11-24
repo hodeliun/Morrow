@@ -1,11 +1,14 @@
 import { Extension } from '@tiptap/core';
 import type { Editor, Range } from '@tiptap/core';
 import { PluginKey } from '@tiptap/pm/state';
+import type { EditorState } from '@tiptap/pm/state';
+import { closeHistory } from '@tiptap/pm/history';
 import Suggestion from '@tiptap/suggestion';
 import {
   CalendarDays,
   Columns2,
   Columns3,
+  Columns4,
   ListTree,
   Workflow,
   ChevronRight,
@@ -29,17 +32,22 @@ import {
   Pilcrow,
   Quote,
   Table,
+  Clapperboard,
 } from 'lucide-react';
+import { ListLettered } from './icons';
 import { foldText } from '../../core/search';
 import { t } from '../i18n';
 import type { TranslationKey } from '../i18n';
 import { pickFiles } from '../platform/files';
+import { promptEmbed } from './PasteMenu';
 import { editMathNear } from './Extras';
 import { insertFiles } from './Media';
 import type { MenuItem } from './SuggestionMenu';
 import { renderSuggestion } from './SuggestionMenu';
-import { listItemAtCursor, turnListItem } from './turnInto';
+import { canTurnListItem, listItemAtCursor, turnListItem } from './turnInto';
 import type { TurnTarget } from './turnInto';
+
+export const SLASH_COMMAND_PLUGIN_KEY = new PluginKey('slashCommand');
 
 interface BlockItem extends MenuItem {
   keywords: string;
@@ -79,13 +87,93 @@ const SAMPLE_DIAGRAM = `flowchart LR
 
 const chain = (editor: Editor, range: Range) => editor.chain().focus().deleteRange(range);
 
+const EQUAL_COLUMN_COMMANDS = new Set(['columns6', 'columns7']);
+
+function isWholeRootParagraphSlashRange(
+  editor: Editor,
+  range: Range,
+  state: EditorState = editor.state,
+): boolean {
+  if (!editor.isEditable || !Number.isInteger(range.from) || !Number.isInteger(range.to)) return false;
+  if (range.from < 0 || range.to <= range.from || range.to > state.doc.content.size) return false;
+
+  const { selection, doc } = state;
+  if (!selection.empty || selection.from !== range.to) return false;
+
+  const $from = doc.resolve(range.from);
+  const $to = doc.resolve(range.to);
+  if ($from.depth !== 1 || $to.depth !== 1 || $from.parent !== $to.parent) return false;
+
+  const paragraph = $from.parent;
+  let containsTextOnly = paragraph.childCount > 0;
+  paragraph.forEach((child) => {
+    if (!child.isText) containsTextOnly = false;
+  });
+  const query = doc.textBetween(range.from, range.to, '\uFFFC', '\uFFFC');
+  const hasNonDefaultParagraphAttributes = Object.entries(paragraph.attrs).some(([name, value]) => {
+    const defaultValue = paragraph.type.spec.attrs?.[name]?.default;
+    return value !== defaultValue;
+  });
+  return (
+    paragraph.type.name === 'paragraph' &&
+    containsTextOnly &&
+    !hasNonDefaultParagraphAttributes &&
+    range.from === $from.start() &&
+    range.to === $from.end() &&
+    paragraph.textContent === query &&
+    query.startsWith('/')
+  );
+}
+
+function isCurrentEqualWidthCommand(editor: Editor, range: Range, count: 6 | 7): boolean {
+  const state = editor.state;
+  const suggestion = SLASH_COMMAND_PLUGIN_KEY.getState(state) as
+    | { active: boolean; query: string | null; range: Range }
+    | undefined;
+  const currentRange = suggestion?.range;
+  if (
+    !suggestion?.active ||
+    !currentRange ||
+    suggestion.query === null ||
+    currentRange.from !== range.from ||
+    currentRange.to !== range.to ||
+    !isWholeRootParagraphSlashRange(editor, currentRange, state)
+  ) {
+    return false;
+  }
+
+  const query = state.doc.textBetween(currentRange.from + 1, currentRange.to, '\uFFFC', '\uFFFC');
+  return (
+    suggestion.query === query &&
+    slashItems(query, editor, currentRange, state).some((item) => item.id === `columns${count}`)
+  );
+}
+
+function runEqualWidthColumns(editor: Editor, range: Range, count: 6 | 7): void {
+  // An old menu item may still be clickable during a React update; re-run the live filter at dispatch time.
+  if (!isCurrentEqualWidthCommand(editor, range, count)) return;
+  chain(editor, range)
+    .setColumns(count)
+    .command(({ tr }) => {
+      closeHistory(tr);
+      return true;
+    })
+    .run();
+}
+
 // in the first line of a list item a block command changes only that item, the rest of the list stays.
 // asking a list item for the list it is already in is left to the usual toggle, which takes it out
 const turnItem = (editor: Editor, range: Range, target: TurnTarget): boolean => {
   const item = listItemAtCursor(editor);
   if (item === null) return false;
   const list = editor.state.doc.resolve(item).parent.type.name;
-  if (list === target.kind) return false;
+  const kind =
+    list === 'orderedList' && editor.state.doc.resolve(item).parent.attrs.type === 'a'
+      ? 'letteredList'
+      : list;
+  if (kind === target.kind) return false;
+  // Check before deleting the slash command. Unsupported conversions leave the text and its color intact.
+  if (!canTurnListItem(editor, item, target)) return true;
   chain(editor, range).run();
   turnListItem(editor, item, target);
   return true;
@@ -157,6 +245,17 @@ export const BLOCK_ITEMS: BlockItem[] = [
     hint: '1.',
     keywords: 'ordered ol',
     run: (e, r) => turnItem(e, r, { kind: 'orderedList' }) || chain(e, r).toggleOrderedList().run(),
+  },
+  {
+    id: 'lettered',
+    title: 'Lettered list',
+    description: 'List counted a, b, c',
+    icon: ListLettered,
+    hint: 'a.',
+    keywords: 'alphabetical letters outline abc',
+    run: (e, r) =>
+      turnItem(e, r, { kind: 'letteredList' }) ||
+      chain(e, r).toggleOrderedList().updateAttributes('orderedList', { type: 'a' }).run(),
   },
   {
     id: 'task',
@@ -266,7 +365,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
   },
   {
     id: 'math',
-    title: 'Formula',
+    title: 'Equation block',
     description: 'Display maths in LaTeX',
     icon: Sigma,
     hint: '$$',
@@ -281,7 +380,7 @@ export const BLOCK_ITEMS: BlockItem[] = [
   },
   {
     id: 'inlineMath',
-    title: 'Inline formula',
+    title: 'Equation inline',
     description: 'Maths inside a sentence',
     icon: Sigma,
     hint: '$…$',
@@ -352,6 +451,38 @@ export const BLOCK_ITEMS: BlockItem[] = [
     run: (e, r) => chain(e, r).setColumns(3).run(),
   },
   {
+    id: 'columns4',
+    title: '4 columns',
+    description: 'Four blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split wide',
+    run: (e, r) => chain(e, r).setColumns(4).run(),
+  },
+  {
+    id: 'columns5',
+    title: '5 columns',
+    description: 'Five blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split wide',
+    run: (e, r) => chain(e, r).setColumns(5).run(),
+  },
+  {
+    id: 'columns6',
+    title: '6 columns',
+    description: 'Six blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split',
+    run: (e, r) => runEqualWidthColumns(e, r, 6),
+  },
+  {
+    id: 'columns7',
+    title: '7 columns',
+    description: 'Seven blocks side by side',
+    icon: Columns4,
+    keywords: 'columns layout side by side split',
+    run: (e, r) => runEqualWidthColumns(e, r, 7),
+  },
+  {
     id: 'toc',
     title: 'Table of contents',
     description: 'Every heading on this page',
@@ -399,6 +530,17 @@ export const BLOCK_ITEMS: BlockItem[] = [
     run: (e, r) => chain(e, r).insertContent('@').run(),
   },
   {
+    id: 'embedMedia',
+    title: 'Embed',
+    description: 'A YouTube video, or a picture, sound, video or folder on this computer',
+    icon: Clapperboard,
+    keywords: 'youtube video audio sound music picture folder path local file embed',
+    run: (e, r) => {
+      chain(e, r).run();
+      promptEmbed(e);
+    },
+  },
+  {
     id: 'embed',
     title: 'Embed a page',
     description: 'Show another page inside this one',
@@ -420,6 +562,10 @@ export const BLOCK_ITEMS: BlockItem[] = [
 
 export function getLocalizedBlocks(): BlockItem[] {
   return [...BLOCK_ITEMS.map(localized), ...pluginBlocks()];
+}
+
+export function runSlashCommandItem(editor: Editor, range: Range, id: string, options: SlashOptions): void {
+  getLocalizedBlocks().find((candidate) => candidate.id === id)?.run(editor, range, options);
 }
 
 function localized(item: BlockItem): BlockItem {
@@ -453,6 +599,7 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
       'h6',
       'bullet',
       'ordered',
+      'lettered',
       'task',
       'toggle',
       'toggleH1',
@@ -468,8 +615,12 @@ const SECTIONS: Array<[string, string[], TranslationKey]> = [
     ],
     'slash.sections.basic',
   ],
-  ['media', ['image', 'file'], 'slash.sections.media'],
-  ['layout', ['columns2', 'columns3', 'table', 'toc'], 'slash.sections.layout'],
+  ['media', ['image', 'file', 'embedMedia'], 'slash.sections.media'],
+  [
+    'layout',
+    ['columns2', 'columns3', 'columns4', 'columns5', 'columns6', 'columns7', 'table', 'toc'],
+    'slash.sections.layout',
+  ],
   [
     'pagesAndData',
     ['link', 'embed', 'date', 'database', 'inlineDatabase', 'canvas', 'inlineCanvas'],
@@ -522,6 +673,22 @@ export function filterBlocks(query: string): BlockItem[] {
     .map((entry) => entry.item);
 }
 
+function slashItems(
+  query: string,
+  editor?: Editor,
+  range?: Range,
+  state?: EditorState,
+): MenuItem[] {
+  if (query.length > 40 || /^\s|\s{2}/.test(query)) return [];
+  const items = filterBlocks(query).slice(0, 40);
+  if (editor && range && isWholeRootParagraphSlashRange(editor, range, state)) return items;
+  return items.filter((item) => !EQUAL_COLUMN_COMMANDS.has(item.id));
+}
+
+export function getSlashCommandItems(query: string, editor: Editor, range: Range): MenuItem[] {
+  return slashItems(query, editor, range);
+}
+
 export const SlashCommand = Extension.create<SlashOptions>({
   name: 'slashCommand',
   addOptions() {
@@ -532,20 +699,27 @@ export const SlashCommand = Extension.create<SlashOptions>({
     return [
       Suggestion<MenuItem, MenuItem>({
         editor: this.editor,
-        pluginKey: new PluginKey('slashCommand'),
+        pluginKey: SLASH_COMMAND_PLUGIN_KEY,
         char: '/',
         startOfLine: false,
         // names like "2 columns" have spaces, a sentence typed after a slash simply finds nothing
         allowSpaces: true,
-        allow: ({ state }) => {
+        // a slash followed by a space or by words no block is called is just a slash in a sentence, so the
+        // menu goes away and doesn't come back when the cursor returns there
+        allow: ({ state, range }) => {
           const parent = state.selection.$from.parent;
-          return parent.type.name !== 'codeBlock';
+          if (parent.type.name === 'codeBlock') return false;
+          return slashItems(state.doc.textBetween(range.from + 1, range.to, ' '), this.editor, range, state).length > 0;
         },
-        items: ({ query }) =>
-          query.length > 40 || /\s{2}/.test(query) ? [] : filterBlocks(query).slice(0, 40),
+        items: ({ query, editor }) => {
+          const suggestion = SLASH_COMMAND_PLUGIN_KEY.getState(editor.state) as
+            | { active: boolean; query: string | null; range: Range }
+            | undefined;
+          const range = suggestion?.active && suggestion.query === query ? suggestion.range : undefined;
+          return slashItems(query, editor, range);
+        },
         command: ({ editor, range, props }) => {
-          const item = BLOCK_ITEMS.find((candidate) => candidate.id === props.id);
-          item?.run(editor, range, options);
+          runSlashCommandItem(editor, range, props.id, options);
         },
         render: renderSuggestion(
           () => t('slash.menu.insertBlock'),

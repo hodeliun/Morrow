@@ -1,4 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
+import { isExitInteractionBlocked } from './exitInteraction';
 import {
   Archive,
   ArrowLeft,
@@ -181,7 +182,7 @@ export const ACTIONS: Action[] = [
     // the new side starts on the same page, with the search open to pick another one for it
     run: () => {
       openSide();
-      setUi({ palette: true, paletteForSide: true });
+      setUi({ palette: true, paletteForSide: true, palettePaneScope: null });
     },
   },
   {
@@ -332,7 +333,12 @@ export const ACTIONS: Action[] = [
     icon: Search,
     shortcut: 'Mod+K',
     keywords: 'find palette',
-    run: () => setUi({ palette: !getUi().palette }),
+    run: () =>
+      setUi({
+        palette: !getUi().palette,
+        paletteForSide: false,
+        palettePaneScope: null,
+      }),
   },
   {
     id: 'search.all',
@@ -360,6 +366,14 @@ export const ACTIONS: Action[] = [
     icon: Home,
     shortcut: 'Alt+H',
     run: () => navigate({ name: 'home' }),
+  },
+  {
+    id: 'go.journal',
+    label: 'Go to journal',
+    group: 'General',
+    icon: BookOpen,
+    keywords: 'daily notes diary days',
+    run: () => navigate({ name: 'journal' }),
   },
   {
     id: 'go.tasks',
@@ -588,6 +602,7 @@ export function allActions(): Action[] {
 }
 
 export function runAction(id: string): void {
+  if (isExitInteractionBlocked()) return;
   const action = allActions().find((candidate) => candidate.id === id);
   if (!action) return;
   const context = currentContext();

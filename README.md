@@ -87,7 +87,7 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 - Page history with a view of what changed since each version
 - **Tabs and split panes**: back and forward in every tab (Alt + ← and →, or
   Cmd + [ and ] on a Mac, or the mouse's side buttons), Ctrl/Cmd + click to open
-  a page in a new tab, Alt + click to open it beside the page you are on,
+  a page in a tab behind the one you're on, Alt + click to open it beside the page you are on,
   Ctrl/Cmd + Shift + T to reopen a closed tab and Ctrl/Cmd + 1 to 9 to jump
 - **Drag a page** from the sidebar into another page to link it
 - **An optional assistant** that searches, reads and edits your pages in Morrow's
@@ -116,7 +116,7 @@ https://github.com/user-attachments/assets/a279710f-1a50-4f1a-82ff-17714cfe7641
 
 ## Status
 
-Version **2.0.0**. Morrow is now built with [Tauri](https://tauri.app) and Rust instead of
+Version **2.2.0**. Morrow is now built with [Tauri](https://tauri.app) and Rust instead of
 Electron: it uses the web view your system already has, so it is a fraction of the size, starts
 quicker and uses far less memory. Pages are files in a folder you choose. Releases are built for
 Windows (x64 and ARM64), macOS (Apple silicon and Intel) and Linux (x64).
@@ -174,6 +174,10 @@ as databases, canvas drawing and the welcome guide, and handled most debugging
 and optimisation. I decide what goes into Morrow and test every change myself.
 Morrow itself has no AI and sends nothing anywhere. The optional assistant only
 runs when you turn it on and add your own key.
+
+Big thanks to all the contributors, and reporters, your insights made this app how it is today.
+
+***Also, a SUPER DUPER big thanks to Gleyce Cruz, for testing my app, the insane amount of bugs reported single handedly by her, and also for the fabulous suggestions and insights.***
 
 ## Licence
 

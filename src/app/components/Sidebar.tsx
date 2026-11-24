@@ -26,10 +26,11 @@ import {
   Star,
   Table2,
   Trash2,
+  Paperclip,
+  X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { memo, useDeferredValue, useMemo, useRef, useState } from 'react';
-import { dateKey } from '../../core/daily';
+import { Fragment, memo, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { displayTitle } from '../../core/model';
 import type { PageId, PageMeta, WorkspaceState } from '../../core/model';
 import { collectTasks } from '../../core/tasks';
@@ -44,6 +45,8 @@ import {
 } from '../../core/tree';
 import { collectCards, dueCards } from '../../core/flashcards';
 import { collectTags } from '../../core/tags';
+import { findTemplatesPage, listTemplates } from '../../core/templates';
+import { addPageToSection, togglePageInSection, useSidebarSections } from '../sidebarSections';
 import { useReviewLog } from '../review';
 import { formatShortcut, runAction } from '../actions';
 import { t, useTranslation } from '../i18n';
@@ -51,25 +54,19 @@ import { canOpenFolders, desktop } from '../platform/desktop';
 import { vaultName } from '../platform/vault';
 import { chooseVaultFolder, createVault, switchVault } from '../vaults';
 import { getSession } from '../workspace';
-import {
-  createPage,
-  expandPage,
-  importMarkdown,
-  movePage,
-  openToday,
-  toggleFavorite,
-  trashPage,
-} from '../operations';
-import { getPreferences, setPreferences, usePreferences } from '../platform/preferences';
-import type { SidebarModule } from '../platform/preferences';
+import { createPage, expandPage, importMarkdown, movePage, toggleFavorite, trashPage } from '../operations';
+import { getPreferences, setPreferences, SIDEBAR_GROUPS, usePreferences } from '../platform/preferences';
+import type { SidebarItem, SidebarModule } from '../platform/preferences';
 import { navigate, openPage, useActiveRoute } from '../router';
 import { openDialog, setUi, useUi } from '../ui';
 import { run, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
 import { pageMenuEntries } from './pageMenu';
+import { canMoveTreePage, isProviderManagedPage } from './pageEditability';
 import { Emoji } from './Emoji';
 import { Logo } from './primitives';
 import { PAGE_DRAG_TYPE } from '../editor/PageLink';
+import { polarisArquivosSidebarFileCatalog, subscribePlugins } from '../plugins/registry';
 
 type DropZone = 'before' | 'inside' | 'after';
 
@@ -160,6 +157,11 @@ export function Sidebar() {
     () => live.filter((page) => page.favorite).sort((a, b) => displayTitle(a).localeCompare(displayTitle(b))),
     [live],
   );
+  const customSections = useSidebarSections();
+  const [dropSection, setDropSection] = useState<string | null>(null);
+  // templates have a section of their own rather than sitting among the pages
+  const templatesPage = useMemo(() => findTemplatesPage(state), [state]);
+  const templateCount = useMemo(() => listTemplates(state).length, [state]);
   const trashCount = useMemo(() => trashedPages(state.pages).length, [state.pages]);
   const archiveCount = useMemo(() => archivedPages(state.pages).length, [state.pages]);
   const openTasks = useMemo(() => collectTasks(state).filter((task) => !task.checked).length, [state]);
@@ -173,8 +175,10 @@ export function Sidebar() {
     recent: Array<{ path: string; name: string; exists: boolean }>;
   } | null>(null);
   const location = getSession().location;
-  const todayKey = dateKey(new Date());
-  const isToday = activeId !== null && state.pages[activeId]?.dailyDate === todayKey;
+  // the journal is lit for its own view and for any daily note open
+  const inJournal =
+    route.name === 'journal' ||
+    (activeId !== null && (!!state.pages[activeId]?.dailyDate || state.pages[activeId]?.kind === 'journal'));
   const resizing = useRef(false);
 
   const startResize = (event: React.PointerEvent) => {
@@ -199,6 +203,267 @@ export function Sidebar() {
   const go = (fn: () => void) => () => {
     fn();
     setUi({ mobileSidebar: false });
+  };
+
+  const order = prefs.sidebarOrder;
+  const inGroup = (group: keyof typeof SIDEBAR_GROUPS, item: SidebarItem) =>
+    (SIDEBAR_GROUPS[group] as readonly SidebarItem[]).includes(item);
+  const topItems: Record<TopItem, React.ReactNode> = {
+    search: shown('search') && (
+      <NavItem
+        icon={Search}
+        label={t('common.search')}
+        hint={formatShortcut('Mod+K')}
+        onClick={() =>
+          setUi({
+            palette: true,
+            paletteForSide: false,
+            palettePaneScope: null,
+            mobileSidebar: false,
+          })
+        }
+      />
+    ),
+    home: (
+      <NavItem
+        icon={Home}
+        label={t('settings.general.startPages.home')}
+        active={route.name === 'home'}
+        onClick={go(() => navigate({ name: 'home' }))}
+      />
+    ),
+    // daily notes live in a view of their own, which writes today's note with one click
+    daily: shown('daily') && (
+      <NavItem
+        icon={BookOpen}
+        label={t('journal.title')}
+        active={inJournal}
+        onClick={go(() => navigate({ name: 'journal' }))}
+      />
+    ),
+    tasks: shown('tasks') && (
+      <NavItem
+        icon={CheckSquare}
+        label={t('sidebar.tasks')}
+        active={route.name === 'tasks'}
+        count={openTasks}
+        onClick={go(() => navigate({ name: 'tasks' }))}
+      />
+    ),
+    // templates open a view of their own with a search, so dozens of them never crowd the sidebar
+    templates: shown('templates') && (
+      <NavItem
+        icon={LayoutTemplate}
+        label={t('dialogs.templates')}
+        active={route.name === 'templates' || (!!templatesPage && activeId === templatesPage.id)}
+        count={templateCount || undefined}
+        onClick={go(() => navigate({ name: 'templates' }))}
+      />
+    ),
+    tags: shown('tags') && (
+      <NavItem
+        icon={Hash}
+        label={t('sidebar.tags')}
+        active={route.name === 'tags' || route.name === 'tag'}
+        count={tagCount}
+        onClick={go(() => navigate({ name: 'tags' }))}
+      />
+    ),
+    review: shown('review') && (
+      <NavItem
+        icon={GraduationCap}
+        label={t('sidebar.review')}
+        active={route.name === 'review'}
+        count={dueCount}
+        onClick={go(() => navigate({ name: 'review' }))}
+      />
+    ),
+    graph: shown('graph') && (
+      <NavItem
+        icon={Network}
+        label={t('sidebar.graph')}
+        active={route.name === 'graph'}
+        onClick={go(() => navigate({ name: 'graph', focus: null }))}
+      />
+    ),
+    files: shown('files') && (
+      <NavItem
+        icon={Paperclip}
+        label={t('files.title')}
+        active={route.name === 'files'}
+        onClick={go(() => navigate({ name: 'files' }))}
+      />
+    ),
+    assistant: prefs.assistant && desktop?.assistant && (
+      <NavItem
+        icon={Sparkles}
+        label={t('settings.sections.assistant')}
+        active={prefs.assistantOpen}
+        onClick={() => setPreferences({ assistantOpen: !prefs.assistantOpen })}
+      />
+    ),
+  };
+  // favourites only show once there is something in them
+  const sectionItems: Record<SectionItem, React.ReactNode> = {
+    favorites: shown('favorites') && favorites.length > 0 && (
+      <section className="sidebar-section" aria-label={t('sidebar.favorites')}>
+        <h2 className="sidebar-heading">{t('sidebar.favorites')}</h2>
+        <ul className="flat-list">
+          {favorites.map((page) => {
+            return (
+              <li key={page.id}>
+                <button
+                  type="button"
+                  className={`tree-row flat${activeId === page.id ? ' is-active' : ''}`}
+                  onClick={go(() => openPage(page.id))}
+                >
+                  <span className="tree-icon">
+                    <PageIcon page={page} />
+                  </span>
+                  <span className="tree-title">{displayTitle(page)}</span>
+                  {/* the star takes the page out of favourites right here */}
+                  <span
+                    role="button"
+                    tabIndex={-1}
+                    className="favorite-mark"
+                    title={t('pageMenu.removeFromFavorites')}
+                    aria-label={t('pageMenu.removeFromFavorites')}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleFavorite(page.id);
+                    }}
+                  >
+                    <Star size={12} />
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    ),
+    // sections of your own, each a list of pages like favourites. an empty one shows too, so a page can be
+    // dragged into it from the tree
+    custom: customSections
+      .filter((section) => !section.hidden)
+      .map((section) => {
+        const pages = section.pages
+          .map((id) => state.pages[id])
+          .filter((page): page is PageMeta => !!page && page.trashedAt === null);
+        return (
+          <section
+            key={section.id}
+            className={`sidebar-section${dropSection === section.id ? ' is-drop-target' : ''}`}
+            aria-label={section.name}
+            onDragOver={(event) => {
+              if (!event.dataTransfer.types.includes(PAGE_DRAG_TYPE)) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'link';
+              setDropSection(section.id);
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropSection(null);
+            }}
+            onDrop={(event) => {
+              const id = event.dataTransfer.getData(PAGE_DRAG_TYPE);
+              setDropSection(null);
+              if (!id) return;
+              event.preventDefault();
+              void addPageToSection(section.id, id);
+            }}
+          >
+            <h2 className="sidebar-heading">{section.name}</h2>
+            {pages.length === 0 && <p className="sidebar-section-hint">{t('sidebar.sectionEmpty')}</p>}
+            <ul className="flat-list">
+              {pages.map((page) => (
+                <li key={page.id}>
+                  <button
+                    type="button"
+                    className={`tree-row flat${activeId === page.id ? ' is-active' : ''}`}
+                    data-page-id={page.id}
+                    onClick={go(() => openPage(page.id))}
+                  >
+                    <span className="tree-icon">
+                      <PageIcon page={page} />
+                    </span>
+                    <span className="tree-title">{displayTitle(page)}</span>
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      className="favorite-mark"
+                      title={t('sidebar.removeFromSection', { name: section.name })}
+                      aria-label={t('sidebar.removeFromSection', { name: section.name })}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void togglePageInSection(section.id, page.id);
+                      }}
+                    >
+                      <X size={12} />
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        );
+      }),
+    pages: (
+      <>
+        <section className="sidebar-section" aria-label={t('sidebar.pagesHeading')}>
+          <div className="sidebar-heading-row">
+            <h2 className="sidebar-heading">{t('sidebar.pagesHeading')}</h2>
+            <button
+              type="button"
+              className="icon-button small"
+              aria-label={t('sidebar.newPageAria')}
+              aria-haspopup="menu"
+              title={t('sidebar.newPageTitle', { shortcut: formatShortcut('Alt+N') })}
+              onClick={(event) => setNewMenu(event.currentTarget)}
+            >
+              <Plus size={15} strokeWidth={1.75} />
+            </button>
+          </div>
+          {live.length === 0 ? (
+            <div className="sidebar-empty">
+              <p>{t('sidebar.noPages')}</p>
+              <button type="button" className="link-button" onClick={() => createPage()}>
+                {t('sidebar.createFirstPage')}
+              </button>
+            </div>
+          ) : (
+            <PageTree state={state} activeId={activeId} expanded={prefs.expanded} />
+          )}
+        </section>
+        <SidebarFileCatalogSlot />
+      </>
+    ),
+  };
+  const bottomItems: Record<BottomItem, React.ReactNode> = {
+    import: shown('import') && (
+      <NavItem icon={FileUp} label={t('sidebar.import')} onClick={() => void importMarkdown()} />
+    ),
+    archive: shown('archive') && (archiveCount > 0 || route.name === 'archive') && (
+      <NavItem
+        icon={Archive}
+        label={t('sidebar.archive')}
+        active={route.name === 'archive'}
+        count={archiveCount}
+        onClick={go(() => navigate({ name: 'archive' }))}
+      />
+    ),
+    // the trash shows once something is in it
+    trash: shown('trash') && (trashCount > 0 || route.name === 'trash') && (
+      <NavItem
+        icon={Trash2}
+        label={t('sidebar.trash')}
+        active={route.name === 'trash'}
+        count={trashCount}
+        onClick={go(() => navigate({ name: 'trash' }))}
+      />
+    ),
+    settings: (
+      <NavItem icon={Settings} label={t('settings.title')} onClick={() => openDialog({ kind: 'settings' })} />
+    ),
   };
 
   return (
@@ -251,162 +516,27 @@ export function Sidebar() {
       </div>
 
       <nav className="sidebar-nav" aria-label={t('sidebar.main')}>
-        <NavItem
-          icon={Search}
-          label={t('common.search')}
-          hint={formatShortcut('Mod+K')}
-          onClick={() => setUi({ palette: true, mobileSidebar: false })}
-        />
-        {shown('daily') && (
-          <NavItem
-            icon={CalendarDays}
-            label={t('sidebar.today')}
-            active={isToday}
-            onClick={go(() => openToday())}
-          />
-        )}
-        <NavItem
-          icon={Home}
-          label={t('settings.general.startPages.home')}
-          active={route.name === 'home'}
-          onClick={go(() => navigate({ name: 'home' }))}
-        />
-        {shown('tasks') && (
-          <NavItem
-            icon={CheckSquare}
-            label={t('sidebar.tasks')}
-            active={route.name === 'tasks'}
-            count={openTasks}
-            onClick={go(() => navigate({ name: 'tasks' }))}
-          />
-        )}
-        {shown('tags') && (
-          <NavItem
-            icon={Hash}
-            label={t('sidebar.tags')}
-            active={route.name === 'tags' || route.name === 'tag'}
-            count={tagCount}
-            onClick={go(() => navigate({ name: 'tags' }))}
-          />
-        )}
-        {shown('review') && (
-          <NavItem
-            icon={GraduationCap}
-            label={t('sidebar.review')}
-            active={route.name === 'review'}
-            count={dueCount}
-            onClick={go(() => navigate({ name: 'review' }))}
-          />
-        )}
-        {shown('graph') && (
-          <NavItem
-            icon={Network}
-            label={t('sidebar.graph')}
-            active={route.name === 'graph'}
-            onClick={go(() => navigate({ name: 'graph', focus: null }))}
-          />
-        )}
-        {prefs.assistant && desktop?.assistant && (
-          <NavItem
-            icon={Sparkles}
-            label={t('settings.sections.assistant')}
-            active={prefs.assistantOpen}
-            onClick={() => setPreferences({ assistantOpen: !prefs.assistantOpen })}
-          />
-        )}
+        {order
+          .filter((item) => inGroup('top', item))
+          .map((item) => (
+            <Fragment key={item}>{topItems[item as TopItem]}</Fragment>
+          ))}
       </nav>
 
       <div className="sidebar-scroll">
-        {favorites.length > 0 && (
-          <section className="sidebar-section" aria-label={t('sidebar.favorites')}>
-            <h2 className="sidebar-heading">{t('sidebar.favorites')}</h2>
-            <ul className="flat-list">
-              {favorites.map((page) => {
-                return (
-                  <li key={page.id}>
-                    <button
-                      type="button"
-                      className={`tree-row flat${activeId === page.id ? ' is-active' : ''}`}
-                      onClick={go(() => openPage(page.id))}
-                    >
-                      <span className="tree-icon">
-                        <PageIcon page={page} />
-                      </span>
-                      <span className="tree-title">{displayTitle(page)}</span>
-                      {/* the star takes the page out of favourites right here */}
-                      <span
-                        role="button"
-                        tabIndex={-1}
-                        className="favorite-mark"
-                        title={t('pageMenu.removeFromFavorites')}
-                        aria-label={t('pageMenu.removeFromFavorites')}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleFavorite(page.id);
-                        }}
-                      >
-                        <Star size={12} />
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        )}
-
-        <section className="sidebar-section" aria-label={t('sidebar.pagesHeading')}>
-          <div className="sidebar-heading-row">
-            <h2 className="sidebar-heading">{t('sidebar.pagesHeading')}</h2>
-            <button
-              type="button"
-              className="icon-button small"
-              aria-label={t('sidebar.newPageAria')}
-              aria-haspopup="menu"
-              title={t('sidebar.newPageTitle', { shortcut: formatShortcut('Alt+N') })}
-              onClick={(event) => setNewMenu(event.currentTarget)}
-            >
-              <Plus size={15} strokeWidth={1.75} />
-            </button>
-          </div>
-          {live.length === 0 ? (
-            <div className="sidebar-empty">
-              <p>{t('sidebar.noPages')}</p>
-              <button type="button" className="link-button" onClick={() => createPage()}>
-                {t('sidebar.createFirstPage')}
-              </button>
-            </div>
-          ) : (
-            <PageTree state={state} activeId={activeId} expanded={prefs.expanded} />
-          )}
-        </section>
+        {order
+          .filter((item) => inGroup('sections', item))
+          .map((item) => (
+            <Fragment key={item}>{sectionItems[item as SectionItem]}</Fragment>
+          ))}
       </div>
 
       <div className="sidebar-footer">
-        {shown('import') && (
-          <NavItem icon={FileUp} label={t('sidebar.import')} onClick={() => void importMarkdown()} />
-        )}
-        {(archiveCount > 0 || route.name === 'archive') && (
-          <NavItem
-            icon={Archive}
-            label={t('sidebar.archive')}
-            active={route.name === 'archive'}
-            count={archiveCount}
-            onClick={go(() => navigate({ name: 'archive' }))}
-          />
-        )}
-        <NavItem
-          icon={Trash2}
-          label={t('sidebar.trash')}
-          active={route.name === 'trash'}
-          count={trashCount}
-          onClick={go(() => navigate({ name: 'trash' }))}
-        />
-        <NavItem
-          icon={Settings}
-          label={t('settings.title')}
-          onClick={() => openDialog({ kind: 'settings' })}
-        />
+        {order
+          .filter((item) => inGroup('bottom', item))
+          .map((item) => (
+            <Fragment key={item}>{bottomItems[item as BottomItem]}</Fragment>
+          ))}
       </div>
       {newMenu && (
         <Menu
@@ -468,6 +598,47 @@ export function Sidebar() {
   );
 }
 
+function SidebarFileCatalogSlot() {
+  const registration = useSyncExternalStore(
+    subscribePlugins,
+    polarisArquivosSidebarFileCatalog,
+    polarisArquivosSidebarFileCatalog,
+  );
+  const container = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const target = container.current;
+    if (!target || !registration?.isActive()) return;
+
+    target.removeAttribute('role');
+    target.replaceChildren();
+    let unmount: void | (() => void);
+    try {
+      unmount = registration.mount(target, registration.host);
+    } catch {
+      target.setAttribute('role', 'alert');
+      target.textContent = 'The file catalog could not be mounted.';
+    }
+
+    return () => {
+      try {
+        if (typeof unmount === 'function') unmount();
+      } catch {
+        // A plugin cleanup cannot take down the host sidebar.
+      } finally {
+        target.replaceChildren();
+      }
+    };
+  }, [registration]);
+
+  if (!registration?.isActive()) return null;
+  return <div ref={container} data-sidebar-plugin-slot="polaris-arquivos" style={{ display: 'contents' }} />;
+}
+
+type TopItem = (typeof SIDEBAR_GROUPS.top)[number];
+type SectionItem = (typeof SIDEBAR_GROUPS.sections)[number];
+type BottomItem = (typeof SIDEBAR_GROUPS.bottom)[number];
+
 interface TreeProps {
   state: WorkspaceState;
   activeId: PageId | null;
@@ -478,7 +649,6 @@ const SUBPAGES_SHOWN = 50;
 
 const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps) {
   const ui = useUi();
-  const hideJournal = usePreferences().hiddenModules.includes('daily');
   const [drop, setDrop] = useState<{ id: PageId; zone: DropZone } | null>(null);
   const [menu, setMenu] = useState<{ id: PageId; anchor: HTMLElement } | null>(null);
   const dragging = useRef<PageId | null>(null);
@@ -509,15 +679,16 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
     const id = dragging.current;
     dragging.current = null;
     setDrop(null);
-    if (!id || id === target.id) return;
+    const source = id ? state.pages[id] : undefined;
+    if (!source || source.id === target.id || !canMoveTreePage(state, source, target, zone)) return;
     if (zone === 'inside') {
-      if (movePage(id, target.id)) expandPage(target.id);
+      if (movePage(source.id, target.id)) expandPage(target.id);
       return;
     }
     const parentId = effectiveParent(state.pages, target);
-    const siblings = childrenOf(state.pages, parentId).filter((page) => page.id !== id);
+    const siblings = childrenOf(state.pages, parentId).filter((page) => page.id !== source.id);
     const index = siblings.findIndex((page) => page.id === target.id) + (zone === 'after' ? 1 : 0);
-    movePage(id, parentId, index);
+    movePage(source.id, parentId, index);
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -556,11 +727,11 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
         break;
       case 'F2':
         event.preventDefault();
-        setUi({ renaming: id });
+        if (!isProviderManagedPage(state, page)) setUi({ renaming: id });
         break;
       case 'Delete':
         event.preventDefault();
-        trashPage(id);
+        if (!isProviderManagedPage(state, page)) trashPage(id);
         break;
       case 'ContextMenu':
         event.preventDefault();
@@ -575,9 +746,11 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
   };
 
   const renderLevel = (parentId: PageId | null, depth: number): React.ReactNode => {
-    // the journal stays in the vault with daily notes off, it just leaves the tree
+    // daily notes are in the journal's own view, so the journal and the templates leave the tree
     const all = childrenOf(state.pages, parentId).filter(
-      (page) => page.archivedAt === null && (parentId !== null || page.kind !== 'journal' || !hideJournal),
+      (page) =>
+        page.archivedAt === null &&
+        (parentId !== null || (page.kind !== 'journal' && page.kind !== 'templates')),
     );
     if (all.length === 0) return null;
     const key = parentId ?? '';
@@ -592,6 +765,7 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
     const rows = children.map((page) => {
       const hasChildren = childrenOf(state.pages, page.id).length > 0;
       const isOpen = expandedSet.has(page.id);
+      const providerManaged = isProviderManagedPage(state, page);
       return (
         <li key={page.id} role="none">
           <TreeRow
@@ -603,7 +777,8 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
             tabbable={
               activeId ? page.id === activeId : depth === 0 && page === children[0] && parentId === null
             }
-            renaming={ui.renaming === page.id}
+            renaming={ui.renaming === page.id && !providerManaged}
+            providerManaged={providerManaged}
             dropZone={drop?.id === page.id ? drop.zone : null}
             menuOpen={menu?.id === page.id}
             onToggle={toggle}
@@ -611,7 +786,13 @@ const PageTree = memo(function PageTree({ state, activeId, expanded }: TreeProps
             onDragStart={() => (dragging.current = page.id)}
             onDragOverZone={(zone) => {
               const id = dragging.current;
-              if (!id || id === page.id || isDescendantOf(state.pages, page.id, id)) {
+              const source = id ? state.pages[id] : undefined;
+              if (
+                !source ||
+                source.id === page.id ||
+                isDescendantOf(state.pages, page.id, source.id) ||
+                !canMoveTreePage(state, source, page, zone)
+              ) {
                 setDrop(null);
                 return false;
               }
@@ -677,6 +858,7 @@ interface RowProps {
   active: boolean;
   tabbable: boolean;
   renaming: boolean;
+  providerManaged: boolean;
   dropZone: DropZone | null;
   menuOpen: boolean;
   onToggle: (id: PageId) => void;
@@ -688,7 +870,18 @@ interface RowProps {
 }
 
 const TreeRow = memo(function TreeRow(props: RowProps) {
-  const { page, depth, hasChildren, isOpen, active, tabbable, renaming, dropZone, menuOpen } = props;
+  const {
+    page,
+    depth,
+    hasChildren,
+    isOpen,
+    active,
+    tabbable,
+    renaming,
+    providerManaged,
+    dropZone,
+    menuOpen,
+  } = props;
 
   const zoneFor = (event: React.DragEvent): DropZone => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -707,7 +900,7 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
       data-page-id={page.id}
       className={`tree-row${active ? ' is-active' : ''}${menuOpen ? ' is-menu-open' : ''}${dropZone ? ` drop-${dropZone}` : ''}`}
       style={{ '--depth': depth } as React.CSSProperties}
-      draggable={!renaming}
+      draggable={!renaming && !providerManaged}
       onClick={() => {
         if (renaming) return;
         openPage(page.id);
@@ -715,13 +908,17 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
       }}
       onDoubleClick={(event) => {
         event.preventDefault();
-        setUi({ renaming: page.id });
+        if (!providerManaged) setUi({ renaming: page.id });
       }}
       onContextMenu={(event) => {
         event.preventDefault();
         props.onMenu(event.currentTarget as HTMLElement);
       }}
       onDragStart={(event) => {
+        if (providerManaged) {
+          event.preventDefault();
+          return;
+        }
         event.dataTransfer.setData(PAGE_DRAG_TYPE, page.id);
         event.dataTransfer.setData('text/plain', displayTitle(page));
         event.dataTransfer.effectAllowed = 'move';
@@ -755,7 +952,11 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
       <span className="tree-icon">
         <PageIcon page={page} />
       </span>
-      {renaming ? <RenameInput page={page} /> : <span className="tree-title">{displayTitle(page)}</span>}
+      {renaming && !providerManaged ? (
+        <RenameInput page={page} />
+      ) : (
+        <span className="tree-title">{displayTitle(page)}</span>
+      )}
       {!renaming && (
         <span className="tree-actions">
           <button
@@ -771,19 +972,21 @@ const TreeRow = memo(function TreeRow(props: RowProps) {
           >
             <MoreHorizontal size={14} />
           </button>
-          <button
-            type="button"
-            tabIndex={-1}
-            className="icon-button tiny"
-            aria-label={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
-            title={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
-            onClick={(event) => {
-              event.stopPropagation();
-              createPage({ parentId: page.id });
-            }}
-          >
-            <Plus size={14} />
-          </button>
+          {!providerManaged && (
+            <button
+              type="button"
+              tabIndex={-1}
+              className="icon-button tiny"
+              aria-label={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
+              title={t('sidebar.addSubpageTo', { title: displayTitle(page) })}
+              onClick={(event) => {
+                event.stopPropagation();
+                createPage({ parentId: page.id });
+              }}
+            >
+              <Plus size={14} />
+            </button>
+          )}
         </span>
       )}
     </div>

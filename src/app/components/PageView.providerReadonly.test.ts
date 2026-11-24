@@ -1,0 +1,475 @@
+// @vitest-environment happy-dom
+import { act, createElement, Fragment } from 'react';
+import type { ReactNode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PageId } from '../../core/model';
+import { readPageText } from '../../core/vault/pageFile';
+import { E003_POLARIS_DADOS_FIXTURE } from '../../storage/fixtures/e003-polaris-dados';
+import { MemoryVault } from '../../storage/memoryVault';
+import { WorkspaceSession } from '../../storage/session';
+import { VaultRepository } from '../../storage/vaultRepository';
+import { setPreferences } from '../platform/preferences';
+import { t } from '../i18n';
+import { flushPlaces, readingPlace, rememberPlace } from '../readingPlace';
+import { matchesReadingPageRoute } from '../readingFocus';
+import { PaneContext, PaneTabContext } from '../tabs';
+import { setSession } from '../workspace';
+import { PageView } from './PageView';
+
+const focusTestState = vi.hoisted(() => ({
+  focusedTabIds: [] as Array<string | null>,
+  restoredTabIds: [] as Array<string | null>,
+}));
+
+vi.mock('../editor/PageEditor', async () => {
+  const React = await import('react');
+  const { PaneTabContext } = await import('../tabs');
+  const { Schema } = await import('@tiptap/pm/model');
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { group: 'block', content: 'text*' },
+      text: {},
+    },
+  });
+
+  function makeEditor(tabId: string | null) {
+    const doc = schema.node('doc', null, [schema.node('paragraph')]);
+    const tr = {
+      setSelection() {
+        return this;
+      },
+    };
+    return {
+      isDestroyed: false,
+      state: { doc, tr },
+      view: {
+        dispatch() {
+          focusTestState.restoredTabIds.push(tabId);
+        },
+        dom: {
+          isConnected: true,
+          focus() {
+            focusTestState.focusedTabIds.push(tabId);
+          },
+        },
+      },
+      on() {},
+    };
+  }
+
+  return {
+    PageEditor: function PageEditorMock({
+      editable,
+      onReady,
+    }: {
+      editable: boolean;
+      onReady: (editor: unknown) => void;
+    }) {
+      const tabId = React.useContext(PaneTabContext);
+      const editor = React.useMemo(() => makeEditor(tabId), [tabId]);
+      // The callback is intentionally delivered once, like the editor's ready event.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      React.useEffect(() => onReady(editor), [editor]);
+      return React.createElement('div', {
+        'data-testid': 'page-editor',
+        'data-editable': String(editable),
+      });
+    },
+  };
+});
+
+vi.mock('./Cover', async () => {
+  const React = await import('react');
+  return {
+    CoverBanner: ({ editable }: { editable: boolean }) =>
+      React.createElement('div', { 'data-testid': 'cover-banner', 'data-editable': String(editable) }),
+    CoverPicker: () => null,
+  };
+});
+
+vi.mock('./database/DatabaseView', async () => {
+  const React = await import('react');
+  return {
+    DatabaseView: ({ editable }: { editable: boolean }) =>
+      React.createElement('div', { 'data-testid': 'database-view', 'data-editable': String(editable) }),
+  };
+});
+
+vi.mock('./TopBar', () => ({ TopBar: () => null }));
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+let nextId = 0;
+const newId = () => `page-view-provider-${++nextId}`;
+
+async function openFixture(
+  files: Record<string, string> = E003_POLARIS_DADOS_FIXTURE,
+  vault: MemoryVault = new MemoryVault(files),
+) {
+  const opened = await WorkspaceSession.open(new VaultRepository(vault, newId));
+  if (!opened.ok) throw new Error(opened.error);
+  setSession(opened.value);
+  return opened.value;
+}
+
+function pathId(session: WorkspaceSession, path: string): PageId {
+  const id = Object.keys(session.getState().pages).find(
+    (candidate) => session.pathOf(candidate as PageId) === path,
+  );
+  if (!id) throw new Error(`No page at ${path}`);
+  return id as PageId;
+}
+
+function mount() {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  return { container, root, render: (value: ReactNode) => root.render(value) };
+}
+
+function pageInPane(id: PageId, pane: string, tabId: string | null = null) {
+  return createElement(
+    PaneContext.Provider,
+    { value: pane },
+    createElement(
+      PaneTabContext.Provider,
+      { value: tabId },
+      createElement(
+        'section',
+        { className: 'pane', 'data-pane-id': pane },
+        createElement(PageView, { id, find: null }),
+      ),
+    ),
+  );
+}
+
+function changeInput(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('HTML input value setter is unavailable.');
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+afterEach(() => {
+  document.body.replaceChildren();
+  flushPlaces();
+  window.localStorage.clear();
+  setPreferences({
+    expanded: [],
+    readingMode: false,
+    outlines: false,
+    hiddenOutlines: [],
+    shownOutlines: [],
+    subpagesSection: 'hidden',
+    backlinksSection: 'hidden',
+    mentionsButton: false,
+  });
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  focusTestState.focusedTabIds.length = 0;
+  focusTestState.restoredTabIds.length = 0;
+});
+
+describe('provider-managed PageView boundaries', () => {
+  it('restores duplicate reading positions but focuses only the saved active instance', async () => {
+    const session = await openFixture();
+    const id = pathId(session, 'Archive.md');
+    rememberPlace(id, { scroll: 111, from: 1, to: 1 });
+    rememberPlace(`${id}@side` as PageId, { scroll: 222, from: 1, to: 1 });
+    const tabs = await import('../tabs');
+    vi.spyOn(tabs, 'targetPane').mockReturnValue('pane-b');
+    vi.spyOn(tabs, 'paneAssignments').mockReturnValue([
+      { role: 'main', paneId: 'pane-a', tabId: 'instance-a' },
+      { role: 'side', paneId: 'pane-b', tabId: 'instance-b' },
+    ]);
+    vi.spyOn(tabs, 'isSideTabInstance').mockImplementation((tabId) => tabId === 'instance-b');
+    const encodedId = encodeURIComponent(id);
+    const rawRoute = `#/page/${encodedId.replace(
+      /[A-Za-z0-9]/,
+      (character) => `%${character.charCodeAt(0).toString(16).padStart(2, '0')}`,
+    )}?extra=1`;
+    vi.spyOn(tabs, 'routeHashForTabId').mockReturnValue(rawRoute);
+    const { parseRoute } = await import('../router');
+    expect(
+      matchesReadingPageRoute(parseRoute('#/page/%61?extra=1'), { id: 'a', find: null, anchor: null }),
+    ).toBe(true);
+    expect(matchesReadingPageRoute(parseRoute(rawRoute), { id, find: null, anchor: null })).toBe(true);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { container, root } = mount();
+    try {
+      await act(async () =>
+        root.render(
+          createElement(
+            Fragment,
+            null,
+            pageInPane(id, 'pane-a', 'instance-a'),
+            pageInPane(id, 'pane-b', 'instance-b'),
+          ),
+        ),
+      );
+      const scrollers = container.querySelectorAll<HTMLElement>('.page-scroll');
+      expect(scrollers).toHaveLength(2);
+
+      await act(async () => {
+        let steps = 0;
+        while (
+          (scrollers[0]?.scrollTop !== 111 || scrollers[1]?.scrollTop !== 222) &&
+          frames.length > 0 &&
+          steps++ < 20
+        )
+          frames.shift()?.(0);
+      });
+
+      expect(scrollers[0]?.scrollTop).toBe(111);
+      expect(scrollers[1]?.scrollTop).toBe(222);
+      expect(focusTestState.focusedTabIds).toEqual(['instance-b']);
+      expect([...focusTestState.restoredTabIds].sort()).toEqual(['instance-a', 'instance-b']);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('leaves an interacted panel alone while restoring the other visible panel', async () => {
+    const session = await openFixture();
+    const id = pathId(session, 'Archive.md');
+    rememberPlace(id, { scroll: 111, from: 1, to: 1 });
+    rememberPlace(`${id}@side` as PageId, { scroll: 222, from: 1, to: 1 });
+    const tabs = await import('../tabs');
+    vi.spyOn(tabs, 'targetPane').mockReturnValue('pane-b');
+    vi.spyOn(tabs, 'paneAssignments').mockReturnValue([
+      { role: 'main', paneId: 'pane-a', tabId: 'instance-a' },
+      { role: 'side', paneId: 'pane-b', tabId: 'instance-b' },
+    ]);
+    vi.spyOn(tabs, 'isSideTabInstance').mockImplementation((tabId) => tabId === 'instance-b');
+    vi.spyOn(tabs, 'routeHashForTabId').mockReturnValue(`#/page/${encodeURIComponent(id)}?extra=1`);
+
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const { container, root } = mount();
+    try {
+      await act(async () =>
+        root.render(
+          createElement(
+            Fragment,
+            null,
+            pageInPane(id, 'pane-a', 'instance-a'),
+            pageInPane(id, 'pane-b', 'instance-b'),
+          ),
+        ),
+      );
+      const panes = container.querySelectorAll<HTMLElement>('.pane');
+      const scrollers = container.querySelectorAll<HTMLElement>('.page-scroll');
+      expect(panes).toHaveLength(2);
+      expect(scrollers).toHaveLength(2);
+
+      panes[0]!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      scrollers[0]!.scrollTop = 333;
+      scrollers[0]!.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await act(async () => {
+        let steps = 0;
+        while (frames.length > 0 && steps++ < 30) frames.shift()?.(0);
+      });
+
+      expect(scrollers[0]?.scrollTop).toBe(333);
+      expect(scrollers[1]?.scrollTop).toBe(222);
+      expect(readingPlace(id)?.scroll).toBe(333);
+      expect(focusTestState.restoredTabIds).toEqual(['instance-b']);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('restores the same page independently in each split and stops restoring after user input', async () => {
+    const session = await openFixture();
+    const id = pathId(session, 'Archive.md');
+    rememberPlace(id, { scroll: 111, from: 1, to: 1 });
+    rememberPlace(`${id}@side` as PageId, { scroll: 222, from: 1, to: 1 });
+
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+
+    const { container, root } = mount();
+    try {
+      await act(async () =>
+        root.render(createElement(Fragment, null, pageInPane(id, 'main'), pageInPane(id, 'side'))),
+      );
+      const scrollers = container.querySelectorAll<HTMLElement>('.page-scroll');
+      expect(scrollers).toHaveLength(2);
+
+      // Advance the ready callbacks and restore frames until each side has its own saved position.
+      await act(async () => {
+        let steps = 0;
+        while (
+          (scrollers[0]?.scrollTop !== 111 || scrollers[1]?.scrollTop !== 222) &&
+          frames.length > 0 &&
+          steps++ < 20
+        )
+          frames.shift()?.(0);
+      });
+      expect(scrollers[0]?.scrollTop).toBe(111);
+      expect(scrollers[1]?.scrollTop).toBe(222);
+
+      scrollers[0]!.dispatchEvent(new Event('wheel', { bubbles: true }));
+      scrollers[0]!.scrollTop = 333;
+      scrollers[0]!.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+      await act(async () => {
+        let steps = 0;
+        while (frames.length > 0 && steps++ < 100) frames.shift()?.(0);
+      });
+
+      scrollers[1]!.scrollTop = 444;
+      scrollers[1]!.dispatchEvent(new Event('scroll', { bubbles: true }));
+      expect(scrollers[0]?.scrollTop).toBe(333);
+      expect(scrollers[1]?.scrollTop).toBe(444);
+      expect(readingPlace(id)?.scroll).toBe(333);
+      expect(readingPlace(`${id}@side` as PageId)?.scroll).toBe(444);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('keeps provider-owned page editing native-read-only while preserving database editability gates', async () => {
+    const session = await openFixture();
+    const rowId = pathId(session, 'Inventory/Widget.md');
+    const databaseId = pathId(session, 'Inventory.md');
+    setPreferences({
+      readingMode: false,
+      outlines: false,
+      subpagesSection: 'hidden',
+      backlinksSection: 'hidden',
+      mentionsButton: false,
+    });
+
+    const { container, root, render } = mount();
+    try {
+      await act(async () => root.render(pageInPane(rowId, 'main')));
+      expect(container.querySelector<HTMLTextAreaElement>('.page-title')?.readOnly).toBe(true);
+      expect(container.querySelector('[data-testid="page-editor"]')?.getAttribute('data-editable')).toBe(
+        'false',
+      );
+      expect(container.querySelector('[data-testid="cover-banner"]')?.getAttribute('data-editable')).toBe(
+        'false',
+      );
+
+      await act(async () => render(pageInPane(databaseId, 'main')));
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+      expect(container.querySelector<HTMLTextAreaElement>('.page-title')?.readOnly).toBe(true);
+      expect(container.querySelector('[data-testid="database-view"]')?.getAttribute('data-editable')).toBe(
+        'true',
+      );
+
+      setPreferences({ readingMode: true });
+      await act(async () => Promise.resolve());
+      expect(container.querySelector('[data-testid="database-view"]')?.getAttribute('data-editable')).toBe(
+        'false',
+      );
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('projects each note style onto its own split article and leaves unstyled notes on native preferences', async () => {
+    const session = await openFixture({
+      ...E003_POLARIS_DADOS_FIXTURE,
+      'Styles/Serif.md': `---\nmorrowNoteStyle:\n  font: serif\n  fontSize: 19\n  lineHeight: 1.8\n  blockSpacing: 12\n  width: comfortable\n---\nSerif body\n`,
+      'Styles/Mono.md': `---\nmorrowNoteStyle:\n  font: mono\n  fontSize: 14.5\n  lineHeight: 1.75\n  blockSpacing: 8\n  width: full\n---\nMono body\n`,
+      'Styles/Native.md': '---\ntitle: Native\n---\nNative body\n',
+    });
+    const serifId = pathId(session, 'Styles/Serif.md');
+    const monoId = pathId(session, 'Styles/Mono.md');
+    const nativeId = pathId(session, 'Styles/Native.md');
+    setPreferences({ font: 'sans', width: 'wide' });
+
+    const { container, root, render } = mount();
+    try {
+      await act(async () =>
+        root.render(createElement(Fragment, null, pageInPane(serifId, 'main'), pageInPane(monoId, 'side'))),
+      );
+      const serif = container.querySelector<HTMLElement>(`.page[data-polaris-note-page-id="${serifId}"]`)!;
+      const mono = container.querySelector<HTMLElement>(`.page[data-polaris-note-page-id="${monoId}"]`)!;
+      expect(serif.getAttribute('data-polaris-note-style')).toBe('saved');
+      expect(serif.matches('[data-page-id]')).toBe(false);
+      expect(serif.closest('[data-page-id]')).toBeNull();
+      expect(serif.getAttribute('data-polaris-note-font')).toBe('serif');
+      expect(serif.getAttribute('data-polaris-note-width')).toBe('comfortable');
+      expect(serif.style.getPropertyValue('--polaris-note-font-size')).toBe('19px');
+      expect(serif.style.getPropertyValue('--polaris-note-line-height')).toBe('1.8');
+      expect(serif.style.getPropertyValue('--polaris-note-block-spacing')).toBe('12px');
+      expect(mono.getAttribute('data-polaris-note-page-id')).toBe(monoId);
+      expect(mono.getAttribute('data-polaris-note-font')).toBe('mono');
+      expect(mono.getAttribute('data-polaris-note-width')).toBe('full');
+      expect(mono.style.getPropertyValue('--polaris-note-font-size')).toBe('14.5px');
+
+      await act(async () => render(pageInPane(nativeId, 'main')));
+      const nativePage = container.querySelector<HTMLElement>(
+        `.page[data-polaris-note-page-id="${nativeId}"]`,
+      )!;
+      expect(nativePage.matches('[data-page-id]')).toBe(false);
+      expect(nativePage.closest('[data-page-id]')).toBeNull();
+      expect(nativePage.classList).toContain('font-sans');
+      expect(nativePage.classList).toContain('width-wide');
+      expect(nativePage.hasAttribute('data-polaris-note-style')).toBe(false);
+      expect(nativePage.style.getPropertyValue('--polaris-note-font-size')).toBe('');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+
+  it('offers the header action for a style-only note and creates its first visible extra', async () => {
+    const original = `---\nmorrowNoteStyle:\n  font: serif\n  fontSize: 19\n  lineHeight: 1.8\n  blockSpacing: 12\n  width: comfortable\n---\nStyled body\n`;
+    const vault = new MemoryVault({ 'Style-only.md': original });
+    const session = await openFixture({ 'Style-only.md': original }, vault);
+    const id = pathId(session, 'Style-only.md');
+    const { container, root } = mount();
+    try {
+      await act(async () => root.render(pageInPane(id, 'main')));
+      const addProperty = [...container.querySelectorAll<HTMLButtonElement>('.page-header-actions .add-icon')].find(
+        (button) => button.textContent?.includes(t('page.addProperty')),
+      );
+      expect(addProperty).toBeDefined();
+
+      await act(async () => addProperty!.click());
+      const nameInput = container.querySelector<HTMLInputElement>('.row-prop-new input[name="name"]');
+      expect(nameInput).not.toBeNull();
+      await act(async () => {
+        changeInput(nameInput!, 'status');
+        container.querySelector<HTMLFormElement>('.row-prop-new')!.dispatchEvent(
+          new Event('submit', { bubbles: true, cancelable: true }),
+        );
+        expect(await session.flush()).toBe(true);
+      });
+
+      expect(session.getState().pages[id]?.extra.status).toBe('');
+      const saved = readPageText(vault.text('Style-only.md')!);
+      expect(saved.extra.status).toBe('');
+      expect(saved.extra.morrowNoteStyle).toEqual(readPageText(original).extra.morrowNoteStyle);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      await session.close();
+    }
+  });
+});

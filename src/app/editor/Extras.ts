@@ -19,11 +19,20 @@ import type { Transaction } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import type { EditorView } from '@tiptap/pm/view';
 import { common, createLowlight } from 'lowlight';
-import { CALLOUT_TONES, calloutTone, COLORS } from '../../core/model';
-import type { CalloutTone, ColorName } from '../../core/model';
-import { tagColor } from '../../core/tags';
+import {
+  BACKGROUND_HEX,
+  CALLOUT_TONES,
+  calloutTone,
+  inlineColorHex,
+  normalizeInlineColor,
+  parseInlineColor,
+  TEXT_HEX,
+} from '../../core/model';
+import type { CalloutTone, InlineColor } from '../../core/model';
+import { tagClass } from '../../core/tags';
 import { emojiElement } from '../components/Emoji';
 import { getPreferences, setPreferences } from '../platform/preferences';
+import { desktop, openExternal } from '../platform/desktop';
 import { openDialog } from '../ui';
 import { calloutIcon } from '../../core/markdown/serialize';
 import { t } from '../i18n';
@@ -33,25 +42,74 @@ declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     highlight: {
       toggleHighlight: () => ReturnType;
-      setHighlightColor: (color: ColorName | null) => ReturnType;
+      setHighlightColor: (color: InlineColor | null) => ReturnType;
     };
     textColor: {
-      setTextColor: (color: ColorName | null) => ReturnType;
+      setTextColor: (color: InlineColor | null) => ReturnType;
     };
   }
+}
+
+type ParsedColorElement = { valid: true; color: InlineColor | null } | { valid: false; color: null };
+
+function colorFromElement(element: HTMLElement, prefix: 'text' | 'bg'): ParsedColorElement {
+  const palette = prefix === 'text' ? TEXT_HEX : BACKGROUND_HEX;
+  const dataColor = element.getAttribute('data-color');
+  if (dataColor !== null) {
+    const color = normalizeInlineColor(dataColor);
+    if (!color) return { valid: false, color: null };
+
+    const style = element.getAttribute('style');
+    if (!color.startsWith('#'))
+      return style === null ? { valid: true, color } : { valid: false, color: null };
+    if (style === null) return { valid: false, color: null };
+
+    const property = prefix === 'text' ? 'color' : 'background-color';
+    const match = new RegExp(`^${property}\\s*:\\s*(#[0-9a-f]{6})\\s*;?$`, 'i').exec(style.trim());
+    const rgbMatch = new RegExp(
+      `^${property}\\s*:\\s*rgb\\((0|[1-9]\\d{0,2}), (0|[1-9]\\d{0,2}), (0|[1-9]\\d{0,2})\\)\\s*;?$`,
+    ).exec(style.trim());
+    const channels = rgbMatch?.slice(1).map(Number);
+    const rgbColor =
+      channels?.length === 3 && channels.every((channel) => channel <= 255)
+        ? `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
+        : null;
+    const pairedColor = match ? normalizeInlineColor(match[1]) : rgbColor;
+    return pairedColor === color ? { valid: true, color } : { valid: false, color: null };
+  }
+
+  const style = element.getAttribute('style');
+  if (style === null) return prefix === 'bg' ? { valid: true, color: null } : { valid: false, color: null };
+  const match = /^(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3}|#[0-9a-f]{6}|[a-z]+)\s*;?$/i.exec(
+    style.trim(),
+  );
+  if (!match) return { valid: false, color: null };
+  const property = match[1]!.toLowerCase();
+  if ((prefix === 'text' && property !== 'color') || (prefix === 'bg' && property === 'color'))
+    return { valid: false, color: null };
+  const color = parseInlineColor(match[2]!, palette);
+  return color ? { valid: true, color } : { valid: false, color: null };
 }
 
 const colorAttribute = (prefix: 'text' | 'bg') => ({
   color: {
     default: null,
-    parseHTML: (element: HTMLElement) => {
-      const value = element.getAttribute('data-color');
-      return COLORS.includes(value as ColorName) ? value : null;
+    parseHTML: (element: HTMLElement) => colorFromElement(element, prefix).color,
+    renderHTML: (attributes: Record<string, unknown>) => {
+      const palette = prefix === 'text' ? TEXT_HEX : BACKGROUND_HEX;
+      const color = normalizeInlineColor(attributes.color);
+      if (!color) return {};
+      if (color.startsWith('#')) {
+        const hex = inlineColorHex(color, palette);
+        return hex
+          ? {
+              'data-color': color,
+              style: `${prefix === 'text' ? 'color' : 'background-color'}: ${hex}`,
+            }
+          : {};
+      }
+      return { 'data-color': color, class: `${prefix}-${color}` };
     },
-    renderHTML: (attributes: Record<string, unknown>) =>
-      attributes.color
-        ? { 'data-color': attributes.color, class: `${prefix}-${String(attributes.color)}` }
-        : {},
   },
 });
 
@@ -62,7 +120,12 @@ export const Highlight = Mark.create({
     return colorAttribute('bg');
   },
   parseHTML() {
-    return [{ tag: 'mark' }];
+    return [
+      {
+        tag: 'mark',
+        getAttrs: (element) => (colorFromElement(element as HTMLElement, 'bg').valid ? null : false),
+      },
+    ];
   },
   renderHTML({ HTMLAttributes }) {
     return ['mark', mergeAttributes(HTMLAttributes), 0];
@@ -109,7 +172,12 @@ export const TextColor = Mark.create({
     return colorAttribute('text');
   },
   parseHTML() {
-    return [{ tag: 'span[data-color]' }];
+    return [
+      {
+        tag: 'span',
+        getAttrs: (element) => (colorFromElement(element as HTMLElement, 'text').valid ? null : false),
+      },
+    ];
   },
   renderHTML({ HTMLAttributes }) {
     return ['span', mergeAttributes(HTMLAttributes), 0];
@@ -323,10 +391,14 @@ let diagramTheme: string | null = null;
 function configureMermaid(mermaid: Mermaid): void {
   const dark = document.documentElement.dataset.theme === 'dark';
   // the base theme tinted with morrow's colours, so diagrams belong on the page
+  // webkit, the web view on macos and linux, draws the html mermaid puts in its boxes in the wrong place or
+  // cut off, labels drawn as svg text come out right there
+  const webkit = desktop?.platform === 'darwin' || /AppleWebKit(?!.*Chrome)/.test(navigator.userAgent);
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
     theme: 'base',
+    ...(webkit ? { htmlLabels: false, flowchart: { htmlLabels: false } } : {}),
     fontFamily: 'Inter Variable, system-ui, sans-serif',
     themeVariables: dark
       ? {
@@ -375,6 +447,8 @@ export async function renderMermaid(source: string): Promise<{ html: string; err
       diagramTheme = theme;
       configureMermaid(mermaid);
     }
+    // boxes are sized to their words, measured in the page's font once it has loaded
+    await document.fonts?.ready;
     const { svg } = await mermaid.render(`morrow-diagram-${++diagramCount}`, source);
     return { html: svg, error: false };
   } catch (error) {
@@ -386,6 +460,61 @@ export async function renderMermaid(source: string): Promise<{ html: string; err
       error: true,
     };
   }
+}
+
+// the page an html block draws, in the page's own type and colours so a widget sits in with the rest.
+// the frame is sandboxed without scripts, so what is drawn can't run code, send forms or reach morrow
+function previewDocument(source: string, host: HTMLElement): string {
+  const style = getComputedStyle(host);
+  // the same colour scheme as the page around it, otherwise the frame paints a background of its own
+  const scheme = getComputedStyle(document.documentElement).colorScheme || 'normal';
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+:root { color-scheme: ${scheme}; }
+html, body { background: transparent; }
+body { margin: 0; padding: 12px; font-family: ${style.fontFamily}; font-size: ${style.fontSize}; line-height: 1.5; color: ${style.color}; overflow-wrap: anywhere; }
+img, video, svg { max-width: 100%; height: auto; }
+</style></head><body>${source}</body></html>`;
+}
+
+// a sandboxed frame for an html block, as tall as what it draws
+function createPreviewFrame(): {
+  frame: HTMLIFrameElement;
+  show: (source: string, host: HTMLElement) => void;
+} {
+  const frame = document.createElement('iframe');
+  frame.className = 'html-preview';
+  // same origin, so its height can be read, but no scripts, which together keep it shut in
+  frame.setAttribute('sandbox', 'allow-same-origin');
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  frame.title = t('editor.htmlPreview');
+  const fit = () => {
+    const root = frame.contentDocument?.documentElement;
+    if (!root) return;
+    frame.style.height = `${Math.min(Math.max(root.scrollHeight, 24), 1600)}px`;
+  };
+  frame.addEventListener('load', () => {
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    fit();
+    // pictures load after the page does and make it taller
+    doc.addEventListener('load', fit, true);
+    // a link opens in the browser, the frame never goes anywhere
+    doc.addEventListener('click', (event) => {
+      const link = (event.target as Element | null)?.closest?.('a[href]');
+      if (!link) return;
+      event.preventDefault();
+      const href = link.getAttribute('href') ?? '';
+      if (/^(https?|mailto):/i.test(href)) openExternal(href);
+    });
+  });
+  // the width changes with the page, and the words wrap to a new height
+  new ResizeObserver(fit).observe(frame);
+  return {
+    frame,
+    show: (source, host) => {
+      frame.srcdoc = previewDocument(source, host);
+    },
+  };
 }
 
 // a new code block starts in the language the last one was set to, so a page of python stays python
@@ -469,13 +598,17 @@ export const CodeBlock = CodeBlockLowlight.extend({
       let showCode = current.textContent.trim() === '';
       let drawn = '';
       let timer: ReturnType<typeof setTimeout> | null = null;
-      // mermaid draws a diagram, a base shows the pages it finds, both from the text in the block
+      // mermaid draws a diagram, a base shows the pages it finds, an html block set to show its
+      // preview draws its page, all from the text in the block
       const isBase = () => current.attrs.language === 'base';
-      const isMermaid = () => current.attrs.language === 'mermaid' || isBase();
+      const isPreview = () => current.attrs.language === 'html' && current.attrs.preview === true;
+      const isMermaid = () => current.attrs.language === 'mermaid' || isBase() || isPreview();
+      let preview: ReturnType<typeof createPreviewFrame> | null = null;
       const layout = () => {
         const mermaid = isMermaid();
         dom.classList.toggle('is-mermaid', mermaid);
         dom.classList.toggle('is-base', isBase());
+        dom.classList.toggle('is-preview', isPreview());
         dom.classList.toggle('hide-code', mermaid && !showCode);
         diagram.hidden = !mermaid;
         toggle.hidden = !mermaid;
@@ -483,13 +616,31 @@ export const CodeBlock = CodeBlockLowlight.extend({
           ? t('editor.hideCode')
           : isBase()
             ? t('editor.editBase')
-            : t('editor.editDiagram');
+            : isPreview()
+              ? t('editor.editHtml')
+              : t('editor.editDiagram');
       };
       const draw = () => {
-        if (!isMermaid()) return;
+        if (!isMermaid()) {
+          drawn = '';
+          return;
+        }
         const source = current.textContent;
-        if (source === drawn) return;
+        if (source === drawn && (!isPreview() || preview)) return;
         if (timer) clearTimeout(timer);
+        if (isPreview()) {
+          timer = setTimeout(() => {
+            drawn = source;
+            diagram.classList.remove('is-error');
+            if (!preview || !diagram.contains(preview.frame)) {
+              preview = createPreviewFrame();
+              diagram.replaceChildren(preview.frame);
+            }
+            preview.show(source, editor.view.dom as HTMLElement);
+          }, 350);
+          return;
+        }
+        preview = null;
         timer = setTimeout(() => {
           drawn = source;
           const render = isBase() ? Promise.resolve(renderBase(source)) : renderMermaid(source);
@@ -521,6 +672,7 @@ export const CodeBlock = CodeBlockLowlight.extend({
         drawn = '';
         draw();
       });
+      let wasPreview = isPreview();
       const stopPages = onPagesChange(() => {
         if (!isBase()) return;
         drawn = '';
@@ -536,6 +688,14 @@ export const CodeBlock = CodeBlockLowlight.extend({
         update(updated) {
           if (updated.type !== current.type) return false;
           current = updated;
+          // turning the preview on or off draws the block afresh, a preview starts with its code folded away
+          if (isPreview() !== wasPreview) {
+            wasPreview = isPreview();
+            drawn = '';
+            preview = null;
+            diagram.replaceChildren();
+            showCode = !wasPreview || current.textContent.trim() === '';
+          }
           sync();
           layout();
           draw();
@@ -723,7 +883,7 @@ function tagsInBlock(block: PmNode, start: number, out: Decoration[]): void {
       const from = pos + match.index + match[1]!.length;
       const to = from + match[2]!.length + 1;
       out.push(
-        Decoration.inline(from, to, { class: `tag-chip tag-${tagColor(match[2]!)}`, 'data-tag': match[2]! }),
+        Decoration.inline(from, to, { class: `tag-chip ${tagClass(match[2]!)}`, 'data-tag': match[2]! }),
       );
     }
     return true;
@@ -791,7 +951,18 @@ export function Tags(open: (tag: string) => void) {
           key: tagKey,
           state: {
             init: (_config, state) => tagDecorations(state.doc),
-            apply: (tr, value) => (tr.docChanged ? updateTagDecorations(tr, value) : value),
+            apply: (tr, value, _old, next) =>
+              tr.getMeta(tagKey) === 'recolour'
+                ? tagDecorations(next.doc)
+                : tr.docChanged
+                  ? updateTagDecorations(tr, value)
+                  : value,
+          },
+          // a tag given another colour is drawn again in it
+          view: (view) => {
+            const recolour = () => view.dispatch(view.state.tr.setMeta(tagKey, 'recolour'));
+            window.addEventListener('morrow:tag-colors', recolour);
+            return { destroy: () => window.removeEventListener('morrow:tag-colors', recolour) };
           },
           props: {
             decorations: (state) => tagKey.getState(state),

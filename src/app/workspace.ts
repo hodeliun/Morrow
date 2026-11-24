@@ -1,15 +1,34 @@
 import { useSyncExternalStore } from 'react';
 import type { Command } from '../core/commands';
+import { legacyNoteStyle, resolveDefaultNoteStyle } from '../core/noteStyle';
 import type { PageId, PageMeta, WorkspaceState } from '../core/model';
 import type { Result } from '../core/result';
 import type { SaveStatus } from '../storage/saveQueue';
 import type { WorkspaceSession } from '../storage/session';
+import { isExitInteractionBlocked } from './exitInteraction';
+import { getPreferences } from './platform/preferences';
 import { toast } from './ui';
 
 let session: WorkspaceSession | null = null;
+let sessionGeneration = 0;
+const sessionListeners = new Set<() => void>();
 
 export function setSession(next: WorkspaceSession): void {
+  if (session === next) return;
   session = next;
+  sessionGeneration += 1;
+  for (const listener of [...sessionListeners]) listener();
+}
+
+/** A monotonic identity for the workspace session currently installed in the host. */
+export function getWorkspaceSessionGeneration(): number {
+  return sessionGeneration;
+}
+
+/** Listen for replacement of the active workspace session. */
+export function subscribeWorkspaceSession(listener: () => void): () => void {
+  sessionListeners.add(listener);
+  return () => sessionListeners.delete(listener);
 }
 
 export function getSession(): WorkspaceSession {
@@ -27,12 +46,26 @@ export function run(command: Command): Result<WorkspaceState> {
 }
 
 export function runAll(commands: Command[]): Result<WorkspaceState> {
-  const before = propertySnapshots(commands);
+  const prepared = commands.map(withNoteDefaults);
+  const before = propertySnapshots(prepared);
   const result =
-    commands.length === 1 ? getSession().execute(commands[0]!) : getSession().executeAll(commands);
+    prepared.length === 1 ? getSession().execute(prepared[0]!) : getSession().executeAll(prepared);
   if (!result.ok) toast(result.error, { tone: 'error' });
   else if (before) recordProperties(before);
   return result;
+}
+
+function withNoteDefaults(command: Command): Command {
+  if (command.type !== 'page.create' || command.kind === 'canvas' || command.noteStyle !== undefined)
+    return command;
+
+  const preferences = getPreferences();
+  const style = resolveDefaultNoteStyle(preferences.defaultNoteStyle, preferences.font, preferences.width);
+  if (command.kind === 'database') return { ...command, noteStyle: { ...style, width: 'full' } };
+  // Keep the legacy YAML omitted when the new-page style already matches native profile appearance.
+  if (JSON.stringify(style) === JSON.stringify(legacyNoteStyle(preferences.font, preferences.width)))
+    return command;
+  return { ...command, noteStyle: style };
 }
 
 // property values and types live outside a page's text, so the editor's undo never sees them. ctrl+z away
@@ -86,6 +119,7 @@ export function clearPropertyHistory(): void {
 
 // puts the properties back as they were before the last change, false when there is nothing to undo
 export function stepProperties(direction: 'undo' | 'redo'): boolean {
+  if (isExitInteractionBlocked()) return false;
   const [from, to] = direction === 'undo' ? [undoStack, redoStack] : [redoStack, undoStack];
   const step = from.pop();
   if (!step) return false;

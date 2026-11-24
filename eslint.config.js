@@ -20,6 +20,15 @@ export default tseslint.config(
     },
   },
   {
+    files: ['scripts/pilot/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      globals: globals.node,
+    },
+    rules: js.configs.recommended.rules,
+  },
+  {
     // the core layer stays free of ui and storage code
     files: ['src/core/**/*.ts'],
     rules: {

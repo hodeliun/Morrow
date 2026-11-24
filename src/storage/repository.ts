@@ -5,16 +5,68 @@ import { readWorkspace } from '../core/migrations';
 import type { LoadedWorkspace } from '../core/migrations';
 import { SCHEMA_VERSION } from '../core/model';
 import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
+import type { NoteStyle } from '../core/noteStyle';
+import type {
+  ExplicitMorrowNoteStyleSnapshot,
+  MorrowNoteStyleRestoreContext,
+} from '../core/vault/frontmatter';
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
+
+export interface InheritedNoteStyleRestore {
+  readonly kind: 'restore-inherited';
+  readonly pageId: PageId;
+  readonly appliedStyle: NoteStyle;
+  readonly context: MorrowNoteStyleRestoreContext;
+}
+
+export interface ExplicitNoteStyleRestore {
+  readonly kind: 'restore-explicit';
+  readonly pageId: PageId;
+  readonly appliedStyle: NoteStyle;
+  readonly context: ExplicitMorrowNoteStyleSnapshot;
+}
+
+export type NoteStyleRestore = InheritedNoteStyleRestore | ExplicitNoteStyleRestore;
+
+/** Private, in-memory source context for a later style-batch undo. */
+export type NoteStyleRestoreContext =
+  | { readonly kind: 'inherited'; readonly context: MorrowNoteStyleRestoreContext }
+  | { readonly kind: 'explicit'; readonly context: ExplicitMorrowNoteStyleSnapshot };
+
+/** Receipt returned only by the host-internal opt-in note-style write path. */
+export interface NoteStyleWriteReceipt {
+  readonly op: 'check' | 'write';
+  readonly restoreContext: NoteStyleRestoreContext | null;
+}
 
 export interface WriteBatch {
   pages: PageMeta[];
   docs: Array<{ id: PageId; doc: DocNode }>;
   removed: PageId[];
+  /** Pages whose only queued change is navigation metadata such as lastOpenedAt. */
+  quietPageIds?: PageId[];
+  /** Read-only source records that must still match before dependent pilot data is written. */
+  checkPages?: PageId[];
+  /** Isolated note-style lane; updates and restores fail instead of rebasing. */
+  noteStylePages?: PageId[];
+  /** A typed isolated style restoration using the original inherited or explicit source context. */
+  noteStyleRestore?: NoteStyleRestore;
   snapshots?: Snapshot[];
   // the whole workspace at the time of the write, file based storage lays out pages from it
   state?: WorkspaceState;
+}
+
+/** A storage failure with retry semantics the save queue can preserve across its timer. */
+export class WorkspaceWriteError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = 'WorkspaceWriteError';
+  }
 }
 
 // pages changed by another app while morrow was open
@@ -24,6 +76,11 @@ export interface ExternalPatch {
   removed: PageId[];
   unreadable: PageId[];
   readable: PageId[];
+  protectedPages?: Record<PageId, string>;
+  /** Clears stale protection messages without making a still-unreadable page readable. */
+  clearProtected?: PageId[];
+  /** A page is applied only if every listed page was accepted from this patch first. */
+  requiresAccepted?: Record<PageId, PageId[]>;
 }
 
 export interface StoredFile {
@@ -33,8 +90,15 @@ export interface StoredFile {
 
 export interface WorkspaceRepository {
   load(): Promise<Result<LoadedWorkspace & { firstRun: boolean }>>;
+  // an optional synchronous preflight lets file storage reject indirect path changes before state commits
+  validateWrite?(batch: WriteBatch): string | null;
   // resolves only after the transaction commits, rejects on any failure
   write(batch: WriteBatch): Promise<void>;
+  /** Opt-in host path that can return a private undo context after a confirmed Markdown write. */
+  writeNoteStyle?(
+    batch: WriteBatch,
+    options: { readonly captureRestoreContext: true },
+  ): Promise<NoteStyleWriteReceipt>;
   markInitialized(): Promise<void>;
   // stores files and returns their metadata, the ids may differ from the ones passed in
   putFiles(files: StoredFile[]): Promise<FileMeta[]>;
@@ -48,6 +112,10 @@ export interface WorkspaceRepository {
   attachState?(getState: () => WorkspaceState): void;
   // where a page's file lives, relative to the storage location
   pathOf?(id: PageId): string | null;
+  /** True only when the page has its own writable Markdown file, not just a folder placement. */
+  hasWritableNoteStyleSource?(id: PageId): boolean;
+  /** Pure serializer preflight for a style value; it must not write or normalize the source. */
+  canUpdateNoteStyleSource?(id: PageId, style: NoteStyle): boolean;
   // small files of morrow's own beside the pages, such as flashcard progress
   readMeta?(name: string): Promise<string | null>;
   writeMeta?(name: string, text: string): Promise<void>;

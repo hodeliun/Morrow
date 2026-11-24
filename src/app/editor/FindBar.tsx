@@ -1,6 +1,6 @@
 import type { Editor } from '@tiptap/core';
 import { useEditorState } from '@tiptap/react';
-import { ChevronDown, ChevronUp, Regex, Replace, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Regex, Replace, X, CaseSensitive } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from '../ui';
 import { t } from '../i18n';
@@ -23,12 +23,19 @@ export function FindBar({ editor, seed, onClose }: Props) {
   }
   const [replacement, setReplacement] = useState('');
   const [replacing, setReplacing] = useState(false);
+  // matches from one number to another, the way the count shows them, for replacing only some
+  const [range, setRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const inputRef = useRef<HTMLInputElement>(null);
   const find = useEditorState({
     editor,
     selector: ({ editor: current }) => {
       const state = getFindState(current.state);
-      return { count: state.matches.length, current: state.current, regex: state.regex };
+      return {
+        count: state.matches.length,
+        current: state.current,
+        regex: state.regex,
+        caseSensitive: state.caseSensitive ?? false,
+      };
     },
   });
 
@@ -57,9 +64,9 @@ export function FindBar({ editor, seed, onClose }: Props) {
         .querySelector('.find-match.is-current')
         ?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
     );
-  const update = (value: string, regex = find.regex) => {
+  const update = (value: string, regex = find.regex, caseSensitive = find.caseSensitive) => {
     setQuery(value);
-    setFindQuery(editor.state, editor.view.dispatch, value, regex);
+    setFindQuery(editor.state, editor.view.dispatch, value, regex, caseSensitive);
     reveal();
   };
   const step = (direction: 1 | -1) => {
@@ -95,6 +102,16 @@ export function FindBar({ editor, seed, onClose }: Props) {
         <span className="find-count" aria-live="polite">
           {query ? (find.count ? `${find.current + 1} of ${find.count}` : t('editor.noResults')) : ''}
         </span>
+        <button
+          type="button"
+          className={`icon-button small${find.caseSensitive ? ' is-active' : ''}`}
+          aria-label={t('editor.matchCase')}
+          title={t('editor.matchCase')}
+          aria-pressed={find.caseSensitive}
+          onClick={() => update(query, find.regex, !find.caseSensitive)}
+        >
+          <CaseSensitive size={15} />
+        </button>
         <button
           type="button"
           className={`icon-button small${find.regex ? ' is-active' : ''}`}
@@ -177,6 +194,53 @@ export function FindBar({ editor, seed, onClose }: Props) {
             }}
           >
             {t('editor.replaceAll')}
+          </button>
+        </div>
+      )}
+      {replacing && find.count > 1 && (
+        <div className="find-row find-range">
+          <span className="find-range-label">{t('editor.replaceMatches')}</span>
+          <input
+            className="find-input find-number"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={find.count}
+            placeholder="1"
+            aria-label={t('editor.replaceFrom')}
+            value={range.from}
+            onChange={(event) => setRange({ ...range, from: event.target.value })}
+          />
+          <span className="find-range-label">{t('editor.replaceTo')}</span>
+          <input
+            className="find-input find-number"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={find.count}
+            placeholder={String(find.count)}
+            aria-label={t('editor.replaceUntil')}
+            value={range.to}
+            onChange={(event) => setRange({ ...range, to: event.target.value })}
+          />
+          <button
+            type="button"
+            className="button small"
+            onClick={() => {
+              const from = Math.max(1, Math.floor(Number(range.from) || 1));
+              const to = Math.min(find.count, Math.floor(Number(range.to) || find.count));
+              if (to < from) return;
+              const count = replaceAll(editor.state, editor.view.dispatch, replacement, from, to);
+              setRange({ from: '', to: '' });
+              toast(
+                count === 1
+                  ? t('toasts.replacedMatchesSingle')
+                  : t('toasts.replacedMatchesPlural', { count }),
+                { action: { label: t('toasts.undo'), run: () => editor.commands.undo() } },
+              );
+            }}
+          >
+            {t('editor.replaceThese')}
           </button>
         </div>
       )}

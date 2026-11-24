@@ -1,6 +1,6 @@
 [package]
 name = "morrow"
-version = "2.0.0"
+version = "2.2.0"
 description = "A free, open source, local first workspace for notes, databases and canvases."
 authors = ["Aarav Gupta"]
 license = "Apache-2.0"
@@ -47,9 +47,13 @@ gethostname = "0.5"
 which = "6"
 mime_guess = "2"
 dirs = "5"
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 trash = "5"
+# reads the html another app copied, which the clipboard plugin can only write. phones have no use for it
+arboard = { version = "3.7", default-features = false }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
@@ -63,7 +67,7 @@ cairo-rs = { version = "0.18", features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Registry", "Win32_UI_Shell"] }
 windows-core = "0.62"
 
 [profile.release]

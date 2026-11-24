@@ -2,15 +2,21 @@ import { Extension } from '@tiptap/core';
 import { t } from '../i18n';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import { dropPoint } from '@tiptap/pm/transform';
 import type { EditorState, Transaction } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { selectedBlocks } from './BlockSelect';
+import type { BlockMenuOrigin } from './blockMenuOrigin';
 
 const MOVABLE_ITEMS = new Set(['listItem', 'taskItem']);
 
 export interface BlockMenuRequest {
   pos: number;
   rect: DOMRect;
+  /** Captured by the owning PageEditor at the moment this request is opened. */
+  origin?: BlockMenuOrigin;
+  // several blocks the selected words run across, which turn together
+  range?: { from: number; to: number };
 }
 
 // finds the block the selection is in, preferring the nearest list item
@@ -90,9 +96,30 @@ function contains(element: Element, y: number): boolean {
   return y >= rect.top && y < rect.bottom;
 }
 
-// every item of a list and every line inside an open toggle is a block of its own, the way notion has it,
-// so the handle picks the innermost one under the pointer rather than the whole list or toggle
-function innerBlock(element: HTMLElement, y: number): HTMLElement {
+// every item of a list, every line inside an open toggle and every block in a column is a block of its own,
+// the way notion has it, so the handle picks the innermost one under the pointer rather than the whole
+// list, toggle or row of columns
+function innerBlock(element: HTMLElement, y: number, x: number): HTMLElement {
+  if (element.classList.contains('columns-editor')) {
+    const grid = Array.from(element.children).find(
+      (child): child is HTMLElement => child instanceof HTMLElement && child.hasAttribute('data-columns'),
+    );
+    if (!grid) return element;
+    const target = innerBlock(grid, y, x);
+    return target === grid ? element : target;
+  }
+  if (element.hasAttribute('data-columns')) {
+    const column = Array.from(element.children).find((child): child is HTMLElement => {
+      if (!(child instanceof HTMLElement) || !child.hasAttribute('data-column')) return false;
+      const rect = child.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right;
+    });
+    if (!column) return element;
+    const child = Array.from(column.children).find(
+      (candidate): candidate is HTMLElement => candidate instanceof HTMLElement && contains(candidate, y),
+    );
+    return child ? innerBlock(child, y, x) : element;
+  }
   if (element.tagName === 'UL' || element.tagName === 'OL') {
     const item = Array.from(element.children).find(
       (child): child is HTMLElement => child.tagName === 'LI' && contains(child, y),
@@ -101,7 +128,7 @@ function innerBlock(element: HTMLElement, y: number): HTMLElement {
     const nested = Array.from(item.querySelectorAll<HTMLElement>('ul, ol')).find(
       (list) => list.parentElement?.closest('li') === item && contains(list, y),
     );
-    return nested ? innerBlock(nested, y) : item;
+    return nested ? innerBlock(nested, y, x) : item;
   }
   if (element.dataset.type === 'details') {
     const content = Array.from(element.querySelectorAll<HTMLElement>('[data-type="detailsContent"]')).find(
@@ -111,7 +138,7 @@ function innerBlock(element: HTMLElement, y: number): HTMLElement {
     const child = Array.from(content.children).find(
       (candidate): candidate is HTMLElement => candidate instanceof HTMLElement && contains(candidate, y),
     );
-    return child ? innerBlock(child, y) : element;
+    return child ? innerBlock(child, y, x) : element;
   }
   return element;
 }
@@ -122,6 +149,12 @@ const BOXED_INSET = 6;
 // the middle of a block's first line of text, which sits lower than its top in a callout, quote or
 // code block with padding around it. null for a block with no text, such as a picture
 function firstTextMiddle(block: HTMLElement): number | null {
+  // a database or canvas shown in the page lines up with its title, not the line it sits in
+  const head = block.querySelector('.page-embed.is-live .inline-database-head');
+  if (head) {
+    const rect = head.getBoundingClientRect();
+    return rect.top + rect.height / 2;
+  }
   // a table lines up with its first row, the header, whatever is written in it
   const row = block.matches('table, .tableWrapper') ? block.querySelector('tr') : null;
   if (row) {
@@ -154,6 +187,16 @@ function firstTextMiddle(block: HTMLElement): number | null {
   return null;
 }
 
+// the blocks the selected words run across, when they run across more than one: the items of a list, the
+// lines in a toggle, or blocks on the page
+export function selectedTextBlocks(state: EditorState): { from: number; to: number } | null {
+  const { $from, $to, empty } = state.selection;
+  if (empty) return null;
+  const range = $from.blockRange($to);
+  if (!range || range.endIndex - range.startIndex < 2) return null;
+  return { from: range.start, to: range.end };
+}
+
 function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
   return new Plugin({
     key: new PluginKey('blockHandle'),
@@ -161,7 +204,9 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       const handle = document.createElement('button');
       handle.type = 'button';
       handle.className = 'block-handle';
-      handle.draggable = true;
+      // dragged with the pointer rather than the system's drag and drop, whose picture of the block trailed
+      // behind the cursor in the web views morrow runs in
+      handle.draggable = false;
       handle.tabIndex = -1;
       handle.setAttribute('aria-label', t('editor.dragToMoveAria'));
       handle.innerHTML = GRIP;
@@ -175,7 +220,22 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
       };
 
       const onMove = (event: MouseEvent) => {
-        if (!view.editable || !host) return;
+        if (!view.editable || !host || drag?.started) return;
+        // the pointer on its way to the handle stays with the block the handle is for. a block in the second
+        // column has its handle over the first, which would otherwise take the handle back to itself
+        if (event.target instanceof Node && handle.contains(event.target)) return;
+        // and so does the pointer crossing the gap between the block and its handle
+        if (current?.element.isConnected && handle.classList.contains('is-visible')) {
+          const box = current.element.getBoundingClientRect();
+          const grip = handle.getBoundingClientRect();
+          if (
+            event.clientX >= grip.left - 4 &&
+            event.clientX < box.left &&
+            event.clientY >= Math.min(box.top, grip.top) - 4 &&
+            event.clientY <= Math.max(grip.bottom, Math.min(box.bottom, grip.bottom + 24)) + 4
+          )
+            return;
+        }
         const children = Array.from(view.dom.children) as HTMLElement[];
         const top = children.find((child) => {
           if (child.classList.contains('ProseMirror-gapcursor')) return false;
@@ -183,7 +243,7 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
           return event.clientY >= rect.top - 4 && event.clientY <= rect.bottom + 4;
         });
         if (!top) return;
-        let target = innerBlock(top, event.clientY);
+        let target = innerBlock(top, event.clientY, event.clientX);
         let pos = blockPosition(view, target, target === top);
         if (pos === null) {
           target = top;
@@ -216,41 +276,261 @@ function handlePlugin(onMenu: (request: BlockMenuRequest) => void) {
         hide();
       };
 
-      const onDragStart = (event: DragEvent) => {
-        if (!current || !event.dataTransfer) return;
-        const selection = NodeSelection.create(view.state.doc, current.pos);
-        view.dispatch(view.state.tr.setSelection(selection));
-        const slice = selection.content();
-        const { dom, text } = view.serializeForClipboard(slice);
-        event.dataTransfer.clearData();
-        event.dataTransfer.setData('text/html', dom.innerHTML);
-        event.dataTransfer.setData('text/plain', text);
-        event.dataTransfer.effectAllowed = 'copyMove';
-        event.dataTransfer.setDragImage(current.element, 0, 0);
-        view.dragging = { slice, move: true };
+      // the blocks a drag takes: the ones picked in the margin, or the lines the selected words run across,
+      // when the handle is on one of them, otherwise the block beside the handle
+      const dragRange = (pos: number): { from: number; to: number } | null => {
+        const { state } = view;
+        const picked = selectedBlocks(state);
+        if (picked && pos >= picked.from && pos < picked.to) return picked;
+        const range = selectedTextBlocks(state);
+        return range && pos >= range.from && pos < range.to ? range : null;
+      };
+
+      // a drag of the handle moves the blocks. a light copy follows the pointer and a line shows where they
+      // land, both drawn once a frame, and the page scrolls by itself near its top or bottom edge
+      let drag: {
+        from: number;
+        to: number;
+        startX: number;
+        startY: number;
+        x: number;
+        y: number;
+        started: boolean;
+        ghost: HTMLElement | null;
+        line: HTMLElement | null;
+        frame: number;
+        target: { view: EditorView; pos: number } | null;
+        sources: HTMLElement[];
+      } | null = null;
+      // the click that ends a drag is not a click on the handle
+      let dragged = false;
+
+      const editorAt = (x: number, y: number): EditorView | null => {
+        const element = document.elementFromPoint(x, y)?.closest('.ProseMirror') as
+          (HTMLElement & { editor?: { view: EditorView; isEditable: boolean } }) | null;
+        const other = element?.editor;
+        if (element === view.dom || !other) return element === view.dom ? view : null;
+        return other.isEditable ? other.view : null;
+      };
+
+      const dropTarget = (x: number, y: number): { view: EditorView; pos: number } | null => {
+        if (!drag) return null;
+        const over = editorAt(x, y) ?? view;
+        const box = over.dom.getBoundingClientRect();
+        // beside the text, in the margin, still drops on the line at that height
+        const left = Math.min(Math.max(x, box.left + 4), box.right - 4);
+        const at = over.posAtCoords({ left, top: y });
+        if (!at) return null;
+        const slice = view.state.doc.slice(drag.from, drag.to);
+        const pos = dropPoint(over.state.doc, at.pos, slice);
+        if (pos === null) return null;
+        // the blocks dropped on themselves stay where they are
+        if (over === view && pos >= drag.from && pos <= drag.to) return null;
+        return { view: over, pos };
+      };
+
+      // the edge between blocks the drop goes in at, as a line across the block below or above it
+      const drawLine = (target: { view: EditorView; pos: number } | null) => {
+        if (!drag?.line) return;
+        if (!target) {
+          drag.line.style.display = 'none';
+          return;
+        }
+        const $pos = target.view.state.doc.resolve(target.pos);
+        const after = $pos.nodeAfter ? target.view.nodeDOM(target.pos) : null;
+        const before = $pos.nodeBefore ? target.view.nodeDOM(target.pos - $pos.nodeBefore.nodeSize) : null;
+        let rect: { left: number; width: number; top: number };
+        if (after instanceof HTMLElement) {
+          const box = after.getBoundingClientRect();
+          rect = { left: box.left, width: box.width, top: box.top - 2 };
+        } else if (before instanceof HTMLElement) {
+          const box = before.getBoundingClientRect();
+          rect = { left: box.left, width: box.width, top: box.bottom + 1 };
+        } else {
+          const coords = target.view.coordsAtPos(target.pos);
+          const box = target.view.dom.getBoundingClientRect();
+          rect = { left: box.left, width: box.width, top: coords.top };
+        }
+        drag.line.style.display = 'block';
+        drag.line.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
+        drag.line.style.width = `${rect.width}px`;
+      };
+
+      const scroller = () => view.dom.closest<HTMLElement>('.page-scroll');
+
+      const frame = () => {
+        if (!drag?.started) return;
+        drag.frame = 0;
+        if (drag.ghost) drag.ghost.style.transform = `translate(${drag.x + 14}px, ${drag.y + 6}px)`;
+        // near the top or bottom of the page it scrolls, faster the closer the pointer is to the edge
+        const page = scroller();
+        let scrolling = false;
+        if (page) {
+          const box = page.getBoundingClientRect();
+          const edge = 48;
+          const step =
+            drag.y < box.top + edge
+              ? -Math.ceil((box.top + edge - drag.y) / 3)
+              : drag.y > box.bottom - edge
+                ? Math.ceil((drag.y - (box.bottom - edge)) / 3)
+                : 0;
+          if (step) {
+            const before = page.scrollTop;
+            page.scrollTop += step;
+            scrolling = page.scrollTop !== before;
+          }
+        }
+        drag.target = dropTarget(drag.x, drag.y);
+        drawLine(drag.target);
+        if (scrolling) drag.frame = requestAnimationFrame(frame);
+      };
+
+      const startDrag = () => {
+        if (!drag || !current) return;
+        drag.started = true;
+        dragged = true;
+        hide();
+        // the blocks being moved fade where they are
+        view.state.doc.nodesBetween(drag.from, drag.to, (node, pos) => {
+          if (pos < drag!.from || pos + node.nodeSize > drag!.to) return true;
+          const dom = view.nodeDOM(pos);
+          if (dom instanceof HTMLElement) {
+            dom.classList.add('is-drag-source');
+            drag!.sources.push(dom);
+          }
+          return false;
+        });
+        const ghost = document.createElement('div');
+        ghost.className = 'block-drag-ghost';
+        const text = view.state.doc.textBetween(drag.from, drag.to, ' ', ' ').trim();
+        ghost.textContent = text.length > 90 ? `${text.slice(0, 90)}…` : text || '…';
+        const count = drag.sources.length;
+        if (count > 1) ghost.dataset.count = String(count);
+        const line = document.createElement('div');
+        line.className = 'block-drop-line';
+        document.body.append(ghost, line);
+        drag.ghost = ghost;
+        drag.line = line;
+        document.documentElement.classList.add('is-dragging-blocks');
+      };
+
+      const endDrag = (drop: boolean) => {
+        if (!drag) return;
+        const state = drag;
+        const target = drop && state.started ? dropTarget(state.x, state.y) : null;
+        drag = null;
+        if (state.frame) cancelAnimationFrame(state.frame);
+        state.ghost?.remove();
+        state.line?.remove();
+        state.sources.forEach((dom) => dom.classList.remove('is-drag-source'));
+        document.documentElement.classList.remove('is-dragging-blocks');
+        window.removeEventListener('pointermove', onPointerMove, true);
+        window.removeEventListener('pointerup', onPointerUp, true);
+        window.removeEventListener('pointercancel', onPointerCancel, true);
+        window.removeEventListener('keydown', onDragKey, true);
+        if (!target) return;
+        const slice = view.state.doc.slice(state.from, state.to);
+        if (target.view === view) {
+          const tr = view.state.tr.delete(state.from, state.to);
+          const at = tr.mapping.map(target.pos);
+          tr.replaceRange(at, at, slice);
+          const landed = TextSelection.findFrom(
+            tr.doc.resolve(Math.min(at + 1, tr.doc.content.size)),
+            1,
+            true,
+          );
+          if (landed) tr.setSelection(landed);
+          view.dispatch(tr);
+          view.focus();
+          return;
+        }
+        // into the page on the other side of a split, taken out of this one
+        const into = target.view.state.tr.replaceRange(target.pos, target.pos, slice);
+        target.view.dispatch(into);
+        view.dispatch(view.state.tr.delete(state.from, state.to));
+        target.view.focus();
+      };
+
+      const onPointerMove = (event: PointerEvent) => {
+        if (!drag) return;
+        drag.x = event.clientX;
+        drag.y = event.clientY;
+        if (!drag.started) {
+          if (Math.hypot(drag.x - drag.startX, drag.y - drag.startY) < 5) return;
+          startDrag();
+        }
+        event.preventDefault();
+        if (!drag.frame) drag.frame = requestAnimationFrame(frame);
+      };
+      const onPointerUp = () => endDrag(true);
+      const onPointerCancel = () => endDrag(false);
+      const onDragKey = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        endDrag(false);
+      };
+
+      const onPointerDown = (event: PointerEvent) => {
+        if (event.button !== 0 || !current || !view.editable) return;
+        dragged = false;
+        const range = dragRange(current.pos) ?? {
+          from: current.pos,
+          to: current.pos + (view.state.doc.nodeAt(current.pos)?.nodeSize ?? 0),
+        };
+        if (range.to <= range.from) return;
+        // the press would otherwise take the focus and the selection with it
+        event.preventDefault();
+        drag = {
+          ...range,
+          startX: event.clientX,
+          startY: event.clientY,
+          x: event.clientX,
+          y: event.clientY,
+          started: false,
+          ghost: null,
+          line: null,
+          frame: 0,
+          target: null,
+          sources: [],
+        };
+        window.addEventListener('pointermove', onPointerMove, true);
+        window.addEventListener('pointerup', onPointerUp, true);
+        window.addEventListener('pointercancel', onPointerCancel, true);
+        window.addEventListener('keydown', onDragKey, true);
       };
 
       const onClick = () => {
+        if (dragged) {
+          dragged = false;
+          return;
+        }
         if (!current) return;
-        // a block among several picked in the margin opens the menu for all of them
-        const picked = selectedBlocks(view.state);
-        if (!picked || current.pos < picked.from || current.pos >= picked.to)
+        // a block among several picked in the margin, or among the lines the selected words run across,
+        // opens the menu for all of them
+        const range = dragRange(current.pos);
+        if (!range)
           view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, current.pos)));
         view.focus();
-        onMenu({ pos: current.pos, rect: handle.getBoundingClientRect() });
+        onMenu({
+          pos: current.pos,
+          rect: handle.getBoundingClientRect(),
+          ...(range && !selectedBlocks(view.state) ? { range } : {}),
+        });
       };
 
       host?.addEventListener('mousemove', onMove);
       host?.addEventListener('mouseleave', onLeave);
-      handle.addEventListener('dragstart', onDragStart);
-      handle.addEventListener('dragend', hide);
+      handle.addEventListener('pointerdown', onPointerDown);
       handle.addEventListener('click', onClick);
 
       return {
         update() {
+          if (drag) return;
           if (current && !current.element.isConnected) hide();
         },
         destroy() {
+          endDrag(false);
           host?.removeEventListener('mousemove', onMove);
           host?.removeEventListener('mouseleave', onLeave);
           handle.remove();

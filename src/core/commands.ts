@@ -4,6 +4,8 @@ import { normalizeExtra, normalizeTag } from './vault/frontmatter';
 import { normalizeDatabase } from './migrations';
 import { emptyDoc, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, newPageMeta, PAGE_KINDS, validCover } from './model';
 import type { DatabaseDef, DocNode, PageId, PageKind, PageMeta, PropValue, WorkspaceState } from './model';
+import { isValidNoteStyleInput, mergeNoteStyleExtra, supportsNoteStyleKind } from './noteStyle';
+import type { NoteStyle } from './noteStyle';
 import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
 import { setTaskChecked } from './tasks';
@@ -24,6 +26,7 @@ export type Command =
       tags?: string[];
       properties?: Record<string, PropValue>;
       database?: DatabaseDef | null;
+      noteStyle?: NoteStyle;
     }
   | { type: 'page.rename'; id: PageId; title: string; now: number }
   | { type: 'page.setIcon'; id: PageId; icon: string | null; now: number }
@@ -42,6 +45,7 @@ export type Command =
   | { type: 'task.setChecked'; pageId: PageId; index: number; checked: boolean; now: number }
   | { type: 'page.setTags'; id: PageId; tags: string[]; now: number }
   | { type: 'page.setCover'; id: PageId; cover: string | null; now: number }
+  | { type: 'page.setNoteStyle'; id: PageId; style: NoteStyle; now: number }
   | { type: 'page.setEncrypted'; id: PageId; encrypted: boolean; now: number }
   | { type: 'page.setKind'; id: PageId; kind: PageKind; now: number }
   // merges values into a database row, null clears a value
@@ -192,6 +196,17 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       if (cover === page.value.cover) return unchanged(state);
       return updatePage(state, { ...page.value, cover, updatedAt: command.now });
     }
+    case 'page.setNoteStyle': {
+      const page = requirePage(state, command.id);
+      if (!page.ok) return page;
+      if (!supportsNoteStyleKind(page.value.kind))
+        return fail('Note styles can only be saved on pages, the journal, or templates.');
+      if (!isValidNoteStyleInput(command.style)) return fail('Invalid note style.');
+      const extra = mergeNoteStyleExtra(page.value.extra, command.style);
+      if (!extra) return fail('This note style uses an unsupported format and was left unchanged.');
+      if (JSON.stringify(extra) === JSON.stringify(page.value.extra)) return unchanged(state);
+      return updatePage(state, { ...page.value, extra, updatedAt: command.now });
+    }
     case 'page.setEncrypted': {
       const page = requirePage(state, command.id);
       if (!page.ok) return page;
@@ -218,9 +233,14 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
       const properties = { ...page.value.properties };
       for (const [key, value] of Object.entries(command.values ?? {})) {
         if (!ID_PATTERN.test(key)) return fail('Invalid property.');
-        if (value === null || value === '' || (Array.isArray(value) && value.length === 0))
+        const preserveExactText = isOptedInTextProperty(state, page.value, key);
+        if (
+          (value === null || value === '' || (Array.isArray(value) && value.length === 0)) &&
+          !preserveExactText
+        )
           delete properties[key];
-        else if (validValue(value)) properties[key] = value;
+        else if (value === null && preserveExactText) setOwnPropertyValue(properties, key, null);
+        else if (validValue(value)) setOwnPropertyValue(properties, key, value);
         else return fail('Invalid property value.');
       }
       return updatePage(state, { ...page.value, properties, updatedAt: command.now });
@@ -233,9 +253,18 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
         const properties: Record<string, PropValue> = {};
         for (const [key, value] of Object.entries(command.properties ?? {})) {
           if (!ID_PATTERN.test(key)) return fail('Invalid property.');
-          if (value === null || value === '' || (Array.isArray(value) && value.length === 0)) continue;
+          const preserveExactText = isOptedInTextProperty(state, page.value, key);
+          if (
+            (value === null || value === '' || (Array.isArray(value) && value.length === 0)) &&
+            !preserveExactText
+          )
+            continue;
+          if (value === null && preserveExactText) {
+            setOwnPropertyValue(properties, key, null);
+            continue;
+          }
           if (!validValue(value)) return fail('Invalid property value.');
-          properties[key] = value;
+          setOwnPropertyValue(properties, key, value);
         }
         next.properties = properties;
       }
@@ -270,6 +299,13 @@ function createPage(
   if (command.dailyDate != null && !DATE_PATTERN.test(command.dailyDate)) return fail('Invalid daily date.');
   const doc = validateDoc(command.doc ?? emptyDoc());
   if (!doc.ok) return doc;
+  let extra: Record<string, unknown> = {};
+  if (command.noteStyle !== undefined) {
+    if (!isValidNoteStyleInput(command.noteStyle)) return fail('Invalid note style.');
+    const merged = mergeNoteStyleExtra(extra, command.noteStyle);
+    if (!merged) return fail('This note style uses an unsupported format and was left unchanged.');
+    extra = merged;
+  }
   const kind = command.kind && PAGE_KINDS.includes(command.kind) ? command.kind : 'page';
   const page = newPageMeta({
     id: command.id,
@@ -281,6 +317,7 @@ function createPage(
     dailyDate: command.dailyDate ?? null,
     tags: normalizeTags(command.tags ?? []),
     properties: { ...(command.properties ?? {}) },
+    extra,
     database:
       kind === 'database' ? (normalizeDatabase(command.database) ?? { properties: [], views: [] }) : null,
   });
@@ -453,6 +490,23 @@ function validValue(value: unknown): value is PropValue {
   if (typeof value === 'number') return Number.isFinite(value);
   if (typeof value === 'boolean') return true;
   return Array.isArray(value) && value.length <= 200 && value.every((item) => typeof item === 'string');
+}
+
+function setOwnPropertyValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+}
+
+function isOptedInTextProperty(state: WorkspaceState, page: PageMeta, propertyId: string): boolean {
+  const parent = page.parentId ? state.pages[page.parentId] : undefined;
+  if (parent?.kind !== 'database' || !parent.database || !Object.hasOwn(parent.extra, 'polarisDados'))
+    return false;
+  const matches = parent.database.properties.filter((property) => property.id === propertyId);
+  return matches.length === 1 && matches[0]!.type === 'text';
 }
 
 export function normalizeTitle(title: unknown): string {

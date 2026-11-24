@@ -515,3 +515,41 @@ describe('conflict copies made by sync apps', () => {
     expect(conflictOriginal('Plan.md')).toBeNull();
   });
 });
+
+describe('search with match case', () => {
+  it('only finds the words as they were typed', () => {
+    const doc = (text: string): DocNode => ({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+    });
+    const pages = [
+      newPageMeta({ id: 'a', parentId: null, title: 'Notes', order: 0, createdAt: 0 }),
+      newPageMeta({ id: 'b', parentId: null, title: 'Other', order: 1, createdAt: 0 }),
+    ];
+    const state = run(emptyWorkspace(), {
+      type: 'pages.insert',
+      pages,
+      docs: { a: doc('Apple pie'), b: doc('apple juice') },
+    });
+    expect(searchWorkspace(state, 'apple')).toHaveLength(2);
+    expect(searchWorkspace(state, 'Apple', 50, 1, { matchCase: true }).map((r) => r.page.id)).toEqual(['a']);
+  });
+});
+
+describe('block ids', () => {
+  it('knows which of a page’s blocks other pages link to', async () => {
+    const { linkedBlockIds } = await import('./links');
+    const pages = [
+      newPageMeta({ id: 'a', parentId: null, title: 'A', order: 0, createdAt: 0 }),
+      newPageMeta({ id: 'b', parentId: null, title: 'B', order: 1, createdAt: 0 }),
+    ];
+    const link: DocNode = { type: 'pageLink', attrs: { id: 'a', label: 'A', anchor: '^kept' } };
+    const state = run(emptyWorkspace(), {
+      type: 'pages.insert',
+      pages,
+      docs: { b: { type: 'doc', content: [{ type: 'paragraph', content: [link] }] } },
+    });
+    expect([...linkedBlockIds(state, 'a')]).toEqual(['kept']);
+    expect(linkedBlockIds(state, 'b').size).toBe(0);
+  });
+});

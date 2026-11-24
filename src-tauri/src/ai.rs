@@ -4,13 +4,85 @@ use crate::paths;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::oneshot;
 
 const MAX_TOKENS: u64 = 16000;
 const ANTHROPIC: &str = "https://api.anthropic.com/v1";
-const KEYCHAIN_SERVICE: &str = "Morrow";
+const LEGACY_APP_IDENTIFIER: &str = "app.morrow.desktop";
+const LEGACY_KEYCHAIN_SERVICE: &str = "Morrow";
+const ALTERNATE_KEYCHAIN_SERVICE_PREFIX: &str = "Morrow/";
 const KEYCHAIN_USER: &str = "assistant";
+static KEYCHAIN_SERVICE: OnceLock<String> = OnceLock::new();
+
+fn service_for_identifier(identifier: &str) -> String {
+    if identifier == LEGACY_APP_IDENTIFIER {
+        LEGACY_KEYCHAIN_SERVICE.to_string()
+    } else {
+        format!("{ALTERNATE_KEYCHAIN_SERVICE_PREFIX}{identifier}")
+    }
+}
+
+fn initialized_service(service: Option<&String>) -> Option<&str> {
+    service.map(String::as_str)
+}
+
+pub(super) fn init_keychain_identity(identifier: &str) -> std::io::Result<()> {
+    let service = service_for_identifier(identifier);
+    if let Some(initialized) = KEYCHAIN_SERVICE.get() {
+        return if initialized == &service {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "assistant credential identity was already initialized",
+            ))
+        };
+    }
+
+    match KEYCHAIN_SERVICE.set(service) {
+        Ok(()) => Ok(()),
+        Err(service) if KEYCHAIN_SERVICE.get() == Some(&service) => Ok(()),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "assistant credential identity was initialized concurrently",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{initialized_service, service_for_identifier};
+
+    #[test]
+    fn legacy_identifier_keeps_the_upstream_service_name() {
+        assert_eq!(service_for_identifier("app.morrow.desktop"), "Morrow");
+    }
+
+    #[test]
+    fn alternate_identifiers_get_distinct_verbatim_namespaced_services() {
+        let pilot = service_for_identifier("app.morrow.polaris.pilot");
+        let other = service_for_identifier("app.morrow.other");
+
+        assert_eq!(pilot, "Morrow/app.morrow.polaris.pilot");
+        assert_eq!(other, "Morrow/app.morrow.other");
+        assert_ne!(pilot, "Morrow");
+        assert_ne!(pilot, other);
+        assert_eq!(service_for_identifier("app.morrow.polaris.pilot"), pilot);
+    }
+
+    #[test]
+    fn an_uninitialized_identity_has_no_legacy_fallback() {
+        assert_eq!(initialized_service(None), None);
+        assert_eq!(
+            initialized_service(Some(&"Morrow/pilot".to_string())),
+            Some("Morrow/pilot")
+        );
+    }
+}
+
+#[cfg(test)]
+mod independent_tests;
 
 struct Provider {
     id: &'static str,
@@ -103,7 +175,8 @@ mod keychain {
     use super::{KEYCHAIN_SERVICE, KEYCHAIN_USER};
 
     fn entry() -> Option<keyring::Entry> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).ok()
+        let service = super::initialized_service(KEYCHAIN_SERVICE.get())?;
+        keyring::Entry::new(service, KEYCHAIN_USER).ok()
     }
 
     // a keychain counts when it answers, even to say there is no key in it yet

@@ -1,5 +1,7 @@
 import {
+  ArrowDown,
   ArrowDownUp,
+  ArrowUp,
   Calendar,
   ChevronLeft,
   ChevronRight,
@@ -8,6 +10,7 @@ import {
   EyeOff,
   Filter,
   GalleryVerticalEnd,
+  LayoutDashboard,
   LayoutList,
   Maximize2,
   Plus,
@@ -15,16 +18,23 @@ import {
   Table2,
   Trash2,
   X,
+  Download,
+  Upload,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { dateKey } from '../../../core/daily';
 import {
   filterOpsFor,
+  arrangeGroups,
+  groupKey,
   groupRows,
+  moveGroup,
   propType,
   rowsOf,
   TITLE_PROP,
+  moveKey,
+  viewColumns,
   VIEW_LABELS,
   visibleRows,
   newView,
@@ -45,18 +55,25 @@ import type {
   ViewType,
 } from '../../../core/model';
 import { fileUrl } from '../../platform/attachments';
-import { newId } from '../../platform/files';
+import { newId, pickFiles, saveFile } from '../../platform/files';
+import { eventsToIcs, parseIcs } from '../../../core/ics';
+import { toast } from '../../ui';
 import { openPage } from '../../router';
-import { run, useWorkspace } from '../../workspace';
+import { getState, run, useWorkspace } from '../../workspace';
+import { usePreferences } from '../../platform/preferences';
 import { Menu } from '../Menu';
 import { Popover } from '../Popover';
+import { Switch } from '../primitives';
 import { Emoji } from '../Emoji';
 import { PageIcon } from '../Sidebar';
 import { addColumnsFromPages, createRow, setValue, updateDatabase, updateView } from './data';
+import { Grouped, Limited } from './Grouped';
+import { DashboardView } from './DashboardView';
 import { Chip, DraftInput, NewProperty, PropertyDisplay, PropertyInput } from './PropertyValue';
 import { PropertySettings } from './PropertySettings';
 import { dateLocale, t, tp } from '../../i18n';
 import { filterLabel, propLabel, viewLabel, viewName } from '../../i18n/labels';
+import { ProviderDatabaseView } from './ProviderDatabaseView';
 
 const VIEW_ICONS: Record<ViewType, LucideIcon> = {
   table: Table2,
@@ -64,6 +81,7 @@ const VIEW_ICONS: Record<ViewType, LucideIcon> = {
   calendar: Calendar,
   list: LayoutList,
   gallery: GalleryVerticalEnd,
+  dashboard: LayoutDashboard,
 };
 
 const viewKey = (id: PageId) => `morrow.view.${id}`;
@@ -76,17 +94,44 @@ function readViewChoice(id: PageId): string | null {
   }
 }
 
-export function DatabaseView({ page, editable }: { page: PageMeta; editable: boolean }) {
+export function DatabaseView({
+  page,
+  editable,
+  onlyView = null,
+}: {
+  page: PageMeta;
+  editable: boolean;
+  // one native view shown alone, as a database embedded with #view does
+  onlyView?: string | null;
+}) {
+  // An extension marker reserves the database for its provider before any native view hooks or
+  // formula renderers are mounted. Unknown and malformed markers stay on the read-only fallback.
+  if (Object.hasOwn(page.extra, 'polarisDados'))
+    return <ProviderDatabaseView page={page} editable={editable} />;
+  return <NativeDatabaseView page={page} editable={editable} onlyView={onlyView} />;
+}
+
+function NativeDatabaseView({
+  page,
+  editable,
+  onlyView,
+}: {
+  page: PageMeta;
+  editable: boolean;
+  onlyView: string | null;
+}) {
   const state = useWorkspace();
   const database = useMemo(() => page.database ?? { properties: [], views: [] }, [page.database]);
   const [viewId, setViewId] = useState<string | null>(() => readViewChoice(page.id));
-  const view = database.views.find((candidate) => candidate.id === viewId) ?? database.views[0] ?? null;
+  const view =
+    database.views.find((candidate) => candidate.id === (onlyView ?? viewId)) ?? database.views[0] ?? null;
   const allRows = useMemo(() => rowsOf(state, page.id), [state, page.id]);
   const rows = useMemo(
     () => (view ? visibleRows(allRows, view, database) : allRows),
     [allRows, view, database],
   );
   const [tabMenu, setTabMenu] = useState<{ view: ViewDef; anchor: HTMLElement } | null>(null);
+  const [movingView, setMovingView] = useState<string | null>(null);
   const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
 
   const choose = (id: string) => {
@@ -105,36 +150,67 @@ export function DatabaseView({ page, editable }: { page: PageMeta; editable: boo
   }, [editable, database.views.length, page.id]);
 
   if (!view) return null;
-  const visible = database.properties.filter((prop) => !view.hidden.includes(prop.id));
+  // properties in the order of the view's columns, for cards and lists as well as the table
+  const visible = viewColumns(view, database.properties).filter(
+    (column): column is PropDef => column !== TITLE_PROP && !view.hidden.includes(column.id),
+  );
 
   return (
     <section className="database" aria-label={t('sidebar.database')}>
       <div className="db-bar">
         <div className="db-tabs" role="tablist" aria-label={t('database.views')}>
-          {database.views.map((candidate) => {
-            const Icon = VIEW_ICONS[candidate.type];
-            return (
-              <button
-                key={candidate.id}
-                type="button"
-                role="tab"
-                aria-selected={candidate.id === view.id}
-                className={`db-tab${candidate.id === view.id ? ' is-active' : ''}`}
-                onClick={() => choose(candidate.id)}
-                onContextMenu={(event) => {
-                  if (!editable) return;
-                  event.preventDefault();
-                  setTabMenu({ view: candidate, anchor: event.currentTarget });
-                }}
-                onDoubleClick={(event) =>
-                  editable && setTabMenu({ view: candidate, anchor: event.currentTarget })
-                }
-              >
-                <Icon size={14} /> {viewName(candidate)}
-              </button>
-            );
-          })}
-          {editable && (
+          {(onlyView ? database.views.filter((candidate) => candidate.id === view.id) : database.views).map(
+            (candidate) => {
+              const Icon = VIEW_ICONS[candidate.type];
+              return (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={candidate.id === view.id}
+                  className={`db-tab${candidate.id === view.id ? ' is-active' : ''}${movingView === candidate.id ? ' is-moving' : ''}`}
+                  onClick={() => choose(candidate.id)}
+                  // a view is dragged along the tabs to another place
+                  draggable={editable}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/x-morrow-view', candidate.id);
+                    setMovingView(candidate.id);
+                  }}
+                  onDragEnd={() => setMovingView(null)}
+                  onDragOver={(event) => movingView && event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const moved = movingView;
+                    setMovingView(null);
+                    if (!moved || moved === candidate.id) return;
+                    updateDatabase(page.id, (current) => {
+                      const order = moveKey(
+                        current.views.map((item) => item.id),
+                        moved,
+                        candidate.id,
+                      );
+                      return {
+                        ...current,
+                        views: order.map((id) => current.views.find((item) => item.id === id)!),
+                      };
+                    });
+                  }}
+                  onContextMenu={(event) => {
+                    if (!editable) return;
+                    event.preventDefault();
+                    setTabMenu({ view: candidate, anchor: event.currentTarget });
+                  }}
+                  onDoubleClick={(event) =>
+                    editable && setTabMenu({ view: candidate, anchor: event.currentTarget })
+                  }
+                >
+                  <Icon size={14} /> {viewName(candidate)}
+                </button>
+              );
+            },
+          )}
+          {editable && !onlyView && (
             <button
               type="button"
               className="icon-button small"
@@ -149,16 +225,35 @@ export function DatabaseView({ page, editable }: { page: PageMeta; editable: boo
       </div>
       {editable && <ColumnSuggestion dbId={page.id} database={database} rows={allRows} />}
 
-      {view.type === 'table' && (
-        <TableView
-          dbId={page.id}
-          database={database}
-          view={view}
-          rows={rows}
-          props={visible}
-          editable={editable}
-        />
-      )}
+      {(view.type === 'table' || view.type === 'list' || view.type === 'gallery') &&
+        (() => {
+          // a table, list or gallery, split into groups when the view groups its rows
+          const draw = (shown: PageMeta[]) =>
+            view.type === 'table' ? (
+              <TableView
+                dbId={page.id}
+                database={database}
+                view={view}
+                rows={shown}
+                props={visible}
+                editable={editable}
+              />
+            ) : view.type === 'list' ? (
+              <ListView rows={shown} props={visible} database={database} />
+            ) : (
+              <GalleryView rows={shown} props={visible} database={database} />
+            );
+          const grouped = !!view.groupBy && database.properties.some((prop) => prop.id === view.groupBy);
+          return grouped ? (
+            <Grouped dbId={page.id} database={database} view={view} rows={rows} editable={editable}>
+              {draw}
+            </Grouped>
+          ) : (
+            <Limited key={view.id} view={view} rows={rows}>
+              {draw}
+            </Limited>
+          );
+        })()}
       {view.type === 'board' && (
         <BoardView
           dbId={page.id}
@@ -169,12 +264,13 @@ export function DatabaseView({ page, editable }: { page: PageMeta; editable: boo
           editable={editable}
         />
       )}
+      {view.type === 'dashboard' && (
+        <DashboardView dbId={page.id} database={database} view={view} rows={rows} editable={editable} />
+      )}
       {view.type === 'calendar' && (
         <CalendarView dbId={page.id} database={database} view={view} rows={rows} editable={editable} />
       )}
-      {view.type === 'list' && <ListView rows={rows} props={visible} database={database} />}
-      {view.type === 'gallery' && <GalleryView rows={rows} props={visible} database={database} />}
-      {view.type !== 'table' && editable && (
+      {view.type !== 'table' && view.type !== 'dashboard' && editable && (
         <button type="button" className="db-new-row" onClick={() => newRowAndOpen(page.id, {})}>
           <Plus size={14} /> {t('database.new')}
         </button>
@@ -212,6 +308,50 @@ export function DatabaseView({ page, editable }: { page: PageMeta; editable: boo
       )}
     </section>
   );
+}
+
+// the rows with a date go out as a calendar file, all day events on their dates
+function exportIcs(dbId: PageId, propId: string, rows: PageMeta[]): void {
+  const page = getState().pages[dbId];
+  const events = rows.flatMap((row) => {
+    const value = row.properties[propId];
+    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)
+      ? [
+          {
+            uid: `${row.id}@morrow`,
+            date: value.slice(0, 10),
+            time: null,
+            title: displayTitle(row),
+            description: '',
+          },
+        ]
+      : [];
+  });
+  const name = page ? displayTitle(page) : 'Calendar';
+  saveFile(`${name}.ics`, eventsToIcs(name, events), 'text/calendar');
+}
+
+// each event in a calendar file becomes a row on its date, with its notes as the row's text
+async function importIcs(dbId: PageId, propId: string): Promise<void> {
+  const [file] = await pickFiles('.ics,text/calendar', false);
+  if (!file) return;
+  const events = parseIcs(await file.text());
+  for (const event of events.slice(0, 2000)) {
+    const id = createRow(dbId, { [propId]: event.date }, event.title || event.date);
+    if (id && event.description)
+      run({
+        type: 'page.setDoc',
+        id,
+        now: Date.now(),
+        doc: {
+          type: 'doc',
+          content: event.description
+            .split('\n')
+            .map((line) => ({ type: 'paragraph', content: line ? [{ type: 'text', text: line }] : [] })),
+        },
+      });
+  }
+  toast(t('database.importedIcs', { count: events.length }));
 }
 
 function newRowAndOpen(dbId: PageId, values: Record<string, PropValue>): void {
@@ -398,9 +538,14 @@ function Toolbar({
         <ArrowDownUp size={13} /> {t('database.sort')}
         {view.sorts.length ? ` ${view.sorts.length}` : ''}
       </button>
-      {(view.type === 'board' || view.type === 'calendar') && (
+      {view.type !== 'dashboard' && (
         <button type="button" className="text-tool" onClick={open('layout')} disabled={!editable}>
-          <Settings2 size={13} /> {view.type === 'board' ? t('database.group') : t('database.date')}
+          <Settings2 size={13} />{' '}
+          {view.type === 'calendar'
+            ? t('database.date')
+            : view.groupBy
+              ? t('database.group')
+              : t('slash.sections.layout')}
         </button>
       )}
       <button type="button" className="text-tool" onClick={open('properties')}>
@@ -604,24 +749,30 @@ function Toolbar({
           className="db-panel"
         >
           <label className="field">
-            <span>{view.type === 'board' ? t('database.groupCardsBy') : t('database.placeRowsBy')}</span>
+            <span>
+              {view.type === 'board'
+                ? t('database.groupCardsBy')
+                : view.type === 'calendar'
+                  ? t('database.placeRowsBy')
+                  : t('database.groupRowsBy')}
+            </span>
             <select
               className="text-input small"
-              value={(view.type === 'board' ? view.groupBy : view.dateProp) ?? ''}
+              value={(view.type === 'calendar' ? view.dateProp : view.groupBy) ?? ''}
               onChange={(event) =>
                 updateView(dbId, view.id, (current) =>
-                  current.type === 'board'
-                    ? { ...current, groupBy: event.target.value || null }
-                    : { ...current, dateProp: event.target.value || null },
+                  current.type === 'calendar'
+                    ? { ...current, dateProp: event.target.value || null }
+                    : { ...current, groupBy: event.target.value || null },
                 )
               }
             >
               <option value="">{t('database.none')}</option>
               {database.properties
                 .filter((prop) =>
-                  view.type === 'board'
-                    ? ['select', 'multiSelect', 'checkbox'].includes(prop.type)
-                    : prop.type === 'date',
+                  view.type === 'calendar'
+                    ? prop.type === 'date'
+                    : ['select', 'multiSelect', 'checkbox'].includes(prop.type),
                 )
                 .map((prop) => (
                   <option key={prop.id} value={prop.id}>
@@ -630,6 +781,34 @@ function Toolbar({
                 ))}
             </select>
           </label>
+          {view.type !== 'calendar' && view.groupBy && (
+            <GroupSettings dbId={dbId} database={database} view={view} rows={rows} />
+          )}
+          {view.type !== 'calendar' && view.type !== 'board' && (
+            <label className="field">
+              <span>{t('database.loadLimit')}</span>
+              <select
+                className="text-input small"
+                value={view.limit === undefined ? 'default' : String(view.limit)}
+                onChange={(event) =>
+                  updateView(dbId, view.id, (current) => {
+                    const { limit: _old, ...rest } = current;
+                    return event.target.value === 'default'
+                      ? rest
+                      : { ...rest, limit: Number(event.target.value) };
+                  })
+                }
+              >
+                <option value="default">{t('database.limitDefault')}</option>
+                {[10, 25, 50, 100, 200, 500].map((count) => (
+                  <option key={count} value={count}>
+                    {t('database.limitRows', { count })}
+                  </option>
+                ))}
+                <option value="0">{t('database.limitAll')}</option>
+              </select>
+            </label>
+          )}
         </Popover>
       )}
       {panel?.kind === 'properties' && (
@@ -704,6 +883,101 @@ function Toolbar({
         </Popover>
       )}
     </div>
+  );
+}
+
+// the groups of a grouped view: each can be left out or moved up or down, and empty ones hidden
+function GroupSettings({
+  dbId,
+  database,
+  view,
+  rows,
+}: {
+  dbId: PageId;
+  database: DatabaseDef;
+  view: ViewDef;
+  rows: PageMeta[];
+}) {
+  const groups = groupRows(rows, view.groupBy, database);
+  const ordered = arrangeGroups(groups, { ...view, hiddenGroups: [], hideEmptyGroups: false });
+  const hidden = view.hiddenGroups ?? [];
+  return (
+    <>
+      <p className="db-panel-heading">{t('database.groups')}</p>
+      <ul className="db-prop-list db-group-list">
+        {ordered.map((group, index) => {
+          const key = groupKey(group);
+          const off = hidden.includes(key);
+          return (
+            <li key={key}>
+              <span className={`chip color-${group.color}`}>{group.label}</span>
+              <span className="muted small">{group.rows.length}</span>
+              <button
+                type="button"
+                className="icon-button tiny"
+                aria-label={t('database.moveGroupUp', { name: group.label })}
+                disabled={index === 0}
+                onClick={() =>
+                  updateView(dbId, view.id, (current) => ({
+                    ...current,
+                    groupOrder: moveGroup(groups, current, key, -1),
+                  }))
+                }
+              >
+                <ArrowUp size={13} />
+              </button>
+              <button
+                type="button"
+                className="icon-button tiny"
+                aria-label={t('database.moveGroupDown', { name: group.label })}
+                disabled={index === ordered.length - 1}
+                onClick={() =>
+                  updateView(dbId, view.id, (current) => ({
+                    ...current,
+                    groupOrder: moveGroup(groups, current, key, 1),
+                  }))
+                }
+              >
+                <ArrowDown size={13} />
+              </button>
+              <button
+                type="button"
+                className="icon-button tiny"
+                aria-label={
+                  off
+                    ? t('database.showGroup', { name: group.label })
+                    : t('database.hideGroup', { name: group.label })
+                }
+                onClick={() =>
+                  updateView(dbId, view.id, (current) => {
+                    const list = current.hiddenGroups ?? [];
+                    return {
+                      ...current,
+                      hiddenGroups: off ? list.filter((item) => item !== key) : [...list, key],
+                    };
+                  })
+                }
+              >
+                {off ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <label className="field-inline">
+        <span>{t('database.hideEmptyGroups')}</span>
+        <Switch
+          label={t('database.hideEmptyGroups')}
+          checked={view.hideEmptyGroups === true}
+          onChange={(hideEmptyGroups) =>
+            updateView(dbId, view.id, (current) => {
+              const { hideEmptyGroups: _old, ...rest } = current;
+              return hideEmptyGroups ? { ...rest, hideEmptyGroups: true } : rest;
+            })
+          }
+        />
+      </label>
+    </>
   );
 }
 
@@ -807,6 +1081,15 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
   const [focusNew, setFocusNew] = useState<string | null>(null);
   // the width being dragged, saved to the view once the drag ends
   const [dragging, setDragging] = useState<{ key: string; width: number } | null>(null);
+  // the column being dragged to another place
+  const [moving, setMoving] = useState<string | null>(null);
+  const columns = viewColumns(view, props);
+  const keyOf = (column: (typeof columns)[number]) => (column === TITLE_PROP ? TITLE_PROP : column.id);
+  const moveColumn = (key: string, before: string) =>
+    updateView(dbId, view.id, (current) => ({
+      ...current,
+      columns: moveKey(viewColumns(current, database.properties).map(keyOf), key, before),
+    }));
   const widthOf = (key: string) =>
     dragging?.key === key
       ? dragging.width
@@ -835,32 +1118,63 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
     <div className="db-table-wrap">
       <table className={`db-table${editable ? ' is-filled' : ''}`} style={{ width: total }}>
         <colgroup>
-          <col style={{ width: widthOf(TITLE_PROP) }} />
-          {props.map((prop) => (
-            <col key={prop.id} style={{ width: widthOf(prop.id) }} />
+          {columns.map((column) => (
+            <col key={keyOf(column)} style={{ width: widthOf(keyOf(column)) }} />
           ))}
           {/* the add column takes whatever room is left, so the others keep the width they were given */}
           {editable && <col />}
         </colgroup>
         <thead>
           <tr>
-            <th scope="col" className="db-col-title">
-              {t('database.name')}
-              {resizer(TITLE_PROP)}
-            </th>
-            {props.map((prop) => (
-              <th key={prop.id} scope="col">
-                <button
-                  type="button"
-                  className="db-header"
-                  disabled={!editable}
-                  onClick={(event) => setHeader({ prop, anchor: event.currentTarget })}
-                >
-                  {prop.name}
-                </button>
-                {resizer(prop.id)}
-              </th>
-            ))}
+            {columns.map((column) => {
+              const key = keyOf(column);
+              // a column is dragged by its header to another place, the name column too
+              const drag = editable
+                ? {
+                    draggable: true,
+                    onDragStart: (event: React.DragEvent) => {
+                      if ((event.target as HTMLElement).closest('.db-resize')) return event.preventDefault();
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/x-morrow-column', key);
+                      setMoving(key);
+                    },
+                    onDragEnd: () => setMoving(null),
+                    onDragOver: (event: React.DragEvent) => {
+                      if (moving) event.preventDefault();
+                    },
+                    onDrop: (event: React.DragEvent) => {
+                      event.preventDefault();
+                      if (moving) moveColumn(moving, key);
+                      setMoving(null);
+                    },
+                  }
+                : {};
+              if (column === TITLE_PROP)
+                return (
+                  <th
+                    key={key}
+                    scope="col"
+                    className={`db-col-title${moving === key ? ' is-moving' : ''}`}
+                    {...drag}
+                  >
+                    {t('database.name')}
+                    {resizer(TITLE_PROP)}
+                  </th>
+                );
+              return (
+                <th key={key} scope="col" className={moving === key ? 'is-moving' : undefined} {...drag}>
+                  <button
+                    type="button"
+                    className="db-header"
+                    disabled={!editable}
+                    onClick={(event) => setHeader({ prop: column, anchor: event.currentTarget })}
+                  >
+                    {column.name}
+                  </button>
+                  {resizer(column.id)}
+                </th>
+              );
+            })}
             {editable && (
               <th className="db-col-add">
                 <button
@@ -878,14 +1192,17 @@ function TableView({ dbId, database, view, rows, props, editable }: ViewProps) {
         <tbody>
           {rows.map((row) => (
             <tr key={row.id}>
-              <td className="db-col-title">
-                <RowTitle row={row} editable={editable} autoFocus={focusNew === row.id} />
-              </td>
-              {props.map((prop) => (
-                <td key={prop.id}>
-                  <PropertyInput dbId={dbId} prop={prop} row={row} editable={editable} />
-                </td>
-              ))}
+              {columns.map((column) =>
+                column === TITLE_PROP ? (
+                  <td key={TITLE_PROP} className="db-col-title">
+                    <RowTitle row={row} editable={editable} autoFocus={focusNew === row.id} />
+                  </td>
+                ) : (
+                  <td key={column.id}>
+                    <PropertyInput dbId={dbId} prop={column} row={row} editable={editable} />
+                  </td>
+                ),
+              )}
               {editable && <td />}
             </tr>
           ))}
@@ -1008,8 +1325,8 @@ const DRAG = 'application/x-morrow-row';
 
 function BoardView({ dbId, database, view, rows, props, editable }: ViewProps) {
   const prop = database.properties.find((candidate) => candidate.id === view.groupBy);
-  // an empty column for rows without a value only adds noise
-  const groups = groupRows(rows, view.groupBy, database).filter(
+  // an empty column for rows without a value only adds noise. the view's order and hidden groups count too
+  const groups = arrangeGroups(groupRows(rows, view.groupBy, database), view).filter(
     (group) => group.key !== null || group.rows.length > 0,
   );
   const [over, setOver] = useState<string | null>(null);
@@ -1080,11 +1397,11 @@ function CalendarView({ dbId, database, view, rows, editable }: Omit<ViewProps, 
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
   const [over, setOver] = useState<string | null>(null);
+  const { weekStart } = usePreferences();
   const prop = database.properties.find((candidate) => candidate.id === view.dateProp);
   if (!prop) return <p className="muted db-hint">{t('database.calendarHint')}</p>;
-  // weeks start on monday
   const start = new Date(month);
-  start.setDate(1 - ((month.getDay() + 6) % 7));
+  start.setDate(1 - ((month.getDay() - weekStart + 7) % 7));
   const days = Array.from(
     { length: 42 },
     (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i),
@@ -1123,6 +1440,26 @@ function CalendarView({ dbId, database, view, rows, editable }: Omit<ViewProps, 
         >
           <ChevronRight size={15} />
         </button>
+        <span className="db-calendar-files">
+          <button
+            type="button"
+            className="button small"
+            title={t('database.exportIcsHint')}
+            onClick={() => exportIcs(dbId, prop.id, rows)}
+          >
+            <Download size={14} /> .ics
+          </button>
+          {editable && (
+            <button
+              type="button"
+              className="button small"
+              title={t('database.importIcsHint')}
+              onClick={() => void importIcs(dbId, prop.id)}
+            >
+              <Upload size={14} /> .ics
+            </button>
+          )}
+        </span>
       </header>
       <div className="db-calendar-grid" role="grid">
         {days.slice(0, 7).map((day) => (

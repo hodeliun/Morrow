@@ -1,11 +1,13 @@
 import { useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
 
-export type SettingsSection = 'general' | 'appearance' | 'assistant' | 'sync' | 'vault' | 'plugins' | 'about';
+export type SettingsSection =
+  'general' | 'language' | 'appearance' | 'assistant' | 'sync' | 'vault' | 'plugins' | 'about';
 
 export type Dialog =
   | { kind: 'settings'; section?: SettingsSection }
   | { kind: 'shortcuts' }
+  | { kind: 'welcome' }
   | { kind: 'move'; pageId: PageId }
   | { kind: 'history'; pageId: PageId }
   | { kind: 'icon'; pageId: PageId }
@@ -32,15 +34,17 @@ export type Dialog =
   | { kind: 'template'; parentId: PageId | null }
   | { kind: 'encrypt'; pageId: PageId }
   | { kind: 'pair' }
-  | { kind: 'capture' }
-  | {
-      kind: 'confirm';
-      title: string;
-      body: string;
-      confirmLabel: string;
-      danger?: boolean;
-      onConfirm: () => void;
-    };
+  | { kind: 'capture' };
+
+// a question asked before something that can't be undone. it opens over whatever dialog is showing, such
+// as settings, which is still there once it is answered
+export interface Confirm {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+}
 
 export interface Toast {
   id: number;
@@ -49,11 +53,20 @@ export interface Toast {
   action?: { label: string; run: () => void };
 }
 
+export interface PalettePaneScope {
+  readonly paneId: string;
+  readonly sessionGeneration: number;
+  readonly topologyRevision: number;
+}
+
 export interface UiState {
   palette: boolean;
   // the palette was opened to choose the page for the new side of a split
   paletteForSide: boolean;
+  // the palette was opened from a specific empty pane; null for global and legacy split palettes
+  palettePaneScope: PalettePaneScope | null;
   dialog: Dialog | null;
+  confirm: Confirm | null;
   toasts: Toast[];
   mobileSidebar: boolean;
   // the hidden sidebar shown over the page while the pointer is on it
@@ -70,7 +83,9 @@ export interface UiState {
 let state: UiState = {
   palette: false,
   paletteForSide: false,
+  palettePaneScope: null,
   dialog: null,
+  confirm: null,
   toasts: [],
   mobileSidebar: false,
   sidebarPeek: false,
@@ -102,15 +117,19 @@ export function useUi(): UiState {
 }
 
 export function openDialog(dialog: Dialog): void {
-  setUi({ dialog, palette: false });
+  setUi({ dialog, palette: false, palettePaneScope: null });
 }
 
 export function closeDialog(): void {
   setUi({ dialog: null });
 }
 
-export function confirmAction(options: Omit<Extract<Dialog, { kind: 'confirm' }>, 'kind'>): void {
-  openDialog({ kind: 'confirm', ...options });
+export function confirmAction(options: Confirm): void {
+  setUi({ confirm: options, palette: false, palettePaneScope: null });
+}
+
+export function closeConfirm(): void {
+  setUi({ confirm: null });
 }
 
 export function toast(

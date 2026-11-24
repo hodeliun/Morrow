@@ -5,6 +5,40 @@ export interface CloudFolder {
   path: string;
 }
 
+export interface VaultFileMetadata {
+  name: string;
+  path: string;
+  kind: 'file' | 'folder';
+  size: number | null;
+  modified: number | null;
+}
+
+export interface VaultFilePage {
+  generation: number;
+  status: 'ready' | 'empty' | 'notFound' | 'blocked' | 'ioError' | 'unavailable' | 'stale';
+  entries: VaultFileMetadata[];
+  nextCursor: string | null;
+  error: string | null;
+}
+
+export type VaultCatalogFileAction = 'open' | 'reveal';
+
+export type VaultCatalogFileActionStatus =
+  | 'opened'
+  | 'revealed'
+  | 'notFound'
+  | 'blocked'
+  | 'noAssociation'
+  | 'invalidResource'
+  | 'stale'
+  | 'unavailable'
+  | 'failed';
+
+export interface VaultCatalogFileActionResult {
+  generation: number;
+  status: VaultCatalogFileActionStatus;
+}
+
 export interface DesktopVaultApi {
   state(): Promise<{
     current: string | null;
@@ -17,6 +51,8 @@ export interface DesktopVaultApi {
   createDefault(): Promise<string>;
   select(dir: string): Promise<{ ok: boolean; error?: string }>;
   forget(dir: string): Promise<void>;
+  // the vaults known to morrow in the order to list them
+  reorder?(order: string[]): Promise<void>;
   open(): Promise<{ ok: boolean; root: string | null }>;
   close(): Promise<void>;
   scan(): Promise<unknown>;
@@ -26,6 +62,14 @@ export interface DesktopVaultApi {
   createFile(path: string, data: ArrayBuffer): Promise<void>;
   exists(path: string): Promise<boolean>;
   list(path: string): Promise<Array<{ path: string; size: number; mtime: number }>>;
+  // one page of immediate file/folder metadata from the active session; unlike list(), it never recurses
+  listFilesPage(directory: string, cursor?: string | null, limit?: number): Promise<VaultFilePage>;
+  // explicit catalog actions accept only a relative file identity tied to the page's vault generation
+  catalogFileAction?(
+    path: string,
+    generation: number,
+    action: VaultCatalogFileAction,
+  ): Promise<VaultCatalogFileActionResult>;
   reveal(path?: string): Promise<void>;
   openFile(path: string): Promise<boolean>;
   openLink?(href: string, pagePath: string | null): Promise<boolean>;
@@ -185,7 +229,8 @@ export interface DesktopBridge {
   dataPath: string;
   onCommand(listener: (id: string) => void): () => void;
   onZoom?(listener: (percent: number) => void): () => void;
-  setTheme(theme: 'light' | 'dark'): void;
+  // the colour of the page, for the window behind it
+  setTheme(theme: 'light' | 'dark', color?: string): void;
   // the native window buttons of the electron versions, which took the colours under them
   paintTitleBar?(color: string, symbolColor: string): void;
   openExternal(url: string): Promise<void>;
@@ -200,7 +245,19 @@ export interface DesktopBridge {
   ): Promise<{ ok: true; path: string } | { ok: false; error: string | null }>;
   copyText(text: string): Promise<boolean> | void;
   copyRich?(text: string, html: string): Promise<boolean>;
+  // pictures, sound and video copied in the file manager, which the web view only names
+  clipboardFiles?(): Promise<File[]>;
+  // a link or words another app shared with morrow on a phone, once
+  takeShared?(): Promise<{ text: string | null; files: File[] }>;
   setSpellcheck?(enabled: boolean): void;
+  // an .ics calendar by its address, https or webcal
+  fetchCalendar?(url: string): Promise<string>;
+  // a picture file another app put among the words it copied, by its file:// address
+  readPastedPicture?(src: string): Promise<Uint8Array | null>;
+  // the languages spelling is checked in: the ones picked, and the system's own for when none are
+  spellLanguages?(): Promise<{ chosen: string[]; system: string[]; automatic: boolean }>;
+  // true when they only apply once morrow opens again
+  setSpellLanguages?(languages: string[]): Promise<boolean>;
   fetchImage?(url: string): Promise<{ type: string; data: ArrayBuffer } | null>;
   // a file made in the app, saved where the person picks. the webview has no downloads of its own
   saveFile?(

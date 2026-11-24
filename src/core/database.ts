@@ -14,6 +14,7 @@ import type {
   SortRule,
   ViewDef,
   ViewType,
+  Widget,
   WorkspaceState,
 } from './model';
 import { computeFormula } from './formula';
@@ -31,6 +32,7 @@ export const VIEW_LABELS: Record<ViewType, string> = {
   calendar: 'Calendar',
   list: 'List',
   gallery: 'Gallery',
+  dashboard: 'Dashboard',
 };
 
 export function filterOpsFor(type: PropType | 'title'): FilterOp[] {
@@ -64,7 +66,71 @@ export function newView(type: ViewType, database: DatabaseDef, newId: () => stri
     groupBy: type === 'board' ? (select?.id ?? null) : null,
     dateProp: type === 'calendar' ? (date?.id ?? null) : null,
     hidden: [],
+    // a dashboard starts with the number of rows and charts of what the database already has
+    ...(type === 'dashboard' ? { widgets: defaultWidgets(database, newId) } : {}),
   };
+}
+
+function defaultWidgets(database: DatabaseDef, newId: () => string): Widget[] {
+  const select = database.properties.find((prop) => prop.type === 'select');
+  const number = database.properties.find((prop) => prop.type === 'number');
+  const date = database.properties.find((prop) => prop.type === 'date');
+  return [
+    { id: newId(), kind: 'count', prop: null },
+    ...(number ? [{ id: newId(), kind: 'sum' as const, prop: number.id }] : []),
+    ...(select ? [{ id: newId(), kind: 'donut' as const, prop: select.id }] : []),
+    ...(select ? [{ id: newId(), kind: 'bar' as const, prop: select.id, wide: true }] : []),
+    { id: newId(), kind: 'line', prop: date?.id ?? null, wide: true },
+  ];
+}
+
+// what a number tile shows for the rows, null when there is nothing to work it out from
+export function widgetNumber(widget: Widget, rows: PageMeta[]): number | null {
+  if (widget.kind === 'count') return rows.length;
+  const values = rows
+    .map((row) => (widget.prop ? row.properties[widget.prop] : null))
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (values.length === 0) return widget.kind === 'sum' ? 0 : null;
+  switch (widget.kind) {
+    case 'sum':
+      return values.reduce((sum, value) => sum + value, 0);
+    case 'average':
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    case 'min':
+      return Math.min(...values);
+    case 'max':
+      return Math.max(...values);
+    default:
+      return null;
+  }
+}
+
+// rows counted by month of a date, the created date when none is given, for the last twelve months
+export function rowsByMonth(
+  rows: PageMeta[],
+  prop: string | null,
+  today = new Date(),
+): Array<{ month: string; count: number }> {
+  const months: Array<{ month: string; count: number }> = [];
+  for (let back = 11; back >= 0; back--) {
+    const at = new Date(today.getFullYear(), today.getMonth() - back, 1);
+    months.push({ month: `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}`, count: 0 });
+  }
+  for (const row of rows) {
+    const value = prop ? row.properties[prop] : null;
+    const key =
+      typeof value === 'string' && /^\d{4}-\d{2}/.test(value)
+        ? value.slice(0, 7)
+        : prop
+          ? null
+          : (() => {
+              const made = new Date(row.createdAt);
+              return `${made.getFullYear()}-${String(made.getMonth() + 1).padStart(2, '0')}`;
+            })();
+    const month = months.find((item) => item.month === key);
+    if (month) month.count++;
+  }
+  return months;
 }
 
 export function defaultDatabase(newId: () => string): DatabaseDef {
@@ -260,6 +326,36 @@ export interface RowGroup {
 }
 
 // board columns: one per option in order, rows without a value come first
+// the key a group goes by in a view's order, hidden and folded lists. rows without a value have one too
+export const NO_VALUE_GROUP = '__none';
+export const groupKey = (group: RowGroup): string => group.key ?? NO_VALUE_GROUP;
+
+// the groups as the view sets them out: in its order, the rest after them as they come, without the ones it
+// leaves out, and without empty ones when it hides those
+export function arrangeGroups(groups: RowGroup[], view: ViewDef): RowGroup[] {
+  const order = view.groupOrder ?? [];
+  const place = (group: RowGroup) => {
+    const index = order.indexOf(groupKey(group));
+    return index === -1 ? order.length : index;
+  };
+  return groups
+    .map((group, index) => ({ group, index }))
+    .sort((a, b) => place(a.group) - place(b.group) || a.index - b.index)
+    .map(({ group }) => group)
+    .filter((group) => !(view.hiddenGroups ?? []).includes(groupKey(group)))
+    .filter((group) => !view.hideEmptyGroups || group.rows.length > 0);
+}
+
+// the groups' keys with one moved up or down a place, for the view's order
+export function moveGroup(groups: RowGroup[], view: ViewDef, key: string, by: -1 | 1): string[] {
+  const keys = arrangeGroups(groups, { ...view, hiddenGroups: [], hideEmptyGroups: false }).map(groupKey);
+  const index = keys.indexOf(key);
+  const to = index + by;
+  if (index < 0 || to < 0 || to >= keys.length) return keys;
+  [keys[index], keys[to]] = [keys[to]!, keys[index]!];
+  return keys;
+}
+
 export function groupRows(rows: PageMeta[], propId: string | null, database: DatabaseDef): RowGroup[] {
   const prop = database.properties.find((candidate) => candidate.id === propId);
   if (!prop) return [{ key: null, label: 'All', color: 'gray', rows }];
@@ -445,4 +541,23 @@ export function databaseFromTable(header: string[], rows: string[][], newId: () 
   if (properties.some((prop) => prop.type === 'date'))
     database.views.push(newView('calendar', database, newId));
   return database;
+}
+
+// the columns of a view in the order they were dragged into: the title and the properties shown. any not
+// in the saved order keep the database's order after the ones that are
+export function viewColumns(view: ViewDef, props: PropDef[]): Array<typeof TITLE_PROP | PropDef> {
+  const all: Array<typeof TITLE_PROP | PropDef> = [TITLE_PROP, ...props];
+  const keyOf = (column: typeof TITLE_PROP | PropDef) => (column === TITLE_PROP ? TITLE_PROP : column.id);
+  const order = view.columns ?? [];
+  const placed = order.flatMap((key) => all.filter((column) => keyOf(column) === key));
+  return [...placed, ...all.filter((column) => !order.includes(keyOf(column)))];
+}
+
+// moves one key before another in a list of keys, for dragging columns and views
+export function moveKey(keys: string[], key: string, before: string): string[] {
+  if (key === before) return keys;
+  const rest = keys.filter((item) => item !== key);
+  const at = rest.indexOf(before);
+  rest.splice(at < 0 ? rest.length : at, 0, key);
+  return rest;
 }

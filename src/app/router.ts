@@ -1,6 +1,16 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import type { PageId } from '../core/model';
-import { activeHash, getTabs, showInMain, showInSide, subscribeTabs, targetPane } from './tabs';
+import {
+  activeHash,
+  isPrimaryPane,
+  routeHashForPane,
+  routeHashForTabId,
+  showInPane,
+  subscribeTabs,
+  targetPane,
+  usePane,
+  usePaneTabContextId,
+} from './tabs';
 import type { PaneId } from './tabs';
 
 export type Route =
@@ -8,8 +18,11 @@ export type Route =
   // anchor is a heading or ^block id to scroll to once the page opens
   | { name: 'page'; id: PageId; find: string | null; anchor?: string | null }
   | { name: 'tasks' }
+  | { name: 'templates' }
+  | { name: 'journal' }
   | { name: 'trash' }
   | { name: 'archive' }
+  | { name: 'files' }
   | { name: 'tags' }
   | { name: 'tag'; tag: string }
   | { name: 'graph'; focus: PageId | null }
@@ -27,8 +40,11 @@ export function parseRoute(hash: string): Route {
     return { name: 'page', id: decodeURIComponent(parts[1]), find: find || null, anchor: anchor || null };
   }
   if (parts[0] === 'tasks') return { name: 'tasks' };
+  if (parts[0] === 'templates') return { name: 'templates' };
+  if (parts[0] === 'journal') return { name: 'journal' };
   if (parts[0] === 'trash') return { name: 'trash' };
   if (parts[0] === 'archive') return { name: 'archive' };
+  if (parts[0] === 'files') return { name: 'files' };
   if (parts[0] === 'tags' && parts[1])
     return { name: 'tag', tag: decodeURIComponent(parts.slice(1).join('/')) };
   if (parts[0] === 'tags') return { name: 'tags' };
@@ -49,10 +65,16 @@ export function routeHash(route: Route): string {
     }
     case 'tasks':
       return '#/tasks';
+    case 'templates':
+      return '#/templates';
+    case 'journal':
+      return '#/journal';
     case 'trash':
       return '#/trash';
     case 'archive':
       return '#/archive';
+    case 'files':
+      return '#/files';
     case 'tags':
       return '#/tags';
     case 'tag':
@@ -72,34 +94,34 @@ export function routeHash(route: Route): string {
 export function navigate(route: Route, options: { replace?: boolean; pane?: PaneId } = {}): void {
   const hash = routeHash(route);
   const pane = options.pane ?? targetPane();
-  if (pane === 'side' && getTabs().tabs.find((tab) => tab.id === getTabs().active)?.side) {
-    showInSide(hash, options.replace);
-    return;
-  }
-  showInMain(hash, options.replace);
+  showInPane(hash, pane, options.replace);
 }
 
 export function openPage(id: PageId, find: string | null = null, anchor: string | null = null): void {
   navigate({ name: 'page', id, find, anchor });
 }
 
-let cachedHash = '';
-let cachedRoute: Route = { name: 'home' };
-
-function snapshot(): Route {
-  const hash = window.location.hash;
-  if (hash !== cachedHash) {
-    cachedHash = hash;
-    cachedRoute = parseRoute(hash);
-  }
-  return cachedRoute;
-}
-
 export function useRoute(): Route {
-  return useSyncExternalStore((listener) => {
-    window.addEventListener('hashchange', listener);
-    return () => window.removeEventListener('hashchange', listener);
-  }, snapshot);
+  const pane = usePane();
+  const tabId = usePaneTabContextId();
+  const hash = useSyncExternalStore(
+    (listener) => {
+      window.addEventListener('hashchange', listener);
+      const stop = subscribeTabs(listener);
+      return () => {
+        window.removeEventListener('hashchange', listener);
+        stop();
+      };
+    },
+    () =>
+      tabId !== null
+        ? routeHashForTabId(tabId)
+        : isPrimaryPane(pane)
+          ? window.location.hash || routeHashForPane(pane)
+          : routeHashForPane(pane),
+    () => '#/',
+  );
+  return useMemo(() => parseRoute(hash), [hash]);
 }
 
 // the place shown where navigation goes, the side of a split tab when that side is in use

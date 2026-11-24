@@ -85,3 +85,74 @@ export const MarkdownPaste = Extension.create<{ resolvePage: (title: string) => 
     ];
   },
 });
+
+// blocks that only hold other blocks. a copy made inside one of them, with both of its ends inside, is just
+// the copied blocks, so a line copied out of a toggle pastes as that line rather than a new toggle around it
+const HOLDERS = new Set(['details', 'detailsContent', 'callout', 'columns', 'column']);
+
+export function unwrapHolders(slice: Slice): Slice {
+  let { content, openStart, openEnd } = slice;
+  while (openStart > 0 && openEnd > 0 && content.childCount === 1) {
+    const only = content.firstChild!;
+    if (!HOLDERS.has(only.type.name)) break;
+    content = only.content;
+    openStart -= 1;
+    openEnd -= 1;
+  }
+  return content === slice.content ? slice : new Slice(content, openStart, openEnd);
+}
+
+export const CopyFromInside = Extension.create({
+  name: 'copyFromInside',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('copyFromInside'),
+        props: {
+          transformCopied: (slice) => unwrapHolders(slice),
+          // a copy made before this, or in another morrow window, is unwrapped as it comes in
+          transformPasted: (slice) => unwrapHolders(slice),
+        },
+      }),
+    ];
+  },
+});
+
+// blocks pasted on an empty line take that line's place, a list copied in morrow used to land under it and
+// leave the empty line above
+export const PasteOnEmptyLine = Extension.create({
+  name: 'pasteOnEmptyLine',
+  // ahead of the other paste handlers, it only takes blocks pasted on an empty line
+  priority: 1000,
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('pasteOnEmptyLine'),
+        props: {
+          handlePaste: (view, _event, slice) => {
+            const { $from, empty } = view.state.selection;
+            if (!empty || $from.parent.type.name !== 'paragraph' || $from.parent.content.size > 0)
+              return false;
+            // only blocks, words pasted on the line go in it as usual
+            let blocks = false;
+            slice.content.forEach((node) => {
+              if (node.isBlock && !node.isTextblock) blocks = true;
+            });
+            if (!blocks) return false;
+            // the copied blocks go in whole, a copy cut out of a list keeps its first item an item
+            let content = slice.content;
+            const first = content.firstChild;
+            const { bulletList, taskList } = view.state.schema.nodes;
+            if (first?.type.name === 'listItem' && bulletList)
+              content = Fragment.from(bulletList.create(null, content));
+            if (first?.type.name === 'taskItem' && taskList)
+              content = Fragment.from(taskList.create(null, content));
+            const tr = view.state.tr.replaceRange($from.before(), $from.after(), new Slice(content, 0, 0));
+            view.dispatch(tr.scrollIntoView());
+            return true;
+          },
+        },
+      }),
+    ];
+  },
+});

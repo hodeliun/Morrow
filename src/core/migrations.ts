@@ -4,11 +4,13 @@ import {
   COLORS,
   MAX_ICON_LENGTH,
   MAX_TITLE_LENGTH,
+  normalizeDatabasePropertyFormat,
   PAGE_KINDS,
   PROP_TYPES,
   SCHEMA_VERSION,
   validCover,
   VIEW_TYPES,
+  WIDGET_KINDS,
 } from './model';
 import type {
   ColorName,
@@ -23,6 +25,8 @@ import type {
   PropValue,
   ViewDef,
   ViewType,
+  Widget,
+  WidgetKind,
 } from './model';
 import { fail, ok } from './result';
 import type { Result } from './result';
@@ -39,6 +43,8 @@ export interface LoadedWorkspace {
   problems: string[];
   // pages whose stored content failed validation, opened read only so nothing overwrites it
   unreadable: PageId[];
+  // readable files with Markdown/frontmatter this version cannot safely represent
+  protectedPages?: Record<PageId, string>;
 }
 
 // each entry upgrades data from version n to n + 1
@@ -145,6 +151,10 @@ function normalizeProperties(raw: unknown): Record<string, PropValue> {
 
 function normalizeProp(raw: Record<string, unknown>): PropDef | null {
   if (!validId(raw.id) || !PROP_TYPES.includes(raw.type as PropType)) return null;
+  // Public import/restore callers normalize data without the vault compatibility guard.
+  // Keep the supported property even when its optional display metadata is unknown;
+  // opening/editing the actual vault remains fail-closed in that guard.
+  const format = Object.hasOwn(raw, 'format') ? normalizeDatabasePropertyFormat(raw) : null;
   return {
     id: raw.id,
     name: nameOf(raw.name, ''),
@@ -156,10 +166,20 @@ function normalizeProp(raw: Record<string, unknown>): PropDef | null {
         name: nameOf(option.name, ''),
         color: COLORS.includes(option.color as ColorName) ? (option.color as ColorName) : 'gray',
       })),
+    ...(format !== null ? { format } : {}),
     ...(raw.type === 'formula' && typeof raw.formula === 'string'
       ? { formula: raw.formula.slice(0, 2000) }
       : {}),
+    ...(raw.type === 'formula' &&
+    (raw.formulaResultType === 'text' ||
+      raw.formulaResultType === 'number' ||
+      raw.formulaResultType === 'percent' ||
+      raw.formulaResultType === 'currency' ||
+      raw.formulaResultType === 'checkbox')
+      ? { formulaResultType: raw.formulaResultType }
+      : {}),
     ...(raw.display === 'bar' ? { display: 'bar' as const } : {}),
+    ...(raw.wrap === true && raw.type === 'text' ? { wrap: true } : {}),
     ...(typeof raw.max === 'number' && Number.isFinite(raw.max) && raw.max > 0 ? { max: raw.max } : {}),
   };
 }
@@ -186,7 +206,49 @@ function normalizeView(raw: Record<string, unknown>): ViewDef | null {
     dateProp: propRef(raw.dateProp),
     hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((id): id is string => propRef(id) !== null) : [],
     ...(isRecord(raw.widths) ? { widths: normalizeWidths(raw.widths) } : {}),
+    ...groupSettings(raw),
+    ...(Array.isArray(raw.widgets) ? { widgets: normalizeWidgets(raw.widgets) } : {}),
+    ...(typeof raw.limit === 'number' && Number.isInteger(raw.limit) && raw.limit >= 0 && raw.limit <= 10_000
+      ? { limit: raw.limit }
+      : {}),
+    ...(Array.isArray(raw.columns)
+      ? {
+          columns: raw.columns
+            .filter((key): key is string => typeof key === 'string' && key.length > 0 && key.length <= 64)
+            .slice(0, 200),
+        }
+      : {}),
   };
+}
+
+function normalizeWidgets(raw: unknown[]): Widget[] {
+  return raw.slice(0, 40).flatMap((item) => {
+    if (!isRecord(item) || !validId(item.id) || !WIDGET_KINDS.includes(item.kind as WidgetKind)) return [];
+    return [
+      {
+        id: item.id,
+        kind: item.kind as WidgetKind,
+        prop: typeof item.prop === 'string' && item.prop.length <= 64 ? item.prop : null,
+        ...(typeof item.title === 'string' && item.title.trim() ? { title: item.title.slice(0, 80) } : {}),
+        ...(item.wide === true ? { wide: true } : {}),
+      },
+    ];
+  });
+}
+
+function groupSettings(raw: Record<string, unknown>): Partial<ViewDef> {
+  const keys = (value: unknown) =>
+    Array.isArray(value)
+      ? value
+          .filter((key): key is string => typeof key === 'string' && key.length > 0 && key.length <= 64)
+          .slice(0, 200)
+      : [];
+  const out: Partial<ViewDef> = {};
+  if (keys(raw.groupOrder).length) out.groupOrder = keys(raw.groupOrder);
+  if (keys(raw.hiddenGroups).length) out.hiddenGroups = keys(raw.hiddenGroups);
+  if (keys(raw.collapsedGroups).length) out.collapsedGroups = keys(raw.collapsedGroups);
+  if (raw.hideEmptyGroups === true) out.hideEmptyGroups = true;
+  return out;
 }
 
 export const MIN_COLUMN_WIDTH = 80;

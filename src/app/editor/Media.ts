@@ -4,8 +4,9 @@ import type { Node as ProseNode, Slice } from '@tiptap/pm/model';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import type { FileMeta } from '../../core/model';
+import { mimeType } from '../../core/importer';
 import { downloadFile, fileUrl, formatBytes, storeFiles } from '../platform/attachments';
-import { desktop, nativeFileUrl } from '../platform/desktop';
+import { desktop, nativeFileUrl, openExternal } from '../platform/desktop';
 import { activeRoute } from '../router';
 import { selectedBlocks } from './BlockSelect';
 import { getSession } from '../workspace';
@@ -24,6 +25,15 @@ export const Image = Node.create({
       // an image on the web or at a path morrow could not find, kept as written
       src: { default: null, parseHTML: (element) => element.getAttribute('data-src') },
       alt: { default: '', parseHTML: (element) => element.getAttribute('alt') ?? '' },
+      // where a picture narrower than the page sits, null for the middle
+      align: {
+        default: null,
+        parseHTML: (element) => {
+          const value = element.getAttribute('data-align');
+          return value === 'left' || value === 'right' ? value : null;
+        },
+        renderHTML: (attributes) => (attributes.align ? { 'data-align': attributes.align } : {}),
+      },
       // the width the picture was dragged to, null to fit the page
       width: {
         default: null,
@@ -73,7 +83,10 @@ export const Image = Node.create({
       dom.appendChild(frame);
       const width = typeof node.attrs.width === 'number' ? node.attrs.width : null;
       if (width) img.style.width = `${width}px`;
-      // the picture's sides drag to make it smaller or larger. it stays centred, so it grows both ways
+      const align = node.attrs.align === 'left' || node.attrs.align === 'right' ? node.attrs.align : null;
+      if (align) dom.classList.add(`is-align-${align}`);
+      // the picture's sides drag to make it smaller or larger. a centred one grows both ways, one set to a
+      // side grows from that side
       if (editor.isEditable)
         for (const side of ['left', 'right'] as const) {
           const handle = document.createElement('span');
@@ -86,7 +99,7 @@ export const Image = Node.create({
             const most = dom.getBoundingClientRect().width;
             let next = start;
             const onMove = (move: PointerEvent) => {
-              const delta = (move.clientX - startX) * (side === 'right' ? 2 : -2);
+              const delta = (move.clientX - startX) * (side === 'right' ? 1 : -1) * (align ? 1 : 2);
               next = Math.round(Math.min(most, Math.max(60, start + delta)));
               img.style.width = `${next}px`;
             };
@@ -259,19 +272,33 @@ export function youtubeId(src: string): string | null {
 }
 
 // like pictures from the web, the video only loads once asked, so opening a page never contacts anyone
+// a youtube video shows as its picture with a play button, and plays in the page when clicked. it is a
+// real link to the video, so a page exported to pdf keeps it clickable
 function youtubeEmbed(dom: HTMLElement, id: string): HTMLElement {
   dom.className = 'image-block media-block media-youtube';
   dom.replaceChildren();
-  const box = document.createElement('div');
-  box.className = 'image-remote';
-  const label = document.createElement('span');
-  label.textContent = t('editor.videoFrom', { host: 'YouTube' });
-  const play = document.createElement('button');
-  play.type = 'button';
-  play.className = 'button small';
-  play.textContent = t('editor.playVideo');
-  play.addEventListener('click', (event) => {
+  const card = document.createElement('a');
+  card.className = 'youtube-card';
+  card.href = `https://www.youtube.com/watch?v=${id}`;
+  card.title = t('editor.playVideo');
+  card.setAttribute('aria-label', t('editor.videoFrom', { host: 'YouTube' }));
+  const thumb = document.createElement('img');
+  thumb.src = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+  thumb.alt = '';
+  thumb.draggable = false;
+  thumb.addEventListener('error', () => card.classList.add('no-thumbnail'));
+  const play = document.createElement('span');
+  play.className = 'youtube-play';
+  play.innerHTML =
+    '<svg viewBox="0 0 68 48" width="68" height="48" aria-hidden="true"><path d="M66.5 7.7a8.5 8.5 0 0 0-6-6C55.2.4 34 .4 34 .4s-21.2 0-26.5 1.3a8.5 8.5 0 0 0-6 6C.2 13 .2 24 .2 24s0 11 1.3 16.3a8.5 8.5 0 0 0 6 6c5.3 1.3 26.5 1.3 26.5 1.3s21.2 0 26.5-1.3a8.5 8.5 0 0 0 6-6c1.3-5.3 1.3-16.3 1.3-16.3s0-11-1.3-16.3z" fill="#f00"/><path d="M45 24 27 14v20" fill="#fff"/></svg>';
+  card.append(thumb, play);
+  card.addEventListener('click', (event) => {
     event.preventDefault();
+    // ctrl or cmd click opens it on youtube instead
+    if (event.ctrlKey || event.metaKey) {
+      openExternal(card.href);
+      return;
+    }
     const player = document.createElement('iframe');
     player.src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1`;
     player.title = 'YouTube';
@@ -280,8 +307,7 @@ function youtubeEmbed(dom: HTMLElement, id: string): HTMLElement {
     player.referrerPolicy = 'strict-origin-when-cross-origin';
     dom.replaceChildren(player);
   });
-  box.append(label, play);
-  dom.append(box);
+  dom.append(card);
   return dom;
 }
 
@@ -363,7 +389,9 @@ function filesFrom(data: DataTransfer | null): File[] {
   return data ? Array.from(data.files) : [];
 }
 
-const PASTED_IMAGE = /^(https?:\/\/|data:image\/)/i;
+// pictures pasted by address: on the web, held in the address itself, or a file on this computer the way
+// word and libreoffice put the pictures among the words they copy
+const PASTED_IMAGE = /^(https?:\/\/|data:image\/|file:\/\/)/i;
 
 // the bytes of a picture pasted by its address, or held in the address itself
 async function pastedImage(src: string): Promise<File | null> {
@@ -376,6 +404,12 @@ async function pastedImage(src: string): Promise<File | null> {
       return new File([bytes], `image.${type.split('/')[1]!.replace('svg+xml', 'svg')}`, { type });
     }
     if (src.startsWith('data:')) return null;
+    if (/^file:/i.test(src)) {
+      const bytes = await desktop?.readPastedPicture?.(src);
+      if (!bytes) return null;
+      const name = decodeURIComponent(src.split(/[\\/]/).pop() ?? '') || 'image.png';
+      return new File([bytes.slice().buffer as ArrayBuffer], name, { type: mimeType(name) });
+    }
     const fetched = desktop?.fetchImage ? await desktop.fetchImage(src) : null;
     if (!fetched) return null;
     const name = decodeURIComponent(new URL(src).pathname.split('/').pop() ?? '') || 'image';
@@ -426,6 +460,17 @@ function bytesToBase64(data: ArrayBuffer): string {
   return btoa(binary);
 }
 
+async function pictureSize(blob: Blob): Promise<{ width: number; height: number } | null> {
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return size.width && size.height ? size : null;
+  } catch {
+    return null;
+  }
+}
+
 // the browser copies pictures as references only morrow understands. once the copy is done the clipboard is
 // written again with the pictures inside it, so pasting into another app brings them along with the words
 async function copyWithImages(view: EditorView, slice: Slice): Promise<void> {
@@ -439,7 +484,18 @@ async function copyWithImages(view: EditorView, slice: Slice): Promise<void> {
   const { dom: container, text } = view.serializeForClipboard(slice);
   for (const img of container.querySelectorAll<HTMLImageElement>('img[data-file-id]')) {
     const file = await getSession().getFile(img.dataset.fileId ?? '');
-    if (file) img.src = `data:${file.meta.type};base64,${bytesToBase64(file.data)}`;
+    if (!file) continue;
+    img.src = `data:${file.meta.type};base64,${bytesToBase64(file.data)}`;
+    // a size in the html of its own, apps that read only the width drew the picture as a thin line
+    const size = await pictureSize(new Blob([file.data], { type: file.meta.type }));
+    if (size) {
+      const width = Math.min(Number(img.getAttribute('width')) || size.width, size.width, 720);
+      const height = Math.round((size.height * width) / size.width);
+      img.setAttribute('width', String(width));
+      img.setAttribute('height', String(height));
+      img.style.width = `${width}px`;
+      img.style.height = `${height}px`;
+    }
   }
   if (desktop?.copyRich) await desktop.copyRich(text, container.innerHTML);
   else
@@ -457,16 +513,50 @@ function copyBlocks(view: EditorView, event: ClipboardEvent, cut: boolean): bool
   const range = selectedBlocks(view.state);
   const slice = range ? view.state.doc.slice(range.from, range.to) : view.state.selection.content();
   if (!range && view.state.selection.empty) return false;
-  if (range && event.clipboardData) {
+  let pictures = false;
+  slice.content.descendants((node) => {
+    if (node.type.name === 'image' && node.attrs.fileId) pictures = true;
+    return !pictures;
+  });
+  // blocks picked in the margin, or words with pictures among them, are written here rather than left to
+  // the web view, so the copy with the pictures inside it that follows is the only other write
+  if ((range || pictures) && event.clipboardData) {
     const { dom, text } = view.serializeForClipboard(slice);
     event.clipboardData.clearData();
     event.clipboardData.setData('text/html', dom.innerHTML);
     event.clipboardData.setData('text/plain', text);
     event.preventDefault();
-    if (cut) view.dispatch(view.state.tr.delete(range.from, range.to).scrollIntoView());
+    if (cut) {
+      const from = range?.from ?? view.state.selection.from;
+      const to = range?.to ?? view.state.selection.to;
+      view.dispatch(view.state.tr.delete(from, to).scrollIntoView());
+    }
   }
-  void copyWithImages(view, slice).catch(() => {});
-  return range !== null;
+  if (pictures) setTimeout(() => void copyWithImages(view, slice).catch(() => {}), 0);
+  return range !== null || pictures;
+}
+
+// a picture or video copied in the file manager reaches the page on windows as its name alone. its name is
+// held back while morrow asks the system for the file, and goes in as text if there is none
+const MEDIA_NAME =
+  /^[^\\/:*?"<>|\n]+\.(png|jpe?g|gif|webp|bmp|svg|avif|mp3|wav|ogg|m4a|flac|mp4|webm|mov|m4v|pdf)$/i;
+function pasteCopiedFiles(editor: Editor, event: ClipboardEvent): boolean {
+  const data = event.clipboardData;
+  const text = data?.getData('text/plain').trim() ?? '';
+  const names = text.split(/\r?\n/).filter(Boolean);
+  if (!desktop?.clipboardFiles || data?.getData('text/html') || !names.length) return false;
+  if (!names.every((name) => MEDIA_NAME.test(name))) return false;
+  event.preventDefault();
+  const at = editor.state.selection.from;
+  void desktop
+    .clipboardFiles()
+    .catch(() => [])
+    .then((copied) => {
+      if (editor.isDestroyed) return;
+      if (copied.length) void insertFiles(editor, copied, at);
+      else editor.chain().focus().insertContent(text).run();
+    });
+  return true;
 }
 
 export const FileDrop = Extension.create({
@@ -489,7 +579,7 @@ export const FileDrop = Extension.create({
           },
           handlePaste(_view: EditorView, event: ClipboardEvent) {
             const files = filesFrom(event.clipboardData);
-            if (files.length === 0) return false;
+            if (files.length === 0) return pasteCopiedFiles(editor, event);
             // words and pictures copied together come as html, files alongside it are only copies of the pictures
             const html = event.clipboardData?.getData('text/html') ?? '';
             if (html && new DOMParser().parseFromString(html, 'text/html').body.textContent?.trim())

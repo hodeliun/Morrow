@@ -2,7 +2,14 @@
 import { dailyTitle, parseDateKey } from '../daily';
 import { isRecord } from '../doc';
 import { normalizeDatabase } from '../migrations';
-import { COLORS, displayTitle, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, validCover } from '../model';
+import {
+  COLORS,
+  displayTitle,
+  MAX_ICON_LENGTH,
+  MAX_TITLE_LENGTH,
+  normalizeDatabasePropertyFormat,
+  validCover,
+} from '../model';
 import type { DatabaseDef, PageKind, PageMeta, PropDef, PropValue, SelectOption } from '../model';
 import {
   findKey,
@@ -98,6 +105,7 @@ export function managedFrontmatter(
   page: PageMeta,
   fileBase: string,
   parentDatabase: DatabaseDef | null,
+  preserveNull = false,
 ): Map<string, unknown> {
   const out = new Map<string, unknown>();
   const title = displayTitle(page);
@@ -107,7 +115,7 @@ export function managedFrontmatter(
   if (FILE_KINDS.has(page.kind)) out.set('kind', page.kind);
   if (page.tags.length > 0) out.set('tags', [...page.tags]);
   for (const prop of parentDatabase?.properties ?? []) {
-    const value = writeProperty(prop, page.properties[prop.id]);
+    const value = writeProperty(prop, page.properties[prop.id], preserveNull);
     if (value !== undefined) out.set(prop.name, value);
   }
   if (page.kind === 'database' && page.database) out.set('database', databaseToYaml(page.database));
@@ -119,10 +127,12 @@ export function composeFrontmatter(
   managed: Map<string, unknown>,
   extra: Record<string, unknown>,
   source: PageSource | null,
+  page?: PageMeta,
 ): Record<string, unknown> {
   const keyOrder = source?.keyOrder ?? [];
   // morrow's own values win over other keys of the same name
   const values = new Map<string, unknown>(managed);
+  if (source?.rawHead && source.rawData && page) preserveEquivalentManagedValues(values, source, page);
   for (const [key, value] of Object.entries(extra)) if (!values.has(key)) values.set(key, value);
   // a key keeps the spelling its file already uses, so date stays date rather than turning into Date
   const spellings = new Map<string, string>();
@@ -139,6 +149,44 @@ export function composeFrontmatter(
   return out;
 }
 
+function preserveEquivalentManagedValues(
+  managed: Map<string, unknown>,
+  source: PageSource,
+  page: PageMeta,
+): void {
+  const original = readPageText(source.rawHead);
+  const candidateTitle = displayTitle(page);
+  const equivalent = [
+    {
+      keys: ['title'],
+      same: managed.has('title')
+        ? sameValue(original.title, managed.get('title'))
+        : original.title === null || sameValue(original.title, candidateTitle),
+    },
+    { keys: ['icon'], same: sameValue(original.icon, managed.get('icon') ?? null) },
+    { keys: ['cover'], same: sameValue(original.cover, validCover(managed.get('cover'))) },
+    { keys: ['kind'], same: sameValue(original.kind, managed.get('kind') ?? null) },
+    {
+      keys: ['tag', 'tags'],
+      same: sameValue(original.tags, readTags(managed.get('tags') ?? managed.get('tag'))),
+    },
+    {
+      keys: ['database'],
+      same: sameValue(
+        original.database,
+        managed.has('database') ? normalizeDatabase(managed.get('database')) : null,
+      ),
+    },
+  ];
+  for (const group of equivalent) {
+    if (!group.same) continue;
+    const originalKeys = group.keys.filter((key) => Object.hasOwn(source.rawData!, key));
+    if (originalKeys.length === 0) continue;
+    for (const key of group.keys) managed.delete(key);
+    for (const key of originalKeys) managed.set(key, source.rawData![key]);
+  }
+}
+
 export function renderPageText(
   frontmatter: Record<string, unknown>,
   source: PageSource | null,
@@ -146,20 +194,46 @@ export function renderPageText(
 ): string {
   if (source?.rawData && source.rawHead && sameValue(frontmatter, source.rawData))
     return source.rawHead + body;
+  if (source?.rawHead && source.rawData === null) {
+    if (Object.keys(frontmatter).length === 0) return source.rawHead + body;
+    throw new UnsafeFrontmatterUpdateError();
+  }
   if (source?.rawData && source.rawHead) {
-    const updated = updateFrontmatter(source.rawYaml, source.rawData, frontmatter, body);
+    const updated = updateFrontmatter(
+      source.rawYaml,
+      source.rawData,
+      frontmatter,
+      body,
+      new Set(),
+      new Set(),
+      true,
+    );
     if (updated !== null) return updated;
+    throw new UnsafeFrontmatterUpdateError();
   }
   return joinFrontmatter(frontmatter, body);
 }
 
-export function writeProperty(prop: PropDef, value: PropValue | undefined): unknown {
-  if (value === null || value === undefined || value === '') return undefined;
+export class UnsafeFrontmatterUpdateError extends Error {
+  constructor() {
+    super(
+      'The page properties were not written because its YAML frontmatter cannot be changed without risking another value. No files were changed.',
+    );
+    this.name = 'UnsafeFrontmatterUpdateError';
+  }
+}
+
+export function writeProperty(prop: PropDef, value: PropValue | undefined, preserveNull = false): unknown {
+  if (value === null && preserveNull) return null;
+  if (value === null || value === undefined || (value === '' && !(preserveNull && prop.type === 'text')))
+    return undefined;
   switch (prop.type) {
+    case 'text':
+      return typeof value === 'string' ? value : preserveNull ? undefined : String(value);
     case 'number':
       return typeof value === 'number' ? value : undefined;
     case 'checkbox':
-      return value === true ? true : undefined;
+      return value === true || (preserveNull && value === false) ? value : undefined;
     case 'select': {
       const option = prop.options.find((candidate) => candidate.id === value);
       return option?.name;
@@ -188,6 +262,7 @@ export function readProperty(
   prop: PropDef,
   raw: unknown,
   newOptionId: () => string,
+  preserveOptedInValue = false,
 ): { value: PropValue; added: SelectOption[] } {
   const added: SelectOption[] = [];
   const optionFor = (name: string): string => {
@@ -203,12 +278,34 @@ export function readProperty(
     added.push(option);
     return option.id;
   };
+  if (preserveOptedInValue) {
+    if (prop.type === 'text') {
+      return {
+        value: typeof raw === 'string' && raw.length <= 10_000 ? raw : null,
+        added,
+      };
+    }
+  }
   switch (prop.type) {
+    case 'text': {
+      const text = scalarText(raw);
+      return { value: text || null, added };
+    }
     case 'number': {
       const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
       return { value: Number.isFinite(value) && raw !== '' ? value : null, added };
     }
     case 'checkbox':
+      if (preserveOptedInValue) {
+        if (raw === null) return { value: null, added };
+        if (typeof raw === 'boolean') return { value: raw, added };
+        if (typeof raw === 'string') {
+          const text = raw.trim();
+          if (/^(true|yes|x|1)$/i.test(text)) return { value: true, added };
+          if (/^(false|no|0)$/i.test(text)) return { value: false, added };
+        }
+        return { value: null, added };
+      }
       return {
         value: raw === true || (typeof raw === 'string' && /^(true|yes|x)$/i.test(raw.trim())),
         added,
@@ -259,18 +356,45 @@ export function takeProperties(
   extra: Record<string, unknown>,
   properties: Record<string, PropValue>,
   newOptionId: () => string,
+  preserveNull = false,
 ): void {
   for (const prop of database.properties) {
     if (prop.type === 'formula') continue;
     const key = findKey(extra, prop.name);
     if (key === undefined) continue;
     const raw = extra[key];
-    const read = readProperty(prop, raw, newOptionId);
+    const preserveExactText = preserveNull && prop.type === 'text';
+    if (preserveExactText && !isRepresentableOptedInTextRaw(raw)) continue;
+    const preserveOptedInCheckbox = preserveNull && prop.type === 'checkbox';
+    if (preserveOptedInCheckbox && !isRepresentableOptedInCheckboxRaw(raw)) continue;
+    const read = readProperty(prop, raw, newOptionId, preserveExactText || preserveOptedInCheckbox);
     if (read.added.length) prop.options.push(...read.added);
-    if (read.value !== null) properties[prop.id] = read.value;
+    if (preserveNull && raw === null) setOwnPropertyValue(properties, prop.id, null);
+    if (read.value !== null) setOwnPropertyValue(properties, prop.id, read.value);
     // a value the property can not hold, like a date written in words, stays so saving never drops it
     if (read.value !== null || raw === null || raw === '') delete extra[key];
   }
+}
+
+function setOwnPropertyValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+}
+
+function isRepresentableOptedInTextRaw(raw: unknown): boolean {
+  return raw === null || (typeof raw === 'string' && raw.length <= 10_000);
+}
+
+function isRepresentableOptedInCheckboxRaw(raw: unknown): boolean {
+  return (
+    raw === null ||
+    typeof raw === 'boolean' ||
+    (typeof raw === 'string' && /^(true|yes|x|1|false|no|0)$/i.test(raw.trim()))
+  );
 }
 
 function scalarText(value: unknown): string | null {
@@ -281,15 +405,31 @@ function scalarText(value: unknown): string | null {
 
 function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
   return {
-    properties: database.properties.map((prop) => ({
-      id: prop.id,
-      name: prop.name,
-      type: prop.type,
-      ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
-      ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
-      ...(prop.display === 'bar' ? { display: 'bar' } : {}),
-      ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
-    })),
+    properties: database.properties.map((prop) => {
+      const format = prop.format
+        ? normalizeDatabasePropertyFormat({
+            type: prop.type,
+            format: prop.format,
+            ...(prop.formulaResultType !== undefined ? { formulaResultType: prop.formulaResultType } : {}),
+            ...(prop.display !== undefined ? { display: prop.display } : {}),
+            ...(prop.max !== undefined ? { max: prop.max } : {}),
+          })
+        : null;
+      return {
+        id: prop.id,
+        name: prop.name,
+        type: prop.type,
+        ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
+        ...(format !== null ? { format } : {}),
+        ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
+        ...(prop.type === 'formula' && prop.formulaResultType
+          ? { formulaResultType: prop.formulaResultType }
+          : {}),
+        ...(prop.display === 'bar' ? { display: 'bar' } : {}),
+        ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
+        ...(prop.type === 'text' && prop.wrap ? { wrap: true } : {}),
+      };
+    }),
     views: database.views.map((view) => ({
       id: view.id,
       name: view.name,
@@ -300,6 +440,13 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
       ...(view.dateProp ? { dateProp: view.dateProp } : {}),
       ...(view.hidden.length ? { hidden: [...view.hidden] } : {}),
       ...(view.widths && Object.keys(view.widths).length ? { widths: { ...view.widths } } : {}),
+      ...(view.columns?.length ? { columns: [...view.columns] } : {}),
+      ...(view.groupOrder?.length ? { groupOrder: [...view.groupOrder] } : {}),
+      ...(view.hiddenGroups?.length ? { hiddenGroups: [...view.hiddenGroups] } : {}),
+      ...(view.collapsedGroups?.length ? { collapsedGroups: [...view.collapsedGroups] } : {}),
+      ...(view.hideEmptyGroups ? { hideEmptyGroups: true } : {}),
+      ...(view.limit !== undefined ? { limit: view.limit } : {}),
+      ...(view.widgets ? { widgets: view.widgets.map((widget) => ({ ...widget })) } : {}),
     })),
   };
 }

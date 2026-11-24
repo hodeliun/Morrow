@@ -1,19 +1,58 @@
 import MarkdownIt from 'markdown-it';
 import type { StateBlock, StateInline, Token } from 'markdown-it';
-import { BACKGROUND_HEX, calloutTone, emptyDoc, nearestColor, TEXT_HEX } from '../model';
-import type { DocMark, DocNode, PageId } from '../model';
+import { BACKGROUND_HEX, calloutTone, COLORS, emptyDoc, parseInlineColor, TEXT_HEX } from '../model';
+import type { DocMark, DocNode, InlineColor, PageId } from '../model';
 import { inlineText } from '../doc';
-import { calloutIcon, HEADER_COLUMN, imageWidth, toggleLevel } from './serialize';
+import { LEGACY_FORMULA_NODE, legacyFormulaInlineRule } from '../legacyFormula';
+import { decodePolarisDadosViewMarker } from '../polarisDadosView';
+import { parseBlockBackgroundMarker, supportsHexBlockBackgroundOwner } from './blockBackground';
+import { scanMarkdownDestination } from './markdownLinkDestination';
+import { classifyDetailsHtmlBlock, readToggleSummaryHeader } from './toggleSummary';
+import type { DetailsHtmlBlockClassification } from './toggleSummary';
+import {
+  ALIGN_PATTERN,
+  BACKGROUND_PATTERN,
+  EMBED_TITLE_COMMENT,
+  PREVIEW_COMMENT,
+  calloutIcon,
+  LETTERS_COMMENT,
+  HEADER_COLUMN,
+  imageWidth,
+  toggleLevel,
+} from './serialize';
+import { COLUMN_WIDTHS_PATTERN } from './serialize';
+import { parseColumnLayoutTag } from '../columnWidths';
 
 export interface ParseOptions {
   // resolves a [[wiki link]] target, a title or a path inside the vault, to a page id
   resolvePage?: (target: string) => PageId | null;
   // resolves relative links such as notion exports use between pages
   resolveLink?: (href: string) => PageId | null;
+  // resolves an inline Markdown link only when its exact page file path is unique
+  resolveMarkdownPageLink?: (markdownHref: string) => PageId | null;
   // resolves image and file paths, and ![[embeds]], to stored files
   resolveFile?: (href: string) => { fileId: string; name: string; image: boolean } | null;
   // links to pages that do not exist yet stay live and create the page when followed, on by default
   keepUnresolved?: boolean;
+  /** @internal Nested HTML wrappers disable marker interpretation until their format is supported. */
+  allowLegacyBlockBackgrounds?: boolean;
+}
+
+/** A block as classified by the Markdown builder, with its real owner context. */
+export interface ParsedDetailsHtmlBlock {
+  source: string;
+  structure: DetailsHtmlBlockClassification;
+  /** A detailsContent node is an ancestor in the document being built. */
+  detailsOwner: boolean;
+  /** The builder is directly inside detailsContent, rather than a quote/list/table. */
+  immediateDetailsOwner: boolean;
+  /** Summary tag consumed as this block's heading by htmlBlock, if any. */
+  consumedSummaryStart: number | null;
+}
+
+interface ParseReportContext {
+  detailsHtmlBlocks: ParsedDetailsHtmlBlock[];
+  inheritedDetailsOwner: boolean;
 }
 
 export interface WikiLink {
@@ -23,13 +62,83 @@ export interface WikiLink {
   embed: boolean;
 }
 
+export interface BlockBackgroundMarkerInspection {
+  comment: string;
+  color: InlineColor | null;
+  tokenIndex: number;
+  tokenType: string;
+  sourceLine: number | null;
+  approved: boolean;
+  targetType: string | null;
+  targetTag: string | null;
+  titleHeading: boolean;
+}
+
+interface ParsedMarkdownDoc {
+  doc: DocNode;
+  blockBackgroundMarkers: BlockBackgroundMarkerInspection[];
+}
+
+const BLOCK_BACKGROUND_MARKER_IDS = Symbol('morrow.blockBackgroundMarkerIds');
+type MarkerOwnedDocNode = DocNode & { [BLOCK_BACKGROUND_MARKER_IDS]?: number[] };
+
 const md = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 md.inline.ruler.before('link', 'wikilink', wikiLinkRule);
 md.inline.ruler.after('backticks', 'math_inline', mathInlineRule);
+md.inline.ruler.before('html_inline', LEGACY_FORMULA_NODE, legacyFormulaInlineRule);
 md.inline.ruler.after('strikethrough', 'highlight', highlightRule);
 md.block.ruler.before('fence', 'math_block', mathBlockRule, {
   alt: ['paragraph', 'reference', 'blockquote', 'list'],
 });
+
+// The installed table rule intentionally unescapes `\\|` while splitting cells. Preserve the
+// source offsets only for retarget scans so edits can map token ranges back through that change.
+const tableRuleDefinition = md.block.ruler.__rules__.find((rule) => rule.name === 'table');
+const markdownTableRule = tableRuleDefinition?.fn as
+  ((state: StateBlock, startLine: number, endLine: number, silent: boolean) => boolean) | undefined;
+if (!tableRuleDefinition || !markdownTableRule) throw new Error('markdown-it table rule is unavailable');
+md.block.ruler.at(
+  'table',
+  (state, startLine, endLine, silent) => {
+    const tokenStart = state.tokens.length;
+    const matched = markdownTableRule(state, startLine, endLine, silent);
+    if (matched && !silent && state.env?.morrowRetargetSourceMaps === true)
+      attachTableCellSourceMaps(state, state.tokens.slice(tokenStart));
+    return matched;
+  },
+  { alt: tableRuleDefinition.alt },
+);
+
+// markdown-it normalizes link destinations before exposing them on tokens. Wrap the built-in rule so
+// inline note links can keep the source spelling without reimplementing CommonMark link parsing.
+const linkRuleDefinition = md.inline.ruler.__rules__.find((rule) => rule.name === 'link');
+const markdownLinkRule = linkRuleDefinition?.fn as
+  ((state: StateInline, silent: boolean) => boolean) | undefined;
+if (!linkRuleDefinition || !markdownLinkRule) throw new Error('markdown-it inline link rule is unavailable');
+md.inline.ruler.at(
+  'link',
+  (state, silent) => {
+    const linkStart = state.pos;
+    const labelEnd =
+      state.src.charCodeAt(linkStart) === 0x5b ? state.md.helpers.parseLinkLabel(state, linkStart, true) : -1;
+    const tokenStart = state.tokens.length;
+    const matched = markdownLinkRule(state, silent);
+    if (matched && !silent && labelEnd >= 0 && state.src.charCodeAt(labelEnd + 1) === 0x28) {
+      const linkToken = state.tokens.slice(tokenStart).find((token) => token.type === 'link_open');
+      if (linkToken) {
+        const meta: Record<string, unknown> = { ...(linkToken.meta ?? {}), morrowMarkdownHrefScanned: true };
+        const destination = scanMarkdownDestination(state.src, labelEnd + 1, 16_384);
+        if (destination && destination.close === state.pos - 1) {
+          meta.markdownHref = state.src.slice(destination.start, destination.end);
+          meta.morrowMarkdownHrefRange = { start: destination.start, end: destination.end };
+        }
+        linkToken.meta = meta;
+      }
+    }
+    return matched;
+  },
+  { alt: linkRuleDefinition.alt },
+);
 
 const MAX_INPUT = 5_000_000;
 // a checkbox is [ ] or [x], and notion's exports also write an empty box as [] or with a non-breaking space
@@ -37,6 +146,141 @@ const TASK_PREFIX = /^\[([ \u00a0xX]?)\](?:\s+|$)/;
 // obsidian callouts and github alerts: > [!type]+ optional title
 const CALLOUT = /^\[!([A-Za-z][\w-]{0,30})(?:\|([^\]\n]{0,80}))?\]([+-]?)[ \t]*/;
 const WIKI = /^(!?)\[\[([^[\]\n]{0,400}?)\]\]/;
+
+interface TableCellSourceMap {
+  normalizedStart: number;
+  removedBefore: ArrayLike<number>;
+}
+
+interface EscapedTableCell {
+  content: string;
+  normalizedStart: number;
+  removedBefore: number[];
+}
+
+function attachTableCellSourceMaps(state: StateBlock, tokens: Token[]): void {
+  let inTable = false;
+  let rowLine: number | null = null;
+  let cellIndex = 0;
+  const rows = new Map<number, EscapedTableCell[] | null>();
+  for (const token of tokens) {
+    if (token.type === 'table_open') inTable = true;
+    else if (token.type === 'table_close') {
+      inTable = false;
+      rowLine = null;
+    } else if (inTable && token.type === 'tr_open') {
+      rowLine = Array.isArray(token.map) ? token.map[0]! : null;
+      cellIndex = 0;
+    } else if (inTable && token.type === 'tr_close') {
+      rowLine = null;
+    } else if (inTable && rowLine !== null && token.type === 'inline') {
+      let cells = rows.get(rowLine);
+      if (cells === undefined) {
+        cells = tableCellsAtSourceLine(state, rowLine);
+        rows.set(rowLine, cells);
+      }
+      const cell = cells?.[cellIndex];
+      if (cell && cell.content === token.content) {
+        token.meta = {
+          ...(token.meta ?? {}),
+          morrowTableCellSourceMap: {
+            normalizedStart: cell.normalizedStart,
+            removedBefore: cell.removedBefore.length ? Uint32Array.from(cell.removedBefore) : [],
+          } satisfies TableCellSourceMap,
+        };
+      }
+      cellIndex++;
+    }
+  }
+}
+
+function tableCellsAtSourceLine(state: StateBlock, line: number): EscapedTableCell[] | null {
+  const lineStart = state.bMarks[line]! + state.tShift[line]!;
+  const lineEnd = state.eMarks[line]!;
+  if (lineStart < 0 || lineEnd < lineStart || lineEnd > state.src.length) return null;
+  const sourceLine = state.src.slice(lineStart, lineEnd);
+  const leadingWhitespace = sourceLine.length - sourceLine.trimStart().length;
+  const tableLine = sourceLine.trim();
+  const cells = splitEscapedTableCells(tableLine);
+  if (cells.length && cells[0]!.content === '') cells.shift();
+  if (cells.length && cells[cells.length - 1]!.content === '') cells.pop();
+
+  const tableLineStart = lineStart + leadingWhitespace;
+  return cells.map((cell) => {
+    const leading = cell.content.length - cell.content.trimStart().length;
+    const content = cell.content.trim();
+    const removedBeforeLeading = cell.removedBefore.filter((offset) => offset < leading).length;
+    const removedBefore = cell.removedBefore
+      .filter((offset) => offset >= leading && offset < leading + content.length)
+      .map((offset) => offset - leading);
+    return {
+      content,
+      normalizedStart: tableLineStart + cell.segmentStart + leading + removedBeforeLeading,
+      removedBefore,
+    };
+  });
+}
+
+function splitEscapedTableCells(line: string): Array<{
+  content: string;
+  segmentStart: number;
+  removedBefore: number[];
+}> {
+  const cells: Array<{ content: string; segmentStart: number; removedBefore: number[] }> = [];
+  const decoded = new Uint16Array(line.length);
+  let segmentStart = 0;
+  let cellOutputStart = 0;
+  let outputLength = 0;
+  let removedBefore: number[] = [];
+  let isEscaped = false;
+  for (let position = 0; position < line.length; position++) {
+    const char = line[position]!;
+    if (char === '|') {
+      if (isEscaped) {
+        outputLength--;
+        removedBefore.push(outputLength - cellOutputStart);
+        decoded[outputLength++] = 0x7c;
+      } else {
+        cells.push({
+          content: utf16BufferSlice(decoded, cellOutputStart, outputLength),
+          segmentStart,
+          removedBefore,
+        });
+        segmentStart = position + 1;
+        cellOutputStart = outputLength;
+        removedBefore = [];
+      }
+    } else {
+      decoded[outputLength++] = line.charCodeAt(position);
+    }
+    isEscaped = char === '\\';
+  }
+  cells.push({
+    content: utf16BufferSlice(decoded, cellOutputStart, outputLength),
+    segmentStart,
+    removedBefore,
+  });
+  return cells;
+}
+
+function utf16BufferSlice(buffer: Uint16Array, start: number, end: number): string {
+  const parts: string[] = [];
+  for (let index = start; index < end; index += 8192)
+    parts.push(String.fromCharCode(...buffer.subarray(index, Math.min(end, index + 8192))));
+  return parts.join('');
+}
+
+function unescapeTablePipes(text: string): string {
+  const chars: string[] = [];
+  let isEscaped = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (char === '|' && isEscaped) chars.pop();
+    chars.push(char);
+    isEscaped = char === '\\';
+  }
+  return chars.join('');
+}
 
 // [[target#anchor|alias]] and ![[embed]], before markdown links so the brackets are not read as one
 function wikiLinkRule(state: StateInline, silent: boolean): boolean {
@@ -46,8 +290,18 @@ function wikiLinkRule(state: StateInline, silent: boolean): boolean {
   const match = WIKI.exec(state.src.slice(start, Math.min(state.posMax, start + 810)));
   if (!match) return false;
   if (!silent) {
+    const wiki = parseWikiLink(match[2]!, match[1] === '!');
+    const inner = match[2]!;
+    const aliasStart = inner.search(/\\?\|/);
+    const path = (aliasStart === -1 ? inner : inner.slice(0, aliasStart)).split('#', 1)[0]!;
+    const targetStartInPath = path.length - path.trimStart().length;
+    const targetStart = start + (match[1]?.length ?? 0) + 2 + targetStartInPath;
     const token = state.push('wikilink', '', 0);
-    token.meta = { ...parseWikiLink(match[2]!, match[1] === '!') };
+    token.meta = {
+      ...wiki,
+      morrowRetargetRange: { start, end: start + match[0].length },
+      morrowRetargetTargetRange: { start: targetStart, end: targetStart + wiki.target.length },
+    };
     token.markup = match[0];
   }
   state.pos += match[0].length;
@@ -175,12 +429,62 @@ function takeBlockId(paragraph: DocNode): void {
 }
 
 export function markdownToDoc(source: string, options: ParseOptions = {}): DocNode {
+  return parseMarkdownToDoc(source, options).doc;
+}
+
+/**
+ * Parses a page and returns the details HTML blocks as the builder actually handled them.
+ * Compatibility checks use this instead of reconstructing toggle ownership from source text.
+ */
+export function markdownToDocWithDetailsHtmlBlocks(
+  source: string,
+  options: ParseOptions = {},
+): { doc: DocNode; detailsHtmlBlocks: ParsedDetailsHtmlBlock[] } {
+  const detailsHtmlBlocks: ParsedDetailsHtmlBlock[] = [];
+  const parsed = parseMarkdownToDoc(source, options, { detailsHtmlBlocks, inheritedDetailsOwner: false });
+  return { doc: parsed.doc, detailsHtmlBlocks };
+}
+
+function parseMarkdownToDoc(
+  source: string,
+  options: ParseOptions = {},
+  report?: ParseReportContext,
+): ParsedMarkdownDoc {
   const text = source.length > MAX_INPUT ? source.slice(0, MAX_INPUT) : source;
   const tokens = md.parse(text.replace(/\r\n?/g, '\n'), {});
+  const hasBlockBackground = /<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/i.test(text);
+  const backgroundMarkers = hasBlockBackground ? inspectBlockBackgroundMarkerTokens(tokens) : [];
+  const approvedBackgroundMarkers = new Map(
+    (options.allowLegacyBlockBackgrounds === false ? [] : backgroundMarkers)
+      .filter((marker) => marker.approved && marker.color)
+      .map((marker) => [marker.tokenIndex, marker.color!] as const),
+  );
   const root: DocNode = { type: 'doc', content: [] };
   const stack: DocNode[] = [root];
   const top = () => stack[stack.length - 1]!;
+  // what a comment morrow writes above a block says about it: its background colour, or a list counted in
+  // letters. it goes on the next block at the same level
+  let pending: { attrs: Record<string, unknown>; parent: DocNode; markerIds: number[] } | null = null;
+  const note = (attrs: Record<string, unknown>, blockBackgroundMarkerId?: number) => {
+    const previous = pending;
+    const sameParent = previous?.parent === top();
+    pending = {
+      attrs: { ...(sameParent ? previous.attrs : {}), ...attrs },
+      parent: top(),
+      markerIds: [
+        ...(sameParent ? previous.markerIds : []),
+        ...(blockBackgroundMarkerId === undefined ? [] : [blockBackgroundMarkerId]),
+      ],
+    };
+  };
   const push = (node: DocNode) => {
+    if (pending?.parent === top()) {
+      const { type, ...rest } = pending.attrs;
+      node.attrs = { ...node.attrs, ...rest, ...(type && node.type === 'orderedList' ? { type } : {}) };
+      if (pending.markerIds.length)
+        (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] = pending.markerIds;
+    }
+    pending = null;
     (top().content ??= []).push(node);
   };
   const open = (node: DocNode) => {
@@ -193,9 +497,16 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
   // set by the comment morrow writes above a table whose first column is a header
   let headerColumn = false;
   let tableHasHeaderColumn = false;
+  // the widths from a comment above a table, for its cells
+  let columnWidths: number[] = [];
+  let tableWidths: number[] = [];
 
-  for (const token of tokens) {
-    if (token.type !== 'table_open' && token.type !== 'html_block') headerColumn = false;
+  for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+    const token = tokens[tokenIndex]!;
+    if (token.type !== 'table_open' && token.type !== 'html_block') {
+      headerColumn = false;
+      columnWidths = [];
+    }
     switch (token.type) {
       case 'paragraph_open':
         open({ type: 'paragraph', content: [] });
@@ -220,6 +531,8 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
       case 'table_open':
         tableHasHeaderColumn = headerColumn;
         headerColumn = false;
+        tableWidths = columnWidths;
+        columnWidths = [];
         open({ type: 'table', content: [] });
         break;
       case 'tr_open':
@@ -227,9 +540,14 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         break;
       case 'th_open':
       case 'td_open': {
-        const first = (top().content ?? []).length === 0;
-        const header = token.type === 'th_open' || (tableHasHeaderColumn && first);
-        open({ type: header ? 'tableHeader' : 'tableCell', content: [] });
+        const index = (top().content ?? []).length;
+        const header = token.type === 'th_open' || (tableHasHeaderColumn && index === 0);
+        const width = tableWidths[index] ?? 0;
+        open({
+          type: header ? 'tableHeader' : 'tableCell',
+          ...(width > 0 ? { attrs: { colwidth: [width] } } : {}),
+          content: [],
+        });
         open({ type: 'paragraph', content: [] });
         break;
       }
@@ -254,9 +572,25 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
         break;
       case 'inline': {
         const cell = stack[stack.length - 2];
+        // a list item with a background of its own ends its first line with the comment for it
+        if (cell?.type === 'listItem' && (cell.content ?? []).length === 1) {
+          const children = token.children ?? [];
+          const last = children[children.length - 1];
+          const color =
+            last?.type === 'html_inline' ? BACKGROUND_PATTERN.exec(last.content.trim())?.[1] : null;
+          if (color && (COLORS as readonly string[]).includes(color)) {
+            cell.attrs = { ...cell.attrs, backgroundColor: color };
+            children.pop();
+            const before = children[children.length - 1];
+            if (before?.type === 'text') before.content = before.content.replace(/\s+$/, '');
+          }
+        }
         if (cell && (cell.type === 'tableCell' || cell.type === 'tableHeader'))
           cellInline(token.children ?? [], options, cell, top());
-        else (top().content ??= []).push(...inlineNodes(token.children ?? [], options));
+        else
+          (top().content ??= []).push(
+            ...inlineNodes(token.children ?? [], options, stack.length === 2 && top().type === 'paragraph'),
+          );
         break;
       }
       case 'fence':
@@ -281,15 +615,77 @@ export function markdownToDoc(source: string, options: ParseOptions = {}): DocNo
           headerColumn = true;
           break;
         }
-        htmlBlock(token.content, options, { push, top, close, stack });
+        {
+          const background = approvedBackgroundMarkers.get(tokenIndex);
+          if (background) {
+            note({ backgroundColor: background }, tokenIndex);
+            break;
+          }
+          const view = decodePolarisDadosViewMarker(token.content.trim());
+          if (view && hasInvalidViewListStart(stack)) {
+            push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
+          } else if (view) push({ type: 'polarisDadosView', attrs: view });
+          else if (
+            hasInvalidViewListStart(stack) &&
+            /<!--\s*morrow:polaris-dados-view\s*:/i.test(token.content)
+          ) {
+            // Keep nested or malformed protocol markers from becoming atoms after list normalization.
+            push({ type: 'rawBlock', attrs: { text: token.content.replace(/\n+$/, '') } });
+          } else {
+            const widths = COLUMN_WIDTHS_PATTERN.exec(token.content.trim())?.[1];
+            if (widths) {
+              columnWidths = widths.split(/\s+/).map((width) => Math.min(2000, Number(width) || 0));
+              break;
+            }
+            const color = BACKGROUND_PATTERN.exec(token.content.trim())?.[1];
+            if (color && (COLORS as readonly string[]).includes(color)) {
+              note({ backgroundColor: color });
+              break;
+            }
+            const side = ALIGN_PATTERN.exec(token.content.trim())?.[1];
+            if (side) {
+              note({ align: side });
+              break;
+            }
+            if (token.content.trim() === EMBED_TITLE_COMMENT) {
+              note({ embedTitle: false });
+              break;
+            }
+            if (token.content.trim() === PREVIEW_COMMENT) {
+              note({ preview: true });
+              break;
+            }
+            if (token.content.trim() === LETTERS_COMMENT) {
+              note({ type: 'a' });
+              break;
+            }
+            htmlBlock(token.content, options, { push, top, close, stack }, report);
+          }
+        }
         break;
       default:
         break;
     }
   }
 
-  const doc = normalize(root);
-  return (doc.content ?? []).length > 0 ? doc : emptyDoc();
+  const invalidMarkerIds = new Set<number>();
+  const normalized = normalize(root, invalidMarkerIds);
+  const provenBackgroundMarkers = backgroundMarkers.length
+    ? proveBlockBackgroundOwners(normalized, backgroundMarkers, invalidMarkerIds)
+    : backgroundMarkers;
+  if (backgroundMarkers.length) removeBlockBackgroundMarkerIds(normalized, provenBackgroundMarkers);
+  return {
+    doc: (normalized.content ?? []).length > 0 ? normalized : emptyDoc(),
+    blockBackgroundMarkers: provenBackgroundMarkers,
+  };
+}
+
+function hasInvalidViewListStart(stack: DocNode[]): boolean {
+  return stack.some((node) => {
+    if (node.type !== 'listItem' && node.type !== 'taskItem') return false;
+    const first = node.content?.[0];
+    return first?.type !== 'paragraph';
+  });
 }
 
 const CELL_LIST_OPEN = /^<(ul|ol)\b([^>]*)>$/i;
@@ -373,8 +769,35 @@ interface Builder {
 const NOTION_ICON = /^<img\s[^>]*src=["'](?:notion:\/\/custom_emoji\/|\/icons\/)[^>]*>\s*/i;
 
 // toggles and notion asides become blocks, any other html is kept exactly as written
-function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
+function htmlBlock(
+  source: string,
+  options: ParseOptions,
+  b: Builder,
+  report?: ParseReportContext,
+): void {
   const html = source.trim();
+  const immediateDetailsOwner = b.top().type === 'detailsContent';
+  const detailsStructure = classifyDetailsHtmlBlock(html, immediateDetailsOwner);
+  const detailsOwner =
+    report?.inheritedDetailsOwner === true || b.stack.some((node) => node.type === 'detailsContent');
+  const parsedBlock: ParsedDetailsHtmlBlock = {
+    source: html,
+    structure: detailsStructure,
+    detailsOwner,
+    immediateDetailsOwner,
+    consumedSummaryStart: null,
+  };
+  report?.detailsHtmlBlocks.push(parsedBlock);
+  if (detailsStructure.kind === 'close') {
+    const closing = detailsStructure.close;
+    const bodyPrefix = html.slice(0, closing.start).trim();
+    if (bodyPrefix) b.push({ type: 'rawBlock', attrs: { text: bodyPrefix } });
+    b.close();
+    b.close();
+    const suffix = html.slice(closing.end);
+    if (suffix.trim()) b.push({ type: 'rawBlock', attrs: { text: suffix } });
+    return;
+  }
   if (NOTION_ICON.test(html) && !html.replace(NOTION_ICON, '').trim()) return;
   // an empty line kept on purpose, the way morrow writes one
   if (/^<br\s*\/?>$/i.test(html)) {
@@ -385,56 +808,111 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
     b.push({ type: 'tableOfContents' });
     return;
   }
-  // column wrappers come as runs of bare tags, each one opens or closes a level
-  const layoutTags = html.match(/<div data-columns>|<div data-column>|<\/div>/gi);
-  if (layoutTags && html.replace(/<div data-columns>|<div data-column>|<\/div>/gi, '').trim() === '') {
+  // column wrappers come as runs of supported tags, each one opens or closes a level
+  const divTags = [...html.matchAll(/<\/?div\b[^>]*>/gi)];
+  const layoutTags = divTags.map((match) => parseColumnLayoutTag(match[0]!.trim()));
+  if (
+    divTags.length > 0 &&
+    layoutTags.every((tag) => tag !== null) &&
+    html.replace(/<\/?div\b[^>]*>/gi, '').trim() === ''
+  ) {
     const inLayout = b.stack.some((node) => node.type === 'columns');
-    if (inLayout || /<div data-columns>/i.test(html)) {
+    if (inLayout || layoutTags.some((tag) => tag?.kind === 'columns')) {
       for (const tag of layoutTags) {
-        if (/data-columns/i.test(tag)) {
-          const node: DocNode = { type: 'columns', content: [] };
+        if (tag?.kind === 'columns') {
+          const node: DocNode = {
+            type: 'columns',
+            ...(tag.widths === null ? {} : { attrs: { widths: tag.widths } }),
+            content: [],
+          };
           b.push(node);
           b.stack.push(node);
-        } else if (/data-column/i.test(tag)) {
+        } else if (tag?.kind === 'column') {
           if (b.top().type !== 'columns') continue;
           const node: DocNode = { type: 'column', content: [] };
           b.push(node);
           b.stack.push(node);
-        } else if (b.top().type === 'column' || b.top().type === 'columns') b.close();
+        } else if (tag?.kind === 'close' && b.top().type === 'column') {
+          if ((b.top().content ?? []).length === 0) b.top().content = [{ type: 'paragraph', content: [] }];
+          b.close();
+        } else if (tag?.kind === 'close' && b.top().type === 'columns') b.close();
       }
       return;
     }
   }
-  const details = /^<details[^>]*>/i.exec(html);
+  const details =
+    detailsStructure.kind === 'open'
+      ? html.slice(detailsStructure.tag.start, detailsStructure.tag.end)
+      : null;
   const aside = /^<aside[^>]*>/i.exec(html);
   if (details) {
-    const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(html);
-    const title = decodeEntities((summary?.[1] ?? '').replace(/<[^>]+>/g, '')).trim();
+    const header = readToggleSummaryHeader(html);
+    const summaryMatch = header ? null : /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(html);
+    parsedBlock.consumedSummaryStart = header?.summary.start ?? summaryMatch?.index ?? null;
+    const titleMarkup = header ? html.slice(header.titleStart, header.titleEnd) : (summaryMatch?.[1] ?? '');
+    const title = decodeEntities(titleMarkup.replace(/<[^>]+>/g, '')).trim();
     // <summary><h2>…</h2></summary> is a toggle heading
-    const level = toggleLevel(Number(/^\s*<h([1-6])\b/i.exec(summary?.[1] ?? '')?.[1]));
+    const level = header?.level ?? toggleLevel(Number(/^\s*<h([1-6])\b/i.exec(titleMarkup)?.[1]));
+    const richTitle = header ? parseToggleSummaryInline(titleMarkup, options) : null;
+    const summaryAttrs = {
+      ...(level ? { level } : {}),
+      ...(header?.backgroundColor ? { backgroundColor: header.backgroundColor } : {}),
+    };
     const body: DocNode = { type: 'detailsContent', content: [] };
     const node: DocNode = {
       type: 'details',
-      attrs: { open: /^<details\b[^>]*\sopen\b/i.test(details[0]) },
+      attrs: { open: header?.open ?? /^<details\b[^>]*\sopen\b/i.test(details) },
       content: [
         {
           type: 'detailsSummary',
-          ...(level ? { attrs: { level } } : {}),
-          content: summaryContent(title, options),
+          ...(Object.keys(summaryAttrs).length ? { attrs: summaryAttrs } : {}),
+          content: richTitle ?? summaryContent(title, options),
         },
         body,
       ],
     };
     b.push(node);
-    const after = html.slice(summary ? summary.index + summary[0].length : details[0].length);
-    const closed = /<\/details>\s*$/i.test(after);
-    const inner = after.replace(/<\/details>\s*$/i, '').trim();
-    if (inner) body.content!.push(...(markdownToDoc(inner, options).content ?? []));
+    const summaryEnd = header
+      ? header.summaryClose.end
+      : summaryMatch
+        ? summaryMatch.index + summaryMatch[0].length
+        : details.length;
+    const after = html.slice(summaryEnd);
+    const closing =
+      detailsStructure.kind === 'open' && detailsStructure.close
+        ? {
+            start: detailsStructure.close.start - summaryEnd,
+            end: detailsStructure.close.end - summaryEnd,
+          }
+        : null;
+    const closeStart = closing?.start ?? after.length;
+    const closed = closing !== null;
+    const inner = (closed ? after.slice(0, closeStart) : after).trim();
+    if (inner)
+      body.content!.push(
+        ...(parseNestedMarkdown(
+          inner,
+          { ...options, allowLegacyBlockBackgrounds: false },
+          report,
+          true,
+        ).content ?? []),
+      );
     if (!closed) b.stack.push(node, body);
-  } else if (/^<\/details>/i.test(html)) {
+    else if (closing) {
+      const suffix = after.slice(closing.end);
+      if (suffix.trim()) b.push({ type: 'rawBlock', attrs: { text: suffix } });
+    }
+  } else if (/^<\/details\s*>/i.test(html)) {
+    const close = /^<\/details\s*>/i.exec(html)![0];
     if (b.top().type === 'detailsContent') {
       b.close();
       b.close();
+      const suffix = source.slice(source.indexOf(html) + close.length).replace(/\n+$/, '');
+      if (suffix.trim()) b.push({ type: 'rawBlock', attrs: { text: suffix } });
+    } else {
+      // A closing fragment outside a known details owner is not a structural command.
+      // Preserve it as opaque source instead of dropping an HTML suffix on import.
+      b.push({ type: 'rawBlock', attrs: { text: source.replace(/\n+$/, '') } });
     }
   } else if (aside) {
     const closed = /<\/aside>\s*$/i.test(html);
@@ -454,12 +932,30 @@ function htmlBlock(source: string, options: ParseOptions, b: Builder): void {
       content: [],
     };
     if (emoji) inner = inner.slice(emoji[0].length);
-    if (inner) node.content!.push(...(markdownToDoc(inner, options).content ?? []));
+    if (inner)
+      node.content!.push(
+        ...(parseNestedMarkdown(
+          inner,
+          { ...options, allowLegacyBlockBackgrounds: false },
+          report,
+          detailsOwner,
+        ).content ?? []),
+      );
     b.push(node);
     if (!closed) b.stack.push(node);
   } else if (/^<\/aside>/i.test(html)) {
     if (b.top().type === 'callout') b.close();
   } else if (html) b.push({ type: 'rawBlock', attrs: { text: source.replace(/\n+$/, '') } });
+}
+
+function parseNestedMarkdown(
+  source: string,
+  options: ParseOptions,
+  report: ParseReportContext | undefined,
+  inheritedDetailsOwner: boolean,
+): DocNode {
+  if (!report) return markdownToDoc(source, options);
+  return parseMarkdownToDoc(source, options, { ...report, inheritedDetailsOwner }).doc;
 }
 
 // a toggle's title is written as markdown, so links and bold in it come back as they were. it only holds
@@ -473,6 +969,50 @@ function summaryContent(title: string, options: ParseOptions): DocNode[] {
     return { type: 'text', text, ...(child.marks?.length ? { marks: child.marks } : {}) };
   });
   return mergeText(nodes.filter((child) => child.text));
+}
+
+/** Parses only the inline forms that detailsSummary can retain without flattening. */
+export function parseToggleSummaryInline(source: string, options: ParseOptions = {}): DocNode[] | null {
+  if (/[\r\n]/.test(source)) return null;
+  const token = md.parseInline(source, {})[0];
+  const children = token?.children ?? [];
+  if (
+    children.some(
+      (child) =>
+        child.type === 'hardbreak' ||
+        (child.type === 'html_inline' && !isSupportedSummaryHtml(child.content)),
+    )
+  ) {
+    return null;
+  }
+  const nodes = inlineNodes(children, options);
+  if (
+    nodes.some(
+      (node) =>
+        (node.type !== 'text' && node.type !== 'pageLink') ||
+        (node.type === 'pageLink' && node.attrs?.embed === true),
+    )
+  ) {
+    return null;
+  }
+  return nodes;
+}
+
+function isSupportedSummaryHtml(source: string): boolean {
+  const tag = source.trim().toLowerCase();
+  return (
+    tag === '<u>' ||
+    tag === '</u>' ||
+    tag === '<mark>' ||
+    tag === '</mark>' ||
+    /^<mark\s+style\s*=\s*(["'])\s*background(?:-color)?\s*:\s*#[\da-f]{3}(?:[\da-f]{3})?\s*;?\s*\1\s*>$/i.test(
+      tag,
+    ) ||
+    /^<span\s+style\s*=\s*(["'])\s*color\s*:\s*#[\da-f]{3}(?:[\da-f]{3})?\s*;?\s*\1\s*>$/i.test(
+      tag,
+    ) ||
+    tag === '</span>'
+  );
 }
 
 // first level one heading becomes the page title
@@ -493,7 +1033,604 @@ export function markdownToPage(
   return { title: fallbackTitle, doc };
 }
 
-function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
+/** Inspects legacy background comments using the same Markdown token stream as the codec. */
+export function inspectBlockBackgroundMarkers(
+  source: string,
+  resolvesAttachment?: (href: string) => boolean,
+): BlockBackgroundMarkerInspection[] {
+  const text = source.length > MAX_INPUT ? source.slice(0, MAX_INPUT) : source;
+  if (!/<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/i.test(text)) return [];
+  const resolveFile = resolvesAttachment
+    ? (href: string) =>
+        resolvesAttachment(href)
+          ? {
+              fileId: href,
+              name: href.split('/').at(-1) || href,
+              image: /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(href),
+            }
+          : null
+    : undefined;
+  return parseMarkdownToDoc(text, { resolveFile }).blockBackgroundMarkers;
+}
+
+function inspectBlockBackgroundMarkerTokens(tokens: Token[]): BlockBackgroundMarkerInspection[] {
+  const found: BlockBackgroundMarkerInspection[] = [];
+  const listItems: number[] = [];
+  const htmlContainers: Array<{
+    tag: string;
+    nativeColumnLayout: boolean;
+    layoutKind: 'columns' | 'column' | 'other';
+  }> = [];
+  let blockquoteDepth = 0;
+  let tableDepth = 0;
+  let rootContentSeen = false;
+
+  for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+    const token = tokens[tokenIndex]!;
+    if (token.type === 'list_item_open') listItems.push(token.level);
+    if (token.type === 'list_item_close') {
+      while (listItems.length && listItems[listItems.length - 1]! >= token.level) listItems.pop();
+    }
+
+    if (token.type === 'html_block' || token.type === 'html_inline') {
+      const comments = blockBackgroundComments(token.content);
+      for (const comment of comments) {
+        const color = parseBlockBackgroundMarker(comment);
+        const next = tokens[tokenIndex + 1];
+        const syntheticEmptyParagraph =
+          next?.type === 'html_block' && /^<br\s*\/?>$/i.test(next.content.trim());
+        const targetType =
+          next && ['paragraph_open', 'heading_open', 'blockquote_open'].includes(next.type)
+            ? next.type
+            : syntheticEmptyParagraph
+              ? 'paragraph_open'
+              : null;
+        const targetTag = targetType && next ? (syntheticEmptyParagraph ? 'p' : next.tag) : null;
+        const layoutIsSupported =
+          htmlContainers.length === 0 ||
+          (htmlContainers.at(-1)?.layoutKind === 'column' &&
+            htmlContainers.some((container) => container.nativeColumnLayout) &&
+            htmlContainers.every((container) => container.nativeColumnLayout));
+        const isColumnChild = htmlContainers.length === 0 || htmlContainers.at(-1)?.layoutKind === 'column';
+        const previousBackground = tokens[tokenIndex - 1];
+        const duplicateBackground =
+          previousBackground?.type === 'html_block' &&
+          (parseBlockBackgroundMarker(previousBackground.content.trim()) !== null ||
+            BACKGROUND_PATTERN.test(previousBackground.content.trim()));
+        const listItemLevel = listItems.at(-1);
+        const directListParagraph =
+          targetType === 'paragraph_open' && listItemLevel !== undefined && next?.level === listItemLevel + 1;
+        const approved =
+          token.type === 'html_block' &&
+          token.content.trim() === comment &&
+          color !== null &&
+          !duplicateBackground &&
+          targetType !== null &&
+          next?.level === token.level &&
+          (listItems.length === 0 || directListParagraph) &&
+          tableDepth === 0 &&
+          layoutIsSupported &&
+          isColumnChild;
+        const titleHeading =
+          approved &&
+          targetType === 'heading_open' &&
+          targetTag === 'h1' &&
+          next?.level === 0 &&
+          htmlContainers.length === 0 &&
+          blockquoteDepth === 0 &&
+          !rootContentSeen;
+        found.push({
+          comment,
+          color,
+          tokenIndex,
+          tokenType: token.type,
+          sourceLine: token.map?.[0] ?? null,
+          approved,
+          targetType,
+          targetTag,
+          titleHeading,
+        });
+      }
+    }
+
+    if (token.type === 'blockquote_open') blockquoteDepth++;
+    if (token.type === 'blockquote_close') blockquoteDepth = Math.max(0, blockquoteDepth - 1);
+    if (token.type === 'table_open') tableDepth++;
+    if (token.type === 'table_close') tableDepth = Math.max(0, tableDepth - 1);
+
+    if (token.type === 'html_block') updateBlockBackgroundHtmlContainers(token.content, htmlContainers);
+
+    if (token.level === 0 && isRootContentToken(token)) rootContentSeen = true;
+  }
+  return found;
+}
+
+function proveBlockBackgroundOwners(
+  doc: DocNode,
+  markers: BlockBackgroundMarkerInspection[],
+  invalidMarkerIds: ReadonlySet<number>,
+): BlockBackgroundMarkerInspection[] {
+  const owners = new Map<number, Array<{ node: DocNode; ancestors: DocNode[] }>>();
+  const visit = (node: DocNode, ancestors: DocNode[]) => {
+    for (const markerId of (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] ?? []) {
+      owners.set(markerId, [...(owners.get(markerId) ?? []), { node, ancestors }]);
+    }
+    for (const child of node.content ?? []) visit(child, [...ancestors, node]);
+  };
+  visit(doc, []);
+
+  return markers.map((marker) => {
+    if (!marker.approved) return marker;
+    const candidates = owners.get(marker.tokenIndex) ?? [];
+    const owner = candidates[0];
+    const expectedNodeType =
+      marker.targetType === 'paragraph_open'
+        ? 'paragraph'
+        : marker.targetType === 'heading_open'
+          ? 'heading'
+          : marker.targetType === 'blockquote_open'
+            ? 'blockquote'
+            : null;
+    const firstTaskItemParagraph =
+      owner?.node.type === 'paragraph' &&
+      owner.ancestors.some(
+        (ancestor) => ancestor.type === 'taskItem' && ancestor.content?.[0] === owner.node,
+      );
+    const supportedChain = owner
+      ? supportsHexBlockBackgroundOwner(
+          owner.node.type,
+          owner.ancestors.map((ancestor) => ancestor.type),
+          firstTaskItemParagraph,
+        )
+      : false;
+    const proven =
+      candidates.length === 1 &&
+      !invalidMarkerIds.has(marker.tokenIndex) &&
+      expectedNodeType !== null &&
+      owner?.node.type === expectedNodeType &&
+      owner?.node.attrs?.backgroundColor === marker.color &&
+      supportedChain === true;
+    return { ...marker, approved: proven };
+  });
+}
+
+function removeBlockBackgroundMarkerIds(doc: DocNode, markers: BlockBackgroundMarkerInspection[]): void {
+  const approved = new Set(markers.filter((marker) => marker.approved).map((marker) => marker.tokenIndex));
+  const visit = (node: DocNode) => {
+    const owned = node as MarkerOwnedDocNode;
+    const markerIds = owned[BLOCK_BACKGROUND_MARKER_IDS] ?? [];
+    if (markerIds.length && markerIds.some((markerId) => !approved.has(markerId))) {
+      if (node.attrs && Object.hasOwn(node.attrs, 'backgroundColor')) {
+        const attrs = { ...node.attrs };
+        delete attrs.backgroundColor;
+        node.attrs = Object.keys(attrs).length ? attrs : undefined;
+      }
+    }
+    Reflect.deleteProperty(owned, BLOCK_BACKGROUND_MARKER_IDS);
+    for (const child of node.content ?? []) visit(child);
+  };
+  visit(doc);
+}
+
+function blockBackgroundComments(content: string): string[] {
+  const comments: string[] = [];
+  const opening = /<!--[ \t\r\n]*morrow:block-background(?=[\s:>])/gi;
+  let match: RegExpExecArray | null;
+  while ((match = opening.exec(content))) {
+    const end = content.indexOf('-->', match.index);
+    comments.push((end === -1 ? content.slice(match.index) : content.slice(match.index, end + 3)).trim());
+  }
+  return comments;
+}
+
+function updateBlockBackgroundHtmlContainers(
+  content: string,
+  stack: Array<{
+    tag: string;
+    nativeColumnLayout: boolean;
+    layoutKind: 'columns' | 'column' | 'other';
+  }>,
+): void {
+  const tags = content.match(/<!--[\s\S]*?-->|<\/?[a-z][^>]*>/gi) ?? [];
+  for (const tag of tags) {
+    if (tag.startsWith('<!--')) continue;
+    const closing = /^<\/([a-z][\w-]*)\s*>$/i.exec(tag);
+    if (closing) {
+      let index = stack.length - 1;
+      while (index >= 0 && stack[index]!.tag !== closing[1]!.toLowerCase()) index--;
+      if (index >= 0) stack.splice(index);
+      continue;
+    }
+    const opening = /^<([a-z][\w-]*)\b([^>]*)>$/i.exec(tag);
+    if (!opening || /\/\s*>$/.test(tag)) continue;
+    const name = opening[1]!.toLowerCase();
+    const layoutTag = name === 'div' ? parseColumnLayoutTag(tag) : null;
+    if (layoutTag?.kind === 'columns') {
+      stack.push({ tag: 'div', nativeColumnLayout: true, layoutKind: 'columns' });
+    } else if (
+      layoutTag?.kind === 'column' &&
+      stack.at(-1)?.layoutKind === 'columns' &&
+      stack.at(-1)?.nativeColumnLayout
+    ) {
+      stack.push({ tag: 'div', nativeColumnLayout: true, layoutKind: 'column' });
+    } else if (!/^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/.test(name)) {
+      stack.push({ tag: name, nativeColumnLayout: false, layoutKind: 'other' });
+    }
+  }
+}
+
+function isRootContentToken(token: Token): boolean {
+  if (
+    [
+      'paragraph_open',
+      'heading_open',
+      'blockquote_open',
+      'bullet_list_open',
+      'ordered_list_open',
+      'fence',
+      'code_block',
+      'math_block',
+      'hr',
+      'table_open',
+    ].includes(token.type)
+  ) {
+    return true;
+  }
+  if (token.type !== 'html_block') return false;
+  const value = token.content.trim();
+  if (
+    parseBlockBackgroundMarker(value) ||
+    BACKGROUND_PATTERN.test(value) ||
+    ALIGN_PATTERN.test(value) ||
+    value === HEADER_COLUMN ||
+    value === EMBED_TITLE_COMMENT ||
+    value === PREVIEW_COMMENT ||
+    value === LETTERS_COMMENT ||
+    COLUMN_WIDTHS_PATTERN.test(value)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export interface MarkdownRetargetSpan {
+  kind: 'markdown' | 'wiki';
+  start: number;
+  end: number;
+  raw: string;
+  target?: string;
+  targetStart?: number;
+  targetEnd?: number;
+}
+
+interface InlineSourceLine {
+  rawStart: number;
+  localStart: number;
+  localEnd: number;
+  contentColumn: number;
+}
+
+/** Returns exact source ranges for links accepted by Morrow's configured Markdown parser. */
+export function markdownRetargetSpans(source: string): MarkdownRetargetSpan[] {
+  if (source.length > MAX_INPUT) return [];
+  const normalized = source.replace(/\r\n?/g, '\n');
+  let tokens: Token[];
+  try {
+    tokens = md.parse(normalized, { morrowRetargetSourceMaps: true });
+  } catch {
+    return [];
+  }
+
+  const normalizedLineStarts = markdownLineStarts(normalized);
+  const rawLineStarts = markdownLineStarts(source);
+  const cursors = new Map<number, number>();
+  const spans: MarkdownRetargetSpan[] = [];
+  let tableRowMap: [number, number] | null = null;
+
+  for (const block of tokens) {
+    if (block.type === 'tr_close') tableRowMap = null;
+    if (block.type === 'tr_open') tableRowMap = block.map as [number, number] | null;
+    if (block.type !== 'inline' || !block.children) continue;
+
+    const lineMap = (block.map as [number, number] | null) ?? tableRowMap;
+    const tableMap = tableCellSourceMap(block.meta);
+    if (!tableMap && !lineMap) continue;
+    const lines = tableMap
+      ? null
+      : mapInlineSourceLines(
+          block.content,
+          lineMap!,
+          normalized,
+          normalizedLineStarts,
+          rawLineStarts,
+          cursors,
+        );
+    if (!tableMap && !lines) continue;
+    const mapRange = (start: number, end: number) =>
+      tableMap
+        ? mapTableCellSourceRange(
+            block.content,
+            tableMap,
+            start,
+            end,
+            normalizedLineStarts,
+            rawLineStarts,
+            normalized.length,
+            source.length,
+          )
+        : mapInlineSourceRange(block.content, lines!, start, end);
+    const sourceMatches = (raw: string, expected: string) =>
+      (tableMap ? unescapeTablePipes(raw) : raw) === expected;
+
+    const visit = (children: Token[]) => {
+      for (const token of children) {
+        const meta = token.meta as Record<string, unknown> | null;
+        if (token.type === 'wikilink' && meta) {
+          const range = sourceRange(meta.morrowRetargetRange);
+          const targetRange = sourceRange(meta.morrowRetargetTargetRange);
+          const target = typeof meta.target === 'string' ? meta.target : undefined;
+          const mapped = range ? mapRange(range.start, range.end) : null;
+          const mappedTarget = targetRange && target ? mapRange(targetRange.start, targetRange.end) : null;
+          if (mapped) {
+            const raw = source.slice(mapped.start, mapped.end);
+            if (sourceMatches(raw, token.markup) && mappedTarget && target) {
+              const rawTarget = source.slice(mappedTarget.start, mappedTarget.end);
+              if (!sourceMatches(rawTarget, target)) {
+                if (token.children) visit(token.children);
+                continue;
+              }
+              spans.push({
+                kind: 'wiki',
+                start: mapped.start,
+                end: mapped.end,
+                raw,
+                target,
+                targetStart: mappedTarget.start,
+                targetEnd: mappedTarget.end,
+              });
+            }
+          }
+        } else if (token.type === 'link_open' && meta?.morrowMarkdownHrefScanned === true) {
+          const range = sourceRange(meta.morrowMarkdownHrefRange);
+          const href = typeof meta.markdownHref === 'string' ? meta.markdownHref : null;
+          const mapped = range ? mapRange(range.start, range.end) : null;
+          if (href !== null && mapped) {
+            const raw = source.slice(mapped.start, mapped.end);
+            if (sourceMatches(raw, href))
+              spans.push({ kind: 'markdown', start: mapped.start, end: mapped.end, raw });
+          }
+        }
+        if (token.children) visit(token.children);
+      }
+    };
+    visit(block.children);
+  }
+
+  spans.sort((left, right) => left.start - right.start || left.end - right.end);
+  const nonOverlapping: MarkdownRetargetSpan[] = [];
+  let previousEnd = -1;
+  for (const span of spans) {
+    if (span.start < previousEnd) continue;
+    nonOverlapping.push(span);
+    previousEnd = span.end;
+  }
+  return nonOverlapping;
+}
+
+function tableCellSourceMap(value: unknown): TableCellSourceMap | null {
+  if (!value || typeof value !== 'object') return null;
+  const map = (value as Record<string, unknown>).morrowTableCellSourceMap;
+  if (!map || typeof map !== 'object') return null;
+  const candidate = map as { normalizedStart?: unknown; removedBefore?: unknown };
+  const removedBefore = candidate.removedBefore;
+  if (
+    !Number.isInteger(candidate.normalizedStart) ||
+    !(Array.isArray(removedBefore) || removedBefore instanceof Uint32Array)
+  )
+    return null;
+  for (let index = 0; index < removedBefore.length; index++) {
+    const offset = removedBefore[index];
+    if (!Number.isInteger(offset) || Number(offset) < 0 || (index > 0 && offset! < removedBefore[index - 1]!))
+      return null;
+  }
+  return {
+    normalizedStart: Number(candidate.normalizedStart),
+    removedBefore,
+  };
+}
+
+function mapTableCellSourceRange(
+  content: string,
+  map: TableCellSourceMap,
+  start: number,
+  end: number,
+  normalizedLineStarts: number[],
+  rawLineStarts: number[],
+  normalizedLength: number,
+  rawLength: number,
+): { start: number; end: number } | null {
+  if (start < 0 || end > content.length || end <= start) return null;
+  const removedBefore = (offset: number) => {
+    let low = 0;
+    let high = map.removedBefore.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (map.removedBefore[middle]! < offset) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  const normalizedStart = map.normalizedStart + start + removedBefore(start);
+  const normalizedEnd = map.normalizedStart + end + removedBefore(end);
+  const rawStart = normalizedToRawOffset(
+    normalizedStart,
+    normalizedLineStarts,
+    rawLineStarts,
+    normalizedLength,
+    rawLength,
+  );
+  const rawEnd = normalizedToRawOffset(
+    normalizedEnd,
+    normalizedLineStarts,
+    rawLineStarts,
+    normalizedLength,
+    rawLength,
+  );
+  return rawStart === null || rawEnd === null || rawEnd <= rawStart ? null : { start: rawStart, end: rawEnd };
+}
+
+function normalizedToRawOffset(
+  offset: number,
+  normalizedLineStarts: number[],
+  rawLineStarts: number[],
+  normalizedLength: number,
+  rawLength: number,
+): number | null {
+  if (offset < 0 || offset > normalizedLength) return null;
+  if (offset === normalizedLength) return rawLength;
+  let low = 0;
+  let high = normalizedLineStarts.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (normalizedLineStarts[middle]! <= offset) low = middle + 1;
+    else high = middle;
+  }
+  const line = low - 1;
+  const normalizedStart = normalizedLineStarts[line];
+  const rawStart = rawLineStarts[line];
+  if (normalizedStart === undefined || rawStart === undefined) return null;
+  return rawStart + offset - normalizedStart;
+}
+
+function sourceRange(value: unknown): { start: number; end: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const range = value as { start?: unknown; end?: unknown };
+  return Number.isInteger(range.start) &&
+    Number.isInteger(range.end) &&
+    Number(range.end) > Number(range.start)
+    ? { start: Number(range.start), end: Number(range.end) }
+    : null;
+}
+
+function markdownLineStarts(source: string): number[] {
+  const starts = [0];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] === '\r') {
+      if (source[index + 1] === '\n') index++;
+      starts.push(index + 1);
+    } else if (source[index] === '\n') starts.push(index + 1);
+  }
+  return starts;
+}
+
+function mapInlineSourceLines(
+  content: string,
+  lineMap: [number, number],
+  normalized: string,
+  normalizedLineStarts: number[],
+  rawLineStarts: number[],
+  cursors: Map<number, number>,
+): Array<InlineSourceLine | null> | null {
+  const localLineStarts = [0];
+  for (let index = 0; index < content.length; index++)
+    if (content[index] === '\n') localLineStarts.push(index + 1);
+  const localLineCount =
+    localLineStarts.length === lineMap[1] - lineMap[0] + 1 && content.endsWith('\n')
+      ? localLineStarts.length - 1
+      : localLineStarts.length;
+  const sourceLineCount = lineMap[1] - lineMap[0];
+  if (sourceLineCount < 1) return null;
+
+  const lines: Array<InlineSourceLine | null> = [];
+  let nextSourceLine = lineMap[0];
+  for (let index = 0; index < localLineCount; index++) {
+    const localStart = localLineStarts[index]!;
+    const localEnd = index + 1 < localLineStarts.length ? localLineStarts[index + 1]! - 1 : content.length;
+    const inlineLine = content.slice(localStart, localEnd);
+    if (!inlineLine) {
+      lines.push(null);
+      continue;
+    }
+
+    const candidateLines =
+      localLineCount === sourceLineCount
+        ? [lineMap[0] + index]
+        : Array.from(
+            { length: Math.max(0, lineMap[1] - nextSourceLine) },
+            (_, offset) => nextSourceLine + offset,
+          );
+    const candidates: Array<{ line: number; rawStart: number; contentColumn: number }> = [];
+    for (const line of candidateLines) {
+      const normalizedStart = normalizedLineStarts[line];
+      const rawStart = rawLineStarts[line];
+      if (normalizedStart === undefined || rawStart === undefined) continue;
+      const normalizedEnd = normalizedLineStarts[line + 1] ?? normalized.length;
+      const sourceLineEnd =
+        normalizedEnd > normalizedStart && normalized[normalizedEnd - 1] === '\n'
+          ? normalizedEnd - 1
+          : normalizedEnd;
+      const sourceLine = normalized.slice(normalizedStart, sourceLineEnd);
+      const cursor = cursors.get(line) ?? 0;
+      const contentColumn = sourceLine.indexOf(inlineLine, cursor);
+      if (contentColumn < 0) continue;
+      if (localLineCount !== sourceLineCount && sourceLine.indexOf(inlineLine, contentColumn + 1) !== -1)
+        continue;
+      candidates.push({ line, rawStart, contentColumn });
+    }
+    if (candidates.length !== 1) {
+      lines.push(null);
+      continue;
+    }
+    const mapped = candidates[0]!;
+    cursors.set(mapped.line, mapped.contentColumn + inlineLine.length);
+    nextSourceLine = Math.max(nextSourceLine, mapped.line + 1);
+    lines.push({ rawStart: mapped.rawStart, localStart, localEnd, contentColumn: mapped.contentColumn });
+  }
+  return lines;
+}
+
+function mapInlineSourceRange(
+  content: string,
+  lines: Array<InlineSourceLine | null>,
+  start: number,
+  end: number,
+): { start: number; end: number } | null {
+  if (start < 0 || end > content.length || end <= start) return null;
+  let lineIndex = -1;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line && start >= line.localStart && end <= line.localEnd) {
+      lineIndex = index;
+      break;
+    }
+  }
+  if (lineIndex === -1) return null;
+  const line = lines[lineIndex]!;
+  const localColumnStart = start - line.localStart;
+  const localColumnEnd = end - line.localStart;
+  return {
+    start: line.rawStart + line.contentColumn + localColumnStart,
+    end: line.rawStart + line.contentColumn + localColumnEnd,
+  };
+}
+
+// a time written just after a date, [[2026-11-10]] 17:05, belongs to the date
+function dateTimes(nodes: DocNode[]): DocNode[] {
+  for (let index = 0; index < nodes.length - 1; index++) {
+    const date = nodes[index]!;
+    const next = nodes[index + 1]!;
+    if (date.type !== 'dateMention' || next.type !== 'text' || next.marks?.length) continue;
+    const match = /^ (([01]\d|2[0-3]):[0-5]\d)(?![\d:])/.exec(next.text ?? '');
+    if (!match) continue;
+    date.attrs = { ...date.attrs, time: match[1] };
+    const rest = next.text!.slice(match[0].length);
+    if (rest) next.text = rest;
+    else nodes.splice(index + 1, 1);
+  }
+  return nodes;
+}
+
+function inlineNodes(tokens: Token[], options: ParseOptions, allowLegacyFormula = false): DocNode[] {
   const out: DocNode[] = [];
   const marks: DocMark[] = [];
   const add = (text: string, extra: DocMark[] = []) => {
@@ -505,7 +1642,8 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
     const index = marks.map((mark) => mark.type).lastIndexOf(type);
     if (index !== -1) marks.splice(index, 1);
   };
-  let pageTarget: { id: PageId; label: string } | null = null;
+  let pageTarget: { id: PageId; label: string; markdownHref: string | null; anchor: string | null } | null =
+    null;
 
   for (const token of tokens) {
     if (pageTarget && token.type !== 'link_close') {
@@ -537,9 +1675,16 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         break;
       case 'link_open': {
         const href = String(token.attrGet('href') ?? '');
-        const pageId = options.resolveLink?.(href) ?? null;
+        const scannedInlineLink = token.meta?.morrowMarkdownHrefScanned === true;
+        const markdownHref = typeof token.meta?.markdownHref === 'string' ? token.meta.markdownHref : null;
+        const pageId =
+          scannedInlineLink && options.resolveMarkdownPageLink
+            ? markdownHref === null
+              ? null
+              : (options.resolveMarkdownPageLink(markdownHref) ?? null)
+            : (options.resolveLink?.(href) ?? null);
         const file = pageId ? null : (options.resolveFile?.(href) ?? null);
-        if (pageId) pageTarget = { id: pageId, label: '' };
+        if (pageId) pageTarget = { id: pageId, label: '', markdownHref, anchor: markdownAnchor(href) };
         else if (file) marks.push({ type: 'link', attrs: { href, fileRef: file } });
         else marks.push({ type: 'link', attrs: { href } });
         break;
@@ -558,7 +1703,17 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         break;
       case 'link_close':
         if (pageTarget) {
-          out.push({ type: 'pageLink', attrs: { id: pageTarget.id, label: pageTarget.label.trim() } });
+          const label = pageTarget.label.trim();
+          out.push({
+            type: 'pageLink',
+            attrs: {
+              id: pageTarget.id,
+              label,
+              alias: label,
+              ...(pageTarget.markdownHref !== null ? { markdownHref: pageTarget.markdownHref } : {}),
+              ...(pageTarget.anchor !== null ? { anchor: pageTarget.anchor } : {}),
+            },
+          });
           pageTarget = null;
         } else remove('link');
         break;
@@ -568,6 +1723,18 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
       case 'math_inline':
         out.push({ type: 'inlineMath', attrs: { latex: token.content } });
         break;
+      case LEGACY_FORMULA_NODE: {
+        const meta = token.meta as { raw?: unknown; fallback?: unknown } | null;
+        if (allowLegacyFormula && typeof meta?.raw === 'string' && typeof meta.fallback === 'string') {
+          out.push({
+            type: LEGACY_FORMULA_NODE,
+            attrs: { raw: meta.raw, fallback: meta.fallback },
+            ...(marks.length ? { marks: [...marks] } : {}),
+          });
+        } else if (typeof meta?.fallback === 'string') add(meta.fallback);
+        else if (token.content) add(token.content);
+        break;
+      }
       case 'wikilink':
         out.push(...wikiNode(token.meta as unknown as WikiLink, token.markup, options, marks));
         break;
@@ -584,15 +1751,20 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
       case 'html_inline': {
         const tag = token.content.trim().toLowerCase();
         const styled =
-          /^<(span|mark)\s+style\s*=\s*["']\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3,6})\s*;?\s*["']\s*>$/.exec(
+          /^<(span|mark)\s+style\s*=\s*(["'])\s*(color|background(?:-color)?)\s*:\s*(#[0-9a-f]{3}|#[0-9a-f]{6}|[a-z]+)\s*;?\s*\2\s*>$/.exec(
             tag,
           );
-        const color = styled
-          ? nearestColor(styled[3]!, styled[2] === 'color' ? TEXT_HEX : BACKGROUND_HEX)
-          : null;
-        if (styled && color && styled[1] === 'span' && styled[2] === 'color')
-          marks.push({ type: 'textColor', attrs: { color } });
-        else if (styled && color && styled[1] === 'mark') marks.push({ type: 'highlight', attrs: { color } });
+        const isTextColor = styled?.[1] === 'span' && styled[3] === 'color';
+        const isHighlightColor =
+          styled?.[1] === 'mark' && (styled[3] === 'background' || styled[3] === 'background-color');
+        const color =
+          styled && isTextColor
+            ? parseInlineColor(styled[4]!, TEXT_HEX)
+            : styled && isHighlightColor
+              ? parseInlineColor(styled[4]!, BACKGROUND_HEX)
+              : null;
+        if (styled && color && isTextColor) marks.push({ type: 'textColor', attrs: { color } });
+        else if (styled && color && isHighlightColor) marks.push({ type: 'highlight', attrs: { color } });
         else if (tag === '</span>' && marks.some((mark) => mark.type === 'textColor')) remove('textColor');
         else if (tag === '<u>') marks.push({ type: 'underline' });
         else if (tag === '</u>') remove('underline');
@@ -606,7 +1778,58 @@ function inlineNodes(tokens: Token[], options: ParseOptions): DocNode[] {
         if (token.content) add(token.content);
     }
   }
-  return mergeText(out);
+  return dateTimes(mergeText(out));
+}
+
+function markdownAnchor(href: string): string | null {
+  const hash = href.indexOf('#');
+  if (hash === -1) return null;
+  const fragment = href.slice(hash + 1);
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
+}
+
+export interface MarkdownHrefPath {
+  // A vault-relative path after CommonMark unescaping, entity decoding and one URL decode per segment.
+  path: string;
+  // The query/fragment suffix exactly as captured from the Markdown source.
+  suffix: string;
+}
+
+/**
+ * Converts a scanner-captured Markdown href into its CommonMark path semantics while leaving its
+ * query/fragment suffix untouched. Path decoding stays segment-local so encoded separators cannot
+ * change which vault file a link names.
+ */
+export function markdownHrefPath(href: string): MarkdownHrefPath | null {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) return null;
+  const suffixStart = href.search(/[?#]/);
+  const rawPath = suffixStart === -1 ? href : href.slice(0, suffixStart);
+  if (!rawPath) return null;
+
+  const commonMarkSegments = rawPath.split('/').map((segment) => md.utils.unescapeAll(segment));
+  const commonMarkPath = commonMarkSegments.join('/');
+  if (/^[a-z][a-z0-9+.-]*:/i.test(commonMarkPath) || commonMarkPath.startsWith('//')) return null;
+  const pathSegments: string[] = [];
+  for (const commonMarkSegment of commonMarkSegments) {
+    if (/[/?#\\]/.test(commonMarkSegment)) return null;
+    let segment: string;
+    try {
+      segment = decodeURIComponent(commonMarkSegment);
+    } catch {
+      segment = commonMarkSegment;
+    }
+    if (/[\\/]/.test(segment)) return null;
+    pathSegments.push(segment);
+  }
+
+  return {
+    path: pathSegments.join('/'),
+    suffix: suffixStart === -1 ? '' : href.slice(suffixStart),
+  };
 }
 
 // obsidian sizes a picture in its alt text: "a cat|300", "a cat|300x200", or just "300" in an embed
@@ -631,16 +1854,11 @@ function wikiNode(link: WikiLink, markup: string, options: ParseOptions, marks: 
       return [{ type: 'text', text: link.alias ?? file.name, marks: fileMarks }];
     }
   }
-  const id = link.target ? (options.resolvePage?.(link.target) ?? null) : null;
-  // [[2026-10-16]] with no page of that name is a date, it opens that day's note
-  if (
-    !id &&
-    !link.embed &&
-    link.alias === null &&
-    link.anchor === null &&
-    /^\d{4}-\d{2}-\d{2}$/.test(link.target)
-  )
+  // [[2026-10-16]] is a date, which opens that day's note. it stays a date once the note exists, rather
+  // than becoming a link titled with the day written out, which lost its reminder and could not be edited
+  if (!link.embed && link.alias === null && link.anchor === null && /^\d{4}-\d{2}-\d{2}$/.test(link.target))
     return [{ type: 'dateMention', attrs: { date: link.target } }];
+  const id = link.target ? (options.resolvePage?.(link.target) ?? null) : null;
   if (!id && options.keepUnresolved === false) {
     return [
       marks.length ? { type: 'text', text: markup, marks: [...marks] } : { type: 'text', text: markup },
@@ -689,10 +1907,13 @@ function sameMarks(a: DocMark[] = [], b: DocMark[] = []): boolean {
 }
 
 // shapes the tree so the editor schema accepts it
-function normalize(input: DocNode): DocNode {
+function normalize(input: DocNode, invalidMarkerIds: Set<number>): DocNode {
   // callouts read their title from the raw first line, before line breaks turn into spaces
   const node = input.type === 'blockquote' ? toCallout(input) : input;
-  const content = node.content?.flatMap((child) => liftMedia(normalize(child)));
+  if (node !== input) invalidateBlockBackgroundMarkers(input, invalidMarkerIds);
+  const content = node.content?.flatMap((child) =>
+    liftMedia(normalize(child, invalidMarkerIds), invalidMarkerIds),
+  );
   let next: DocNode = content ? { ...node, content } : { ...node };
   if ((next.type === 'callout' || next.type === 'detailsContent') && (next.content ?? []).length === 0) {
     next = { ...next, content: [{ type: 'paragraph', content: [] }] };
@@ -730,9 +1951,11 @@ function marksOf(node: DocNode): { marks?: DocMark[] } {
 
 // images and embeds become blocks, a paragraph that mixes them with text is split around them,
 // so nothing an image or embed points at is ever lost
-function liftMedia(node: DocNode): DocNode[] {
+function liftMedia(node: DocNode, invalidMarkerIds: Set<number>): DocNode[] {
   if (node.type !== 'paragraph' || !node.content) return [node];
   const children = node.content;
+  const markerIds = (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] ?? [];
+  const invalidate = () => invalidateBlockBackgroundMarkers(node, invalidMarkerIds);
   const blank = (child: DocNode) =>
     child.type === 'hardBreak' ||
     child.type === 'softBreak' ||
@@ -741,10 +1964,14 @@ function liftMedia(node: DocNode): DocNode[] {
   // a lone link to a stored file is shown as an attachment
   const refs = new Set(meaningful.map((child) => fileRefOf(child)));
   const ref = refs.size === 1 ? [...refs][0] : undefined;
-  if (ref && meaningful.every((child) => fileRefOf(child) === ref)) return [mediaBlock(ref)];
+  if (ref && meaningful.every((child) => fileRefOf(child) === ref)) {
+    invalidate();
+    return [mediaBlock(ref)];
+  }
   if (!meaningful.some((child) => child.type === 'image' || fileRefOf(child)?.embed)) {
     return [{ ...node, content: children.map(plainFileLink) }];
   }
+  if (markerIds.length) invalidate();
   const out: DocNode[] = [];
   let run: DocNode[] = [];
   const flush = () => {
@@ -758,11 +1985,13 @@ function liftMedia(node: DocNode): DocNode[] {
     }
     run = [];
   };
+  // a picture set to one side keeps that side once it leaves its paragraph
+  const align = node.attrs?.align;
   for (const child of children) {
     const embed = fileRefOf(child);
     if (child.type === 'image') {
       flush();
-      out.push(child);
+      out.push(align ? { ...child, attrs: { ...child.attrs, align } } : child);
     } else if (embed?.embed) {
       flush();
       out.push(mediaBlock(embed));
@@ -770,6 +1999,11 @@ function liftMedia(node: DocNode): DocNode[] {
   }
   flush();
   return out.length ? out : [{ ...node, content: [] }];
+}
+
+function invalidateBlockBackgroundMarkers(node: DocNode, invalidMarkerIds: Set<number>): void {
+  for (const markerId of (node as MarkerOwnedDocNode)[BLOCK_BACKGROUND_MARKER_IDS] ?? [])
+    invalidMarkerIds.add(markerId);
 }
 
 function mediaBlock(ref: { fileId: string; name: string; image: boolean }): DocNode {
@@ -855,7 +2089,10 @@ function toTaskItem(item: DocNode): DocNode | null {
   const inline = [...(rest ? [{ ...lead, text: rest }] : []), ...(first.content ?? []).slice(1)];
   return {
     type: 'taskItem',
-    attrs: { checked: /x/i.test(match[1]!) },
+    attrs: {
+      checked: /x/i.test(match[1]!),
+      ...(item.attrs?.backgroundColor ? { backgroundColor: item.attrs.backgroundColor } : {}),
+    },
     content: [{ ...first, content: inline }, ...(item.content ?? []).slice(1)],
   };
 }

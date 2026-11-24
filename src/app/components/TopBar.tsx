@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowRightLeft,
-  BookOpen,
   Check,
   Columns2,
   Loader2,
@@ -13,6 +12,7 @@ import {
   Pencil,
   Star,
   X,
+  Eye,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
@@ -23,7 +23,17 @@ import { ACTION_SHORTCUTS, formatShortcut, runAction } from '../actions';
 import { toggleFavorite } from '../operations';
 import { usePreferences } from '../platform/preferences';
 import { openPage } from '../router';
-import { canGo, closeSide, goBack, goForward, swapSides, usePane, useTabs } from '../tabs';
+import {
+  canGo,
+  closeSide,
+  goBack,
+  goForward,
+  isPrimaryPane,
+  isSidePane,
+  swapSides,
+  usePane,
+  useTabs,
+} from '../tabs';
 import { setUi } from '../ui';
 import { getSession, useSaveStatus, useWorkspace } from '../workspace';
 import { Menu } from './Menu';
@@ -59,7 +69,7 @@ export function SidebarToggle() {
   );
 }
 
-// switches every page between reading and editing, as the book and pencil do in obsidian
+// switches every page between view mode, the eye, and edit mode, the pencil
 function ReadingToggle() {
   const { t } = useTranslation();
   const reading = usePreferences().readingMode;
@@ -73,7 +83,7 @@ function ReadingToggle() {
       aria-pressed={reading}
       onClick={() => runAction('view.reading')}
     >
-      {reading ? <Pencil size={16} strokeWidth={1.75} /> : <BookOpen size={16} strokeWidth={1.75} />}
+      {reading ? <Pencil size={16} strokeWidth={1.75} /> : <Eye size={16} strokeWidth={1.75} />}
     </button>
   );
 }
@@ -118,7 +128,7 @@ function SplitButtons() {
   const pane = usePane();
   const { tabs, active } = useTabs();
   const split = Boolean(tabs.find((item) => item.id === active)?.side);
-  if (pane === 'side')
+  if (isSidePane(pane))
     return (
       <>
         <button
@@ -141,7 +151,7 @@ function SplitButtons() {
         </button>
       </>
     );
-  if (split) return null;
+  if (split || !isPrimaryPane(pane)) return null;
   return (
     <button
       type="button"
@@ -177,10 +187,20 @@ export function SaveIndicator({ editing }: { editing: boolean }) {
       </button>
     );
   }
-  if (editing || status.state === 'pending' || status.state === 'saving') {
+  // the spinner only shows while the file is being written. between edits it says the page was edited and
+  // is saved a moment after the typing stops
+  if (status.state === 'saving') {
     return (
       <span className="save-status is-saving">
         <Loader2 size={13} className="spin" /> <span className="save-label">{t('topBar.saving')}</span>
+      </span>
+    );
+  }
+  if (editing || status.state === 'pending') {
+    return (
+      <span className="save-status is-pending" title={t('topBar.unsavedHelp')}>
+        <span className="save-dot" aria-hidden="true" />{' '}
+        <span className="save-label">{t('topBar.unsaved')}</span>
       </span>
     );
   }
@@ -218,7 +238,7 @@ export function TopBar({
   return (
     <header className="topbar">
       <div className="topbar-nav">
-        {pane === 'main' && <SidebarToggle />}
+        {isPrimaryPane(pane) && <SidebarToggle />}
         <HistoryButtons />
       </div>
       <div className="topbar-center">
@@ -253,7 +273,7 @@ export function TopBar({
       </div>
       <div className="topbar-actions">
         {/* saving is the same for both sides of a split, so it shows once */}
-        {pane === 'main' && <SaveIndicator editing={editing ?? false} />}
+        {isPrimaryPane(pane) && <SaveIndicator editing={editing ?? false} />}
         {page && (
           <>
             <span

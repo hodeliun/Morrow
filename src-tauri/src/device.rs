@@ -69,15 +69,85 @@ pub async fn pick_folder<R: Runtime>(app: &AppHandle<R>) -> Result<Option<String
     Ok(picked.path)
 }
 
+#[derive(Deserialize, serde::Serialize, Default)]
+pub struct Shared {
+    pub text: Option<String>,
+    // files copied into morrow's cache from the app that shared them
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+// a link, words or files another app shared with morrow, once
+pub async fn take_shared<R: Runtime>(app: &AppHandle<R>) -> Shared {
+    let mut shared: Shared = call(app, "takeShared", json!({})).await.unwrap_or_default();
+    shared.text = shared.text.filter(|text| !text.trim().is_empty());
+    shared
+}
+
 pub async fn name<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
     let named: Named = call(app, "deviceName", json!({})).await.ok()?;
     named.name.filter(|name| !name.trim().is_empty())
 }
 
-pub fn set_theme<R: Runtime>(app: &AppHandle<R>, dark: bool, color: &'static str) {
+pub fn set_theme<R: Runtime>(app: &AppHandle<R>, dark: bool, color: String) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _: Result<serde_json::Value, _> =
             call(&app, "setTheme", json!({ "dark": dark, "color": color })).await;
     });
+}
+
+// whether morrow may reach other devices on the network, asking first when `request` is set. android 17
+// keeps an app away from them until this is allowed, which made pairing fail both ways
+pub async fn local_network<R: Runtime>(app: &AppHandle<R>, request: bool) -> bool {
+    let command = if request {
+        "requestLocalNetworkAccess"
+    } else {
+        "localNetworkAccess"
+    };
+    call::<R, Access>(app, command, json!({}))
+        .await
+        .map(|access| access.granted)
+        .unwrap_or(true)
+}
+
+#[derive(Deserialize)]
+struct Opened {
+    #[serde(default)]
+    opened: bool,
+    #[serde(default)]
+    private: bool,
+}
+
+// a folder on the phone shown in its file manager, the way show in folder does on a computer
+pub async fn open_folder<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let opened: Opened = call(app, "openFolder", json!({ "path": path.to_string_lossy() })).await?;
+    if opened.private {
+        return Err(
+            "This vault is kept in Morrow's own storage on the phone, which other apps can't open. Move it \
+             to a folder on the phone from Settings, Vault, to see its files."
+                .into(),
+        );
+    }
+    if !opened.opened {
+        return Err(format!(
+            "No app on this phone opens folders. The vault is in {}.",
+            path.to_string_lossy()
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct Folder {
+    path: Option<String>,
+}
+
+// the phone's documents folder, which a file manager and a computer over usb can both reach
+pub async fn documents_folder<R: Runtime>(app: &AppHandle<R>) -> Option<std::path::PathBuf> {
+    let folder: Folder = call(app, "documentsFolder", json!({})).await.ok()?;
+    folder.path.map(std::path::PathBuf::from)
 }

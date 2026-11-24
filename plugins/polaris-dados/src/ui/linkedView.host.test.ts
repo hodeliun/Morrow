@@ -1,0 +1,1382 @@
+import { Window } from 'happy-dom';
+import { afterEach, describe, expect, it } from 'vitest';
+import type {
+  DataApi,
+  DataApiFlushResult,
+  DataApiHistoryResult,
+  DataApiPatchResult,
+  DataApiSnapshot,
+} from '../../../../src/app/plugins/dataApi';
+import type {
+  LinkedViewApi,
+  LinkedViewConfig,
+  LinkedViewFlushResult,
+  LinkedViewHistoryResult,
+  LinkedViewMutationResult,
+  LinkedViewSnapshot,
+} from '../../../../src/app/plugins/linkedViewApi';
+import { mountPolarisDados } from './mount';
+import type { ReadySnapshot } from './formulas';
+
+type ReadyViewSnapshot = Extract<LinkedViewSnapshot, { status: 'ready' }>;
+type Property = ReadySnapshot['schema']['properties'][number];
+
+const DATABASE_ID = 'inventory';
+const properties: readonly Property[] = [
+  { id: 'name', name: 'Name', type: 'text', options: [] },
+  { id: 'quantity', name: 'Quantity', type: 'number', options: [] },
+  { id: 'price', name: 'Price', type: 'number', options: [] },
+];
+
+function initialDataSnapshot(): ReadySnapshot {
+  return {
+    version: 1,
+    status: 'ready',
+    databaseId: DATABASE_ID,
+    revision: 'data-1',
+    schema: { properties, views: [] },
+    rows: [
+      { id: 'widget', title: 'Widget', properties: { name: 'Catalog label', quantity: 4, price: 10 } },
+      { id: 'gadget', title: 'Gadget', properties: { name: 'Shelf name', quantity: 1, price: 5 } },
+    ],
+    history: { canUndo: false, canRedo: false },
+    readonly: false,
+    diagnostic: null,
+  };
+}
+
+function makeDataApi(snapshot = initialDataSnapshot()) {
+  let current = snapshot;
+  let revision = 1;
+  const patchCalls: Parameters<DataApi['patchCell']>[0][] = [];
+  const historyCalls: Parameters<DataApi['history']>[0][] = [];
+  const listeners = new Set<(snapshot: DataApiSnapshot) => void>();
+  const api: DataApi = {
+    version: 1,
+    snapshot: () => current,
+    patchCell(input): DataApiPatchResult {
+      patchCalls.push(input);
+      current = {
+        ...current,
+        revision: `data-${++revision}`,
+        rows: current.rows.map((row) =>
+          row.id === input.rowId
+            ? { ...row, properties: { ...row.properties, [input.propertyId]: input.value } }
+            : row,
+        ),
+      };
+      for (const listener of [...listeners]) listener(current);
+      return {
+        status: 'staged',
+        databaseId: DATABASE_ID,
+        rowId: input.rowId,
+        propertyId: input.propertyId,
+        revision: current.revision,
+      };
+    },
+    history(input): DataApiHistoryResult {
+      historyCalls.push(input);
+      return {
+        status: 'no-op',
+        databaseId: DATABASE_ID,
+        revision: current.revision,
+        direction: input.direction,
+      };
+    },
+    subscribe(_databaseId, listener) {
+      listeners.add(listener);
+      listener(current);
+      return () => listeners.delete(listener);
+    },
+    async flush(): Promise<DataApiFlushResult> {
+      return { status: 'persisted', databaseId: DATABASE_ID, revision: current.revision };
+    },
+  };
+  return { api, patchCalls, historyCalls, subscriberCount: () => listeners.size, current: () => current };
+}
+
+function makeViewApi(config: LinkedViewConfig) {
+  let revision = 1;
+  let current: ReadyViewSnapshot = {
+    version: 1,
+    status: 'ready',
+    pageId: 'linked-note',
+    viewId: 'view-1',
+    sourceDatabaseId: DATABASE_ID,
+    revision: `view-${revision}`,
+    config,
+    sourceStatus: { status: 'available', diagnostic: null },
+    readonly: false,
+    diagnostic: null,
+    history: { canUndo: false, canRedo: false },
+  };
+  const listeners = new Set<(snapshot: LinkedViewSnapshot) => void>();
+  const patchCalls: Parameters<LinkedViewApi['patchConfig']>[0][] = [];
+  const historyCalls: Parameters<LinkedViewApi['history']>[0][] = [];
+  const flushCalls: number[] = [];
+  const undo: LinkedViewConfig[] = [];
+  const redo: LinkedViewConfig[] = [];
+  let nextFlush: (() => Promise<LinkedViewFlushResult>) | null = null;
+  let stageErrorOnce = false;
+
+  const publish = (nextConfig: LinkedViewConfig, direction: 'undo' | 'redo' | null) => {
+    current = {
+      ...current,
+      revision: `view-${++revision}`,
+      config: nextConfig,
+      history: { canUndo: undo.length > 0, canRedo: redo.length > 0 },
+    };
+    for (const listener of [...listeners]) listener(current);
+    return direction;
+  };
+  const api: LinkedViewApi = {
+    version: 1,
+    snapshot: () => current,
+    patchConfig(input): LinkedViewMutationResult {
+      patchCalls.push(input);
+      if (input.expectedRevision !== current.revision)
+        return { status: 'error', code: 'stale-revision', message: 'stale' };
+      undo.push(current.config);
+      redo.splice(0);
+      const nextConfig = { ...current.config, ...input.patch };
+      publish(nextConfig, null);
+      if (stageErrorOnce) {
+        stageErrorOnce = false;
+        return {
+          status: 'error',
+          code: 'page-editor-conflict',
+          message: 'The config was staged while page synchronization reported an error.',
+          staged: true,
+          pageId: current.pageId,
+          viewId: current.viewId,
+          revision: current.revision,
+        };
+      }
+      return { status: 'staged', pageId: current.pageId, viewId: current.viewId, revision: current.revision };
+    },
+    history(input): LinkedViewHistoryResult {
+      historyCalls.push(input);
+      if (input.expectedRevision !== current.revision)
+        return { status: 'error', code: 'stale-revision', message: 'stale' };
+      const source = input.direction === 'undo' ? undo : redo;
+      const destination = input.direction === 'undo' ? redo : undo;
+      const previous = source.pop();
+      if (!previous)
+        return {
+          status: 'no-op',
+          pageId: current.pageId,
+          viewId: current.viewId,
+          revision: current.revision,
+          direction: input.direction,
+        };
+      destination.push(current.config);
+      publish(previous, input.direction);
+      return {
+        status: 'staged',
+        pageId: current.pageId,
+        viewId: current.viewId,
+        revision: current.revision,
+        direction: input.direction,
+      };
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener(current);
+      return () => listeners.delete(listener);
+    },
+    async flush(): Promise<LinkedViewFlushResult> {
+      flushCalls.push(Date.now());
+      const behavior = nextFlush;
+      nextFlush = null;
+      return behavior
+        ? behavior()
+        : { status: 'persisted', pageId: current.pageId, viewId: current.viewId, revision: current.revision };
+    },
+  };
+
+  return {
+    api,
+    patchCalls,
+    historyCalls,
+    flushCalls,
+    failNextFlush(message: string) {
+      nextFlush = async () => ({
+        status: 'error',
+        code: 'save-failed',
+        message,
+        staged: true,
+        pageId: current.pageId,
+        viewId: current.viewId,
+        revision: current.revision,
+      });
+    },
+    failPatchAfterStagingOnce() {
+      stageErrorOnce = true;
+    },
+  };
+}
+
+const windows: Window[] = [];
+
+afterEach(async () => {
+  await Promise.all(windows.splice(0).map((window) => window.happyDOM.abort()));
+});
+
+function mountLinked(config: LinkedViewConfig, snapshot = initialDataSnapshot()) {
+  const window = new Window({ url: 'http://morrow.test/' });
+  windows.push(window);
+  const domElement = window.document.createElement('div');
+  window.document.body.append(domElement);
+  const element = domElement as unknown as HTMLElement;
+  const controller = new AbortController();
+  const data = makeDataApi(snapshot);
+  const view = makeViewApi(config);
+  const cleanup = mountPolarisDados({
+    element: element as unknown as HTMLElement,
+    databaseId: DATABASE_ID,
+    data: data.api,
+    locale: 'en',
+    editable: true,
+    signal: controller.signal,
+    view: view.api,
+  });
+  return { window, element, controller, cleanup, data, view };
+}
+
+function click(window: Window, element: Element | null): void {
+  if (!element) throw new Error('Expected a UI control.');
+  element.dispatchEvent(
+    new window.MouseEvent('click', { bubbles: true, cancelable: true }) as unknown as Event,
+  );
+}
+
+function input(window: Window, element: HTMLInputElement | HTMLSelectElement, value: string): void {
+  element.value = value;
+  element.dispatchEvent(
+    new window.Event(element instanceof window.HTMLSelectElement ? 'change' : 'input', {
+      bubbles: true,
+    }) as unknown as Event,
+  );
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe('Polaris Dados linked view UI', () => {
+  it('saves local title, partial column priority, and numeric filter through the linked API', async () => {
+    const mounted = mountLinked({ title: 'Inventory view', columnOrder: [], filter: null });
+    const { element, window, view, data } = mounted;
+    click(window, element.querySelector('[data-action="view-settings-toggle"]'));
+
+    const title = element.querySelector<HTMLInputElement>('[data-action="view-title"]')!;
+    input(window, title, 'Quantity at least two');
+    input(
+      window,
+      element.querySelector<HTMLSelectElement>('[data-action="view-filter-property"]')!,
+      'quantity',
+    );
+    input(window, element.querySelector<HTMLInputElement>('[data-action="view-filter-value"]')!, '2');
+    const quantityPriority = element.querySelector<HTMLButtonElement>(
+      '[data-action="view-priority"][data-column-id="quantity"]',
+    );
+    if (!quantityPriority) throw new Error('Expected the Quantity priority control.');
+    expect(quantityPriority.textContent).toBe('Quantity');
+    expect(quantityPriority.getAttribute('aria-pressed')).toBe('false');
+    click(window, quantityPriority);
+    expect(
+      element
+        .querySelector<HTMLButtonElement>('[data-action="view-priority"][data-column-id="quantity"]')
+        ?.getAttribute('aria-pressed'),
+    ).toBe('true');
+    element
+      .querySelector<HTMLFormElement>('[data-view-settings-form]')!
+      .dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event);
+    await flushMicrotasks();
+
+    expect(view.patchCalls).toEqual([
+      {
+        patch: {
+          title: 'Quantity at least two',
+          columnOrder: ['quantity'],
+          filter: { propertyId: 'quantity', op: 'gte', value: 2 },
+        },
+        expectedRevision: 'view-1',
+      },
+    ]);
+    expect(view.api.snapshot()).toMatchObject({
+      status: 'ready',
+      config: {
+        title: 'Quantity at least two',
+        columnOrder: ['quantity'],
+        filter: { propertyId: 'quantity', op: 'gte', value: 2 },
+      },
+    });
+    expect([...element.querySelectorAll('thead th')].map((heading) => heading.textContent)).toEqual([
+      'Row title',
+      'Quantity',
+      'Name',
+      'Price',
+    ]);
+    expect(element.querySelector('caption')?.textContent).toBe('Quantity at least two');
+    expect(
+      [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')].map((row) => row.dataset.rowId),
+    ).toEqual(['widget']);
+    expect(element.querySelector('tbody')?.textContent).toContain('Catalog label');
+    expect(view.flushCalls).toHaveLength(1);
+    expect(data.patchCalls).toHaveLength(0);
+    expect(data.historyCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
+  it('renders the source number format in linked views while filtering and calculating raw values', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties.map((property) =>
+            property.id === 'quantity'
+              ? {
+                  ...property,
+                  format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' as const },
+                }
+              : property,
+          ),
+          {
+            id: 'total',
+            name: 'Total',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * Price * -1',
+            format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' },
+          },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Total + 1' },
+        ],
+      },
+      rows: [
+        { id: 'below', title: 'Below', properties: { name: 'Below', quantity: 2.75, price: 10 } },
+        { id: 'kept', title: 'Kept', properties: { name: 'Kept', quantity: 3.75, price: 5 } },
+      ],
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Inventory view',
+        columnOrder: ['quantity', 'total', 'dependent'],
+        filter: { propertyId: 'quantity', op: 'gte', value: 3 },
+      },
+      snapshot,
+    );
+    const { element } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+
+    expect(rows.map((row) => row.dataset.rowId)).toEqual(['kept']);
+    expect(rows[0]?.querySelector('[data-field="quantity"] [data-value-kind="number"]')?.textContent).toBe('3,8');
+    const formattedNegative = new Intl.NumberFormat('de-DE', {
+      maximumFractionDigits: 1.5,
+      minimumFractionDigits: 1.5,
+    }).format(18.75);
+    expect(rows[0]?.querySelector('[data-field="total"] [data-value-kind="number"]')?.textContent)
+      .toBe(`(${formattedNegative})`);
+    expect(rows[0]?.querySelector('[data-field="dependent"] [data-value-kind="number"]')?.textContent)
+      .toBe(new Intl.NumberFormat('en', { maximumFractionDigits: 10 }).format(-17.75));
+    mounted.cleanup();
+  });
+
+  it('renders implicit formula currencies in linked views with two default fraction digits and raw dependencies', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          {
+            id: 'usd',
+            name: 'USD',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * Price * -1.23456',
+            format: { locale: 'en-US', currency: 'USD' },
+          },
+          {
+            id: 'jpy',
+            name: 'JPY',
+            type: 'formula',
+            options: [],
+            formula: '12.5',
+            format: { currency: 'JPY' },
+          },
+          {
+            id: 'rounded',
+            name: 'Rounded',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * Price * -1.23456',
+            format: { currency: 'BHD', precision: 0, negativeFormat: 'parentheses' },
+          },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Rounded + 1' },
+        ],
+      },
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Currency view',
+        columnOrder: ['usd', 'jpy', 'rounded', 'dependent'],
+        filter: { propertyId: 'quantity', op: 'gte', value: 3 },
+      },
+      snapshot,
+    );
+    const { element } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const cellText = (row: HTMLTableRowElement, propertyId: string) =>
+      row.querySelector(`[data-field="${propertyId}"] [data-value-kind="number"]`)?.textContent;
+    const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+    const currencyText = (value: number, currency: string, locale = browserLocale, precision = 2) =>
+      new Intl.NumberFormat(locale, {
+        style: 'currency',
+        currency,
+        maximumFractionDigits: precision,
+        minimumFractionDigits: precision,
+      }).format(value);
+    const rawTotal = 4 * 10 * -1.23456;
+
+    expect(rows).toHaveLength(1);
+    expect(cellText(rows[0]!, 'usd')).toBe(currencyText(rawTotal, 'USD', 'en-US'));
+    expect(cellText(rows[0]!, 'jpy')).toBe(currencyText(12.5, 'JPY'));
+    expect(cellText(rows[0]!, 'rounded')).toBe(`(${currencyText(Math.abs(rawTotal), 'BHD', browserLocale, 0)})`);
+    expect(cellText(rows[0]!, 'dependent')).toBe(
+      new Intl.NumberFormat('en', { maximumFractionDigits: 10 }).format(rawTotal + 1),
+    );
+    expect(snapshot.rows[0]?.properties).toEqual({ name: 'Catalog label', quantity: 4, price: 10 });
+    mounted.cleanup();
+  });
+
+  it('renders typed number and percentage results with raw dependencies in linked views', async () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'optional', name: 'Optional', type: 'number', options: [] },
+          {
+            id: 'typed-checkbox',
+            name: 'Typed checkbox',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity > 3',
+            formulaResultType: 'checkbox',
+          },
+          {
+            id: 'typed-checkbox-copy',
+            name: 'Typed checkbox copy',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox"), "Yes", "No")',
+          },
+          {
+            id: 'typed-checkbox-false-check',
+            name: 'Typed checkbox false check',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox") == false, "false", "not false")',
+          },
+          {
+            id: 'typed-checkbox-null',
+            name: 'Typed checkbox null',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow.Optional',
+            formulaResultType: 'checkbox',
+          },
+          {
+            id: 'typed-null-false-check',
+            name: 'Typed null false check',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox null") == false, "false", "not false")',
+          },
+          {
+            id: 'typed-checkbox-invalid',
+            name: 'Typed checkbox invalid',
+            type: 'formula',
+            options: [],
+            formula: '1',
+            formulaResultType: 'checkbox',
+          },
+          {
+            id: 'typed-checkbox-invalid-dependent',
+            name: 'Typed checkbox invalid dependent',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox invalid"), "Yes", "No")',
+          },
+          {
+            id: 'typed-text',
+            name: 'Typed text',
+            type: 'formula',
+            options: [],
+            formula: 'Concat(" Qty ", If(Quantity > 3, "three", "two"), " ")',
+            formulaResultType: 'text',
+          },
+          {
+            id: 'typed-text-copy',
+            name: 'Typed text copy',
+            type: 'formula',
+            options: [],
+            formula: 'Concat(prop("Typed text"), "!")',
+          },
+          {
+            id: 'typed-text-length',
+            name: 'Typed text length',
+            type: 'formula',
+            options: [],
+            formula: 'Length(prop("Typed text"))',
+          },
+          {
+            id: 'typed-text-empty',
+            name: 'Typed text empty',
+            type: 'formula',
+            options: [],
+            formula: '""',
+            formulaResultType: 'text',
+          },
+          {
+            id: 'typed-text-null',
+            name: 'Typed text null',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow["Optional"]',
+            formulaResultType: 'text',
+          },
+          {
+            id: 'percent',
+            name: 'Percent',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity / 8',
+            formulaResultType: 'percent',
+            format: { locale: 'de-DE', precision: 1 },
+          },
+          {
+            id: 'bounded-percent',
+            name: 'Bounded percent',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity / 8',
+            formulaResultType: 'percent',
+            format: { locale: 'en-US', precision: 0, min: 0.125, max: 0.5, step: 0.125 },
+          },
+          {
+            id: 'bounded-percent-raw-check',
+            name: 'Bounded percent raw check',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Bounded percent") * 100',
+          },
+          {
+            id: 'percent-raw-max-failure',
+            name: 'Percent raw max failure',
+            type: 'formula',
+            options: [],
+            formula: '0.504',
+            formulaResultType: 'percent',
+            format: { locale: 'en-US', precision: 0, max: 0.5 },
+          },
+          {
+            id: 'percent-raw-max-dependent',
+            name: 'Percent raw max dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Percent raw max failure") + 1',
+          },
+          {
+            id: 'decimal',
+            name: 'Decimal',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'number',
+            format: { locale: 'de-DE' },
+          },
+          {
+            id: 'decimal-bounded',
+            name: 'Decimal bounded',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'number',
+            format: { locale: 'de-DE', precision: 2, min: 2, max: 3 },
+          },
+          {
+            id: 'decimal-bounded-raw-check',
+            name: 'Decimal bounded raw check',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Decimal bounded") * 3',
+          },
+          {
+            id: 'step-valid',
+            name: 'Step valid',
+            type: 'formula',
+            options: [],
+            formula: '0.3',
+            formulaResultType: 'number',
+            format: { locale: 'de-DE', precision: 1, step: 0.1 },
+          },
+          {
+            id: 'step-valid-raw-check',
+            name: 'Step valid raw check',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Step valid") * 10',
+          },
+          {
+            id: 'step-invalid',
+            name: 'Step invalid',
+            type: 'formula',
+            options: [],
+            formula: '0.31',
+            formulaResultType: 'number',
+            format: { locale: 'de-DE', precision: 1, step: 0.1 },
+          },
+          {
+            id: 'step-bound-priority',
+            name: 'Step bound priority',
+            type: 'formula',
+            options: [],
+            formula: '0.31',
+            formulaResultType: 'number',
+            format: { min: 0.2, max: 0.3, step: 0.2 },
+          },
+          {
+            id: 'step-null',
+            name: 'Step null',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow.Optional',
+            formulaResultType: 'number',
+            format: { step: 0.1 },
+          },
+          {
+            id: 'step-max-not-anchor',
+            name: 'Step max not anchor',
+            type: 'formula',
+            options: [],
+            formula: '0.1',
+            formulaResultType: 'number',
+            format: { max: 0.3, step: 0.2 },
+          },
+          {
+            id: 'raw-max-failure',
+            name: 'Raw max failure',
+            type: 'formula',
+            options: [],
+            formula: '1.004',
+            formulaResultType: 'number',
+            format: { precision: 2, max: 1 },
+          },
+          {
+            id: 'raw-max-dependent',
+            name: 'Raw max dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Raw max failure") + 1',
+          },
+          {
+            id: 'min-first',
+            name: 'Minimum first',
+            type: 'formula',
+            options: [],
+            formula: '1',
+            formulaResultType: 'number',
+            format: { min: 2, max: 0 },
+          },
+          {
+            id: 'null-impossible-bounds',
+            name: 'Null impossible bounds',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow.Optional',
+            formulaResultType: 'number',
+            format: { min: 2, max: 0 },
+          },
+          { id: 'decimal-times-three', name: 'Decimal times three', type: 'formula', options: [], formula: 'Decimal * 3' },
+          {
+            id: 'currency-default',
+            name: 'Default currency',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'currency',
+          },
+          {
+            id: 'currency-raw-check',
+            name: 'Currency raw check',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Default currency") * 3',
+          },
+          {
+            id: 'currency-jpy',
+            name: 'JPY result',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity - 1',
+            formulaResultType: 'currency',
+            format: { currency: 'JPY' },
+          },
+          {
+            id: 'currency-locale-only',
+            name: 'Currency locale only',
+            type: 'formula',
+            options: [],
+            formula: '7 / 3',
+            formulaResultType: 'currency',
+            format: { locale: 'de-DE' },
+          },
+          {
+            id: 'currency-zero-precision',
+            name: 'Currency zero precision',
+            type: 'formula',
+            options: [],
+            formula: '0',
+            formulaResultType: 'currency',
+            format: { currency: 'USD', precision: 0 },
+          },
+          {
+            id: 'null-currency',
+            name: 'Null currency',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow["Optional"]',
+            formulaResultType: 'currency',
+          },
+          {
+            id: 'invalid-currency',
+            name: 'Invalid currency',
+            type: 'formula',
+            options: [],
+            formula: '"done"',
+            formulaResultType: 'currency',
+          },
+          {
+            id: 'invalid-currency-dependent',
+            name: 'Invalid currency dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Invalid currency") + 1',
+          },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Percent + 1' },
+          {
+            id: 'above-100',
+            name: 'Above 100%',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * 2',
+            formulaResultType: 'percent',
+          },
+          {
+            id: 'null-percent',
+            name: 'Null percent',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow["Optional"]',
+            formulaResultType: 'percent',
+          },
+          {
+            id: 'invalid-percent',
+            name: 'Invalid percent',
+            type: 'formula',
+            options: [],
+            formula: '"done"',
+            formulaResultType: 'percent',
+          },
+          {
+            id: 'invalid-dependent',
+            name: 'Invalid dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Invalid percent") + 1',
+          },
+        ],
+      },
+      rows: original.rows.map((row) => ({ ...row, properties: { ...row.properties, optional: null } })),
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Percent view',
+        columnOrder: [
+          'quantity',
+          'typed-checkbox',
+          'typed-checkbox-copy',
+          'typed-checkbox-false-check',
+          'typed-checkbox-null',
+          'typed-null-false-check',
+          'typed-checkbox-invalid',
+          'typed-checkbox-invalid-dependent',
+          'typed-text',
+          'typed-text-copy',
+          'typed-text-length',
+          'typed-text-empty',
+          'typed-text-null',
+          'percent',
+          'bounded-percent',
+          'bounded-percent-raw-check',
+          'percent-raw-max-failure',
+          'percent-raw-max-dependent',
+          'decimal',
+          'decimal-bounded',
+          'decimal-bounded-raw-check',
+          'step-valid',
+          'step-valid-raw-check',
+          'step-invalid',
+          'step-bound-priority',
+          'step-null',
+          'step-max-not-anchor',
+          'raw-max-failure',
+          'raw-max-dependent',
+          'min-first',
+          'null-impossible-bounds',
+          'decimal-times-three',
+          'currency-default',
+          'currency-raw-check',
+          'currency-jpy',
+          'currency-locale-only',
+          'currency-zero-precision',
+          'null-currency',
+          'invalid-currency',
+          'invalid-currency-dependent',
+          'dependent',
+          'above-100',
+          'null-percent',
+          'invalid-percent',
+          'invalid-dependent',
+        ],
+        filter: null,
+      },
+      snapshot,
+    );
+    const { element } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const cell = (row: HTMLTableRowElement, propertyId: string) =>
+      row.querySelector<HTMLElement>(`[data-field="${propertyId}"]`)!;
+    const localizedPercent = (value: number) =>
+      new Intl.NumberFormat('de-DE', {
+        style: 'percent',
+        maximumFractionDigits: 1,
+        minimumFractionDigits: 1,
+      }).format(value);
+    const typeError = 'Formula “Invalid percent” declared as percent must return a finite number or null.';
+    const currencyTypeError =
+      'Formula “Invalid currency” declared as currency must return a finite number or null.';
+    const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+
+    expect(rows.map((row) => row.dataset.rowId)).toEqual(['widget', 'gadget']);
+    expect(cell(rows[0]!, 'typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('True');
+    expect(cell(rows[1]!, 'typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('False');
+    expect(cell(rows[0]!, 'typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('Yes');
+    expect(cell(rows[1]!, 'typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('No');
+    expect(cell(rows[0]!, 'typed-checkbox-false-check').textContent).toBe('not false');
+    expect(cell(rows[1]!, 'typed-checkbox-false-check').textContent).toBe('false');
+    expect(cell(rows[0]!, 'typed-checkbox-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell(rows[0]!, 'typed-null-false-check').textContent).toBe('not false');
+    expect(cell(rows[0]!, 'typed-checkbox').querySelector('input[type="checkbox"], button[data-action="edit"]')).toBeNull();
+    const checkboxTypeError =
+      'Formula “Typed checkbox invalid” declared as checkbox must return true, false, or null.';
+    expect(cell(rows[0]!, 'typed-checkbox-invalid').querySelector('code')?.textContent).toBe(checkboxTypeError);
+    expect(cell(rows[0]!, 'typed-checkbox-invalid-dependent').querySelector('code')?.textContent).toBe(
+      checkboxTypeError,
+    );
+    expect(cell(rows[0]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty three ');
+    expect(cell(rows[1]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two ');
+    expect(cell(rows[0]!, 'typed-text-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty three !');
+    expect(cell(rows[1]!, 'typed-text-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two !');
+    expect(cell(rows[0]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('11');
+    expect(cell(rows[1]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('9');
+    expect(cell(rows[0]!, 'typed-text-empty').querySelector('[data-value-kind="text"]')).not.toBeNull();
+    expect(cell(rows[0]!, 'typed-text-empty').textContent).toBe('');
+    expect(cell(rows[0]!, 'typed-text-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell(rows[0]!, 'percent').textContent).toBe(localizedPercent(0.5));
+    expect(cell(rows[1]!, 'percent').textContent).toBe(localizedPercent(0.125));
+    expect(cell(rows[0]!, 'bounded-percent').textContent).toBe('50%');
+    expect(cell(rows[1]!, 'bounded-percent').textContent).toBe('13%');
+    expect(cell(rows[0]!, 'bounded-percent-raw-check').textContent).toBe('50');
+    expect(cell(rows[1]!, 'bounded-percent-raw-check').textContent).toBe('12.5');
+    expect(cell(rows[0]!, 'percent-raw-max-failure').querySelector('code')?.textContent).toBe(
+      'Percent raw max failure must be at most 0.5.',
+    );
+    expect(cell(rows[0]!, 'percent-raw-max-dependent').querySelector('code')?.textContent).toBe(
+      'Percent raw max failure must be at most 0.5.',
+    );
+    expect(cell(rows[0]!, 'decimal').textContent).toBe('2,33');
+    expect(cell(rows[0]!, 'decimal-bounded').textContent).toBe('2,33');
+    expect(cell(rows[0]!, 'decimal-bounded-raw-check').textContent).toBe('7');
+    expect(cell(rows[0]!, 'step-valid').textContent).toBe('0,3');
+    expect(cell(rows[0]!, 'step-valid-raw-check').textContent).toBe('3');
+    expect(cell(rows[0]!, 'step-invalid').querySelector('code')?.textContent).toBe(
+      'Step invalid must use steps of 0.1.',
+    );
+    expect(cell(rows[0]!, 'step-bound-priority').querySelector('code')?.textContent).toBe(
+      'Step bound priority must be at most 0.3.',
+    );
+    expect(cell(rows[0]!, 'step-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell(rows[0]!, 'step-max-not-anchor').querySelector('code')?.textContent).toBe(
+      'Step max not anchor must use steps of 0.2.',
+    );
+    expect(cell(rows[0]!, 'raw-max-failure').querySelector('code')?.textContent).toBe(
+      'Raw max failure must be at most 1.',
+    );
+    expect(cell(rows[0]!, 'raw-max-dependent').querySelector('code')?.textContent).toBe(
+      'Raw max failure must be at most 1.',
+    );
+    expect(cell(rows[0]!, 'min-first').querySelector('code')?.textContent).toBe(
+      'Minimum first must be at least 2.',
+    );
+    expect(
+      cell(rows[0]!, 'null-impossible-bounds').querySelector('[data-value-kind="null"]')?.textContent,
+    ).toBe('Blank');
+    expect(cell(rows[0]!, 'decimal-times-three').textContent).toBe('7');
+    expect(cell(rows[0]!, 'currency-default').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, { style: 'currency', currency: 'BRL' }).format(7 / 3),
+    );
+    expect(cell(rows[0]!, 'currency-raw-check').textContent).toBe('7');
+    expect(cell(rows[0]!, 'currency-jpy').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'JPY',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(3),
+    );
+    expect(cell(rows[0]!, 'currency-locale-only').textContent).toBe(
+      new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'BRL' }).format(7 / 3),
+    );
+    expect(cell(rows[0]!, 'currency-zero-precision').textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 0,
+        minimumFractionDigits: 0,
+      }).format(0),
+    );
+    expect(cell(rows[0]!, 'null-currency').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell(rows[0]!, 'invalid-currency').querySelector('code')?.textContent).toBe(currencyTypeError);
+    expect(cell(rows[0]!, 'invalid-currency-dependent').querySelector('code')?.textContent).toBe(currencyTypeError);
+    expect(cell(rows[0]!, 'dependent').textContent).toBe('1.5');
+    expect(cell(rows[1]!, 'dependent').textContent).toBe('1.125');
+    expect(cell(rows[0]!, 'above-100').textContent).toBe('800%');
+    expect(cell(rows[1]!, 'above-100').textContent).toBe('200%');
+    expect(cell(rows[0]!, 'null-percent').querySelector('[data-value-kind="null"]')?.textContent).toBe(
+      'Blank',
+    );
+    expect(cell(rows[0]!, 'invalid-percent').querySelector('code')?.textContent).toBe(typeError);
+    expect(cell(rows[0]!, 'invalid-dependent').querySelector('code')?.textContent).toBe(typeError);
+    click(mounted.window, cell(rows[0]!, 'quantity').querySelector('button[data-action="edit"]'));
+    const quantityInput = element.querySelector<HTMLInputElement>('input[data-field="quantity"]');
+    if (!quantityInput) throw new Error('Expected the linked quantity editor.');
+    input(mounted.window, quantityInput, '2');
+    click(mounted.window, element.querySelector('button[data-action="save"]'));
+    await flushMicrotasks();
+    const updatedRows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    expect(cell(updatedRows[0]!, 'typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('False');
+    expect(cell(updatedRows[0]!, 'typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('No');
+    expect(cell(updatedRows[0]!, 'typed-checkbox-false-check').textContent).toBe('false');
+    expect(cell(updatedRows[0]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two ');
+    expect(cell(updatedRows[0]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('9');
+    expect(cell(updatedRows[0]!, 'bounded-percent').textContent).toBe('25%');
+    expect(cell(updatedRows[0]!, 'bounded-percent-raw-check').textContent).toBe('25');
+    expect(mounted.data.patchCalls).toMatchObject([
+      { databaseId: DATABASE_ID, rowId: 'widget', propertyId: 'quantity', value: 2 },
+    ]);
+    expect(mounted.data.current().rows[0]?.properties).toEqual({ name: 'Catalog label', quantity: 2, price: 10, optional: null });
+    expect(snapshot.rows[0]?.properties).toEqual({
+      name: 'Catalog label',
+      quantity: 4,
+      price: 10,
+      optional: null,
+    });
+    mounted.cleanup();
+  });
+
+  it('validates explicit currency constraints in linked views and after row edits', async () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'optional', name: 'Optional', type: 'number', options: [] },
+          {
+            id: 'bounded-currency',
+            name: 'Bounded currency',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity + 5.996',
+            formulaResultType: 'currency',
+            format: { currency: 'BRL', locale: 'en-US', precision: 2, min: 0, max: 10, step: 0.002 },
+          },
+          {
+            id: 'bounded-currency-raw-check',
+            name: 'Bounded currency raw check',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Bounded currency") == 9.996, 1, 0)',
+          },
+          {
+            id: 'over-max-currency',
+            name: 'Over max currency',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity + 6.004',
+            formulaResultType: 'currency',
+            format: { currency: 'BRL', locale: 'en-US', precision: 2, min: 0, max: 10, step: 0.002 },
+          },
+          {
+            id: 'over-max-currency-dependent',
+            name: 'Over max currency dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Over max currency") + 1',
+          },
+          {
+            id: 'negative-currency',
+            name: 'Negative currency',
+            type: 'formula',
+            options: [],
+            formula: '-1.996',
+            formulaResultType: 'currency',
+            format: { currency: 'BRL', locale: 'en-US', precision: 2, min: -2, max: -1, step: 0.002 },
+          },
+          {
+            id: 'null-bounded-currency',
+            name: 'Null bounded currency',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow.Optional',
+            formulaResultType: 'currency',
+            format: { min: 5, max: 0, step: 0.002 },
+          },
+        ],
+      },
+      rows: original.rows.map((row) => ({ ...row, properties: { ...row.properties, optional: null } })),
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Currency bounds view',
+        columnOrder: [
+          'quantity',
+          'bounded-currency',
+          'bounded-currency-raw-check',
+          'over-max-currency',
+          'over-max-currency-dependent',
+          'negative-currency',
+          'null-bounded-currency',
+        ],
+        filter: null,
+      },
+      snapshot,
+    );
+    const { element, window } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const cell = (row: HTMLTableRowElement, propertyId: string) =>
+      row.querySelector<HTMLElement>(`[data-field="${propertyId}"]`)!;
+    const currency = (value: number) =>
+      new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'BRL',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(value);
+    const error = 'Over max currency must be at most 10.';
+
+    expect(currency(9.996)).toBe(currency(10.004));
+    expect(cell(rows[0]!, 'bounded-currency').textContent).toBe(currency(9.996));
+    expect(cell(rows[0]!, 'bounded-currency-raw-check').textContent).toBe('1');
+    expect(cell(rows[1]!, 'bounded-currency-raw-check').textContent).toBe('0');
+    expect(cell(rows[0]!, 'over-max-currency').querySelector('code')?.textContent).toBe(error);
+    expect(cell(rows[0]!, 'over-max-currency-dependent').querySelector('code')?.textContent).toBe(error);
+    expect(cell(rows[1]!, 'over-max-currency').textContent).toBe(currency(7.004));
+    expect(cell(rows[0]!, 'negative-currency').textContent).toBe(currency(-1.996));
+    expect(cell(rows[0]!, 'null-bounded-currency').querySelector('[data-value-kind="null"]')?.textContent).toBe(
+      'Blank',
+    );
+
+    click(window, cell(rows[0]!, 'quantity').querySelector('button[data-action="edit"]'));
+    const quantity = element.querySelector<HTMLInputElement>('input[data-field="quantity"]');
+    if (!quantity) throw new Error('Expected the linked quantity editor.');
+    input(window, quantity, '4.008');
+    click(window, element.querySelector('button[data-action="save"]'));
+    await flushMicrotasks();
+    const updatedRows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+
+    expect(cell(updatedRows[0]!, 'bounded-currency').querySelector('code')?.textContent).toBe(
+      'Bounded currency must be at most 10.',
+    );
+    expect(cell(updatedRows[0]!, 'bounded-currency-raw-check').querySelector('code')?.textContent).toBe(
+      'Bounded currency must be at most 10.',
+    );
+    expect(mounted.data.patchCalls).toMatchObject([
+      { databaseId: DATABASE_ID, rowId: 'widget', propertyId: 'quantity', value: 4.008 },
+    ]);
+    mounted.cleanup();
+  });
+
+  it('renders formula progress bars in linked views with the shared cell presentation', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'default-bar', name: 'Default bar', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar' },
+          { id: 'fractional-bar', name: 'Fractional bar', type: 'formula', options: [], formula: 'Quantity / 3', display: 'bar', max: 3 },
+          { id: 'overflow', name: 'Overflow', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar', max: 20 },
+          { id: 'zero-maximum', name: 'Zero maximum', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar', max: 0 },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Overflow + 1' },
+          { id: 'text-bar', name: 'Text bar', type: 'formula', options: [], formula: '"Ready"', display: 'bar' },
+          { id: 'manual-bar', name: 'Manual bar', type: 'number', options: [], display: 'bar', max: 5 },
+        ],
+      },
+      rows: [
+        { id: 'widget', title: 'Widget', properties: { name: 'Catalog label', quantity: 4, price: 10, 'manual-bar': 2 } },
+      ],
+    };
+    const mounted = mountLinked(
+      { title: 'Progress view', columnOrder: ['default-bar', 'fractional-bar', 'overflow', 'zero-maximum', 'dependent', 'text-bar', 'manual-bar'], filter: null },
+      snapshot,
+    );
+    const { element } = mounted;
+    const progressFor = (id: string) => element.querySelector<HTMLElement>(`[data-field="${id}"] .prop-progress`);
+    const labelFor = (id: string) => progressFor(id)?.querySelector('.prop-progress-label')?.textContent;
+
+    expect(labelFor('default-bar')).toBe('40%');
+    expect(labelFor('fractional-bar')).toBe('44%');
+    expect(progressFor('fractional-bar')?.getAttribute('aria-valuetext')).toBe('44% (1.3333333333333333 / 3)');
+    expect(labelFor('overflow')).toBe('100%');
+    expect(progressFor('overflow')?.title).toBe('40 / 20');
+    expect(progressFor('zero-maximum')?.title).toBe('40 / 100');
+    expect(labelFor('zero-maximum')).toBe('40%');
+    expect(progressFor('overflow')?.hasAttribute('tabindex')).toBe(false);
+    expect(element.querySelector('[data-field="dependent"] [data-value-kind="number"]')?.textContent).toBe('41');
+    expect(element.querySelector('[data-field="text-bar"] [data-value-kind="text"]')?.textContent).toBe('Ready');
+    expect(progressFor('text-bar')).toBeNull();
+    expect(element.querySelector('[data-field="manual-bar"] .prop-progress')).toBeNull();
+    expect(mounted.data.patchCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
+  it('preserves tiny finite formula ranges in linked progress labels and accessibility text', () => {
+    const tiny = 1e-110;
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'tiny', name: 'Tiny', type: 'formula', options: [], formula: 'Quantity', display: 'bar', max: tiny },
+          { id: 'tiny-dependent', name: 'Tiny dependent', type: 'formula', options: [], formula: 'Tiny * 2', display: 'bar', max: tiny * 2 },
+        ],
+      },
+      rows: [{ id: 'widget', title: 'Widget', properties: { name: 'Widget', quantity: tiny, price: 10 } }],
+    };
+    const mounted = mountLinked({ title: 'Tiny progress', columnOrder: ['tiny', 'tiny-dependent'], filter: null }, snapshot);
+    const { element } = mounted;
+    const progressFor = (id: string) => element.querySelector<HTMLElement>(`[data-field="${id}"] .prop-progress`);
+    const localize = (value: number) =>
+      new Intl.NumberFormat('en', { maximumSignificantDigits: 21, notation: 'scientific' }).format(value);
+    const tinyRange = `${localize(tiny)} / ${localize(tiny)}`;
+    const dependentRange = `${localize(tiny * 2)} / ${localize(tiny * 2)}`;
+
+    expect(progressFor('tiny')?.title).toBe(tinyRange);
+    expect(progressFor('tiny')?.title).not.toBe('0 / 0');
+    expect(progressFor('tiny')?.getAttribute('aria-label')).toBe('Tiny');
+    expect(progressFor('tiny')?.getAttribute('aria-valuetext')).toBe(`100% (${tinyRange})`);
+    expect(progressFor('tiny')?.querySelector<HTMLElement>('.prop-progress-fill')?.style.width).toBe('100%');
+    expect(progressFor('tiny-dependent')?.title).toBe(dependentRange);
+    expect(progressFor('tiny-dependent')?.getAttribute('aria-valuetext')).toBe(`100% (${dependentRange})`);
+    expect(mounted.data.patchCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
+  it('preserves priority-control focus through toggle and reorder without stealing another root focus', () => {
+    const mounted = mountLinked({
+      title: 'Inventory view',
+      columnOrder: ['quantity', 'price'],
+      filter: null,
+    });
+    const { element, window } = mounted;
+    click(window, element.querySelector('[data-action="view-settings-toggle"]'));
+
+    const namePriority = element.querySelector<HTMLButtonElement>(
+      '[data-action="view-priority"][data-column-id="name"]',
+    )!;
+    namePriority.focus();
+    click(window, namePriority);
+    const toggledName = element.querySelector<HTMLButtonElement>(
+      '[data-action="view-priority"][data-column-id="name"]',
+    )!;
+    expect(toggledName.getAttribute('aria-pressed')).toBe('true');
+    expect(window.document.activeElement).toBe(toggledName);
+
+    const priceMoveDown = element.querySelector<HTMLButtonElement>(
+      '[data-action="view-move-down"][data-column-id="price"]',
+    )!;
+    priceMoveDown.focus();
+    click(window, priceMoveDown);
+    const priceMoveUp = element.querySelector<HTMLButtonElement>(
+      '[data-action="view-move-up"][data-column-id="price"]',
+    );
+    expect(priceMoveUp).not.toBeNull();
+    expect(window.document.activeElement).toBe(priceMoveUp);
+
+    const secondRoot = window.document.createElement('button');
+    window.document.body.append(secondRoot);
+    secondRoot.focus();
+    click(window, element.querySelector('[data-action="view-priority"][data-column-id="name"]'));
+    expect(window.document.activeElement).toBe(secondRoot);
+    mounted.cleanup();
+  });
+
+  it('keeps linked-view keyboard history independent inside an editable document', async () => {
+    const mounted = mountLinked({ title: 'Inventory view', columnOrder: [], filter: null });
+    const { element, window, view, data } = mounted;
+    const document = element.ownerDocument;
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    element.parentElement?.replaceChild(editor, element);
+    editor.append(element);
+    element.setAttribute('contenteditable', 'false');
+    element.tabIndex = -1;
+
+    click(window, element.querySelector('[data-action="view-settings-toggle"]'));
+    const title = element.querySelector<HTMLInputElement>('[data-action="view-title"]');
+    if (!title) throw new Error('The linked view title input did not render.');
+    input(window, title, 'Renamed view');
+    element
+      .querySelector<HTMLFormElement>('[data-view-settings-form]')!
+      .dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event);
+    await flushMicrotasks();
+    expect(view.api.snapshot()).toMatchObject({
+      status: 'ready',
+      config: { title: 'Renamed view' },
+      history: { canUndo: true },
+    });
+
+    const settingsToggle = element.querySelector<HTMLButtonElement>('[data-action="view-settings-toggle"]');
+    if (!settingsToggle) throw new Error('The linked view settings control did not render.');
+    settingsToggle.focus();
+    expect(document.activeElement).toBe(settingsToggle);
+    const undo = new window.KeyboardEvent('keydown', {
+      key: 'z', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    settingsToggle.dispatchEvent(undo as unknown as Event);
+    expect(undo.target).toBe(settingsToggle);
+    await flushMicrotasks();
+    expect(undo.defaultPrevented).toBe(true);
+    expect(view.historyCalls.map(({ direction }) => direction)).toEqual(['undo']);
+    expect(data.historyCalls).toHaveLength(0);
+    expect(view.api.snapshot()).toMatchObject({ config: { title: 'Inventory view' } });
+    mounted.cleanup();
+  });
+
+  it('returns focus to settings when explicit missing-reference repair removes its own button', () => {
+    const mounted = mountLinked({
+      title: 'Inventory view',
+      columnOrder: ['deleted-column'],
+      filter: null,
+    });
+    const { element, window, view } = mounted;
+    click(window, element.querySelector('[data-action="view-settings-toggle"]'));
+    const repair = element.querySelector<HTMLButtonElement>(
+      '[data-action="view-remove-unavailable-columns"]',
+    );
+    if (!repair) throw new Error('Expected the explicit missing-reference repair button.');
+    repair.focus();
+    click(window, repair);
+
+    const settingsToggle = element.querySelector('[data-action="view-settings-toggle"]');
+    expect(element.querySelector('[data-action="view-remove-unavailable-columns"]')).toBeNull();
+    expect(window.document.activeElement).toBe(settingsToggle);
+    expect(view.patchCalls).toHaveLength(0);
+    expect(view.historyCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
+  it('preserves unavailable references on title-only Save and offers Retry without Cancel after staged failure', async () => {
+    const original = {
+      title: 'Inventory view',
+      columnOrder: ['deleted-column', 'quantity'],
+      filter: { propertyId: 'deleted-filter', op: 'gte' as const, value: 2 },
+    };
+    const mounted = mountLinked(original);
+    const { element, window, view } = mounted;
+    expect(element.querySelectorAll('tbody tr')).toHaveLength(2);
+    click(window, element.querySelector('[data-action="view-settings-toggle"]'));
+    expect(element.querySelector('[data-action="view-remove-unavailable-columns"]')?.textContent).toBe(
+      'Remove unavailable references',
+    );
+    const title = element.querySelector<HTMLInputElement>('[data-action="view-title"]')!;
+    const originalInputNode = title;
+    input(window, title, 'Renamed locally');
+    view.failPatchAfterStagingOnce();
+    view.failNextFlush('Temporary persistence failure.');
+    element
+      .querySelector<HTMLFormElement>('[data-view-settings-form]')!
+      .dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event);
+    await flushMicrotasks();
+
+    expect(view.patchCalls).toEqual([{ patch: { title: 'Renamed locally' }, expectedRevision: 'view-1' }]);
+    expect(view.api.snapshot()).toMatchObject({
+      status: 'ready',
+      config: {
+        title: 'Renamed locally',
+        columnOrder: ['deleted-column', 'quantity'],
+        filter: { propertyId: 'deleted-filter', op: 'gte', value: 2 },
+      },
+    });
+    expect(element.querySelector('[data-action="view-retry"]')).not.toBeNull();
+    expect(element.querySelector<HTMLButtonElement>('[data-action="view-cancel"]')?.disabled).toBe(true);
+    expect(element.querySelector('[data-action="view-title"]')).toBe(originalInputNode);
+
+    click(window, element.querySelector('[data-action="view-retry"]'));
+    await flushMicrotasks();
+    expect(view.flushCalls).toHaveLength(2);
+    expect(view.patchCalls).toHaveLength(1);
+    expect(view.historyCalls).toHaveLength(0);
+    expect(element.querySelector('[data-action="view-retry"]')).toBeNull();
+    expect(element.querySelector('[data-action="view-title"]')).toBe(originalInputNode);
+    mounted.cleanup();
+  });
+
+  it('shows an inert localized diagnostic for an unsupported linked-view API version', async () => {
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const domElement = window.document.createElement('div');
+    window.document.body.append(domElement);
+    const element = domElement as unknown as HTMLElement;
+    const controller = new AbortController();
+    const data = makeDataApi();
+    const cleanup = mountPolarisDados({
+      element,
+      databaseId: DATABASE_ID,
+      data: data.api,
+      locale: 'en',
+      editable: true,
+      signal: controller.signal,
+      view: { version: 2 } as unknown as LinkedViewApi,
+    });
+
+    expect(element.querySelector('[role="alert"]')?.textContent).toContain('does not support');
+    expect(data.subscriberCount()).toBe(0);
+    expect(data.patchCalls).toHaveLength(0);
+    expect(data.historyCalls).toHaveLength(0);
+    cleanup();
+  });
+});

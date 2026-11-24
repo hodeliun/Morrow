@@ -1,20 +1,36 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  cloneElement,
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import type { ReactElement } from 'react';
 import { t } from './i18n';
 import { allActions, matchesShortcut, runAction } from './actions';
+import { isExitInteractionBlocked } from './exitInteraction';
 import { CommandPalette } from './components/CommandPalette';
 import { Dialogs } from './components/Dialogs';
+import { PaneSplitResizer } from './PaneSplitResizer';
+import type { PaneSplitPreview, SplitResizeIdentity } from './PaneSplitResizer';
 import { ReviewView } from './components/ReviewView';
 import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageView } from './components/PageView';
-import { Toasts } from './components/primitives';
 import { TabBar } from './components/TabBar';
 import { SearchView } from './components/SearchView';
 import { Sidebar } from './components/Sidebar';
 import { HomeView } from './components/Home';
 import { ArchiveView, TasksView, TrashView } from './components/Views';
+import { TemplatesView } from './components/TemplatesView';
+import { JournalView } from './components/JournalView';
+import { FilesView } from './components/FilesView';
 import { commitEditors, ownsUndo, undoRedo } from './editor/commits';
-import { ensureToday, writeAutoBackup } from './operations';
+import { captureFilesToToday, captureToToday, ensureToday, writeAutoBackup } from './operations';
+import { dateKey, findDailyNote } from '../core/daily';
 import { startAutoSync, syncWith } from './sync';
 import { startUpdateChecks } from './updates';
 import { desktop, isMac, watchTitleBar } from './platform/desktop';
@@ -22,27 +38,89 @@ import {
   applySpellcheck,
   getPreferences,
   resolvedTheme,
-  setPreferences,
   usePreferences,
 } from './platform/preferences';
+import type { Palette } from './platform/preferences';
 import { navigate, openPage, parseRoute, routeHash, useRoute } from './router';
 import type { Route } from './router';
-import { getUi, setUi, toast, useUi } from './ui';
+import { getUi, openDialog, setUi, toast, useUi } from './ui';
 import { loadCustomCss } from './customCss';
+import { loadTagColors } from './tagColors';
 import {
   activateTabAt,
   claimNavigation,
-  goBack,
+  commitPaneResizeSession,
+  getTabs,
   PaneContext,
+  PaneTabContext,
+  paneAssignments,
+  paneIdForTabId,
+  paneSlots,
+  restoreLastPosition,
+  runStartupNavigation,
   setActivePane,
   startTabs,
   useTabs,
 } from './tabs';
-import type { PaneId } from './tabs';
-import { flushPlaces } from './readingPlace';
-import { clearPropertyHistory, getSession, getState } from './workspace';
+import type { PaneId, PaneRole } from './tabs';
+import { panePresetOf, updatePaneSplitRatio } from './paneLayout';
+import type { PanePreset } from './paneLayout';
+import { paneLayoutGeometry } from './paneGeometry';
+import {
+  clearPropertyHistory,
+  getSession,
+  getState,
+  getWorkspaceSessionGeneration,
+  subscribeWorkspaceSession,
+} from './workspace';
+import type { WorkspaceSession } from '../storage/session';
 
 const AUTO_BACKUP_MS = 10 * 60 * 1000;
+const mountedPaneInstances = new WeakMap<WorkspaceSession, Set<string>>();
+
+export function paneHostInstances(
+  session: WorkspaceSession,
+  registeredIds: readonly string[],
+  visibleIds: readonly string[],
+  cacheableIds: readonly string[] = registeredIds,
+): string[] {
+  const registered = new Set(registeredIds);
+  const cacheable = new Set(cacheableIds.filter((tabId) => registered.has(tabId)));
+  const mounted = mountedPaneInstances.get(session) ?? new Set<string>();
+  for (const tabId of mounted) if (!cacheable.has(tabId)) mounted.delete(tabId);
+  for (const tabId of visibleIds) if (cacheable.has(tabId)) mounted.add(tabId);
+  mountedPaneInstances.set(session, mounted);
+  return registeredIds.filter((tabId) => mounted.has(tabId));
+}
+
+export function cacheablePaneHostIds(tabs: readonly { id: string; target: string }[]): string[] {
+  return tabs.filter((tab) => parseRoute(tab.target).name === 'page').map((tab) => tab.id);
+}
+
+interface PaneHostElement {
+  readonly tabId: string;
+  readonly element: ReactElement;
+}
+
+export function paneHostChildren(
+  sessionGeneration: number,
+  visible: readonly PaneHostElement[],
+  hidden: readonly PaneHostElement[],
+  splitResizer: ReactElement,
+  includeSplitResizer = true,
+): ReactElement[] {
+  const children: ReactElement[] = [];
+  visible.forEach((pane, index) => {
+    if (includeSplitResizer && index === 1) {
+      children.push(cloneElement(splitResizer, { key: `${sessionGeneration}:split-resizer` }));
+    }
+    children.push(cloneElement(pane.element, { key: `${sessionGeneration}:${pane.tabId}` }));
+  });
+  for (const pane of hidden) {
+    children.push(cloneElement(pane.element, { key: `${sessionGeneration}:${pane.tabId}` }));
+  }
+  return children;
+}
 
 // the assistant is only loaded for people who turned it on
 const AssistantPanel = lazy(() =>
@@ -54,20 +132,24 @@ const GraphView = lazy(() =>
   import('./components/GraphView').then((module) => ({ default: module.GraphView })),
 );
 
-function useTheme(theme: 'system' | 'light' | 'dark') {
+function useTheme(theme: 'system' | 'light' | 'dark', palette: Palette) {
   useEffect(() => {
     const apply = () => {
       const resolved = resolvedTheme(theme);
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.style.colorScheme = resolved;
-      desktop?.setTheme(resolved);
+      const root = document.documentElement;
+      root.dataset.theme = resolved;
+      root.dataset.palette = palette;
+      root.style.colorScheme = resolved;
+      // the window behind the page, and on a phone the strips around it, take the page's colour
+      const page = getComputedStyle(root).getPropertyValue('--bg').trim();
+      desktop?.setTheme(resolved, /^#[0-9a-f]{6}$/i.test(page) ? page : undefined);
     };
     watchTitleBar();
     apply();
     const media = matchMedia('(prefers-color-scheme: dark)');
     media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);
-  }, [theme]);
+  }, [theme, palette]);
 }
 
 function useGlobalShortcuts() {
@@ -97,13 +179,14 @@ function useGlobalShortcuts() {
       }
       if (matchesShortcut(event, 'Mod+P')) {
         event.preventDefault();
-        setUi({ palette: !ui.palette });
+        setUi({ palette: !ui.palette, paletteForSide: false, palettePaneScope: null });
         return;
       }
       for (const action of allActions()) {
         if (action.shortcut && matchesShortcut(event, action.shortcut)) {
           event.preventDefault();
-          if (ui.palette && action.id !== 'search') setUi({ palette: false });
+          if (ui.palette && action.id !== 'search')
+            setUi({ palette: false, palettePaneScope: null });
           runAction(action.id);
           return;
         }
@@ -111,6 +194,60 @@ function useGlobalShortcuts() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+}
+
+// the mouse pointer hides while typing and comes back when the mouse moves, the way the electron app did
+// and the system does in its own text fields. the web view on windows leaves it standing over the words
+function useHidePointerWhileTyping() {
+  useEffect(() => {
+    const root = document.documentElement;
+    let hidden = false;
+    const onKey = (event: KeyboardEvent) => {
+      if (hidden || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.length !== 1 && !['Enter', 'Backspace', 'Delete', 'Tab'].includes(event.key)) return;
+      const target = event.target as HTMLElement | null;
+      if (!target?.isContentEditable && !(target instanceof HTMLTextAreaElement)) return;
+      hidden = true;
+      root.dataset.typing = '';
+    };
+    const onMove = (event: PointerEvent) => {
+      // a move of no distance comes with some keys and scrolling, only a real move shows it again
+      if (!hidden || (event.type === 'pointermove' && event.movementX === 0 && event.movementY === 0)) return;
+      hidden = false;
+      delete root.dataset.typing;
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerdown', onMove, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerdown', onMove, true);
+    };
+  }, []);
+}
+
+// links and words shared from another app on a phone go into today's note, when morrow opens from the share
+// sheet or comes back to the front
+function useSharedText() {
+  useEffect(() => {
+    if (!desktop?.takeShared) return;
+    const take = () => {
+      if (document.visibilityState !== 'visible') return;
+      void desktop?.takeShared?.().then(async ({ text, files }) => {
+        const words = text ? captureToToday(text) : false;
+        const kept = files.length ? await captureFilesToToday(files) : 0;
+        if (words || kept) toast(t('toasts.sharedSaved'), { durationMs: 3000 });
+      });
+    };
+    take();
+    document.addEventListener('visibilitychange', take);
+    window.addEventListener('focus', take);
+    return () => {
+      document.removeEventListener('visibilitychange', take);
+      window.removeEventListener('focus', take);
+    };
   }, []);
 }
 
@@ -156,13 +293,7 @@ function useLifecycle() {
     document.addEventListener('visibilitychange', onVisibility);
 
     const unsubscribe = desktop?.onCommand(async (id) => {
-      if (id === 'app.prepareToClose') {
-        commitEditors();
-        flushPlaces();
-        await session.flush();
-        await writeAutoBackup();
-        return;
-      }
+      if (isExitInteractionBlocked()) return;
       if (id.startsWith('page:')) {
         if (getState().pages[id.slice(5)]) openPage(id.slice(5));
         return;
@@ -216,10 +347,16 @@ function viewFor(route: Route) {
       return <PageView key={route.id} id={route.id} find={route.find} anchor={route.anchor ?? null} />;
     case 'tasks':
       return <TasksView />;
+    case 'templates':
+      return <TemplatesView />;
+    case 'journal':
+      return <JournalView />;
     case 'trash':
       return <TrashView />;
     case 'archive':
       return <ArchiveView />;
+    case 'files':
+      return <FilesView />;
     case 'tags':
       return <TagsView />;
     case 'tag':
@@ -252,69 +389,78 @@ function usePaneSize(ref: React.RefObject<HTMLElement | null>): PaneSize {
 }
 
 // one side of the window's content, a split tab shows two of these
-function Pane({
-  pane,
+export function Pane({
+  role,
+  paneId,
+  tabId,
   route,
   active,
+  hidden = false,
   style,
 }: {
-  pane: PaneId;
-  route: Route;
+  role: PaneRole;
+  paneId: PaneId;
+  tabId: string | null;
+  route: Route | null;
   active: boolean;
+  hidden?: boolean;
   style?: React.CSSProperties;
 }) {
   const ref = useRef<HTMLElement>(null);
   const size = usePaneSize(ref);
+  useLayoutEffect(() => {
+    if (!hidden) return;
+    const section = ref.current;
+    const focused = section?.ownerDocument.activeElement;
+    if (section && focused instanceof HTMLElement && section.contains(focused)) focused.blur();
+  }, [hidden]);
   return (
-    <PaneContext.Provider value={pane}>
-      <section
-        ref={ref}
-        className={`pane${active ? ' is-active' : ''}`}
-        data-pane={pane}
-        data-size={size}
-        style={style}
-        aria-label={pane === 'side' ? t('tabs.secondPage') : undefined}
-        onPointerDownCapture={() => setActivePane(pane)}
-        onFocusCapture={() => setActivePane(pane)}
-      >
-        <ErrorBoundary resetKey={routeHash(route)}>
-          <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
-        </ErrorBoundary>
-      </section>
+    <PaneContext.Provider value={paneId}>
+      <PaneTabContext.Provider value={tabId}>
+        <section
+          ref={ref}
+          className={`pane${active ? ' is-active' : ''}${hidden ? ' is-cached' : ''}`}
+          data-pane={hidden ? undefined : role}
+          data-pane-id={hidden ? undefined : paneId}
+          data-pane-index={role === 'main' ? '0' : role === 'side' ? '1' : role === 'third' ? '2' : '3'}
+          data-tab-instance={tabId ?? undefined}
+          data-size={size}
+          style={hidden ? { display: 'none' } : style}
+          aria-hidden={hidden || undefined}
+          inert={hidden || undefined}
+          aria-label={role === 'side' ? t('tabs.secondPage') : undefined}
+          onPointerDownCapture={() => !hidden && setActivePane(paneId)}
+          onFocusCapture={() => !hidden && setActivePane(paneId)}
+        >
+          {route ? (
+            <ErrorBoundary resetKey={routeHash(route)}>
+              <Suspense fallback={<div className="view" aria-busy="true" />}>{viewFor(route)}</Suspense>
+            </ErrorBoundary>
+          ) : (
+            <div className="pane-empty">
+              <button
+                type="button"
+                className="button small"
+                onClick={() => {
+                  setActivePane(paneId);
+                  setUi({
+                    palette: true,
+                    paletteForSide: false,
+                    palettePaneScope: {
+                      paneId,
+                      sessionGeneration: getWorkspaceSessionGeneration(),
+                      topologyRevision: getTabs().layout.topologyRevision,
+                    },
+                  });
+                }}
+              >
+                {t('tabs.openInPane')}
+              </button>
+            </div>
+          )}
+        </section>
+      </PaneTabContext.Provider>
     </PaneContext.Provider>
-  );
-}
-
-// dragging the line between the two sides of a split, the share is remembered
-function SplitResizer() {
-  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const handle = event.currentTarget;
-    const panes = handle.parentElement!.getBoundingClientRect();
-    handle.setPointerCapture(event.pointerId);
-    const move = (moved: PointerEvent) => {
-      const share = (moved.clientX - panes.left) / panes.width;
-      setPreferences({ splitShare: Math.min(0.8, Math.max(0.2, share)) });
-    };
-    const up = () => {
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      handle.removeEventListener('pointercancel', up);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-    handle.addEventListener('pointercancel', up);
-  };
-  return (
-    <div
-      className="split-resizer"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={t('tabs.resizeSplit')}
-      onPointerDown={onPointerDown}
-      onDoubleClick={() => setPreferences({ splitShare: 0.5 })}
-    />
   );
 }
 
@@ -382,6 +528,20 @@ function ZoomLevel() {
   );
 }
 
+// true for a moment after the sidebar is shown or hidden, while it slides
+function useSidebarSlide(open: boolean): boolean {
+  const [sliding, setSliding] = useState(false);
+  const was = useRef(open);
+  useEffect(() => {
+    if (was.current === open) return;
+    was.current = open;
+    setSliding(true);
+    const timer = setTimeout(() => setSliding(false), 240);
+    return () => clearTimeout(timer);
+  }, [open]);
+  return sliding;
+}
+
 let started = false;
 function useStartPage() {
   useEffect(() => {
@@ -389,12 +549,15 @@ function useStartPage() {
     started = true;
     // a window opened at a particular place, or a brand new vault showing its guide, stays as it is
     if ((window.location.hash && window.location.hash !== '#/') || getSession().firstRun) return;
-    const { startPage: start, hiddenModules } = getPreferences();
-    if (start === 'last') goBack('main');
-    else if (start === 'today' && !hiddenModules.includes('daily')) {
-      const id = ensureToday();
-      if (id) navigate({ name: 'page', id, find: null }, { replace: true, pane: 'main' });
-    }
+    runStartupNavigation(() => {
+      const { startPage: start, hiddenModules, autoDaily } = getPreferences();
+      if (start === 'last') restoreLastPosition();
+      else if (start === 'today' && !hiddenModules.includes('daily')) {
+        // with notes made by hand only, a day without one opens on home rather than making an empty note
+        const id = autoDaily ? ensureToday() : (findDailyNote(getState(), dateKey(new Date()))?.id ?? null);
+        if (id) navigate({ name: 'page', id, find: null }, { replace: true, pane: 'main' });
+      }
+    });
   }, []);
 }
 
@@ -403,17 +566,37 @@ export function App() {
   const ui = useUi();
   const prefs = usePreferences();
   const tabs = useTabs();
-  useTheme(prefs.theme);
+  const sessionGeneration = useSyncExternalStore(
+    subscribeWorkspaceSession,
+    getWorkspaceSessionGeneration,
+    getWorkspaceSessionGeneration,
+  );
+  const session = getSession();
+  const [splitPreview, setSplitPreview] = useState<PaneSplitPreview | null>(null);
+  useTheme(prefs.theme, prefs.palette);
   useEffect(() => {
-    document.documentElement.dataset.accent = prefs.accent;
-    document.documentElement.dataset.colorful = prefs.colorful ? 'true' : 'false';
-  }, [prefs.accent, prefs.colorful]);
+    const root = document.documentElement;
+    root.dataset.accent = prefs.accent;
+    root.dataset.colorful = prefs.colorful ? 'true' : 'false';
+    root.style.setProperty('--text-scale', String(prefs.textScale));
+    // a custom accent sets the colour, the softer shades are mixed from it in color.css
+    if (prefs.accent === 'custom') root.style.setProperty('--custom-accent', prefs.accentColor);
+    else root.style.removeProperty('--custom-accent');
+  }, [prefs.accent, prefs.colorful, prefs.textScale, prefs.accentColor]);
   useGlobalShortcuts();
   useCopyToast();
   useEffect(() => applySpellcheck(prefs.spellcheck), [prefs.spellcheck]);
-  useEffect(() => startTabs(), []);
+  useLayoutEffect(() => startTabs(), []);
   useStartPage();
   useLifecycle();
+  useHidePointerWhileTyping();
+  useSharedText();
+  // the first time morrow opens on this computer it says hello and asks how it should look
+  useEffect(() => {
+    if (!getPreferences().onboarded) openDialog({ kind: 'welcome' });
+  }, []);
+  // tags keep the colours picked for them from the first page drawn
+  useEffect(() => void loadTagColors(), []);
 
   useEffect(() => {
     setUi({ mobileSidebar: false, sidebarPeek: false });
@@ -421,13 +604,124 @@ export function App() {
     clearPropertyHistory();
   }, [route]);
   useSidebarPeek(!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek);
+  const sliding = useSidebarSlide(prefs.sidebarOpen);
 
-  const side = tabs.tabs.find((tab) => tab.id === tabs.active)?.side ?? null;
-  const sideRoute = useMemo(() => (side ? parseRoute(side.hash) : null), [side]);
+  const updateSplitPreview = (preview: PaneSplitPreview | null, identity: SplitResizeIdentity) => {
+    setSplitPreview((current) => {
+      const sameGesture =
+        current &&
+        current.splitId === identity.splitId &&
+        current.layoutId === identity.layoutId &&
+        current.topologyRevision === identity.topologyRevision &&
+        current.sessionGeneration === identity.sessionGeneration;
+      if (!preview) return sameGesture ? null : current;
+      return preview;
+    });
+  };
+
+  const visibleAssignments = paneAssignments(tabs.layout);
+  const visibleSlots = paneSlots(tabs.layout);
+  const layoutPreset: PanePreset = panePresetOf(tabs.layout) ?? 'single';
+  const previewMatchesLayout =
+    splitPreview &&
+    splitPreview.layoutId === tabs.layout.id &&
+    splitPreview.topologyRevision === tabs.layout.topologyRevision &&
+    splitPreview.sessionGeneration === sessionGeneration;
+  const previewLayout = previewMatchesLayout
+    ? (updatePaneSplitRatio(tabs.layout, splitPreview.splitId, splitPreview.ratio) ?? tabs.layout)
+    : tabs.layout;
+  const layoutGeometry = paneLayoutGeometry(previewLayout.root);
+  const cacheableIds = cacheablePaneHostIds(tabs.layout.tabs);
+  const cacheableSet = new Set(cacheableIds);
+  const instances = paneHostInstances(
+    session,
+    tabs.layout.tabs.map((tab) => tab.id),
+    visibleAssignments
+      .filter((assignment) => cacheableSet.has(assignment.tabId))
+      .map((assignment) => assignment.tabId),
+    cacheableIds,
+  );
+  const assignmentByTabId = new Map(visibleAssignments.map((assignment) => [assignment.tabId, assignment]));
+  const mountedIds = new Set(instances);
+  const panes = visibleSlots.map((slot) => {
+    const assignment = visibleAssignments.find((candidate) => candidate.paneId === slot.paneId);
+    const tab = assignment ? tabs.layout.tabs.find((candidate) => candidate.id === assignment.tabId)! : null;
+    const rect = layoutGeometry.panes.get(slot.paneId);
+    return {
+      ...slot,
+      tab,
+      route: tab ? parseRoute(tab.target) : null,
+      active: tabs.layout.focusedPaneId === slot.paneId,
+      hostKey: tab?.id ?? `empty:${slot.paneId}`,
+      style: rect
+        ? {
+            position: 'absolute' as const,
+            left: `${rect.left}%`,
+            top: `${rect.top}%`,
+            width: `${rect.width}%`,
+            height: `${rect.height}%`,
+          }
+        : undefined,
+    };
+  });
+  const hiddenInstances = tabs.layout.tabs.filter(
+    (tab) => mountedIds.has(tab.id) && !assignmentByTabId.has(tab.id),
+  );
+  const renderPane = (
+    pane: {
+      role: PaneRole;
+      paneId: PaneId;
+      tabId: string | null;
+      route: Route | null;
+      active: boolean;
+      style?: React.CSSProperties;
+    },
+    hidden = false,
+  ) => (
+    <Pane
+      role={pane.role}
+      paneId={pane.paneId}
+      tabId={pane.tabId}
+      route={pane.route}
+      active={pane.active}
+      style={pane.style}
+      hidden={hidden}
+    />
+  );
+  const paneChildren = paneHostChildren(
+    sessionGeneration,
+    panes.map((pane) => ({ tabId: pane.hostKey, element: renderPane(pane) })),
+    hiddenInstances.map((tab) => {
+      const assignment = {
+        role: 'main' as const,
+        paneId: paneIdForTabId(tab.id),
+        tabId: tab.id,
+        route: parseRoute(tab.target),
+        active: false,
+        style: undefined,
+      };
+      return { tabId: tab.id, element: renderPane(assignment, true) };
+    }),
+    <>
+      {layoutGeometry.splits.map(({ split, rect }) => (
+        <PaneSplitResizer
+          key={`${sessionGeneration}:${tabs.layout.id}:${tabs.layout.topologyRevision}:${split.id}`}
+          split={split}
+          rect={rect}
+          layoutId={tabs.layout.id}
+          topologyRevision={tabs.layout.topologyRevision}
+          sessionGeneration={sessionGeneration}
+          onPreview={updateSplitPreview}
+          onCommit={commitPaneResizeSession}
+        />
+      ))}
+    </>,
+    layoutGeometry.splits.length > 0,
+  );
 
   return (
     <div
-      className={`app${prefs.sidebarOpen ? '' : ' sidebar-collapsed'}${!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek ? ' sidebar-peeking' : ''}${prefs.assistant && prefs.assistantOpen ? ' has-assistant' : ''}${ui.mobileSidebar ? ' mobile-sidebar-open' : ''}${ui.focusMode ? ' focus-mode' : ''}`}
+      className={`app${prefs.sidebarOpen ? '' : ' sidebar-collapsed'}${sliding ? ' sidebar-sliding' : ''}${!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek ? ' sidebar-peeking' : ''}${prefs.assistant && prefs.assistantOpen ? ' has-assistant' : ''}${ui.mobileSidebar ? ' mobile-sidebar-open' : ''}${ui.focusMode ? ' focus-mode' : ''}`}
     >
       <Sidebar />
       {!prefs.sidebarOpen && prefs.sidebarPeek && (
@@ -440,24 +734,8 @@ export function App() {
       <div className="scrim" aria-hidden="true" onClick={() => setUi({ mobileSidebar: false })} />
       <main className="main">
         <TabBar />
-        <div className={`panes${sideRoute ? ' is-split' : ''}`}>
-          <Pane
-            pane="main"
-            route={route}
-            active={!sideRoute || tabs.pane === 'main'}
-            style={sideRoute ? { flexGrow: prefs.splitShare } : undefined}
-          />
-          {sideRoute && (
-            <>
-              <SplitResizer />
-              <Pane
-                pane="side"
-                route={sideRoute}
-                active={tabs.pane === 'side'}
-                style={{ flexGrow: 1 - prefs.splitShare }}
-              />
-            </>
-          )}
+        <div className={`panes${visibleSlots.length > 1 ? ' is-split' : ''}`} data-layout={layoutPreset}>
+          {paneChildren}
         </div>
       </main>
       {prefs.assistant && prefs.assistantOpen && desktop?.assistant && (
@@ -465,9 +743,18 @@ export function App() {
           <AssistantPanel />
         </Suspense>
       )}
-      {ui.palette && <CommandPalette key={ui.paletteForSide ? 'side' : 'main'} />}
+      {ui.palette && (
+        <CommandPalette
+          key={
+            ui.paletteForSide
+              ? 'side'
+              : ui.palettePaneScope
+                ? `pane:${ui.palettePaneScope.sessionGeneration}:${ui.palettePaneScope.topologyRevision}:${ui.palettePaneScope.paneId}`
+                : 'main'
+          }
+        />
+      )}
       <Dialogs />
-      <Toasts />
       <ZoomLevel />
     </div>
   );

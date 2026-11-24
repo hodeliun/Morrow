@@ -1,5 +1,7 @@
 // what each system's webview does its own way: printing a page to pdf, a picture of the window, spelling
 use std::path::Path;
+#[cfg(any(windows, test))]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Runtime, WebviewWindow};
 use tokio::sync::oneshot;
@@ -10,6 +12,36 @@ pub type Res<T> = Result<T, String>;
 pub const PRINTS_TO_FILE: bool = cfg!(any(target_os = "linux", windows));
 // and those two can take a picture of the window
 pub const CAPTURES: bool = cfg!(any(target_os = "linux", windows));
+
+#[cfg(any(windows, test))]
+pub(crate) const POLARIS_DADOS_PILOT_IDENTIFIER: &str = "app.morrow.polaris-dados-pilot";
+
+#[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WebviewProfile {
+    Isolated(PathBuf),
+    AppLocal(PathBuf),
+    Skip,
+}
+
+// The launcher owns and validates the isolated pilot directory. Do not fall back to app-local data
+// for the debug pilot when its optional preseed path is missing or unusable.
+#[cfg(any(windows, test))]
+pub(crate) fn select_webview_profile(
+    identifier: &str,
+    debug_build: bool,
+    app_local_profile: Option<PathBuf>,
+    pilot_profile: Option<PathBuf>,
+) -> WebviewProfile {
+    if debug_build && identifier == POLARIS_DADOS_PILOT_IDENTIFIER {
+        return match pilot_profile {
+            Some(path) if path.is_absolute() && path.is_dir() => WebviewProfile::Isolated(path),
+            _ => WebviewProfile::Skip,
+        };
+    }
+
+    app_local_profile.map_or(WebviewProfile::Skip, WebviewProfile::AppLocal)
+}
 
 // 2026-11-10T08-41-00-123Z, the moment as a backup's name, sorting in time order
 pub fn iso_stamp() -> String {
@@ -72,6 +104,185 @@ pub fn crop_png(png: &[u8], area: [f64; 4], viewport_width: f64) -> Res<Vec<u8>>
     Ok(out.into_inner())
 }
 
+// the languages picked for spelling in settings, kept beside morrow's other files. none picked means the
+// languages the system is set to
+const SPELL_FILE: &str = "spell-languages.json";
+
+fn valid_language(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 16
+        && code
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+pub fn chosen_spell_languages() -> Vec<String> {
+    std::fs::read_to_string(crate::paths::data_dir().join(SPELL_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|code| valid_language(code))
+        .take(8)
+        .collect()
+}
+
+fn save_spell_languages(languages: &[String]) -> Res<()> {
+    let clean: Vec<&String> = languages
+        .iter()
+        .filter(|code| valid_language(code))
+        .take(8)
+        .collect();
+    let text = serde_json::to_string(&clean).map_err(|error| error.to_string())?;
+    std::fs::write(crate::paths::data_dir().join(SPELL_FILE), text)
+        .map_err(|error| error.to_string())
+}
+
+// the languages spelling uses on this system: the ones picked, or the system's own
+#[cfg(any(target_os = "linux", windows))]
+pub fn spell_languages() -> Vec<String> {
+    let chosen = chosen_spell_languages();
+    if chosen.is_empty() {
+        system_spell_languages()
+    } else {
+        chosen
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn system_spell_languages() -> Vec<String> {
+    let mut languages: Vec<String> = ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .flat_map(|value| value.split(':').map(String::from).collect::<Vec<_>>())
+        .map(|value| {
+            value
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .replace('_', "-")
+        })
+        .filter(|value| !value.is_empty() && value != "C" && value != "POSIX")
+        .collect();
+    languages.dedup();
+    if languages.is_empty() {
+        languages.push("en-US".into());
+    }
+    languages.truncate(3);
+    languages
+}
+
+#[cfg(windows)]
+pub fn system_spell_languages() -> Vec<String> {
+    windows_languages()
+}
+
+// macos and phones check spelling in every language the system has, by themselves
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn system_spell_languages() -> Vec<String> {
+    Vec::new()
+}
+
+// keeps the picked languages. linux checks in them at once, the web view on windows reads them as it
+// starts, so they apply the next time morrow opens. true when that restart is needed
+pub fn set_spell_languages<R: Runtime>(
+    window: &WebviewWindow<R>,
+    languages: &[String],
+) -> Res<bool> {
+    save_spell_languages(languages)?;
+    #[cfg(target_os = "linux")]
+    {
+        let languages = spell_languages();
+        let _ = window.with_webview(move |webview| {
+            use webkit2gtk::{WebContextExt, WebViewExt};
+            if let Some(context) = webview.inner().context() {
+                let codes: Vec<String> = languages
+                    .iter()
+                    .map(|code| code.replace('-', "_"))
+                    .collect();
+                let refs: Vec<&str> = codes.iter().map(String::as_str).collect();
+                context.set_spell_checking_languages(&refs);
+            }
+        });
+        Ok(false)
+    }
+    #[cfg(windows)]
+    {
+        let _ = window;
+        Ok(true)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = window;
+        Ok(false)
+    }
+}
+
+// webview2 keeps the languages it checks spelling in with its profile, set once when the profile was first
+// made, and --accept-lang only counts for a new one. so a profile made while windows had one language kept
+// checking only that one. the profile's preferences are written with the languages before it starts, the
+// same keys edge's language settings write
+#[cfg(windows)]
+pub fn prepare_spelling(profile_dir: &Path) {
+    let languages = spell_languages();
+    if languages.is_empty() {
+        return;
+    }
+
+    // Spelling is optional; a profile write must never prevent the window from opening.
+    let _ = write_spelling_preferences(profile_dir, &languages);
+}
+
+#[cfg(any(windows, test))]
+fn write_spelling_preferences(profile_dir: &Path, languages: &[String]) -> std::io::Result<()> {
+    if languages.is_empty() {
+        return Ok(());
+    }
+
+    let file = profile_dir
+        .join("EBWebView")
+        .join("Default")
+        .join("Preferences");
+    let mut preferences: serde_json::Value = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let root = preferences.as_object_mut().expect("an object");
+    let section = |root: &mut serde_json::Map<String, serde_json::Value>, name: &str| {
+        let entry = root
+            .entry(name.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !entry.is_object() {
+            *entry = serde_json::json!({});
+        }
+        entry.as_object_mut().expect("an object").clone()
+    };
+    let mut spellcheck = section(root, "spellcheck");
+    spellcheck.insert("dictionaries".into(), serde_json::json!(languages));
+    spellcheck.insert("dictionary".into(), serde_json::json!(""));
+    root.insert("spellcheck".into(), serde_json::Value::Object(spellcheck));
+    let mut browser = section(root, "browser");
+    browser.insert("enable_spellchecking".into(), serde_json::json!(true));
+    root.insert("browser".into(), serde_json::Value::Object(browser));
+    let mut intl = section(root, "intl");
+    intl.insert(
+        "accept_languages".into(),
+        serde_json::json!(languages.join(",")),
+    );
+    intl.insert(
+        "selected_languages".into(),
+        serde_json::json!(languages.join(",")),
+    );
+    root.insert("intl".into(), serde_json::Value::Object(intl));
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string(&preferences)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    std::fs::write(&file, text)
+}
+
 #[cfg(target_os = "linux")]
 pub fn setup_webview<R: Runtime>(window: &WebviewWindow<R>) {
     let _ = window.with_webview(|webview| {
@@ -79,19 +290,13 @@ pub fn setup_webview<R: Runtime>(window: &WebviewWindow<R>) {
         let Some(context) = webview.inner().context() else {
             return;
         };
-        // webkitgtk leaves spelling off, it is checked in the languages this computer is set to
-        let mut languages: Vec<String> = ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"]
+        // webkitgtk leaves spelling off, it is checked in the languages picked in settings, or the ones
+        // this computer is set to
+        let languages: Vec<String> = spell_languages()
             .iter()
-            .filter_map(|name| std::env::var(name).ok())
-            .flat_map(|value| value.split(':').map(String::from).collect::<Vec<_>>())
-            .map(|value| value.split('.').next().unwrap_or_default().to_string())
-            .filter(|value| !value.is_empty() && value != "C" && value != "POSIX")
+            .map(|code| code.replace('-', "_"))
             .collect();
-        languages.dedup();
-        if languages.is_empty() {
-            languages.push("en_US".into());
-        }
-        let refs: Vec<&str> = languages.iter().map(String::as_str).take(3).collect();
+        let refs: Vec<&str> = languages.iter().map(String::as_str).collect();
         context.set_spell_checking_languages(&refs);
         context.set_spell_checking_enabled(true);
         // drawing on the graphics card keeps scrolling and typing smooth in long pages
@@ -176,6 +381,91 @@ pub async fn capture<R: Runtime>(
 
 #[cfg(windows)]
 pub fn setup_webview<R: Runtime>(_window: &WebviewWindow<R>) {}
+
+// webview2 checks spelling only in the language windows shows itself in. the electron app checked the
+// first three of the languages windows is set up for, so writing in english, spanish and portuguese at
+// once was fine. the web view takes the same list as its languages, which spelling follows
+#[cfg(windows)]
+pub fn browser_args() -> String {
+    // wry's own arguments, which giving any replaces
+    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    let languages = spell_languages();
+    if !languages.is_empty() {
+        args.push_str(" --accept-lang=");
+        args.push_str(&languages.join(","));
+    }
+    args
+}
+
+#[cfg(windows)]
+fn windows_languages() -> Vec<String> {
+    use windows::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_MULTI_SZ};
+    use windows_core::{w, PWSTR};
+    let split = |buffer: &[u16]| -> Vec<String> {
+        buffer
+            .split(|unit| *unit == 0)
+            .filter(|part| !part.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect()
+    };
+    // the list in settings, languages and regions, in the order picked there
+    let mut languages = unsafe {
+        let mut size = 0u32;
+        let key = w!("Control Panel\\International\\User Profile");
+        let value = w!("Languages");
+        let found = RegGetValueW(
+            HKEY_CURRENT_USER,
+            key,
+            value,
+            RRF_RT_REG_MULTI_SZ,
+            None,
+            None,
+            Some(&mut size),
+        );
+        if found.is_ok() && size > 0 {
+            let mut buffer = vec![0u16; size as usize / 2 + 1];
+            let read = RegGetValueW(
+                HKEY_CURRENT_USER,
+                key,
+                value,
+                RRF_RT_REG_MULTI_SZ,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                Some(&mut size),
+            );
+            if read.is_ok() {
+                split(&buffer)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    };
+    if languages.is_empty() {
+        unsafe {
+            let (mut count, mut size) = (0u32, 0u32);
+            if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut size).is_ok() {
+                let mut buffer = vec![0u16; size as usize];
+                if GetUserPreferredUILanguages(
+                    MUI_LANGUAGE_NAME,
+                    &mut count,
+                    Some(PWSTR(buffer.as_mut_ptr())),
+                    &mut size,
+                )
+                .is_ok()
+                {
+                    languages = split(&buffer);
+                }
+            }
+        }
+    }
+    languages.retain(|code| code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    languages.dedup();
+    languages.truncate(3);
+    languages
+}
 
 #[cfg(windows)]
 pub async fn print_to_pdf<R: Runtime>(window: &WebviewWindow<R>, path: &Path) -> Res<()> {
@@ -293,12 +583,239 @@ pub async fn capture<R: Runtime>(
     Err("Saving a picture of the canvas is not available on this system yet.".into())
 }
 
+// files copied in the file manager, which the web view on windows hands the page as a name only
+#[cfg(windows)]
+pub fn clipboard_files() -> Vec<String> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+    const CF_HDROP: u32 = 15;
+    let mut paths = Vec::new();
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return paths;
+        }
+        if let Ok(handle) = GetClipboardData(CF_HDROP) {
+            let drop = HDROP(handle.0);
+            let count = DragQueryFileW(drop, u32::MAX, None);
+            for index in 0..count.min(20) {
+                let length = DragQueryFileW(drop, index, None) as usize;
+                let mut buffer = vec![0u16; length + 1];
+                let written = DragQueryFileW(drop, index, Some(&mut buffer)) as usize;
+                paths.push(String::from_utf16_lossy(
+                    &buffer[..written.min(buffer.len())],
+                ));
+            }
+        }
+        let _ = CloseClipboard();
+    }
+    paths
+}
+
+// other systems give the page the copied files, or their paths as text
+#[cfg(not(windows))]
+pub fn clipboard_files() -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{
+        select_webview_profile, write_spelling_preferences, WebviewProfile,
+        POLARIS_DADOS_PILOT_IDENTIFIER,
+    };
+    use serde_json::Value;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TemporaryProfile(PathBuf);
+
+    impl TemporaryProfile {
+        fn new() -> Self {
+            static NEXT_PROFILE: AtomicU64 = AtomicU64::new(0);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "Morrow spelling profile {} — espaço {} {}",
+                std::process::id(),
+                nonce,
+                NEXT_PROFILE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).expect("temporary profile should be created");
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TemporaryProfile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn preferences_path(profile: &std::path::Path) -> PathBuf {
+        profile
+            .join("EBWebView")
+            .join("Default")
+            .join("Preferences")
+    }
+
     #[test]
     fn stamps_sort_in_time_order() {
         let stamp = super::iso_stamp();
         assert_eq!(stamp.len(), "2026-11-10T08-41-00-123Z".len());
         assert!(stamp.starts_with("20"));
+    }
+
+    #[test]
+    fn pilot_debug_uses_existing_isolated_profile_and_preserves_unrelated_preferences() {
+        let temporary = TemporaryProfile::new();
+        let pilot_profile = temporary
+            .path()
+            .join("PilotState/WebView2 UserData – teste");
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        fs::create_dir_all(&pilot_profile).unwrap();
+        fs::create_dir_all(&app_local).unwrap();
+        let sentinel = app_local.join("sentinel.txt");
+        fs::write(&sentinel, "app-local stays untouched").unwrap();
+
+        let file = preferences_path(&pilot_profile);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            r#"{"other":{"keep":true},"spellcheck":{"otherSpellSetting":7},"browser":{"otherBrowserSetting":8},"intl":{"otherIntlSetting":9}}"#,
+        )
+        .unwrap();
+
+        let selection = select_webview_profile(
+            POLARIS_DADOS_PILOT_IDENTIFIER,
+            true,
+            Some(app_local.clone()),
+            Some(pilot_profile.clone()),
+        );
+        assert_eq!(selection, WebviewProfile::Isolated(pilot_profile.clone()));
+
+        let WebviewProfile::Isolated(selected_profile) = selection else {
+            unreachable!("the valid pilot path should be selected");
+        };
+        write_spelling_preferences(&selected_profile, &["pt-BR".into(), "en-US".into()]).unwrap();
+
+        let preferences: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert!(preferences["other"]["keep"].as_bool().unwrap());
+        assert_eq!(preferences["spellcheck"]["otherSpellSetting"], 7);
+        assert_eq!(preferences["browser"]["otherBrowserSetting"], 8);
+        assert_eq!(preferences["intl"]["otherIntlSetting"], 9);
+        assert_eq!(
+            preferences["spellcheck"]["dictionaries"],
+            serde_json::json!(["pt-BR", "en-US"])
+        );
+        assert_eq!(preferences["spellcheck"]["dictionary"], "");
+        assert!(preferences["browser"]["enable_spellchecking"]
+            .as_bool()
+            .unwrap());
+        assert_eq!(preferences["intl"]["accept_languages"], "pt-BR,en-US");
+        assert_eq!(preferences["intl"]["selected_languages"], "pt-BR,en-US");
+        assert!(!preferences_path(&app_local).exists());
+        assert_eq!(
+            fs::read_to_string(sentinel).unwrap(),
+            "app-local stays untouched"
+        );
+    }
+
+    #[test]
+    fn published_identifier_keeps_app_local_profile_even_when_pilot_override_is_present() {
+        let temporary = TemporaryProfile::new();
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        let pilot_profile = temporary.path().join("PilotState/WebView2UserData");
+        fs::create_dir_all(&app_local).unwrap();
+        fs::create_dir_all(&pilot_profile).unwrap();
+        let file = preferences_path(&app_local);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            r#"{"custom":{"keep":"yes"},"spellcheck":{"custom":true}}"#,
+        )
+        .unwrap();
+
+        let selection = select_webview_profile(
+            "app.morrow.desktop",
+            true,
+            Some(app_local.clone()),
+            Some(pilot_profile.clone()),
+        );
+        assert_eq!(selection, WebviewProfile::AppLocal(app_local.clone()));
+
+        let WebviewProfile::AppLocal(selected_profile) = selection else {
+            unreachable!("the published identifier should keep its default profile");
+        };
+        write_spelling_preferences(&selected_profile, &["en-US".into()]).unwrap();
+
+        let preferences: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(preferences["custom"]["keep"], "yes");
+        assert!(preferences["spellcheck"]["custom"].as_bool().unwrap());
+        assert_eq!(
+            preferences["spellcheck"]["dictionaries"],
+            serde_json::json!(["en-US"])
+        );
+        assert!(!preferences_path(&pilot_profile).exists());
+    }
+
+    #[test]
+    fn pilot_debug_skips_preseed_for_missing_relative_or_file_overrides() {
+        let temporary = TemporaryProfile::new();
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        fs::create_dir_all(&app_local).unwrap();
+        let sentinel = app_local.join("sentinel.txt");
+        fs::write(&sentinel, "leave default profile unchanged").unwrap();
+        let missing = temporary.path().join("missing WebView2 profile");
+        let not_a_directory = temporary.path().join("WebView2 profile.txt");
+        fs::write(&not_a_directory, "file").unwrap();
+
+        for override_path in [
+            None,
+            Some(PathBuf::from("relative/WebView2 UserData")),
+            Some(missing),
+            Some(not_a_directory),
+        ] {
+            assert_eq!(
+                select_webview_profile(
+                    POLARIS_DADOS_PILOT_IDENTIFIER,
+                    true,
+                    Some(app_local.clone()),
+                    override_path,
+                ),
+                WebviewProfile::Skip
+            );
+        }
+
+        assert!(!preferences_path(&app_local).exists());
+        assert_eq!(
+            fs::read_to_string(sentinel).unwrap(),
+            "leave default profile unchanged"
+        );
+    }
+
+    #[test]
+    fn release_build_uses_default_profile_for_pilot_identifier() {
+        let temporary = TemporaryProfile::new();
+        let app_local = temporary.path().join("AppData/Roaming/Morrow");
+        let pilot_profile = temporary.path().join("PilotState/WebView2UserData");
+        fs::create_dir_all(&app_local).unwrap();
+        fs::create_dir_all(&pilot_profile).unwrap();
+
+        assert_eq!(
+            select_webview_profile(
+                POLARIS_DADOS_PILOT_IDENTIFIER,
+                false,
+                Some(app_local.clone()),
+                Some(pilot_profile),
+            ),
+            WebviewProfile::AppLocal(app_local)
+        );
     }
 }

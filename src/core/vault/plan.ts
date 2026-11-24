@@ -4,6 +4,8 @@ import type { Layout, Placement } from './layout';
 import { basename, dirname, joinPath } from './paths';
 
 export type VaultOp =
+  // non-mutating compare-and-check, used to put races ahead of a multi-file save
+  | { op: 'check'; path: string; expect: string | null; id?: PageId }
   // expect is the text the file must still have, null when it must not exist yet, absent to skip the check
   | { op: 'write'; path: string; text: string; expect?: string | null; id?: PageId }
   // optional renames are skipped when the source is missing, used for folders that may not exist

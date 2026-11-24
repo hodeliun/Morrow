@@ -4,9 +4,14 @@ import { decryptPage, encryptPage, isEncryptedText, newPageKey } from '../core/c
 import type { PageKey } from '../core/crypto';
 import { isDocEmpty, isRecord, validateDoc, walk } from '../core/doc';
 import { snapshotsToPrune } from '../core/history';
-import { parseWikiLink } from '../core/markdown/parse';
-import { docToMarkdown } from '../core/markdown/serialize';
-import { markdownToDoc } from '../core/markdown/parse';
+import {
+  markdownHrefPath,
+  markdownRetargetSpans,
+  markdownToDoc,
+  parseWikiLink,
+} from '../core/markdown/parse';
+import { isHexBlockBackground } from '../core/markdown/blockBackground';
+import { docToMarkdown, retargetMarkdownHref } from '../core/markdown/serialize';
 import { displayTitle, emptyDoc, newPageMeta } from '../core/model';
 import type {
   DocNode,
@@ -20,7 +25,19 @@ import type {
 } from '../core/model';
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
-import { childrenOf } from '../core/tree';
+import { childrenOf, isEffectivelyTrashed } from '../core/tree';
+import {
+  isValidNoteStyle,
+  isValidNoteStyleInput,
+  projectNoteStyle,
+  supportsNoteStyleKind,
+} from '../core/noteStyle';
+import type { NoteStyle } from '../core/noteStyle';
+import {
+  findUnrepresentablePageContent,
+  findUnrepresentableVaultMetadata,
+  hasUnrepresentableDatabaseSchema,
+} from '../core/vault/compatibility';
 import { linkTargets, placePages } from '../core/vault/layout';
 import type { Placement } from '../core/vault/layout';
 import {
@@ -30,18 +47,35 @@ import {
   parseOptions,
   readRegistry,
   resolveFile,
+  resolveMarkdownPageLink,
 } from '../core/vault/load';
 import type { LoadedVault, RegistryEntry, Resolver } from '../core/vault/load';
 import {
   composeFrontmatter,
   impliedTitle,
   managedFrontmatter,
+  readProperty,
   readPageText,
   takeProperties,
   renderPageText,
+  sameValue,
+  UnsafeFrontmatterUpdateError,
 } from '../core/vault/pageFile';
 import type { PageSource } from '../core/vault/pageFile';
-import { splitFrontmatter } from '../core/vault/frontmatter';
+import {
+  captureExplicitMorrowNoteStyleFile,
+  captureInheritedMorrowNoteStyleContext,
+  decodeExplicitMorrowNoteStyleSnapshot,
+  findKey,
+  isUnambiguousFrontmatter,
+  matchesAppliedNoteStyleValues,
+  restoreExplicitMorrowNoteStyleFile,
+  restoreInheritedMorrowNoteStyleFile,
+  sameNoteStyle,
+  splitFrontmatter,
+  updateFrontmatter,
+  updateMorrowNoteStyleFile,
+} from '../core/vault/frontmatter';
 import {
   ATTACHMENTS_DIR,
   basename,
@@ -54,6 +88,7 @@ import {
   joinPath,
   MORROW_DIR,
   relativePath,
+  resolveRelative,
   safeFileName,
   stripExtension,
   TRASH_DIR,
@@ -61,7 +96,9 @@ import {
 import { planMoves, replayRename } from '../core/vault/plan';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
 import type { LoadedWorkspace } from '../core/migrations';
+import { WorkspaceWriteError } from './repository';
 import type { ExternalPatch, StoredFile, WorkspaceRepository, WriteBatch } from './repository';
+import type { NoteStyleRestoreContext, NoteStyleWriteReceipt } from './repository';
 import type { VaultBridge, VaultChange } from './vaultBridge';
 
 export const REGISTRY_PATH = `${MORROW_DIR}/workspace.json`;
@@ -70,12 +107,164 @@ const HISTORY_DIR = `${MORROW_DIR}/history`;
 const MAX_RECENT = 300;
 const MAX_ACTIVITY_DAYS = 400;
 
+type FolderOwnerIndex = ReadonlyMap<
+  string,
+  { readonly count: number; readonly first: PageId; readonly second?: PageId }
+>;
+
+function indexFolderOwners(layout: Map<PageId, Placement>): FolderOwnerIndex {
+  const owners = new Map<string, { count: number; first: PageId; second?: PageId }>();
+  for (const [id, placement] of layout) {
+    const folder = placement.folder.toLowerCase();
+    const current = owners.get(folder);
+    if (!current) {
+      owners.set(folder, { count: 1, first: id });
+    } else if (current.count === 1) {
+      owners.set(folder, { count: 2, first: current.first, second: id });
+    } else {
+      owners.set(folder, { ...current, count: current.count + 1 });
+    }
+  }
+  return owners;
+}
+
+function sourceParentId(
+  id: PageId,
+  placement: Placement,
+  owners: FolderOwnerIndex,
+): PageId | null | undefined {
+  const parentFolder = dirname(placement.folder);
+  if (!parentFolder) return null;
+  const folderOwners = owners.get(parentFolder.toLowerCase());
+  if (!folderOwners) return undefined;
+  if (folderOwners.first !== id) return folderOwners.count === 1 ? folderOwners.first : undefined;
+  return folderOwners.count === 2 ? folderOwners.second : undefined;
+}
+
+interface NavigationReadContext {
+  readonly state: WorkspaceState;
+  readonly layout: Map<PageId, Placement>;
+  readonly sources: Map<PageId, PageSource>;
+  readonly others: Set<string>;
+  readonly resolver: Resolver;
+  readonly otherIndex: Map<string, string>;
+  readonly otherNames: Map<string, string[]>;
+}
+
+interface RenderedPage {
+  text: string | null;
+  source: PageSource | null;
+}
+
+interface PendingLinkRetarget {
+  kind: 'markdown' | 'wiki';
+  destination: string;
+  targetId: PageId;
+  sourcePathBefore: string | null;
+  sourcePathAfter: string | null;
+  targetPathBefore: string | null;
+  targetPathAfter: string | null;
+  sourcePathConfirmed: string | null;
+  targetPathConfirmed: string | null;
+}
+
+interface PendingLinkTargets {
+  markdown: Map<string, PageId>;
+  wiki: Map<string, PageId>;
+}
+
+function retargetKey(kind: PendingLinkRetarget['kind'], destination: string, targetId: PageId): string {
+  return `${kind}\0${destination}\0${targetId}`;
+}
+
+function pendingTargetsForSource(
+  body: string | null,
+  doc: DocNode | undefined,
+  pending: ReadonlyMap<string, PendingLinkRetarget> | undefined,
+): PendingLinkTargets {
+  const targets: PendingLinkTargets = { markdown: new Map(), wiki: new Map() };
+  if (!pending?.size) return targets;
+
+  const sourceKeys: Record<PendingLinkRetarget['kind'], Set<string>> = {
+    markdown: new Set(),
+    wiki: new Set(),
+  };
+  const currentMarkdown = new Map<string, PageId>();
+  const blocked: Record<PendingLinkRetarget['kind'], Set<string>> = {
+    markdown: new Set(),
+    wiki: new Set(),
+  };
+  const blockedCurrentMarkdown = new Set<string>();
+  const addUnique = (kind: PendingLinkRetarget['kind'], destination: string, targetId: PageId) => {
+    if (blocked[kind].has(destination)) return;
+    const targetMap = targets[kind];
+    const existing = targetMap.get(destination);
+    if (existing === undefined) targetMap.set(destination, targetId);
+    else if (existing !== targetId) {
+      targetMap.delete(destination);
+      blocked[kind].add(destination);
+    }
+  };
+
+  if (body !== null) {
+    for (const span of markdownRetargetSpans(body)) {
+      if (span.kind === 'markdown') {
+        const destination = markdownHrefPath(span.raw);
+        if (destination) sourceKeys.markdown.add(destination.path);
+      } else if (span.target) {
+        sourceKeys.wiki.add(span.target);
+      }
+    }
+  } else if (doc) {
+    walk(doc, (node) => {
+      if (
+        node.type !== 'pageLink' ||
+        typeof node.attrs?.id !== 'string' ||
+        typeof node.attrs?.markdownHref !== 'string'
+      )
+        return true;
+      const destination = markdownHrefPath(node.attrs.markdownHref);
+      if (!destination) return true;
+      if (blockedCurrentMarkdown.has(destination.path)) return true;
+      const existing = currentMarkdown.get(destination.path);
+      if (existing === undefined) currentMarkdown.set(destination.path, node.attrs.id);
+      else if (existing !== node.attrs.id) {
+        currentMarkdown.delete(destination.path);
+        blockedCurrentMarkdown.add(destination.path);
+      }
+      return true;
+    });
+  }
+
+  for (const intention of pending.values()) {
+    if (body !== null) {
+      if (!sourceKeys[intention.kind].has(intention.destination)) continue;
+    } else if (
+      intention.kind !== 'markdown' ||
+      currentMarkdown.get(intention.destination) !== intention.targetId
+    ) {
+      continue;
+    }
+    addUnique(intention.kind, intention.destination, intention.targetId);
+  }
+  return targets;
+}
+
+function affectedPlacements(layout: Map<PageId, Placement>, from: string): Map<PageId, Placement> {
+  const affected = new Map<PageId, Placement>();
+  const containsPath = (path: string) => path === from || path.startsWith(`${from}/`);
+  for (const [id, placement] of layout) {
+    if (containsPath(placement.folder) || (placement.file !== null && containsPath(placement.file)))
+      affected.set(id, { ...placement });
+  }
+  return affected;
+}
+
 function localDay(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 const DATE_NAME = /^\d{4}-\d{2}-\d{2}$/;
-const WIKI_LINK = /(!?)\[\[([^[\]\n]{0,400}?)\]\]/g;
 
 export class VaultRepository implements WorkspaceRepository {
   private layout = new Map<PageId, Placement>();
@@ -86,6 +275,7 @@ export class VaultRepository implements WorkspaceRepository {
   private reserved = new Set<string>();
   // pages that could not be read, their files are never rewritten
   private locked = new Set<PageId>();
+  private protectedReasons = new Map<PageId, string>();
   private others = new Set<string>();
   private registryText: string | null = null;
   private recentText: string | null = null;
@@ -94,6 +284,8 @@ export class VaultRepository implements WorkspaceRepository {
   // the plain text last encrypted for each page, to tell whether anything changed
   private readonly plainTexts = new Map<PageId, string>();
   private readonly pendingPlain = new Map<PageId, string>();
+  // retarget intent kept only in memory when a confirmed move outlives its referrer's failed write
+  private readonly pendingLinkRetargets = new Map<PageId, Map<string, PendingLinkRetarget>>();
   // when morrow last wrote each path, lower case. a page moved and rewritten is renamed first and written
   // after, and the file watcher can catch it in between, still holding the text from before the move. such
   // a file is older than morrow's write, so it is not taken for an edit made elsewhere
@@ -126,6 +318,32 @@ export class VaultRepository implements WorkspaceRepository {
     return placement ? (placement.file ?? placement.folder) : null;
   }
 
+  hasWritableNoteStyleSource(id: PageId): boolean {
+    const placement = this.layout.get(id);
+    const page = this.currentState?.()?.pages[id];
+    const parentId = page?.parentId;
+    return Boolean(
+      !(page?.encrypted && (page.kind === 'journal' || page.kind === 'templates')) &&
+      placement?.file &&
+      extension(placement.file) === 'md' &&
+      this.texts.has(id) &&
+      !(parentId && (this.locked.has(parentId) || this.protectedReasons.has(parentId))),
+    );
+  }
+
+  canUpdateNoteStyleSource(id: PageId, style: NoteStyle): boolean {
+    const placement = this.layout.get(id);
+    const page = this.currentState?.()?.pages[id];
+    const sourceText = page?.encrypted ? this.plainTexts.get(id) : this.texts.get(id);
+    return Boolean(
+      !(page?.encrypted && (page.kind === 'journal' || page.kind === 'templates')) &&
+      placement?.file &&
+      extension(placement.file) === 'md' &&
+      sourceText !== undefined &&
+      updateMorrowNoteStyleFile(sourceText, style) !== null,
+    );
+  }
+
   // lets edits made elsewhere be read against the live workspace, not the last saved one
   attachState(getState: () => WorkspaceState): void {
     this.currentState = getState;
@@ -133,13 +351,46 @@ export class VaultRepository implements WorkspaceRepository {
 
   async load(): Promise<Result<LoadedWorkspace & { firstRun: boolean }>> {
     try {
-      const scan = await this.bridge.scan();
-      const loaded = loadVault(scan, this.newId);
+      const [scan, registryText, recentText] = await Promise.all([
+        this.bridge.scan(),
+        this.bridge.readText(REGISTRY_PATH),
+        this.bridge.readText(RECENT_PATH),
+      ]);
+      const parseMetadata = (
+        text: string | null,
+        scanned: unknown,
+        kind: 'workspace' | 'recent',
+      ): { value: unknown; problem: string | null } => {
+        if (text === null)
+          return { value: scanned, problem: findUnrepresentableVaultMetadata(scanned, kind) };
+        let value: unknown;
+        try {
+          value = JSON.parse(text) as unknown;
+        } catch {
+          return {
+            value: null,
+            problem: `The Morrow ${kind} metadata could not be read and was left untouched.`,
+          };
+        }
+        if (value === null) {
+          return { value, problem: `The Morrow ${kind} metadata is not a supported object.` };
+        }
+        return { value, problem: findUnrepresentableVaultMetadata(value, kind) };
+      };
+      const registry = parseMetadata(registryText, scan.registry, 'workspace');
+      const recent = parseMetadata(recentText, scan.recent, 'recent');
+      if (registry.problem || recent.problem) {
+        return fail(
+          `${registry.problem ?? recent.problem} Opening this vault was stopped before any file could be changed.`,
+        );
+      }
+      const guardedScan = { ...scan, registry: registry.value, recent: recent.value };
+      const loaded = loadVault(guardedScan, this.newId);
       this.adopt(loaded);
       this.others = new Set(scan.others);
-      this.registryText = scan.registry === null ? null : JSON.stringify(scan.registry);
-      this.recentText = scan.recent === null ? null : JSON.stringify(scan.recent);
-      const activity = (scan.recent as { activity?: unknown } | null)?.activity;
+      this.registryText = registryText ?? (registry.value === null ? null : JSON.stringify(registry.value));
+      this.recentText = recentText ?? (recent.value === null ? null : JSON.stringify(recent.value));
+      const activity = (recent.value as { activity?: unknown } | null)?.activity;
       if (activity && typeof activity === 'object') {
         for (const [day, count] of Object.entries(activity as Record<string, unknown>)) {
           if (/^\d{4}-\d{2}-\d{2}$/.test(day) && typeof count === 'number' && count > 0)
@@ -154,13 +405,14 @@ export class VaultRepository implements WorkspaceRepository {
       this.stopWatching = this.bridge.onChange((changes) => this.onChanges(changes));
       const firstRun =
         scan.files.length === 0 &&
-        scan.registry === null &&
+        registry.value === null &&
         scan.folders.every((folder) => isHiddenPath(folder.path) || folder.path === TRASH_DIR);
       return ok({
         pages: loaded.pages,
         docs: loaded.docs,
         problems: loaded.problems,
         unreadable: loaded.unreadable,
+        protectedPages: Object.fromEntries(loaded.protectedPages),
         firstRun,
       });
     } catch (error) {
@@ -175,6 +427,151 @@ export class VaultRepository implements WorkspaceRepository {
     this.texts = loaded.texts;
     this.reserved = loaded.reserved;
     this.locked = new Set(loaded.unreadable);
+    this.protectedReasons = new Map(loaded.protectedPages);
+  }
+
+  validateWrite(batch: WriteBatch): string | null {
+    const state = batch.state ?? this.lastState;
+    if (!state) return 'Nothing to write yet.';
+    const touched = new Set<PageId>([
+      ...batch.pages.map((page) => page.id),
+      ...batch.docs.map((record) => record.id),
+      ...batch.removed,
+      ...(batch.noteStylePages ?? []),
+      ...(batch.noteStyleRestore ? [batch.noteStyleRestore.pageId] : []),
+      ...(batch.snapshots ?? []).map((snapshot) => snapshot.pageId),
+    ]);
+    for (const id of touched) if (this.locked.has(id)) return this.protectionMessage(id);
+
+    // Adding or moving a child under a read-only page changes its directory contents and, for
+    // databases, the set of rows. Keep the whole parent boundary read only as well.
+    for (const id of touched) {
+      const page = state.pages[id];
+      if (page?.parentId && this.locked.has(page.parentId)) {
+        return this.protectionMessage(page.parentId);
+      }
+    }
+
+    if (
+      batch.noteStyleRestore &&
+      ((batch.noteStylePages?.length ?? 0) !== 1 ||
+        batch.noteStylePages?.[0] !== batch.noteStyleRestore.pageId ||
+        batch.pages.length !== 1 ||
+        batch.pages[0]?.id !== batch.noteStyleRestore.pageId ||
+        batch.docs.length > 0 ||
+        batch.removed.length > 0 ||
+        (batch.checkPages?.length ?? 0) > 0 ||
+        (batch.quietPageIds?.length ?? 0) > 0 ||
+        (batch.snapshots?.length ?? 0) > 0)
+    )
+      return batch.noteStyleRestore.kind === 'restore-inherited'
+        ? 'An inherited note-style restoration requires its matching isolated note-style lane.'
+        : 'An explicit note-style restoration requires its matching isolated note-style lane.';
+
+    for (const id of batch.noteStylePages ?? []) {
+      const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
+      const before =
+        this.lastState && Object.hasOwn(this.lastState.pages, id) ? this.lastState.pages[id] : undefined;
+      const placement = this.layout.get(id);
+      if (
+        !page ||
+        !before ||
+        !supportsNoteStyleKind(page.kind) ||
+        !supportsNoteStyleKind(before.kind) ||
+        isEffectivelyTrashed(state.pages, id)
+      )
+        return 'A note style can only be changed on a live page, journal, or templates container.';
+      if (page.kind !== before.kind) return 'A note-style write cannot change the page kind.';
+      if (
+        (page.kind === 'journal' || page.kind === 'templates') &&
+        (page.encrypted || before.encrypted)
+      )
+        return 'Encrypted journals and templates cannot use note styles.';
+      if (this.isPilotDataRecord(id))
+        return 'Note styles cannot be changed on opted-in Polaris Dados records.';
+      if (!placement?.file || extension(placement.file) !== 'md' || !this.texts.has(id))
+        return 'The page has no writable Markdown source for its note style.';
+      if (batch.docs.some((record) => record.id === id))
+        return 'A note-style write cannot include a body change.';
+      const restore = batch.noteStyleRestore;
+      if (restore) {
+        if (restore.pageId !== id || page.encrypted || before.encrypted)
+          return restore.kind === 'restore-inherited'
+            ? 'An inherited note style can only be restored on a live, unencrypted page, journal, or templates container.'
+            : 'An explicit note style can only be restored on a live, unencrypted page, journal, or templates container.';
+        if (!isValidNoteStyleInput(restore.appliedStyle)) return 'The applied note style is invalid.';
+        if (restore.kind === 'restore-inherited') {
+          if (
+            !sameNoteStyle(before.extra.morrowNoteStyle, restore.appliedStyle) ||
+            Object.hasOwn(page.extra, 'morrowNoteStyle')
+          )
+            return 'The note style no longer matches the inherited-style restoration.';
+        } else {
+          const patch = decodeExplicitMorrowNoteStyleSnapshot(restore.context);
+          const beforeStyle = before.extra.morrowNoteStyle;
+          const afterStyle = page.extra.morrowNoteStyle;
+          if (
+            !patch ||
+            !matchesAppliedNoteStyleValues(beforeStyle, restore.appliedStyle) ||
+            !isRecord(beforeStyle) ||
+            !isRecord(afterStyle) ||
+            !Object.hasOwn(page.extra, 'morrowNoteStyle')
+          )
+            return 'The note style no longer matches the explicit-style restoration.';
+          for (const field of patch.remove) {
+            if (Object.hasOwn(afterStyle, field))
+              return 'The explicit note-style restoration did not remove an originally absent field.';
+          }
+          for (const [field, value] of Object.entries(patch.set)) {
+            if (!Object.hasOwn(afterStyle, field) || !sameValue(afterStyle[field], value))
+              return 'The explicit note-style restoration did not restore an original field value.';
+          }
+          const owned = new Set([...patch.remove, ...Object.keys(patch.set)]);
+          const unknownFields = (style: Record<string, unknown>) =>
+            Object.fromEntries(Object.entries(style).filter(([field]) => !owned.has(field)));
+          if (!sameValue(unknownFields(beforeStyle), unknownFields(afterStyle)))
+            return 'The explicit note-style restoration changed unknown style fields.';
+        }
+      } else if (!isValidNoteStyle(page.extra.morrowNoteStyle)) {
+        return 'The saved note style is invalid.';
+      }
+      const withoutStyle = (candidate: PageMeta) => {
+        const extra = { ...candidate.extra };
+        delete extra.morrowNoteStyle;
+        return { ...candidate, updatedAt: 0, extra };
+      };
+      if (!sameValue(withoutStyle(before), withoutStyle(page)))
+        return 'A note-style write can change only morrowNoteStyle.';
+    }
+
+    for (const id of this.locked) {
+      const beforePage = this.lastState?.pages[id];
+      const afterPage = state.pages[id];
+      const beforeDoc = this.lastState?.docs[id];
+      const afterDoc = state.docs[id];
+      if (!sameValue(beforePage, afterPage) || !sameValue(beforeDoc, afterDoc)) {
+        return this.protectionMessage(id);
+      }
+    }
+
+    const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
+    const previous = new Map([...this.layout].filter(([id]) => !removed.has(id)));
+    const next = placePages(state, previous, this.folderOnly, this.reserved);
+    for (const id of this.locked) {
+      const before = this.layout.get(id);
+      const after = next.get(id);
+      if (before && (!after || before.file !== after.file || before.folder !== after.folder)) {
+        return this.protectionMessage(id);
+      }
+    }
+    return null;
+  }
+
+  private protectionMessage(id: PageId): string {
+    const reason = this.protectedReasons.get(id);
+    return reason
+      ? `This page is protected because Morrow cannot safely represent its content: ${reason}`
+      : 'This page could not be read and is protected from changes.';
   }
 
   async markInitialized(): Promise<void> {
@@ -185,31 +582,36 @@ export class VaultRepository implements WorkspaceRepository {
   async write(batch: WriteBatch): Promise<void> {
     const state = batch.state ?? this.lastState;
     if (!state) throw new Error('Nothing to write yet.');
-    this.lastState = state;
+    const noteStyleIds = batch.noteStylePages ?? [];
+    if (batch.noteStyleRestore || noteStyleIds.length > 0) {
+      await this.writeNoteStyleBatch(batch, state, false);
+      return;
+    }
+    const refusal = this.validateWrite(batch);
+    if (refusal) throw new Error(refusal);
+    const metadataRefusal = await this.validateMetadataBeforeWrite();
+    if (metadataRefusal) throw new Error(metadataRefusal);
     const docChanged = new Set(batch.docs.map((record) => record.id));
     const metaChanged = new Set(batch.pages.map((page) => page.id));
+    const quietPageIds = new Set(batch.quietPageIds ?? []);
+    const nonQuietMetaChanged = new Set([...metaChanged].filter((id) => !quietPageIds.has(id)));
     const removed = new Set(batch.removed.filter((id) => !state.pages[id]));
 
     // a folder that gains content or properties gets a note of its own
-    for (const id of [...docChanged, ...metaChanged]) {
+    for (const id of [...docChanged, ...nonQuietMetaChanged]) {
       if (this.folderOnly.has(id) && this.wantsFile(state, id)) this.folderOnly.delete(id);
     }
 
     const previous = new Map([...this.layout].filter(([id]) => !removed.has(id)));
     const next = placePages(state, previous, this.folderOnly, this.reserved);
-    const ops: VaultOp[] = [];
-
-    for (const id of removed) {
-      const before = this.layout.get(id);
-      if (before?.file) ops.push({ op: 'remove', path: before.file });
-      // a page deleted for good takes its history with it, which would otherwise keep its pictures and
-      // files in the attachments folder for ever
-      if (before) {
-        ops.push({ op: 'delete', path: this.historyPath(id) });
-        this.history.delete(id);
-      }
-    }
-    ops.push(...planMoves(previous, next));
+    const previousFolderOwners = indexFolderOwners(previous);
+    const nextFolderOwners = indexFolderOwners(next);
+    const persistibleSourceMatches = new Map<PageId, boolean>();
+    // Put a non-mutating compare ahead of moves/removals, then compare again at each metadata write.
+    const ops: VaultOp[] = [
+      { op: 'check', path: REGISTRY_PATH, expect: this.registryText },
+      { op: 'check', path: RECENT_PATH, expect: this.recentText },
+    ];
 
     const oldTargets = linkTargets(previous);
     const newTargets = linkTargets(next);
@@ -224,25 +626,203 @@ export class VaultRepository implements WorkspaceRepository {
     }
 
     const candidates = new Set<PageId>([...docChanged, ...metaChanged]);
+    const structuralCandidates = new Set<PageId>(docChanged);
+    const linkReferrers = new Set<PageId>();
     for (const [id, placement] of next)
-      if (!previous.has(id) || movedPages.has(id) || (placement.file && !this.texts.has(id)))
+      if (!previous.has(id) || movedPages.has(id) || (placement.file && !this.texts.has(id))) {
         candidates.add(id);
+        structuralCandidates.add(id);
+      }
     if (retargeted.size > 0 || movedPages.size > 0) {
       for (const [id, doc] of Object.entries(state.docs)) {
-        if (linksTo(doc, retargeted) || (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages)))
+        const linksToMovedMarkdownPage = linksToMarkdownPage(doc, movedPages);
+        const movedMarkdownSource = movedPages.has(id) && hasMarkdownPageLink(doc);
+        if (
+          linksTo(doc, retargeted) ||
+          linksToMovedMarkdownPage ||
+          movedMarkdownSource ||
+          (state.pages[id]?.kind === 'canvas' && linksTo(doc, movedPages))
+        ) {
           candidates.add(id);
+          structuralCandidates.add(id);
+          if (linksToMovedMarkdownPage || movedMarkdownSource || linksTo(doc, retargeted))
+            linkReferrers.add(id);
+        }
       }
     }
+    for (const id of this.pendingLinkRetargets.keys()) {
+      if (!state.pages[id] || removed.has(id)) continue;
+      candidates.add(id);
+      structuralCandidates.add(id);
+      linkReferrers.add(id);
+    }
+    const quietSchemaDependents = new Set<PageId>();
+    const nonQuietSchemaDependents = new Set<PageId>();
     for (const id of metaChanged) {
-      if (state.pages[id]?.kind === 'database')
-        for (const child of childrenOf(state.pages, id, true)) candidates.add(child.id);
+      if (state.pages[id]?.kind === 'database') {
+        for (const child of childrenOf(state.pages, id, true)) {
+          candidates.add(child.id);
+          if (
+            quietPageIds.has(id) &&
+            !nonQuietMetaChanged.has(id) &&
+            !docChanged.has(id) &&
+            !movedPages.has(id) &&
+            !retargeted.has(id)
+          ) {
+            quietSchemaDependents.add(child.id);
+          } else {
+            nonQuietSchemaDependents.add(child.id);
+          }
+        }
+      }
     }
 
-    const resolveOld = retargeted.size > 0 ? makeResolver(state, previous, this.sources) : null;
+    const preservedSources = new Set<PageId>();
+    const sourcesToCheck = new Set<PageId>();
+    let navigationReadContext: NavigationReadContext | null = null;
+    const getNavigationReadContext = (): NavigationReadContext => {
+      navigationReadContext ??= this.createNavigationReadContext(state, next);
+      return navigationReadContext;
+    };
     for (const id of candidates) {
+      const dependencies = this.navigationSourceDependencies(
+        id,
+        state,
+        previous,
+        next,
+        previousFolderOwners,
+        nextFolderOwners,
+        movedPages,
+        retargeted,
+        docChanged,
+        persistibleSourceMatches,
+        getNavigationReadContext,
+      );
+      if (!dependencies) continue;
+      preservedSources.add(id);
+      for (const dependency of dependencies) sourcesToCheck.add(dependency);
+    }
+    // Check every affected page-link referrer before moves begin so a known external edit cannot leave a
+    // partially moved target followed by a failed referrer write.
+    for (const id of linkReferrers) sourcesToCheck.add(id);
+
+    const checkedSources = new Set<string>();
+    for (const id of batch.checkPages ?? []) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) {
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'The source database for a staged Polaris Dados edit is no longer available.',
+          false,
+        );
+      }
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+      checkedSources.add(source.file.toLowerCase());
+    }
+    // A style request can be a reducer no-op, but it still needs a compare against the
+    // bytes loaded for this page before the session is allowed to report success.
+    for (const id of batch.noteStylePages ?? []) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) {
+        throw new WorkspaceWriteError(
+          'save-conflict',
+          'The Markdown source for this note style is no longer available.',
+          false,
+        );
+      }
+      if (checkedSources.has(source.file.toLowerCase())) continue;
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+      checkedSources.add(source.file.toLowerCase());
+    }
+    for (const id of sourcesToCheck) {
+      const source = this.layout.get(id);
+      const baseline = this.texts.get(id);
+      if (!source?.file || baseline === undefined) continue;
+      if (checkedSources.has(source.file.toLowerCase())) continue;
+      ops.push({ op: 'check', path: source.file, expect: baseline, id });
+      checkedSources.add(source.file.toLowerCase());
+    }
+
+    for (const id of removed) {
+      const before = this.layout.get(id);
+      if (before?.file) ops.push({ op: 'remove', path: before.file });
+      // a page deleted for good takes its history with it, which would otherwise keep its pictures and
+      // files in the attachments folder for ever
+      if (before) {
+        ops.push({ op: 'delete', path: this.historyPath(id) });
+        this.history.delete(id);
+      }
+    }
+    ops.push(...planMoves(previous, next));
+
+    const resolveOld =
+      retargeted.size > 0 || movedPages.size > 0 ? makeResolver(state, previous, this.sources) : null;
+    const resolveCurrent = makeResolver(state, next, this.sources);
+    const skippedQuietSerialization = new Set<PageId>();
+    const plannedSources = new Map<PageId, PageSource>();
+    const plannedLinkRetargets = new Map<PageId, Map<string, PendingLinkRetarget>>();
+    const replacedPendingRetargets = new Set(
+      [...this.pendingLinkRetargets.keys()].filter((id) => docChanged.has(id)),
+    );
+    const noOpPendingRetargets = new Set<PageId>();
+    const rememberLinkRetarget = (
+      referrerId: PageId,
+      targetId: PageId,
+      kind: PendingLinkRetarget['kind'],
+      rawDestination: string,
+    ) => {
+      const destination = kind === 'markdown' ? markdownHrefPath(rawDestination)?.path : rawDestination;
+      if (!destination) return;
+      const key = retargetKey(kind, destination, targetId);
+      const old = this.pendingLinkRetargets.get(referrerId)?.get(key);
+      let planned = plannedLinkRetargets.get(referrerId);
+      if (!planned) {
+        planned = new Map();
+        plannedLinkRetargets.set(referrerId, planned);
+      }
+      planned.set(key, {
+        kind,
+        destination,
+        targetId,
+        sourcePathBefore: old?.sourcePathBefore ?? previous.get(referrerId)?.file ?? null,
+        sourcePathAfter: next.get(referrerId)?.file ?? null,
+        targetPathBefore: old?.targetPathBefore ?? previous.get(targetId)?.file ?? null,
+        targetPathAfter: next.get(targetId)?.file ?? null,
+        sourcePathConfirmed: old?.sourcePathConfirmed ?? this.layout.get(referrerId)?.file ?? null,
+        targetPathConfirmed: old?.targetPathConfirmed ?? this.layout.get(targetId)?.file ?? null,
+      });
+    };
+    for (const id of candidates) {
+      if (preservedSources.has(id)) continue;
       const placement = next.get(id);
       if (!state.pages[id] || !placement?.file || this.locked.has(id)) continue;
-      const text = this.render(
+      const doc = state.docs[id];
+      const structurallyAffectedCanvas =
+        state.pages[id]?.kind === 'canvas' && doc !== undefined && linksTo(doc, movedPages);
+      const retargetedLink = retargeted.size > 0 && doc !== undefined && linksTo(doc, retargeted);
+      const retargetedLinkReferrer = linkReferrers.has(id);
+      const enteredThroughQuiet =
+        (quietPageIds.has(id) && metaChanged.has(id)) || quietSchemaDependents.has(id);
+      const quietOnlyCandidate =
+        enteredThroughQuiet &&
+        !nonQuietMetaChanged.has(id) &&
+        !nonQuietSchemaDependents.has(id) &&
+        !structuralCandidates.has(id) &&
+        !movedPages.has(id) &&
+        !retargeted.has(id) &&
+        !retargetedLink &&
+        !retargetedLinkReferrer &&
+        !structurallyAffectedCanvas;
+      if (quietOnlyCandidate) {
+        skippedQuietSerialization.add(id);
+        continue;
+      }
+      const pendingLinks = docChanged.has(id)
+        ? { markdown: new Map<string, PageId>(), wiki: new Map<string, PageId>() }
+        : pendingTargetsForSource(this.sources.get(id)?.body ?? null, doc, this.pendingLinkRetargets.get(id));
+      const rendered = this.render(
         state,
         next,
         newTargets,
@@ -250,19 +830,32 @@ export class VaultRepository implements WorkspaceRepository {
         docChanged.has(id),
         previous.get(id),
         resolveOld,
+        resolveCurrent,
         retargeted,
+        movedPages,
+        pendingLinks,
+        (targetId, kind, destination) => rememberLinkRetarget(id, targetId, kind, destination),
       );
+      const text = rendered.text;
       if (text === null) continue;
       let written = text;
       if (state.pages[id]!.encrypted) {
         // encrypted pages are compared before encryption, a fresh nonce makes every encrypted copy differ
         const pageKey = this.keys.get(id);
         if (!pageKey) continue;
-        if (text === this.plainTexts.get(id) && this.texts.has(id) && isEncryptedText(this.texts.get(id)!))
+        if (text === this.plainTexts.get(id) && this.texts.has(id) && isEncryptedText(this.texts.get(id)!)) {
+          plannedLinkRetargets.delete(id);
+          if (this.pendingLinkRetargets.has(id)) noOpPendingRetargets.add(id);
           continue;
+        }
         written = await encryptPage(text, pageKey);
         this.pendingPlain.set(id, text);
-      } else if (text === this.texts.get(id)) continue;
+      } else if (text === this.texts.get(id)) {
+        plannedLinkRetargets.delete(id);
+        if (this.pendingLinkRetargets.has(id)) noOpPendingRetargets.add(id);
+        continue;
+      }
+      if (rendered.source) plannedSources.set(id, rendered.source);
       ops.push({
         op: 'write',
         path: placement.file,
@@ -274,6 +867,7 @@ export class VaultRepository implements WorkspaceRepository {
     // turning encryption on removes the plain versions kept in page history
     for (const id of metaChanged) {
       if (
+        !quietPageIds.has(id) &&
         state.pages[id]?.encrypted &&
         this.layout.has(id) &&
         !this.history.get(id)?.length &&
@@ -301,6 +895,15 @@ export class VaultRepository implements WorkspaceRepository {
       if (op) ops.push(op);
     }
 
+    const guardedLinkedViewPages = new Set<PageId>();
+    for (const id of candidates) {
+      if (skippedQuietSerialization.has(id)) continue;
+      const placement = next.get(id);
+      if (!placement?.file || extension(placement.file) !== 'md') continue;
+      const stagedHasLinkedView = hasLinkedViewNode(state.docs[id]);
+      if (stagedHasLinkedView) guardedLinkedViewPages.add(id);
+    }
+
     const edited = batch.docs.length;
     if (edited > 0) {
       const day = localDay(new Date());
@@ -308,9 +911,9 @@ export class VaultRepository implements WorkspaceRepository {
     }
     const registry = this.registryFor(state, next);
     if (registry.workspace !== this.registryText)
-      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace });
+      ops.push({ op: 'write', path: REGISTRY_PATH, text: registry.workspace, expect: this.registryText });
     if (registry.recent !== this.recentText)
-      ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent });
+      ops.push({ op: 'write', path: RECENT_PATH, text: registry.recent, expect: this.recentText });
     // the shell only removes empty folders, a folder page keeps its folder because the folder is the page
     const folderPages = new Set(
       [...next.values()].filter((p) => p.file === null).map((p) => p.folder.toLowerCase()),
@@ -319,10 +922,414 @@ export class VaultRepository implements WorkspaceRepository {
       if (!folderPages.has(folder.toLowerCase())) ops.push({ op: 'rmdir', path: folder });
     }
 
-    await this.run(ops, next);
+    await this.run(
+      ops,
+      next,
+      new Set(),
+      guardedLinkedViewPages,
+      linkReferrers,
+      plannedSources,
+      plannedLinkRetargets,
+      replacedPendingRetargets,
+    );
+    for (const id of noOpPendingRetargets) this.pendingLinkRetargets.delete(id);
+    this.lastState = state;
     this.registryText = registry.workspace;
     this.recentText = registry.recent;
     this.registryDirty = false;
+  }
+
+  private async writeNoteStyleOnly(
+    state: WorkspaceState,
+    id: PageId,
+    restore?: NonNullable<WriteBatch['noteStyleRestore']>,
+    captureRestoreContext = false,
+  ): Promise<NoteStyleWriteReceipt> {
+    const page = state.pages[id];
+    const placement = this.layout.get(id);
+    const baseline = this.texts.get(id);
+    const sourceText = page?.encrypted ? this.plainTexts.get(id) : baseline;
+    if (!page || !placement?.file || baseline === undefined || sourceText === undefined) {
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        'The note style was not written because its Markdown source could not be verified.',
+        false,
+      );
+    }
+
+    const noteStylePages = new Set<PageId>([id]);
+    const plannedSources = new Map<PageId, PageSource>();
+    let op: VaultOp;
+    let restoreContext: NoteStyleRestoreContext | null = null;
+    if (restore) {
+      const text =
+        restore.kind === 'restore-inherited'
+          ? restoreInheritedMorrowNoteStyleFile(sourceText, restore.appliedStyle, restore.context)
+          : restoreExplicitMorrowNoteStyleFile(sourceText, restore.appliedStyle, restore.context);
+      if (text === null) {
+        throw new WorkspaceWriteError(
+          'unsafe-frontmatter',
+          restore.kind === 'restore-inherited'
+            ? 'The inherited note style was not restored because its YAML could not be changed safely. No files were changed.'
+            : 'The explicit note style was not restored because its YAML could not be changed safely. No files were changed.',
+          false,
+        );
+      }
+      const parsed = readPageText(text);
+      if (
+        parsed.error ||
+        (restore.kind === 'restore-inherited'
+          ? Object.hasOwn(parsed.extra, 'morrowNoteStyle')
+          : !Object.hasOwn(parsed.extra, 'morrowNoteStyle')) ||
+        (parsed.source.rawData === null && parsed.source.rawHead !== '')
+      ) {
+        throw new WorkspaceWriteError(
+          'unsafe-frontmatter',
+          restore.kind === 'restore-inherited'
+            ? 'The inherited note style was not restored because the updated Markdown could not be verified. No files were changed.'
+            : 'The explicit note style was not restored because the updated Markdown could not be verified. No files were changed.',
+          false,
+        );
+      }
+      plannedSources.set(id, parsed.source);
+      op = { op: 'write', path: placement.file, text, expect: baseline, id };
+    } else {
+      const sourceStyle = readPageText(sourceText).extra.morrowNoteStyle;
+      if (sameValue(page.extra.morrowNoteStyle, sourceStyle)) {
+        // An equal saved value still performs source CAS but does not canonicalize YAML or enqueue a retry.
+        op = { op: 'check', path: placement.file, expect: baseline, id };
+      } else {
+        const style = page.extra.morrowNoteStyle as NoteStyle;
+        const text = updateMorrowNoteStyleFile(sourceText, style);
+        if (text === null) {
+          throw new WorkspaceWriteError(
+            'unsafe-frontmatter',
+            'The note style was not written because its YAML could not be changed without risking another value. No files were changed.',
+            false,
+          );
+        }
+        const parsed = readPageText(text);
+        if (parsed.error || !parsed.source.rawData) {
+          throw new WorkspaceWriteError(
+            'unsafe-frontmatter',
+            'The note style was not written because its updated YAML could not be verified. No files were changed.',
+            false,
+          );
+        }
+        plannedSources.set(id, parsed.source);
+        if (captureRestoreContext && !page.encrypted) {
+          try {
+            const appliedStyle = projectNoteStyle(style);
+            if (appliedStyle) {
+              const inherited = captureInheritedMorrowNoteStyleContext(sourceText);
+              if (inherited) {
+                if (restoreInheritedMorrowNoteStyleFile(text, appliedStyle, inherited) === sourceText)
+                  restoreContext = { kind: 'inherited', context: inherited };
+              } else {
+                const explicit = captureExplicitMorrowNoteStyleFile(sourceText);
+                if (
+                  explicit &&
+                  restoreExplicitMorrowNoteStyleFile(text, appliedStyle, explicit) === sourceText
+                )
+                  restoreContext = { kind: 'explicit', context: explicit };
+              }
+            }
+          } catch {
+            // A private undo candidate must never reject a valid style write.
+            restoreContext = null;
+          }
+        }
+        let written = text;
+        if (page.encrypted) {
+          const pageKey = this.keys.get(id);
+          if (!pageKey) {
+            throw new WorkspaceWriteError(
+              'page-inaccessible',
+              'This encrypted note is locked and its style cannot be saved.',
+              false,
+            );
+          }
+          written = await encryptPage(text, pageKey);
+          this.pendingPlain.set(id, text);
+        }
+        op = { op: 'write', path: placement.file, text: written, expect: baseline, id };
+      }
+    }
+
+    try {
+      await this.run(
+        [op],
+        new Map(this.layout),
+        noteStylePages,
+        new Set(),
+        new Set(),
+        plannedSources,
+        new Map(),
+        new Set(),
+      );
+      this.lastState = state;
+      return {
+        op: op.op,
+        restoreContext: op.op === 'write' ? restoreContext : null,
+      };
+    } catch (error) {
+      this.pendingPlain.delete(id);
+      throw error;
+    }
+  }
+
+  private async writeNoteStyleBatch(
+    batch: WriteBatch,
+    state: WorkspaceState,
+    captureRestoreContext: boolean,
+  ): Promise<NoteStyleWriteReceipt> {
+    const noteStyleIds = batch.noteStylePages ?? [];
+    if (batch.noteStyleRestore && noteStyleIds.length === 0) {
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        batch.noteStyleRestore.kind === 'restore-inherited'
+          ? 'An inherited note-style restoration requires its matching isolated note-style lane.'
+          : 'An explicit note-style restoration requires its matching isolated note-style lane.',
+        false,
+      );
+    }
+    const id = noteStyleIds[0];
+    const isolated =
+      id !== undefined &&
+      noteStyleIds.length === 1 &&
+      batch.pages.length === 1 &&
+      batch.pages[0]?.id === id &&
+      batch.docs.length === 0 &&
+      batch.removed.length === 0 &&
+      (batch.checkPages?.length ?? 0) === 0 &&
+      (batch.quietPageIds?.length ?? 0) === 0 &&
+      (batch.snapshots?.length ?? 0) === 0 &&
+      (!batch.noteStyleRestore || batch.noteStyleRestore.pageId === id);
+    if (!isolated)
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        'A note-style write must be isolated from other workspace changes.',
+        false,
+      );
+    const refusal = this.validateWrite(batch);
+    if (refusal) throw new WorkspaceWriteError('unsafe-note-style', refusal, false);
+    return this.writeNoteStyleOnly(state, id, batch.noteStyleRestore, captureRestoreContext);
+  }
+
+  async writeNoteStyle(
+    batch: WriteBatch,
+    _options: { readonly captureRestoreContext: true },
+  ): Promise<NoteStyleWriteReceipt> {
+    const state = batch.state ?? this.lastState;
+    if (!state) throw new Error('Nothing to write yet.');
+    if (batch.noteStyleRestore)
+      throw new WorkspaceWriteError(
+        'unsafe-note-style',
+        'Restore operations cannot collect a note-style application context.',
+        false,
+      );
+    return this.writeNoteStyleBatch(batch, state, true);
+  }
+
+  private navigationSourceDependencies(
+    id: PageId,
+    state: WorkspaceState,
+    previous: Map<PageId, Placement>,
+    next: Map<PageId, Placement>,
+    previousFolderOwners: FolderOwnerIndex,
+    nextFolderOwners: FolderOwnerIndex,
+    movedPages: Set<PageId>,
+    retargeted: Set<PageId>,
+    docChanged: Set<PageId>,
+    persistibleSourceMatches: Map<PageId, boolean>,
+    getNavigationReadContext: () => NavigationReadContext,
+  ): PageId[] | null {
+    const page = state.pages[id];
+    const before = previous.get(id);
+    const after = next.get(id);
+    const parent = page?.parentId ? state.pages[page.parentId] : undefined;
+    if (
+      !page ||
+      !before?.file ||
+      !after?.file ||
+      extension(before.file) !== 'md' ||
+      before.file !== after.file ||
+      before.folder !== after.folder ||
+      movedPages.has(id) ||
+      retargeted.size > 0 ||
+      docChanged.has(id) ||
+      linksToMarkdownPage(state.docs[id], movedPages) ||
+      this.locked.has(id) ||
+      page.encrypted ||
+      (!isOptedInDatabase(page) && !isOptedInDatabase(parent))
+    ) {
+      return null;
+    }
+
+    const previousOwner = sourceParentId(id, before, previousFolderOwners);
+    const nextOwner = sourceParentId(id, after, nextFolderOwners);
+    if (
+      previousOwner === undefined ||
+      nextOwner === undefined ||
+      previousOwner !== nextOwner ||
+      page.parentId !== nextOwner
+    ) {
+      return null;
+    }
+
+    const dependencies = [id];
+    if (page.parentId) {
+      const parentId = page.parentId;
+      if (docChanged.has(parentId) || movedPages.has(parentId) || retargeted.has(parentId)) return null;
+      if (parent?.kind === 'database') {
+        const parentBefore = previous.get(parentId);
+        const parentAfter = next.get(parentId);
+        const grandparent = parent.parentId ? state.pages[parent.parentId] : undefined;
+        if (
+          !parent.database ||
+          !parentBefore?.file ||
+          !parentAfter?.file ||
+          parentBefore.file !== parentAfter.file ||
+          parentBefore.folder !== parentAfter.folder ||
+          movedPages.has(parentId) ||
+          grandparent?.kind === 'database' ||
+          !this.sourceMatchesPersistiblePage(
+            parentId,
+            state,
+            next,
+            nextFolderOwners,
+            persistibleSourceMatches,
+            getNavigationReadContext,
+          )
+        ) {
+          return null;
+        }
+        dependencies.push(parentId);
+      }
+    }
+
+    if (
+      !this.sourceMatchesPersistiblePage(
+        id,
+        state,
+        next,
+        nextFolderOwners,
+        persistibleSourceMatches,
+        getNavigationReadContext,
+      )
+    )
+      return null;
+    return dependencies;
+  }
+
+  private sourceMatchesPersistiblePage(
+    id: PageId,
+    state: WorkspaceState,
+    layout: Map<PageId, Placement>,
+    folderOwners: FolderOwnerIndex,
+    matches: Map<PageId, boolean>,
+    getNavigationReadContext: () => NavigationReadContext,
+  ): boolean {
+    const remembered = matches.get(id);
+    if (remembered !== undefined || matches.has(id)) return remembered ?? false;
+    const page = state.pages[id];
+    const placement = layout.get(id);
+    const baseline = this.texts.get(id);
+    if (
+      !page ||
+      !placement?.file ||
+      extension(placement.file) !== 'md' ||
+      baseline === undefined ||
+      this.locked.has(id) ||
+      page.encrypted
+    ) {
+      return false;
+    }
+
+    const sourceParent = sourceParentId(id, placement, folderOwners);
+    if (sourceParent === undefined || page.parentId !== sourceParent) {
+      matches.set(id, false);
+      return false;
+    }
+
+    let matchesSource: boolean;
+    try {
+      const parsed = this.readFile(
+        placement.file,
+        baseline,
+        page,
+        state,
+        layout,
+        () => {
+          throw new Error('A new select option would be required to compare this source safely.');
+        },
+        getNavigationReadContext(),
+      );
+      matchesSource =
+        parsed.ok &&
+        parsed.database === undefined &&
+        samePersistiblePageContent(page, parsed.page) &&
+        sameValue(state.docs[id], parsed.doc);
+    } catch {
+      matchesSource = false;
+    }
+    matches.set(id, matchesSource);
+    return matchesSource;
+  }
+
+  private async validateMetadataBeforeWrite(): Promise<string | null> {
+    for (const [path, kind, baseline] of [
+      [REGISTRY_PATH, 'workspace', this.registryText],
+      [RECENT_PATH, 'recent', this.recentText],
+    ] as const) {
+      let current: string | null;
+      try {
+        current = await this.bridge.readText(path);
+      } catch {
+        return `The Morrow ${kind} metadata could not be checked; no files were changed.`;
+      }
+      if (current === null) {
+        if (baseline !== null) {
+          return `The Morrow ${kind} metadata changed after opening; reopen this vault before saving.`;
+        }
+        continue;
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(current) as unknown;
+      } catch {
+        return `The Morrow ${kind} metadata could not be read and was left untouched.`;
+      }
+      const issue = findUnrepresentableVaultMetadata(raw, kind);
+      if (issue) return `${issue} No files were changed.`;
+      if (current !== baseline) {
+        return `The Morrow ${kind} metadata changed after opening; reopen this vault before saving.`;
+      }
+    }
+    return null;
+  }
+
+  private createNavigationReadContext(
+    state: WorkspaceState,
+    layout: Map<PageId, Placement>,
+  ): NavigationReadContext {
+    const otherIndex = new Map<string, string>();
+    const otherNames = new Map<string, string[]>();
+    for (const path of this.others) {
+      otherIndex.set(path.toLowerCase(), path);
+      const name = basename(path).toLowerCase();
+      otherNames.set(name, [...(otherNames.get(name) ?? []), path]);
+    }
+    return {
+      state,
+      layout,
+      sources: this.sources,
+      others: this.others,
+      resolver: makeResolver(state, layout, this.sources),
+      otherIndex,
+      otherNames,
+    };
   }
 
   private wantsFile(state: WorkspaceState, id: PageId): boolean {
@@ -336,6 +1343,7 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       placement ? basename(placement.folder) : '',
       parent?.kind === 'database' ? parent.database : null,
+      parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
     return managed.size > 0 || Object.keys(page.extra).length > 0;
   }
@@ -348,36 +1356,77 @@ export class VaultRepository implements WorkspaceRepository {
     edited: boolean,
     before: Placement | undefined,
     resolveOld: Resolver | null,
+    resolveCurrent: Resolver,
     retargeted: Set<PageId>,
-  ): string | null {
+    movedPages: Set<PageId>,
+    pendingTargets: PendingLinkTargets,
+    rememberLinkRetarget: (targetId: PageId, kind: PendingLinkRetarget['kind'], destination: string) => void,
+  ): RenderedPage {
     const page = state.pages[id]!;
     const placement = layout.get(id)!;
     if (page.kind === 'canvas')
-      return writeCanvas(canvasFromDoc(state.docs[id]), (pageId) => layout.get(pageId)?.file ?? null);
+      return {
+        text: writeCanvas(canvasFromDoc(state.docs[id]), (pageId) => layout.get(pageId)?.file ?? null),
+        source: null,
+      };
     // a folder that just got a note of its own, for its tags, properties or kind, has no text yet
     const doc = state.docs[id] ?? emptyDoc();
     const dir = dirname(placement.file!);
+    const beforeDir = before?.file ? dirname(before.file) : before ? dirname(before.folder) : dir;
+    const markdownTarget = (href: string): string | null => {
+      const hrefPath = markdownHrefPath(href)?.path;
+      const pendingTargetId = hrefPath ? pendingTargets.markdown.get(hrefPath) : undefined;
+      if (pendingTargetId) {
+        const targetPath = markdownPageTargetPath(pendingTargetId, href, dir, layout, resolveCurrent);
+        if (targetPath) rememberLinkRetarget(pendingTargetId, 'markdown', href);
+        return targetPath;
+      }
+      if (!resolveOld) return null;
+      const targetId = resolveMarkdownPageLink(href, beforeDir, resolveOld);
+      if (!targetId || (!movedPages.has(id) && !movedPages.has(targetId))) return null;
+      const targetPath = markdownPageTargetPath(targetId, href, dir, layout, resolveCurrent);
+      if (targetPath) rememberLinkRetarget(targetId, 'markdown', href);
+      return targetPath;
+    };
+    const wikiTarget = (target: string): string | null => {
+      const pendingTargetId = pendingTargets.wiki.get(target);
+      if (pendingTargetId) {
+        const targetName = targets.get(pendingTargetId) ?? null;
+        if (targetName) rememberLinkRetarget(pendingTargetId, 'wiki', target);
+        return targetName;
+      }
+      if (!resolveOld) return null;
+      const targetId = resolveOld.resolve(target, beforeDir);
+      if (!targetId || !retargeted.has(targetId)) return null;
+      const targetName = targets.get(targetId) ?? null;
+      if (targetName) rememberLinkRetarget(targetId, 'wiki', target);
+      return targetName;
+    };
     let source = this.sources.get(id) ?? null;
     const movedDir = before !== undefined && dirname(before.folder) !== dirname(placement.folder);
     if (source && source.body !== null && (edited || (movedDir && hasFileRefs(doc)))) {
       source = { ...source, body: null };
-      this.sources.set(id, source);
     }
     let body: string;
     if (source && source.body !== null) {
-      body = resolveOld
-        ? retargetLinks(source.body, (target) => {
-            const found = resolveOld.resolve(target, before ? dirname(before.folder) : dir);
-            return found && retargeted.has(found) ? (targets.get(found) ?? null) : null;
-          })
-        : source.body;
+      body =
+        resolveOld || pendingTargets.markdown.size > 0 || pendingTargets.wiki.size > 0
+          ? retargetLinks(source.body, wikiTarget, markdownTarget)
+          : source.body;
       if (body !== source.body) {
         source = { ...source, body };
-        this.sources.set(id, source);
       }
     } else {
       body = docToMarkdown(doc, {
         linkTarget: (pageId) => targets.get(pageId) ?? null,
+        markdownLinkTarget: (pageId, href) => {
+          const targetPath = markdownPageTargetPath(pageId, href, dir, layout, resolveCurrent);
+          const hrefPath = markdownHrefPath(href)?.path;
+          const pendingTargetId = hrefPath ? pendingTargets.markdown.get(hrefPath) : undefined;
+          if (targetPath && (movedPages.has(id) || movedPages.has(pageId) || pendingTargetId === pageId))
+            rememberLinkRetarget(pageId, 'markdown', href);
+          return targetPath;
+        },
         titleOf: (pageId) => (state.pages[pageId] ? displayTitle(state.pages[pageId]) : null),
         filePath: (fileId) =>
           fileId.includes('/') || fileId.includes('.') ? relativePath(dir, fileId) : null,
@@ -388,29 +1437,147 @@ export class VaultRepository implements WorkspaceRepository {
       page,
       basename(placement.folder),
       parent?.kind === 'database' ? parent.database : null,
+      parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados'),
     );
-    const text = renderPageText(composeFrontmatter(managed, page.extra, source), source, body);
-    // the next save starts from what this one wrote, so keys added in morrow keep their spelling and order
+    const firstBlock = doc.content?.[0];
+    if (
+      firstBlock?.type === 'heading' &&
+      firstBlock.attrs?.level === 1 &&
+      isHexBlockBackground(firstBlock.attrs?.backgroundColor)
+    ) {
+      // Keep a custom-colored body H1 distinct from the implicit file title on the next read.
+      managed.set('title', displayTitle(page));
+    }
+    let frontmatter = composeFrontmatter(managed, page.extra, source, page);
+    const changedCheckboxKeys = new Set<string>();
+    const unchangedSchemaKeys = new Set<string>();
+    let schemaValuesChanged = false;
+    const optedInDatabase =
+      parent?.kind === 'database' && parent.database !== null && Object.hasOwn(parent.extra, 'polarisDados');
+    const unchangedSourceValues = new Map<string, unknown>();
+    if (source?.rawData && parent?.kind === 'database' && parent.database) {
+      for (const property of parent.database.properties) {
+        if (property.type === 'formula') continue;
+        const sourceKey = findKey(source.rawData, property.name);
+        const hasPageValue = Object.hasOwn(page.properties, property.id);
+        if (sourceKey === undefined) {
+          if (hasPageValue) {
+            schemaValuesChanged = true;
+            if (property.type === 'checkbox' && optedInDatabase) {
+              changedCheckboxKeys.add(findKey(frontmatter, property.name) ?? property.name);
+            }
+          }
+          continue;
+        }
+        const raw = source.rawData[sourceKey];
+        const parsed = readProperty(
+          property,
+          raw,
+          () => '',
+          optedInDatabase && (property.type === 'text' || property.type === 'checkbox'),
+        ).value;
+        // takeProperties leaves unrepresentable non-empty values in page.extra so they remain
+        // editable. Only restore source values that its parser actually consumes (or omits as null/empty).
+        if (parsed === null && raw !== null && raw !== '') continue;
+        // Match the page's effective property state, including whether it is present. A null raw
+        // value maps to an explicit null only in the opted-in lane; legacy schemas omit it.
+        const sourceHasPageValue = parsed !== null || (optedInDatabase && raw === null);
+        const sameAsSource =
+          hasPageValue === sourceHasPageValue &&
+          (!sourceHasPageValue || sameValue(parsed, page.properties[property.id]));
+
+        if (!sameAsSource) schemaValuesChanged = true;
+        if (property.type === 'checkbox' && optedInDatabase && !sameAsSource) {
+          changedCheckboxKeys.add(findKey(frontmatter, property.name) ?? sourceKey ?? property.name);
+        }
+        if (!sameAsSource) continue;
+        unchangedSourceValues.set(sourceKey, raw);
+        unchangedSchemaKeys.add(sourceKey);
+      }
+    }
+    // Preserve unchanged raw schema values on unrelated edits. For actual opted-in schema edits,
+    // keep the established typed serialization, except for the checkbox patch lane which must
+    // preserve untouched source lines.
+    if (
+      unchangedSourceValues.size > 0 &&
+      (!optedInDatabase || !schemaValuesChanged || changedCheckboxKeys.size > 0)
+    ) {
+      const preserved = new Map(Object.entries(frontmatter));
+      for (const [sourceKey, raw] of unchangedSourceValues) {
+        const candidateKey = findKey(frontmatter, sourceKey);
+        if (candidateKey !== undefined && candidateKey !== sourceKey) preserved.delete(candidateKey);
+        preserved.set(sourceKey, raw);
+      }
+      frontmatter = composeFrontmatter(preserved, {}, source);
+    }
+    let text: string;
+    if (changedCheckboxKeys.size > 0 && source?.rawData && source.rawHead) {
+      const updated = updateFrontmatter(
+        source.rawYaml,
+        source.rawData,
+        frontmatter,
+        body,
+        changedCheckboxKeys,
+        unchangedSchemaKeys,
+      );
+      if (updated === null) {
+        throw new WorkspaceWriteError(
+          'unsafe-checkbox-frontmatter',
+          'The checkbox change was kept in memory but not written because its frontmatter cannot be changed without risking another value. No files were changed.',
+          false,
+        );
+      }
+      text = updated;
+    } else {
+      try {
+        text = renderPageText(frontmatter, source, body);
+      } catch (error) {
+        if (error instanceof UnsafeFrontmatterUpdateError) {
+          throw new WorkspaceWriteError('unsafe-frontmatter', error.message, false);
+        }
+        throw error;
+      }
+    }
+    let writtenSource: PageSource | null = null;
     if (source) {
       const written = splitFrontmatter(text);
-      this.sources.set(id, {
+      // Keep this candidate local until its corresponding file write succeeds.
+      writtenSource = {
         ...source,
         keyOrder: Object.keys(written.data ?? {}),
         rawData: written.data,
         rawHead: written.head,
         rawYaml: written.yaml,
-      });
+      };
     }
-    return text;
+    return { text, source: writtenSource };
   }
 
   // carries out the operations and keeps track of what reached the disk, even when something fails halfway
-  private async run(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async run(
+    ops: VaultOp[],
+    next: Map<PageId, Placement>,
+    noteStylePages: ReadonlySet<PageId>,
+    guardedLinkedViewPages: ReadonlySet<PageId>,
+    guardedLinkReferrers: ReadonlySet<PageId>,
+    plannedSources: ReadonlyMap<PageId, PageSource>,
+    plannedLinkRetargets: ReadonlyMap<PageId, ReadonlyMap<string, PendingLinkRetarget>>,
+    replacedPendingRetargets: ReadonlySet<PageId>,
+  ): Promise<void> {
     const started = Date.now();
     for (const op of ops) if (op.op === 'write') this.wroteAt.set(op.path.toLowerCase(), started);
     this.saving++;
     try {
-      await this.runOps(ops, next);
+      await this.runOps(
+        ops,
+        next,
+        noteStylePages,
+        guardedLinkedViewPages,
+        guardedLinkReferrers,
+        plannedSources,
+        plannedLinkRetargets,
+        replacedPendingRetargets,
+      );
     } finally {
       this.saving--;
       if (this.saving === 0 && this.held.length > 0) {
@@ -421,48 +1588,214 @@ export class VaultRepository implements WorkspaceRepository {
     }
   }
 
-  private async runOps(ops: VaultOp[], next: Map<PageId, Placement>): Promise<void> {
+  private async runOps(
+    ops: VaultOp[],
+    next: Map<PageId, Placement>,
+    noteStylePages: ReadonlySet<PageId>,
+    guardedLinkedViewPages: ReadonlySet<PageId>,
+    guardedLinkReferrers: ReadonlySet<PageId>,
+    plannedSources: ReadonlyMap<PageId, PageSource>,
+    plannedLinkRetargets: ReadonlyMap<PageId, ReadonlyMap<string, PendingLinkRetarget>>,
+    replacedPendingRetargets: ReadonlySet<PageId>,
+  ): Promise<void> {
     let pending = ops;
     const layout = new Map(this.layout);
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (pending.length === 0) break;
-      const results: VaultOpResult[] = await this.bridge.apply(pending);
-      let failedAt = -1;
-      for (let i = 0; i < results.length; i++) {
-        if (results[i]!.ok) this.applied(pending[i]!, layout, next);
-        else {
-          failedAt = i;
+    const preAppliedLayout = new Map(layout);
+    const confirmedMovedPages = new Set<PageId>();
+    const writtenReferrers = new Set<PageId>();
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (pending.length === 0) break;
+        const results: VaultOpResult[] = await this.bridge.apply(pending);
+        let failedAt = -1;
+        for (let i = 0; i < results.length; i++) {
+          const op = pending[i]!;
+          const beforeRename = op.op === 'rename' ? affectedPlacements(layout, op.from) : null;
+          if (results[i]!.ok) {
+            this.applied(op, layout, next, plannedSources);
+            if (op.op === 'write' && op.id && guardedLinkReferrers.has(op.id)) writtenReferrers.add(op.id);
+            if (beforeRename) {
+              for (const [id, before] of beforeRename) {
+                const after = layout.get(id);
+                if (after && (after.file !== before.file || after.folder !== before.folder))
+                  confirmedMovedPages.add(id);
+              }
+            }
+          } else {
+            failedAt = i;
+            break;
+          }
+        }
+        if (failedAt === -1 && results.length === pending.length) {
+          pending = [];
           break;
         }
+        if (failedAt === -1) throw new Error('The desktop shell stopped before finishing the save.');
+        const failed = results[failedAt]!;
+        const op = pending[failedAt]!;
+        const pageId = op.op === 'check' || op.op === 'write' ? op.id : undefined;
+        if (!failed.ok && failed.code === 'conflict' && pageId && noteStylePages.has(pageId)) {
+          throw new WorkspaceWriteError(
+            'save-conflict',
+            'The note changed on disk; its bytes were preserved and the style change was refused. Reopen the vault to review the external version.',
+            false,
+          );
+        }
+        if (
+          !failed.ok &&
+          failed.code === 'conflict' &&
+          op.op === 'check' &&
+          op.id &&
+          (this.isPilotDataRecord(op.id) ||
+            guardedLinkedViewPages.has(op.id) ||
+            guardedLinkReferrers.has(op.id) ||
+            this.hasLinkedViewBaseline(op.id))
+        ) {
+          throw new WorkspaceWriteError(
+            'save-conflict',
+            guardedLinkReferrers.has(op.id)
+              ? 'A page-link referrer changed on disk; its bytes were preserved and the retarget was refused. Reopen the vault to review the external version.'
+              : 'A Polaris Dados source or linked-view note changed on disk. The staged change was kept in memory and not written; reopen the vault to review the external version.',
+            false,
+          );
+        }
+        if (!failed.ok && failed.code === 'conflict' && op.op === 'write' && op.id) {
+          if (
+            this.isPilotDataRecord(op.id) ||
+            guardedLinkedViewPages.has(op.id) ||
+            guardedLinkReferrers.has(op.id) ||
+            this.hasLinkedViewBaseline(op.id)
+          ) {
+            throw new WorkspaceWriteError(
+              'save-conflict',
+              guardedLinkReferrers.has(op.id)
+                ? 'A page-link referrer changed during retargeting; its bytes were preserved and automatic retry was refused. Reopen the vault to review the external version.'
+                : 'A Polaris Dados source or linked-view note changed on disk. Automatic retry was refused; reopen the vault to review the external version.',
+              false,
+            );
+          }
+          const currentSplit = failed.current === null ? null : splitFrontmatter(failed.current);
+          const ambiguousFrontmatter =
+            currentSplit !== null &&
+            currentSplit.head !== '' &&
+            currentSplit.error === null &&
+            currentSplit.data !== null &&
+            !isUnambiguousFrontmatter(currentSplit.yaml, currentSplit.data);
+          const reason =
+            failed.current === null
+              ? null
+              : (findUnrepresentablePageContent(failed.current) ??
+                currentSplit?.error ??
+                (ambiguousFrontmatter ? 'The current file contains ambiguous YAML frontmatter.' : null) ??
+                (isEncryptedText(failed.current) ? 'The current file is encrypted.' : null));
+          if (reason) {
+            if (ambiguousFrontmatter) {
+              throw new WorkspaceWriteError(
+                'unsafe-frontmatter',
+                'The external page now contains ambiguous YAML frontmatter. Its bytes and the staged edit were kept; history capture and automatic retry were skipped.',
+                false,
+              );
+            }
+            throw new Error(
+              `The page changed on disk and contains content this version cannot safely represent. It was left untouched: ${reason}`,
+            );
+          }
+          // the file changed on disk in the meantime, that version is kept in page history before it is replaced
+          if (failed.current !== null) await this.keepDiskVersion(op.id, failed.current);
+          pending = [{ ...op, expect: failed.current }, ...pending.slice(failedAt + 1)];
+          continue;
+        }
+        throw new Error(failed.ok ? 'Unknown error' : failed.message);
       }
-      if (failedAt === -1 && results.length === pending.length) {
-        pending = [];
-        break;
-      }
-      if (failedAt === -1) throw new Error('The desktop shell stopped before finishing the save.');
-      const failed = results[failedAt]!;
-      const op = pending[failedAt]!;
-      if (!failed.ok && failed.code === 'conflict' && op.op === 'write' && op.id) {
-        // the file changed on disk in the meantime, that version is kept in page history before it is replaced
-        if (failed.current !== null) await this.keepDiskVersion(op.id, failed.current);
-        pending = [{ ...op, expect: failed.current }, ...pending.slice(failedAt + 1)];
-        continue;
-      }
+      if (pending.length > 0)
+        throw new Error('The file kept changing on disk while Morrow tried to save it.');
+    } catch (error) {
+      this.rememberFailedLinkRetargets(
+        plannedLinkRetargets,
+        replacedPendingRetargets,
+        guardedLinkReferrers,
+        confirmedMovedPages,
+        writtenReferrers,
+        preAppliedLayout,
+        layout,
+      );
       this.layout = layout;
-      throw new Error(failed.ok ? 'Unknown error' : failed.message);
-    }
-    if (pending.length > 0) {
-      this.layout = layout;
-      throw new Error('The file kept changing on disk while Morrow tried to save it.');
+      throw error;
     }
     this.layout = new Map(next);
   }
 
-  private applied(op: VaultOp, layout: Map<PageId, Placement>, next: Map<PageId, Placement>): void {
+  private rememberFailedLinkRetargets(
+    planned: ReadonlyMap<PageId, ReadonlyMap<string, PendingLinkRetarget>>,
+    replaced: ReadonlySet<PageId>,
+    guardedReferrers: ReadonlySet<PageId>,
+    confirmedMovedPages: ReadonlySet<PageId>,
+    writtenReferrers: ReadonlySet<PageId>,
+    preAppliedLayout: Map<PageId, Placement>,
+    confirmedLayout: Map<PageId, Placement>,
+  ): void {
+    const beforeLinkTargets = linkTargets(preAppliedLayout);
+    const confirmedLinkTargets = linkTargets(confirmedLayout);
+    const wikiProjectionChanged = new Set<PageId>();
+    for (const [id, target] of confirmedLinkTargets) {
+      if (beforeLinkTargets.get(id) !== target) wikiProjectionChanged.add(id);
+    }
+    const referrers = new Set([...guardedReferrers, ...planned.keys()]);
+    for (const referrerId of referrers) {
+      if (writtenReferrers.has(referrerId)) continue;
+      const intentions = planned.get(referrerId);
+      const sourceMoved = confirmedMovedPages.has(referrerId);
+      const targetMoved =
+        intentions !== undefined &&
+        [...intentions.values()].some((item) => confirmedMovedPages.has(item.targetId));
+      const targetProjectionChanged =
+        intentions !== undefined &&
+        [...intentions.values()].some(
+          (item) => item.kind === 'wiki' && wikiProjectionChanged.has(item.targetId),
+        );
+      const existing = this.pendingLinkRetargets.get(referrerId);
+      const replacing = replaced.has(referrerId) && existing !== undefined;
+      if (!sourceMoved && !targetMoved && !targetProjectionChanged && !replacing) continue;
+
+      const pending = existing ?? new Map<string, PendingLinkRetarget>();
+      if (replacing) pending.clear();
+      for (const [key, intention] of intentions ?? []) {
+        if (
+          !sourceMoved &&
+          !confirmedMovedPages.has(intention.targetId) &&
+          !(intention.kind === 'wiki' && wikiProjectionChanged.has(intention.targetId))
+        )
+          continue;
+        const old = pending.get(key);
+        pending.set(key, {
+          ...intention,
+          sourcePathBefore: old?.sourcePathBefore ?? intention.sourcePathBefore,
+          sourcePathAfter: intention.sourcePathAfter,
+          targetPathBefore: old?.targetPathBefore ?? intention.targetPathBefore,
+          targetPathAfter: intention.targetPathAfter,
+          sourcePathConfirmed: confirmedLayout.get(referrerId)?.file ?? null,
+          targetPathConfirmed: confirmedLayout.get(intention.targetId)?.file ?? null,
+        });
+      }
+      this.pendingLinkRetargets.set(referrerId, pending);
+    }
+  }
+
+  private applied(
+    op: VaultOp,
+    layout: Map<PageId, Placement>,
+    next: Map<PageId, Placement>,
+    plannedSources: ReadonlyMap<PageId, PageSource>,
+  ): void {
     switch (op.op) {
       case 'write':
+        if (op.path === REGISTRY_PATH) this.registryText = op.text;
+        if (op.path === RECENT_PATH) this.recentText = op.text;
         if (op.id) {
+          this.pendingLinkRetargets.delete(op.id);
           this.texts.set(op.id, op.text);
+          const source = plannedSources.get(op.id);
+          if (source) this.sources.set(op.id, source);
           const plain = this.pendingPlain.get(op.id);
           if (plain !== undefined) {
             this.plainTexts.set(op.id, plain);
@@ -481,6 +1814,7 @@ export class VaultRepository implements WorkspaceRepository {
           layout.delete(id);
           this.texts.delete(id);
           this.sources.delete(id);
+          this.pendingLinkRetargets.delete(id);
           this.folderOnly.delete(id);
           this.locked.delete(id);
         }
@@ -488,6 +1822,31 @@ export class VaultRepository implements WorkspaceRepository {
       default:
         break;
     }
+  }
+
+  private isPilotDataRecord(id: PageId): boolean {
+    const state = this.currentState() ?? this.lastState;
+    const page = state?.pages[id];
+    if (!page) return false;
+    if (page.kind === 'database' && Object.hasOwn(page.extra, 'polarisDados')) return true;
+    const parent = page.parentId ? state?.pages[page.parentId] : undefined;
+    return parent?.kind === 'database' && Object.hasOwn(parent.extra, 'polarisDados');
+  }
+
+  private hasLinkedViewText(text: string): boolean {
+    if (isEncryptedText(text) || findUnrepresentablePageContent(text)) return false;
+    try {
+      const page = readPageText(text);
+      if (page.error) return false;
+      return hasLinkedViewNode(markdownToDoc(page.body));
+    } catch {
+      return false;
+    }
+  }
+
+  private hasLinkedViewBaseline(id: PageId): boolean {
+    const text = this.plainTexts.get(id) ?? this.texts.get(id);
+    return text ? this.hasLinkedViewText(text) : false;
   }
 
   private registryFor(
@@ -616,7 +1975,13 @@ export class VaultRepository implements WorkspaceRepository {
     const opened = await decryptPage(text, password);
     if (!opened) return fail('That password is not right.');
     const read = this.readFile(placement.file, opened.plain, base, state, this.layout);
-    if (!read.ok) return fail('The page was decrypted but could not be read.');
+    if (!read.ok) {
+      return fail(
+        read.reason
+          ? `This encrypted page is protected because Morrow cannot safely represent its content: ${read.reason}`
+          : 'The page was decrypted but could not be read.',
+      );
+    }
     this.keys.set(id, opened.pageKey);
     this.plainTexts.set(id, opened.plain);
     if (read.source) this.sources.set(id, read.source);
@@ -738,6 +2103,12 @@ export class VaultRepository implements WorkspaceRepository {
   }
 
   async deleteFiles(ids: FileId[]): Promise<void> {
+    if (ids.length > 0 && this.locked.size > 0) {
+      const id = this.locked.values().next().value as PageId;
+      throw new Error(
+        `Files could not be deleted because a protected page may reference them: ${this.protectionMessage(id)}`,
+      );
+    }
     const results = await this.bridge.apply(ids.map((path) => ({ op: 'remove', path })));
     for (const id of ids) this.others.delete(id);
     const failed = results.find((result) => !result.ok);
@@ -785,8 +2156,15 @@ export class VaultRepository implements WorkspaceRepository {
       else this.others.add(change.path);
     }
     // a path that disappeared may have been a folder of pages
+    const pendingReferrerPaths = new Set<string>();
+    for (const id of this.pendingLinkRetargets.keys()) {
+      const current = this.layout.get(id)?.file;
+      if (current) pendingReferrerPaths.add(current.toLowerCase());
+    }
     const pageChanges = [...latest.values()].filter(
-      (change) => (change.dir && change.text === null) || (!change.other && isPageFile(change.path)),
+      (change) =>
+        !pendingReferrerPaths.has(change.path.toLowerCase()) &&
+        ((change.dir && change.text === null) || (!change.other && isPageFile(change.path))),
     );
     if (pageChanges.length === 0) return null;
 
@@ -799,6 +2177,11 @@ export class VaultRepository implements WorkspaceRepository {
     const removed = new Set<PageId>();
     const unreadable = new Set<PageId>();
     const readable = new Set<PageId>();
+    const protectedPages = new Map<PageId, string>();
+    const clearProtected = new Set<PageId>();
+    const protectedDatabases = new Set<PageId>();
+    const recoveredDatabases = new Set<PageId>();
+    const requiresAccepted = new Map<PageId, PageId[]>();
     const texts = new Map<PageId, string>();
     const sources = new Map<PageId, PageSource | null>();
     const becameFolders = new Set<PageId>();
@@ -888,6 +2271,8 @@ export class VaultRepository implements WorkspaceRepository {
         id = folderPage && layout.get(folderPage)?.file === null ? folderPage : this.newId();
       }
       const current = pageOf(id);
+      const wasStructurallyProtectedDatabase =
+        this.locked.has(id) && hasUnrepresentableDatabaseSchema(this.texts.get(id) ?? '');
       const parentId = parentFolder === TRASH_DIR ? (current?.parentId ?? null) : ensureFolder(parentFolder);
       const base =
         current ??
@@ -909,9 +2294,96 @@ export class VaultRepository implements WorkspaceRepository {
         docs[id] = read.doc;
         sources.set(id, read.source);
         if (this.locked.has(id)) readable.add(id);
+        if (wasStructurallyProtectedDatabase && read.page.kind === 'database' && read.page.database) {
+          recoveredDatabases.add(id);
+        }
       } else {
         pages.set(id, { ...page, encrypted: isEncryptedText(text) || page.encrypted });
         unreadable.add(id);
+        if (read.reason) {
+          protectedPages.set(id, read.reason);
+          docs[id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text } }] };
+          if (hasUnrepresentableDatabaseSchema(text)) protectedDatabases.add(id);
+        } else if (this.protectedReasons.has(id)) {
+          clearProtected.add(id);
+        }
+      }
+    }
+
+    if (protectedDatabases.size > 0) {
+      const allPages = new Map(
+        [...Object.values(state.pages), ...pages.values()].map((page) => [page.id, page]),
+      );
+      for (const databaseId of protectedDatabases) {
+        const reason = `The parent database is protected: ${protectedPages.get(databaseId)}`;
+        for (const row of allPages.values()) {
+          if (row.parentId !== databaseId || removed.has(row.id)) continue;
+          requiresAccepted.set(row.id, [databaseId]);
+          protectedPages.set(row.id, reason);
+          unreadable.add(row.id);
+          readable.delete(row.id);
+          pages.set(row.id, row);
+          const raw = texts.get(row.id) ?? this.texts.get(row.id);
+          if (raw !== undefined)
+            docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text: raw } }] };
+        }
+      }
+    }
+
+    if (recoveredDatabases.size > 0) {
+      for (const databaseId of recoveredDatabases) {
+        const mergedPages = { ...state.pages, ...Object.fromEntries(pages) };
+        const readState: WorkspaceState = { ...state, pages: mergedPages };
+        const rows = Object.values(mergedPages).filter(
+          (page) => page.parentId === databaseId && !removed.has(page.id),
+        );
+        for (const row of rows) {
+          if (row.parentId !== databaseId || removed.has(row.id)) continue;
+          requiresAccepted.set(row.id, [databaseId]);
+          const base = pages.get(row.id) ?? row;
+          const placement = layout.get(row.id);
+          const text = texts.get(row.id) ?? this.texts.get(row.id);
+          if (!placement?.file || text === undefined) {
+            pages.set(row.id, base);
+            if (this.locked.has(row.id)) {
+              unreadable.delete(row.id);
+              readable.add(row.id);
+              clearProtected.add(row.id);
+            }
+            continue;
+          }
+
+          const wasUnreadable = this.locked.has(row.id) || unreadable.has(row.id);
+          const read = this.readFile(placement.file, text, base, readState, layout);
+          if (read.ok) {
+            pages.set(row.id, read.page);
+            mergedPages[row.id] = read.page;
+            if (read.database) {
+              pages.set(read.database.id, read.database);
+              mergedPages[read.database.id] = read.database;
+            }
+            docs[row.id] = read.doc;
+            sources.set(row.id, read.source);
+            unreadable.delete(row.id);
+            protectedPages.delete(row.id);
+            clearProtected.delete(row.id);
+            if (wasUnreadable) readable.add(row.id);
+          } else {
+            const unreadablePage = { ...base, encrypted: isEncryptedText(text) || base.encrypted };
+            pages.set(row.id, unreadablePage);
+            mergedPages[row.id] = unreadablePage;
+            unreadable.add(row.id);
+            readable.delete(row.id);
+            if (read.reason) {
+              protectedPages.set(row.id, read.reason);
+              clearProtected.delete(row.id);
+              docs[row.id] = { type: 'doc', content: [{ type: 'rawBlock', attrs: { text } }] };
+            } else {
+              protectedPages.delete(row.id);
+              if (this.protectedReasons.has(row.id) || clearProtected.has(row.id)) clearProtected.add(row.id);
+            }
+          }
+        }
       }
     }
 
@@ -922,6 +2394,9 @@ export class VaultRepository implements WorkspaceRepository {
       removed: [...removed],
       unreadable: [...unreadable],
       readable: [...readable],
+      ...(protectedPages.size > 0 ? { protectedPages: Object.fromEntries(protectedPages) } : {}),
+      ...(clearProtected.size > 0 ? { clearProtected: [...clearProtected] } : {}),
+      ...(requiresAccepted.size > 0 ? { requiresAccepted: Object.fromEntries(requiresAccepted) } : {}),
     };
     return {
       patch,
@@ -942,10 +2417,19 @@ export class VaultRepository implements WorkspaceRepository {
           if (texts.has(id)) this.texts.set(id, texts.get(id)!);
           else if (becameFolders.has(id)) this.texts.delete(id);
           const source = sources.get(id);
-          if (source) this.sources.set(id, source);
+          if (sources.has(id)) {
+            if (source) this.sources.set(id, source);
+            else this.sources.delete(id);
+          }
+          if (clearProtected.has(id)) this.protectedReasons.delete(id);
           if (unreadable.has(id)) this.locked.add(id);
-          if (readable.has(id)) this.locked.delete(id);
+          if (protectedPages.has(id)) this.protectedReasons.set(id, protectedPages.get(id)!);
+          if (readable.has(id)) {
+            this.locked.delete(id);
+            this.protectedReasons.delete(id);
+          }
         }
+        this.lastState = this.currentState() ?? this.lastState;
         // registry ids for new pages are written with the next save
         if (patch.pages.some((page) => !this.registryHas(page.id))) this.registryDirty = true;
       },
@@ -967,16 +2451,26 @@ export class VaultRepository implements WorkspaceRepository {
     base: PageMeta,
     state: WorkspaceState,
     layout: Map<PageId, Placement>,
+    newOptionId?: () => string,
+    navigationContext?: NavigationReadContext,
   ):
     | { ok: true; page: PageMeta; doc: DocNode; source: PageSource | null; database?: PageMeta }
-    | { ok: false } {
+    | { ok: false; reason?: string } {
     if (text.length > MAX_PAGE_BYTES || isEncryptedText(text)) return { ok: false };
     const folder = stripExtension(path);
     const name = basename(folder);
     const parent = base.parentId ? state.pages[base.parentId] : undefined;
     const dailyDate = parent?.kind === 'journal' && DATE_NAME.test(name) ? name : null;
-    const merged = { ...state, pages: { ...state.pages, [base.id]: base } };
-    const resolver = makeResolver(merged, layout, this.sources);
+    const context =
+      navigationContext?.state === state &&
+      navigationContext.layout === layout &&
+      navigationContext.sources === this.sources &&
+      navigationContext.others === this.others &&
+      state.pages[base.id] === base
+        ? navigationContext
+        : undefined;
+    const merged = context ? state : { ...state, pages: { ...state.pages, [base.id]: base } };
+    const resolver = context?.resolver ?? makeResolver(merged, layout, this.sources);
     if (extension(path) === 'canvas') {
       try {
         const data = readCanvas(JSON.parse(text || '{}'), (target) =>
@@ -993,6 +2487,21 @@ export class VaultRepository implements WorkspaceRepository {
         return { ok: false };
       }
     }
+    const index =
+      context?.otherIndex ?? new Map([...this.others].map((other) => [other.toLowerCase(), other]));
+    const names = context?.otherNames ?? new Map<string, string[]>();
+    if (!context) {
+      for (const other of this.others)
+        names.set(basename(other).toLowerCase(), [
+          ...(names.get(basename(other).toLowerCase()) ?? []),
+          other,
+        ]);
+    }
+    const dir = dirname(path);
+    const protectionReason = findUnrepresentablePageContent(text, {
+      resolveAttachmentHref: (href) => resolveFile(dir, href, index, names) !== null,
+    });
+    if (protectionReason) return { ok: false, reason: protectionReason };
     const read = readPageText(text);
     if (read.error) return { ok: false };
     const page: PageMeta = {
@@ -1011,17 +2520,18 @@ export class VaultRepository implements WorkspaceRepository {
     let database: PageMeta | undefined;
     if (parent?.kind === 'database' && parent.database) {
       const copy = structuredClone(parent.database);
-      takeProperties(copy, page.extra, page.properties, this.newId);
+      takeProperties(
+        copy,
+        page.extra,
+        page.properties,
+        newOptionId ?? this.newId,
+        Object.hasOwn(parent.extra, 'polarisDados'),
+      );
       const added = copy.properties.some(
         (prop, i) => prop.options.length !== parent.database!.properties[i]!.options.length,
       );
       if (added) database = { ...parent, database: copy };
     }
-    const index = new Map([...this.others].map((other) => [other.toLowerCase(), other]));
-    const names = new Map<string, string[]>();
-    for (const other of this.others)
-      names.set(basename(other).toLowerCase(), [...(names.get(basename(other).toLowerCase()) ?? []), other]);
-    const dir = dirname(path);
     const doc = markdownToDoc(
       read.body,
       parseOptions(dir, resolver, (href) => resolveFile(dir, href, index, names)),
@@ -1030,6 +2540,16 @@ export class VaultRepository implements WorkspaceRepository {
     if (!valid.ok) return { ok: false };
     return { ok: true, page, doc: valid.value, source: read.source, ...(database ? { database } : {}) };
   }
+}
+
+function hasLinkedViewNode(doc: DocNode | undefined): boolean {
+  if (!doc) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (node.type === 'polarisDadosView') found = true;
+    return !found;
+  });
+  return found;
 }
 
 function linksTo(doc: DocNode, ids: Set<PageId>): boolean {
@@ -1059,33 +2579,91 @@ function hasFileRefs(doc: DocNode): boolean {
   return found;
 }
 
-// rewrites [[links]] in a file morrow has not otherwise touched, outside code
-export function retargetLinks(body: string, newTarget: (target: string) => string | null): string {
-  let fenced = false;
-  return body
-    .split('\n')
-    .map((line) => {
-      if (/^\s*(```|~~~)/.test(line)) {
-        fenced = !fenced;
-        return line;
+function linksToMarkdownPage(doc: DocNode | undefined, ids: Set<PageId>): boolean {
+  if (!doc || ids.size === 0) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (
+      node.type === 'pageLink' &&
+      typeof node.attrs?.id === 'string' &&
+      typeof node.attrs?.markdownHref === 'string' &&
+      ids.has(node.attrs.id)
+    ) {
+      found = true;
+    }
+    return !found;
+  });
+  return found;
+}
+
+function hasMarkdownPageLink(doc: DocNode | undefined): boolean {
+  if (!doc) return false;
+  let found = false;
+  walk(doc, (node) => {
+    if (node.type === 'pageLink' && typeof node.attrs?.markdownHref === 'string') found = true;
+    return !found;
+  });
+  return found;
+}
+
+function markdownPageTargetPath(
+  id: PageId,
+  href: string,
+  sourceDir: string,
+  layout: Map<PageId, Placement>,
+  resolver: Resolver,
+): string | null {
+  const destination = markdownHrefPath(href);
+  if (!destination || !/\.(md|canvas)$/i.test(destination.path)) return null;
+  const target = layout.get(id);
+  if (!target?.file || isInTrash(target.folder)) return null;
+  if (resolveMarkdownPageLink(href, sourceDir, resolver) === id) return null;
+
+  const currentPath = destination.path.startsWith('/')
+    ? destination.path.slice(1)
+    : resolveRelative(sourceDir, destination.path);
+  if (currentPath === target.file) return null;
+  return destination.path.startsWith('/') ? `/${target.file}` : relativePath(sourceDir, target.file);
+}
+
+// rewrites only source ranges emitted by Morrow's configured Markdown parser
+export function retargetLinks(
+  body: string,
+  newWikiTarget: (target: string) => string | null,
+  newMarkdownTarget?: (href: string) => string | null,
+): string {
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  for (const span of markdownRetargetSpans(body)) {
+    if (span.kind === 'wiki') {
+      const bang = span.raw.startsWith('!') ? '!' : '';
+      const inner = span.raw.slice(bang.length + 2, -2);
+      const originalTarget = span.target ?? parseWikiLink(inner, bang === '!').target;
+      const target = newWikiTarget(originalTarget);
+      if (!target || target === originalTarget) continue;
+      if (span.targetStart !== undefined && span.targetEnd !== undefined) {
+        edits.push({ start: span.targetStart, end: span.targetEnd, text: target });
+        continue;
       }
-      if (fenced || !line.includes('[[')) return line;
-      return line
-        .split(/(`[^`]*`)/)
-        .map((part, index) =>
-          index % 2 === 1
-            ? part
-            : part.replace(WIKI_LINK, (match, bang: string, inner: string) => {
-                const link = parseWikiLink(inner, bang === '!');
-                const target = newTarget(link.target);
-                if (!target || target === link.target) return match;
-                const rest = inner.slice(inner.indexOf(link.target) + link.target.length);
-                return `${bang}[[${target}${rest}]]`;
-              }),
-        )
-        .join('');
-    })
-    .join('\n');
+      const rest = inner.slice(inner.indexOf(originalTarget) + originalTarget.length);
+      edits.push({ start: span.start, end: span.end, text: bang + '[[' + target + rest + ']]' });
+      continue;
+    }
+
+    const targetPath = newMarkdownTarget?.(span.raw);
+    if (!targetPath) continue;
+    const href = retargetMarkdownHref(span.raw, targetPath);
+    if (href !== span.raw) edits.push({ start: span.start, end: span.end, text: href });
+  }
+
+  edits.sort((left, right) => right.start - left.start);
+  let result = body;
+  let nextStart = body.length + 1;
+  for (const edit of edits) {
+    if (edit.end > nextStart) continue;
+    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+    nextStart = edit.start;
+  }
+  return result;
 }
 
 function safeCanvas(text: string): DocNode | null {
@@ -1095,6 +2673,24 @@ function safeCanvas(text: string): DocNode | null {
   } catch {
     return null;
   }
+}
+
+function isOptedInDatabase(page: PageMeta | undefined): page is PageMeta {
+  return page?.kind === 'database' && Object.hasOwn(page.extra, 'polarisDados');
+}
+
+function samePersistiblePageContent(current: PageMeta, parsed: PageMeta): boolean {
+  const projection = (page: PageMeta) => ({
+    title: page.title,
+    icon: page.icon,
+    cover: page.cover,
+    kind: page.kind,
+    tags: page.tags,
+    extra: page.extra,
+    database: page.database,
+    properties: page.properties,
+  });
+  return sameValue(projection(current), projection(parsed));
 }
 
 const MIME: Record<string, string> = {

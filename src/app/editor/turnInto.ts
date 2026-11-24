@@ -2,18 +2,33 @@ import { Extension } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
 import { Fragment } from '@tiptap/pm/model';
 import type { Node as PMNode, Schema } from '@tiptap/pm/model';
-import { TextSelection } from '@tiptap/pm/state';
+import { Plugin, PluginKey, Selection, TextSelection } from '@tiptap/pm/state';
+import type { EditorState } from '@tiptap/pm/state';
 import { liftTarget } from '@tiptap/pm/transform';
+import { normalizeInlineColor } from '../../core/model';
+import { isMac } from '../platform/desktop';
 import { getPreferences } from '../platform/preferences';
 
 export type TurnTarget =
   | { kind: 'paragraph' }
   | { kind: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6 }
   | { kind: 'bulletList' | 'orderedList' | 'taskList' | 'blockquote' | 'codeBlock' }
+  // a numbered list counted a, b, c
+  | { kind: 'letteredList' }
+  | { kind: 'callout' | 'equation' }
+  // the block, or the blocks picked, laid out side by side
+  | { kind: 'columns'; count: 2 | 3 | 4 | 5 }
   // a toggle, with a heading for its title when it has a level
   | { kind: 'toggle'; level?: 1 | 2 | 3 | 4 | 5 | 6 };
 
 const LIST_ITEMS = new Set(['listItem', 'taskItem']);
+
+// a lettered list is a numbered one counted in letters
+export const listAttrs = (target: TurnTarget) => (target.kind === 'letteredList' ? { type: 'a' } : null);
+
+// lists of one kind join, a lettered list and a numbered one stay apart
+const sameList = (a: PMNode, b: PMNode) =>
+  a.type === b.type && (a.type.name !== 'orderedList' || (a.attrs.type ?? null) === (b.attrs.type ?? null));
 const LISTS = new Set(['bulletList', 'orderedList', 'taskList']);
 
 // the inline content of a line, kept to what the new block can hold. a toggle's title only takes text
@@ -32,6 +47,11 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
   const { nodes } = schema;
   const first = item.firstChild;
   if (!first?.isTextblock) return null;
+  const itemBackground = normalizeInlineColor(item.attrs.backgroundColor);
+  const firstBackground = normalizeInlineColor(first.attrs.backgroundColor);
+  const distinctBackgrounds =
+    itemBackground !== null && firstBackground !== null && itemBackground !== firstBackground;
+  const convertedBackground = backgroundAttrs(firstBackground !== null ? first : item);
   const rest = item.content.cut(first.nodeSize);
   const after = (block: PMNode) => {
     const children: PMNode[] = [block];
@@ -41,25 +61,37 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
   switch (target.kind) {
     case 'bulletList':
     case 'orderedList':
+    case 'letteredList':
     case 'taskList': {
       const itemType = target.kind === 'taskList' ? nodes.taskItem : nodes.listItem;
-      const listType = nodes[target.kind];
+      const listType = nodes[target.kind === 'letteredList' ? 'orderedList' : target.kind];
       if (!itemType || !listType) return null;
-      const attrs = target.kind === 'taskList' ? { checked: item.attrs.checked === true } : null;
-      return [listType.create(null, itemType.create(attrs, item.content))];
+      const attrs = {
+        ...(target.kind === 'taskList' ? { checked: item.attrs.checked === true } : {}),
+        ...(item.attrs.backgroundColor != null ? { backgroundColor: item.attrs.backgroundColor } : {}),
+      };
+      if (target.kind === 'taskList' && hasBackground(first)) return null;
+      return [listType.create(listAttrs(target), itemType.create(attrs, item.content))];
     }
     case 'paragraph':
-      return nodes.paragraph ? after(nodes.paragraph.create(null, first.content)) : null;
+      if (!nodes.paragraph || distinctBackgrounds) return null;
+      return after(nodes.paragraph.create(convertedBackground, first.content));
     case 'heading':
+      if (!nodes.heading || distinctBackgrounds) return null;
       return nodes.heading
-        ? after(nodes.heading.create({ level: target.level }, lineContent(nodes.heading, first)))
+        ? after(
+            nodes.heading.create(
+              { level: target.level, ...convertedBackground },
+              lineContent(nodes.heading, first),
+            ),
+          )
         : null;
     case 'blockquote':
-      return nodes.blockquote && nodes.paragraph
-        ? after(nodes.blockquote.create(null, nodes.paragraph.create(null, first.content)))
+      return nodes.blockquote && nodes.paragraph && !distinctBackgrounds
+        ? after(nodes.blockquote.create(null, nodes.paragraph.create(convertedBackground, first.content)))
         : null;
     case 'codeBlock': {
-      if (!nodes.codeBlock) return null;
+      if (!nodes.codeBlock || hasBackground(first) || itemBackground !== null) return null;
       const text = first.textContent;
       return after(
         nodes.codeBlock.create(
@@ -70,7 +102,15 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
     }
     case 'toggle': {
       const { details, detailsSummary, detailsContent, paragraph } = nodes;
-      if (!details || !detailsSummary || !detailsContent || !paragraph) return null;
+      if (
+        !details ||
+        !detailsSummary ||
+        !detailsContent ||
+        !paragraph ||
+        hasBackground(first) ||
+        itemBackground !== null
+      )
+        return null;
       return [
         details.create({ open: true }, [
           detailsSummary.create(
@@ -81,7 +121,17 @@ function convertItem(schema: Schema, item: PMNode, target: TurnTarget): PMNode[]
         ]),
       ];
     }
+    default:
+      return null;
   }
+}
+
+function hasBackground(node: PMNode): boolean {
+  return normalizeInlineColor(node.attrs.backgroundColor) !== null;
+}
+
+function backgroundAttrs(node: PMNode): Record<string, unknown> | null {
+  return node.attrs.backgroundColor == null ? null : { backgroundColor: node.attrs.backgroundColor };
 }
 
 // turns one item of a list into something else the way notion does. the list is cut around it, so the
@@ -107,14 +157,14 @@ export function turnListItem(editor: Editor, pos: number, target: TurnTarget): b
   let cursorFrom = listPos + (before ? before.nodeSize : 0);
   // a new list next to a list of the same kind becomes part of it
   const head = middle[0]!;
-  if (before && LISTS.has(head.type.name) && head.type === before.type) {
+  if (before && LISTS.has(head.type.name) && sameList(head, before)) {
     cursorFrom = listPos + 1 + before.content.size;
     merged = before.copy(before.content.append(head.content));
     middle.shift();
   }
   const blocks = [...(merged ? [merged] : []), ...middle];
   const last = blocks[blocks.length - 1]!;
-  if (after && LISTS.has(last.type.name) && last.type === after.type)
+  if (after && LISTS.has(last.type.name) && sameList(last, after))
     blocks[blocks.length - 1] = last.copy(last.content.append(after.content));
   else if (after) blocks.push(after);
 
@@ -126,6 +176,15 @@ export function turnListItem(editor: Editor, pos: number, target: TurnTarget): b
   return true;
 }
 
+/** Checks the same list-item conversion guards without changing the editor. */
+export function canTurnListItem(editor: Editor, pos: number, target: TurnTarget): boolean {
+  const { state } = editor;
+  const item = state.doc.nodeAt(pos);
+  if (!item || !LIST_ITEMS.has(item.type.name)) return false;
+  const list = state.doc.resolve(pos).parent;
+  return LISTS.has(list.type.name) && convertItem(state.schema, item, target) !== null;
+}
+
 // the list item the cursor is writing the first line of, so a / command there changes only that item
 export function listItemAtCursor(editor: Editor): number | null {
   const { $from, empty } = editor.state.selection;
@@ -133,6 +192,95 @@ export function listItemAtCursor(editor: Editor): number | null {
   const item = $from.node($from.depth - 1);
   if (!LIST_ITEMS.has(item.type.name) || $from.index($from.depth - 1) !== 0) return null;
   return $from.before($from.depth - 1);
+}
+
+// the list item the cursor starts the first line of, when the item has a list nested under it and an item
+// before it. enter at the end of an item with items under it hands them to the new line, these keys keep
+// them where they were
+function parentItemAtCursor(state: EditorState) {
+  const { $from, empty } = state.selection;
+  if (!empty || $from.depth < 2 || $from.parent.type.name !== 'paragraph') return null;
+  const item = $from.node(-1);
+  if (!LIST_ITEMS.has(item.type.name) || $from.index(-1) !== 0 || item.childCount < 2) return null;
+  const rest: PMNode[] = [];
+  item.forEach((child, _offset, index) => {
+    if (index > 0) rest.push(child);
+  });
+  const listType = rest[0]!.type;
+  if (!rest.every((child) => LISTS.has(child.type.name) && sameList(child, rest[0]!))) return null;
+  const index = $from.index(-2);
+  if (index === 0) return null;
+  const list = $from.node(-2);
+  const previous = list.child(index - 1);
+  const tail = previous.lastChild;
+  // the items under it join a list at the end of the item before, or a new one of their kind
+  if (tail && LISTS.has(tail.type.name) && !sameList(tail, rest[0]!)) return null;
+  const nested = rest.flatMap((child) => {
+    const items: PMNode[] = [];
+    child.forEach((entry) => items.push(entry));
+    return items;
+  });
+  return {
+    item,
+    itemPos: $from.before(-1),
+    previous,
+    previousPos: $from.before(-1) - previous.nodeSize,
+    nested,
+    // the previous item with these items added to the list at its end
+    withNested: (items: PMNode[]) => {
+      if (tail && LISTS.has(tail.type.name))
+        return previous.copy(
+          previous.content.replaceChild(
+            previous.childCount - 1,
+            tail.copy(tail.content.append(Fragment.from(items))),
+          ),
+        );
+      return previous.copy(previous.content.addToEnd(listType.create(rest[0]!.attrs, items)));
+    },
+  };
+}
+
+// tab on an item with items under it moves only the item in a level. the items under it keep their depth
+// and come after it, so the line stays where it is on the page
+function indentParentItem(editor: Editor): boolean {
+  const { state } = editor;
+  const found = parentItemAtCursor(state);
+  if (!found) return false;
+  const { item, itemPos, previousPos, nested, withNested } = found;
+  const offset = state.selection.from - (itemPos + 2);
+  const alone = item.copy(Fragment.from(item.firstChild!));
+  const next = withNested([alone, ...nested]);
+  const tr = state.tr.replaceWith(previousPos, itemPos + item.nodeSize, next);
+  // the line is now an item of the list at the end of the item before
+  let at = previousPos + 1;
+  tr.doc.nodesBetween(previousPos, previousPos + next.nodeSize, (node, pos) => {
+    if (node === alone) at = pos + 2 + offset;
+    return node !== alone;
+  });
+  tr.setSelection(TextSelection.create(tr.doc, at));
+  editor.view.dispatch(tr.scrollIntoView());
+  return true;
+}
+
+// backspace or delete on the empty line enter left above the items under an item takes the line away and
+// gives the items back to the item before, at the depth they had
+function removeEmptyParentItem(editor: Editor, forward: boolean): boolean {
+  const { state } = editor;
+  const found = parentItemAtCursor(state);
+  if (!found || found.item.firstChild!.content.size > 0) return false;
+  const { item, itemPos, previous, previousPos, nested, withNested } = found;
+  const next = withNested(nested);
+  const tr = state.tr.replaceWith(previousPos, itemPos + item.nodeSize, next);
+  // backspace ends up at the end of the line before, delete at the start of the line that came up
+  const target = forward
+    ? previousPos + previous.nodeSize + 1
+    : previousPos + 1 + (previous.firstChild?.nodeSize ?? 2) - 1;
+  const selection = forward
+    ? TextSelection.findFrom(tr.doc.resolve(Math.min(target, tr.doc.content.size)), 1)
+    : TextSelection.create(tr.doc, target);
+  if (selection) tr.setSelection(selection);
+  editor.view.dispatch(tr.scrollIntoView());
+  return true;
 }
 
 // plain lines indented under a list item, the way notion has text blocks under a bullet. enter on one
@@ -157,16 +305,19 @@ export const IndentedLines = Extension.create({
         if ($from.parent.content.size === 0 && lastLine && lastItem) {
           const { tr } = editor.state;
           const end = $from.after(-2);
+          const paragraphAttrs = backgroundAttrs($from.parent);
           tr.delete($from.before(), $from.after());
           const at = tr.mapping.map(end);
-          tr.insert(at, editor.schema.nodes.paragraph!.create());
+          tr.insert(at, editor.schema.nodes.paragraph!.create(paragraphAttrs));
           tr.setSelection(TextSelection.create(tr.doc, at + 1));
           editor.view.dispatch(tr.scrollIntoView());
           return true;
         }
         return editor.commands.splitBlock();
       },
+      Tab: ({ editor }) => indentParentItem(editor),
       Backspace: ({ editor }) => {
+        if (removeEmptyParentItem(editor, false)) return true;
         const { $from, empty } = editor.state.selection;
         if (!empty || $from.parentOffset !== 0 || $from.depth < 3 || !$from.parent.isTextblock) return false;
         const item = $from.node(-1);
@@ -183,6 +334,7 @@ export const IndentedLines = Extension.create({
         return turnListItem(editor, $from.before(-1), { kind: 'paragraph' });
       },
       Delete: ({ editor }) => {
+        if (removeEmptyParentItem(editor, true)) return true;
         const { $from, empty } = editor.state.selection;
         if (!empty || !$from.parent.isTextblock || $from.parentOffset !== $from.parent.content.size)
           return false;
@@ -207,12 +359,182 @@ export const IndentedLines = Extension.create({
   },
 });
 
-// tab never leaves the page. where a line can't be indented or outdented any further it stays put, rather
-// than the browser moving focus to the next button on the page
+function focusColumnResizeHandle(editor: Editor, last: boolean): void {
+  const { state } = editor;
+  const { selection } = state;
+  if (editor.isDestroyed || !editor.isEditable || !selection.empty || selection.$from.parent.type.name !== 'paragraph')
+    return;
+
+  const { $from } = selection;
+  let columnsDepth = 0;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const name = $from.node(depth).type.name;
+    // Lists, tables, and code blocks have their own higher-priority Tab behavior. Leave those paths alone
+    // even when their current keymap declines the event.
+    if (
+      [
+        'bulletList',
+        'orderedList',
+        'taskList',
+        'listItem',
+        'taskItem',
+        'table',
+        'tableRow',
+        'tableCell',
+        'tableHeader',
+        'codeBlock',
+      ].includes(name)
+    ) {
+      return;
+    }
+    // Keep the nearest group as the focus target, while checking every ancestor. A valid columns group
+    // can live in a table cell, whose own Tab handlers sometimes decline at the first/last cell.
+    if (name === 'columns' && columnsDepth === 0) {
+      columnsDepth = depth;
+    }
+  }
+  if (columnsDepth === 0) return;
+
+  const columns = $from.node(columnsDepth);
+  const position = $from.before(columnsDepth);
+  if (columns.childCount < 2 || columns.childCount > 7 || state.doc.nodeAt(position) !== columns) return;
+  const wrapper = editor.view.nodeDOM(position);
+  if (
+    !(wrapper instanceof HTMLElement) ||
+    !editor.view.dom.contains(wrapper) ||
+    !wrapper.classList.contains('columns-editor')
+  ) {
+    return;
+  }
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const narrowMedia =
+    typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 720px)').matches;
+  if (
+    narrowMedia ||
+    (viewportWidth > 0 && viewportWidth <= 720) ||
+    wrapper.closest<HTMLElement>('.pane')?.dataset.size === 'narrow'
+  ) {
+    return;
+  }
+
+  const handles = Array.from(wrapper.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && child.classList.contains('column-layout-resize-handle'),
+  );
+  if (handles.length !== columns.childCount - 1) return;
+  const handle = last ? handles[handles.length - 1] : handles[0];
+  if (!handle || handle.hidden || handle.tabIndex !== 0 || handle.getAttribute('role') !== 'separator') return;
+  try {
+    handle.focus({ preventScroll: true });
+  } catch {
+    handle.focus();
+  }
+}
+
+// tab never leaves the page. Where a line can't be indented or outdented any further it stays put. From a
+// paragraph in a resizable columns group, send focus to that group's first or last separator instead.
 export const KeepTab = Extension.create({
   name: 'keepTab',
   priority: 1,
   addKeyboardShortcuts() {
-    return { Tab: () => true, 'Shift-Tab': () => true };
+    return {
+      Tab: ({ editor }) => {
+        focusColumnResizeHandle(editor, false);
+        return true;
+      },
+      'Shift-Tab': ({ editor }) => {
+        focusColumnResizeHandle(editor, true);
+        return true;
+      },
+    };
+  },
+});
+
+// home and end move to the start and end of the line on screen, a wrapped line's own part of it, with shift
+// to select and ctrl or cmd for the whole page. done here rather than left to the web view, which on
+// windows lets the keys go by without moving the cursor
+function lineEdge(editor: Editor, forward: boolean, extend: boolean, page: boolean): boolean {
+  const { view, state } = editor;
+  const { selection } = state;
+  let target: number;
+  if (page) {
+    const edge = forward ? Selection.atEnd(state.doc) : Selection.atStart(state.doc);
+    target = forward ? edge.to : edge.from;
+  } else {
+    const head = selection.head;
+    const $head = state.doc.resolve(head);
+    if (!$head.parent.isTextblock) return false;
+    const start = $head.start();
+    const end = $head.end();
+    target = nativeLineEdge(editor, forward, start, end) ?? measuredLineEdge(editor, forward, start, end);
+  }
+  const anchor = extend ? selection.anchor : target;
+  const next = TextSelection.between(state.doc.resolve(anchor), state.doc.resolve(target));
+  view.dispatch(state.tr.setSelection(next).scrollIntoView());
+  return true;
+}
+
+// the web view's own idea of where the line on screen starts or ends, asked by moving a copy of the cursor
+// there. the selection is put back as it was, the editor then moves it itself
+function nativeLineEdge(editor: Editor, forward: boolean, start: number, end: number): number | null {
+  const { view } = editor;
+  const dom = view.dom.ownerDocument.getSelection?.();
+  if (!dom || typeof dom.modify !== 'function' || !dom.focusNode) return null;
+  try {
+    const head = view.domAtPos(editor.state.selection.head);
+    dom.collapse(head.node, head.offset);
+    dom.modify('move', forward ? 'forward' : 'backward', 'lineboundary');
+    if (!dom.focusNode || !view.dom.contains(dom.focusNode)) return null;
+    const pos = view.posAtDOM(dom.focusNode, dom.focusOffset);
+    return pos >= start && pos <= end ? pos : null;
+  } catch {
+    return null;
+  }
+}
+
+// the same found from the layout: the position at the far side of the block, at the height of the cursor
+function measuredLineEdge(editor: Editor, forward: boolean, start: number, end: number): number {
+  const { view, state } = editor;
+  const head = state.selection.head;
+  let target = forward ? end : start;
+  try {
+    const caret = view.coordsAtPos(head, forward ? -1 : 1);
+    const block = view.nodeDOM(state.doc.resolve(head).before());
+    const box = block instanceof HTMLElement ? block.getBoundingClientRect() : null;
+    if (box) {
+      const top = (caret.top + caret.bottom) / 2;
+      const found = view.posAtCoords({ left: forward ? box.right - 1 : box.left + 1, top });
+      if (found && found.pos >= start && found.pos <= end) target = found.pos;
+    }
+  } catch {
+    // no layout to measure, such as a hidden page, so the edge of the whole line will do
+  }
+  return target;
+}
+
+// taken as the key goes down in the page, ahead of every other key handler, so nothing else can let the
+// keys through to a web view that ignores them
+export const LineEdges = Extension.create({
+  name: 'lineEdges',
+  priority: 1200,
+  addProseMirrorPlugins() {
+    const editor = this.editor;
+    return [
+      new Plugin({
+        key: new PluginKey('lineEdges'),
+        props: {
+          handleDOMEvents: {
+            keydown: (_view, event) => {
+              // a mac has its own keys for this and home and end scroll there
+              if (isMac || event.altKey || event.metaKey || event.isComposing) return false;
+              if (event.key !== 'Home' && event.key !== 'End') return false;
+              const handled = lineEdge(editor, event.key === 'End', event.shiftKey, event.ctrlKey);
+              if (handled) event.preventDefault();
+              return handled;
+            },
+          },
+        },
+      }),
+    ];
   },
 });

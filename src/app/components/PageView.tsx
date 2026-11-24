@@ -11,6 +11,8 @@ import {
   Smile,
   Trash2,
   ChevronRight,
+  FileText,
+  LayoutTemplate,
 } from 'lucide-react';
 import {
   lazy,
@@ -24,10 +26,11 @@ import {
 } from 'react';
 import { docToPlainText, findUnknownTypes, isDocEmpty } from '../../core/doc';
 import { backlinksTo, unlinkedMentions } from '../../core/links';
+import { supportsNoteStyleKind } from '../../core/noteStyle';
 import { displayTitle, emptyDoc } from '../../core/model';
 import type { DocNode, PageId, PageMeta } from '../../core/model';
 import { childrenOf, isEffectivelyTrashed } from '../../core/tree';
-import { findTemplatesPage } from '../../core/templates';
+import { findTemplatesPage, listTemplates } from '../../core/templates';
 import { RepeatBar } from './RepeatBar';
 import { findDatabaseOf } from '../../core/database';
 import { basename, conflictOriginal, stripExtension } from '../../core/vault/paths';
@@ -37,21 +40,45 @@ import { CoverBanner, CoverPicker } from './Cover';
 import { DailyNav, MadeThisDay } from './DailyNav';
 import { Emoji } from './Emoji';
 import { LockedPage } from './EncryptDialog';
-import { PageProperties } from './PageProperties';
+import { PageProperties, visiblePageExtraKeys } from './PageProperties';
 import { PageTags } from './TagsView';
-import { deleteForever, restorePage, setArchived, trashPage } from '../operations';
-import { usePreferences } from '../platform/preferences';
+import { NoteStyleAction } from './NoteStyleAction';
+import { applyTemplateTo, deleteForever, restorePage, setArchived, trashPage } from '../operations';
+import { outlineShown, usePreferences } from '../platform/preferences';
+import type { FooterSection } from '../platform/preferences';
 import { readingPlace, rememberPlace } from '../readingPlace';
-import { navigate, openPage, routeHash } from '../router';
-import { openSide } from '../tabs';
+import { navigate, openPage, parseRoute, routeHash } from '../router';
+import {
+  isSidePane,
+  isSideTabInstance,
+  openSide,
+  paneAssignments,
+  routeHashForTabId,
+  runStartupReadingFocus,
+  targetPane,
+  usePane,
+  usePaneTabContextId,
+  usePaneTabId,
+} from '../tabs';
 import { getUi, openDialog, setUi, useUi } from '../ui';
-import { getSession, run, useWorkspace } from '../workspace';
+import { getSession, getWorkspaceSessionGeneration, run, useWorkspace } from '../workspace';
+import {
+  canFocusRestoredReadingPlace,
+  isCurrentReadingRestore,
+  matchesReadingPageRoute,
+  isStartupReadingFocusTarget,
+  watchReadingRestoreInteraction,
+} from '../readingFocus';
+import type { ReadingFocusLease, ReadingFocusState } from '../readingFocus';
+import { Menu } from './Menu';
 import type { MenuEntry } from './Menu';
 import { getLocale, t } from '../i18n';
 import { pageMenuEntries } from './pageMenu';
 import { exactTime, relativeTime, useShowMore } from './primitives';
 import { PageIcon } from './Sidebar';
 import { TopBar } from './TopBar';
+import { isProviderManagedPage } from './pageEditability';
+import { readSavedNoteStyle } from './noteStyleProjection';
 
 const EMPTY_DOC = emptyDoc();
 
@@ -86,8 +113,9 @@ let firstPage = true;
 
 // puts the page back where it was left: scrolled as far down, the cursor where it was. the page can still be
 // growing as images load, so the scroll is set again for a moment until it holds
-function restorePlace(editor: Editor, scroller: HTMLElement | null, id: PageId, focus: boolean): void {
-  const place = readingPlace(id);
+function restorePlace(editor: Editor, scroller: HTMLElement | null, id: string, focus: boolean): void {
+  // the second side of a split has a place of its own, the same page open on both sides keeps both
+  const place = readingPlace(id) ?? readingPlace(id.replace(/@side$/, ''));
   if (!place || editor.isDestroyed) return;
   const { doc, tr } = editor.state;
   const size = doc.content.size;
@@ -97,14 +125,32 @@ function restorePlace(editor: Editor, scroller: HTMLElement | null, id: PageId, 
     ),
   );
   if (focus) editor.view.dom.focus({ preventScroll: true });
+  if (!scroller) return;
+  // at start the page can be filled in again after it was put back, the same page open on both sides of a
+  // split is, so the scroll is held until it has stayed put for a while. scrolling by hand lets go at once
+  restoring.add(scroller);
   let frames = 0;
+  let held = 0;
+  const done = () => {
+    restoring.delete(scroller);
+    for (const type of STOP_RESTORING) scroller.removeEventListener(type, done);
+  };
+  for (const type of STOP_RESTORING) scroller.addEventListener(type, done, { passive: true, once: true });
   const apply = () => {
-    if (!scroller?.isConnected) return;
-    scroller.scrollTop = place.scroll;
-    if (Math.abs(scroller.scrollTop - place.scroll) > 2 && ++frames < 60) requestAnimationFrame(apply);
+    if (!scroller.isConnected || !restoring.has(scroller)) return done();
+    if (Math.abs(scroller.scrollTop - place.scroll) > 2) {
+      scroller.scrollTop = place.scroll;
+      held = 0;
+    } else held++;
+    if (held < 20 && ++frames < 180) requestAnimationFrame(apply);
+    else done();
   };
   apply();
 }
+
+// pages being scrolled back to where they were left, their scrolling until then isn't a new place
+const restoring = new WeakSet<HTMLElement>();
+const STOP_RESTORING = ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const;
 
 export function PageView({ id, find, anchor }: { id: PageId; find: string | null; anchor?: string | null }) {
   const state = useWorkspace();
@@ -120,6 +166,20 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
   // enter in the title can arrive before the editor exists, focus it once it does
   const focusWhenReady = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pane = usePane();
+  const tabId = usePaneTabId();
+  const contextTabId = usePaneTabContextId();
+  const currentPageIdentity = useRef({ id, pane, tabId: contextTabId, find, anchor: anchor ?? null });
+  useLayoutEffect(() => {
+    currentPageIdentity.current = { id, pane, tabId: contextTabId, find, anchor: anchor ?? null };
+  });
+  const placeKey = tabId
+    ? isSideTabInstance(tabId)
+      ? `${id}@side`
+      : id
+    : pane === 'side' || isSidePane(pane)
+      ? `${id}@side`
+      : id;
   // the place is only written down once it has been put back, the empty page loading first is not it
   const placed = useRef(false);
   const prefs = usePreferences();
@@ -148,10 +208,25 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
     );
   }
 
+  const savedNoteStyle = readSavedNoteStyle(page.extra);
+  const savedNoteStyleCss = savedNoteStyle
+    ? ({
+        '--polaris-note-font-size': `${savedNoteStyle.fontSize}px`,
+        '--polaris-note-line-height': savedNoteStyle.lineHeight,
+        '--polaris-note-block-spacing': `${savedNoteStyle.blockSpacing}px`,
+      } as React.CSSProperties)
+    : undefined;
+
   const trashed = isEffectivelyTrashed(state.pages, id);
   const unreadable = getSession().unreadable.has(id);
+  const protectionReason = getSession().protectedReasons.get(id);
   const isTemplate = page.parentId !== null && page.parentId === findTemplatesPage(state)?.id;
   const doc = state.docs[id] ?? EMPTY_DOC;
+  const database = findDatabaseOf(state, page);
+  // Provider-owned metadata and text cannot be saved by native page editors. Keep this separate from
+  // databaseEditable: the provider's grid may still edit through its own DataApi scope.
+  const databaseEditable = !trashed && !unreadable && !reading;
+  const nativeEditable = databaseEditable && !isProviderManagedPage(state, page);
 
   const menu = (): MenuEntry[] => {
     const words = docToPlainText(doc).split(/\s+/).filter(Boolean).length;
@@ -165,21 +240,21 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
         t('topBar.edited', { time: exactTime(page.updatedAt) }),
       ].join('\n'),
     };
-    if (trashed) return [info];
-    return [info, ...pageMenuEntries(id, () => titleRef.current?.focus())];
+    if (trashed || unreadable) return [info];
+    return [info, ...pageMenuEntries(id, () => titleRef.current?.focus(), { nativeEditable })];
   };
 
   const hasText = page.kind === 'database' && !isDocEmpty(doc);
   if (hasText && databaseTextFor !== id) setDatabaseTextFor(id);
   const showText = page.kind !== 'database' || hasText || databaseTextFor === id;
 
-  const database = findDatabaseOf(state, page);
   // rows and pages that already show properties add more from that list instead
   const canAddProperty =
     page.kind === 'page' &&
     !database &&
+    nativeEditable &&
     !unreadable &&
-    Object.keys(page.extra).length === 0 &&
+    visiblePageExtraKeys(page, state).length === 0 &&
     addingFor !== id;
 
   if (page.kind === 'canvas') {
@@ -204,7 +279,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
           </div>
         ) : (
           <Suspense fallback={<div className="canvas-view" aria-busy="true" />}>
-            <CanvasView pageId={id} doc={state.docs[id]} editable={!trashed} />
+            <CanvasView pageId={id} doc={state.docs[id]} editable={nativeEditable} />
           </Suspense>
         )}
       </div>
@@ -217,7 +292,11 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
       <div
         className="page-scroll"
         ref={scrollRef}
-        onScroll={(event) => placed.current && rememberPlace(id, { scroll: event.currentTarget.scrollTop })}
+        onScroll={(event) =>
+          placed.current &&
+          !restoring.has(event.currentTarget) &&
+          rememberPlace(placeKey, { scroll: event.currentTarget.scrollTop })
+        }
       >
         {trashed && (
           <div className="banner" role="note">
@@ -246,28 +325,36 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
             </button>
           </div>
         )}
-        {page.kind !== 'database' && !unreadable && !prefs.hiddenOutlines.includes(page.id) && (
-          <Outline doc={doc} />
-        )}
-        <CoverBanner page={page} editable={!trashed && !reading} />
+        {page.kind !== 'database' && !unreadable && outlineShown(prefs, page.id) && <Outline doc={doc} />}
+        <CoverBanner page={page} editable={nativeEditable} />
         <article
+          data-polaris-note-page-id={id}
+          data-polaris-note-style={savedNoteStyle ? 'saved' : undefined}
+          data-polaris-note-font={savedNoteStyle?.font}
+          data-polaris-note-width={savedNoteStyle?.width}
           className={`page font-${prefs.font} width-${prefs.pageWidths[page.id] ?? prefs.width}${page.cover ? ' has-cover' : ''}`}
+          style={savedNoteStyleCss}
         >
           {!trashed && <ConflictBanner id={id} />}
           {page.icon && (
             <div className="page-icon-row">
-              <button
-                type="button"
-                className="page-icon"
-                aria-label={t('page.changeIcon')}
-                disabled={trashed}
-                onClick={() => openDialog({ kind: 'icon', pageId: id })}
-              >
-                <Emoji emoji={page.icon} />
-              </button>
+              {nativeEditable ? (
+                <button
+                  type="button"
+                  className="page-icon"
+                  aria-label={t('page.changeIcon')}
+                  onClick={() => openDialog({ kind: 'icon', pageId: id })}
+                >
+                  <Emoji emoji={page.icon} />
+                </button>
+              ) : (
+                <span className="page-icon" role="img" aria-label={t('page.changeIcon')}>
+                  <Emoji emoji={page.icon} />
+                </span>
+              )}
             </div>
           )}
-          {!trashed && (!page.icon || !page.cover || canAddProperty) && (
+          {nativeEditable && (!page.icon || !page.cover || canAddProperty) && (
             <div className="page-header-actions">
               {!page.icon && (
                 <button
@@ -294,14 +381,14 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               )}
             </div>
           )}
-          {coverPicker && (
+          {nativeEditable && coverPicker && (
             <CoverPicker page={page} anchor={coverPicker} onClose={() => setCoverPicker(null)} />
           )}
           {page.dailyDate && <DailyNav page={page} />}
           <h1 className="page-title-heading">
             <TitleField
               page={page}
-              readOnly={trashed || reading}
+              readOnly={!nativeEditable}
               inputRef={titleRef}
               onEnter={(rest) => {
                 const editor = editorRef.current;
@@ -311,26 +398,34 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               }}
             />
           </h1>
-          {page.kind !== 'database' && (
-            <PageTags page={page} editable={!trashed && !unreadable && !reading} />
+          {supportsNoteStyleKind(page.kind) && nativeEditable && !trashed && !unreadable && (
+            <NoteStyleAction pageId={id} />
           )}
-          {isTemplate && <RepeatBar page={page} editable={!trashed && !unreadable && !reading} />}
+          {page.kind !== 'database' && <PageTags page={page} editable={nativeEditable} />}
+          {isTemplate && <RepeatBar page={page} editable={nativeEditable} />}
           {!unreadable && (
             <PageProperties
               page={page}
               database={database?.database ? { id: database.id, database: database.database } : null}
-              editable={!trashed && !reading}
+              editable={nativeEditable}
               adding={addingFor === id}
               onAdded={() => setAddingFor(null)}
             />
           )}
-          {unreadable && page.encrypted ? (
+          {unreadable && protectionReason ? (
+            <>
+              <div className="banner is-error" role="alert">
+                {t('page.contentUnreadable')} {protectionReason}
+              </div>
+              <pre className="readonly-text">{docToPlainText(doc)}</pre>
+            </>
+          ) : unreadable && page.encrypted ? (
             <LockedPage page={page} />
           ) : unreadable ? (
             <div className="banner is-error" role="alert">
               {t('page.contentUnreadable')}
             </div>
-          ) : ui.sourceMode === id && page.kind === 'page' ? (
+          ) : nativeEditable && ui.sourceMode === id && page.kind === 'page' ? (
             <>
               <div className="banner source-banner" role="note">
                 <span>{t('page.editingAsMarkdown')}</span>
@@ -338,61 +433,135 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
                   {t('page.backToEditor')}
                 </button>
               </div>
-              <SourceEditor pageId={id} doc={doc} editable={!trashed && !reading} />
+              <SourceEditor pageId={id} doc={doc} editable={nativeEditable} />
             </>
           ) : (
             showText && (
-              <PageBody
-                id={id}
-                doc={doc}
-                editable={!trashed && !reading}
-                find={find}
-                anchor={anchor ?? null}
-                onDirty={setEditing}
-                onExitTop={(text) => {
-                  const title = titleRef.current;
-                  if (!title) return;
-                  const end = title.value.length;
-                  if (text && !trashed) {
-                    const joined = title.value + text;
-                    run({ type: 'page.rename', id, title: joined, now: Date.now() });
-                    // the textarea is controlled, set it now so the cursor lands between the two parts
-                    title.value = joined;
-                  }
-                  title.focus();
-                  title.setSelectionRange(end, end);
-                }}
-                onReady={(editor) => {
-                  editorRef.current = editor;
-                  editor.on('selectionUpdate', ({ editor: current }) => {
-                    if (!placed.current) return;
-                    const { from, to } = current.state.selection;
-                    rememberPlace(id, { from, to });
-                  });
-                  const startup = firstPage;
-                  firstPage = false;
-                  if (!focusWhenReady.current) {
-                    requestAnimationFrame(() => {
-                      if (!find && !anchor) restorePlace(editor, scrollRef.current, id, startup);
-                      placed.current = true;
+              <>
+                {nativeEditable && <TemplateStart pageId={id} doc={doc} />}
+                <PageBody
+                  id={id}
+                  doc={doc}
+                  editable={nativeEditable}
+                  find={find}
+                  anchor={anchor ?? null}
+                  onDirty={setEditing}
+                  onExitTop={(text) => {
+                    const title = titleRef.current;
+                    if (!title) return;
+                    const end = title.value.length;
+                    if (text && nativeEditable) {
+                      const joined = title.value + text;
+                      run({ type: 'page.rename', id, title: joined, now: Date.now() });
+                      // the textarea is controlled, set it now so the cursor lands between the two parts
+                      title.value = joined;
+                    }
+                    title.focus();
+                    title.setSelectionRange(end, end);
+                  }}
+                  onReady={(editor) => {
+                    editorRef.current = editor;
+                    editor.on('selectionUpdate', ({ editor: current }) => {
+                      if (!placed.current) return;
+                      const { from, to } = current.state.selection;
+                      rememberPlace(placeKey, { from, to });
                     });
-                    return;
-                  }
-                  placed.current = true;
-                  focusWhenReady.current = false;
-                  requestAnimationFrame(() => focusStart(editor));
-                }}
-              />
+                    const assignment = paneAssignments().find((item) => item.paneId === pane);
+                    const startupFocusTarget = isStartupReadingFocusTarget(
+                      firstPage,
+                      pane,
+                      contextTabId,
+                      targetPane(),
+                      contextTabId === null ? null : (assignment?.tabId ?? null),
+                    );
+                    if (startupFocusTarget) firstPage = false;
+                    const focusLease: ReadingFocusLease = {
+                      pageId: id,
+                      paneId: pane,
+                      tabId: contextTabId,
+                      routeHash: contextTabId ? routeHashForTabId(contextTabId) : null,
+                      sessionGeneration: getWorkspaceSessionGeneration(),
+                      editor,
+                      activeElement: document.activeElement,
+                    };
+                    if (!focusWhenReady.current) {
+                      const restoreInteraction = watchReadingRestoreInteraction(
+                        scrollRef.current?.closest<HTMLElement>('[data-pane-id]') ?? scrollRef.current,
+                        () => {
+                          placed.current = true;
+                        },
+                      );
+                      requestAnimationFrame(() => {
+                        const locallyInteracted = restoreInteraction.didInteract();
+                        restoreInteraction.dispose();
+                        const current = currentPageIdentity.current;
+                        const assignedTabId =
+                          current.tabId === null
+                            ? null
+                            : (paneAssignments().find((item) => item.paneId === current.pane)?.tabId ?? null);
+                        let startupAllowed = false;
+                        if (startupFocusTarget) {
+                          runStartupReadingFocus(() => {
+                            startupAllowed = true;
+                          });
+                        }
+                        const currentRouteHash = current.tabId ? routeHashForTabId(current.tabId) : null;
+                        const restoreState: ReadingFocusState = {
+                          pageId: current.id,
+                          paneId: current.pane,
+                          tabId: current.tabId,
+                          routeHash: currentRouteHash,
+                          sessionGeneration: getWorkspaceSessionGeneration(),
+                          editor: editorRef.current ?? editor,
+                          activeElement: document.activeElement,
+                          focusedPaneId: targetPane(),
+                          assignedTabId,
+                          startupAllowed,
+                          editorDestroyed: editor.isDestroyed,
+                          editorConnected: editor.view.dom.isConnected,
+                        };
+                        const routeStillAssigned =
+                          current.tabId === null ||
+                          (currentRouteHash !== null &&
+                            currentRouteHash === focusLease.routeHash &&
+                            matchesReadingPageRoute(parseRoute(currentRouteHash), {
+                              id: current.id,
+                              find: current.find,
+                              anchor: current.anchor,
+                            }));
+                        if (
+                          isCurrentReadingRestore(focusLease, restoreState) &&
+                          !locallyInteracted &&
+                          routeStillAssigned &&
+                          !current.find &&
+                          !current.anchor
+                        ) {
+                          const shouldFocus =
+                            startupFocusTarget && canFocusRestoredReadingPlace(focusLease, restoreState);
+                          restorePlace(editor, scrollRef.current, placeKey, shouldFocus);
+                        }
+                        placed.current = true;
+                      });
+                      return;
+                    }
+                    placed.current = true;
+                    focusWhenReady.current = false;
+                    requestAnimationFrame(() => focusStart(editor));
+                  }}
+                />
+              </>
             )
           )}
-          {page.kind === 'database' && (
+          {page.kind === 'database' && !unreadable && (
             <Suspense fallback={<div className="database" aria-busy="true" />}>
-              <DatabaseView page={page} editable={!trashed && !unreadable} />
+              <DatabaseView page={page} editable={databaseEditable} />
             </Suspense>
           )}
-          {page.kind !== 'database' && <Subpages parentId={id} />}
+          {page.kind !== 'database' && prefs.subpagesSection !== 'hidden' && (
+            <Subpages parentId={id} folded={prefs.subpagesSection === 'folded'} />
+          )}
           {page.dailyDate && <MadeThisDay dailyDate={page.dailyDate} />}
-          <Backlinks id={id} />
+          <Backlinks id={id} mode={prefs.backlinksSection} mentions={prefs.mentionsButton} />
         </article>
       </div>
     </div>
@@ -563,33 +732,80 @@ function TitleField({
   );
 }
 
-function Subpages({ parentId }: { parentId: PageId }) {
+// a list at the bottom of a page folds under its heading. whether it starts folded comes from settings,
+// a click on the heading is remembered for that page while morrow is open
+const foldedSections = new Map<string, boolean>();
+function useFold(key: string, start: boolean): [boolean, () => void] {
+  const [, redraw] = useState(0);
+  const folded = foldedSections.get(key) ?? start;
+  return [
+    folded,
+    () => {
+      foldedSections.set(key, !folded);
+      redraw((n) => n + 1);
+    },
+  ];
+}
+
+function FoldHeading({
+  folded,
+  onToggle,
+  children,
+}: {
+  folded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <h2 className="section-label">
+      <button type="button" className="section-fold" aria-expanded={!folded} onClick={onToggle}>
+        <ChevronRight size={13} className={`section-fold-chevron${folded ? '' : ' is-open'}`} />
+        {children}
+      </button>
+    </h2>
+  );
+}
+
+function Subpages({ parentId, folded: startFolded }: { parentId: PageId; folded: boolean }) {
   const state = useDeferredValue(useWorkspace());
   const children = useMemo(() => childrenOf(state.pages, parentId), [state.pages, parentId]);
+  const [folded, toggle] = useFold(`subpages:${parentId}`, startFolded);
   if (children.length === 0) return null;
   return (
     <section className="page-section" aria-label={t('page.subpages')}>
-      <h2 className="section-label">{t('page.subpages')}</h2>
-      <ul className="link-list">
-        {children.map((child) => {
-          return (
-            <li key={child.id}>
-              <button type="button" className="link-row" onClick={() => openPage(child.id)}>
-                <span className="tree-icon">
-                  <PageIcon page={child} />
-                </span>
-                <span className="link-row-title">{displayTitle(child)}</span>
-                <span className="link-row-meta">{relativeTime(child.updatedAt)}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <FoldHeading folded={folded} onToggle={toggle}>
+        {t('page.subpages')} <span className="section-count">{children.length}</span>
+      </FoldHeading>
+      {!folded && (
+        <ul className="link-list">
+          {children.map((child) => {
+            return (
+              <li key={child.id}>
+                <button type="button" className="link-row" onClick={() => openPage(child.id)}>
+                  <span className="tree-icon">
+                    <PageIcon page={child} />
+                  </span>
+                  <span className="link-row-title">{displayTitle(child)}</span>
+                  <span className="link-row-meta">{relativeTime(child.updatedAt)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
 
-function Backlinks({ id }: { id: PageId }) {
+function Backlinks({
+  id,
+  mode,
+  mentions: findMentions,
+}: {
+  id: PageId;
+  mode: FooterSection;
+  mentions: boolean;
+}) {
   // links from other pages are worked out after typing, never in its way
   const state = useDeferredValue(useWorkspace());
   const backlinks = useMemo(() => backlinksTo(state, id), [state, id]);
@@ -600,7 +816,8 @@ function Backlinks({ id }: { id: PageId }) {
     [state, id, showMentions],
   );
   const title = displayTitle(state.pages[id]);
-  const mentionsSection = (
+  const [folded, toggle] = useFold(`backlinks:${id}`, mode === 'folded');
+  const mentionsSection = !findMentions ? null : (
     <section className="page-section" aria-label={t('page.unlinkedMentionsAria')}>
       <button
         type="button"
@@ -633,28 +850,30 @@ function Backlinks({ id }: { id: PageId }) {
         ))}
     </section>
   );
-  if (backlinks.length === 0) return mentionsSection;
+  if (backlinks.length === 0 || mode === 'hidden') return mentionsSection;
   return (
     <>
       <section className="page-section" aria-label={t('page.backlinksAria')}>
-        <h2 className="section-label">
+        <FoldHeading folded={folded} onToggle={toggle}>
           {backlinks.length === 1
             ? t('page.linkedFromSingular')
             : t('page.linkedFromPlural', { count: backlinks.length })}
-        </h2>
-        <ul className="link-list">
-          {linked.shown.map(({ source, contexts }) => (
-            <li key={source.id}>
-              <button type="button" className="link-row backlink" onClick={() => openPage(source.id)}>
-                <span className="link-row-title">
-                  {displayTitle(source)} <ArrowUpRight size={13} />
-                </span>
-                {contexts[0] && <span className="backlink-context">{contexts[0]}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-        {linked.more}
+        </FoldHeading>
+        {!folded && (
+          <ul className="link-list">
+            {linked.shown.map(({ source, contexts }) => (
+              <li key={source.id}>
+                <button type="button" className="link-row backlink" onClick={() => openPage(source.id)}>
+                  <span className="link-row-title">
+                    {displayTitle(source)} <ArrowUpRight size={13} />
+                  </span>
+                  {contexts[0] && <span className="backlink-context">{contexts[0]}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {!folded && linked.more}
       </section>
       {mentionsSection}
     </>
@@ -811,5 +1030,35 @@ function Outline({ doc }: { doc: DocNode }) {
         )}
       </ul>
     </nav>
+  );
+}
+
+// an empty page offers the templates there are, one click fills it in
+function TemplateStart({ pageId, doc }: { pageId: PageId; doc: typeof EMPTY_DOC }) {
+  const state = useWorkspace();
+  const [menu, setMenu] = useState<HTMLElement | null>(null);
+  const templates = useMemo(() => listTemplates(state), [state]);
+  const page = state.pages[pageId];
+  const empty = isDocEmpty(doc);
+  if (!empty || templates.length === 0 || !page || page.kind !== 'page') return null;
+  if (templates.some((template) => template.id === pageId)) return null;
+  return (
+    <div className="template-start">
+      <button type="button" className="link-button" onClick={(event) => setMenu(event.currentTarget)}>
+        <LayoutTemplate size={14} /> {t('page.startFromTemplate')}
+      </button>
+      {menu && (
+        <Menu
+          anchor={menu}
+          label={t('dialogs.templates')}
+          onClose={() => setMenu(null)}
+          entries={templates.map((template) => ({
+            label: displayTitle(template),
+            icon: FileText,
+            onSelect: () => applyTemplateTo(pageId, template.id),
+          }))}
+        />
+      )}
+    </div>
   );
 }

@@ -1,18 +1,29 @@
-import { BACKGROUND_HEX, TEXT_HEX } from '../model';
-import type { ColorName, DocMark, DocNode, PageId } from '../model';
+import { BACKGROUND_HEX, inlineColorHex, normalizeInlineColor, TEXT_HEX } from '../model';
+import type { ColorName, DocMark, DocNode, InlineColor, PageId } from '../model';
+import { legacyFormulaDocIssue, LEGACY_FORMULA_NODE } from '../legacyFormula';
+import { encodePolarisDadosViewMarker, polarisDadosViewDocIssue } from '../polarisDadosView';
+import {
+  formatBlockBackgroundMarker,
+  isHexBlockBackground,
+  supportsHexBlockBackgroundOwner,
+} from './blockBackground';
+import { scanMarkdownDestination } from './markdownLinkDestination';
+import { parseLegacyColumnWidths } from '../columnWidths';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
   titleOf?: (id: PageId) => string | null;
   // how a wiki link names its page, a file name or a vault path, defaults to the title
   linkTarget?: (id: PageId) => string | null;
+  // current path for a Markdown page link, relative to the source note unless root-relative
+  markdownLinkTarget?: (id: PageId, originalHref: string) => string | null;
   // relative path an exported file is written to, null when it is not exported
   filePath?: (fileId: string) => string | null;
 }
 
 const MARK_ORDER = ['link', 'bold', 'italic', 'strike', 'underline', 'highlight', 'textColor'];
 const hexOf = (palette: Record<ColorName, string>, mark: DocMark) =>
-  typeof mark.attrs?.color === 'string' ? (palette[mark.attrs.color as ColorName] ?? null) : null;
+  inlineColorHex(mark.attrs?.color, palette);
 const MARK_OPEN: Record<string, (mark: DocMark) => string> = {
   link: () => '[',
   bold: () => '**',
@@ -36,7 +47,13 @@ const MARK_CLOSE: Record<string, (mark: DocMark) => string> = {
 };
 
 export function docToMarkdown(doc: DocNode, options: SerializeOptions = {}): string {
-  const out = blocks(doc.content ?? [], options).trim();
+  const viewIssue = polarisDadosViewDocIssue(doc);
+  if (viewIssue) throw new TypeError(viewIssue);
+  assertSupportedCustomBlockBackgrounds(doc);
+  assertSupportedToggleSummaries(doc);
+  const formulaIssue = legacyFormulaDocIssue(doc);
+  if (formulaIssue) throw new TypeError(formulaIssue);
+  const out = blocks(doc.content ?? [], options, ['doc']).trim();
   return out.length > 0 ? `${out}\n` : '';
 }
 
@@ -50,20 +67,38 @@ export function pageToMarkdown(title: string, doc: DocNode, options: SerializeOp
 const isEmptyParagraph = (node: DocNode | undefined) =>
   node?.type === 'paragraph' && !(node.content ?? []).length;
 
+const isEmptyListParagraph = (node: DocNode | undefined) =>
+  node?.type === 'paragraph' &&
+  (node.content ?? []).every(
+    (child) => child.type === 'hardBreak' || (child.type === 'text' && !(child.text ?? '')),
+  );
+
 // an empty line someone left between paragraphs is written as <br>, which markdown keeps, where plain
 // blank lines would all fold into one. empty lines at the very end are left out
-function blocks(nodes: DocNode[], options: SerializeOptions): string {
+function blocks(nodes: DocNode[], options: SerializeOptions, ancestors: string[]): string {
   let last = nodes.length - 1;
-  while (last >= 0 && isEmptyParagraph(nodes[last])) last--;
+  while (last >= 0 && isEmptyParagraph(nodes[last]) && !blockBackground(nodes[last]!)) last--;
   const parts: string[] = [];
   for (const node of nodes.slice(0, last + 1)) {
-    const text = isEmptyParagraph(node) ? '<br>' : block(node, options);
-    if (text !== null) parts.push(text);
+    const text = isEmptyParagraph(node) ? '<br>' : block(node, options, ancestors);
+    if (text === null) continue;
+    const background = blockBackground(node);
+    const backgroundMarker = background ? blockBackgroundComment(node, background, ancestors) : null;
+    const notes = [
+      ...(backgroundMarker ? [backgroundMarker] : []),
+      ...(node.type === 'orderedList' && node.attrs?.type === 'a' ? [LETTERS_COMMENT] : []),
+      ...(node.type === 'paragraph' && node.attrs?.embedTitle === false ? [EMBED_TITLE_COMMENT] : []),
+      ...(node.type === 'codeBlock' && node.attrs?.preview === true ? [PREVIEW_COMMENT] : []),
+      ...(node.type === 'image' && (node.attrs?.align === 'left' || node.attrs?.align === 'right')
+        ? [ALIGN_COMMENT(String(node.attrs.align))]
+        : []),
+    ];
+    parts.push([...notes, text].join('\n'));
   }
   return parts.join('\n\n');
 }
 
-function block(node: DocNode, options: SerializeOptions): string | null {
+function block(node: DocNode, options: SerializeOptions, ancestors: string[]): string | null {
   switch (node.type) {
     case 'paragraph': {
       const text = escapeLineStart(inline(node.content ?? [], options));
@@ -75,15 +110,20 @@ function block(node: DocNode, options: SerializeOptions): string | null {
       return `${'#'.repeat(level)} ${inline(node.content ?? [], options)}`;
     }
     case 'blockquote':
-      return prefixLines(blocks(node.content ?? [], options), '> ', '>');
+      return prefixLines(blocks(node.content ?? [], options, [...ancestors, 'blockquote']), '> ', '>');
     case 'bulletList':
-      return listItems(node, () => '- ', options);
+      return listItems(node, () => '- ', options, ancestors);
     case 'orderedList': {
       const start = typeof node.attrs?.start === 'number' ? Math.max(0, Math.floor(node.attrs.start)) : 1;
-      return listItems(node, (index) => `${start + index}. `, options);
+      return listItems(node, (index) => `${start + index}. `, options, ancestors);
     }
     case 'taskList':
-      return listItems(node, (_index, item) => (item.attrs?.checked === true ? '- [x] ' : '- [ ] '), options);
+      return listItems(
+        node,
+        (_index, item) => (item.attrs?.checked === true ? '- [x] ' : '- [ ] '),
+        options,
+        ancestors,
+      );
     case 'codeBlock': {
       const code = (node.content ?? []).map((child) => child.text ?? '').join('');
       const fence = '`'.repeat(Math.max(3, longestRun(code, '`') + 1));
@@ -127,28 +167,58 @@ function block(node: DocNode, options: SerializeOptions): string | null {
       ];
       const metadata = meta.length ? `|${meta.join('|')}` : '';
       const title = typeof node.attrs?.title === 'string' && node.attrs.title ? ` ${node.attrs.title}` : '';
-      const body = blocks(node.content ?? [], options);
+      const body = blocks(node.content ?? [], options, [...ancestors, 'callout']);
       return prefixLines(`[!${kind}${metadata}]${fold}${title}\n${body}`, '> ', '>');
     }
     case 'tableOfContents':
       return '<!-- toc -->';
+    case 'polarisDadosView': {
+      if (Object.keys(node).length !== 2 || !Object.hasOwn(node, 'attrs')) {
+        throw new TypeError('Invalid Polaris Dados view atom.');
+      }
+      return encodePolarisDadosViewMarker(node.attrs);
+    }
     case 'columns': {
       // plain html wrappers, other markdown apps show the columns one after another
+      const sourceWidths = node.attrs?.widths;
+      const hasSourceWidths = sourceWidths !== undefined && sourceWidths !== null;
+      const widths = hasSourceWidths
+        ? parseLegacyColumnWidths(sourceWidths, node.content?.length ?? 0)
+        : null;
+      if (hasSourceWidths && (!widths || typeof sourceWidths !== 'string')) {
+        throw new TypeError('Invalid legacy column widths.');
+      }
+      const widthAttribute = widths ? ` data-widths="${sourceWidths as string}"` : '';
       const columns = (node.content ?? []).map(
-        (column) => `<div data-column>\n\n${blocks(column.content ?? [], options)}\n\n</div>`,
+        (column) =>
+          `<div data-column>\n\n${blocks(column.content ?? [], options, [...ancestors, 'columns', 'column'])}\n\n</div>`,
       );
-      return `<div data-columns>\n${columns.join('\n')}\n</div>`;
+      return `<div data-columns${widthAttribute}>\n${columns.join('\n')}\n</div>`;
     }
     case 'details': {
       const [summary, content] = node.content ?? [];
-      const text = summary ? escapeHtml(inline(summary.content ?? [], options)) : '';
+      // `inline` serializes from typed text/mark nodes: ordinary text is escaped, supported
+      // formatting emits its own allowlisted delimiters, and code spans stay opaque to HTML scans.
+      const text = summary ? inline(summary.content ?? [], options) : '';
       // a toggle heading wraps its title in a heading tag, which browsers and other apps show as one
       const level = toggleLevel(summary?.attrs?.level);
       const title = level ? `<h${level}>${text}</h${level}>` : text;
-      const body = content ? blocks(content.content ?? [], options) : '';
+      const summaryBackground = normalizeInlineColor(summary?.attrs?.backgroundColor);
+      if (summaryBackground && !isHexBlockBackground(summaryBackground)) {
+        throw new TypeError('Toggle summary backgrounds require a six-digit HEX color.');
+      }
+      const summaryBackgroundAttr = summaryBackground
+        ? ` data-block-background="${summaryBackground}"`
+        : '';
+      const summaryFormatAttr = summary && (!level || summary.content?.some((child) => child.type !== 'text'))
+        ? ' data-morrow-summary-format="markdown"'
+        : '';
+      const body = content
+        ? blocks(content.content ?? [], options, [...ancestors, 'details', 'detailsContent'])
+        : '';
       // an open toggle is written open, so it is still open when the page comes back
       return `<details${node.attrs?.open === true ? ' open' : ''}>
-<summary>${title}</summary>
+<summary${summaryBackgroundAttr}${summaryFormatAttr}>${title}</summary>
 
 ${body}
 
@@ -157,7 +227,7 @@ ${body}
     default: {
       // unknown blocks keep their text so nothing silently disappears from an export
       if (node.content?.some((child) => child.type === 'text')) return inline(node.content, options);
-      return node.content ? blocks(node.content, options) : null;
+      return node.content ? blocks(node.content, options, [...ancestors, node.type]) : null;
     }
   }
 }
@@ -166,25 +236,55 @@ function listItems(
   list: DocNode,
   marker: (index: number, item: DocNode) => string,
   options: SerializeOptions,
+  ancestors: string[],
 ): string {
   return (list.content ?? [])
     .map((item, index) => {
       const bullet = marker(index, item);
       let children = item.content ?? [];
       const parts: string[] = [];
+      const startsWithView = children[0]?.type === 'polarisDadosView';
+      if (startsWithView) {
+        throw new TypeError('A Polaris Dados view cannot be the first block in a list item.');
+      }
+      if (isEmptyListParagraph(children[0]) && children[1]?.type === 'polarisDadosView') {
+        parts.push('<br>');
+        children = children.slice(1);
+      }
       // an item that starts empty never leaves a bare - on its line, under text that reads as a heading
       // underline. a picture moves up onto the line, anything else waits under a <br>
-      if (isEmptyParagraph(children[0]) && bullet.trim() === '-') {
+      if (isEmptyParagraph(children[0]) && !blockBackground(children[0]!) && bullet.trim() === '-') {
         if (children[1]?.type === 'image') children = children.slice(1);
         else {
           parts.push('<br>');
           children = children.slice(1);
         }
       }
+      // an item's own background is a comment at the end of its first line, other apps hide it
+      const background = blockBackground(item);
+      if (background && isHexBlockBackground(background)) {
+        throw new TypeError('Custom block backgrounds are not supported on list items.');
+      }
       children.forEach((child, childIndex) => {
-        const text = block(child, options) ?? '';
+        let text =
+          child.type === 'paragraph' && isEmptyParagraph(child)
+            ? '<br>'
+            : (block(child, options, [...ancestors, list.type, item.type]) ?? '');
+        const childBackground = child.type === 'paragraph' ? blockBackground(child) : null;
+        const backgroundMarker = childBackground
+          ? listParagraphBackgroundComment(child, childBackground, [...ancestors, list.type, item.type])
+          : null;
+        if (backgroundMarker && childIndex === 0) {
+          // The empty bullet line keeps the comment inside the item when Markdown is parsed again.
+          // A trailing inline palette comment on the synthetic <br> still identifies the item separately.
+          text = `\n${backgroundMarker}\n\n${text}`;
+        } else if (backgroundMarker) text = `${backgroundMarker}\n\n${text}`;
+        if (childIndex === 0 && background && backgroundMarker && child.type === 'paragraph')
+          text = `${text} ${BACKGROUND_COMMENT(background)}`;
+        else if (childIndex === 0 && background && !backgroundMarker && !text.includes('\n'))
+          text = `${text} ${BACKGROUND_COMMENT(background)}`;
         if (childIndex === 0 && parts.length === 0) parts.push(text);
-        else parts.push((isList(child) ? '\n' : '\n\n') + text);
+        else parts.push((isList(child) && !startsWithBackgroundedParagraph(child) ? '\n' : '\n\n') + text);
       });
       const body = parts.join('');
       const indent = ' '.repeat(bullet.startsWith('- [') ? 2 : bullet.length);
@@ -197,6 +297,16 @@ function listItems(
       );
     })
     .join('\n');
+}
+
+function startsWithBackgroundedParagraph(list: DocNode): boolean {
+  return (
+    isList(list) &&
+    (list.content ?? []).some((item) => {
+      const first = item.content?.[0];
+      return first?.type === 'paragraph' && blockBackground(first) !== null;
+    })
+  );
 }
 
 function isList(node: DocNode): boolean {
@@ -223,6 +333,93 @@ export function toggleLevel(value: unknown): 1 | 2 | 3 | 4 | 5 | 6 | null {
 }
 
 export const HEADER_COLUMN = '<!-- header-column -->';
+// a table's column widths in pixels, a comment above it like the header column, other apps leave it out
+export const COLUMN_WIDTHS = (widths: number[]) => `<!-- column-widths: ${widths.join(' ')} -->`;
+export const COLUMN_WIDTHS_PATTERN = /^<!--\s*column-widths:\s*([\d ]+?)\s*-->$/;
+
+// a block's background colour is a comment on the line above it, other apps hide it and show the block as is
+export const BACKGROUND_COMMENT = (color: ColorName) => `<!-- background: ${color} -->`;
+export const BACKGROUND_PATTERN = /^<!--\s*background:\s*([a-z]+)\s*-->$/;
+// a picture set to one side of the page, a comment above it like the background
+export const ALIGN_COMMENT = (side: string) => `<!-- align: ${side} -->`;
+export const ALIGN_PATTERN = /^<!--\s*align:\s*(left|right)\s*-->$/;
+// a line showing another page without that page's title
+export const EMBED_TITLE_COMMENT = '<!-- embed: no title -->';
+// an html code block drawn as a page under its code
+export const PREVIEW_COMMENT = '<!-- preview -->';
+// a numbered list counted a, b, c. markdown only has numbers, so other apps show it numbered
+export const LETTERS_COMMENT = '<!-- letters -->';
+
+export function blockBackground(node: DocNode): InlineColor | null {
+  return normalizeInlineColor(node.attrs?.backgroundColor);
+}
+
+function blockBackgroundComment(node: DocNode, color: InlineColor, ancestors: string[]): string {
+  if (isHexBlockBackground(color)) {
+    const marker = formatBlockBackgroundMarker(color);
+    if (marker && supportsHexBlockBackgroundOwner(node.type, ancestors)) return marker;
+    throw new TypeError(
+      'Custom block backgrounds are only supported on paragraphs, headings, and blockquotes.',
+    );
+  }
+  return BACKGROUND_COMMENT(color);
+}
+
+function listParagraphBackgroundComment(node: DocNode, color: InlineColor, ancestors: string[]): string {
+  const marker = formatBlockBackgroundMarker(color);
+  if (marker && supportsHexBlockBackgroundOwner(node.type, ancestors)) return marker;
+  throw new TypeError('List paragraph backgrounds require a direct list-item paragraph.');
+}
+
+function assertSupportedCustomBlockBackgrounds(
+  node: DocNode,
+  ancestors: string[] = [],
+  firstTaskItemParagraph = false,
+): void {
+  const color = normalizeInlineColor(node.attrs?.backgroundColor);
+  const ambiguousTaskFirstParagraph =
+    node.type === 'paragraph' && ancestors.at(-1) === 'taskItem' && firstTaskItemParagraph && color !== null;
+  if (ambiguousTaskFirstParagraph) {
+    if (!isHexBlockBackground(color)) {
+      throw new TypeError('Palette backgrounds cannot be represented on a task first paragraph.');
+    }
+    throw new TypeError(
+      'Custom block backgrounds are only supported on paragraphs, headings, and blockquotes.',
+    );
+  }
+  if (
+    color &&
+    isHexBlockBackground(color) &&
+    !supportsHexBlockBackgroundOwner(node.type, ancestors, firstTaskItemParagraph)
+  ) {
+    throw new TypeError(
+      'Custom block backgrounds are only supported on paragraphs, headings, and blockquotes.',
+    );
+  }
+  node.content?.forEach((child, index) =>
+    assertSupportedCustomBlockBackgrounds(
+      child,
+      [...ancestors, node.type],
+      node.type === 'taskItem' && index === 0,
+    ),
+  );
+}
+
+function assertSupportedToggleSummaries(node: DocNode, parentType: string | null = null): void {
+  if (node.type === 'detailsSummary') {
+    if (
+      parentType !== 'details' ||
+      (node.content ?? []).some(
+        (child) =>
+          (child.type !== 'text' && child.type !== 'pageLink') ||
+          (child.type === 'pageLink' && child.attrs?.embed === true),
+      )
+    ) {
+      throw new TypeError('Toggle summaries can contain only text and non-embedded page links.');
+    }
+  }
+  node.content?.forEach((child) => assertSupportedToggleSummaries(child, node.type));
+}
 
 // a table row is one line of markdown, so what sits in a cell is written on that line: text, pictures as
 // ![](path), and lists as the html obsidian also reads inside a cell
@@ -241,7 +438,7 @@ function cellBlocks(nodes: DocNode[], options: SerializeOptions): string {
 
 function cellBlock(node: DocNode, options: SerializeOptions): string {
   if (isList(node)) return listHtml(node, options);
-  if (node.type === 'image' || node.type === 'fileAttachment') return block(node, options) ?? '';
+  if (node.type === 'image' || node.type === 'fileAttachment') return block(node, options, ['doc']) ?? '';
   if (node.content?.some((child) => !isList(child) && child.type !== 'text' && child.content))
     return cellBlocks(node.content, options);
   return inline(node.content ?? [], options, true);
@@ -279,7 +476,13 @@ function table(node: DocNode, options: SerializeOptions): string {
   // with a header cell when it is on
   const later = (node.content ?? []).slice(1);
   const headerColumn = later.length > 0 && later.every((row) => row.content?.[0]?.type === 'tableHeader');
-  return [...(headerColumn ? [HEADER_COLUMN] : []), ...lines].join('\n');
+  // the widths columns were dragged to, by the first row's cells, 0 for one left to fit
+  const widths = (node.content?.[0]?.content ?? []).map((cell) => {
+    const width = Array.isArray(cell.attrs?.colwidth) ? Number(cell.attrs.colwidth[0]) : 0;
+    return Number.isFinite(width) && width > 0 ? Math.round(width) : 0;
+  });
+  const sized = widths.some((width) => width > 0) ? [COLUMN_WIDTHS(widths)] : [];
+  return [...(headerColumn ? [HEADER_COLUMN] : []), ...sized, ...lines].join('\n');
 }
 
 export function wikiLink(node: DocNode, options: SerializeOptions, inTable = false): string {
@@ -308,6 +511,9 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
   };
 
   for (const node of nodes) {
+    if (node.type === 'polarisDadosView') {
+      throw new TypeError('A Polaris Dados view block cannot be serialized as inline content.');
+    }
     if (node.type === 'hardBreak') {
       closeTo(0);
       out += pendingSpace + (inTable ? '<br>' : '\\\n');
@@ -316,20 +522,45 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
     }
     if (node.type === 'pageLink') {
       closeTo(0);
-      out += pendingSpace + wikiLink(node, options, inTable);
+      const markdownHref = node.attrs?.markdownHref;
+      if (typeof markdownHref === 'string') {
+        const label = String(node.attrs?.alias ?? node.attrs?.label ?? '');
+        const id = typeof node.attrs?.id === 'string' ? node.attrs.id : null;
+        const target = id ? options.markdownLinkTarget?.(id, markdownHref) : null;
+        const href = target ? retargetMarkdownHref(markdownHref, target) : markdownHref;
+        out += `${pendingSpace}[${formatLinkLabel(label, inTable)}](${formatMarkdownHref(href)})`;
+      } else out += pendingSpace + wikiLink(node, options, inTable);
       pendingSpace = '';
       continue;
     }
     if (node.type === 'dateMention') {
       // dates are written as links to that day's note, the way obsidian names daily notes
       closeTo(0);
-      out += `${pendingSpace}[[${String(node.attrs?.date ?? '')}]]`;
+      const time = String(node.attrs?.time ?? '');
+      out += `${pendingSpace}[[${String(node.attrs?.date ?? '')}]]${/^\d{2}:\d{2}$/.test(time) ? ` ${time}` : ''}`;
       pendingSpace = '';
       continue;
     }
     if (node.type === 'inlineMath') {
       closeTo(0);
       out += `${pendingSpace}$${String(node.attrs?.latex ?? '').trim()}$`;
+      pendingSpace = '';
+      continue;
+    }
+    if (node.type === LEGACY_FORMULA_NODE) {
+      const marks = sortMarks(node.marks ?? []);
+      let keep = 0;
+      while (keep < open.length && keep < marks.length && sameMark(open[keep]!, marks[keep]!)) keep++;
+      closeTo(keep);
+      if (marks.length > keep) {
+        out += pendingSpace;
+        pendingSpace = '';
+      }
+      for (const mark of marks.slice(keep)) {
+        out += MARK_OPEN[mark.type]!(mark);
+        open.push(mark);
+      }
+      out += pendingSpace + String(node.attrs?.raw ?? '');
       pendingSpace = '';
       continue;
     }
@@ -359,9 +590,30 @@ function inline(nodes: DocNode[], options: SerializeOptions, inTable = false): s
   return out + pendingSpace;
 }
 
+/** Markdown copied from the editor carries a formula's readable fallback, never its stored identity. */
+export function docToClipboardMarkdown(doc: DocNode, options: SerializeOptions = {}): string {
+  const fallback = (node: DocNode): DocNode => {
+    if (node.type === LEGACY_FORMULA_NODE) {
+      return {
+        type: 'text',
+        text: String(node.attrs?.fallback ?? ''),
+        ...(node.marks?.length ? { marks: node.marks } : {}),
+      };
+    }
+    return node.content ? { ...node, content: node.content.map(fallback) } : node;
+  };
+  return docToMarkdown(fallback(doc), options);
+}
+
 function sortMarks(marks: DocMark[]): DocMark[] {
   return marks
-    .filter((mark) => mark.type === 'code' || MARK_ORDER.includes(mark.type))
+    .filter(
+      (mark) =>
+        (mark.type === 'code' || MARK_ORDER.includes(mark.type)) &&
+        ((mark.type !== 'textColor' && mark.type !== 'highlight') ||
+          mark.attrs?.color == null ||
+          normalizeInlineColor(mark.attrs.color) !== null),
+    )
     .sort((a, b) => MARK_ORDER.indexOf(a.type) - MARK_ORDER.indexOf(b.type));
 }
 
@@ -377,10 +629,6 @@ function codeSpan(text: string): string {
   const fence = '`'.repeat(longestRun(text, '`') + 1);
   const padded = text.startsWith('`') || text.endsWith('`') ? ` ${text} ` : text;
   return `${fence}${padded}${fence}`;
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // escapes only what would turn into formatting, so files stay pleasant to read in other editors
@@ -439,6 +687,75 @@ function escapeLineStart(text: string): string {
 
 function formatHref(href: string): string {
   return /[\s()<>]/.test(href) ? `<${href.replace(/[<>]/g, encodeURIComponent)}>` : href;
+}
+
+function formatMarkdownHref(href: string): string {
+  const source = `[link](${href})`;
+  const openingParen = '[link]'.length;
+  const destination = scanMarkdownDestination(source, openingParen, 16_384);
+  if (
+    destination &&
+    destination.start === openingParen + 1 &&
+    destination.end === openingParen + 1 + href.length &&
+    destination.close === source.length - 1
+  )
+    return href;
+  return `<${escapeAngleDestination(href)}>`;
+}
+
+/** Replaces only the path of a stored Markdown href, preserving its query and fragment verbatim. */
+export function retargetMarkdownHref(originalHref: string, targetPath: string): string {
+  const suffixStart = originalHref.search(/[?#]/);
+  const originalPath = suffixStart === -1 ? originalHref : originalHref.slice(0, suffixStart);
+  const suffix = suffixStart === -1 ? '' : originalHref.slice(suffixStart);
+  const rootRelative =
+    targetPath.startsWith('/') || (originalPath.startsWith('/') && !originalPath.startsWith('//'));
+  const explicitRelative = originalPath.startsWith('./') || targetPath.startsWith('./');
+  const cleanTarget = targetPath.replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+  const prefix = rootRelative ? '/' : explicitRelative && !cleanTarget.startsWith('../') ? './' : '';
+  return `${prefix}${encodeMarkdownPath(cleanTarget)}${suffix}`;
+}
+
+function encodeMarkdownPath(path: string): string {
+  return path
+    .split('/')
+    .map((segment) =>
+      encodeURIComponent(segment).replace(
+        /[!'()*]/g,
+        (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+      ),
+    )
+    .join('/');
+}
+
+function escapeAngleDestination(href: string): string {
+  let out = '';
+  for (let index = 0; index < href.length; index++) {
+    const char = href[index]!;
+    if (char === '\\' && index + 1 < href.length) out += char + href[++index]!;
+    else out += char === '<' || char === '>' ? `\\${char}` : char;
+  }
+  return out;
+}
+
+function formatLinkLabel(label: string, inTable = false): string {
+  let out = '';
+  for (let index = 0; index < label.length; index++) {
+    const entity = /^&(?:#?\w+;)/.exec(label.slice(index));
+    if (entity) {
+      out += escapeText(entity[0]);
+      index += entity[0].length - 1;
+      continue;
+    }
+    const char = label[index]!;
+    if (char === '\n' || char === '\r') {
+      out += ' ';
+      continue;
+    }
+    if ('\\[]`*_~=$<'.includes(char) || (inTable && char === '|')) out += '\\';
+    out += char;
+  }
+  return out;
 }
 
 function prefixLines(text: string, prefix: string, emptyPrefix: string): string {

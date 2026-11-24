@@ -41,6 +41,7 @@ export const COLORS = [
   'red',
 ] as const;
 export type ColorName = (typeof COLORS)[number];
+export type InlineColor = ColorName | `#${string}`;
 
 export interface SelectOption {
   id: string;
@@ -48,16 +49,194 @@ export interface SelectOption {
   color: ColorName;
 }
 
+/** Display settings for a Markdown-declared number property or explicit numeric formula result. */
+export interface NumberPropertyFormat {
+  locale?: string;
+  precision?: number;
+  negativeFormat?: 'minus' | 'parentheses';
+}
+
+/** Narrow formula format for the optional constraints supported by each declared result kind. */
+export interface FormulaResultNumberFormat extends NumberPropertyFormat {
+  currency?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+/** Validates and copies the deliberately narrow number-format shape supported by this host. */
+export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | null {
+  return normalizeNumberFormatShape(value, false);
+}
+
+function normalizeNumberFormulaFormat(value: unknown): FormulaResultNumberFormat | null {
+  return normalizeNumberFormatShape(value, true);
+}
+
+function normalizeNumberFormatShape(
+  value: unknown,
+  allowFormulaNumberConstraints: boolean,
+): FormulaResultNumberFormat | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    'locale',
+    'precision',
+    'negativeFormat',
+    ...(allowFormulaNumberConstraints ? ['min', 'max', 'step'] : []),
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
+
+  const format: FormulaResultNumberFormat = {};
+  if (Object.hasOwn(raw, 'locale')) {
+    if (!validNumberFormatLocale(raw.locale)) return null;
+    format.locale = raw.locale;
+  }
+  if (Object.hasOwn(raw, 'precision')) {
+    if (
+      typeof raw.precision !== 'number' ||
+      !Number.isFinite(raw.precision) ||
+      raw.precision < 0 ||
+      raw.precision > 8
+    )
+      return null;
+    format.precision = raw.precision;
+  }
+  if (Object.hasOwn(raw, 'negativeFormat')) {
+    if (raw.negativeFormat !== 'minus' && raw.negativeFormat !== 'parentheses') return null;
+    format.negativeFormat = raw.negativeFormat;
+  }
+  if (allowFormulaNumberConstraints) {
+    for (const key of ['min', 'max'] as const) {
+      if (!Object.hasOwn(raw, key)) continue;
+      const bound = raw[key];
+      if (typeof bound !== 'number' || !Number.isFinite(bound) || bound < -1e12 || bound > 1e12) return null;
+      format[key] = bound;
+    }
+    if (Object.hasOwn(raw, 'step')) {
+      const step = raw.step;
+      if (typeof step !== 'number' || !Number.isFinite(step) || step < 1e-9 || step > 1e12) return null;
+      format.step = step;
+    }
+  }
+  return format;
+}
+
+/** Validates the narrow number format a database property can safely preserve. */
+export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNumberFormat | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!Object.hasOwn(raw, 'format')) return null;
+
+  if (raw.type === 'number') {
+    return Object.hasOwn(raw, 'formulaResultType') ? null : normalizeNumberFormat(raw.format);
+  }
+  if (raw.type !== 'formula' || Object.hasOwn(raw, 'display') || Object.hasOwn(raw, 'max')) return null;
+
+  if (Object.hasOwn(raw, 'formulaResultType')) {
+    if (raw.formulaResultType === 'number') {
+      return normalizeNumberFormulaFormat(raw.format);
+    }
+    if (raw.formulaResultType === 'percent') {
+      // Percentage constraints use the same raw decimal values as number formulas.
+      return normalizeNumberFormulaFormat(raw.format);
+    }
+    return raw.formulaResultType === 'currency'
+      ? normalizeFormulaResultNumberFormat(raw.format, true)
+      : null;
+  }
+
+  const format = normalizeFormulaResultNumberFormat(raw.format);
+  return format !== null && (Object.hasOwn(format, 'precision') || Object.hasOwn(format, 'currency'))
+    ? format
+    : null;
+}
+
+function normalizeFormulaResultNumberFormat(
+  value: unknown,
+  allowFormulaNumberConstraints = false,
+): FormulaResultNumberFormat | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    'locale',
+    'currency',
+    'precision',
+    'negativeFormat',
+    ...(allowFormulaNumberConstraints ? ['min', 'max', 'step'] : []),
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
+
+  const hasCurrency = Object.hasOwn(raw, 'currency');
+  if (hasCurrency && !validFormulaCurrency(raw.currency)) return null;
+
+  const numberFormat = normalizeNumberFormat({
+    ...(Object.hasOwn(raw, 'locale') ? { locale: raw.locale } : {}),
+    ...(Object.hasOwn(raw, 'precision') ? { precision: raw.precision } : {}),
+    ...(Object.hasOwn(raw, 'negativeFormat') ? { negativeFormat: raw.negativeFormat } : {}),
+  });
+  if (numberFormat === null) return null;
+  const format: FormulaResultNumberFormat = {
+    ...numberFormat,
+    ...(hasCurrency ? { currency: raw.currency as string } : {}),
+  };
+  if (allowFormulaNumberConstraints) {
+    for (const key of ['min', 'max'] as const) {
+      if (!Object.hasOwn(raw, key)) continue;
+      const bound = raw[key];
+      if (typeof bound !== 'number' || !Number.isFinite(bound) || bound < -1e12 || bound > 1e12) return null;
+      format[key] = bound;
+    }
+    if (Object.hasOwn(raw, 'step')) {
+      const step = raw.step;
+      if (typeof step !== 'number' || !Number.isFinite(step) || step < 1e-9 || step > 1e12) return null;
+      format.step = step;
+    }
+  }
+  return format;
+}
+
+function validFormulaCurrency(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^[A-Z]{3}$/.test(value)) return false;
+  try {
+    new Intl.NumberFormat('en', { style: 'currency', currency: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validNumberFormatLocale(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 40) return false;
+  try {
+    new Intl.NumberFormat(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface PropDef {
   id: string;
   name: string;
   type: PropType;
   options: SelectOption[];
+  format?: FormulaResultNumberFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
+  // an explicit formula result type; the raw calculation value remains unchanged
+  formulaResultType?: 'text' | 'number' | 'percent' | 'currency' | 'checkbox';
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;
+  // a text property shown in full over as many lines as it takes, rather than cut off at the cell's edge
+  wrap?: boolean;
 }
 
 export type FilterOp =
@@ -77,8 +256,31 @@ export interface SortRule {
   dir: 'asc' | 'desc';
 }
 
-export type ViewType = 'table' | 'board' | 'calendar' | 'list' | 'gallery';
-export const VIEW_TYPES: readonly ViewType[] = ['table', 'board', 'calendar', 'list', 'gallery'];
+export type ViewType = 'table' | 'board' | 'calendar' | 'list' | 'gallery' | 'dashboard';
+
+// a tile of a dashboard view: a number worked out from the rows, or a chart of them by a property
+export type WidgetKind = 'count' | 'sum' | 'average' | 'min' | 'max' | 'bar' | 'hbar' | 'donut' | 'line';
+export interface Widget {
+  id: string;
+  kind: WidgetKind;
+  // the number property summed or averaged, the select a chart counts by, the date a line follows
+  prop: string | null;
+  title?: string;
+  // across two of the grid's columns rather than one
+  wide?: boolean;
+}
+export const VIEW_TYPES: readonly ViewType[] = ['table', 'board', 'calendar', 'list', 'gallery', 'dashboard'];
+export const WIDGET_KINDS: readonly WidgetKind[] = [
+  'count',
+  'sum',
+  'average',
+  'min',
+  'max',
+  'bar',
+  'hbar',
+  'donut',
+  'line',
+];
 
 export interface ViewDef {
   id: string;
@@ -91,6 +293,18 @@ export interface ViewDef {
   hidden: string[];
   // table column widths in pixels, by property id or title, missing means the default width
   widths?: Record<string, number>;
+  // the order of the table's columns by property id, title among them, missing keeps the database's order
+  columns?: string[];
+  // the groups rows are split into by groupBy: their order, the ones left out and the ones folded, by key,
+  // and whether groups with no rows show
+  groupOrder?: string[];
+  hiddenGroups?: string[];
+  collapsedGroups?: string[];
+  hideEmptyGroups?: boolean;
+  // how many rows the view shows before more are asked for, 0 for all, missing for the default
+  limit?: number;
+  // the tiles of a dashboard view, in order
+  widgets?: Widget[];
 }
 
 export interface DatabaseDef {
@@ -194,6 +408,8 @@ export const KNOWN_NODE_TYPES = new Set([
   'column',
   'tableOfContents',
   'dateMention',
+  'polarisDadosView',
+  'legacyFormula',
 ]);
 
 export const KNOWN_MARK_TYPES = new Set([
@@ -252,6 +468,31 @@ export function nearestColor(hex: string, palette: Record<ColorName, string>): C
     }
   }
   return best;
+}
+
+/** Accept only a palette name or an exact six-digit CSS hex value. */
+export function normalizeInlineColor(value: unknown): InlineColor | null {
+  if (typeof value !== 'string') return null;
+  if ((COLORS as readonly string[]).includes(value)) return value as ColorName;
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value.toLowerCase() as `#${string}`;
+  return null;
+}
+
+/** Read an inline color, retaining exact six-digit values while keeping old short hex palette-compatible. */
+export function parseInlineColor(value: string, palette: Record<ColorName, string>): InlineColor | null {
+  const normalized = value.trim().toLowerCase();
+  if ((COLORS as readonly string[]).includes(normalized)) return normalized as ColorName;
+  if (/^#[0-9a-f]{3}$/.test(normalized)) return nearestColor(normalized, palette);
+  const color = normalizeInlineColor(normalized);
+  if (!color || !color.startsWith('#')) return null;
+  return COLORS.find((name) => palette[name] === color) ?? color;
+}
+
+/** Convert a valid preset or exact custom inline color to safe CSS. */
+export function inlineColorHex(value: unknown, palette: Record<ColorName, string>): string | null {
+  const color = normalizeInlineColor(value);
+  if (!color) return null;
+  return color.startsWith('#') ? color : palette[color as ColorName];
 }
 
 export type FileId = string;

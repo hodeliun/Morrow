@@ -3,7 +3,16 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { DesktopBridge } from './desktop';
+import type { DesktopBridge, VaultCatalogFileActionResult, VaultFilePage } from './desktop';
+import { getExitPreparer } from '../exitPreparationRegistry';
+import {
+  createCloseProtocolCoordinator,
+  type CloseAckDisposition,
+  type CloseCancelDisposition,
+  type CloseDecision,
+  type CloseProtocolFailure,
+  type CloseSnapshot,
+} from './closeProtocol';
 
 interface NativeInfo {
   version: string;
@@ -20,6 +29,27 @@ declare global {
 }
 
 type Listener = (id: string) => void | Promise<void>;
+
+let nativeCloseCoordinator: ReturnType<typeof createCloseProtocolCoordinator> | null = null;
+
+/** Starts the native handshake after main has installed its private exit preparer. */
+export function startTauriCloseProtocol(reportFailure: (reason: CloseProtocolFailure) => void): void {
+  if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return;
+  nativeCloseCoordinator ??= createCloseProtocolCoordinator({
+    transport: {
+      listen: async (handler) => listen<number>('morrow:close-requested', (event) => handler(event.payload)),
+      snapshot: () => invoke<CloseSnapshot>('close_protocol_snapshot'),
+      acknowledge: (generation: number, decision: CloseDecision) =>
+        invoke<CloseAckDisposition>('close_protocol_ack', { generation, decision }),
+      cancel: (generation: number) => invoke<CloseCancelDisposition>('close_protocol_cancel', { generation }),
+    },
+    getPreparer: getExitPreparer,
+    reportFailure,
+  });
+  void nativeCloseCoordinator.start().catch(() => {
+    // No positive acknowledgement was sent; the coordinator owns listener-registration retries.
+  });
+}
 
 // a listener that can be removed straight away, though tauri hands back its remover a moment later
 function subscribe<T>(event: string, handler: (payload: T) => void): () => void {
@@ -39,6 +69,29 @@ function subscribe<T>(event: string, handler: (payload: T) => void): () => void 
 
 // small values travel as json, file contents as raw bytes with their path in a header
 const pathHeader = (path: string) => ({ headers: { path: encodeURIComponent(path) } });
+
+const MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  avif: 'image/avif',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  flac: 'audio/flac',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  m4v: 'video/mp4',
+  pdf: 'application/pdf',
+};
+const mimeOfName = (name: string) =>
+  MIME[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 
 async function bytesOrNull(command: string, args: Record<string, unknown>): Promise<Uint8Array | null> {
   try {
@@ -62,14 +115,43 @@ export function tauriBridge(): DesktopBridge | null {
   };
   const listeners = new Set<Listener>();
   const zoomListeners = new Set<(percent: number) => void>();
+  let vaultGeneration: number | null = null;
+  let vaultGenerationFloor = 0;
+  let vaultEpoch = 0;
+  const beginVaultTransition = () => {
+    vaultEpoch += 1;
+    vaultGeneration = null;
+    return vaultEpoch;
+  };
+  const safeGeneration = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  const observeVaultGeneration = (value: unknown) => {
+    if (!safeGeneration(value) || value <= vaultGenerationFloor) return;
+    vaultGenerationFloor = value;
+    if (vaultGeneration !== null && vaultGeneration < value) vaultGeneration = null;
+  };
+  const restoreSessionGeneration = (value: unknown) => {
+    if (!safeGeneration(value) || value < vaultGenerationFloor) {
+      vaultGeneration = null;
+      return;
+    }
+    vaultGenerationFloor = Math.max(vaultGenerationFloor, value);
+    vaultGeneration = value;
+  };
+  const acceptTransitionSession = (
+    epoch: number,
+    result: { generation?: unknown; sessionGeneration?: unknown },
+  ) => {
+    observeVaultGeneration(result.generation);
+    if (epoch !== vaultEpoch) return;
+    restoreSessionGeneration(result.sessionGeneration);
+  };
   const run = (id: string) =>
     Promise.all([...listeners].map((listener) => Promise.resolve(listener(id)).catch(() => undefined)));
 
   subscribe<string>('morrow:command', (id) => {
     if (typeof id !== 'string') return;
-    const done = run(id);
-    // the native side waits for this before closing the window
-    if (id === 'app.prepareToClose') void done.finally(() => invoke('close_ready'));
+    void run(id);
   });
 
   setupWindow(info.platform, run);
@@ -118,7 +200,7 @@ export function tauriBridge(): DesktopBridge | null {
       zoomListeners.add(listener);
       return () => zoomListeners.delete(listener);
     },
-    setTheme: (theme) => void invoke('set_theme', { theme }),
+    setTheme: (theme, color) => void invoke('set_theme', { theme, color: color ?? null }),
     openExternal: (url) => invoke('open_external', { url }),
     showDataFolder: () => invoke('show_data_folder'),
     showBackupsFolder: () => invoke('show_backups'),
@@ -133,8 +215,35 @@ export function tauriBridge(): DesktopBridge | null {
       : {}),
     copyText: (text) => invoke<boolean>('copy_text', { text }),
     copyRich: (text, html) => invoke<boolean>('copy_rich', { text, html }),
+    // a pdf, picture or other file shared from another app comes with the words, read once from the cache
+    async takeShared() {
+      const shared = await invoke<{ text: string | null; files: string[] }>('take_shared').catch(() => null);
+      const files: File[] = [];
+      for (const path of shared?.files ?? []) {
+        const data = await bytesOrNull('read_shared_file', { path });
+        const name = path.split(/[\\/]/).pop() || 'file';
+        if (data)
+          files.push(new File([data.slice().buffer as ArrayBuffer], name, { type: mimeOfName(name) }));
+      }
+      return { text: shared?.text ?? null, files };
+    },
+    async clipboardFiles() {
+      const paths = await invoke<string[]>('clipboard_files').catch(() => []);
+      const files: File[] = [];
+      for (const path of paths) {
+        const data = await bytesOrNull('read_clipboard_file', { path });
+        const name = path.split(/[\\/]/).pop() || 'file';
+        if (data)
+          files.push(new File([data.slice().buffer as ArrayBuffer], name, { type: mimeOfName(name) }));
+      }
+      return files;
+    },
     // the webview checks spelling itself, a page without spellcheck turns it off
     setSpellcheck: () => undefined,
+    readPastedPicture: (src) => bytesOrNull('read_pasted_picture', { src }),
+    fetchCalendar: (url) => invoke<string>('fetch_calendar', { url }),
+    spellLanguages: () => invoke('spell_languages'),
+    setSpellLanguages: (languages) => invoke<boolean>('set_spell_languages', { languages }),
     async fetchImage(url) {
       const bytes = await bytesOrNull('fetch_image', { url });
       if (!bytes) return null;
@@ -179,10 +288,53 @@ export function tauriBridge(): DesktopBridge | null {
       cloud: () => invoke('vault_cloud'),
       copyInto: (dir) => invoke('vault_copy_into', { dir }),
       createDefault: () => invoke('vault_create_default'),
-      select: (dir) => invoke('vault_select', { dir }),
-      forget: (dir) => invoke('vault_forget', { dir }),
-      open: () => invoke('vault_open'),
-      close: () => invoke('vault_close'),
+      select: async (dir) => {
+        const epoch = beginVaultTransition();
+        const result = await invoke<{
+          ok: boolean;
+          generation: number;
+          sessionGeneration: number | null;
+          currentChanged: boolean;
+          error: string | null;
+        }>('vault_select', { dir });
+        acceptTransitionSession(epoch, result);
+        return result.error === null ? { ok: result.ok } : { ok: result.ok, error: result.error };
+      },
+      forget: async (dir) => {
+        const epoch = beginVaultTransition();
+        const result = await invoke<{
+          ok: boolean;
+          generation: number;
+          sessionGeneration: number | null;
+          currentChanged: boolean;
+          error: string | null;
+        }>('vault_forget', { dir });
+        acceptTransitionSession(epoch, result);
+        if (!result.ok) throw new Error(result.error ?? 'The vault could not be forgotten.');
+      },
+      async reorder(order) {
+        const result = await invoke<{
+          ok: boolean;
+          error: string | null;
+        }>('vault_reorder', { order });
+        if (!result.ok) throw new Error(result.error ?? 'The vault order could not be saved.');
+      },
+      open: async () => {
+        const epoch = beginVaultTransition();
+        const result = await invoke<{
+          ok: boolean;
+          root: string | null;
+          generation: number;
+          sessionGeneration: number | null;
+        }>('vault_open');
+        observeVaultGeneration(result.generation);
+        if (epoch === vaultEpoch) restoreSessionGeneration(result.sessionGeneration);
+        return { ok: result.ok, root: result.root };
+      },
+      close: async () => {
+        beginVaultTransition();
+        await invoke('vault_close');
+      },
       scan: () => invoke('vault_scan'),
       apply: (ops) => invoke('vault_apply', { ops }),
       readText: (path) => invoke('vault_read_text', { path }),
@@ -190,7 +342,63 @@ export function tauriBridge(): DesktopBridge | null {
       createFile: (path, data) => invoke('vault_create_file', new Uint8Array(data), pathHeader(path)),
       exists: (path) => invoke('vault_exists', { path }),
       list: (path) => invoke('vault_list', { path }),
-      reveal: (path) => invoke('vault_reveal', { path: path ?? null }),
+      async listFilesPage(directory, cursor = null, limit = 100): Promise<VaultFilePage> {
+        const epoch = vaultEpoch;
+        const generation = vaultGeneration;
+        if (generation === null) {
+          return {
+            generation: 0,
+            status: 'stale',
+            entries: [],
+            nextCursor: null,
+            error: null,
+          };
+        }
+        const result = await invoke<VaultFilePage>('vault_files_page', {
+          directory,
+          generation,
+          cursor,
+          limit,
+        });
+        if (vaultEpoch !== epoch || vaultGeneration !== generation || result.generation !== generation) {
+          return {
+            generation: vaultGeneration ?? result.generation,
+            status: 'stale',
+            entries: [],
+            nextCursor: null,
+            error: null,
+          };
+        }
+        return result;
+      },
+      async catalogFileAction(path, generation, action): Promise<VaultCatalogFileActionResult> {
+        const epoch = vaultEpoch;
+        const stale = (): VaultCatalogFileActionResult => ({
+          generation: vaultGeneration ?? generation,
+          status: 'stale',
+        });
+        if (vaultGeneration === null || vaultGeneration !== generation) return stale();
+        try {
+          const result = await invoke<VaultCatalogFileActionResult>('vault_catalog_file_action', {
+            path,
+            generation,
+            action,
+          });
+          return vaultEpoch === epoch && vaultGeneration === generation && result.generation === generation
+            ? result
+            : stale();
+        } catch {
+          return vaultEpoch === epoch && vaultGeneration === generation
+            ? { generation, status: 'failed' }
+            : stale();
+        }
+      },
+      // a folder that can't be shown, such as a phone's own storage, says why rather than doing nothing
+      reveal: (path) =>
+        invoke<void>('vault_reveal', { path: path ?? null }).catch(async (error: unknown) => {
+          const { toast } = await import('../ui');
+          toast(String(error), { tone: 'error' });
+        }),
       openFile: (path) => invoke('vault_open_file', { path }),
       openLink: (href, pagePath) => invoke('vault_open_link', { href, pagePath }),
       copyImage: (path) => invoke('vault_copy_image', { path }),

@@ -12,6 +12,7 @@ export function Popover({
   placement = 'bottom-start',
   label,
   className,
+  onEscape,
 }: {
   anchor: HTMLElement | DOMRect;
   onClose: () => void;
@@ -19,11 +20,17 @@ export function Popover({
   placement?: Placement;
   label: string;
   className?: string;
+  /** Lets a specialized panel own Escape and apply its own focus policy. */
+  onEscape?: (event: KeyboardEvent) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
+  const escapeRef = useRef(onEscape);
   useEffect(() => {
     closeRef.current = onClose;
+  });
+  useEffect(() => {
+    escapeRef.current = onEscape;
   });
 
   useLayoutEffect(() => {
@@ -64,6 +71,10 @@ export function Popover({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.stopPropagation();
+      if (escapeRef.current) {
+        escapeRef.current(event);
+        return;
+      }
       closeRef.current();
       if (trigger?.isConnected) trigger.focus({ preventScroll: true });
     };

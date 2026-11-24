@@ -26,6 +26,7 @@ import {
   StarOff,
   Trash2,
   ListTree,
+  ListPlus,
 } from 'lucide-react';
 import { cardsInDeck, collectCards } from '../../core/flashcards';
 import type { PageId } from '../../core/model';
@@ -45,26 +46,46 @@ import {
   turnIntoPage,
 } from '../operations';
 import { desktop } from '../platform/desktop';
-import { getPreferences, PAGE_WIDTHS, setPreferences } from '../platform/preferences';
+import {
+  getPreferences,
+  outlineShown,
+  PAGE_WIDTHS,
+  setPreferences,
+  toggleOutline,
+} from '../platform/preferences';
 import { navigate } from '../router';
 import { getUi, openDialog, setUi } from '../ui';
 import { childrenOf } from '../../core/tree';
 import { getSession, getState, run } from '../workspace';
 import { t } from '../i18n';
 import type { MenuEntry } from './Menu';
+import { isProviderManagedPage } from './pageEditability';
+import { addSection, getSidebarSections, togglePageInSection } from '../sidebarSections';
 
 // one menu definition for the sidebar row and the page header
-export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[] {
+export function pageMenuEntries(
+  pageId: PageId,
+  rename: () => void,
+  options: { nativeEditable?: boolean } = {},
+): MenuEntry[] {
   const page = getState().pages[pageId];
   if (!page) return [];
+  const providerManaged = isProviderManagedPage(getState(), page);
+  const nativeEditable = options.nativeEditable !== false && !providerManaged;
   return [
-    { label: t('pageMenu.addSubpage'), icon: Plus, onSelect: () => createPage({ parentId: pageId }) },
-    { label: t('pageMenu.rename'), icon: Pencil, shortcut: 'F2', onSelect: rename },
-    {
-      label: page.icon ? t('pageMenu.changeIcon') : t('pageMenu.addIcon'),
-      icon: Smile,
-      onSelect: () => openDialog({ kind: 'icon', pageId }),
-    },
+    ...(!providerManaged
+      ? [{ label: t('pageMenu.addSubpage'), icon: Plus, onSelect: () => createPage({ parentId: pageId }) }]
+      : []),
+    ...(nativeEditable
+      ? [
+          { label: t('pageMenu.rename'), icon: Pencil, shortcut: 'F2', onSelect: rename },
+          {
+            label: page.icon ? t('pageMenu.changeIcon') : t('pageMenu.addIcon'),
+            icon: Smile,
+            onSelect: () => openDialog({ kind: 'icon', pageId }),
+          },
+        ]
+      : []),
     {
       label: t('pageMenu.pageHistory'),
       icon: History,
@@ -83,12 +104,33 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
     page.favorite
       ? { label: t('pageMenu.removeFromFavorites'), icon: StarOff, onSelect: () => toggleFavorite(pageId) }
       : { label: t('pageMenu.addToFavorites'), icon: Star, onSelect: () => toggleFavorite(pageId) },
-    { label: t('pageMenu.duplicate'), icon: Copy, onSelect: () => duplicatePage(pageId) },
+    // Sections only organize sidebar visibility; provider-owned pages can still be listed there.
     {
-      label: t('pageMenu.moveTo'),
-      icon: ArrowRightLeft,
-      onSelect: () => openDialog({ kind: 'move', pageId }),
+      label: t('pageMenu.addToSection'),
+      icon: ListPlus,
+      submenu: [
+        ...getSidebarSections().map((section) => ({
+          label: section.name,
+          checked: section.pages.includes(pageId),
+          onSelect: () => void togglePageInSection(section.id, pageId),
+        })),
+        {
+          label: t('pageMenu.newSection'),
+          icon: Plus,
+          onSelect: () => void addSection(t('pageMenu.newSectionName'), pageId),
+        },
+      ],
     },
+    ...(!providerManaged
+      ? [
+          { label: t('pageMenu.duplicate'), icon: Copy, onSelect: () => duplicatePage(pageId) },
+          {
+            label: t('pageMenu.moveTo'),
+            icon: ArrowRightLeft,
+            onSelect: () => openDialog({ kind: 'move', pageId }),
+          },
+        ]
+      : []),
     {
       label: t('pageMenu.openLocalGraph'),
       icon: Network,
@@ -104,7 +146,11 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
         ]
       : []),
     // a folder of notes becomes a database of them, like a notion database sitting on the folder
-    ...(page.kind === 'page' && !page.dailyDate && !page.encrypted && !getSession().unreadable.has(pageId)
+    ...(!providerManaged &&
+    page.kind === 'page' &&
+    !page.dailyDate &&
+    !page.encrypted &&
+    !getSession().unreadable.has(pageId)
       ? [
           {
             label: childrenOf(getState().pages, pageId).length
@@ -115,7 +161,7 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
           },
         ]
       : []),
-    ...(page.kind === 'database'
+    ...(!providerManaged && page.kind === 'database'
       ? [{ label: t('pageMenu.turnIntoPage'), icon: FileText, onSelect: () => turnIntoPage(pageId) }]
       : []),
     ...(desktop?.vault && getSession().pathOf(pageId) !== null
@@ -145,7 +191,7 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
             },
           ]
       : []),
-    ...(page.kind === 'page' && !getSession().unreadable.has(pageId)
+    ...(nativeEditable && page.kind === 'page' && !getSession().unreadable.has(pageId)
       ? [
           getUi().sourceMode === pageId
             ? {
@@ -166,21 +212,16 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
       ? [{ label: t('pageMenu.exportPdf'), icon: FileText, onSelect: () => void exportPagePdf(pageId) }]
       : []),
     { label: t('pageMenu.publishWebsite'), icon: Globe, onSelect: () => void publishSite(pageId) },
-    { label: t('pageMenu.importMarkdownHere'), icon: FileUp, onSelect: () => void importMarkdown(pageId) },
+    ...(nativeEditable
+      ? [{ label: t('pageMenu.importMarkdownHere'), icon: FileUp, onSelect: () => void importMarkdown(pageId) }]
+      : []),
     ...(page.kind === 'page'
       ? [
           {
             label: t('pageMenu.showOutline'),
             icon: ListTree,
-            checked: !getPreferences().hiddenOutlines.includes(pageId),
-            onSelect: () => {
-              const hidden = getPreferences().hiddenOutlines;
-              setPreferences({
-                hiddenOutlines: hidden.includes(pageId)
-                  ? hidden.filter((id) => id !== pageId)
-                  : [...hidden, pageId],
-              });
-            },
+            checked: outlineShown(getPreferences(), pageId),
+            onSelect: () => toggleOutline(pageId),
           },
           { heading: t('pageMenu.width') },
           ...PAGE_WIDTHS.map((next) => ({
@@ -213,12 +254,16 @@ export function pageMenuEntries(pageId: PageId, rename: () => void): MenuEntry[]
     page.archivedAt === null
       ? { label: t('pageMenu.archive'), icon: Archive, onSelect: () => setArchived(pageId, true) }
       : { label: t('pageMenu.unarchive'), icon: ArchiveRestore, onSelect: () => setArchived(pageId, false) },
-    {
-      label: t('pageMenu.moveToTrash'),
-      icon: Trash2,
-      danger: true,
-      shortcut: 'Del',
-      onSelect: () => trashPage(pageId),
-    },
+    ...(!providerManaged
+      ? [
+          {
+            label: t('pageMenu.moveToTrash'),
+            icon: Trash2,
+            danger: true,
+            shortcut: 'Del',
+            onSelect: () => trashPage(pageId),
+          },
+        ]
+      : []),
   ];
 }
