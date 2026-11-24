@@ -51,6 +51,12 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 
 Em **Configurações → Aparência**, salve um padrão e abra **Prévia das páginas existentes**. Escolha **Preservar estilos existentes** ou **Sobrescrever estilos representáveis** e clique em **Pré-visualizar páginas**. Confira a contagem e a amostra de até quatro títulos. Abra uma nota após a prévia para conferir o estilo anterior. Alterar o modo ou salvar outro padrão pede uma nova prévia.
 
+### Aplicar o estilo nas páginas de demonstração
+
+Use o cofre `PilotState\DemoVault`. Em **Configurações → Aparência**, salve um padrão, escolha o modo da prévia e clique em **Pré-visualizar páginas**. Abra **Aplicar às páginas existentes** e confira a contagem da confirmação. Clique em **Cancelar** para voltar à prévia. Abra a confirmação novamente e escolha **Aplicar estilos**.
+
+O resultado traz as contagens de **Confirmadas**, **Recusadas** e **Não tentadas**, com detalhes por página. Em caso de recusa, gere outra prévia. Abra uma das notas confirmadas e confira o estilo e os demais campos YAML.
+
 ### Cores HEX e estilos salvos
 
 1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.
@@ -144,6 +150,10 @@ Em `Inventory`, abra o cofre de demonstração em uma pasta nova e role a grade 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.
 
 Em `Inventory`, chegue até a célula calculada **Total** com as setas. Ela recebe foco para leitura. Volte para **Name**, digite um caractere para abrir o rascunho e confira que a seta esquerda passa a mover o cursor pelo texto. Pressione **Escape** para descartar. Use **Tab** para continuar pelos controles da tela.
+
+### Abrir uma nota pelo título da linha vinculada
+
+Abra `Views`. Na visualização vinculada, use **Tab** para chegar à região da grade e pressione uma seta para focar o título da primeira linha. Pressione **Alt+Enter** para abrir a nota dessa linha no painel em foco. Se houver um segundo painel, confira que ele mantém a nota anterior.
 
 ## Edição de caixas de seleção
 
