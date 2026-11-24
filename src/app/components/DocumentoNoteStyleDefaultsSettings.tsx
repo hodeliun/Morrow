@@ -3,9 +3,11 @@ import { isValidNoteStyleInput, resolveDefaultNoteStyle } from '../../core/noteS
 import type { NoteStyle } from '../../core/noteStyle';
 import { SettingsGroup } from './SettingsRows';
 import { t } from '../i18n';
+import { createNoteStyleBatchPreviewHost } from './noteStyleBatchPreview';
 import { documentoNoteStyleDefaultsPanel, subscribePlugins } from '../plugins/registry';
 import type {
-  PluginNoteStylePanelHost,
+  PluginNoteStyleDefaultsPanelHost,
+  PluginNoteStyleBatchPreviewLabels,
   PluginNoteStylePanelLabels,
   PluginNoteStylePanelResult,
 } from '../plugins/registry';
@@ -75,14 +77,41 @@ export function DocumentoNoteStyleDefaultsSettings() {
       initialPreferences.width,
     );
     const mountState = { active: true };
+    const translate = (key: Parameters<typeof t>[0]) => t(key, undefined, preferences.locale);
+    const batchPreviewLabels: PluginNoteStyleBatchPreviewLabels = Object.freeze({
+      title: translate('pageStyle.batchPreview.title'),
+      help: translate('pageStyle.batchPreview.help'),
+      mode: translate('pageStyle.batchPreview.mode'),
+      preserve: translate('pageStyle.batchPreview.preserve'),
+      overwrite: translate('pageStyle.batchPreview.overwrite'),
+      preview: translate('pageStyle.batchPreview.preview'),
+      cleared: translate('pageStyle.batchPreview.cleared'),
+      stale: translate('pageStyle.batchPreview.stale'),
+      unavailable: translate('pageStyle.batchPreview.unavailable'),
+      candidateCount: translate('pageStyle.batchPreview.candidateCount'),
+      titles: translate('pageStyle.batchPreview.titles'),
+      preservedCount: translate('pageStyle.batchPreview.preservedCount'),
+      noOpCount: translate('pageStyle.batchPreview.noOpCount'),
+      protectedPageCount: translate('pageStyle.batchPreview.protectedPageCount'),
+      protectedFormatCount: translate('pageStyle.batchPreview.protectedFormatCount'),
+      unsupportedSourceCount: translate('pageStyle.batchPreview.unsupportedSourceCount'),
+      unsupportedContainerCount: translate('pageStyle.batchPreview.unsupportedContainerCount'),
+      noCandidates: translate('pageStyle.batchPreview.noCandidates'),
+    });
+    const batchPreview = createNoteStyleBatchPreviewHost(
+      () => mountState.active,
+      () => registration.isActive(),
+    );
     const unavailable = (): PluginNoteStylePanelResult => ({
       ok: false as const,
       code: 'save-failed',
       message: labels.saveFailed,
     });
-    const host: PluginNoteStylePanelHost = Object.freeze({
+    const host: PluginNoteStyleDefaultsPanelHost = Object.freeze({
       initial: Object.freeze(copyStyle(initialStyle)),
       labels,
+      batchPreview,
+      batchPreviewLabels,
       async save(style: NoteStyle) {
         if (!mountState.active || !registration.isActive() || !isValidNoteStyleInput(style))
           return unavailable();
@@ -115,16 +144,19 @@ export function DocumentoNoteStyleDefaultsSettings() {
       unmount = registration.mount(container, host);
     } catch {
       mountState.active = false;
+      batchPreview.invalidate();
       container.setAttribute('role', 'alert');
       container.textContent = labels.saveFailed;
       return () => {
         mountState.active = false;
+        batchPreview.invalidate();
         container.replaceChildren();
       };
     }
 
     return () => {
       mountState.active = false;
+      batchPreview.invalidate();
       try {
         if (typeof unmount === 'function') unmount();
       } finally {

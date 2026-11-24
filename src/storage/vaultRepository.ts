@@ -307,7 +307,26 @@ export class VaultRepository implements WorkspaceRepository {
 
   hasWritableNoteStyleSource(id: PageId): boolean {
     const placement = this.layout.get(id);
-    return Boolean(placement?.file && extension(placement.file) === 'md' && this.texts.has(id));
+    const page = this.currentState?.()?.pages[id];
+    const parentId = page?.parentId;
+    return Boolean(
+      placement?.file &&
+        extension(placement.file) === 'md' &&
+        this.texts.has(id) &&
+        !(parentId && (this.locked.has(parentId) || this.protectedReasons.has(parentId))),
+    );
+  }
+
+  canUpdateNoteStyleSource(id: PageId, style: NoteStyle): boolean {
+    const placement = this.layout.get(id);
+    const page = this.currentState?.()?.pages[id];
+    const sourceText = page?.encrypted ? this.plainTexts.get(id) : this.texts.get(id);
+    return Boolean(
+      placement?.file &&
+        extension(placement.file) === 'md' &&
+        sourceText !== undefined &&
+        updateMorrowNoteStyleFile(sourceText, style) !== null,
+    );
   }
 
   // lets edits made elsewhere be read against the live workspace, not the last saved one

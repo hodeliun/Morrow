@@ -5,6 +5,7 @@ import { readWorkspace } from '../core/migrations';
 import type { LoadedWorkspace } from '../core/migrations';
 import { SCHEMA_VERSION } from '../core/model';
 import type { DocNode, FileId, FileMeta, PageId, PageMeta, Snapshot, WorkspaceState } from '../core/model';
+import type { NoteStyle } from '../core/noteStyle';
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 
@@ -75,6 +76,8 @@ export interface WorkspaceRepository {
   pathOf?(id: PageId): string | null;
   /** True only when the page has its own writable Markdown file, not just a folder placement. */
   hasWritableNoteStyleSource?(id: PageId): boolean;
+  /** Pure serializer preflight for a style value; it must not write or normalize the source. */
+  canUpdateNoteStyleSource?(id: PageId, style: NoteStyle): boolean;
   // small files of morrow's own beside the pages, such as flashcard progress
   readMeta?(name: string): Promise<string | null>;
   writeMeta?(name: string, text: string): Promise<void>;

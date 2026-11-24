@@ -2,6 +2,7 @@ import { styles } from './styles';
 import { inlineColorStyles } from './inlineColorStyles';
 import { mountInlineColorControl } from './inlineColorControl';
 import { mountNoteStylePanel } from './noteStylePanel';
+import { mountNoteStyleDefaultsPanel } from './noteStyleDefaultsPanel';
 import { noteStylePanelStyles } from './noteStylePanelStyles';
 import type {
   PluginInlineColorControlMount,
@@ -42,7 +43,8 @@ export function activate(api: PolarisDocumentoApi): () => void {
   if (typeof addNoteStylePanel === 'function' || typeof addNoteStyleDefaults === 'function') {
     cleanups.push(api.styles.add(noteStylePanelStyles));
     if (typeof addNoteStylePanel === 'function') cleanups.push(addNoteStylePanel(mountNoteStylePanel));
-    if (typeof addNoteStyleDefaults === 'function') cleanups.push(addNoteStyleDefaults(mountNoteStylePanel));
+    if (typeof addNoteStyleDefaults === 'function')
+      cleanups.push(addNoteStyleDefaults(mountNoteStyleDefaultsPanel));
   }
   let active = true;
   return () => {

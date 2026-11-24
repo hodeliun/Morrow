@@ -224,6 +224,7 @@ export class WorkspaceSession {
   /** Host-only preflight that distinguishes a note file from a folder with the same path suffix. */
   hasWritableNoteStyleSource(id: PageId): boolean {
     const page = ownPage(this.state.pages, id);
+    const parentId = page?.parentId;
     return (
       !this.closed &&
       page?.kind === 'page' &&
@@ -231,8 +232,18 @@ export class WorkspaceSession {
       !isEffectivelyTrashed(this.state.pages, id) &&
       !this.unreadable.has(id) &&
       !this.protectedReasons.has(id) &&
+      !(parentId && (this.unreadable.has(parentId) || this.protectedReasons.has(parentId))) &&
       !this.isPilotDataPage(id) &&
       this.repository.hasWritableNoteStyleSource?.(id) === true
+    );
+  }
+
+  /** Read-only preflight using the same typed YAML serializer as the style write. */
+  canUpdateNoteStyleSource(id: PageId, style: NoteStyle): boolean {
+    return (
+      isValidNoteStyleInput(style) &&
+      this.hasWritableNoteStyleSource(id) &&
+      this.repository.canUpdateNoteStyleSource?.(id, style) === true
     );
   }
 

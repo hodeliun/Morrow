@@ -130,6 +130,41 @@ class ObservedMemoryVault extends MemoryVault {
 }
 
 describe('typed note style persistence', () => {
+  it('blocks a readable Markdown child when its YAML parent is protected', async () => {
+    const parentSource = '---\ntitle: Protected parent\nfuture: [unterminated\n---\nParent body.\n';
+    const childSource = '---\ntitle: Readable child\n---\nChild body.\n';
+    const vault = new ObservedMemoryVault({
+      'Protected.md': parentSource,
+      'Protected/Child.md': childSource,
+    });
+    const session = await open(vault);
+    const parentId = pageIdAt(session, 'Protected.md');
+    const childId = pageIdAt(session, 'Protected/Child.md');
+
+    try {
+      expect(session.unreadable.has(parentId)).toBe(true);
+      expect(session.unreadable.has(childId)).toBe(false);
+      expect(session.pathOf(childId)).toBe('Protected/Child.md');
+      expect(session.hasWritableNoteStyleSource(childId)).toBe(false);
+      expect(session.canUpdateNoteStyleSource(childId, EDITED)).toBe(false);
+
+      const revision = session.readNoteStyle(childId);
+      if (!revision.ok) throw new Error(revision.message);
+      const result = await session.setNoteStyle({
+        pageId: childId,
+        style: EDITED,
+        expectedRevision: revision.value.revision,
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'read-only' });
+      expect(vault.operationBatches).toEqual([]);
+      expect(vault.text('Protected.md')).toBe(parentSource);
+      expect(vault.text('Protected/Child.md')).toBe(childSource);
+    } finally {
+      await session.close();
+    }
+  });
+
   it('distinguishes a folder named like a Markdown file from a writable note source', async () => {
     const vault = new MemoryVault({ 'x.md/Child.md': 'Child note.\n' });
     const session = await open(vault);
@@ -139,6 +174,59 @@ describe('typed note style persistence', () => {
     expect(session.pathOf(folderId)).toBe('x.md');
     expect(session.hasWritableNoteStyleSource(folderId)).toBe(false);
     expect(session.hasWritableNoteStyleSource(childId)).toBe(true);
+    await session.close();
+  });
+
+  it('preflights the current style serializer without writing flow-style YAML', async () => {
+    const source = [
+      '---',
+      'title: Flow style',
+      'morrowNoteStyle: { font: sans, fontSize: 16, lineHeight: 1.68, blockSpacing: 9, width: comfortable }',
+      '---',
+      'Body stays exact.  ',
+      '',
+    ].join('\n');
+    const emptyFlowSource = '---\ntitle: Empty flow style\nmorrowNoteStyle: {}\n---\nBody stays exact.\n';
+    const vault = new ObservedMemoryVault({ 'Flow.md': source, 'Empty flow.md': emptyFlowSource });
+    const session = await open(vault);
+    const pageId = pageIdAt(session, 'Flow.md');
+    const emptyFlowId = pageIdAt(session, 'Empty flow.md');
+    const mtime = vault.modifiedTime('Flow.md');
+    const emptyFlowMtime = vault.modifiedTime('Empty flow.md');
+
+    expect(session.hasWritableNoteStyleSource(pageId)).toBe(true);
+    expect(session.canUpdateNoteStyleSource(pageId, EDITED)).toBe(false);
+    expect(session.hasWritableNoteStyleSource(emptyFlowId)).toBe(true);
+    expect(session.canUpdateNoteStyleSource(emptyFlowId, EDITED)).toBe(false);
+    expect(session.readNoteStyle(pageId)).toMatchObject({
+      ok: true,
+      value: {
+        style: { font: 'sans', fontSize: 16, width: 'comfortable' },
+      },
+    });
+    expect(vault.text('Flow.md')).toBe(source);
+    expect(vault.text('Empty flow.md')).toBe(emptyFlowSource);
+    expect(vault.modifiedTime('Flow.md')).toBe(mtime);
+    expect(vault.modifiedTime('Empty flow.md')).toBe(emptyFlowMtime);
+    expect(vault.operationBatches).toEqual([]);
+    await session.close();
+  });
+
+  it('preflights a partial block style as writable so missing owned fields are not a false no-op', async () => {
+    const source = '---\ntitle: Partial style\nmorrowNoteStyle:\n  font: sans\n---\nBody stays exact.\n';
+    const vault = new ObservedMemoryVault({ 'Partial.md': source });
+    const session = await open(vault);
+    const pageId = pageIdAt(session, 'Partial.md');
+    const mtime = vault.modifiedTime('Partial.md');
+
+    expect(session.canUpdateNoteStyleSource(pageId, EDITED)).toBe(true);
+    expect(session.readNoteStyle(pageId)).toMatchObject({
+      ok: true,
+      value: { style: { font: 'sans', fontSize: 16, lineHeight: 1.68, blockSpacing: 9, width: 'comfortable' } },
+    });
+    expect(vault.text('Partial.md')).toBe(source);
+    expect(vault.modifiedTime('Partial.md')).toBe(mtime);
+    expect(vault.operationBatches).toEqual([]);
     await session.close();
   });
 

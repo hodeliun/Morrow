@@ -96,7 +96,64 @@ export interface PluginNoteStylePanelEntry {
 }
 
 /** Documento-owned Appearance controls for the profile default used by future page creation. */
-export type PluginNoteStyleDefaultsPanelMount = PluginNoteStylePanelMount;
+export type PluginNoteStyleBatchPreviewMode = 'preserve' | 'overwrite';
+
+/** Summary-only view; note identities, revisions, and frontmatter stay in the host. */
+export interface PluginNoteStyleBatchPreviewSummary {
+  readonly mode: PluginNoteStyleBatchPreviewMode;
+  readonly candidateCount: number;
+  readonly titles: readonly string[];
+  readonly preservedCount: number;
+  readonly noOpCount: number;
+  readonly protectedPageCount: number;
+  readonly protectedFormatCount: number;
+  readonly unsupportedSourceCount: number;
+  readonly unsupportedContainerCount: number;
+}
+
+/** Opaque lease for a read-only snapshot. It cannot be used to write pages. */
+export interface PluginNoteStyleBatchPreviewLease {
+  readonly summary: PluginNoteStyleBatchPreviewSummary;
+  isCurrent(): boolean;
+  subscribe(listener: () => void): () => void;
+}
+
+/** Narrow, Documento-only preview operation for the saved default style. */
+export interface PluginNoteStyleBatchPreviewHost {
+  create(mode: PluginNoteStyleBatchPreviewMode): PluginNoteStyleBatchPreviewLease | null;
+  invalidate(): void;
+}
+
+export interface PluginNoteStyleBatchPreviewLabels {
+  readonly title: string;
+  readonly help: string;
+  readonly mode: string;
+  readonly preserve: string;
+  readonly overwrite: string;
+  readonly preview: string;
+  readonly cleared: string;
+  readonly stale: string;
+  readonly unavailable: string;
+  readonly candidateCount: string;
+  readonly titles: string;
+  readonly preservedCount: string;
+  readonly noOpCount: string;
+  readonly protectedPageCount: string;
+  readonly protectedFormatCount: string;
+  readonly unsupportedSourceCount: string;
+  readonly unsupportedContainerCount: string;
+  readonly noCandidates: string;
+}
+
+export interface PluginNoteStyleDefaultsPanelHost extends PluginNoteStylePanelHost {
+  readonly batchPreview: PluginNoteStyleBatchPreviewHost;
+  readonly batchPreviewLabels: PluginNoteStyleBatchPreviewLabels;
+}
+
+export type PluginNoteStyleDefaultsPanelMount = (
+  container: HTMLElement,
+  host: PluginNoteStyleDefaultsPanelHost,
+) => void | (() => void);
 
 export interface PluginNoteStyleDefaultsPanelEntry {
   readonly owner: 'polaris-documento';

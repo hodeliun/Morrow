@@ -5,6 +5,69 @@ export const noteStylePanelStyles = String.raw`
   gap: 12px;
 }
 
+.note-style-batch-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.note-style-batch-preview h4,
+.note-style-batch-preview p {
+  margin: 0;
+}
+
+.note-style-batch-preview h4 {
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.note-style-batch-preview > p,
+.note-style-batch-status,
+.note-style-batch-diagnostics {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.note-style-batch-mode {
+  display: grid;
+  gap: 4px;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.note-style-batch-mode select {
+  width: 100%;
+}
+
+.note-style-batch-preview :is(select, button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.note-style-batch-result {
+  display: grid;
+  gap: 5px;
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.note-style-batch-count,
+.note-style-batch-sample-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.note-style-batch-titles,
+.note-style-batch-diagnostics {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-inline-start: 18px;
+}
+
 .note-style-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

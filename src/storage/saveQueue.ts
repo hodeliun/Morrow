@@ -109,6 +109,14 @@ export class SaveQueue {
     return this.hasQueuedChanges() || this.isolation !== null;
   }
 
+  /** Read-only inspection for callers that must distinguish quiet navigation writes from edits. */
+  hasNonQuietPendingChanges(): boolean {
+    return (
+      this.dirtyDocs.size + this.removed.size + this.checkPages.size > 0 ||
+      [...this.dirtyPages].some((id) => !this.quiet.has(id))
+    );
+  }
+
   // The second argument accepts both the fork's dependency list and upstream's quiet flag.
   // A third flag lets a future caller combine them without losing either contract.
   enqueue(changes: Changes, checkPages?: PageId[]): void;
@@ -374,13 +382,6 @@ export class SaveQueue {
 
   private hasPendingChanges(): boolean {
     return this.dirtyPages.size + this.dirtyDocs.size + this.removed.size + this.checkPages.size > 0;
-  }
-
-  private hasNonQuietPendingChanges(): boolean {
-    return (
-      this.dirtyDocs.size + this.removed.size + this.checkPages.size > 0 ||
-      [...this.dirtyPages].some((id) => !this.quiet.has(id))
-    );
   }
 
   private hasNonQuietPendingFor(id: PageId): boolean {
