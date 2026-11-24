@@ -4,6 +4,7 @@ import { act, createElement, Fragment } from 'react';
 import { createRoot } from 'react-dom/client';
 import { allocateSideInstanceId, isSideInstanceIdFor, visiblePaneLeaves } from './paneLayout';
 import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage';
+import type { CurrentTabsSnapshot } from './paneLayoutStorage';
 
 // Synthetic export only. A migration pilot can obtain the source by reading
 // localStorage.getItem('morrow.tabs') inside a disposable Electron profile; this suite
@@ -174,6 +175,105 @@ function latestForkSnapshot(): string {
   });
 }
 
+function unassignedFocusedFourPaneSnapshot(): string {
+  return JSON.stringify({
+    schemaVersion: 2,
+    paneLayout: {
+      version: 1,
+      id: 'unassigned-four-pane-layout',
+      root: {
+        kind: 'split',
+        id: 'unassigned-four-pane-root',
+        axis: 'columns',
+        ratio: 0.5,
+        first: {
+          kind: 'split',
+          id: 'unassigned-left-root',
+          axis: 'rows',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'unassigned-a-main', tabId: 'group-a' },
+          second: { kind: 'leaf', id: 'unassigned-a-side', tabId: 'group-a:side' },
+        },
+        second: {
+          kind: 'split',
+          id: 'unassigned-right-root',
+          axis: 'rows',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'unassigned-b-main', tabId: 'group-b' },
+          second: { kind: 'leaf', id: 'unassigned-slot', tabId: null },
+        },
+      },
+      focusedPaneId: 'unassigned-slot',
+    },
+    // Keep this unassigned instance first so the startup route resolves through the empty focus slot.
+    tabs: [
+      {
+        id: 'hidden-waiting',
+        groupId: 'hidden-waiting',
+        target: '#/page/waiting',
+        back: ['#/page/waiting-before'],
+        forward: ['#/page/waiting-after'],
+      },
+      { id: 'group-a', groupId: 'group-a', target: '#/page/a', back: ['#/page/a-before'], forward: [] },
+      {
+        id: 'group-a:side',
+        groupId: 'group-a',
+        target: '#/page/a-side',
+        back: ['#/page/a-side-before'],
+        forward: [],
+      },
+      { id: 'group-b', groupId: 'group-b', target: '#/page/b', back: ['#/page/b-before'], forward: [] },
+    ],
+    closed: ['#/page/closed'],
+  });
+}
+
+function blankFirstFocusedFourPaneSnapshot(): string {
+  return JSON.stringify({
+    schemaVersion: 2,
+    paneLayout: {
+      version: 1,
+      id: 'blank-first-four-pane-layout',
+      root: {
+        kind: 'split',
+        id: 'blank-first-root',
+        axis: 'columns',
+        ratio: 0.5,
+        first: {
+          kind: 'split',
+          id: 'blank-first-left',
+          axis: 'rows',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'startup-blank', tabId: null },
+          second: { kind: 'leaf', id: 'real-a-pane', tabId: 'real-a' },
+        },
+        second: {
+          kind: 'split',
+          id: 'blank-first-right',
+          axis: 'rows',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'real-b-pane', tabId: 'real-b' },
+          second: { kind: 'leaf', id: 'real-c-pane', tabId: 'real-c' },
+        },
+      },
+      focusedPaneId: 'startup-blank',
+    },
+    tabs: [
+      {
+        id: 'hidden-waiting',
+        groupId: 'hidden-waiting',
+        target: '#/page/waiting-before-startup',
+        back: ['#/page/waiting-back'],
+        forward: ['#/page/waiting-forward'],
+      },
+      { id: 'real-a', groupId: 'real-a', target: '#/page/a', back: ['#/page/a-back'], forward: [] },
+      { id: 'real-b', groupId: 'real-b', target: '#/page/b', back: ['#/page/b-back'], forward: [] },
+      { id: 'real-c', groupId: 'real-c', target: '#/page/c', back: ['#/page/c-back'], forward: [] },
+    ],
+    closed: ['#/page/closed-before-layout'],
+  });
+}
+
 function overflowForkSnapshot(): string {
   const tabs = Array.from({ length: 21 }, (_, index) => ({
     id: `group-${index}`,
@@ -244,6 +344,12 @@ async function freshTabs(raw: string | null, initialHash = '') {
   return { tabs, router, writes, writeFromOtherContext, readFromStorage };
 }
 
+function currentSnapshot(raw = window.localStorage.getItem(PANE_TABS_STORAGE_KEY)): CurrentTabsSnapshot {
+  const snapshot = readPaneTabsSnapshot(raw);
+  if (snapshot.kind !== 'current') throw new Error('Expected a persisted v2 pane snapshot.');
+  return snapshot.snapshot;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   document.body.replaceChildren();
@@ -291,14 +397,14 @@ describe('two-pane runtime snapshot compatibility', () => {
 
     tabs.openTab('#/page/background', { background: true });
     const afterBackground = readPaneTabsSnapshot(readFromStorage());
-    expect(afterBackground.kind).toBe('legacy');
-    if (afterBackground.kind === 'legacy') {
-      expect(afterBackground.snapshot.tabs.find((tab) => tab.id === 'main')?.side).toMatchObject({
-        hash: '#/page/side',
+    expect(afterBackground.kind).toBe('current');
+    if (afterBackground.kind === 'current') {
+      expect(afterBackground.snapshot.layout.tabs.find((tab) => tab.id === sideId)).toMatchObject({
+        target: '#/page/side',
         back: ['#/page/side-before'],
         forward: ['#/page/side-after'],
       });
-      expect(afterBackground.snapshot.tabs.some((tab) => tab.hash === '#/page/background')).toBe(true);
+      expect(afterBackground.snapshot.layout.tabs.some((tab) => tab.target === '#/page/background')).toBe(true);
     }
 
     const withoutSide = await freshTabs(legacySideCollisionSnapshot(collisions, false));
@@ -307,13 +413,12 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(withoutSide.tabs.routeHashForPane('side')).toBe('#/page/new-side');
     expect(withoutSide.tabs.getTabs().layout.tabs.map((tab) => tab.id)).toContain(sideId);
     const afterSplit = readPaneTabsSnapshot(withoutSide.readFromStorage());
-    expect(afterSplit.kind).toBe('legacy');
-    if (afterSplit.kind === 'legacy') {
-      expect(afterSplit.snapshot.tabs.find((tab) => tab.id === 'main')?.side?.hash).toBe('#/page/new-side');
-    }
+    expect(afterSplit.kind).toBe('current');
+    if (afterSplit.kind === 'current')
+      expect(afterSplit.snapshot.layout.tabs.find((tab) => tab.id === sideId)?.target).toBe('#/page/new-side');
   });
 
-  it('loads the 2.2 snapshot into the existing two-panel state and writes only its old wire shape', async () => {
+  it('loads the 2.2 snapshot and migrates it to the complete v2 wire shape on an explicit tab change', async () => {
     const raw = JSON.stringify({
       tabs: [
         {
@@ -349,11 +454,17 @@ describe('two-pane runtime snapshot compatibility', () => {
 
     tabs.openTab('#/page/new');
     expect(writes).toHaveLength(1);
-    const saved = JSON.parse(writes[0]!) as Record<string, unknown>;
-    expect(Object.keys(saved).sort()).toEqual(['active', 'closed', 'pane', 'tabs']);
-    expect(saved).not.toHaveProperty('schemaVersion');
-    expect(saved.closed).toEqual(['#/page/closed']);
-    expect(readPaneTabsSnapshot(writes[0]!)).toMatchObject({ kind: 'legacy' });
+    const saved = readPaneTabsSnapshot(writes[0]!);
+    expect(saved.kind).toBe('current');
+    if (saved.kind === 'current') {
+      expect(saved.snapshot.closed).toEqual(['#/page/closed']);
+      expect(saved.snapshot.layout.tabs).toMatchObject([
+        { id: 'legacy', target: '#/page/main', back: ['#/page/before'], forward: ['#/page/after'], pinned: true },
+        { id: 'legacy:side', target: '#/page/side', back: ['#/page/side-before'], forward: [] },
+        { id: expect.stringMatching(/^t/), target: '#/page/new' },
+        { id: 'other', target: '#/tasks' },
+      ]);
+    }
   });
 
   it('saves and reopens v0 main and side instances with independent histories for the same note', async () => {
@@ -396,7 +507,7 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(first.tabs.routeHashForPane('main')).toBe('#/page/main-next');
     expect(first.tabs.routeHashForPane('side')).toBe('#/page/side-next');
     const saved = first.writes.at(-1)!;
-    expect(readPaneTabsSnapshot(saved).kind).toBe('legacy');
+    expect(readPaneTabsSnapshot(saved).kind).toBe('current');
 
     const reopened = await freshTabs(saved, '#/page/main-next');
     expect(reopened.tabs.getTabs()).toMatchObject({ active: 'shared-note', pane: 'main' });
@@ -415,6 +526,7 @@ describe('two-pane runtime snapshot compatibility', () => {
         target: '#/page/side-next',
         back: ['#/page/side-before', '#/page/shared-note'],
         forward: [],
+        pinned: true,
       },
     ]);
     expect(reopened.tabs.routeHashForPane('main')).toBe('#/page/main-next');
@@ -485,40 +597,28 @@ describe('two-pane runtime snapshot compatibility', () => {
     stop();
 
     const saved = first.readFromStorage()!;
-    const persisted = JSON.parse(saved) as {
-      tabs: Array<{
-        id: string;
-        hash: string;
-        back: string[];
-        forward: string[];
-        side: { hash: string; back: string[]; forward: string[] };
-      }>;
-      pane: string;
-    };
-    expect(persisted.tabs[0]).toMatchObject({
-      id: 'physical-split',
-      hash: '#/page/b',
-      back: ['#/page/b-before'],
-      forward: ['#/page/b-forward'],
-      side: {
-        hash: '#/page/a',
-        back: ['#/page/a-before'],
-        forward: ['#/page/a-forward'],
-      },
-    });
-    expect(persisted.pane).toBe('side');
+    const persisted = currentSnapshot(saved);
+    expect(visiblePaneLeaves(persisted.layout).map((leaf) => leaf.tabId)).toEqual([
+      'physical-split:side',
+      'physical-split',
+    ]);
+    expect(persisted.layout.tabs).toMatchObject([
+      { id: 'physical-split', target: '#/page/a', back: ['#/page/a-before'], forward: ['#/page/a-forward'] },
+      { id: 'physical-split:side', target: '#/page/b', back: ['#/page/b-before'], forward: ['#/page/b-forward'] },
+    ]);
+    expect(persisted.layout.focusedPaneId).toBe(visiblePaneLeaves(persisted.layout)[1]?.id);
 
     const reopened = await freshTabs(saved, '#/page/b');
     expect(reopened.tabs.paneAssignments().map((assignment) => assignment.tabId)).toEqual([
-      'physical-split',
       'physical-split:side',
+      'physical-split',
     ]);
     expect(reopened.tabs.routeHashForPane('main')).toBe('#/page/b');
     expect(reopened.tabs.routeHashForPane('side')).toBe('#/page/a');
     expect(reopened.tabs.getTabs().pane).toBe('side');
     expect(reopened.tabs.getTabs().layout.tabs).toMatchObject([
-      { id: 'physical-split', back: ['#/page/b-before'], forward: ['#/page/b-forward'] },
-      { id: 'physical-split:side', back: ['#/page/a-before'], forward: ['#/page/a-forward'] },
+      { id: 'physical-split', back: ['#/page/a-before'], forward: ['#/page/a-forward'] },
+      { id: 'physical-split:side', back: ['#/page/b-before'], forward: ['#/page/b-forward'] },
     ]);
   });
 
@@ -548,15 +648,9 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(tabs.routeHashForTabId('close-split:side')).toBe('#/page/b');
     expect(tabs.getTabs().pane).toBe('main');
     expect(tabs.getTabs().active).toBe('close-split:side');
-    expect(JSON.parse(readFromStorage()!).tabs).toMatchObject([
-      {
-        id: 'close-split:side',
-        hash: '#/page/b',
-        back: ['#/page/b-before'],
-        forward: ['#/page/b-forward'],
-        side: null,
-      },
-    ]);
+    const persisted = currentSnapshot(readFromStorage()).layout;
+    expect(persisted.tabs).toEqual([retained]);
+    expect(visiblePaneLeaves(persisted).map((leaf) => leaf.tabId)).toEqual(['close-split:side', null]);
   });
 
   it('opens a route in the physical side after swap without moving the main hash anchor', async () => {
@@ -589,7 +683,7 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(window.location.hash).toBe('#/page/b');
   });
 
-  it('retains a swapped v0 pair orientation through another tab and reload while that tab is active', async () => {
+  it('keeps v0 bytes when a swapped pair becomes hidden and v2 cannot represent its inactive orientation', async () => {
     const raw = JSON.stringify({
       tabs: [
         {
@@ -624,44 +718,24 @@ describe('two-pane runtime snapshot compatibility', () => {
       pinned: true,
     });
     first.tabs.activateTab('c');
+    const writesBeforeHidingPair = first.writes.length;
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     const savedWhileCActive = first.readFromStorage()!;
-    const activeSnapshot = JSON.parse(savedWhileCActive) as {
-      tabs: Array<{
-        id: string;
-        hash: string;
-        back: string[];
-        forward: string[];
-        side?: { hash: string; back: string[]; forward: string[] } | null;
-        pinned?: boolean;
-      }>;
-      active: string;
-    };
-    expect(activeSnapshot.active).toBe('c');
-    expect(activeSnapshot.tabs.find((tab) => tab.id === 'a')).toMatchObject({
-      hash: '#/page/b',
-      back: ['#/page/b-before'],
-      forward: ['#/page/b-forward'],
-      side: { hash: '#/page/a', back: ['#/page/a-before'], forward: ['#/page/a-forward'] },
-      pinned: true,
-    });
+    expect(savedWhileCActive).toBe(first.writes.at(-1));
+    expect(first.writes).toHaveLength(writesBeforeHidingPair);
+    const beforeHide = currentSnapshot(savedWhileCActive);
+    expect(visiblePaneLeaves(beforeHide.layout).map((leaf) => leaf.tabId)).toEqual(['a:side', 'a']);
+    expect(beforeHide.layout.tabs.find((tab) => tab.id === 'a')).toMatchObject({ pinned: true });
     stop();
 
-    first.tabs.activateTab('a');
-    expect(first.tabs.paneAssignments().map((assignment) => assignment.tabId)).toEqual(['a:side', 'a']);
-    expect(first.tabs.routeHashForPane('main')).toBe('#/page/b');
-    expect(first.tabs.routeHashForPane('side')).toBe('#/page/a');
-    expect(window.location.hash).toBe('#/page/b');
-    expect(first.tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(registryIds);
-
-    const reopened = await freshTabs(savedWhileCActive, '#/page/c');
-    expect(reopened.tabs.getTabs().active).toBe('c');
+    const reopened = await freshTabs(savedWhileCActive, '#/page/b');
     reopened.tabs.activateTab('a');
-    expect(reopened.tabs.paneAssignments().map((assignment) => assignment.tabId)).toEqual(['a', 'a:side']);
+    expect(reopened.tabs.paneAssignments().map((assignment) => assignment.tabId)).toEqual(['a:side', 'a']);
     expect(reopened.tabs.routeHashForPane('main')).toBe('#/page/b');
     expect(reopened.tabs.routeHashForPane('side')).toBe('#/page/a');
     expect(reopened.tabs.getTabs().tabs.find((tab) => tab.id === 'a')?.pinned).toBe(true);
+    expect(reopened.tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(registryIds);
   });
 
   it('keeps an interleaved v2 registry while restoring pair orientation and the surviving closed-side projection', async () => {
@@ -698,8 +772,10 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(closeCase.tabs.routeHashForPane('main')).toBe('#/page/b');
     expect(afterClose.layout.focusedPaneId).toBe(visiblePaneLeaves(afterClose.layout)[0]?.id);
     expect(window.location.hash).toBe('#/page/b');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(closeCase.writes).toEqual([]);
+    const persisted = currentSnapshot();
+    expect(persisted.layout.tabs).toEqual(afterClose.layout.tabs);
+    expect(persisted.layout.root).toEqual(afterClose.layout.root);
+    expect(closeCase.writes.length).toBeGreaterThan(0);
   });
 
   it('unassigns a legacy split leaf for a solo tab and restores the inactive side on return', async () => {
@@ -746,7 +822,7 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'split-a:side')).toBe(originalSide);
   });
 
-  it('projects a two-pane Electron snapshot with its focused side while keeping the v2 source unchanged', async () => {
+  it('projects a two-pane Electron snapshot and persists explicit navigation in the full v2 wire', async () => {
     const raw = twoPaneForkSnapshot();
     const { tabs, writes } = await freshTabs(raw);
 
@@ -768,8 +844,15 @@ describe('two-pane runtime snapshot compatibility', () => {
 
     tabs.openSide('#/page/temporary-side');
     tabs.showInMain('#/page/temporary-main');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    const persisted = currentSnapshot();
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/page/temporary-main',
+      back: ['#/page/main-before', '#/page/main', '#/'],
+    });
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'two-pane-tab:side')?.target).toBe(
+      '#/page/temporary-side',
+    );
+    expect(writes.length).toBeGreaterThan(0);
   });
 
   it('keeps an explicit launch hash on the first physical pane after a saved side swap', async () => {
@@ -792,7 +875,7 @@ describe('two-pane runtime snapshot compatibility', () => {
     });
   });
 
-  it('projects a four-pane Electron fixture around its focused pair and keeps its v2 launch target', async () => {
+  it('projects a four-pane Electron fixture and persists explicit workspace changes without dropping instances', async () => {
     const raw = latestForkSnapshot();
     const { tabs, writes } = await freshTabs(raw);
 
@@ -828,8 +911,10 @@ describe('two-pane runtime snapshot compatibility', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     stop();
 
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    const persisted = currentSnapshot();
+    expect(persisted.layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(persisted.closed).toEqual(tabs.getTabs().closed);
+    expect(writes.length).toBeGreaterThan(0);
   });
 
   it('keeps a direct external hash as the main route before the tabs listener starts', async () => {
@@ -1069,8 +1154,10 @@ describe('two-pane runtime snapshot compatibility', () => {
         back: ['#/page/b-side-before'],
         forward: ['#/page/side-next'],
       });
-      expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-      expect(writes).toEqual([]);
+      const persisted = currentSnapshot();
+      expect(persisted.layout.tabs).toEqual(updated.layout.tabs);
+      expect(persisted.closed).toEqual(updated.closed);
+      expect(writes.length).toBeGreaterThan(0);
     } finally {
       await act(async () => root.unmount());
       stop();
@@ -1188,7 +1275,7 @@ describe('two-pane runtime snapshot compatibility', () => {
     expect(readFromStorage()).toBe(raw);
   });
 
-  it('lets Onde parei return to the focused v2 main target without skipping it', async () => {
+  it('restores the v2 snapshot exactly for Onde parei without consuming history or focus', async () => {
     const raw = twoPaneForkSnapshot();
     const { tabs, writes } = await freshTabs(raw);
     const stop = tabs.startTabs();
@@ -1211,16 +1298,118 @@ describe('two-pane runtime snapshot compatibility', () => {
       ],
     });
 
-    tabs.goBack('main');
+    expect(tabs.runStartupNavigation(() => tabs.restoreLastPosition())).toBe(true);
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     stop();
 
+    const original = currentSnapshot(raw).layout;
+    expect(tabs.getTabs().layout).toEqual(original);
     expect(tabs.getTabs().tabs[0]).toMatchObject({
       hash: '#/page/main',
       back: ['#/page/main-before'],
-      forward: ['#/'],
+      forward: [],
+      side: {
+        hash: '#/page/side',
+        back: ['#/page/side-before'],
+        forward: ['#/page/side-after'],
+      },
     });
     expect(window.location.hash).toBe('#/page/main');
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+  });
+
+  it('restores a focused four-pane v2 snapshot without altering a Home target or its history', async () => {
+    const snapshot = JSON.parse(latestForkSnapshot()) as {
+      paneLayout: { focusedPaneId: string };
+      tabs: Array<{ id: string; target: string; back: string[]; forward: string[] }>;
+    };
+    snapshot.tabs[2] = {
+      ...snapshot.tabs[2]!,
+      target: '#/',
+      back: ['#/page/older'],
+      forward: ['#/page/newer'],
+    };
+    const raw = JSON.stringify(snapshot);
+    const { tabs, writes } = await freshTabs(raw);
+    const stop = tabs.startTabs();
+
+    expect(tabs.getTabs().layout.focusedPaneId).toBe('b-side');
+    expect(tabs.runStartupNavigation(() => tabs.restoreLastPosition())).toBe(true);
+    stop();
+
+    expect(tabs.getTabs().layout).toEqual(currentSnapshot(raw).layout);
+    expect(tabs.getTabs().layout.focusedPaneId).toBe('b-side');
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'group-b')).toMatchObject({
+      target: '#/',
+      back: ['#/page/older'],
+      forward: ['#/page/newer'],
+    });
+    expect(tabs.routeHashForPane('b-main')).toBe('#/');
+    expect(window.location.hash).toBe('');
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+  });
+
+  it('restores the selected main route in a four-pane snapshot while retaining side focus and histories', async () => {
+    const raw = latestForkSnapshot();
+    const { tabs, writes } = await freshTabs(raw);
+    const stop = tabs.startTabs();
+
+    expect(tabs.getTabs().layout.focusedPaneId).toBe('b-side');
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'group-b')).toMatchObject({
+      target: '#/',
+      back: ['#/page/b-main-before', '#/page/b-main'],
+      forward: ['#/page/b-main-after'],
+    });
+    expect(tabs.runStartupNavigation(() => tabs.restoreLastPosition())).toBe(true);
+    stop();
+
+    const restored = tabs.getTabs().layout;
+    expect(restored).toEqual(currentSnapshot(raw).layout);
+    expect(restored.focusedPaneId).toBe('b-side');
+    expect(restored.tabs.find((tab) => tab.id === 'group-b')).toMatchObject({
+      target: '#/page/b-main',
+      back: ['#/page/b-main-before'],
+      forward: ['#/page/b-main-after'],
+    });
+    expect(restored.tabs.find((tab) => tab.id === 'group-b:side')).toMatchObject({
+      target: '#/page/b-side',
+      back: ['#/page/b-side-before'],
+      forward: [],
+    });
+    expect(window.location.hash).toBe('#/page/b-main');
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+  });
+
+  it('keeps the established v0 Onde parei back-navigation behavior', async () => {
+    const raw = JSON.stringify({
+      tabs: [
+        {
+          id: 'legacy-last',
+          hash: '#/page/saved',
+          back: ['#/page/older'],
+          forward: ['#/page/newer'],
+          side: null,
+        },
+      ],
+      active: 'legacy-last',
+      pane: 'main',
+      closed: [],
+    });
+    const { tabs, writes } = await freshTabs(raw);
+    const stop = tabs.startTabs();
+
+    expect(tabs.runStartupNavigation(() => tabs.restoreLastPosition())).toBe(true);
+    stop();
+
+    expect(tabs.getTabs().tabs[0]).toMatchObject({
+      hash: '#/page/saved',
+      back: ['#/page/older'],
+      forward: ['#/page/newer', '#/'],
+    });
+    expect(window.location.hash).toBe('#/page/saved');
     expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
     expect(writes).toEqual([]);
   });
@@ -1247,7 +1436,11 @@ describe('two-pane runtime snapshot compatibility', () => {
     tabs.getTabs();
 
     // useStartPage's real Today action, with a synthetic daily-note id.
-    router.navigate({ name: 'page', id: 'today-note', find: null }, { replace: true, pane: 'main' });
+    expect(
+      tabs.runStartupNavigation(() =>
+        router.navigate({ name: 'page', id: 'today-note', find: null }, { replace: true, pane: 'main' }),
+      ),
+    ).toBe(true);
 
     expect(router.parseRoute(window.location.hash)).toEqual({
       name: 'page',
@@ -1264,6 +1457,137 @@ describe('two-pane runtime snapshot compatibility', () => {
     stop();
     expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
     expect(writes).toEqual([]);
+  });
+
+  it.each(['pointerdown', 'keydown'] as const)(
+    'abandons the preferred start page after a %s interaction',
+    async (eventName) => {
+    const raw = twoPaneForkSnapshot();
+    const { tabs, writes } = await freshTabs(raw);
+    const stop = tabs.startTabs();
+    let ran = false;
+
+    window.dispatchEvent(
+      eventName === 'pointerdown'
+        ? new Event('pointerdown', { bubbles: true })
+        : new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(
+      tabs.runStartupNavigation(() => {
+        ran = true;
+        tabs.goBack('main');
+      }),
+    ).toBe(false);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    stop();
+
+    expect(ran).toBe(false);
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/',
+      back: ['#/page/main-before', '#/page/main'],
+      forward: [],
+    });
+    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
+    expect(writes).toEqual([]);
+    },
+  );
+
+  it('keeps startup deep links transient when another pane or focus is saved', async () => {
+    const raw = twoPaneForkSnapshot();
+    const { tabs, writes } = await freshTabs(raw, '#/page/launch');
+    tabs.setActivePane('main-pane');
+
+    let persisted = currentSnapshot();
+    expect(persisted.layout.focusedPaneId).toBe('main-pane');
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/page/main',
+      back: ['#/page/main-before'],
+      forward: [],
+    });
+
+    tabs.showInSide('#/page/side-after-user-action');
+    persisted = currentSnapshot();
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/page/main',
+      back: ['#/page/main-before'],
+    });
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'two-pane-tab:side')?.target).toBe(
+      '#/page/side-after-user-action',
+    );
+    expect(writes.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['neutral startup', '', '#/'],
+    ['external deep link', '#/page/external-launch', '#/page/external-launch'],
+  ] as const)(
+    'keeps a startup assignment in an empty v2 pane out of another pane’s write (%s)',
+    async (_name, launchHash, expectedLaunchRoute) => {
+      const raw = unassignedFocusedFourPaneSnapshot();
+      const { tabs, writes } = await freshTabs(raw, launchHash);
+      const stop = tabs.startTabs();
+
+      expect(tabs.paneAssignments().find((item) => item.paneId === 'unassigned-slot')?.tabId).toBe(
+        'hidden-waiting',
+      );
+      expect(tabs.routeHashForPane('unassigned-slot')).toBe(expectedLaunchRoute);
+      tabs.showInPane('#/page/b-after-startup', 'unassigned-b-main');
+
+      const persisted = currentSnapshot();
+      expect(persisted.layout.tabs.map((tab) => tab.id)).toEqual([
+        'hidden-waiting',
+        'group-a',
+        'group-a:side',
+        'group-b',
+      ]);
+      expect(persisted.layout.root).toMatchObject({
+        kind: 'split',
+        second: {
+          kind: 'split',
+          second: { kind: 'leaf', id: 'unassigned-slot', tabId: null },
+        },
+      });
+      expect(persisted.layout.tabs.find((tab) => tab.id === 'hidden-waiting')).toMatchObject({
+        target: '#/page/waiting',
+        back: ['#/page/waiting-before'],
+        forward: ['#/page/waiting-after'],
+      });
+      expect(persisted.layout.tabs.find((tab) => tab.id === 'group-b')?.target).toBe(
+        '#/page/b-after-startup',
+      );
+      expect(persisted.closed).toEqual(['#/page/closed']);
+      expect(tabs.paneAssignments().find((item) => item.paneId === 'unassigned-slot')?.tabId).toBe(
+        'hidden-waiting',
+      );
+      expect(writes.length).toBeGreaterThan(0);
+      stop();
+    },
+  );
+
+  it('commits a transient empty-pane launch only after that pane is intentionally opened', async () => {
+    const raw = unassignedFocusedFourPaneSnapshot();
+    const { tabs, writes } = await freshTabs(raw, '#/page/external-launch');
+    expect(tabs.paneAssignments().find((item) => item.paneId === 'unassigned-slot')?.tabId).toBe(
+      'hidden-waiting',
+    );
+    expect(writes).toEqual([]);
+
+    tabs.showInPane('#/page/external-launch', 'unassigned-slot');
+
+    const persisted = currentSnapshot();
+    expect(persisted.layout.root).toMatchObject({
+      kind: 'split',
+      second: {
+        kind: 'split',
+        second: { kind: 'leaf', id: 'unassigned-slot', tabId: 'hidden-waiting' },
+      },
+    });
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'hidden-waiting')).toMatchObject({
+      target: '#/page/external-launch',
+      back: ['#/page/waiting-before', '#/page/waiting'],
+      forward: ['#/page/waiting-after'],
+    });
+    expect(writes).toHaveLength(1);
   });
 
   it('applies an explicit v2 deep link over the projected main route and retains histories', async () => {
@@ -1416,8 +1740,15 @@ describe('two-pane runtime snapshot compatibility', () => {
     tabs.activateTab('member');
     expect(tabs.getTabs().active).toBe('member');
     expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['group', 'other', 'member']);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    const persisted = currentSnapshot();
+    expect(persisted.layout.tabs.map((tab) => tab.id)).toEqual(['group', 'other', 'member']);
+    expect(persisted.layout.tabs.find((tab) => tab.id === 'member')).toMatchObject({
+      target: '#/page/member',
+      back: ['#/page/member-before'],
+      forward: ['#/page/member-next'],
+    });
+    expect(persisted.layout.focusedPaneId).toBe('member-pane');
+    expect(writes.length).toBeGreaterThan(0);
   });
 
   it('preserves interleaved v2 instance order during side navigation and changes it only on move', async () => {
@@ -1458,15 +1789,15 @@ describe('two-pane runtime snapshot compatibility', () => {
     tabs.goBack('side');
     expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['main', 'other', 'main:side']);
     expect(tabs.routeHashForPane('side')).toBe('#/page/side');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
 
     tabs.moveTab('other', 0);
     expect(tabs.getTabs().tabs.map((tab) => tab.id)).toEqual(['other', 'main']);
     expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['other', 'main', 'main:side']);
     expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toContain('main:side');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
   });
 });
 
@@ -1493,31 +1824,24 @@ describe('legacy pinning and empty address anchors', () => {
     expect(tabs.getTabs().persistenceWritable).toBe(true);
 
     const saved = readFromStorage()!;
-    const savedSnapshot = JSON.parse(saved) as {
-      tabs: Array<{ id: string; hash: string; side?: { hash: string } | null; pinned?: boolean }>;
-      active: string;
-    };
-    expect(savedSnapshot.active).toBe(opened.id);
-    expect(savedSnapshot.tabs).toEqual(
+    const savedSnapshot = currentSnapshot(saved);
+    expect(savedSnapshot.layout.tabs).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          id: 'a',
-          hash: '#/page/a',
-          side: expect.objectContaining({ hash: '#/page/b' }),
-          pinned: true,
-        }),
-        expect.objectContaining({ id: opened.id, hash: '#/page/c', side: null }),
+        expect.objectContaining({ id: 'a', target: '#/page/a', pinned: true }),
+        expect.objectContaining({ id: 'a:side', target: '#/page/b' }),
+        expect.objectContaining({ id: opened.id, target: '#/page/c' }),
       ]),
     );
+    expect(visiblePaneLeaves(savedSnapshot.layout).map((leaf) => leaf.tabId)).toEqual([opened.id, null]);
 
     const reopened = await freshTabs(saved, '#/page/c');
     expect(reopened.tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['a', 'a:side', opened.id]);
     expect(reopened.tabs.getTabs().persistenceWritable).toBe(true);
-    expect(reopened.tabs.getTabs().tabs.find((tab) => tab.id === 'a')).toMatchObject({
+    expect(reopened.tabs.getTabs().layout.tabs.find((tab) => tab.id === 'a')).toMatchObject({
       pinned: true,
-      hash: '#/page/a',
-      side: { hash: '#/page/b' },
+      target: '#/page/a',
     });
+    expect(reopened.tabs.getTabs().layout.tabs.find((tab) => tab.id === 'a:side')?.target).toBe('#/page/b');
   });
 
   it('keeps a pinned legacy lateral instance navigable in its own history', async () => {
@@ -1541,12 +1865,18 @@ describe('legacy pinning and empty address anchors', () => {
     );
     expect(tabs.getTabs().tabs).toHaveLength(1);
     expect(tabs.getTabs().persistenceWritable).toBe(true);
-    expect(JSON.parse(readFromStorage()!).tabs[0]).toMatchObject({
-      id: 'a',
-      hash: '#/page/a',
-      pinned: true,
-      side: { hash: '#/page/d', back: ['#/page/b-before', '#/page/b'], forward: [] },
-    });
+    expect(currentSnapshot(readFromStorage()).layout.tabs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'a', target: '#/page/a', pinned: true }),
+        expect.objectContaining({
+          id: 'a:side',
+          target: '#/page/d',
+          back: ['#/page/b-before', '#/page/b'],
+          forward: [],
+          pinned: true,
+        }),
+      ]),
+    );
   });
 
   it.each(['first', 'second'] as const)(
@@ -1575,7 +1905,8 @@ describe('legacy pinning and empty address anchors', () => {
       expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual(['b']);
       expect(tabs.getTabs().tabs.map((tab) => tab.id)).toEqual(['b']);
       expect(window.location.hash).toBe('#/');
-      expect(writes).toEqual([]);
+      expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+      expect(writes.length).toBeGreaterThan(0);
       stop();
     },
   );
@@ -1613,16 +1944,15 @@ describe('legacy pinning and empty address anchors', () => {
     expect(tabs.routeHashForPane(empty!.paneId)).toBe('#/');
     expect(tabs.routeHashForPane(occupied!.paneId)).toBe('#/page/occupied');
     expect(window.location.hash).toBe('#/');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.root).toEqual(tabs.getTabs().layout.root);
 
     window.location.hash = '#/page/external-open';
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(tabs.routeHashForPane(empty!.paneId)).toBe('#/page/external-open');
     expect(tabs.getTabs().layout.tabs).toHaveLength(2);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
     stop();
   });
 });
@@ -1666,8 +1996,8 @@ describe('multi-pane presets', () => {
       });
       expect(tabs.getTabs().tabs.find((item) => item.id === 'a')?.side).toBeNull();
       expect(window.location.hash).toBe('#/page/a');
-      expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-      expect(writes).toEqual([]);
+      expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+      expect(writes.length).toBeGreaterThan(0);
     },
   );
 
@@ -1749,9 +2079,116 @@ describe('multi-pane presets', () => {
 
     expect(tabs.routeHashForPane(physicalAnchor!.paneId)).toBe('#/page/external-after-preset');
     expect(tabs.routeHashForTabId('focused')).toBe('#/page/external-after-startup');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
     stop();
+  });
+
+  it('does not write or navigate when reselecting an explicitly chosen preset', async () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      paneLayout: {
+        version: 1,
+        id: 'same-preset-layout',
+        root: {
+          kind: 'split',
+          id: 'same-preset-root',
+          axis: 'columns',
+          ratio: 0.5,
+          first: { kind: 'leaf', id: 'same-preset-a', tabId: 'same-preset-tab-a' },
+          second: { kind: 'leaf', id: 'same-preset-b', tabId: 'same-preset-tab-b' },
+        },
+        focusedPaneId: 'same-preset-b',
+      },
+      tabs: [
+        { id: 'same-preset-tab-a', groupId: 'a', target: '#/page/a', back: ['#/page/a-before'], forward: [] },
+        { id: 'same-preset-tab-b', groupId: 'b', target: '#/page/b', back: ['#/page/b-before'], forward: [] },
+      ],
+      closed: [],
+    });
+    const { tabs, writes, readFromStorage } = await freshTabs(raw, '#/page/transient-deep-link');
+    const secondPane = tabs.paneSlots()[1]!;
+
+    expect(tabs.routeHashForPane(secondPane.paneId)).toBe('#/page/transient-deep-link');
+    expect(window.location.hash).toBe('#/page/transient-deep-link');
+    expect(writes).toEqual([]);
+
+    tabs.setPanePreset('two-by-two');
+
+    const expandedSecondPane = tabs.paneSlots()[1]!;
+    expect(tabs.paneSlots().map((slot) => slot.tabId)).toEqual([
+      'same-preset-tab-a',
+      'same-preset-tab-b',
+      null,
+      null,
+    ]);
+    expect(tabs.routeHashForPane(expandedSecondPane.paneId)).toBe('#/page/transient-deep-link');
+    expect(currentSnapshot().layout.tabs.find((tab) => tab.id === 'same-preset-tab-b')?.target).toBe(
+      '#/page/b',
+    );
+    const writesAfterChange = writes.length;
+    const hashAfterChange = window.location.hash;
+    const storedAfterChange = readFromStorage();
+    expect(writesAfterChange).toBeGreaterThan(0);
+
+    tabs.setPanePreset('two-by-two');
+
+    expect(writes).toHaveLength(writesAfterChange);
+    expect(readFromStorage()).toBe(storedAfterChange);
+    expect(window.location.hash).toBe(hashAfterChange);
+    expect(tabs.routeHashForPane(expandedSecondPane.paneId)).toBe('#/page/transient-deep-link');
+  });
+
+  it('keeps an assigned startup deep link visible across 2-to-4 panes until directed navigation', async () => {
+    const { tabs, writes } = await freshTabs(twoPaneForkSnapshot(), '#/page/startup-deep-link');
+
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'two-pane-tab')?.target).toBe(
+      '#/page/startup-deep-link',
+    );
+    expect(writes).toEqual([]);
+
+    tabs.setPanePreset('two-by-two');
+
+    const firstPane = tabs.paneSlots()[0]!;
+    expect(tabs.paneSlots().map((slot) => slot.tabId)).toEqual([
+      'two-pane-tab',
+      'two-pane-tab:side',
+      null,
+      null,
+    ]);
+    expect(tabs.routeHashForPane(firstPane.paneId)).toBe('#/page/startup-deep-link');
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/page/startup-deep-link',
+      back: ['#/page/main-before', '#/page/main'],
+      forward: [],
+    });
+    expect(window.location.hash).toBe('#/page/startup-deep-link');
+    expect(currentSnapshot().layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/page/main',
+      back: ['#/page/main-before'],
+      forward: [],
+    });
+    const writesAfterLayoutChange = writes.length;
+    expect(writesAfterLayoutChange).toBeGreaterThan(0);
+
+    tabs.setPanePreset('two-by-two');
+
+    expect(writes).toHaveLength(writesAfterLayoutChange);
+    expect(window.location.hash).toBe('#/page/startup-deep-link');
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'two-pane-tab')?.target).toBe(
+      '#/page/startup-deep-link',
+    );
+
+    tabs.showInPane('#/page/directed-navigation', firstPane.paneId);
+
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'two-pane-tab')?.target).toBe(
+      '#/page/directed-navigation',
+    );
+    expect(currentSnapshot().layout.tabs.find((tab) => tab.id === 'two-pane-tab')).toMatchObject({
+      target: '#/page/directed-navigation',
+      back: ['#/page/main-before', '#/page/main', '#/page/startup-deep-link'],
+    });
+    expect(writes.length).toBeGreaterThan(writesAfterLayoutChange);
   });
 
   it('keeps an empty first physical leaf separate from the selected v2 URL anchor', async () => {
@@ -1806,8 +2243,8 @@ describe('multi-pane presets', () => {
       back: ['#/page/focused-history', '#/page/focused-before', '#/page/launch-empty-anchor'],
     });
     expect(tabs.targetPane()).toBe(emptyPhysical!.paneId);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
     stop();
   });
 
@@ -1863,8 +2300,8 @@ describe('multi-pane presets', () => {
       back: ['#/page/waiting-history', '#/page/waiting-before-launch', '#/page/launch-empty-selected'],
     });
     expect(tabs.getTabs().layout.tabs).toHaveLength(1);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
     stop();
   });
 
@@ -1901,9 +2338,9 @@ describe('multi-pane presets', () => {
       '#/page/opened-from-pinned-a',
     );
     expect(pinnedTarget.tabs.getTabs().tabs).toHaveLength(3);
-    expect(pinnedTarget.tabs.getTabs().persistenceWritable).toBe(false);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(pinnedTarget.writes).toEqual([]);
+    expect(pinnedTarget.tabs.getTabs().persistenceWritable).toBe(true);
+    expect(currentSnapshot().layout.tabs).toEqual(pinnedTarget.tabs.getTabs().layout.tabs);
+    expect(pinnedTarget.writes.length).toBeGreaterThan(0);
 
     const pinnedOther = await freshTabs(raw, '#/page/a');
     pinnedOther.tabs.setPanePreset('two-columns');
@@ -1926,7 +2363,8 @@ describe('multi-pane presets', () => {
     expect(pinnedOther.tabs.routeHashForPane(otherB!.paneId)).toBe('#/page/b');
     expect(pinnedOther.tabs.targetPane()).toBe(otherA!.paneId);
     expect(pinnedOther.tabs.getTabs().tabs).toHaveLength(2);
-    expect(pinnedOther.writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(pinnedOther.tabs.getTabs().layout.tabs);
+    expect(pinnedOther.writes.length).toBeGreaterThan(0);
   });
 
   it('keeps the address bar anchored to the first physical pane while activeHash follows focus', async () => {
@@ -1964,7 +2402,7 @@ describe('multi-pane presets', () => {
     stop();
   });
 
-  it('freezes legacy storage before exposing an independent pane from a closed legacy side', async () => {
+  it('migrates a legacy split losslessly before exposing an independent pane', async () => {
     const raw = JSON.stringify({
       tabs: [
         {
@@ -1985,10 +2423,11 @@ describe('multi-pane presets', () => {
     expect(tabs.getTabs().persistenceWritable).toBe(true);
     expect(tabs.paneSlots().map((slot) => slot.tabId)).toEqual(['legacy-main']);
     const closedSnapshot = window.localStorage.getItem(PANE_TABS_STORAGE_KEY)!;
-    expect(JSON.parse(closedSnapshot).tabs[0]).toMatchObject({ id: 'legacy-main', side: null });
+    expect(currentSnapshot(closedSnapshot).layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(currentSnapshot(closedSnapshot).layout.tabs.map((tab) => tab.id)).toEqual(['legacy-main']);
 
     tabs.setPanePreset('two-columns');
-    expect(tabs.getTabs().persistenceWritable).toBe(false);
+    expect(tabs.getTabs().persistenceWritable).toBe(true);
     const empty = tabs.paneSlots()[1]!;
     expect(empty.tabId).toBeNull();
     tabs.showInPane('#/page/c', empty.paneId);
@@ -1997,9 +2436,9 @@ describe('multi-pane presets', () => {
       'legacy-main',
       expect.any(String),
     ]);
-    expect(tabs.getTabs().persistenceWritable).toBe(false);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(closedSnapshot);
-    expect(writes).toEqual([closedSnapshot]);
+    expect(tabs.getTabs().persistenceWritable).toBe(true);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(1);
   });
 
   it('keeps explicit two-column assignments and histories when pinning the focused tab', async () => {
@@ -2034,11 +2473,11 @@ describe('multi-pane presets', () => {
     expect(tabs.targetPane()).toBe(second!.paneId);
     expect(tabs.getTabs().tabs[0]).toMatchObject({ id: secondTabId, pinned: true });
     expect(first!.tabId).toBe('legacy-main');
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
   });
 
-  it('stops legacy writes before a two-column preset introduces an empty pane', async () => {
+  it('writes a two-column preset as v2 before navigating from its empty pane', async () => {
     const raw = JSON.stringify({
       tabs: [{ id: 'legacy-main', hash: '#/page/start', back: [], forward: [], side: null }],
       active: 'legacy-main',
@@ -2049,14 +2488,15 @@ describe('multi-pane presets', () => {
 
     tabs.setPanePreset('two-columns');
     expect(tabs.paneSlots().map((slot) => slot.tabId)).toEqual(['legacy-main', null]);
-    expect(tabs.getTabs().persistenceWritable).toBe(false);
+    expect(tabs.getTabs().persistenceWritable).toBe(true);
     tabs.showInMain('#/page/navigated-after-layout-change');
 
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(currentSnapshot().layout.root).toEqual(tabs.getTabs().layout.root);
+    expect(writes.length).toBeGreaterThan(0);
   });
 
-  it('opens any note in the exact focused empty pane and keeps v0 storage frozen after rich layouts', async () => {
+  it('opens any note in the exact focused empty pane and persists the complete rich layout', async () => {
     const raw = JSON.stringify({
       tabs: [{ id: 'legacy-main', hash: '#/page/start', back: ['#/page/before'], forward: [], side: null }],
       active: 'legacy-main',
@@ -2104,16 +2544,88 @@ describe('multi-pane presets', () => {
     expect(tabs.getTabs().layout.tabs.map((tab) => ({ id: tab.id, back: tab.back, forward: tab.forward }))).toEqual(
       histories,
     );
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
 
     tabs.showInMain('#/page/after-reduction');
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(writes.length).toBeGreaterThan(0);
   });
 
-  it('keeps a v2 snapshot byte-exact when presets add and then reduce panes', async () => {
+  it('does not suspend or persist a startup-only blank-slot assignment when reducing and reopening a preset', async () => {
+    const raw = blankFirstFocusedFourPaneSnapshot();
+    const { tabs, writes } = await freshTabs(raw, '#/page/startup-link');
+    const initialSlots = tabs.paneSlots();
+    const blankFirst = initialSlots[0]!;
+    expect(blankFirst.tabId).toBe('hidden-waiting');
+    expect(tabs.routeHashForPane(blankFirst.paneId)).toBe('#/page/startup-link');
+    expect(writes).toEqual([]);
+
+    // Choosing another real pane is deliberate focus and must survive the reduction.
+    tabs.setActivePane(initialSlots[3]!.paneId);
+    tabs.setPanePreset('two-columns');
+
+    expect(tabs.paneSlots().map((slot) => slot.tabId)).toEqual(['real-a', 'real-c']);
+    expect(tabs.targetPane()).toBe(tabs.paneSlots()[1]!.paneId);
+    expect(tabs.getTabs().layout.tabs).toEqual(
+      expect.arrayContaining([
+        {
+          id: 'hidden-waiting',
+          groupId: 'hidden-waiting',
+          target: '#/page/waiting-before-startup',
+          back: ['#/page/waiting-back'],
+          forward: ['#/page/waiting-forward'],
+        },
+        expect.objectContaining({ id: 'real-a', target: '#/page/a', back: ['#/page/a-back'] }),
+        expect.objectContaining({ id: 'real-b', target: '#/page/b', back: ['#/page/b-back'] }),
+        expect.objectContaining({ id: 'real-c', target: '#/page/c', back: ['#/page/c-back'] }),
+      ]),
+    );
+    expect(visiblePaneLeaves(tabs.getTabs().layout).map((leaf) => leaf.tabId)).toEqual(['real-a', 'real-c']);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(currentSnapshot().closed).toEqual(['#/page/closed-before-layout']);
+    expect(writes.length).toBeGreaterThan(0);
+
+    tabs.setPanePreset('two-by-two');
+
+    expect(tabs.paneSlots().map((slot) => slot.tabId)).toEqual(['real-a', 'real-c', 'real-b', null]);
+    expect(tabs.getTabs().layout.tabs.map((tab) => tab.id)).toEqual([
+      'hidden-waiting',
+      'real-a',
+      'real-b',
+      'real-c',
+    ]);
+    expect(tabs.getTabs().layout.tabs.find((tab) => tab.id === 'hidden-waiting')).toMatchObject({
+      target: '#/page/waiting-before-startup',
+      back: ['#/page/waiting-back'],
+      forward: ['#/page/waiting-forward'],
+    });
+    expect(tabs.paneSlots().find((slot) => slot.paneId === tabs.targetPane())?.tabId).toBe('real-c');
+    expect(currentSnapshot().layout.root).toEqual(tabs.getTabs().layout.root);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+  });
+
+  it('persists the launch assignment only after an explicit open in its original blank pane', async () => {
+    const { tabs, writes } = await freshTabs(blankFirstFocusedFourPaneSnapshot(), '#/page/startup-link');
+    const originalSlot = tabs.paneSlots()[0]!;
+
+    expect(originalSlot.tabId).toBe('hidden-waiting');
+    expect(writes).toEqual([]);
+
+    tabs.showInPane('#/page/startup-link', originalSlot.paneId);
+
+    expect(writes.length).toBeGreaterThan(0);
+    expect(tabs.paneSlots()[0]?.tabId).toBe('hidden-waiting');
+    expect(currentSnapshot().layout.root).toEqual(tabs.getTabs().layout.root);
+    expect(currentSnapshot().layout.tabs.find((tab) => tab.id === 'hidden-waiting')).toMatchObject({
+      target: '#/page/startup-link',
+      back: ['#/page/waiting-back', '#/page/waiting-before-startup'],
+      forward: ['#/page/waiting-forward'],
+    });
+  });
+
+  it('persists v2 preset changes and retains the complete instance registry', async () => {
     const raw = twoPaneForkSnapshot();
     const { tabs, writes } = await freshTabs(raw, '#/page/main');
     const originalInstances = tabs.getTabs().layout.tabs;
@@ -2124,8 +2636,9 @@ describe('multi-pane presets', () => {
     tabs.setPanePreset('two-columns');
 
     expect(tabs.getTabs().layout.tabs).toEqual(originalInstances);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(currentSnapshot().layout.root).toEqual(tabs.getTabs().layout.root);
+    expect(writes.length).toBeGreaterThan(0);
   });
 
   it('restores suspended instances and histories when a reduced layout expands again', async () => {
@@ -2169,8 +2682,9 @@ describe('multi-pane presets', () => {
       forward: tab.forward,
     }))).toEqual(originalTabs);
     expect(tabs.paneSlots().find((slot) => slot.paneId === tabs.targetPane())?.tabId).toBe(focusedTabId);
-    expect(window.localStorage.getItem(PANE_TABS_STORAGE_KEY)).toBe(raw);
-    expect(writes).toEqual([]);
+    expect(currentSnapshot().layout.tabs).toEqual(tabs.getTabs().layout.tabs);
+    expect(currentSnapshot().layout.root).toEqual(tabs.getTabs().layout.root);
+    expect(writes.length).toBeGreaterThan(0);
   });
 
   it('opens the command palette from a blank pane using that pane id as the router target', async () => {

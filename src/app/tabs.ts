@@ -10,7 +10,13 @@ import {
   visiblePaneLeaves,
 } from './paneLayout';
 import type { PaneLayout, PaneLeaf, PaneNode, PanePreset, PaneTabInstance } from './paneLayout';
-import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage';
+import {
+  PANE_TABS_STORAGE_KEY,
+  persistPaneTabsSnapshot,
+  persistPaneTabsSnapshotAfterLegacyEquivalence,
+  readPaneTabsSnapshot,
+  writePaneTabsSnapshot,
+} from './paneLayoutStorage';
 import type { CurrentTabsSnapshot, LegacyTabsSnapshot } from './paneLayoutStorage';
 import { getPreferences } from './platform/preferences';
 
@@ -54,6 +60,14 @@ interface TabState {
   explicitLayout: boolean;
   // Raw value observed during load or the last successful write; prevents overwriting another window.
   observedStorageRaw: string | null;
+  // The parsed v0 baseline, reconstructed through the same projection used by the v2 writer.
+  legacyMigrationBaseline: LegacyTabsSnapshot | null;
+  // Full v2 bytes for the same reconstructed v0 baseline, excluding startup route overlays.
+  legacyMigrationBaselineV2Raw: string | null;
+  // Startup routing is an in-memory overlay until the user navigates that instance themselves.
+  transientLaunchRoute: TransientLaunchRoute | null;
+  // A launch route may temporarily put an unassigned instance in an empty persisted pane.
+  transientLaunchAssignment: TransientLaunchAssignment | null;
 }
 
 const MAX_TABS = 20;
@@ -63,6 +77,9 @@ const LAYOUT_ID = 'morrow-pane-layout';
 const listeners = new Set<() => void>();
 let counter = 0;
 let urlAnchorPaneId: PaneId | null = null;
+let startupNavigationCancelled = false;
+let startupNavigationSuppressionDepth = 0;
+let activeTabsLifecycles = 0;
 const newTabId = () => `t${Date.now().toString(36)}${(counter++).toString(36)}`;
 
 type PaneLayoutState = PaneLayout<PaneTabInstance<string>>;
@@ -70,6 +87,17 @@ type PaneLayoutState = PaneLayout<PaneTabInstance<string>>;
 interface PanePair {
   readonly main: PaneTabInstance<string>;
   readonly side: PaneTabInstance<string>;
+}
+
+interface TransientLaunchRoute {
+  readonly tabId: string;
+  readonly original: PaneTabInstance<string>;
+}
+
+interface TransientLaunchAssignment {
+  readonly paneId: PaneId;
+  readonly tabId: string;
+  readonly created: boolean;
 }
 
 function pairInPhysicalOrder(
@@ -311,6 +339,10 @@ function stateFromLayout(
   projectionOrder?: readonly string[] | null,
   physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>,
   explicitLayout = projectionKind === 'fork-layout',
+  legacyMigrationBaseline: LegacyTabsSnapshot | null = null,
+  legacyMigrationBaselineV2Raw: string | null = null,
+  transientLaunchRoute: TransientLaunchRoute | null = null,
+  transientLaunchAssignment: TransientLaunchAssignment | null = null,
 ): TabState {
   const normalizedPhysicalOrder = normalizePhysicalOrderByGroup(layout, physicalOrderByGroup);
   const focused = focusedInstance(layout);
@@ -354,6 +386,10 @@ function stateFromLayout(
     closed: [...closed].slice(-MAX_CLOSED),
     persistenceWritable,
     observedStorageRaw,
+    legacyMigrationBaseline,
+    legacyMigrationBaselineV2Raw,
+    transientLaunchRoute,
+    transientLaunchAssignment,
   };
 }
 
@@ -378,25 +414,6 @@ function clearMissingAssignments(layout: PaneLayoutState): PaneLayoutState {
   };
   const root = clear(layout.root);
   return root === layout.root ? layout : { ...layout, root };
-}
-
-function legacyLayoutCanRepresent(
-  layout: PaneLayoutState,
-  activeId: string,
-  explicitLayout = false,
-): boolean {
-  const root = layout.root;
-  const active = layout.tabs.find((tab) => tab.id === activeId);
-  const activePair = active ? pairForInstance(layout.tabs, active) : null;
-  if (root.kind === 'leaf') return activePair === null;
-  if (root.axis !== 'columns' || root.first.kind !== 'leaf' || root.second.kind !== 'leaf') return false;
-  const first = root.first.tabId;
-  const second = root.second.tabId;
-  if (!first || first === second) return false;
-  if (!activePair) return !explicitLayout && first === activeId && second === null;
-  if (!second) return false;
-  const pairIds = new Set([activePair.main.id, activePair.side.id]);
-  return pairIds.has(first) && pairIds.has(second);
 }
 
 function uniqueTreeId(layout: PaneLayoutState, preferred: string): string {
@@ -511,7 +528,12 @@ function applyLaunchHash(
   layout: PaneLayoutState,
   activeId: string,
   hash: string,
-): { readonly layout: PaneLayoutState; readonly anchorPaneId: PaneId | null } {
+): {
+  readonly layout: PaneLayoutState;
+  readonly anchorPaneId: PaneId | null;
+  readonly transientLaunchRoute: TransientLaunchRoute | null;
+  readonly transientLaunchAssignment: TransientLaunchAssignment | null;
+} {
   const exact = layout.tabs.find((tab) => tab.id === activeId);
   const pair = exact ? pairForInstance(layout.tabs, exact) : null;
   const pairIds = pair ? new Set([pair.main.id, pair.side.id]) : new Set(exact ? [exact.id] : []);
@@ -521,7 +543,13 @@ function applyLaunchHash(
   const target = layout.tabs.find((tab) => tab.id === anchorLeaf?.tabId) ?? pair?.main ?? exact;
   if (!target) {
     const focusedLeaf = visiblePaneLeaves(layout).find((leaf) => leaf.id === layout.focusedPaneId);
-    if (!focusedLeaf || focusedLeaf.tabId !== null) return { layout, anchorPaneId: null };
+    if (!focusedLeaf || focusedLeaf.tabId !== null)
+      return {
+        layout,
+        anchorPaneId: null,
+        transientLaunchRoute: null,
+        transientLaunchAssignment: null,
+      };
     const id = newTabId();
     const created: PaneTabInstance<string> = { id, groupId: id, target: hash, back: [], forward: [] };
     const next = {
@@ -529,8 +557,18 @@ function applyLaunchHash(
       tabs: [...layout.tabs, created],
       root: replaceLeafAssignments(layout.root, new Map([[focusedLeaf.id, id]])),
     };
-    return { layout: next, anchorPaneId: focusedLeaf.id };
+    return {
+      layout: next,
+      anchorPaneId: focusedLeaf.id,
+      transientLaunchRoute: null,
+      transientLaunchAssignment: {
+        paneId: focusedLeaf.id,
+        tabId: id,
+        created: true,
+      },
+    };
   }
+  let transientLaunchAssignment: TransientLaunchAssignment | null = null;
   if (!anchorLeaf) {
     const focusedLeaf = visiblePaneLeaves(layout).find((leaf) => leaf.id === layout.focusedPaneId);
     if (focusedLeaf?.tabId === null) {
@@ -539,11 +577,22 @@ function applyLaunchHash(
         ...layout,
         root: replaceLeafAssignments(layout.root, new Map([[focusedLeaf.id, target.id]])),
       };
+      transientLaunchAssignment = {
+        paneId: focusedLeaf.id,
+        tabId: target.id,
+        created: false,
+      };
     } else {
       anchorLeaf = visiblePaneLeaves(layout).find((leaf) => leaf.tabId === target!.id);
     }
   }
-  if (target.target === hash) return { layout, anchorPaneId: anchorLeaf?.id ?? null };
+  if (target.target === hash)
+    return {
+      layout,
+      anchorPaneId: anchorLeaf?.id ?? null,
+      transientLaunchRoute: null,
+      transientLaunchAssignment,
+    };
   const updated = {
     ...target,
     target: hash,
@@ -552,6 +601,8 @@ function applyLaunchHash(
   return {
     layout: { ...layout, tabs: layout.tabs.map((tab) => (tab.id === target.id ? updated : tab)) },
     anchorPaneId: anchorLeaf?.id ?? null,
+    transientLaunchRoute: { tabId: target.id, original: target },
+    transientLaunchAssignment,
   };
 }
 
@@ -572,9 +623,46 @@ function initialState(
 
 function fromLegacySnapshot(snapshot: LegacyTabsSnapshot, hash: string, raw: string): TabState {
   const layout = migrateLegacySplit(LAYOUT_ID, snapshot, getPreferences().splitShare);
+  const baselineState = stateFromLayout(
+    layout,
+    snapshot.closed,
+    true,
+    raw,
+    snapshot.active,
+    null,
+    'legacy-two-pane',
+  );
+  const projectedBaseline = legacyPersistenceView(baselineState);
+  const legacyMigrationBaseline: LegacyTabsSnapshot = {
+    tabs: projectedBaseline.tabs,
+    active: projectedBaseline.active,
+    pane: projectedBaseline.pane === 'side' ? 'side' : 'main',
+    closed: projectedBaseline.closed,
+  };
+  let legacyMigrationBaselineV2Raw: string | null = null;
+  try {
+    legacyMigrationBaselineV2Raw = writePaneTabsSnapshot(layout, snapshot.closed);
+  } catch {
+    // If the parsed v0 state cannot be emitted as valid v2, leave that source protected.
+  }
   const started = applyLaunchHash(layout, snapshot.active, hash);
   urlAnchorPaneId = null;
-  return stateFromLayout(started.layout, snapshot.closed, true, raw, snapshot.active, null, 'legacy-two-pane');
+  return stateFromLayout(
+    started.layout,
+    snapshot.closed,
+    legacyMigrationBaselineV2Raw !== null,
+    raw,
+    snapshot.active,
+    null,
+    'legacy-two-pane',
+    undefined,
+    undefined,
+    false,
+    legacyMigrationBaseline,
+    legacyMigrationBaselineV2Raw,
+    started.transientLaunchRoute,
+    started.transientLaunchAssignment,
+  );
 }
 
 function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: string): TabState {
@@ -593,7 +681,7 @@ function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: s
   return stateFromLayout(
     launched.layout,
     snapshot.closed,
-    false,
+    true,
     raw,
     identity.id,
     null,
@@ -601,6 +689,10 @@ function fromCurrentSnapshot(snapshot: CurrentTabsSnapshot, hash: string, raw: s
     undefined,
     physicalOrderByGroup,
     false,
+    null,
+    null,
+    launched.transientLaunchRoute,
+    launched.transientLaunchAssignment,
   );
 }
 
@@ -726,6 +818,124 @@ function legacyPersistenceView(now: TabState): {
     pane: focusedPosition === 1 ? 'side' : 'main',
     closed: now.closed,
   };
+}
+
+function sameTransientRoute(
+  left: PaneTabInstance<string> | undefined,
+  right: PaneTabInstance<string> | undefined,
+): boolean {
+  return Boolean(
+    left &&
+      right &&
+      left.id === right.id &&
+      left.target === right.target &&
+      left.back.length === right.back.length &&
+      left.back.every((item, index) => item === right.back[index]) &&
+      left.forward.length === right.forward.length &&
+      left.forward.every((item, index) => item === right.forward[index]),
+  );
+}
+
+function layoutWithoutTransientLaunchRoute(layout: PaneLayoutState, route: TransientLaunchRoute | null) {
+  if (!route) return layout;
+  const exists = layout.tabs.some((tab) => tab.id === route.tabId);
+  if (!exists) return layout;
+  return {
+    ...layout,
+    tabs: layout.tabs.map((tab) =>
+      tab.id === route.tabId
+        ? {
+            ...tab,
+            target: route.original.target,
+            back: [...route.original.back],
+            forward: [...route.original.forward],
+          }
+        : tab,
+    ),
+  };
+}
+
+function sameTransientLaunchAssignment(
+  previous: PaneLayoutState,
+  next: PaneLayoutState,
+  assignment: TransientLaunchAssignment,
+): boolean {
+  const previousLeaf = visiblePaneLeaves(previous).find((leaf) => leaf.id === assignment.paneId);
+  const nextLeaf = visiblePaneLeaves(next).find((leaf) => leaf.id === assignment.paneId);
+  if (previousLeaf?.tabId !== assignment.tabId || nextLeaf?.tabId !== assignment.tabId) return false;
+  const previousInstance = previous.tabs.find((tab) => tab.id === assignment.tabId);
+  const nextInstance = next.tabs.find((tab) => tab.id === assignment.tabId);
+  return Boolean(
+    previousInstance &&
+      nextInstance &&
+      previousInstance.groupId === nextInstance.groupId &&
+      previousInstance.pinned === nextInstance.pinned &&
+      sameTransientRoute(previousInstance, nextInstance),
+  );
+}
+
+function layoutWithoutTransientLaunchAssignment(
+  layout: PaneLayoutState,
+  assignment: TransientLaunchAssignment | null,
+): PaneLayoutState {
+  if (!assignment) return layout;
+  const leaf = visiblePaneLeaves(layout).find((item) => item.id === assignment.paneId);
+  if (leaf?.tabId !== assignment.tabId) return layout;
+  return {
+    ...layout,
+    root: replaceLeafAssignments(layout.root, new Map([[assignment.paneId, null]])),
+    tabs: assignment.created
+      ? layout.tabs.filter((tab) => tab.id !== assignment.tabId)
+      : layout.tabs,
+  };
+}
+
+function layoutForPersistence(
+  layout: PaneLayoutState,
+  route: TransientLaunchRoute | null,
+  assignment: TransientLaunchAssignment | null,
+): PaneLayoutState {
+  return layoutWithoutTransientLaunchAssignment(
+    layoutWithoutTransientLaunchRoute(layout, route),
+    assignment,
+  );
+}
+
+function preserveVisibleTransientLaunchRoute(
+  layout: PaneLayoutState,
+  source: PaneLayoutState,
+  route: TransientLaunchRoute | null,
+  assignment: TransientLaunchAssignment | null,
+): PaneLayoutState {
+  if (!route || assignment) return layout;
+  const current = source.tabs.find((tab) => tab.id === route.tabId);
+  if (!current || !visiblePaneLeaves(layout).some((leaf) => leaf.tabId === route.tabId)) return layout;
+  return {
+    ...layout,
+    tabs: layout.tabs.map((tab) =>
+      tab.id === route.tabId
+        ? { ...tab, target: current.target, back: [...current.back], forward: [...current.forward] }
+        : tab,
+    ),
+  };
+}
+
+function hasUnrepresentedPairOrder(state: TabState): boolean {
+  const leaves = visiblePaneLeaves(state.layout);
+  const checked = new Set<string>();
+  for (const instance of state.layout.tabs) {
+    const pair = pairForInstance(state.layout.tabs, instance);
+    if (!pair || checked.has(pair.main.id)) continue;
+    checked.add(pair.main.id);
+    const order = state.physicalOrderByGroup.get(pair.main.id);
+    if (!order || order[0] === pair.main.id) continue;
+    const first = leaves.findIndex((leaf) => leaf.tabId === order[0]);
+    const second = leaves.findIndex((leaf) => leaf.tabId === order[1]);
+    // The v2 wire has no per-group orientation field, so an inverted pair must stay attached
+    // to visible leaves while that order is being persisted.
+    if (first < 0 || second < 0 || first > second) return true;
+  }
+  return false;
 }
 
 function projectedOrderChanged(previous: readonly Tab[], next: readonly Tab[]): boolean {
@@ -908,6 +1118,20 @@ function set(next: TabState, keepLayout = false): void {
     : previous.projectionKind === 'fork-layout' && previous.projectionIds === null
       ? next.tabs.map((tab) => tab.id)
       : null;
+  let transientLaunchRoute = next.transientLaunchRoute;
+  if (transientLaunchRoute && startupNavigationSuppressionDepth === 0) {
+    const previousInstance = previous.layout.tabs.find((tab) => tab.id === transientLaunchRoute!.tabId);
+    const nextInstance = layout.tabs.find((tab) => tab.id === transientLaunchRoute!.tabId);
+    if (!sameTransientRoute(previousInstance, nextInstance)) transientLaunchRoute = null;
+  }
+  let transientLaunchAssignment = next.transientLaunchAssignment;
+  if (
+    transientLaunchAssignment &&
+    startupNavigationSuppressionDepth === 0 &&
+    !sameTransientLaunchAssignment(previous.layout, layout, transientLaunchAssignment)
+  ) {
+    transientLaunchAssignment = null;
+  }
   let committed = stateFromLayout(
     layout,
     next.closed,
@@ -919,34 +1143,74 @@ function set(next: TabState, keepLayout = false): void {
     projectionOrder,
     next.physicalOrderByGroup,
     next.explicitLayout,
+    next.legacyMigrationBaseline,
+    next.legacyMigrationBaselineV2Raw,
+    transientLaunchRoute,
+    transientLaunchAssignment,
   );
-  // Once a legacy snapshot leaves its representable two-pane shape, freeze that source for
-  // this window. Later focus or tab changes must not serialize a lossy projection.
-  if (
-    committed.persistenceWritable &&
-    (committed.projectionKind !== 'legacy-two-pane' ||
-      !legacyLayoutCanRepresent(committed.layout, committed.active, committed.explicitLayout))
-  ) {
-    committed = { ...committed, persistenceWritable: false };
-  }
-  if (committed.persistenceWritable) {
-    const serialized = JSON.stringify(legacyPersistenceView(committed));
-    try {
-      const currentRaw = localStorage.getItem(PANE_TABS_STORAGE_KEY);
-      if (currentRaw !== committed.observedStorageRaw) {
-        committed = { ...committed, persistenceWritable: false };
-      } else if (serialized === currentRaw) {
-        committed = { ...committed, observedStorageRaw: serialized };
-      } else {
+  if (committed.persistenceWritable && startupNavigationSuppressionDepth === 0) {
+    const persistenceLayout = layoutForPersistence(
+      committed.layout,
+      committed.transientLaunchRoute,
+      committed.transientLaunchAssignment,
+    );
+    const source = readPaneTabsSnapshot(committed.observedStorageRaw);
+    let result:
+      | ReturnType<typeof persistPaneTabsSnapshot>
+      | ReturnType<typeof persistPaneTabsSnapshotAfterLegacyEquivalence>
+      | null = null;
+    if (source.kind === 'legacy' && committed.observedStorageRaw !== null) {
+      if (
+        committed.legacyMigrationBaseline &&
+        committed.legacyMigrationBaselineV2Raw !== null
+      ) {
+        let candidateRaw: string | null = null;
         try {
-          localStorage.setItem(PANE_TABS_STORAGE_KEY, serialized);
-          committed = { ...committed, observedStorageRaw: serialized };
+          candidateRaw = writePaneTabsSnapshot(persistenceLayout, committed.closed);
         } catch {
-          // not remembering tabs is harmless
+          // The invalid or over-limit candidate remains in memory; a later representable edit may save.
+        }
+        if (
+          candidateRaw !== null &&
+          candidateRaw !== committed.legacyMigrationBaselineV2Raw &&
+          !hasUnrepresentedPairOrder(committed)
+        ) {
+          result = persistPaneTabsSnapshotAfterLegacyEquivalence(
+            localStorage,
+            persistenceLayout,
+            committed.closed,
+            committed.observedStorageRaw,
+            committed.legacyMigrationBaseline,
+          );
         }
       }
-    } catch {
-      // A failed read cannot prove that the stored value is still the one loaded here.
+    } else if (source.kind === 'current' && hasUnrepresentedPairOrder(committed)) {
+      // The v2 wire stores physical order in its tree, not for detached pairs. Keep the last
+      // snapshot if writing this runtime state would erase a swapped hidden pair orientation.
+    } else {
+      result = persistPaneTabsSnapshot(
+        localStorage,
+        persistenceLayout,
+        committed.closed,
+        committed.observedStorageRaw,
+      );
+    }
+
+    if (result?.kind === 'written' || result?.kind === 'unchanged') {
+      committed = {
+        ...committed,
+        observedStorageRaw: result.raw,
+        legacyMigrationBaseline: null,
+        legacyMigrationBaselineV2Raw: null,
+      };
+    } else if (result?.kind === 'conflict') {
+      committed = { ...committed, persistenceWritable: false };
+    } else if (result?.kind === 'storage-error' && result.operation === 'read') {
+      committed = { ...committed, persistenceWritable: false };
+    } else if (
+      result?.kind === 'protected' &&
+      result.reason !== 'invalid-candidate'
+    ) {
       committed = { ...committed, persistenceWritable: false };
     }
   }
@@ -959,7 +1223,6 @@ function setLayout(
   options: {
     readonly physicalOrderByGroup?: ReadonlyMap<string, readonly [string, string]>;
     readonly projectionIdReplacement?: readonly [string, string];
-    readonly disablePersistence?: boolean;
     readonly explicitLayout?: boolean;
   } = {},
 ): void {
@@ -971,7 +1234,7 @@ function setLayout(
   const next = stateFromLayout(
     layout,
     now.closed,
-    now.persistenceWritable && !options.disablePersistence,
+    now.persistenceWritable,
     now.observedStorageRaw,
     now.active,
     replaceProjectionIds(now.projectionIds),
@@ -979,8 +1242,29 @@ function setLayout(
     replaceProjectionIds(now.projectionOrder),
     options.physicalOrderByGroup ?? now.physicalOrderByGroup,
     options.explicitLayout ?? now.explicitLayout,
+    now.legacyMigrationBaseline,
+    now.legacyMigrationBaselineV2Raw,
+    now.transientLaunchRoute,
+    now.transientLaunchAssignment,
   );
   set(next, true);
+}
+
+function commitTransientLaunchForIntent(paneId: PaneId, tabId: string): void {
+  if (startupNavigationSuppressionDepth > 0) return;
+  const now = current();
+  const clearsRoute = now.transientLaunchRoute?.tabId === tabId;
+  const clearsAssignment =
+    now.transientLaunchAssignment?.paneId === paneId && now.transientLaunchAssignment.tabId === tabId;
+  if (!clearsRoute && !clearsAssignment) return;
+  set(
+    {
+      ...now,
+      transientLaunchRoute: clearsRoute ? null : now.transientLaunchRoute,
+      transientLaunchAssignment: clearsAssignment ? null : now.transientLaunchAssignment,
+    },
+    true,
+  );
 }
 
 function updateActive(change: (tab: Tab) => Tab, extra: Partial<TabState> = {}): void {
@@ -1028,8 +1312,62 @@ export function claimNavigation(): boolean {
   return true;
 }
 
+/** Runs the preferred start page only while startup has not received user input. */
+export function runStartupNavigation(action: () => void): boolean {
+  if (startupNavigationCancelled) return false;
+  startupNavigationSuppressionDepth += 1;
+  try {
+    action();
+  } finally {
+    startupNavigationSuppressionDepth -= 1;
+  }
+  return true;
+}
+
+/** Restores a saved v2 workspace literally; v0 keeps its published 2.2 back-navigation behavior. */
+export function restoreLastPosition(): void {
+  if (startupNavigationSuppressionDepth === 0) {
+    runStartupNavigation(() => restoreLastPosition());
+    return;
+  }
+
+  const now = current();
+  if (now.projectionKind !== 'fork-layout') {
+    goBack('main');
+    return;
+  }
+
+  const layout = layoutWithoutTransientLaunchAssignment(
+    layoutWithoutTransientLaunchRoute(now.layout, now.transientLaunchRoute),
+    now.transientLaunchAssignment,
+  );
+  if (
+    layout !== now.layout ||
+    now.transientLaunchRoute !== null ||
+    now.transientLaunchAssignment !== null
+  ) {
+    set(
+      {
+        ...now,
+        layout,
+        transientLaunchRoute: null,
+        transientLaunchAssignment: null,
+      },
+      true,
+    );
+  }
+
+  const primary = primaryPaneId();
+  replaceBrowserHash(primary ? routeHashForPane(primary) : '#/');
+}
+
 export function startTabs(): () => void {
+  if (activeTabsLifecycles === 0) startupNavigationCancelled = false;
+  activeTabsLifecycles += 1;
   current();
+  const onStartupInteraction = () => {
+    startupNavigationCancelled = true;
+  };
   const onHash = () => {
     const hash = window.location.hash || '#/';
     const primary = primaryPaneId();
@@ -1096,18 +1434,26 @@ export function startTabs(): () => void {
     }
   };
   window.addEventListener('hashchange', onHash);
+  window.addEventListener('pointerdown', onStartupInteraction, true);
+  window.addEventListener('keydown', onStartupInteraction, true);
   window.addEventListener('click', onClick, true);
   window.addEventListener('auxclick', onClick, true);
   window.addEventListener('mousedown', onMouseButton, true);
   window.addEventListener('mouseup', onMouseButton, true);
   window.addEventListener('keydown', onKey, true);
+  let active = true;
   return () => {
+    if (!active) return;
+    active = false;
     window.removeEventListener('hashchange', onHash);
+    window.removeEventListener('pointerdown', onStartupInteraction, true);
+    window.removeEventListener('keydown', onStartupInteraction, true);
     window.removeEventListener('click', onClick, true);
     window.removeEventListener('auxclick', onClick, true);
     window.removeEventListener('mousedown', onMouseButton, true);
     window.removeEventListener('mouseup', onMouseButton, true);
     window.removeEventListener('keydown', onKey, true);
+    activeTabsLifecycles = Math.max(0, activeTabsLifecycles - 1);
   };
 }
 
@@ -1211,11 +1557,22 @@ export function setActivePane(pane: PaneId): void {
 
 export function setPanePreset(preset: PanePreset): void {
   const now = current();
-  const layout = applyPresetWithSuspendedTabs(now.layout, preset);
+  const samePreset = applyPanePresetPreservingAssignments(now.layout, preset) === now.layout;
+  if (samePreset && now.explicitLayout) return;
+  const persistentLayout = layoutForPersistence(
+    now.layout,
+    now.transientLaunchRoute,
+    now.transientLaunchAssignment,
+  );
+  const layout = preserveVisibleTransientLaunchRoute(
+    applyPresetWithSuspendedTabs(persistentLayout, preset),
+    now.layout,
+    now.transientLaunchRoute,
+    now.transientLaunchAssignment,
+  );
   if (layout === now.layout && now.explicitLayout) return;
   urlAnchorPaneId = null;
   setLayout(layout, {
-    disablePersistence: now.persistenceWritable && !legacyLayoutCanRepresent(layout, now.active, true),
     explicitLayout: true,
   });
   goToPrimaryPane();
@@ -1229,7 +1586,10 @@ export function assignTabToPane(tabId: string, pane: PaneId): void {
   const leaf = visiblePaneLeaves(now.layout).find((item) => item.id === paneId);
   if (!leaf) return;
   if (leaf.tabId === tabId) {
-    if (now.layout.focusedPaneId !== paneId) setLayout({ ...now.layout, focusedPaneId: paneId });
+    commitTransientLaunchForIntent(paneId, tabId);
+    const latest = current();
+    if (latest.layout.focusedPaneId !== paneId)
+      setLayout({ ...latest.layout, focusedPaneId: paneId });
     return;
   }
   const updates = new Map<string, string | null>();
@@ -1325,7 +1685,10 @@ export function showInPane(hash: string, pane = targetPane(), replace = false): 
   }
   const place = (value: string) => (value || '#/').split('?')[0];
   if (tab.target === hash) {
-    if (now.layout.focusedPaneId !== paneId) setLayout({ ...now.layout, focusedPaneId: paneId });
+    commitTransientLaunchForIntent(paneId, tab.id);
+    const latest = current();
+    if (latest.layout.focusedPaneId !== paneId)
+      setLayout({ ...latest.layout, focusedPaneId: paneId });
     return;
   }
 

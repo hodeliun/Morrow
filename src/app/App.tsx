@@ -48,13 +48,14 @@ import { loadTagColors } from './tagColors';
 import {
   activateTabAt,
   claimNavigation,
-  goBack,
   getTabs,
   PaneContext,
   PaneTabContext,
   paneAssignments,
   paneIdForTabId,
   paneSlots,
+  restoreLastPosition,
+  runStartupNavigation,
   setActivePane,
   startTabs,
   useTabs,
@@ -596,13 +597,15 @@ function useStartPage() {
     started = true;
     // a window opened at a particular place, or a brand new vault showing its guide, stays as it is
     if ((window.location.hash && window.location.hash !== '#/') || getSession().firstRun) return;
-    const { startPage: start, hiddenModules, autoDaily } = getPreferences();
-    if (start === 'last') goBack('main');
-    else if (start === 'today' && !hiddenModules.includes('daily')) {
-      // with notes made by hand only, a day without one opens on home rather than making an empty note
-      const id = autoDaily ? ensureToday() : (findDailyNote(getState(), dateKey(new Date()))?.id ?? null);
-      if (id) navigate({ name: 'page', id, find: null }, { replace: true, pane: 'main' });
-    }
+    runStartupNavigation(() => {
+      const { startPage: start, hiddenModules, autoDaily } = getPreferences();
+      if (start === 'last') restoreLastPosition();
+      else if (start === 'today' && !hiddenModules.includes('daily')) {
+        // with notes made by hand only, a day without one opens on home rather than making an empty note
+        const id = autoDaily ? ensureToday() : (findDailyNote(getState(), dateKey(new Date()))?.id ?? null);
+        if (id) navigate({ name: 'page', id, find: null }, { replace: true, pane: 'main' });
+      }
+    });
   }, []);
 }
 
@@ -630,7 +633,7 @@ export function App() {
   useGlobalShortcuts();
   useCopyToast();
   useEffect(() => applySpellcheck(prefs.spellcheck), [prefs.spellcheck]);
-  useEffect(() => startTabs(), []);
+  useLayoutEffect(() => startTabs(), []);
   useStartPage();
   useLifecycle();
   useHidePointerWhileTyping();

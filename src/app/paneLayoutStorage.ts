@@ -19,6 +19,25 @@ export const MAX_PANE_NODES = 7;
 export const MAX_PANE_DEPTH = 3;
 export const PANE_TABS_STORAGE_KEY = 'morrow.tabs';
 
+export interface PaneTabsStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export type PaneTabsWriteResult =
+  | { readonly kind: 'written'; readonly raw: string }
+  | { readonly kind: 'unchanged'; readonly raw: string }
+  | { readonly kind: 'conflict' }
+  | {
+      readonly kind: 'protected';
+      readonly reason:
+        | 'unsupported-source'
+        | 'legacy-source'
+        | 'source-not-lossless'
+        | 'invalid-candidate';
+    }
+  | { readonly kind: 'storage-error'; readonly operation: 'read' | 'write' };
+
 export interface LegacyTabsSnapshot extends LegacySplitState {
   readonly closed: readonly string[];
 }
@@ -36,6 +55,62 @@ export type PaneTabsReadResult =
   | { readonly kind: 'invalid'; readonly reason: string };
 
 type UnknownRecord = Record<string, unknown>;
+
+/** Detects duplicate decoded object keys before JSON.parse can silently keep only the last one. */
+function hasDuplicateJsonObjectKeys(raw: string): boolean {
+  type Frame =
+    | { readonly kind: 'array' }
+    | { readonly kind: 'object'; readonly keys: Set<string>; expectingKey: boolean };
+  const stack: Frame[] = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === '"') {
+      const start = index;
+      index += 1;
+      while (index < raw.length) {
+        if (raw[index] === '\\') {
+          index += 2;
+          continue;
+        }
+        if (raw[index] === '"') break;
+        index += 1;
+      }
+      if (index >= raw.length) return false;
+
+      const parent = stack.at(-1);
+      if (parent?.kind === 'object' && parent.expectingKey) {
+        let key: unknown;
+        try {
+          key = JSON.parse(raw.slice(start, index + 1)) as unknown;
+        } catch {
+          return false;
+        }
+        if (typeof key !== 'string') return false;
+        if (parent.keys.has(key)) return true;
+        parent.keys.add(key);
+        parent.expectingKey = false;
+      }
+      continue;
+    }
+
+    if (char === '{') {
+      stack.push({ kind: 'object', keys: new Set(), expectingKey: true });
+    } else if (char === '[') {
+      stack.push({ kind: 'array' });
+    } else if (char === '}' || char === ']') {
+      const parent = stack.at(-1);
+      if (
+        parent &&
+        ((char === '}' && parent.kind === 'object') || (char === ']' && parent.kind === 'array'))
+      )
+        stack.pop();
+    } else if (char === ',') {
+      const parent = stack.at(-1);
+      if (parent?.kind === 'object') parent.expectingKey = true;
+    }
+  }
+  return false;
+}
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -263,4 +338,323 @@ export function readPaneTabsSnapshot(raw: string | null): PaneTabsReadResult {
   if (Object.hasOwn(value, 'paneLayout')) return { kind: 'invalid', reason: 'unversioned-pane-layout' };
   const snapshot = readLegacySnapshot(value);
   return snapshot ? { kind: 'legacy', snapshot } : { kind: 'invalid', reason: 'invalid-legacy-payload' };
+}
+
+function nodeHasOnlyKnownFields(value: unknown): boolean {
+  const visited = new Set<UnknownRecord>();
+  let visitedCount = 0;
+  const visit = (node: unknown, depth: number): boolean => {
+    if (
+      !isRecord(node) ||
+      depth > MAX_PANE_DEPTH ||
+      visitedCount >= MAX_PANE_NODES ||
+      visited.has(node)
+    )
+      return false;
+
+    visited.add(node);
+    visitedCount += 1;
+    if (node.kind === 'leaf') return hasOnlyKeys(node, ['kind', 'id', 'tabId']);
+    return (
+      node.kind === 'split' &&
+      hasOnlyKeys(node, ['kind', 'id', 'axis', 'ratio', 'first', 'second']) &&
+      visit(node.first, depth + 1) &&
+      visit(node.second, depth + 1)
+    );
+  };
+
+  return visit(value, 0);
+}
+
+function candidateHasOnlyKnownFields(
+  layout: PaneLayout<PaneTabInstance<string>>,
+  closed: readonly string[],
+): boolean {
+  const candidate = layout as unknown as UnknownRecord;
+  return (
+    hasOnlyKeys(candidate, ['id', 'root', 'focusedPaneId', 'topologyRevision', 'tabs']) &&
+    nodeHasOnlyKnownFields(candidate.root) &&
+    Array.isArray(candidate.tabs) &&
+    candidate.tabs.every(
+      (tab) =>
+        isRecord(tab) &&
+        hasOnlyKeys(tab, ['id', 'groupId', 'target', 'back', 'forward', 'pinned']),
+    ) &&
+    Array.isArray(closed)
+  );
+}
+
+function sourceHasNoDiscardedFields(raw: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return false;
+  }
+  if (!isRecord(value)) return false;
+
+  if (
+    !hasOnlyKeys(value, ['schemaVersion', 'paneLayout', 'tabs', 'closed']) ||
+    !isRecord(value.paneLayout) ||
+    !hasOnlyKeys(value.paneLayout, ['version', 'id', 'root', 'focusedPaneId']) ||
+    !nodeHasOnlyKnownFields(value.paneLayout.root) ||
+    !Array.isArray(value.tabs)
+  )
+    return false;
+  return (
+    value.tabs.length <= MAX_PANE_TAB_INSTANCES &&
+    value.tabs.every((tab) =>
+      isRecord(tab) &&
+      hasOnlyKeys(tab, ['id', 'groupId', 'target', 'back', 'forward', 'pinned']) &&
+      !(Object.hasOwn(tab, 'pinned') && tab.pinned === false),
+    ) &&
+    new Set(value.tabs.map((tab) => (isRecord(tab) ? tab.groupId : undefined))).size <=
+      MAX_LEGACY_GROUPS
+  );
+}
+
+function legacyHistoryHasNoDiscardedFields(value: UnknownRecord): boolean {
+  if (!boundedString(value.hash, MAX_PERSISTED_TARGET_LENGTH)) return false;
+  return (['back', 'forward'] as const).every((key) => {
+    const history = value[key];
+    return (
+      history === undefined ||
+      (Array.isArray(history) &&
+        history.length <= MAX_PERSISTED_HISTORY &&
+        history.every((target) => boundedString(target, MAX_PERSISTED_TARGET_LENGTH)))
+    );
+  });
+}
+
+function legacySourceHasNoDiscardedFields(raw: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return false;
+  }
+  if (!isRecord(value) || !hasOnlyKeys(value, ['tabs', 'active', 'pane', 'closed'])) return false;
+  if (
+    value.closed !== undefined &&
+    (!Array.isArray(value.closed) ||
+      value.closed.length > MAX_CLOSED_TABS ||
+      !value.closed.every((target) => boundedString(target, MAX_PERSISTED_TARGET_LENGTH)))
+  )
+    return false;
+
+  return (
+    Array.isArray(value.tabs) &&
+    value.tabs.length > 0 &&
+    value.tabs.length <= MAX_LEGACY_GROUPS &&
+    value.tabs.every((entry) => {
+      if (
+        !isRecord(entry) ||
+        !hasOnlyKeys(entry, ['id', 'hash', 'back', 'forward', 'side', 'pinned']) ||
+        !boundedString(entry.id, MAX_PERSISTED_ID_LENGTH) ||
+        entry.pinned === false ||
+        !legacyHistoryHasNoDiscardedFields(entry)
+      )
+        return false;
+      if (entry.side === undefined || entry.side === null) return true;
+      return (
+        isRecord(entry.side) &&
+        hasOnlyKeys(entry.side, ['hash', 'back', 'forward']) &&
+        legacyHistoryHasNoDiscardedFields(entry.side)
+      );
+    })
+  );
+}
+
+function canonicalLegacySnapshot(snapshot: LegacyTabsSnapshot): string {
+  return JSON.stringify({
+    tabs: snapshot.tabs.map((tab) => ({
+      id: tab.id,
+      hash: tab.hash,
+      back: [...tab.back],
+      forward: [...tab.forward],
+      side: tab.side
+        ? { hash: tab.side.hash, back: [...tab.side.back], forward: [...tab.side.forward] }
+        : null,
+      ...(tab.pinned === true ? { pinned: true } : {}),
+    })),
+    active: snapshot.active,
+    pane: snapshot.pane,
+    closed: [...snapshot.closed],
+  });
+}
+
+function persistableNode(node: PaneNode): PaneNode {
+  if (node.kind === 'leaf') return { kind: 'leaf', id: node.id, tabId: node.tabId };
+  return {
+    kind: 'split',
+    id: node.id,
+    axis: node.axis,
+    ratio: node.ratio,
+    first: persistableNode(node.first),
+    second: persistableNode(node.second),
+  };
+}
+
+function serializePaneTabsSnapshot(
+  layout: PaneLayout<PaneTabInstance<string>>,
+  closed: readonly string[],
+): string {
+  return JSON.stringify({
+    schemaVersion: TABS_SCHEMA_VERSION,
+    paneLayout: {
+      version: PANE_LAYOUT_SCHEMA_VERSION,
+      id: layout.id,
+      root: persistableNode(layout.root),
+      focusedPaneId: layout.focusedPaneId,
+    },
+    tabs: layout.tabs.map((tab) => ({
+      id: tab.id,
+      groupId: tab.groupId,
+      target: tab.target,
+      back: tab.back,
+      forward: tab.forward,
+      ...(tab.pinned === undefined ? {} : { pinned: tab.pinned }),
+    })),
+    closed,
+  });
+}
+
+/** Writes the complete published v2 wire shape, excluding runtime topologyRevision. */
+export function writePaneTabsSnapshot(
+  layout: PaneLayout<PaneTabInstance<string>>,
+  closed: readonly string[],
+): string {
+  if (!candidateHasOnlyKnownFields(layout, closed) || validatePaneLayout(layout).length > 0)
+    throw new Error('Invalid pane tabs snapshot candidate.');
+  if (
+    layout.tabs.length === 0 ||
+    layout.tabs.length > MAX_PANE_TAB_INSTANCES ||
+    new Set(layout.tabs.map((tab) => tab.groupId)).size > MAX_LEGACY_GROUPS
+  )
+    throw new Error('Pane tabs snapshot candidate exceeds the published limits.');
+
+  const raw = serializePaneTabsSnapshot(layout, closed);
+  if (
+    raw.length > MAX_PERSISTED_TABS_CHARS ||
+    new TextEncoder().encode(raw).byteLength > MAX_PERSISTED_TABS_CHARS
+  )
+    throw new Error('Pane tabs snapshot candidate exceeds the published payload limit.');
+
+  const roundTrip = readPaneTabsSnapshot(raw);
+  if (
+    roundTrip.kind !== 'current' ||
+    serializePaneTabsSnapshot(roundTrip.snapshot.layout, roundTrip.snapshot.closed) !== raw
+  )
+    throw new Error('Pane tabs snapshot candidate is not losslessly readable.');
+  return raw;
+}
+
+/**
+ * Validates before reading storage, then compares the exact observed bytes immediately before
+ * setItem. This narrows stale-write risk within one window; Web Storage has no cross-window lock,
+ * so another window may still write between this comparison and setItem.
+ */
+export function persistPaneTabsSnapshot(
+  storage: PaneTabsStorage,
+  layout: PaneLayout<PaneTabInstance<string>>,
+  closed: readonly string[],
+  observedRaw: string | null,
+): PaneTabsWriteResult {
+  let candidateRaw: string;
+  try {
+    candidateRaw = writePaneTabsSnapshot(layout, closed);
+  } catch {
+    return { kind: 'protected', reason: 'invalid-candidate' };
+  }
+
+  let semanticallyUnchanged = false;
+  if (observedRaw !== null) {
+    if (
+      observedRaw.length > MAX_PERSISTED_TABS_CHARS ||
+      new TextEncoder().encode(observedRaw).byteLength > MAX_PERSISTED_TABS_CHARS
+    )
+      return { kind: 'protected', reason: 'unsupported-source' };
+    if (hasDuplicateJsonObjectKeys(observedRaw))
+      return { kind: 'protected', reason: 'source-not-lossless' };
+    const observed = readPaneTabsSnapshot(observedRaw);
+    if (observed.kind === 'legacy') {
+      return { kind: 'protected', reason: 'legacy-source' };
+    } else if (observed.kind === 'current') {
+      if (!sourceHasNoDiscardedFields(observedRaw))
+        return { kind: 'protected', reason: 'source-not-lossless' };
+      semanticallyUnchanged =
+        serializePaneTabsSnapshot(observed.snapshot.layout, observed.snapshot.closed) ===
+        candidateRaw;
+    } else {
+      return { kind: 'protected', reason: 'unsupported-source' };
+    }
+  }
+
+  let currentRaw: string | null;
+  try {
+    currentRaw = storage.getItem(PANE_TABS_STORAGE_KEY);
+  } catch {
+    return { kind: 'storage-error', operation: 'read' };
+  }
+  if (currentRaw !== observedRaw) return { kind: 'conflict' };
+  if (semanticallyUnchanged && currentRaw !== null)
+    return { kind: 'unchanged', raw: currentRaw };
+
+  try {
+    storage.setItem(PANE_TABS_STORAGE_KEY, candidateRaw);
+  } catch {
+    // Storage.setItem is atomic; do not attempt a compensating write that could clobber another window.
+    return { kind: 'storage-error', operation: 'write' };
+  }
+  return { kind: 'written', raw: candidateRaw };
+}
+
+/**
+ * Migrates v0 only after the caller supplies a v2-to-v0 baseline that exactly matches the
+ * losslessly parsed source. The exact raw bytes are still checked immediately before writing.
+ */
+export function persistPaneTabsSnapshotAfterLegacyEquivalence(
+  storage: PaneTabsStorage,
+  layout: PaneLayout<PaneTabInstance<string>>,
+  closed: readonly string[],
+  observedRaw: string,
+  equivalentLegacyBaseline: LegacyTabsSnapshot,
+): PaneTabsWriteResult {
+  let candidateRaw: string;
+  try {
+    candidateRaw = writePaneTabsSnapshot(layout, closed);
+  } catch {
+    return { kind: 'protected', reason: 'invalid-candidate' };
+  }
+
+  if (
+    observedRaw.length > MAX_PERSISTED_TABS_CHARS ||
+    new TextEncoder().encode(observedRaw).byteLength > MAX_PERSISTED_TABS_CHARS
+  )
+    return { kind: 'protected', reason: 'unsupported-source' };
+  if (hasDuplicateJsonObjectKeys(observedRaw))
+    return { kind: 'protected', reason: 'source-not-lossless' };
+
+  const observed = readPaneTabsSnapshot(observedRaw);
+  if (observed.kind !== 'legacy') return { kind: 'protected', reason: 'unsupported-source' };
+  if (
+    !legacySourceHasNoDiscardedFields(observedRaw) ||
+    canonicalLegacySnapshot(observed.snapshot) !== canonicalLegacySnapshot(equivalentLegacyBaseline)
+  )
+    return { kind: 'protected', reason: 'source-not-lossless' };
+
+  let currentRaw: string | null;
+  try {
+    currentRaw = storage.getItem(PANE_TABS_STORAGE_KEY);
+  } catch {
+    return { kind: 'storage-error', operation: 'read' };
+  }
+  if (currentRaw !== observedRaw) return { kind: 'conflict' };
+
+  try {
+    storage.setItem(PANE_TABS_STORAGE_KEY, candidateRaw);
+  } catch {
+    return { kind: 'storage-error', operation: 'write' };
+  }
+  return { kind: 'written', raw: candidateRaw };
 }
