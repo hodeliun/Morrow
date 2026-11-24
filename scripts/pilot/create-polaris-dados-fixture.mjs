@@ -339,6 +339,13 @@ async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBa
         '',
         '   Legacy numbered paragraph.',
         '',
+        '<details open>',
+        '<summary data-block-background="#2f80ed"><h3>Legacy **collapsible** title</h3></summary>',
+        '',
+        'Collapse this paragraph with the arrow beside its title.',
+        '',
+        '</details>',
+        '',
       ].join('\n'),
     },
     {

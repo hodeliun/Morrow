@@ -73,6 +73,10 @@ Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parág
 
 Em `Links`, **List item with native background** usa o amarelo nativo do item. O azul HEX aparece em **Legacy list paragraph**, **Legacy task paragraph** e **Old nested list paragraph**. **Legacy numbered paragraph** fica roxo. Edite **Plain neighbor**, salve e reabra a mesma nota para conferir os fundos e a tarefa marcada.
 
+### Título colorido de um recolhimento antigo
+
+Em `Links`, localize **Legacy collapsible title**. Use a seta para recolher e expandir o texto abaixo. Edite o título, desfaça e refaça a alteração. Feche e reabra a nota para conferir o fundo azul e o negrito.
+
 ### Cálculo de fórmula antiga no texto
 
 1. Abra `Resolved target` com o Polaris Dados ativado. A fórmula `2 + 3` exibe **Legacy total 5** no parágrafo.
