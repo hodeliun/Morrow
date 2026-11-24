@@ -933,6 +933,108 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('renders numeric formula progress bars without changing raw formula values or grid focus', async () => {
+    const properties: readonly TestProperty[] = [
+      ...DEFAULT_PROPERTIES.slice(0, 3),
+      { id: 'default-bar', name: 'Default bar', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar' },
+      { id: 'fractional-max', name: 'Fractional max', type: 'formula', options: [], formula: 'Quantity / 16', display: 'bar', max: 0.5 },
+      { id: 'fractional-ratio', name: 'Fractional ratio', type: 'formula', options: [], formula: 'Quantity / 3', display: 'bar', max: 1.5 },
+      { id: 'zero-bar', name: 'Zero bar', type: 'formula', options: [], formula: '0', display: 'bar' },
+      { id: 'negative-bar', name: 'Negative bar', type: 'formula', options: [], formula: '-Quantity * 2', display: 'bar', max: 8 },
+      { id: 'overflow', name: 'Overflow', type: 'formula', options: [], formula: 'Quantity * 20', display: 'bar', max: 30 },
+      { id: 'zero-maximum', name: 'Zero maximum', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar', max: 0 },
+      { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Overflow + 5' },
+      { id: 'manual-bar', name: 'Manual bar', type: 'number', options: [], display: 'bar', max: 5 },
+      { id: 'text-bar', name: 'Text bar', type: 'formula', options: [], formula: '"Done"', display: 'bar' },
+    ];
+    const data = makeDataDouble({
+      properties,
+      rowProperties: { name: 'Widget', quantity: 1, price: 10, 'manual-bar': 2 },
+    });
+    const mounted = mountPlugin(data.api, 'pt');
+    const progressFor = (id: string) => mounted.element.querySelector<HTMLElement>(`[data-field="${id}"] .prop-progress`);
+    const localize = (value: number) => {
+      const notation = /e/i.test(value.toString()) ? 'scientific' : 'standard';
+      return new Intl.NumberFormat('pt', { maximumSignificantDigits: 21, notation }).format(value);
+    };
+    const labelFor = (id: string) => progressFor(id)?.querySelector('.prop-progress-label')?.textContent;
+    const percentFor = (id: string) => progressFor(id)?.querySelector<HTMLElement>('.prop-progress-fill')?.style.width;
+
+    expect(labelFor('default-bar')).toBe('10%');
+    expect(progressFor('default-bar')?.title).toBe(`${localize(10)} / ${localize(100)}`);
+    expect(progressFor('fractional-max')?.title).toBe(`${localize(0.0625)} / ${localize(0.5)}`);
+    expect(labelFor('fractional-max')).toBe('13%');
+    expect(labelFor('fractional-ratio')).toBe('22%');
+    expect(percentFor('fractional-ratio')).toBe(`${(1 / 3 / 1.5) * 100}%`);
+    expect(labelFor('zero-bar')).toBe('0%');
+    expect(labelFor('negative-bar')).toBe('0%');
+    expect(progressFor('negative-bar')?.getAttribute('aria-valuetext')).toBe(`0% (${localize(-2)} / ${localize(8)})`);
+    expect(labelFor('overflow')).toBe('67%');
+    expect(percentFor('overflow')).toBe(`${(2 / 3) * 100}%`);
+    expect(progressFor('overflow')?.getAttribute('aria-label')).toBe('Overflow');
+    expect(progressFor('overflow')?.getAttribute('aria-valuetext')).toBe(`67% (${localize(20)} / ${localize(30)})`);
+    expect(progressFor('zero-maximum')?.title).toBe(`${localize(10)} / ${localize(100)}`);
+    expect(labelFor('zero-maximum')).toBe('10%');
+    expect(mounted.element.querySelector('[data-field="dependent"] [data-value-kind="number"]')?.textContent).toBe('25');
+    expect(mounted.element.querySelector('[data-field="manual-bar"] .prop-progress')).toBeNull();
+    expect(mounted.element.querySelector('[data-field="manual-bar"]')?.textContent).toContain('2');
+    expect(mounted.element.querySelector('[data-field="text-bar"] [data-value-kind="text"]')?.textContent).toBe('Done');
+    expect(progressFor('text-bar')).toBeNull();
+
+    const overflowCell = mounted.element.querySelector<HTMLTableCellElement>('[data-field="overflow"]')!;
+    const overflowBar = progressFor('overflow')!;
+    expect(overflowCell.tabIndex).toBe(-1);
+    expect(overflowBar.hasAttribute('tabindex')).toBe(false);
+    mounted.element.querySelector<HTMLTableCellElement>('[data-field="negative-bar"]')!.focus();
+    const moveRight = new mounted.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    dispatch(mounted.element.querySelector('[data-field="negative-bar"]')!, moveRight);
+    expect(moveRight.defaultPrevented).toBe(true);
+    expect(mounted.window.document.activeElement).toBe(overflowCell);
+
+    const quantity = editQuantity(mounted.element);
+    setInput(mounted.window, quantity, '2.5');
+    dispatch(quantity, new mounted.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await settle();
+    expect(labelFor('default-bar')).toBe('25%');
+    expect(progressFor('overflow')?.title).toBe(`${localize(50)} / ${localize(30)}`);
+    expect(labelFor('overflow')).toBe('100%');
+    expect(mounted.element.querySelector('[data-field="dependent"] [data-value-kind="number"]')?.textContent).toBe('55');
+    expect(data.current().rows[0]?.properties).toEqual({ name: 'Widget', quantity: 2.5, price: 10, 'manual-bar': 2 });
+    expect(data.persisted()).toEqual({ name: 'Widget', quantity: 2.5, price: 10, 'manual-bar': 2 });
+    expect(data.patchCalls).toHaveLength(1);
+    mounted.unmount();
+  });
+
+  it('preserves tiny finite formula ranges in localized progress labels and accessibility text', () => {
+    const tiny = 1e-110;
+    const properties: readonly TestProperty[] = [
+      ...DEFAULT_PROPERTIES.slice(0, 3),
+      { id: 'tiny', name: 'Tiny', type: 'formula', options: [], formula: 'Quantity', display: 'bar', max: tiny },
+      { id: 'tiny-dependent', name: 'Tiny dependent', type: 'formula', options: [], formula: 'Tiny * 2', display: 'bar', max: tiny * 2 },
+    ];
+    const data = makeDataDouble({
+      properties,
+      rowProperties: { name: 'Widget', quantity: tiny, price: 10 },
+    });
+    const mounted = mountPlugin(data.api, 'pt');
+    const progressFor = (id: string) => mounted.element.querySelector<HTMLElement>(`[data-field="${id}"] .prop-progress`);
+    const localize = (value: number) =>
+      new Intl.NumberFormat('pt', { maximumSignificantDigits: 21, notation: 'scientific' }).format(value);
+    const tinyRange = `${localize(tiny)} / ${localize(tiny)}`;
+    const dependentRange = `${localize(tiny * 2)} / ${localize(tiny * 2)}`;
+
+    expect(progressFor('tiny')?.title).toBe(tinyRange);
+    expect(progressFor('tiny')?.title).not.toBe('0 / 0');
+    expect(progressFor('tiny')?.getAttribute('aria-label')).toBe('Tiny');
+    expect(progressFor('tiny')?.getAttribute('aria-valuetext')).toBe(`100% (${tinyRange})`);
+    expect(progressFor('tiny')?.querySelector<HTMLElement>('.prop-progress-fill')?.style.width).toBe('100%');
+    expect(progressFor('tiny-dependent')?.title).toBe(dependentRange);
+    expect(progressFor('tiny-dependent')?.getAttribute('aria-valuetext')).toBe(`100% (${dependentRange})`);
+    expect(data.current().rows[0]?.properties.quantity).toBe(tiny);
+    expect(data.persisted()?.quantity).toBe(tiny);
+    mounted.unmount();
+  });
+
   it('limits formula dependency depth and work without changing the extracted engine', () => {
     const properties: TestProperty[] = [];
     for (let index = 0; index < 28; index += 1) {

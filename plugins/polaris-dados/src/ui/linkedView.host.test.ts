@@ -440,6 +440,85 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
+  it('renders formula progress bars in linked views with the shared cell presentation', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'default-bar', name: 'Default bar', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar' },
+          { id: 'fractional-bar', name: 'Fractional bar', type: 'formula', options: [], formula: 'Quantity / 3', display: 'bar', max: 3 },
+          { id: 'overflow', name: 'Overflow', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar', max: 20 },
+          { id: 'zero-maximum', name: 'Zero maximum', type: 'formula', options: [], formula: 'Quantity * 10', display: 'bar', max: 0 },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Overflow + 1' },
+          { id: 'text-bar', name: 'Text bar', type: 'formula', options: [], formula: '"Ready"', display: 'bar' },
+          { id: 'manual-bar', name: 'Manual bar', type: 'number', options: [], display: 'bar', max: 5 },
+        ],
+      },
+      rows: [
+        { id: 'widget', title: 'Widget', properties: { name: 'Catalog label', quantity: 4, price: 10, 'manual-bar': 2 } },
+      ],
+    };
+    const mounted = mountLinked(
+      { title: 'Progress view', columnOrder: ['default-bar', 'fractional-bar', 'overflow', 'zero-maximum', 'dependent', 'text-bar', 'manual-bar'], filter: null },
+      snapshot,
+    );
+    const { element } = mounted;
+    const progressFor = (id: string) => element.querySelector<HTMLElement>(`[data-field="${id}"] .prop-progress`);
+    const labelFor = (id: string) => progressFor(id)?.querySelector('.prop-progress-label')?.textContent;
+
+    expect(labelFor('default-bar')).toBe('40%');
+    expect(labelFor('fractional-bar')).toBe('44%');
+    expect(progressFor('fractional-bar')?.getAttribute('aria-valuetext')).toBe('44% (1.3333333333333333 / 3)');
+    expect(labelFor('overflow')).toBe('100%');
+    expect(progressFor('overflow')?.title).toBe('40 / 20');
+    expect(progressFor('zero-maximum')?.title).toBe('40 / 100');
+    expect(labelFor('zero-maximum')).toBe('40%');
+    expect(progressFor('overflow')?.hasAttribute('tabindex')).toBe(false);
+    expect(element.querySelector('[data-field="dependent"] [data-value-kind="number"]')?.textContent).toBe('41');
+    expect(element.querySelector('[data-field="text-bar"] [data-value-kind="text"]')?.textContent).toBe('Ready');
+    expect(progressFor('text-bar')).toBeNull();
+    expect(element.querySelector('[data-field="manual-bar"] .prop-progress')).toBeNull();
+    expect(mounted.data.patchCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
+  it('preserves tiny finite formula ranges in linked progress labels and accessibility text', () => {
+    const tiny = 1e-110;
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'tiny', name: 'Tiny', type: 'formula', options: [], formula: 'Quantity', display: 'bar', max: tiny },
+          { id: 'tiny-dependent', name: 'Tiny dependent', type: 'formula', options: [], formula: 'Tiny * 2', display: 'bar', max: tiny * 2 },
+        ],
+      },
+      rows: [{ id: 'widget', title: 'Widget', properties: { name: 'Widget', quantity: tiny, price: 10 } }],
+    };
+    const mounted = mountLinked({ title: 'Tiny progress', columnOrder: ['tiny', 'tiny-dependent'], filter: null }, snapshot);
+    const { element } = mounted;
+    const progressFor = (id: string) => element.querySelector<HTMLElement>(`[data-field="${id}"] .prop-progress`);
+    const localize = (value: number) =>
+      new Intl.NumberFormat('en', { maximumSignificantDigits: 21, notation: 'scientific' }).format(value);
+    const tinyRange = `${localize(tiny)} / ${localize(tiny)}`;
+    const dependentRange = `${localize(tiny * 2)} / ${localize(tiny * 2)}`;
+
+    expect(progressFor('tiny')?.title).toBe(tinyRange);
+    expect(progressFor('tiny')?.title).not.toBe('0 / 0');
+    expect(progressFor('tiny')?.getAttribute('aria-label')).toBe('Tiny');
+    expect(progressFor('tiny')?.getAttribute('aria-valuetext')).toBe(`100% (${tinyRange})`);
+    expect(progressFor('tiny')?.querySelector<HTMLElement>('.prop-progress-fill')?.style.width).toBe('100%');
+    expect(progressFor('tiny-dependent')?.title).toBe(dependentRange);
+    expect(progressFor('tiny-dependent')?.getAttribute('aria-valuetext')).toBe(`100% (${dependentRange})`);
+    expect(mounted.data.patchCalls).toHaveLength(0);
+    mounted.cleanup();
+  });
+
   it('preserves priority-control focus through toggle and reorder without stealing another root focus', () => {
     const mounted = mountLinked({
       title: 'Inventory view',

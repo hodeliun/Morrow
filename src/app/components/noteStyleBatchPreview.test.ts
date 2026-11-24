@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { emptyWorkspace, newPageMeta } from '../../core/model';
 import type { PageId, PageMeta, WorkspaceState } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
-import { legacyNoteStyle, projectNoteStyle } from '../../core/noteStyle';
+import { legacyNoteStyle, projectNoteStyle, supportsNoteStyleKind } from '../../core/noteStyle';
 import type { NoteStyle } from '../../core/noteStyle';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
@@ -215,7 +215,8 @@ function makeSession(): SessionHarness {
       return Boolean(
         !closed &&
           !fenced &&
-          page?.kind === 'page' &&
+          page &&
+          supportsNoteStyleKind(page.kind) &&
           !isEffectivelyTrashed(currentState.pages, id) &&
           !page.encrypted &&
           !unreadable.has(id) &&
@@ -225,17 +226,19 @@ function makeSession(): SessionHarness {
       );
     },
     canUpdateNoteStyleSource(id: PageId) {
+      const page = currentState.pages[id];
       return Boolean(
         !unrepresentable.has(id) &&
           !closed &&
           !fenced &&
           writable.has(id) &&
-          currentState.pages[id]?.kind === 'page',
+          page &&
+          supportsNoteStyleKind(page.kind),
       );
     },
     readNoteStyle(id: PageId) {
       const page = currentState.pages[id];
-      if (closed || !page || page.kind !== 'page')
+      if (closed || !page || !supportsNoteStyleKind(page.kind))
         return { ok: false as const, code: 'unsupported' as const, message: 'unavailable' };
       return {
         ok: true as const,
@@ -358,10 +361,14 @@ function makeFixture(): { session: SessionHarness; state: WorkspaceState } {
   add('partial-style', 'Partial style', { extra: { morrowNoteStyle: { font: 'sans' } } });
   session.setStyleRepresentable('flow-style', false);
   session.setStyleRepresentable('empty-flow-style', false);
-  add('journal-root', 'Journal', { kind: 'journal' }, false);
-  add('template-root', 'Templates', { kind: 'templates' }, false);
-  session.setPath('journal-root', 'Journal');
-  session.setPath('template-root', 'Templates');
+  add('journal-root', 'Journal', { kind: 'journal' });
+  add('template-root', 'Templates', { kind: 'templates' });
+  add('folder-container', 'Folder-backed container', { kind: 'journal' }, false);
+  session.setPath('folder-container', 'Folder.md');
+  add('encrypted-container', 'Encrypted container', { kind: 'journal', encrypted: true });
+  add('unreadable-container', 'Unreadable container', { kind: 'templates' });
+  add('protected-container', 'Protected container', { kind: 'journal' });
+  add('trash-container', 'Trashed container', { kind: 'templates', trashedAt: 3 }, false);
   add('daily', '2026-11-24', { parentId: 'journal-root', dailyDate: '2026-11-24' });
   add('template-note', 'Template note', { parentId: 'template-root' });
   add('extra-1', 'Extra one');
@@ -380,7 +387,9 @@ function makeFixture(): { session: SessionHarness; state: WorkspaceState } {
   add('datos-row', 'Datos row', { parentId: 'datos' });
 
   session.session.unreadable.add('unreadable');
+  session.session.unreadable.add('unreadable-container');
   session.session.protectedReasons.set('protected', 'Host protected');
+  session.session.protectedReasons.set('protected-container', 'Host protected');
   session.setState({ ...state, pages });
   return { session, state: { ...state, pages } };
 }
@@ -405,8 +414,10 @@ function createHost(runtime: RuntimeHarness['runtime']) {
 }
 
 describe('existing note-style preview', () => {
-  it('classifies preserved, matching, opaque, protected, trashed, and unsupported sources', () => {
+  it('classifies writable containers, protected roots, folder-only containers, and unsupported sources', () => {
     const before = makeFixture();
+    expect(before.session.session.pathOf('folder-container')).toBe('Folder.md');
+    expect(before.session.session.hasWritableNoteStyleSource('folder-container')).toBe(false);
     const runtime = makeRuntime(before.session.session);
     const { host } = createHost(runtime.runtime);
     const beforeText = JSON.stringify(before.session.session.getState());
@@ -414,20 +425,15 @@ describe('existing note-style preview', () => {
     const preserve = host.create('preserve');
     expect(preserve?.summary).toMatchObject({
       mode: 'preserve',
-      candidateCount: 6,
+      candidateCount: 8,
       preservedCount: 7,
       noOpCount: 0,
-      protectedPageCount: 4,
+      protectedPageCount: 7,
       protectedFormatCount: 0,
       unsupportedSourceCount: 1,
-      unsupportedContainerCount: 2,
+      unsupportedContainerCount: 1,
     });
-    expect(preserve?.summary.titles).toEqual([
-      'No override',
-      '2026-11-24',
-      'Template note',
-      'Extra one',
-    ]);
+    expect(preserve?.summary.titles).toEqual(['No override', 'Journal', 'Templates', '2026-11-24']);
     expect(preserve?.summary.titles).toHaveLength(4);
     expect(preserve?.summary).not.toHaveProperty('targets');
     expect(JSON.stringify(preserve?.summary)).not.toContain('future-format');
@@ -436,13 +442,13 @@ describe('existing note-style preview', () => {
     expect(preserve?.isCurrent()).toBe(false);
     expect(overwrite?.summary).toMatchObject({
       mode: 'overwrite',
-      candidateCount: 9,
+      candidateCount: 11,
       preservedCount: 0,
       noOpCount: 1,
-      protectedPageCount: 4,
+      protectedPageCount: 7,
       protectedFormatCount: 3,
       unsupportedSourceCount: 1,
-      unsupportedContainerCount: 2,
+      unsupportedContainerCount: 1,
     });
     expect(overwrite?.summary.titles).toHaveLength(4);
     expect(JSON.stringify(overwrite?.summary)).not.toContain('datos-row');
@@ -479,7 +485,7 @@ describe('existing note-style preview', () => {
     const preview = host.create('overwrite');
 
     expect(preview?.summary).toMatchObject({
-      candidateCount: 10,
+      candidateCount: 12,
       noOpCount: 0,
       protectedFormatCount: 3,
     });
@@ -583,8 +589,8 @@ describe('existing note-style preview', () => {
 
     const preview = host.create('overwrite');
 
-    expect(preview?.summary.protectedPageCount).toBe(6);
-    expect(preview?.summary.candidateCount).toBe(9);
+    expect(preview?.summary.protectedPageCount).toBe(9);
+    expect(preview?.summary.candidateCount).toBe(11);
     expect(preview?.summary.titles).not.toContain('Readable child');
   });
 
@@ -786,6 +792,162 @@ describe('existing note-style preview', () => {
       expect(host.create('preserve')).toBeNull();
       expect(host.create('overwrite')).toBeNull();
     } finally {
+      await session.close();
+    }
+  });
+
+  it('batches physical Journal and Templates notes with ordinary notes and restores their exact sources', async () => {
+    const sources = {
+      'Journal.md': '---\nkind: journal\ntitle: Journal\nstatus: pending\n---\nJournal root body.  \n',
+      'Journal/Entry.md': '---\ntitle: Entry\n---\nJournal child body.\n',
+      'Templates.md': [
+        '---',
+        'kind: templates',
+        'title: Templates',
+        'owner: original',
+        'morrowNoteStyle:',
+        '  font: mono # retain the original style comment',
+        '  fontSize: 14.5',
+        '  lineHeight: 1.75',
+        '  blockSpacing: 8',
+        '  width: comfortable',
+        '  futureSetting: keep',
+        '---',
+        'Templates root body.  ',
+        '',
+      ].join('\n'),
+      'Templates/Example.md': '---\ntitle: Example\n---\nTemplate child body.\n',
+      'Plain.md': [
+        '---',
+        'title: Plain',
+        'morrowNoteStyle:',
+        '  font: mono',
+        '  fontSize: 14.5',
+        '  lineHeight: 1.75',
+        '  blockSpacing: 8',
+        '  width: comfortable',
+        '---',
+        'Plain note body.\n',
+      ].join('\n'),
+    };
+    const vault = new ObservedPreviewVault(sources);
+    const session = await openPreviewSession(vault);
+    const pageIdFor = (current: WorkspaceSession, path: string) =>
+      Object.keys(current.getState().pages).find((id) => current.pathOf(id) === path);
+    const journalId = pageIdFor(session, 'Journal.md');
+    const journalChildId = pageIdFor(session, 'Journal/Entry.md');
+    const templatesId = pageIdFor(session, 'Templates.md');
+    const templateChildId = pageIdFor(session, 'Templates/Example.md');
+    const plainId = pageIdFor(session, 'Plain.md');
+    if (!journalId || !journalChildId || !templatesId || !templateChildId || !plainId)
+      throw new Error('The physical Markdown fixture pages did not load.');
+
+    expect(session.getState().pages[journalId]?.kind).toBe('journal');
+    expect(session.getState().pages[templatesId]?.kind).toBe('templates');
+    expect(session.hasWritableNoteStyleSource(journalId)).toBe(true);
+    expect(session.hasWritableNoteStyleSource(templatesId)).toBe(true);
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+    let reopenedSession: WorkspaceSession | null = null;
+
+    try {
+      const preserve = host.create('preserve');
+      expect(preserve?.summary).toMatchObject({
+        candidateCount: 3,
+        preservedCount: 2,
+        unsupportedContainerCount: 0,
+      });
+      expect(await confirmNoteStyleBatchPreview(preserve!)).toMatchObject({
+        confirmedCount: 3,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(readLastNoteStyleBatchReceipt(host)?.writes.map((write) => write.pageId)).toEqual(
+        expect.arrayContaining([journalId, journalChildId, templateChildId]),
+      );
+      expect(await undoLastNoteStyleBatch(host)).toMatchObject({
+        restoredCount: 3,
+        skippedCount: 0,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      for (const [path, source] of Object.entries(sources)) expect(vault.text(path)).toBe(source);
+
+      const overwrite = host.create('overwrite');
+      expect(overwrite?.summary).toMatchObject({ candidateCount: 5, unsupportedContainerCount: 0 });
+      expect(await confirmNoteStyleBatchPreview(overwrite!)).toMatchObject({
+        confirmedCount: 5,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(readLastNoteStyleBatchReceipt(host)?.writes.map((write) => write.pageId)).toEqual(
+        expect.arrayContaining([journalId, journalChildId, templatesId, templateChildId, plainId]),
+      );
+
+      const templatesBeforeDivergence = session.readNoteStyle(templatesId);
+      if (!templatesBeforeDivergence.ok) throw new Error(templatesBeforeDivergence.message);
+      const diverged = await session.setNoteStyle({
+        pageId: templatesId,
+        style: OTHER_STYLE,
+        expectedRevision: templatesBeforeDivergence.value.revision,
+      });
+      expect(diverged.ok).toBe(true);
+      await session.flush();
+      const divergentSource = vault.text('Templates.md');
+      if (!divergentSource) throw new Error('The divergent container source was not saved.');
+
+      expect(await undoLastNoteStyleBatch(host)).toMatchObject({
+        restoredCount: 4,
+        skippedCount: 1,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(vault.text('Journal.md')).toBe(sources['Journal.md']);
+      expect(vault.text('Journal/Entry.md')).toBe(sources['Journal/Entry.md']);
+      expect(vault.text('Templates/Example.md')).toBe(sources['Templates/Example.md']);
+      expect(vault.text('Plain.md')).toBe(sources['Plain.md']);
+      expect(vault.text('Templates.md')).toBe(divergentSource);
+      expect(vault.text('Templates.md')).toContain('futureSetting: keep');
+
+      await session.close();
+      const reopened = await openPreviewSession(vault);
+      reopenedSession = reopened;
+      const reopenedJournalId = pageIdFor(reopened, 'Journal.md');
+      const reopenedJournalChildId = pageIdFor(reopened, 'Journal/Entry.md');
+      const reopenedTemplatesId = pageIdFor(reopened, 'Templates.md');
+      const reopenedTemplateChildId = pageIdFor(reopened, 'Templates/Example.md');
+      const reopenedPlainId = pageIdFor(reopened, 'Plain.md');
+      if (
+        !reopenedJournalId ||
+        !reopenedJournalChildId ||
+        !reopenedTemplatesId ||
+        !reopenedTemplateChildId ||
+        !reopenedPlainId
+      )
+        throw new Error('The Markdown fixture pages did not reopen.');
+      expect(reopened.getState().pages[reopenedJournalChildId]?.parentId).toBe(reopenedJournalId);
+      expect(reopened.getState().pages[reopenedTemplateChildId]?.parentId).toBe(reopenedTemplatesId);
+      expect(reopened.readNoteStyle(reopenedJournalId)).toMatchObject({
+        ok: true,
+        value: { style: null },
+      });
+      expect(reopened.readNoteStyle(reopenedTemplatesId)).toMatchObject({
+        ok: true,
+        value: { style: OTHER_STYLE },
+      });
+      expect(reopened.readNoteStyle(reopenedPlainId)).toMatchObject({
+        ok: true,
+        value: { style: OTHER_STYLE },
+      });
+      for (const [path, source] of Object.entries(sources)) {
+        expect(vault.text(path)).toBe(path === 'Templates.md' ? divergentSource : source);
+      }
+      await reopened.close();
+      reopenedSession = null;
+    } finally {
+      await reopenedSession?.close();
+      disposeNoteStyleBatchPreviewHost(host);
       await session.close();
     }
   });

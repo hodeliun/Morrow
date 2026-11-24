@@ -16,7 +16,7 @@ import { MemoryVault } from './memoryVault';
 import { SaveQueue } from './saveQueue';
 import { WorkspaceSession } from './session';
 import type { NoteStyleResult } from './session';
-import type { DocNode, PageId } from '../core/model';
+import type { DocNode, PageId, PageKind } from '../core/model';
 import { VaultRepository } from './vaultRepository';
 import type { WorkspaceRepository, WriteBatch } from './repository';
 import type { VaultOp, VaultOpResult } from '../core/vault/plan';
@@ -55,6 +55,12 @@ const EDITED: NoteStyle = {
   blockSpacing: 17,
   width: 'wide',
 };
+
+const STYLEABLE_CONTAINERS = [
+  { kind: 'journal', path: 'Journal.md', childPath: 'Journal/2026-11-24.md' },
+  { kind: 'templates', path: 'Templates.md', childPath: 'Templates/Child.md' },
+] as const;
+const CONTAINER_STYLE_VARIANTS = ['inherited', 'explicit'] as const;
 
 const textDoc = (text: string): DocNode => ({
   type: 'doc',
@@ -196,6 +202,33 @@ class DelayedStyleVault extends MemoryVault {
   }
 }
 
+class HeldNoteStyleVault extends MemoryVault {
+  private held: { path: string; entered: () => void; wait: Promise<void> } | null = null;
+
+  hold(path: string): { entered: Promise<void>; release: () => void } {
+    let enteredResolve!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredResolve = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.held = { path, entered: enteredResolve, wait };
+    return { entered, release };
+  }
+
+  override async apply(ops: VaultOp[]): Promise<VaultOpResult[]> {
+    const held = this.held;
+    if (held && ops.some((op) => op.op === 'write' && op.path === held.path)) {
+      this.held = null;
+      held.entered();
+      await held.wait;
+    }
+    return super.apply(ops);
+  }
+}
+
 class GatedInitializeRepository extends VaultRepository {
   private nextGate: { entered: () => void; wait: Promise<void>; release: () => void } | null = null;
 
@@ -328,8 +361,411 @@ describe('typed note style persistence', () => {
     expect(session.pathOf(folderId)).toBe('x.md');
     expect(session.hasWritableNoteStyleSource(folderId)).toBe(false);
     expect(session.hasWritableNoteStyleSource(childId)).toBe(true);
+    const snapshot = session.readNoteStyle(folderId);
+    if (!snapshot.ok) throw new Error(snapshot.message);
+    expect(
+      await session.setNoteStyle({ pageId: folderId, style: EDITED, expectedRevision: snapshot.value.revision }),
+    ).toMatchObject({ ok: false });
+    expect(vault.text('x.md')).toBeUndefined();
+    expect(vault.text('x.md/Child.md')).toBe('Child note.\n');
     await session.close();
   });
+
+  describe.each(STYLEABLE_CONTAINERS)('$kind container styles', (container) => {
+    it('rejects an isolated style batch that changes the container kind', async () => {
+      const vault = new MemoryVault({ [container.path]: `---\nkind: ${container.kind}\n---\nBody.\n` });
+      const repository = new VaultRepository(vault, nextId);
+      const session = await open(vault, repository);
+      const pageId = pageIdAt(session, container.path);
+      const before = session.getState().pages[pageId]!;
+      const changedKind: PageKind = container.kind === 'journal' ? 'templates' : 'journal';
+      const changed = { ...before, kind: changedKind };
+      const state = { ...session.getState(), pages: { ...session.getState().pages, [pageId]: changed } };
+
+      expect(
+        repository.validateWrite!({
+          pages: [changed],
+          docs: [],
+          removed: [],
+          noteStylePages: [pageId],
+          state,
+        }),
+      ).toBe('A note-style write cannot change the page kind.');
+      await session.close();
+    });
+
+    it.each(CONTAINER_STYLE_VARIANTS)(
+      'applies, reopens, and restores %s style while preserving its child identity',
+      async (variant) => {
+        const source =
+          variant === 'inherited'
+            ? `---\nkind: ${container.kind}\nstatus: pending\n---\nContainer body stays exact.\n`
+            : [
+                '---',
+                `kind: ${container.kind}`,
+                'morrowNoteStyle:',
+                '  font: "sans" # original font note',
+                '  fontSize: null',
+                '  width: wide',
+                '  futureSetting:',
+                '    mode: keep',
+                'status: pending',
+                '---',
+                'Container body stays exact.',
+                '',
+              ].join('\n');
+        const childSource = '---\ntitle: Child\n---\nChild bytes stay exact.\n';
+        const vault = new ObservedMemoryVault({ [container.path]: source, [container.childPath]: childSource });
+        const session = await open(vault);
+        const containerId = pageIdAt(session, container.path);
+        const childId = pageIdAt(session, container.childPath);
+        const childParentId = session.getState().pages[childId]!.parentId;
+
+        expect(session.getState().pages[containerId]?.kind).toBe(container.kind);
+        expect(childParentId).toBe(containerId);
+        expect(session.hasWritableNoteStyleSource(containerId)).toBe(true);
+        expect(session.canUpdateNoteStyleSource(containerId, EDITED)).toBe(true);
+        const initial = session.readNoteStyle(containerId);
+        if (!initial.ok) throw new Error(initial.message);
+
+        const applied = await session.setNoteStyleWithRestoreContext({
+          pageId: containerId,
+          style: EDITED,
+          expectedRevision: initial.value.revision,
+        });
+        expect(applied).toMatchObject({ ok: true, op: 'write' });
+        if (!applied.ok) throw new Error(applied.message);
+        const appliedText = vault.text(container.path)!;
+        const appliedFrontmatter = splitFrontmatter(appliedText);
+        expect(appliedFrontmatter.data?.kind).toBe(container.kind);
+        expect(appliedFrontmatter.data?.status).toBe('pending');
+        expect(appliedFrontmatter.data?.morrowNoteStyle).toMatchObject(EDITED);
+        expect(appliedFrontmatter.body).toBe(splitFrontmatter(source).body);
+        if (variant === 'explicit') {
+          expect(appliedFrontmatter.data?.morrowNoteStyle).toMatchObject({ futureSetting: { mode: 'keep' } });
+          expect(appliedText).toContain('# original font note');
+        }
+        expect(vault.paths()).toContain(container.childPath);
+        expect(vault.text(container.childPath)).toBe(childSource);
+        const containerWrites = vault.operationBatches
+          .flat()
+          .filter((op) => op.op === 'write' && op.path === container.path);
+        expect(containerWrites).toHaveLength(1);
+        expect(containerWrites[0]).toMatchObject({ expect: source });
+        expect(
+          vault.operationBatches.flat().some((op) => op.op === 'write' && op.path === container.childPath),
+        ).toBe(false);
+        expect(
+          session.execute({ type: 'page.setNoteStyle', id: containerId, style: EDITED, now: 1 }).ok,
+        ).toBe(false);
+        expect(
+          session.executeAll([{ type: 'page.setNoteStyle', id: containerId, style: EDITED, now: 1 }]).ok,
+        ).toBe(false);
+        expect(session.getState().pages[containerId]?.extra.morrowNoteStyle).toEqual(
+          appliedFrontmatter.data?.morrowNoteStyle,
+        );
+
+        await session.close();
+        const reopened = await open(vault);
+        expect(pageIdAt(reopened, container.path)).toBe(containerId);
+        expect(pageIdAt(reopened, container.childPath)).toBe(childId);
+        expect(reopened.getState().pages[childId]?.parentId).toBe(childParentId);
+        expect(reopened.readNoteStyle(containerId)).toMatchObject({ ok: true, value: { style: EDITED } });
+        const current = reopened.readNoteStyle(containerId);
+        if (!current.ok) throw new Error(current.message);
+
+        if (variant === 'inherited') {
+          if (applied.restoreContext?.kind !== 'inherited') throw new Error('Expected inherited style context.');
+          expect(
+            await reopened.restoreInheritedNoteStyle({
+              pageId: containerId,
+              expectedRevision: current.value.revision,
+              appliedStyle: EDITED,
+              context: applied.restoreContext.context,
+            }),
+          ).toMatchObject({ ok: true, value: { style: null } });
+        } else {
+          if (applied.restoreContext?.kind !== 'explicit') throw new Error('Expected explicit style context.');
+          expect(
+            await reopened.restoreExplicitNoteStyle({
+              pageId: containerId,
+              expectedRevision: current.value.revision,
+              appliedStyle: EDITED,
+              context: applied.restoreContext.context,
+            }),
+          ).toMatchObject({ ok: true });
+        }
+        expect(vault.text(container.path)).toBe(source);
+        expect(vault.text(container.childPath)).toBe(childSource);
+        await reopened.close();
+
+        const restored = await open(vault);
+        expect(pageIdAt(restored, container.path)).toBe(containerId);
+        expect(pageIdAt(restored, container.childPath)).toBe(childId);
+        expect(restored.getState().pages[childId]?.parentId).toBe(childParentId);
+        expect(restored.readNoteStyle(containerId)).toMatchObject({
+          ok: true,
+          value: {
+            style:
+              variant === 'inherited'
+                ? null
+                : { font: 'sans', fontSize: 16, lineHeight: 1.68, blockSpacing: 9, width: 'wide' },
+          },
+        });
+        await restored.close();
+      },
+    );
+
+    it('refuses an external byte conflict once and preserves the container and child files', async () => {
+      const source = `---\nkind: ${container.kind}\nstatus: pending\n---\nOriginal container bytes.\n`;
+      const childSource = 'Child bytes stay exact.\n';
+      const vault = new ExternalConflictVault({ [container.path]: source, [container.childPath]: childSource });
+      const session = await open(vault);
+      const containerId = pageIdAt(session, container.path);
+      const childId = pageIdAt(session, container.childPath);
+      const childParentId = session.getState().pages[childId]!.parentId;
+      const snapshot = session.readNoteStyle(containerId);
+      if (!snapshot.ok) throw new Error(snapshot.message);
+      const externalBytes = source.replace('Original container bytes.', 'External container bytes stay.');
+      vault.conflict = { path: container.path, text: externalBytes };
+
+      expect(
+        await session.setNoteStyleWithRestoreContext({
+          pageId: containerId,
+          style: EDITED,
+          expectedRevision: snapshot.value.revision,
+        }),
+      ).toMatchObject({ ok: false, code: 'save-conflict' });
+      expect(vault.styleWriteAttempts).toBe(1);
+      expect(vault.text(container.path)).toBe(externalBytes);
+      expect(vault.modifiedTime(container.path)).toBe(vault.conflictMtime);
+      expect(vault.text(container.childPath)).toBe(childSource);
+      expect(session.getState().pages[childId]?.parentId).toBe(childParentId);
+      expect(session.queue.hasPending()).toBe(false);
+      await session.close();
+    });
+  });
+
+  it('keeps the acknowledged write receipt when a synchronous observer changes the container kind', async () => {
+    const vault = new MemoryVault({ 'Journal.md': '---\nkind: journal\n---\nJournal body.\n' });
+    const session = await open(vault);
+    const pageId = pageIdAt(session, 'Journal.md');
+    const initial = session.readNoteStyle(pageId);
+    if (!initial.ok) throw new Error(initial.message);
+    let switched = false;
+    const unsubscribe = session.subscribe(() => {
+      if (switched || !splitFrontmatter(vault.text('Journal.md')!).data?.morrowNoteStyle) return;
+      switched = true;
+      expect(session.execute({ type: 'page.setKind', id: pageId, kind: 'database', now: 812 }).ok).toBe(true);
+    });
+
+    const applied = await session.setNoteStyleWithRestoreContext({
+      pageId,
+      style: EDITED,
+      expectedRevision: initial.value.revision,
+    });
+    unsubscribe();
+
+    expect(switched).toBe(true);
+    expect(session.getState().pages[pageId]?.kind).toBe('database');
+    expect(applied).toMatchObject({ ok: true, op: 'write', restoreContext: { kind: 'inherited' } });
+    if (!applied.ok) throw new Error(applied.message);
+    expect(applied.value.style).toEqual(EDITED);
+    expect(await session.flush()).toBe(true);
+    expect(splitFrontmatter(vault.text('Journal.md')!).data?.morrowNoteStyle).toMatchObject(EDITED);
+    await session.close();
+  });
+
+  it('merges a confirmed apply into the latest page after its kind changes during the source CAS', async () => {
+    const vault = new HeldNoteStyleVault({ 'Journal.md': '---\nkind: journal\n---\nJournal body.\n' });
+    const session = await open(vault);
+    const pageId = pageIdAt(session, 'Journal.md');
+    const initial = session.readNoteStyle(pageId);
+    if (!initial.ok) throw new Error(initial.message);
+    const gate = vault.hold('Journal.md');
+    const applying = session.setNoteStyleWithRestoreContext({
+      pageId,
+      style: EDITED,
+      expectedRevision: initial.value.revision,
+    });
+    await gate.entered;
+    expect(session.execute({ type: 'page.setKind', id: pageId, kind: 'database', now: 813 }).ok).toBe(true);
+    const kindUpdatedAt = session.getState().pages[pageId]!.updatedAt;
+    gate.release();
+
+    const applied = await applying;
+    expect(applied).toMatchObject({ ok: true, op: 'write' });
+    expect(session.getState().pages[pageId]?.kind).toBe('database');
+    expect(session.getState().pages[pageId]?.updatedAt).toBe(kindUpdatedAt);
+    expect(session.getState().pages[pageId]?.extra.morrowNoteStyle).toMatchObject(EDITED);
+    expect(await session.flush()).toBe(true);
+    expect(splitFrontmatter(vault.text('Journal.md')!).data?.kind).toBe('database');
+    expect(splitFrontmatter(vault.text('Journal.md')!).data?.morrowNoteStyle).toMatchObject(EDITED);
+    await session.close();
+  });
+
+  it.each(CONTAINER_STYLE_VARIANTS)(
+    'merges the confirmed %s inverse after a container kind change during the source CAS',
+    async (variant) => {
+      const source =
+        variant === 'inherited'
+          ? '---\nkind: journal\nstatus: pending\n---\nJournal body.\n'
+          : '---\nkind: journal\nmorrowNoteStyle:\n  font: sans\n  fontSize: 15\n  width: wide\n  futureSetting: keep\n---\nJournal body.\n';
+      const vault = new HeldNoteStyleVault({ 'Journal.md': source });
+      const session = await open(vault);
+      const pageId = pageIdAt(session, 'Journal.md');
+      const initial = session.readNoteStyle(pageId);
+      if (!initial.ok) throw new Error(initial.message);
+      const applied = await session.setNoteStyleWithRestoreContext({
+        pageId,
+        style: EDITED,
+        expectedRevision: initial.value.revision,
+      });
+      if (!applied.ok || !applied.restoreContext || applied.restoreContext.kind !== variant)
+        throw new Error(`Expected a ${variant} restore context.`);
+      const restoreContext = applied.restoreContext;
+      const current = session.readNoteStyle(pageId);
+      if (!current.ok) throw new Error(current.message);
+      const gate = vault.hold('Journal.md');
+      let restoring: Promise<NoteStyleResult>;
+      if (variant === 'inherited') {
+        if (restoreContext.kind !== 'inherited') throw new Error('Expected an inherited context.');
+        restoring = session.restoreInheritedNoteStyle({
+          pageId,
+          appliedStyle: EDITED,
+          context: restoreContext.context,
+          expectedRevision: current.value.revision,
+        });
+      } else {
+        if (restoreContext.kind !== 'explicit') throw new Error('Expected an explicit context.');
+        restoring = session.restoreExplicitNoteStyle({
+          pageId,
+          appliedStyle: EDITED,
+          context: restoreContext.context,
+          expectedRevision: current.value.revision,
+        });
+      }
+      await gate.entered;
+      expect(session.execute({ type: 'page.setKind', id: pageId, kind: 'database', now: 814 }).ok).toBe(true);
+      gate.release();
+
+      expect(await restoring).toMatchObject({ ok: true });
+      const restoredPage = session.getState().pages[pageId]!;
+      expect(restoredPage.kind).toBe('database');
+      if (variant === 'inherited') {
+        expect(Object.hasOwn(restoredPage.extra, 'morrowNoteStyle')).toBe(false);
+      } else {
+        expect(restoredPage.extra.morrowNoteStyle).toEqual({
+          font: 'sans',
+          fontSize: 15,
+          width: 'wide',
+          futureSetting: 'keep',
+        });
+      }
+      expect(await session.flush()).toBe(true);
+      const storedStyle = splitFrontmatter(vault.text('Journal.md')!).data?.morrowNoteStyle;
+      if (variant === 'inherited') expect(storedStyle).toBeUndefined();
+      else
+        expect(storedStyle).toEqual({
+          font: 'sans',
+          fontSize: 15,
+          width: 'wide',
+          futureSetting: 'keep',
+        });
+      await session.close();
+    },
+  );
+
+  it.each(['journal', 'templates'] as const)(
+    'refuses style writes and restoration on an unlocked encrypted %s container',
+    async (kind) => {
+      const vault = new MemoryVault({ 'Note.md': 'Ordinary note body.\n' });
+      const repository = new VaultRepository(vault, nextId);
+      const session = await open(vault, repository);
+      const pageId = pageIdAt(session, 'Note.md');
+      const initial = session.readNoteStyle(pageId);
+      if (!initial.ok) throw new Error(initial.message);
+      const applied = await session.setNoteStyleWithRestoreContext({
+        pageId,
+        style: EDITED,
+        expectedRevision: initial.value.revision,
+      });
+      if (!applied.ok || applied.restoreContext?.kind !== 'inherited')
+        throw new Error('Expected a captured inherited restore context.');
+
+      expect((await session.protectPage(pageId, 'review-only password')).ok).toBe(true);
+      expect(session.execute({ type: 'page.setKind', id: pageId, kind, now: 815 }).ok).toBe(true);
+      expect(await session.flush()).toBe(true);
+      expect(session.getState().pages[pageId]).toMatchObject({ kind, encrypted: true });
+      const encryptedSource = vault.text('Note.md');
+      const current = session.readNoteStyle(pageId);
+      if (!current.ok) throw new Error(current.message);
+      const anotherStyle: NoteStyle = { ...EDITED, width: 'full' };
+
+      expect(session.hasWritableNoteStyleSource(pageId)).toBe(false);
+      expect(session.canUpdateNoteStyleSource(pageId, anotherStyle)).toBe(false);
+      expect(
+        await session.setNoteStyleWithRestoreContext({
+          pageId,
+          style: anotherStyle,
+          expectedRevision: current.value.revision,
+        }),
+      ).toMatchObject({ ok: false, code: 'unsupported' });
+      expect(
+        await session.restoreInheritedNoteStyle({
+          pageId,
+          appliedStyle: EDITED,
+          context: applied.restoreContext.context,
+          expectedRevision: current.value.revision,
+        }),
+      ).toMatchObject({ ok: false, code: 'unsupported' });
+      expect(vault.text('Note.md')).toBe(encryptedSource);
+
+      const before = session.getState().pages[pageId]!;
+      const changed = {
+        ...before,
+        updatedAt: before.updatedAt + 1,
+        extra: { ...before.extra, morrowNoteStyle: anotherStyle },
+      };
+      const changedState = {
+        ...session.getState(),
+        pages: { ...session.getState().pages, [pageId]: changed },
+      };
+      expect(
+        repository.validateWrite!({
+          pages: [changed],
+          docs: [],
+          removed: [],
+          noteStylePages: [pageId],
+          state: changedState,
+        }),
+      ).toBe('Encrypted journals and templates cannot use note styles.');
+
+      const restoredExtra = { ...before.extra };
+      delete restoredExtra.morrowNoteStyle;
+      const restoredPage = { ...before, updatedAt: before.updatedAt + 2, extra: restoredExtra };
+      const restoredState = {
+        ...session.getState(),
+        pages: { ...session.getState().pages, [pageId]: restoredPage },
+      };
+      expect(
+        repository.validateWrite!({
+          pages: [restoredPage],
+          docs: [],
+          removed: [],
+          noteStylePages: [pageId],
+          noteStyleRestore: {
+            kind: 'restore-inherited',
+            pageId,
+            appliedStyle: EDITED,
+            context: applied.restoreContext.context,
+          },
+          state: restoredState,
+        }),
+      ).toBe('Encrypted journals and templates cannot use note styles.');
+      await session.close();
+    },
+  );
 
   it('preflights the current style serializer without writing flow-style YAML', async () => {
     const source = [
@@ -697,12 +1133,18 @@ describe('typed note style persistence', () => {
     const checkPageId = pageIdAt(checkSession, 'Note.md');
     const checkSnapshot = checkSession.readNoteStyle(checkPageId);
     if (!checkSnapshot.ok) throw new Error(checkSnapshot.message);
+    let checkNotifications = 0;
+    const unsubscribeCheck = checkSession.subscribe(() => checkNotifications++);
     const checked = await checkSession.setNoteStyleWithRestoreContext({
       pageId: checkPageId,
       style: EDITED,
       expectedRevision: checkSnapshot.value.revision,
     });
     expect(checked).toMatchObject({ ok: true, op: 'check', restoreContext: null });
+    const checkedSnapshot = checkSession.readNoteStyle(checkPageId);
+    expect(checkedSnapshot).toMatchObject({ ok: true, value: { revision: checkSnapshot.value.revision } });
+    expect(checkNotifications).toBe(0);
+    unsubscribeCheck();
     expect(checkVault.operationBatches.flat().some((op) => op.op === 'check' && op.path === 'Note.md')).toBe(
       true,
     );
@@ -1156,7 +1598,7 @@ describe('typed note style persistence', () => {
   });
 
   it('refuses to style a protected read-only note without touching its source', async () => {
-    const source = '<!-- morrow:image align="right" width="35%" -->\n';
+    const source = '---\nkind: journal\n---\n<!-- morrow:image align="right" width="35%" -->\n';
     const vault = new MemoryVault({ 'Protected.md': source });
     const session = await open(vault);
     const pageId = pageIdAt(session, 'Protected.md');

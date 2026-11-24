@@ -2517,8 +2517,40 @@ export function mountPolarisDados(
     const output = document.createElement('span');
     output.dataset.valueKind = value.kind;
     output.dataset.propertyId = property.id;
-    output.textContent = value.text;
-    output.setAttribute('aria-label', `${property.name}: ${value.accessibleText}`);
+    const progressBar = property.type === 'formula' && property.display === 'bar' && value.kind === 'number';
+    if (progressBar) {
+      const requestedMaximum = property.max ?? 100;
+      const maximum = Number.isFinite(requestedMaximum) && requestedMaximum > 0 ? requestedMaximum : 100;
+      const ratio = value.value / maximum;
+      const percent = (Number.isNaN(ratio) ? 0 : Math.min(1, Math.max(0, ratio))) * 100;
+      const formatProgressNumber = (number: number): string => {
+        const notation = /e/i.test(number.toString()) ? 'scientific' : 'standard';
+        return new Intl.NumberFormat(locale, { maximumSignificantDigits: 21, notation }).format(number);
+      };
+      const range = `${formatProgressNumber(value.value)} / ${formatProgressNumber(maximum)}`;
+      output.className = 'prop-progress';
+      output.title = range;
+      output.setAttribute('role', 'progressbar');
+      output.setAttribute('aria-valuemin', '0');
+      output.setAttribute('aria-valuemax', '100');
+      output.setAttribute('aria-valuenow', String(percent));
+      output.setAttribute('aria-valuetext', `${Math.round(percent)}% (${range})`);
+      output.setAttribute('aria-label', property.name);
+
+      const track = document.createElement('span');
+      track.className = 'prop-progress-track';
+      const fill = document.createElement('span');
+      fill.className = 'prop-progress-fill';
+      fill.style.width = `${percent}%`;
+      track.append(fill);
+      const label = document.createElement('span');
+      label.className = 'prop-progress-label';
+      label.textContent = `${Math.round(percent)}%`;
+      output.append(track, label);
+    } else {
+      output.textContent = value.text;
+      output.setAttribute('aria-label', `${property.name}: ${value.accessibleText}`);
+    }
     if (value.kind === 'error') {
       const details = document.createElement('details');
       const heading = document.createElement('summary');

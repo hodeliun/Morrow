@@ -9,6 +9,14 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, '../..');
 const pluginSource = resolve(repositoryRoot, 'plugins/polaris-dados');
 const bundleSource = resolve(repositoryRoot, 'dist/polaris-dados/main.js');
+const containerStyleDemoFiles = [
+  { path: "Journal.md", text: "---\r\nkind: journal\r\nlabel: journal # preserve this comment\r\n---\r\nJournal container body.\r\n" },
+  { path: "Templates.md", text: "---\nkind: templates\nlabel: templates\nmorrowNoteStyle:\n  font: 'serif'\n  fontSize: null\n  width: wide\n  extraStyle:\n    retained: true\n---\nTemplates container body.\n" },
+  { path: "Journal/2026-11-20.md", text: "A dated journal note.\n" },
+  { path: "Templates/Recipe.md", text: "An existing template child.\n" },
+  { path: "Folder only.md/Child.md", text: "An ordinary file in a folder with an extension in its name.\n" },
+  { path: "Container navigation.md", text: "Open [[Journal]] and [[Templates]] as documents.\n" },
+];
 const args = process.argv.slice(2);
 const usage =
   'Usage: node scripts/pilot/create-polaris-dados-fixture.mjs [--checkbox-demo] [--documento-demo] [--arquivos-demo] <new-or-empty-origin-vault> [new-or-empty-destination-vault]\n';
@@ -91,7 +99,7 @@ let idSequence = 0n;
 const now = Date.now();
 const allocateId = (kind) => `${kind}-${firstId + idSequence++}`;
 const destinations = [];
-const pagesPerVault = 3 + (includeCheckboxDemo ? 5 : 0) + (includeDocumentoDemo ? 5 : 0);
+const pagesPerVault = 3 + (includeCheckboxDemo ? 5 : 0) + (includeDocumentoDemo ? 5 + containerStyleDemoFiles.length : 0);
 for (let index = 0; index < targets.length; index += 1) {
   const marker = index === 0 ? 'OPEN-OLD' : 'OPEN-DESTINATION';
   destinations.push(
@@ -411,9 +419,16 @@ async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBa
       trashed: createdAt + 4,
       text: '# Gone target\n\nSynthetic trashed target for the Documento visual demo.\n',
     },
+    ...containerStyleDemoFiles.map((file, index) => ({
+      ...file,
+      id: allocateId('polaris-note'),
+      order: file.path.includes('/') ? 0 : orderBase + 4 + index,
+    })),
   ];
   for (const [index, file] of markdownFiles.entries()) {
-    await writeExclusive(resolve(target, file.path), file.text);
+    const filePath = resolve(target, file.path);
+    await mkdir(dirname(filePath), { recursive: true });
+    await writeExclusive(filePath, file.text);
     pages[file.path] = {
       id: file.id,
       created: createdAt + index,

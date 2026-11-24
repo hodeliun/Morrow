@@ -26,6 +26,7 @@ import {
 } from 'react';
 import { docToPlainText, findUnknownTypes, isDocEmpty } from '../../core/doc';
 import { backlinksTo, unlinkedMentions } from '../../core/links';
+import { supportsNoteStyleKind } from '../../core/noteStyle';
 import { displayTitle, emptyDoc } from '../../core/model';
 import type { DocNode, PageId, PageMeta } from '../../core/model';
 import { childrenOf, isEffectivelyTrashed } from '../../core/tree';
@@ -397,7 +398,7 @@ export function PageView({ id, find, anchor }: { id: PageId; find: string | null
               }}
             />
           </h1>
-          {page.kind === 'page' && nativeEditable && !trashed && !unreadable && (
+          {supportsNoteStyleKind(page.kind) && nativeEditable && !trashed && !unreadable && (
             <NoteStyleAction pageId={id} />
           )}
           {page.kind !== 'database' && <PageTags page={page} editable={nativeEditable} />}

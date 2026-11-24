@@ -26,7 +26,12 @@ import type {
 import { errorMessage, fail, ok } from '../core/result';
 import type { Result } from '../core/result';
 import { childrenOf, isEffectivelyTrashed } from '../core/tree';
-import { isValidNoteStyle, isValidNoteStyleInput, projectNoteStyle } from '../core/noteStyle';
+import {
+  isValidNoteStyle,
+  isValidNoteStyleInput,
+  projectNoteStyle,
+  supportsNoteStyleKind,
+} from '../core/noteStyle';
 import type { NoteStyle } from '../core/noteStyle';
 import {
   findUnrepresentablePageContent,
@@ -318,6 +323,7 @@ export class VaultRepository implements WorkspaceRepository {
     const page = this.currentState?.()?.pages[id];
     const parentId = page?.parentId;
     return Boolean(
+      !(page?.encrypted && (page.kind === 'journal' || page.kind === 'templates')) &&
       placement?.file &&
       extension(placement.file) === 'md' &&
       this.texts.has(id) &&
@@ -330,6 +336,7 @@ export class VaultRepository implements WorkspaceRepository {
     const page = this.currentState?.()?.pages[id];
     const sourceText = page?.encrypted ? this.plainTexts.get(id) : this.texts.get(id);
     return Boolean(
+      !(page?.encrypted && (page.kind === 'journal' || page.kind === 'templates')) &&
       placement?.file &&
       extension(placement.file) === 'md' &&
       sourceText !== undefined &&
@@ -466,8 +473,20 @@ export class VaultRepository implements WorkspaceRepository {
       const before =
         this.lastState && Object.hasOwn(this.lastState.pages, id) ? this.lastState.pages[id] : undefined;
       const placement = this.layout.get(id);
-      if (!page || !before || page.kind !== 'page' || isEffectivelyTrashed(state.pages, id))
-        return 'A note style can only be changed on a live ordinary page.';
+      if (
+        !page ||
+        !before ||
+        !supportsNoteStyleKind(page.kind) ||
+        !supportsNoteStyleKind(before.kind) ||
+        isEffectivelyTrashed(state.pages, id)
+      )
+        return 'A note style can only be changed on a live page, journal, or templates container.';
+      if (page.kind !== before.kind) return 'A note-style write cannot change the page kind.';
+      if (
+        (page.kind === 'journal' || page.kind === 'templates') &&
+        (page.encrypted || before.encrypted)
+      )
+        return 'Encrypted journals and templates cannot use note styles.';
       if (this.isPilotDataRecord(id))
         return 'Note styles cannot be changed on opted-in Polaris Dados records.';
       if (!placement?.file || extension(placement.file) !== 'md' || !this.texts.has(id))
@@ -478,8 +497,8 @@ export class VaultRepository implements WorkspaceRepository {
       if (restore) {
         if (restore.pageId !== id || page.encrypted || before.encrypted)
           return restore.kind === 'restore-inherited'
-            ? 'An inherited note style can only be restored on a live, unencrypted ordinary page.'
-            : 'An explicit note style can only be restored on a live, unencrypted ordinary page.';
+            ? 'An inherited note style can only be restored on a live, unencrypted page, journal, or templates container.'
+            : 'An explicit note style can only be restored on a live, unencrypted page, journal, or templates container.';
         if (!isValidNoteStyleInput(restore.appliedStyle)) return 'The applied note style is invalid.';
         if (restore.kind === 'restore-inherited') {
           if (

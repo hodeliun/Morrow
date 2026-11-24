@@ -61,6 +61,12 @@ O resultado traz as contagens de **Confirmadas**, **Recusadas** e **Não tentada
 
 Após aplicar o estilo às notas de demonstração, mantenha **Configurações → Aparência** aberto e acione **Desfazer último lote**. Confira as contagens e os detalhes por página. Abra novamente uma nota restaurada e confira seu estilo anterior. A nota que recebeu uma alteração de estilo depois do lote aparece em **Ignoradas** quando o estilo atual já difere do aplicado. Use Desfazer no mesmo painel em que aplicou o lote. A ação pode ser usada uma vez por lote.
 
+### Testar estilo em Diário e Modelos
+
+Abra Container navigation no cofre de demonstração e siga os links Journal e Templates para abrir seus documentos. Use **Estilo da página** em cada um. Confira a prévia antes de gravar, teste **Cancelar**, salve outro estilo e depois use **Restaurar padrão**. As telas de coleção mantêm seus controles próprios.
+
+Para testar em lote, salve um padrão em **Configurações → Aparência**, escolha **Sobrescrever estilos representáveis**, faça a prévia e confirme. Confira Journal e Templates nos resultados e acione **Desfazer último lote** no mesmo painel. Os estilos dos documentos voltam ao estado anterior. Folder only.md é uma pasta sem Markdown próprio.
+
 ### Cores HEX e estilos salvos
 
 1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.
@@ -158,6 +164,10 @@ Altere `Quantity` para **3** e salve. Os resultados passam a **(1.851,8)** e **1
 ### Conferir moeda em uma fórmula
 
 Na linha `Widget` de `Inventory`, com `Price` em **10** e `Quantity` em **2**, `CurrencyResult` mostra **($1,234.57)** e `CurrencyRawCheck` mostra **42**. O formato usa dólares, localidade dos Estados Unidos e duas casas decimais por padrão. Altere `Quantity` para **3** e confira **($1,851.85)** e **17** em `Inventory` e na primeira visualização de `Views`.
+
+### Conferir uma barra de progresso em fórmula
+
+Na linha Widget de Inventory, com Price em **10** e Quantity em **2**, ProgressResult mostra **53%**, calculados sobre o máximo de 75. ProgressRawCheck mostra **42**, pois usa o valor 40 no cálculo. Mude Quantity para **3**. Confira **80%** e **17** em Inventory e na primeira visualização vinculada de Views.
 
 ### Navegar na grade sem o mouse
 

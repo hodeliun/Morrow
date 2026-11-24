@@ -21,6 +21,7 @@ import {
   mergeNoteStyleExtra,
   projectNoteStyle,
   resolveDefaultNoteStyle,
+  supportsNoteStyleKind,
 } from '../core/noteStyle';
 import type { BasePageWidth, NoteStyle, NoteStyleFont } from '../core/noteStyle';
 import {
@@ -272,7 +273,9 @@ export class WorkspaceSession {
     const parentId = page?.parentId;
     return (
       !this.closed &&
-      page?.kind === 'page' &&
+      page !== undefined &&
+      supportsNoteStyleKind(page.kind) &&
+      !(page.encrypted && (page.kind === 'journal' || page.kind === 'templates')) &&
       !this.isMutationFenced &&
       !isEffectivelyTrashed(this.state.pages, id) &&
       !this.unreadable.has(id) &&
@@ -297,8 +300,8 @@ export class WorkspaceSession {
     if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
     const page = ownPage(this.state.pages, pageId);
     if (!page) return noteStyleFailure('page-not-found', 'That page no longer exists.');
-    if (page.kind !== 'page')
-      return noteStyleFailure('unsupported', 'Note styles can only be read on ordinary pages.');
+    if (!supportsNoteStyleKind(page.kind))
+      return noteStyleFailure('unsupported', 'Note styles can only be read on pages, the journal, or templates.');
     return {
       ok: true,
       value: {
@@ -425,44 +428,54 @@ export class WorkspaceSession {
         });
         if (dispatched !== true) return dispatched === false ? hostAuthorizationFailure() : dispatched;
 
-        // Merge the confirmed key into the latest state so concurrent body/metadata edits survive.
+        // The source CAS has acknowledged this style. Merge it into the latest state even if an
+        // accepted kind change made the page ineligible for starting another style operation.
+        let styleMergedIntoSession = false;
         if (changes.pages.has(pageId)) {
           const current = ownPage(this.state.pages, pageId);
-          if (current?.kind === 'page') {
+          if (current) {
             const updated = candidate.pages[pageId]!;
-            const extra = mergeNoteStyleExtra(current.extra, style) ?? {
-              ...current.extra,
-              morrowNoteStyle: updated.extra.morrowNoteStyle,
-            };
-            this.state = {
-              ...this.state,
-              pages: {
-                ...this.state.pages,
-                [pageId]: {
-                  ...current,
-                  updatedAt: Math.max(current.updatedAt, updated.updatedAt),
-                  extra,
+            if (!matchesAppliedNoteStyleValues(current.extra.morrowNoteStyle, style)) {
+              const extra = mergeNoteStyleExtra(current.extra, style) ?? {
+                ...current.extra,
+                morrowNoteStyle: updated.extra.morrowNoteStyle,
+              };
+              this.state = {
+                ...this.state,
+                pages: {
+                  ...this.state.pages,
+                  [pageId]: {
+                    ...current,
+                    ...(current.kind === updated.kind
+                      ? { updatedAt: Math.max(current.updatedAt, updated.updatedAt) }
+                      : {}),
+                    extra,
+                  },
                 },
-              },
-            };
-            this.bumpNoteStyleRevisions([pageId]);
-            this.refreshPilotDataRevisions(this.state);
-            this.notifyNoteStyleListeners();
+              };
+              styleMergedIntoSession = true;
+            }
           }
         }
+        if (styleMergedIntoSession) {
+          this.bumpNoteStyleRevisions([pageId]);
+          this.refreshPilotDataRevisions(this.state);
+        }
         const confirmedPage = ownPage(this.state.pages, pageId);
-        if (!confirmedPage || confirmedPage.kind !== 'page')
-          return noteStyleFailure('page-not-found', 'That page no longer exists.');
-        return {
+        const confirmed = {
           ok: true as const,
           value: {
             pageId,
             revision: this.noteStyleRevision(pageId),
-            style: projectNoteStyle(confirmedPage.extra.morrowNoteStyle),
+            style: projectNoteStyle(
+              confirmedPage?.extra.morrowNoteStyle ?? candidate.pages[pageId]?.extra.morrowNoteStyle,
+            ),
           },
           op: confirmedOperation,
           restoreContext: confirmedRestoreContext,
         };
+        if (styleMergedIntoSession) this.notifyNoteStyleListeners();
+        return confirmed;
       });
       return isolated.ok ? isolated.value : this.noteStyleSaveFailure();
     } catch {
@@ -600,9 +613,10 @@ export class WorkspaceSession {
         });
         if (dispatched !== true) return dispatched;
 
-        // Apply the confirmed inverse to the newest state, keeping other accepted edits.
+        // Apply the confirmed inverse to the newest state, keeping other accepted edits. Once
+        // the source CAS has acknowledged the inverse, a later kind change cannot cancel it.
         const current = ownPage(this.state.pages, pageId);
-        if (current?.kind === 'page' && restore.kind === 'restore-inherited') {
+        if (current && restore.kind === 'restore-inherited') {
           if (sameNoteStyle(current.extra.morrowNoteStyle, appliedStyle)) {
             const extra = { ...current.extra };
             delete extra.morrowNoteStyle;
@@ -615,7 +629,7 @@ export class WorkspaceSession {
             };
           }
         } else if (
-          current?.kind === 'page' &&
+          current !== undefined &&
           input.explicitPatch &&
           matchesAppliedNoteStyleValues(current.extra.morrowNoteStyle, appliedStyle) &&
           isRecord(current.extra.morrowNoteStyle)
@@ -634,17 +648,17 @@ export class WorkspaceSession {
         }
         this.bumpNoteStyleRevisions([pageId]);
         this.refreshPilotDataRevisions(this.state);
-        this.notifyNoteStyleListeners();
         const confirmedPage = ownPage(this.state.pages, pageId);
-        return {
+        const confirmed = {
           ok: true as const,
           value: {
             pageId,
             revision: this.noteStyleRevision(pageId),
-            style:
-              confirmedPage?.kind === 'page' ? projectNoteStyle(confirmedPage.extra.morrowNoteStyle) : null,
+            style: confirmedPage ? projectNoteStyle(confirmedPage.extra.morrowNoteStyle) : null,
           },
         };
+        this.notifyNoteStyleListeners();
+        return confirmed;
       });
       return isolated.ok ? isolated.value : this.noteStyleSaveFailure();
     } catch {
@@ -659,11 +673,13 @@ export class WorkspaceSession {
     profileDefault: unknown;
     font: NoteStyleFont;
     width: BasePageWidth;
+    hostAuthorization?: NoteStyleHostAuthorization;
   }): Promise<NoteStyleResult> {
     return this.setNoteStyle({
       pageId: input.pageId,
       expectedRevision: input.expectedRevision,
       style: resolveDefaultNoteStyle(input.profileDefault, input.font, input.width),
+      hostAuthorization: input.hostAuthorization,
     });
   }
 
@@ -1444,7 +1460,12 @@ export class WorkspaceSession {
     restore: InheritedNoteStyleRestore,
   ): WriteBatch | null {
     const current = ownPage(this.state.pages, pageId);
-    if (current?.kind !== 'page' || !sameNoteStyle(current.extra.morrowNoteStyle, appliedStyle)) return null;
+    if (
+      !current ||
+      !supportsNoteStyleKind(current.kind) ||
+      !sameNoteStyle(current.extra.morrowNoteStyle, appliedStyle)
+    )
+      return null;
     const extra = { ...current.extra };
     delete extra.morrowNoteStyle;
     const page = { ...current, extra };
@@ -1470,7 +1491,8 @@ export class WorkspaceSession {
   ): WriteBatch | null {
     const current = ownPage(this.state.pages, pageId);
     if (
-      current?.kind !== 'page' ||
+      !current ||
+      !supportsNoteStyleKind(current.kind) ||
       !matchesAppliedNoteStyleValues(current.extra.morrowNoteStyle, appliedStyle) ||
       !isRecord(current.extra.morrowNoteStyle)
     )
@@ -1533,7 +1555,7 @@ export class WorkspaceSession {
       return noteStyleFailure('unsupported', 'Encrypted notes cannot restore an inherited note style.');
     if (!this.hasWritableNoteStyleSource(pageId))
       return noteStyleFailure('inaccessible', 'The note has no writable Markdown source.');
-    if (!page || page.kind !== 'page' || !sameNoteStyle(page.extra.morrowNoteStyle, appliedStyle))
+    if (!page || !supportsNoteStyleKind(page.kind) || !sameNoteStyle(page.extra.morrowNoteStyle, appliedStyle))
       return noteStyleFailure('stale-revision', 'The applied note style has changed.');
     return null;
   }
@@ -1551,7 +1573,7 @@ export class WorkspaceSession {
       return noteStyleFailure('inaccessible', 'The note has no writable Markdown source.');
     if (
       !page ||
-      page.kind !== 'page' ||
+      !supportsNoteStyleKind(page.kind) ||
       !matchesAppliedNoteStyleValues(page.extra.morrowNoteStyle, appliedStyle)
     )
       return noteStyleFailure('stale-revision', 'The applied note style has changed.');
@@ -1562,8 +1584,10 @@ export class WorkspaceSession {
     if (this.closed) return noteStyleFailure('session-closed', 'The workspace session is closed.');
     const page = ownPage(this.state.pages, pageId);
     if (!page) return noteStyleFailure('page-not-found', 'That page no longer exists.');
-    if (page.kind !== 'page')
-      return noteStyleFailure('unsupported', 'Note styles can only be saved on ordinary pages.');
+    if (!supportsNoteStyleKind(page.kind))
+      return noteStyleFailure('unsupported', 'Note styles can only be saved on pages, the journal, or templates.');
+    if (page.encrypted && (page.kind === 'journal' || page.kind === 'templates'))
+      return noteStyleFailure('unsupported', 'Encrypted journals and templates cannot use note styles.');
     if (isEffectivelyTrashed(this.state.pages, pageId))
       return noteStyleFailure('trashed', 'A page in the trash cannot be styled.');
     if (this.unreadable.has(pageId) || this.protectedReasons.has(pageId) || this.isPilotDataPage(pageId))

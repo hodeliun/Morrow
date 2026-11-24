@@ -4,7 +4,7 @@ import { normalizeExtra, normalizeTag } from './vault/frontmatter';
 import { normalizeDatabase } from './migrations';
 import { emptyDoc, MAX_ICON_LENGTH, MAX_TITLE_LENGTH, newPageMeta, PAGE_KINDS, validCover } from './model';
 import type { DatabaseDef, DocNode, PageId, PageKind, PageMeta, PropValue, WorkspaceState } from './model';
-import { isValidNoteStyleInput, mergeNoteStyleExtra } from './noteStyle';
+import { isValidNoteStyleInput, mergeNoteStyleExtra, supportsNoteStyleKind } from './noteStyle';
 import type { NoteStyle } from './noteStyle';
 import { errorMessage, fail, ok } from './result';
 import type { Result } from './result';
@@ -199,7 +199,8 @@ function dispatch(state: WorkspaceState, command: Command): Result<Applied> {
     case 'page.setNoteStyle': {
       const page = requirePage(state, command.id);
       if (!page.ok) return page;
-      if (page.value.kind !== 'page') return fail('Note styles can only be saved on ordinary pages.');
+      if (!supportsNoteStyleKind(page.value.kind))
+        return fail('Note styles can only be saved on pages, the journal, or templates.');
       if (!isValidNoteStyleInput(command.style)) return fail('Invalid note style.');
       const extra = mergeNoteStyleExtra(page.value.extra, command.style);
       if (!extra) return fail('This note style uses an unsupported format and was left unchanged.');

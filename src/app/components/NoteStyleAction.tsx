@@ -10,7 +10,7 @@ import {
 } from 'react';
 import type { MutableRefObject } from 'react';
 import { isEffectivelyTrashed } from '../../core/tree';
-import { resolveDefaultNoteStyle } from '../../core/noteStyle';
+import { resolveDefaultNoteStyle, supportsNoteStyleKind } from '../../core/noteStyle';
 import type { NoteStyle } from '../../core/noteStyle';
 import { Popover } from './Popover';
 import { documentoNoteStylePanel, subscribePlugins } from '../plugins/registry';
@@ -216,7 +216,8 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
   const page = state.pages[pageId];
   const eligible = Boolean(
     registration &&
-    page?.kind === 'page' &&
+    page !== undefined &&
+    supportsNoteStyleKind(page.kind) &&
     !session.isClosed &&
     !preferences.readingMode &&
     !session.unreadable.has(pageId) &&
@@ -282,7 +283,8 @@ export function NoteStyleAction({ pageId }: { pageId: PageId }) {
         current.registration?.generation === captured.activationGeneration &&
         current.eligible &&
         captured.registration.isActive() &&
-        currentPage?.kind === 'page' &&
+        currentPage !== undefined &&
+        supportsNoteStyleKind(currentPage.kind) &&
         !isProviderManagedPage(currentState, currentPage) &&
         !captured.session.unreadable.has(captured.pageId) &&
         !captured.session.protectedReasons.has(captured.pageId) &&
@@ -538,6 +540,15 @@ function MountedNoteStylePanel({
         code === 'save-conflict' || code === 'stale-revision'
           ? panel.labels.saveConflict
           : panel.labels.saveFailed;
+      const hostAuthorization = {
+        isCurrent: () =>
+          mountState.active &&
+          panelRef.current === panel &&
+          !panel.closed &&
+          scopeIsCurrent(panel) &&
+          !getPreferences().readingMode,
+        onWriteStarted: () => undefined,
+      };
       const run = async (
         operation: () => ReturnType<WorkspaceSession['setNoteStyle']>,
       ): Promise<PluginNoteStylePanelResult> => {
@@ -587,6 +598,7 @@ function MountedNoteStylePanel({
               pageId: panel.pageId,
               style,
               expectedRevision: panel.revision,
+              hostAuthorization,
             }),
           ),
         restore: () =>
@@ -597,6 +609,7 @@ function MountedNoteStylePanel({
               profileDefault: panel.profileDefault,
               font: panel.font,
               width: panel.width,
+              hostAuthorization,
             }),
           ),
         cancel: () => {

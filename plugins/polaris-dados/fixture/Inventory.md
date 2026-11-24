@@ -57,6 +57,16 @@ database:
       name: CurrencyRawCheck
       type: formula
       formula: If(CurrencyResult > -1234.568, 42, 17)
+    - id: demo-progress-result
+      name: ProgressResult
+      type: formula
+      formula: Quantity * Price * 2
+      display: bar
+      max: 75
+    - id: demo-progress-raw
+      name: ProgressRawCheck
+      type: formula
+      formula: If(ProgressResult > 50, 17, 42)
   views:
     - id: inventory-table-v1
       name: Table

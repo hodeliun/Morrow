@@ -24,6 +24,7 @@ import {
 } from '../tabs';
 import { setSession } from '../workspace';
 import { NoteStyleAction } from './NoteStyleAction';
+import { mountNoteStylePanel } from '../../../plugins/polaris-documento/src/noteStylePanel';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -88,6 +89,10 @@ function registerRenderer(mounted: MountedPanel[]) {
       container.replaceChildren();
     };
   });
+}
+
+function registerDocumentoPanel() {
+  return addPluginNoteStylePanel('polaris-documento', mountNoteStylePanel);
 }
 
 class DelayedStyleVault extends MemoryVault {
@@ -177,11 +182,7 @@ function actionForTab(pageId: PageId, tabId: string) {
     createElement(
       PaneContext.Provider,
       { value: paneIdForTabId(tabId) },
-      createElement(
-        PaneTabContext.Provider,
-        { value: tabId },
-        createElement(NoteStyleAction, { pageId }),
-      ),
+      createElement(PaneTabContext.Provider, { value: tabId }, createElement(NoteStyleAction, { pageId })),
     ),
   );
 }
@@ -234,6 +235,13 @@ async function clickAndSettle(button: HTMLButtonElement): Promise<void> {
   });
 }
 
+async function clickPanelAction(dialog: HTMLElement, name: 'cancel' | 'restore'): Promise<void> {
+  await act(async () => {
+    dialog.querySelector<HTMLButtonElement>(`button[data-note-style-action="${name}"]`)!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
 afterEach(async () => {
   cleanupRegistration?.();
   cleanupRegistration = null;
@@ -250,6 +258,188 @@ afterEach(async () => {
 });
 
 describe('host note-style action', () => {
+  it.each([
+    {
+      kind: 'journal',
+      path: 'Journal.md',
+      childPath: 'Journal/2026-11-24.md',
+      body: 'Journal container body remains exact.  \n',
+    },
+    {
+      kind: 'templates',
+      path: 'Templates.md',
+      childPath: 'Templates/Child.md',
+      body: 'Templates container body remains exact.  \n',
+    },
+  ] as const)(
+    'mounts the real Documento panel to save, cancel, restore, and reopen a $kind container',
+    async (target) => {
+      const source = [
+        '---',
+        `kind: ${target.kind}`,
+        'status: pending',
+        'futureYaml:',
+        '  mode: keep',
+        '---',
+        target.body,
+      ].join('\n');
+      const childSource = '---\ntitle: Child\n---\nChild bytes stay exact.\n';
+      const vault = new MemoryVault({ [target.path]: source, [target.childPath]: childSource });
+      const session = await open({}, vault);
+      const pageId = pageIdAt(session, target.path);
+      setPreferences({ defaultNoteStyle: PROFILE_STYLE, locale: 'en', readingMode: false });
+      const frames: FrameRequestCallback[] = [];
+      installUiStubs(frames);
+      cleanupRegistration = registerDocumentoPanel();
+      const app = mount();
+
+      const openPanel = async () => {
+        await app.render(action(pageId));
+        await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+        const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Page style"]');
+        expect(dialog?.querySelector('.note-style-panel')).not.toBeNull();
+        return dialog!;
+      };
+
+      const selectValue = (dialog: HTMLElement, field: string, value: string) => {
+        const select = dialog.querySelector<HTMLSelectElement>(`select[data-note-style-field="${field}"]`)!;
+        select.value = value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+
+      const inputValue = (dialog: HTMLElement, field: string, value: string) => {
+        const input = dialog.querySelector<HTMLInputElement>(`input[data-note-style-field="${field}"]`)!;
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+
+      try {
+        const untouched = await openPanel();
+        expect(
+          untouched.querySelector<HTMLSelectElement>('select[data-note-style-field="font"]')?.value,
+        ).toBe(PROFILE_STYLE.font);
+        selectValue(untouched, 'font', 'mono');
+        await clickPanelAction(untouched, 'cancel');
+        expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+        expect(vault.text(target.path)).toBe(source);
+        expect(session.readNoteStyle(pageId)).toMatchObject({ ok: true, value: { style: null } });
+
+        const editor = await openPanel();
+        selectValue(editor, 'font', SAVED_STYLE.font);
+        selectValue(editor, 'width', SAVED_STYLE.width);
+        inputValue(editor, 'fontSize', String(SAVED_STYLE.fontSize));
+        inputValue(editor, 'lineHeight', String(SAVED_STYLE.lineHeight));
+        inputValue(editor, 'blockSpacing', String(SAVED_STYLE.blockSpacing));
+        await act(async () => {
+          editor
+            .querySelector<HTMLFormElement>('form')!
+            .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+        expect(session.readNoteStyle(pageId)).toMatchObject({ ok: true, value: { style: SAVED_STYLE } });
+        const savedText = vault.text(target.path)!;
+        expect(savedText).toContain('kind: ' + target.kind);
+        expect(savedText).toContain('status: pending');
+        expect(savedText).toContain('futureYaml:\n  mode: keep');
+        expect(savedText).toContain('morrowNoteStyle:');
+        expect(savedText).toContain(target.body);
+        expect(vault.text(target.childPath)).toBe(childSource);
+
+        const reopened = await openPanel();
+        expect(reopened.querySelector<HTMLSelectElement>('select[data-note-style-field="font"]')?.value).toBe(
+          SAVED_STYLE.font,
+        );
+        expect(
+          reopened.querySelector<HTMLSelectElement>('select[data-note-style-field="width"]')?.value,
+        ).toBe(SAVED_STYLE.width);
+        await clickPanelAction(reopened, 'restore');
+        expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+        expect(session.readNoteStyle(pageId)).toMatchObject({ ok: true, value: { style: PROFILE_STYLE } });
+        const restoredText = vault.text(target.path)!;
+        expect(restoredText).toContain('kind: ' + target.kind);
+        expect(restoredText).toContain('status: pending');
+        expect(restoredText).toContain('futureYaml:\n  mode: keep');
+        expect(restoredText).toContain(target.body);
+        expect(vault.text(target.childPath)).toBe(childSource);
+
+        const restored = await openPanel();
+        expect(restored.querySelector<HTMLSelectElement>('select[data-note-style-field="font"]')?.value).toBe(
+          PROFILE_STYLE.font,
+        );
+        expect(
+          restored.querySelector<HTMLSelectElement>('select[data-note-style-field="width"]')?.value,
+        ).toBe(PROFILE_STYLE.width);
+        await clickPanelAction(restored, 'cancel');
+        expect(vault.text(target.path)).toBe(restoredText);
+      } finally {
+        await app.unmount();
+        app.container.remove();
+      }
+    },
+  );
+
+  it('invalidates a journal style panel after session replacement and source protection', async () => {
+    const source = '---\nkind: journal\nstatus: pending\n---\nJournal body stays exact.\n';
+    const vault = new MemoryVault({ 'Journal.md': source });
+    const session = await open({}, vault);
+    const pageId = pageIdAt(session, 'Journal.md');
+    const replacementOpen = await WorkspaceSession.open(
+      new VaultRepository(
+        new MemoryVault({ 'Other.md': 'Other note.\n' }),
+        () => `style-action-${nextDatabase++}`,
+      ),
+      { delayMs: 0 },
+    );
+    if (!replacementOpen.ok) throw new Error(replacementOpen.error);
+    const replacement = replacementOpen.value;
+    const hosts: PluginNoteStylePanelHost[] = [];
+    setPreferences({ locale: 'en', readingMode: false });
+    installUiStubs([]);
+    cleanupRegistration = addPluginNoteStylePanel('polaris-documento', (container, host) => {
+      hosts.push(host);
+      return mountNoteStylePanel(container, host);
+    });
+    const app = mount();
+
+    try {
+      await app.render(action(pageId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+      const firstHost = hosts[0]!;
+      expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).not.toBeNull();
+
+      await act(async () => setSession(replacement));
+      expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+      expect(app.container.querySelector('[aria-label="Page style"]')).toBeNull();
+      let staleSave: PluginNoteStylePanelResult | null = null;
+      await act(async () => {
+        staleSave = await firstHost.save(SAVED_STYLE);
+      });
+      expect(staleSave).toMatchObject({ ok: false });
+      expect(vault.text('Journal.md')).toBe(source);
+
+      await act(async () => setSession(session));
+      await app.render(action(pageId));
+      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+      expect(hosts).toHaveLength(2);
+      session.protectedReasons.set(pageId, 'Synthetic protected source');
+      await app.render(action(pageId));
+      expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
+      expect(app.container.querySelector('[aria-label="Page style"]')).toBeNull();
+      let protectedSave: PluginNoteStylePanelResult | null = null;
+      await act(async () => {
+        protectedSave = await hosts[1]!.save(SAVED_STYLE);
+      });
+      expect(protectedSave).toMatchObject({ ok: false });
+      expect(vault.text('Journal.md')).toBe(source);
+    } finally {
+      await app.unmount();
+      app.container.remove();
+      await replacement.close();
+      setSession(session);
+    }
+  });
+
   it('rejects opening the style panel from a cached hidden tab instance', async () => {
     const session = await open({ 'Note.md': 'First note.\n' });
     const pageId = pageIdAt(session, 'Note.md');
@@ -277,9 +467,10 @@ describe('host note-style action', () => {
   });
 
   it('rejects a retained save after its tab leaves and returns before React renders', async () => {
-    const vault = new MemoryVault({ 'Note.md': 'First note.\n', 'Other.md': 'Second note.\n' });
+    const journalSource = '---\nkind: journal\n---\nFirst note.\n';
+    const vault = new MemoryVault({ 'Journal.md': journalSource, 'Other.md': 'Second note.\n' });
     const session = await open({}, vault);
-    const noteId = pageIdAt(session, 'Note.md');
+    const noteId = pageIdAt(session, 'Journal.md');
     const otherId = pageIdAt(session, 'Other.md');
     const firstTabId = createTabForPage(noteId);
     const secondTabId = createTabForPage(otherId);
@@ -303,7 +494,7 @@ describe('host note-style action', () => {
       });
 
       expect(result).toMatchObject({ ok: false });
-      expect(vault.text('Note.md')).toBe('First note.\n');
+      expect(vault.text('Journal.md')).toBe(journalSource);
       expect(session.readNoteStyle(noteId)).toMatchObject({ ok: true, value: { style: null } });
       expect(mounted[0]!.disposed).toBe(true);
       expect(document.querySelector('[role="dialog"][aria-label="Page style"]')).toBeNull();
@@ -439,9 +630,7 @@ describe('host note-style action', () => {
       expect(mounted[1]!.disposed).toBe(false);
       expect(document.querySelectorAll('[role="dialog"][aria-label="Page style"]')).toHaveLength(1);
 
-      const escapeTarget = document.querySelector<HTMLButtonElement>(
-        '.note-style-popover button',
-      )!;
+      const escapeTarget = document.querySelector<HTMLButtonElement>('.note-style-popover button')!;
       escapeTarget.focus();
       await act(async () => {
         escapeTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -508,7 +697,9 @@ describe('host note-style action', () => {
       await act(async () => mounted[0]!.cancel.click());
       await act(async () => setPreferences({ locale: 'pt' }));
       await app.render(action(noteId));
-      await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Estilo da página"]')!);
+      await clickAndSettle(
+        app.container.querySelector<HTMLButtonElement>('[aria-label="Estilo da página"]')!,
+      );
 
       expect(mounted[1]!.host.labels.previewWidth).toBe('Prévia da largura da página');
       expect(mounted[1]!.host.labels.previewHeading).toBe('Prévia do título');
@@ -755,7 +946,11 @@ describe('host note-style action', () => {
     const mounted: MountedPanel[] = [];
     cleanupRegistration = registerRenderer(mounted);
     const app = mount();
-    const sideControl = createElement('button', { type: 'button', 'aria-label': 'Side pane control' }, 'Side');
+    const sideControl = createElement(
+      'button',
+      { type: 'button', 'aria-label': 'Side pane control' },
+      'Side',
+    );
 
     try {
       await app.render(
@@ -952,4 +1147,160 @@ describe('host note-style action', () => {
       app.container.remove();
     }
   });
+});
+
+describe('panel note-style write authorization', () => {
+  it.each(['save', 'restore'] as const)(
+    'refuses %s after the panel loses its route before Markdown dispatch',
+    async (operation) => {
+      const source = '---\nkind: journal\n---\nJournal body.\n';
+      const vault = new MemoryVault({ 'Journal.md': source, 'Other.md': 'Second note.\n' });
+      const repository = new VaultRepository(vault, () => `authorization-${nextDatabase++}`);
+      const opened = await WorkspaceSession.open(repository, { delayMs: 0 });
+      if (!opened.ok) throw new Error(opened.error);
+      const session = opened.value;
+      activeSession = session;
+      setSession(session);
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const markInitialized = repository.markInitialized.bind(repository);
+      repository.markInitialized = async () => {
+        entered();
+        await wait;
+        await markInitialized();
+      };
+      const pageId = pageIdAt(session, 'Journal.md');
+      const otherId = pageIdAt(session, 'Other.md');
+      const firstTab = createTabForPage(pageId);
+      const secondTab = createTabForPage(otherId);
+      activateTab(firstTab);
+      setPreferences({ defaultNoteStyle: PROFILE_STYLE, readingMode: false });
+      installUiStubs([]);
+      const mounted: MountedPanel[] = [];
+      cleanupRegistration = registerRenderer(mounted);
+      const app = mount();
+
+      try {
+        await app.render(actionForTab(pageId, firstTab));
+        await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+        let pending!: Promise<PluginNoteStylePanelResult>;
+        await act(async () => {
+          pending = operation === 'save' ? mounted[0]!.host.save(SAVED_STYLE) : mounted[0]!.host.restore();
+          await started;
+        });
+        expect(vault.text('Journal.md')).toBe(source);
+
+        await act(async () => activateTab(secondTab));
+        expect(mounted[0]!.disposed).toBe(true);
+        let result!: PluginNoteStylePanelResult;
+        await act(async () => {
+          release();
+          result = await pending;
+        });
+
+        expect(result).toMatchObject({ ok: false });
+        expect(vault.text('Journal.md')).toBe(source);
+      } finally {
+        release();
+        await app.unmount();
+        app.container.remove();
+      }
+    },
+  );
+
+  it.each(['save', 'restore'] as const)(
+    'refuses a %s retry after an earlier write refusal when its route changes before dispatch',
+    async (operation) => {
+      const source = '---\nkind: journal\n---\nJournal body.\n';
+      const vault = new MemoryVault({ 'Journal.md': source, 'Other.md': 'Second note.\n' });
+      const apply = vault.apply.bind(vault);
+      let styleAttempts = 0;
+      vault.apply = async (ops) => {
+        if (
+          ops.some(
+            (op) => op.op === 'write' && op.path === 'Journal.md' && op.text.includes('morrowNoteStyle:'),
+          )
+        ) {
+          styleAttempts += 1;
+          if (styleAttempts === 1)
+            return [{ ok: false, code: 'error', message: 'Synthetic bridge refused the first write' }];
+        }
+        return apply(ops);
+      };
+      const repository = new VaultRepository(vault, () => `authorization-retry-${nextDatabase++}`);
+      const opened = await WorkspaceSession.open(repository, { delayMs: 0 });
+      if (!opened.ok) throw new Error(opened.error);
+      const session = opened.value;
+      activeSession = session;
+      setSession(session);
+      const pageId = pageIdAt(session, 'Journal.md');
+      const firstTab = createTabForPage(pageId);
+      const secondTab = createTabForPage(pageIdAt(session, 'Other.md'));
+      activateTab(firstTab);
+      setPreferences({ defaultNoteStyle: PROFILE_STYLE, readingMode: false });
+      installUiStubs([]);
+      const mounted: MountedPanel[] = [];
+      cleanupRegistration = registerRenderer(mounted);
+      const app = mount();
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const wait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const markInitialized = repository.markInitialized.bind(repository);
+
+      try {
+        await app.render(actionForTab(pageId, firstTab));
+        await clickAndSettle(app.container.querySelector<HTMLButtonElement>('[aria-label="Page style"]')!);
+        const host = mounted[0]!.host;
+        const runOperation = () => (operation === 'save' ? host.save(SAVED_STYLE) : host.restore());
+        let firstResult!: PluginNoteStylePanelResult;
+        await act(async () => {
+          firstResult = await runOperation();
+        });
+        expect(firstResult).toMatchObject({ ok: false });
+        expect(styleAttempts).toBe(1);
+        expect(vault.text('Journal.md')).toBe(source);
+        expect(mounted[0]!.disposed).toBe(false);
+
+        repository.markInitialized = async () => {
+          entered();
+          await wait;
+          await markInitialized();
+        };
+        let retry!: Promise<PluginNoteStylePanelResult>;
+        await act(async () => {
+          retry = runOperation();
+          await started;
+        });
+        expect(styleAttempts).toBe(1);
+        expect(vault.text('Journal.md')).toBe(source);
+
+        await act(async () => activateTab(secondTab));
+        expect(mounted[0]!.disposed).toBe(true);
+        let retryResult!: PluginNoteStylePanelResult;
+        await act(async () => {
+          release();
+          retryResult = await retry;
+        });
+
+        expect(retryResult).toMatchObject({ ok: false });
+        expect(styleAttempts).toBe(1);
+        expect(vault.text('Journal.md')).toBe(source);
+      } finally {
+        release();
+        await app.unmount();
+        app.container.remove();
+      }
+    },
+  );
 });

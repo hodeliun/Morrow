@@ -2,7 +2,11 @@ import { isRecord } from '../../core/doc';
 import { displayTitle } from '../../core/model';
 import type { PageId, WorkspaceState } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
-import { isValidNoteStyle, resolveDefaultNoteStyle } from '../../core/noteStyle';
+import {
+  isValidNoteStyle,
+  resolveDefaultNoteStyle,
+  supportsNoteStyleKind,
+} from '../../core/noteStyle';
 import type { NoteStyle } from '../../core/noteStyle';
 import type { WorkspaceSession } from '../../storage/session';
 import type { NoteStyleRestoreContext } from '../../storage/repository';
@@ -303,19 +307,8 @@ function buildPreview(
       eligibility.push([page.id, 'trashed']);
       continue;
     }
-    if (page.kind === 'journal' || page.kind === 'templates') {
-      // These roots can be backed by a folder or a Markdown file. The current typed write API only
-      // accepts ordinary Markdown pages, so keep the physical container visible as a diagnostic.
-      const physical =
-        !page.encrypted &&
-        !session.unreadable.has(page.id) &&
-        !session.protectedReasons.has(page.id) &&
-        session.pathOf(page.id) !== null;
-      if (physical) counts.unsupportedContainerCount += 1;
-      eligibility.push([page.id, physical ? 'unsupported-container' : 'container']);
-      continue;
-    }
-    if (page.kind !== 'page') continue;
+    if (!supportsNoteStyleKind(page.kind)) continue;
+    const isContainer = page.kind === 'journal' || page.kind === 'templates';
     if (
       page.encrypted ||
       session.unreadable.has(page.id) ||
@@ -332,8 +325,13 @@ function buildPreview(
     // The session guard includes liveness, write fencing, host protection, and the opt-in Datos
     // boundary. The physical source check is deliberately not inferred from a display path.
     if (!session.hasWritableNoteStyleSource(page.id)) {
-      counts.unsupportedSourceCount += 1;
-      eligibility.push([page.id, 'unsupported-source']);
+      if (isContainer) {
+        counts.unsupportedContainerCount += 1;
+        eligibility.push([page.id, 'unsupported-container']);
+      } else {
+        counts.unsupportedSourceCount += 1;
+        eligibility.push([page.id, 'unsupported-source']);
+      }
       continue;
     }
     const saved = session.readNoteStyle(page.id);

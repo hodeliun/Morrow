@@ -1,4 +1,5 @@
 import { isRecord } from './doc';
+import type { PageKind } from './model';
 
 export type NoteStyleFont = 'serif' | 'sans' | 'mono';
 export type NoteStyleWidth = 'comfortable' | 'wide' | 'full';
@@ -21,6 +22,11 @@ export const DEFAULT_NOTE_STYLE: NoteStyle = {
 };
 
 const NOTE_STYLE_FIELDS = ['font', 'fontSize', 'lineHeight', 'blockSpacing', 'width'] as const;
+
+/** Page kinds whose metadata and physical Markdown source can carry a note style. */
+export function supportsNoteStyleKind(kind: PageKind): boolean {
+  return kind === 'page' || kind === 'journal' || kind === 'templates';
+}
 
 export function isValidNoteStyle(value: unknown): value is NoteStyle {
   if (!isRecord(value)) return false;
