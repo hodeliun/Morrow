@@ -43,6 +43,19 @@ const DATABASE = [
   '    - id: flag',
   '      name: Flag',
   '      type: checkbox',
+  '    - id: status',
+  '      name: Status',
+  '      type: text',
+  '    - id: select-status',
+  '      name: SelectStatus',
+  '      type: select',
+  '      options:',
+  '        - id: repeated-option',
+  '          name: Pago',
+  '          color: green',
+  '        - id: repeated-option',
+  '          name: Pendente',
+  '          color: gray',
   '    - id: total',
   '      name: Total',
   '      type: formula',
@@ -51,6 +64,14 @@ const DATABASE = [
   '      name: Filtered Total',
   '      type: formula',
   '      formula: Inventory.Filter(CurrentValue.Flag).Quantity.Sum()',
+  '    - id: paid-total',
+  '      name: Paid Total',
+  '      type: formula',
+  '      formula: Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+  '    - id: ambiguous-select-total',
+  '      name: Ambiguous Select Total',
+  '      type: formula',
+  '      formula: Inventory.Filter(CurrentValue.SelectStatus = "Pago").Quantity.Sum()',
   '  views:',
   '    - id: table',
   '      name: Table',
@@ -60,16 +81,36 @@ const DATABASE = [
   '',
 ].join('\n');
 
-const HIDDEN_ROW = ['---', 'Name: Hidden', 'Quantity: 2', 'Listed: 0', 'Flag: false', '---', 'Filtered row.', ''].join('\n');
-const VISIBLE_ROW = ['---', 'Name: Visible', 'Quantity: 3', 'Listed: 1', 'Flag: true', '---', 'Visible row.', ''].join(
-  '\n',
-);
+const HIDDEN_ROW = [
+  '---',
+  'Name: Hidden',
+  'Quantity: 2',
+  'Listed: 0',
+  'Flag: false',
+  'Status: Pago',
+  'SelectStatus: Pago',
+  '---',
+  'Filtered row.',
+  '',
+].join('\n');
+const VISIBLE_ROW = [
+  '---',
+  'Name: Visible',
+  'Quantity: 3',
+  'Listed: 1',
+  'Flag: true',
+  'Status: Pendente',
+  'SelectStatus: Pendente',
+  '---',
+  'Visible row.',
+  '',
+].join('\n');
 const VIEW_DATA: PolarisDadosViewData = {
   version: 1,
   viewId: VIEW_ID,
   sourceDatabaseId: DATABASE_ID,
   title: 'Visible inventory',
-  columnOrder: ['total', 'filtered-total'],
+  columnOrder: ['total', 'filtered-total', 'paid-total'],
   filter: { propertyId: 'listed', op: 'gte', value: 1 },
 };
 const VIEW_NOTE = ['# Shared view', '', encodePolarisDadosViewMarker(VIEW_DATA), ''].join('\n');
@@ -261,6 +302,23 @@ function openCheckboxEditor(root: HTMLElement, rowId: string, propertyId: string
   return input;
 }
 
+function openTextEditor(
+  root: HTMLElement,
+  rowId: string,
+  propertyId: string,
+): HTMLInputElement | HTMLTextAreaElement {
+  const edit = root.querySelector<HTMLButtonElement>(
+    `button[data-action="edit"][data-row-id="${rowId}"][data-field="${propertyId}"]`,
+  );
+  if (!edit) throw new Error(`Missing Edit control for ${rowId}.${propertyId}.`);
+  edit.click();
+  const input = root.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+    `input[data-field="${propertyId}"], textarea[data-field="${propertyId}"]`,
+  );
+  if (!input) throw new Error(`Missing text editor for ${rowId}.${propertyId}.`);
+  return input;
+}
+
 async function settle(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -373,13 +431,142 @@ describe('table formula projections through the real provider session', () => {
       (property) => property.id === 'filtered-total',
     );
     expect(reopenedFilteredFormula?.formula).toBe('Inventory.Filter(CurrentValue.Flag).Quantity.Sum()');
+    const reopenedPaidFormula = reopenedSnapshot.schema.properties.find(
+      (property) => property.id === 'paid-total',
+    );
+    expect(reopenedPaidFormula?.formula).toBe(
+      'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+    );
     expect(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.quantity).toBe(2);
     expect(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.flag).toBe(false);
+    expect(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.status).toBe('Pago');
     expect(
       Object.hasOwn(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)!.properties, 'total'),
     ).toBe(false);
     expect(
       Object.hasOwn(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)!.properties, 'filtered-total'),
     ).toBe(false);
+  });
+
+  it('updates a text-filtered subtotal from a row omitted by a linked view, undoes it, and reopens unchanged formulas', async () => {
+    const fixture = await openFixture();
+    const initialDatabaseBytes = fixture.vault.text(DATABASE_PATH);
+    const initialHiddenRowBytes = fixture.vault.text(HIDDEN_ROW_PATH);
+    if (initialDatabaseBytes === undefined || initialHiddenRowBytes === undefined) {
+      throw new Error('The synthetic database fixture is incomplete.');
+    }
+    const source = mountRoot(fixture);
+    const linked = mountRoot(fixture, true);
+
+    expect(cellValue(source.element, HIDDEN_ROW_ID, 'paid-total')).toEqual({ kind: 'number', text: '2' });
+    expect(cellValue(source.element, VISIBLE_ROW_ID, 'paid-total')).toEqual({ kind: 'number', text: '2' });
+    expect(cellValue(linked.element, VISIBLE_ROW_ID, 'paid-total')).toEqual({ kind: 'number', text: '2' });
+    expect(linked.element.querySelector(`tr[data-row-id="${HIDDEN_ROW_ID}"]`)).toBeNull();
+
+    const status = openTextEditor(source.element, HIDDEN_ROW_ID, 'status');
+    status.value = 'Pendente';
+    status.dispatchEvent(new source.window.Event('input', { bubbles: true }) as unknown as Event);
+    source.element.querySelector<HTMLButtonElement>('button[data-action="save"]')?.click();
+
+    await until('the text-filtered subtotal to update in the source and linked view', () => {
+      try {
+        const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+        return (
+          cellValue(source.element, HIDDEN_ROW_ID, 'paid-total').text === '0' &&
+          cellValue(source.element, VISIBLE_ROW_ID, 'paid-total').text === '0' &&
+          cellValue(linked.element, VISIBLE_ROW_ID, 'paid-total').text === '0' &&
+          snapshot.status === 'ready' &&
+          snapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.status === 'Pendente' &&
+          fixture.vault.text(HIDDEN_ROW_PATH)?.includes('Status: Pendente') === true
+        );
+      } catch {
+        return false;
+      }
+    });
+    expect(linked.element.querySelector(`tr[data-row-id="${HIDDEN_ROW_ID}"]`)).toBeNull();
+    expect(fixture.vault.text(DATABASE_PATH)).toBe(initialDatabaseBytes);
+    expect(fixture.vault.text(HIDDEN_ROW_PATH)).not.toMatch(/^Paid Total:/m);
+
+    const undo = new source.window.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    source.element.dispatchEvent(undo as unknown as Event);
+    expect(undo.defaultPrevented).toBe(true);
+    await until('undo to restore the hidden text and linked subtotal', () => {
+      try {
+        const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+        return (
+          cellValue(source.element, HIDDEN_ROW_ID, 'paid-total').text === '2' &&
+          cellValue(source.element, VISIBLE_ROW_ID, 'paid-total').text === '2' &&
+          cellValue(linked.element, VISIBLE_ROW_ID, 'paid-total').text === '2' &&
+          snapshot.status === 'ready' &&
+          snapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.status === 'Pago' &&
+          fixture.vault.text(HIDDEN_ROW_PATH) === initialHiddenRowBytes
+        );
+      } catch {
+        return false;
+      }
+    });
+
+    source.unmount();
+    linked.unmount();
+    await fixture.close();
+    fixtures.delete(fixture);
+    const reopened = await openFixture(fixture.vault);
+    const reopenedSnapshot = reopened.data.snapshot(DATABASE_ID as PageId);
+    expect(reopened.vault.text(DATABASE_PATH)).toBe(initialDatabaseBytes);
+    expect(reopened.vault.text(HIDDEN_ROW_PATH)).toBe(initialHiddenRowBytes);
+    expect(reopenedSnapshot.status).toBe('ready');
+    if (reopenedSnapshot.status !== 'ready') throw new Error('The database did not reopen as ready.');
+    expect(reopenedSnapshot.schema.properties.find((property) => property.id === 'paid-total')?.formula).toBe(
+      'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+    );
+    expect(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties.status).toBe('Pago');
+    expect(
+      Object.hasOwn(reopenedSnapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)!.properties, 'paid-total'),
+    ).toBe(false);
+  });
+
+  it('diagnoses duplicate select IDs from the parsed snapshot without changing fixture bytes', async () => {
+    const fixture = await openFixture();
+    const initialDatabaseBytes = fixture.vault.text(DATABASE_PATH);
+    const initialHiddenRowBytes = fixture.vault.text(HIDDEN_ROW_PATH);
+    const initialVisibleRowBytes = fixture.vault.text(VISIBLE_ROW_PATH);
+    if (
+      initialDatabaseBytes === undefined ||
+      initialHiddenRowBytes === undefined ||
+      initialVisibleRowBytes === undefined
+    ) {
+      throw new Error('The synthetic select database fixture is incomplete.');
+    }
+
+    const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+    expect(snapshot.status).toBe('ready');
+    if (snapshot.status !== 'ready') throw new Error('The database did not open as ready.');
+    const selectStatus = snapshot.schema.properties.find((property) => property.id === 'select-status');
+    expect(selectStatus?.options).toEqual([
+      { id: 'repeated-option', name: 'Pago', color: 'green' },
+      { id: 'repeated-option', name: 'Pendente', color: 'gray' },
+    ]);
+    expect(snapshot.rows.find((row) => row.id === HIDDEN_ROW_ID)?.properties['select-status']).toBe(
+      'repeated-option',
+    );
+    expect(snapshot.rows.find((row) => row.id === VISIBLE_ROW_ID)?.properties['select-status']).toBe(
+      'repeated-option',
+    );
+
+    const source = mountRoot(fixture);
+    expect(cellValue(source.element, HIDDEN_ROW_ID, 'ambiguous-select-total').kind).toBe('error');
+    expect(
+      source.element.querySelector<HTMLTableCellElement>(
+        `tr[data-row-id="${HIDDEN_ROW_ID}"] td[data-field="ambiguous-select-total"] code`,
+      )?.textContent,
+    ).toContain('conflicting labels for select option ID “repeated-option”');
+    expect(fixture.vault.text(DATABASE_PATH)).toBe(initialDatabaseBytes);
+    expect(fixture.vault.text(HIDDEN_ROW_PATH)).toBe(initialHiddenRowBytes);
+    expect(fixture.vault.text(VISIBLE_ROW_PATH)).toBe(initialVisibleRowBytes);
   });
 });

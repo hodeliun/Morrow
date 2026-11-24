@@ -34,7 +34,7 @@ export type FormulaDatabaseTitleResolution =
 interface ProjectedColumn {
   readonly values: FormulaRuntimeValue[];
   readonly aggregates: Map<string, ProjectionAggregateResult>;
-  readonly filterPredicateId?: string;
+  readonly filterIdentity?: string;
 }
 
 type ProjectedColumnResult =
@@ -46,7 +46,7 @@ type ProjectionAggregateResult =
   | { readonly status: 'error'; readonly message: string };
 
 interface FilteredRows {
-  readonly predicateProperty: ProviderProperty;
+  readonly filterIdentity: string;
   readonly rows: readonly DataApiRow[];
   readonly tableReference: FormulaRuntimeValue[];
   readonly filterCalls: Set<string>;
@@ -76,10 +76,22 @@ interface ApprovedTableProjectionSpans {
   readonly filteredColumns: ReadonlyMap<string, string>;
 }
 
-interface ApprovedTableFilter {
-  readonly predicateName: string;
-  readonly propertyColumnSpan: string;
-}
+type ApprovedTableFilter =
+  | {
+      readonly predicateName: string;
+      readonly propertyColumnSpan: string;
+      readonly operator: 'checked';
+    }
+  | {
+      readonly predicateName: string;
+      readonly propertyColumnSpan: string;
+      readonly operator: 'equals';
+      readonly literal: string;
+    };
+
+type ApprovedTableFilterPredicate =
+  | { readonly predicateName: string; readonly operator: 'checked' }
+  | { readonly predicateName: string; readonly operator: 'equals'; readonly literal: string };
 
 const LOCAL_LIST_METHODS = new Set(['sum', 'average', 'avg', 'min', 'max', 'count', 'first', 'last']);
 
@@ -289,13 +301,17 @@ function evaluateFormulaProperty(
         receiver.formulaKind === 'table'
       ) {
         if (name.toLowerCase() !== 'filter') {
-          throw new Error('Tables only support Filter(CurrentValue.Checkbox).NumberColumn.Sum() projections.');
+          throw new Error(
+            'Tables only support a direct CurrentValue filter followed by a numeric-column Sum() projection.',
+          );
         }
         const filterCall = projectionSpans.filterCalls.get(spanKey(span));
         if (!filterCall || !scope || receiver.databaseId !== scope.snapshot.databaseId) {
-          throw new Error('Table filters only support a direct Filter(CurrentValue.Checkbox) projection.');
+          throw new Error(
+            'Table filters only support a direct CurrentValue checkbox or text-equality projection.',
+          );
         }
-        if (arguments_.length !== 1) throw new Error('Filter() takes exactly one CurrentValue checkbox column.');
+        if (arguments_.length !== 1) throw new Error('Filter() takes exactly one CurrentValue predicate.');
         return filteredTableRows(
           scope,
           properties,
@@ -390,26 +406,37 @@ function filteredTableRows(
   predicate: Expr,
   evaluate: (expression: Expr, currentValue?: FormulaRuntimeValue) => FormulaRuntimeValue,
 ): FormulaRuntimeValue[] {
-  if (predicate.kind !== 'member' || predicate.object.kind !== 'identifier') {
-    throw new Error('Filter() needs the built-in CurrentValue checkbox predicate.');
+  const currentValueExpression = filterCurrentValueExpression(predicate, filter);
+  if (!currentValueExpression || currentValueExpression.kind !== 'identifier') {
+    throw new Error('Filter() needs a direct CurrentValue checkbox or text-equality predicate.');
   }
   const currentValueSentinel: FormulaRowRef = {
     formulaKind: 'row',
     id: 'table-filter-current-value-sentinel',
     databaseId: scope.snapshot.databaseId,
   };
-  if (evaluate(predicate.object, currentValueSentinel) !== currentValueSentinel) {
+  if (evaluate(currentValueExpression, currentValueSentinel) !== currentValueSentinel) {
     throw new Error('Filter() cannot use an alias that shadows the built-in CurrentValue.');
   }
 
   const predicateProperty = resolveProjectedProperty(properties, filter.predicateName);
-  if (predicateProperty.type !== 'checkbox') {
+  if (filter.operator === 'checked' && predicateProperty.type !== 'checkbox') {
     throw new Error(
-      `Table filters only support manual checkbox columns; “${filter.predicateName}” is ${predicateProperty.type}.`,
+      `Table filters only support manual checkbox columns for direct predicates; “${filter.predicateName}” is ${predicateProperty.type}.`,
+    );
+  }
+  if (
+    filter.operator === 'equals' &&
+    predicateProperty.type !== 'text' &&
+    predicateProperty.type !== 'select'
+  ) {
+    throw new Error(
+      `Table text filters only support manual text or select columns; “${filter.predicateName}” is ${predicateProperty.type}.`,
     );
   }
 
-  const cached = scope.filteredRows.get(predicateProperty.id);
+  const filterIdentity = tableFilterIdentity(predicateProperty, filter);
+  const cached = scope.filteredRows.get(filterIdentity);
   if (cached?.status === 'error') throw new Error(cached.message);
   if (cached?.status === 'ready') {
     cached.filteredRows.filterCalls.add(filterCallKey);
@@ -417,40 +444,111 @@ function filteredTableRows(
   }
   if (scope.snapshot.rows.length > MAX_TABLE_PROJECTION_ROWS) {
     const message = `Table filters are limited to ${MAX_TABLE_PROJECTION_ROWS} rows.`;
-    scope.filteredRows.set(predicateProperty.id, { status: 'error', message });
+    scope.filteredRows.set(filterIdentity, { status: 'error', message });
     throw new Error(message);
   }
 
   const rows: DataApiRow[] = [];
+  const optionNamesById =
+    filter.operator === 'equals' && predicateProperty.type === 'select'
+      ? new Map<string, string | null>()
+      : null;
+  if (optionNamesById) {
+    for (const option of predicateProperty.options) {
+      const existingName = optionNamesById.get(option.id);
+      if (existingName === undefined) optionNamesById.set(option.id, option.name);
+      else if (existingName !== null && existingName !== option.name) optionNamesById.set(option.id, null);
+    }
+  }
   try {
     for (const row of scope.snapshot.rows) {
       const rowProperties = row.properties;
-      if (!Object.hasOwn(rowProperties, predicateProperty.id)) {
-        throw new Error(`Filter predicate “${filter.predicateName}” is missing for row “${row.id}”.`);
+      if (filter.operator === 'checked') {
+        if (!Object.hasOwn(rowProperties, predicateProperty.id)) {
+          throw new Error(`Filter predicate “${filter.predicateName}” is missing for row “${row.id}”.`);
+        }
+        const value = rowProperties[predicateProperty.id];
+        if (typeof value !== 'boolean') {
+          throw new Error(
+            `Filter predicate “${filter.predicateName}” must be a non-null boolean for row “${row.id}”.`,
+          );
+        }
+        if (value) rows.push(row);
+        continue;
       }
+
+      if (!Object.hasOwn(rowProperties, predicateProperty.id)) continue;
       const value = rowProperties[predicateProperty.id];
-      if (typeof value !== 'boolean') {
-        throw new Error(
-          `Filter predicate “${filter.predicateName}” must be a non-null boolean for row “${row.id}”.`,
-        );
+      if (value === null) continue;
+      if (typeof value !== 'string') {
+        throw new Error(`Filter predicate “${filter.predicateName}” must contain text for row “${row.id}”.`);
       }
-      if (value) rows.push(row);
+      const comparable = optionNamesById ? optionNamesById.get(value) : value;
+      if (optionNamesById) {
+        if (comparable === undefined) {
+          throw new Error(
+            `Filter predicate “${filter.predicateName}” has an unknown select option for row “${row.id}”.`,
+          );
+        }
+        if (comparable === null) {
+          throw new Error(
+            `Filter predicate “${filter.predicateName}” has conflicting labels for select option ID “${value}” in row “${row.id}”.`,
+          );
+        }
+      }
+      if (comparable === filter.literal) rows.push(row);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    scope.filteredRows.set(predicateProperty.id, { status: 'error', message });
+    scope.filteredRows.set(filterIdentity, { status: 'error', message });
     throw new Error(message, { cause: error });
   }
 
   const filteredRows: FilteredRows = {
-    predicateProperty,
+    filterIdentity,
     rows,
     tableReference: new Array<FormulaRuntimeValue>(rows.length).fill(null),
     filterCalls: new Set([filterCallKey]),
   };
-  scope.filteredRows.set(predicateProperty.id, { status: 'ready', filteredRows });
+  scope.filteredRows.set(filterIdentity, { status: 'ready', filteredRows });
   scope.filteredRowArrays.set(filteredRows.tableReference, filteredRows);
   return filteredRows.tableReference;
+}
+
+function filterCurrentValueExpression(predicate: Expr, filter: ApprovedTableFilter): Expr | null {
+  if (filter.operator === 'checked') {
+    if (
+      predicate.kind !== 'member' ||
+      predicate.object.kind !== 'identifier' ||
+      predicate.object.name.toLowerCase() !== 'currentvalue'
+    ) {
+      return null;
+    }
+    return predicate.object;
+  }
+
+  if (
+    predicate.kind !== 'binary' ||
+    predicate.op !== '==' ||
+    predicate.left.kind !== 'member' ||
+    predicate.left.object.kind !== 'identifier' ||
+    predicate.left.object.name.toLowerCase() !== 'currentvalue' ||
+    predicate.right.kind !== 'literal' ||
+    typeof predicate.right.value !== 'string' ||
+    predicate.right.value !== filter.literal
+  ) {
+    return null;
+  }
+  return predicate.left.object;
+}
+
+function tableFilterIdentity(property: ProviderProperty, filter: ApprovedTableFilter): string {
+  return JSON.stringify([
+    property.id,
+    property.type,
+    filter.operator,
+    filter.operator === 'equals' ? filter.literal : null,
+  ]);
 }
 
 function projectedFilteredColumn(
@@ -458,7 +556,7 @@ function projectedFilteredColumn(
   filteredRows: FilteredRows,
   property: ProviderProperty,
 ): FormulaRuntimeValue[] {
-  const cacheKey = `${filteredRows.predicateProperty.id}\u0000${property.id}`;
+  const cacheKey = `${filteredRows.filterIdentity}\u0000${property.id}`;
   const cached = scope.filteredColumns.get(cacheKey);
   if (cached?.status === 'error') throw new Error(cached.message);
   if (cached?.status === 'ready') return cached.projection.values;
@@ -485,7 +583,7 @@ function projectedFilteredColumn(
   const projection: ProjectedColumn = {
     values,
     aggregates: new Map(),
-    filterPredicateId: filteredRows.predicateProperty.id,
+    filterIdentity: filteredRows.filterIdentity,
   };
   scope.filteredColumns.set(cacheKey, { status: 'ready', projection });
   scope.projectedArrays.set(values, projection);
@@ -503,7 +601,7 @@ function aggregateProjection(
       `${name}() is not available for table columns; use Sum, Average, Avg, Min, Max, or Count.`,
     );
   }
-  if (projection.filterPredicateId && method !== 'sum') {
+  if (projection.filterIdentity && method !== 'sum') {
     throw new Error('Filtered table projections only support Sum().');
   }
   if (argumentCount !== 0) throw new Error(`${name}() takes no arguments.`);
@@ -563,15 +661,10 @@ function approvedTableProjectionSpans(
         roots.set(rootKey, 'member');
         if (aggregateMethod.toLowerCase() !== 'sum' || filterCall.args.length !== 1) return;
         const predicate = filterCall.args[0]!;
-        if (
-          predicate.kind !== 'member' ||
-          predicate.object.kind !== 'identifier' ||
-          predicate.object.name.toLowerCase() !== 'currentvalue'
-        ) {
-          return;
-        }
+        const approvedPredicate = approvedTableFilterPredicate(predicate);
+        if (!approvedPredicate) return;
         const filterCallKey = spanKey(filterCall.callee);
-        const filter = { predicateName: predicate.name, propertyColumnSpan };
+        const filter = { ...approvedPredicate, propertyColumnSpan };
         filterCalls.set(filterCallKey, filter);
         filteredColumns.set(propertyColumnSpan, filterCallKey);
         columns.add(propertyColumnSpan);
@@ -644,6 +737,32 @@ function approvedTableProjectionSpans(
 
 function spanKey(span: FormulaSpan): string {
   return `${span.start}:${span.end}`;
+}
+
+function approvedTableFilterPredicate(predicate: Expr): ApprovedTableFilterPredicate | null {
+  if (
+    predicate.kind === 'member' &&
+    predicate.object.kind === 'identifier' &&
+    predicate.object.name.toLowerCase() === 'currentvalue'
+  ) {
+    return { predicateName: predicate.name, operator: 'checked' };
+  }
+  if (
+    predicate.kind === 'binary' &&
+    predicate.op === '==' &&
+    predicate.left.kind === 'member' &&
+    predicate.left.object.kind === 'identifier' &&
+    predicate.left.object.name.toLowerCase() === 'currentvalue' &&
+    predicate.right.kind === 'literal' &&
+    typeof predicate.right.value === 'string'
+  ) {
+    return {
+      predicateName: predicate.left.name,
+      operator: 'equals',
+      literal: predicate.right.value,
+    };
+  }
+  return null;
 }
 
 function toRuntimeValue(value: unknown): FormulaRuntimeValue {

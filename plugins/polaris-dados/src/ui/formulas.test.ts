@@ -11,6 +11,10 @@ function checkbox(id: string, name: string): ProviderProperty {
   return { id, name, type: 'checkbox', options: [] };
 }
 
+function selection(id: string, name: string, options: ProviderProperty['options']): ProviderProperty {
+  return { id, name, type: 'select', options };
+}
+
 function formula(id: string, name: string, expression: string): ProviderProperty {
   return { id, name, type: 'formula', options: [], formula: expression };
 }
@@ -589,6 +593,195 @@ describe('Polaris Dados current-database formula projections', () => {
     expect(scope.filteredColumns.size).toBe(1);
   });
 
+  it('filters manual text by an exact literal and separates cached predicates by literal', () => {
+    const properties = [
+      scalar('status', 'Status', 'text'),
+      scalar('amount', 'Amount'),
+      formula('paid', 'Paid total', 'Inventory.Filter(CurrentValue.Status = "Pago").Amount.Sum()'),
+      formula(
+        'paid-equals',
+        'Paid total with ==',
+        'Inventory.Filter(CurrentValue.Status == "Pago").Amount.Sum()',
+      ),
+      formula('pending', 'Pending total', 'Inventory.Filter(CurrentValue.Status = "Pendente").Amount.Sum()'),
+      formula('empty', 'Empty status total', 'Inventory.Filter(CurrentValue.Status = "").Amount.Sum()'),
+      formula(
+        'unmatched',
+        'Unmatched total',
+        'Inventory.Filter(CurrentValue.Status = "Cancelado").Amount.Sum()',
+      ),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [
+      row('paid', { status: 'Pago', amount: 2 }),
+      row('case-mismatch', { status: 'pago', amount: 3 }),
+      row('pending', { status: 'Pendente', amount: 7 }),
+      row('empty', { status: '', amount: 5 }),
+      row('null', { status: null, amount: 11 }),
+      row('missing', { amount: 13 }),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'paid', scope)).toEqual({ kind: 'number', value: 2 });
+    expect(value(snapshot, properties, 'paid-equals', scope)).toEqual({ kind: 'number', value: 2 });
+    expect(value(snapshot, properties, 'pending', scope)).toEqual({ kind: 'number', value: 7 });
+    expect(value(snapshot, properties, 'empty', scope)).toEqual({ kind: 'number', value: 5 });
+    expect(value(snapshot, properties, 'unmatched', scope)).toEqual({ kind: 'number', value: 0 });
+    expect(scope.filteredRows.size).toBe(4);
+    expect(scope.filteredColumns.size).toBe(4);
+  });
+
+  it('resolves select IDs through the snapshot options and keeps distinct option-name filters', () => {
+    const properties = [
+      selection('status', 'Status', [
+        { id: 'paid-option', name: 'Pago', color: 'green' },
+        { id: 'pending-option', name: 'Pendente', color: 'gray' },
+      ]),
+      scalar('amount', 'Amount'),
+      formula('paid', 'Paid total', 'Inventory.Filter(CurrentValue.Status = "Pago").Amount.Sum()'),
+      formula('pending', 'Pending total', 'Inventory.Filter(CurrentValue.Status == "Pendente").Amount.Sum()'),
+      formula(
+        'option-id',
+        'Option ID literal',
+        'Inventory.Filter(CurrentValue.Status = "paid-option").Amount.Sum()',
+      ),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [
+      row('paid', { status: 'paid-option', amount: 2 }),
+      row('pending', { status: 'pending-option', amount: 7 }),
+      row('null', { status: null, amount: 11 }),
+      row('missing', { amount: 13 }),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'paid', scope)).toEqual({ kind: 'number', value: 2 });
+    expect(value(snapshot, properties, 'pending', scope)).toEqual({ kind: 'number', value: 7 });
+    expect(value(snapshot, properties, 'option-id', scope)).toEqual({ kind: 'number', value: 0 });
+    expect(scope.filteredRows.size).toBe(3);
+    expect(scope.filteredColumns.size).toBe(3);
+
+    const invalid = readySnapshot(properties, [
+      row('unknown-option', { status: 'removed-option', amount: 1 }),
+    ]);
+    expect(value(invalid, properties, 'paid')).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('unknown select option'),
+    });
+  });
+
+  it('diagnoses conflicting labels only when a row uses the repeated select ID', () => {
+    const properties = [
+      selection('status', 'Status', [
+        { id: 'same-label', name: 'Pago', color: 'green' },
+        { id: 'same-label', name: 'Pago', color: 'gray' },
+        { id: 'conflicting-labels', name: 'Pago', color: 'green' },
+        { id: 'conflicting-labels', name: 'Pendente', color: 'gray' },
+      ]),
+      scalar('amount', 'Amount'),
+      formula('paid', 'Paid total', 'Inventory.Filter(CurrentValue.Status = "Pago").Amount.Sum()'),
+      formula(
+        'fallback',
+        'Error fallback',
+        'IfError(Inventory.Filter(CurrentValue.Status = "Pago").Amount.Sum(), 44)',
+      ),
+    ] satisfies readonly ProviderProperty[];
+    const normalSnapshot = readySnapshot(properties, [row('normal', { status: 'same-label', amount: 2 })]);
+    const normalScope = createFormulaEvaluationScope(
+      normalSnapshot,
+      resolveFormulaDatabaseTitle(databaseId, pages),
+    );
+    expect(value(normalSnapshot, properties, 'paid', normalScope)).toEqual({ kind: 'number', value: 2 });
+
+    const conflictingSnapshot = readySnapshot(properties, [
+      row('conflicting', { status: 'conflicting-labels', amount: 3 }),
+    ]);
+    const conflictingScope = createFormulaEvaluationScope(
+      conflictingSnapshot,
+      resolveFormulaDatabaseTitle(databaseId, pages),
+    );
+    expect(value(conflictingSnapshot, properties, 'paid', conflictingScope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('conflicting labels for select option ID “conflicting-labels”'),
+    });
+    expect(value(conflictingSnapshot, properties, 'fallback', conflictingScope)).toEqual({
+      kind: 'number',
+      value: 44,
+    });
+  });
+
+  it('diagnoses unknown, ambiguous and non-text predicate columns and preserves IfError fallback', () => {
+    const properties = [
+      scalar('status', 'Status', 'text'),
+      scalar('duplicate-status', ' status ', 'text'),
+      scalar('amount', 'Amount'),
+      scalar('quantity', 'Quantity'),
+      formula('unknown', 'Unknown column', 'Inventory.Filter(CurrentValue.Missing = "Pago").Quantity.Sum()'),
+      formula(
+        'ambiguous',
+        'Ambiguous column',
+        'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+      ),
+      formula('wrong-type', 'Wrong type', 'Inventory.Filter(CurrentValue.Amount == "2").Quantity.Sum()'),
+      formula(
+        'fallback',
+        'Error fallback',
+        'IfError(Inventory.Filter(CurrentValue.Amount = "2").Quantity.Sum(), 44)',
+      ),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [
+      row('r1', { status: 'Pago', 'duplicate-status': 'Pago', amount: 2, quantity: 1 }),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'unknown', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('There is no column called'),
+    });
+    expect(value(snapshot, properties, 'ambiguous', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('is ambiguous'),
+    });
+    expect(value(snapshot, properties, 'wrong-type', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('manual text or select columns'),
+    });
+    expect(value(snapshot, properties, 'fallback', scope)).toEqual({ kind: 'number', value: 44 });
+  });
+
+  it('rejects malformed text cells and non-direct equality predicates without reading rows', () => {
+    const properties = [
+      scalar('status', 'Status', 'text'),
+      scalar('amount', 'Amount'),
+      scalar('quantity', 'Quantity'),
+      formula(
+        'malformed-cell',
+        'Malformed cell',
+        'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+      ),
+      formula(
+        'computed-predicate',
+        'Computed predicate',
+        'Inventory.Filter(CurrentValue.Status = ToText("Pago")).Quantity.Sum()',
+      ),
+      formula(
+        'compound-predicate',
+        'Compound predicate',
+        'Inventory.Filter(CurrentValue.Status = "Pago" && true).Quantity.Sum()',
+      ),
+    ] satisfies readonly ProviderProperty[];
+    const snapshot = readySnapshot(properties, [
+      row('invalid-status', { status: true, amount: 2, quantity: 1 }),
+    ]);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'malformed-cell', scope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('must contain text'),
+    });
+    for (const formulaId of ['computed-predicate', 'compound-predicate']) {
+      expect(value(snapshot, properties, formulaId, scope)).toMatchObject({ kind: 'error' });
+    }
+  });
+
   it('rejects missing or null checkbox predicates and reads quantities only for selected rows', () => {
     const properties = [
       checkbox('flag', 'Flag'),
@@ -661,15 +854,26 @@ describe('Polaris Dados current-database formula projections', () => {
   it('checks built-in CurrentValue identity before cache access in both evaluation orders', () => {
     const properties = [
       checkbox('flag', 'Flag'),
+      scalar('status', 'Status', 'text'),
       scalar('quantity', 'Quantity'),
       formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+      formula(
+        'filtered-text',
+        'Filtered text total',
+        'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+      ),
       formula(
         'shadowed-current-value',
         'Shadowed CurrentValue',
         'WithName(9, CurrentValue, Inventory.Filter(CurrentValue.Flag).Quantity.Sum())',
       ),
+      formula(
+        'shadowed-text-current-value',
+        'Shadowed text CurrentValue',
+        'WithName(9, CurrentValue, Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum())',
+      ),
     ] satisfies readonly ProviderProperty[];
-    const snapshot = readySnapshot(properties, [row('r1', { flag: true, quantity: 2 })]);
+    const snapshot = readySnapshot(properties, [row('r1', { flag: true, status: 'Pago', quantity: 2 })]);
     const title = resolveFormulaDatabaseTitle(databaseId, pages);
     const aliasFirstScope = createFormulaEvaluationScope(snapshot, title);
 
@@ -677,12 +881,24 @@ describe('Polaris Dados current-database formula projections', () => {
       kind: 'error',
       message: expect.stringContaining('shadows the built-in CurrentValue'),
     });
+    expect(value(snapshot, properties, 'shadowed-text-current-value', aliasFirstScope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('shadows the built-in CurrentValue'),
+    });
     expect(aliasFirstScope.filteredRows.size).toBe(0);
     expect(value(snapshot, properties, 'filtered', aliasFirstScope)).toEqual({ kind: 'number', value: 2 });
+    expect(value(snapshot, properties, 'filtered-text', aliasFirstScope)).toEqual({
+      kind: 'number',
+      value: 2,
+    });
 
     const warmedScope = createFormulaEvaluationScope(snapshot, title);
     expect(value(snapshot, properties, 'filtered', warmedScope)).toEqual({ kind: 'number', value: 2 });
     expect(value(snapshot, properties, 'shadowed-current-value', warmedScope)).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('shadows the built-in CurrentValue'),
+    });
+    expect(value(snapshot, properties, 'shadowed-text-current-value', warmedScope)).toMatchObject({
       kind: 'error',
       message: expect.stringContaining('shadows the built-in CurrentValue'),
     });
@@ -692,8 +908,14 @@ describe('Polaris Dados current-database formula projections', () => {
   it('checks the filter row limit before reading any row properties', () => {
     const properties = [
       checkbox('flag', 'Flag'),
+      scalar('status', 'Status', 'text'),
       scalar('quantity', 'Quantity'),
       formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Flag).Quantity.Sum()'),
+      formula(
+        'filtered-text',
+        'Filtered text total',
+        'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()',
+      ),
     ] satisfies readonly ProviderProperty[];
     let rowPropertyReads = 0;
     const rows = Array.from({ length: 2001 }, (_, index) => ({
@@ -707,11 +929,28 @@ describe('Polaris Dados current-database formula projections', () => {
     const snapshot = readySnapshot(properties, rows);
     const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
 
-    expect(value(snapshot, properties, 'filtered', scope)).toMatchObject({
-      kind: 'error',
-      message: expect.stringContaining('limited to 2000 rows'),
-    });
+    for (const formulaId of ['filtered', 'filtered-text']) {
+      expect(value(snapshot, properties, formulaId, scope)).toMatchObject({
+        kind: 'error',
+        message: expect.stringContaining('limited to 2000 rows'),
+      });
+    }
     expect(rowPropertyReads).toBe(0);
+  });
+
+  it('accepts exactly 2,000 rows for a text filter', () => {
+    const properties = [
+      scalar('status', 'Status', 'text'),
+      scalar('quantity', 'Quantity'),
+      formula('filtered', 'Filtered total', 'Inventory.Filter(CurrentValue.Status = "Pago").Quantity.Sum()'),
+    ] satisfies readonly ProviderProperty[];
+    const rows = Array.from({ length: 2000 }, (_, index) =>
+      row(`included-${index}`, { status: 'Pago', quantity: 1 }),
+    );
+    const snapshot = readySnapshot(properties, rows);
+    const scope = createFormulaEvaluationScope(snapshot, resolveFormulaDatabaseTitle(databaseId, pages));
+
+    expect(value(snapshot, properties, 'filtered', scope)).toEqual({ kind: 'number', value: 2000 });
   });
 
   it('caches each projected property within the snapshot and checks the 2,000-row limit before reading rows', () => {
