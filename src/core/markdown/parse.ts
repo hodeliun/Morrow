@@ -21,6 +21,7 @@ import {
   toggleLevel,
 } from './serialize';
 import { COLUMN_WIDTHS_PATTERN } from './serialize';
+import { parseColumnLayoutTag } from '../columnWidths';
 
 export interface ParseOptions {
   // resolves a [[wiki link]] target, a title or a path inside the vault, to a page id
@@ -807,25 +808,34 @@ function htmlBlock(
     b.push({ type: 'tableOfContents' });
     return;
   }
-  // column wrappers come as runs of bare tags, each one opens or closes a level
-  const layoutTags = html.match(/<div data-columns>|<div data-column>|<\/div>/gi);
-  if (layoutTags && html.replace(/<div data-columns>|<div data-column>|<\/div>/gi, '').trim() === '') {
+  // column wrappers come as runs of supported tags, each one opens or closes a level
+  const divTags = [...html.matchAll(/<\/?div\b[^>]*>/gi)];
+  const layoutTags = divTags.map((match) => parseColumnLayoutTag(match[0]!.trim()));
+  if (
+    divTags.length > 0 &&
+    layoutTags.every((tag) => tag !== null) &&
+    html.replace(/<\/?div\b[^>]*>/gi, '').trim() === ''
+  ) {
     const inLayout = b.stack.some((node) => node.type === 'columns');
-    if (inLayout || /<div data-columns>/i.test(html)) {
+    if (inLayout || layoutTags.some((tag) => tag?.kind === 'columns')) {
       for (const tag of layoutTags) {
-        if (/data-columns/i.test(tag)) {
-          const node: DocNode = { type: 'columns', content: [] };
+        if (tag?.kind === 'columns') {
+          const node: DocNode = {
+            type: 'columns',
+            ...(tag.widths === null ? {} : { attrs: { widths: tag.widths } }),
+            content: [],
+          };
           b.push(node);
           b.stack.push(node);
-        } else if (/data-column/i.test(tag)) {
+        } else if (tag?.kind === 'column') {
           if (b.top().type !== 'columns') continue;
           const node: DocNode = { type: 'column', content: [] };
           b.push(node);
           b.stack.push(node);
-        } else if (b.top().type === 'column') {
+        } else if (tag?.kind === 'close' && b.top().type === 'column') {
           if ((b.top().content ?? []).length === 0) b.top().content = [{ type: 'paragraph', content: [] }];
           b.close();
-        } else if (b.top().type === 'columns') b.close();
+        } else if (tag?.kind === 'close' && b.top().type === 'columns') b.close();
       }
       return;
     }
@@ -1234,12 +1244,11 @@ function updateBlockBackgroundHtmlContainers(
     const opening = /^<([a-z][\w-]*)\b([^>]*)>$/i.exec(tag);
     if (!opening || /\/\s*>$/.test(tag)) continue;
     const name = opening[1]!.toLowerCase();
-    const exactTag = tag.toLowerCase();
-    if (name === 'div' && exactTag === '<div data-columns>') {
+    const layoutTag = name === 'div' ? parseColumnLayoutTag(tag) : null;
+    if (layoutTag?.kind === 'columns') {
       stack.push({ tag: 'div', nativeColumnLayout: true, layoutKind: 'columns' });
     } else if (
-      name === 'div' &&
-      exactTag === '<div data-column>' &&
+      layoutTag?.kind === 'column' &&
       stack.at(-1)?.layoutKind === 'columns' &&
       stack.at(-1)?.nativeColumnLayout
     ) {

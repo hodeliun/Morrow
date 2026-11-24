@@ -2,7 +2,7 @@
 
 .prose .columns {
   display: grid;
-  grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
+  grid-template-columns: var(--column-grid-template, repeat(var(--columns, 2), minmax(0, 1fr)));
   gap: 28px;
   margin: 8px 0;
 }

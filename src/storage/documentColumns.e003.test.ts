@@ -15,7 +15,7 @@ import { createExtensions } from '../app/editor/extensions';
 const NOTE_ID = 'seven-column-note';
 const NOTE_PATH = 'Seven columns.md';
 
-function markdownColumnLayout(count: number, emptyIndex = -1): string {
+function markdownColumnLayout(count: number, emptyIndex = -1, widths?: string): string {
   const columns = Array.from({ length: count }, (_, index) => {
     const body =
       index === emptyIndex
@@ -25,7 +25,8 @@ function markdownColumnLayout(count: number, emptyIndex = -1): string {
           : `Column ${index + 1} ^column-${index + 1}`;
     return `<div data-column>\n\n${body}\n\n</div>`;
   });
-  return `Before ^before\n\n<div data-columns>\n${columns.join('\n')}\n</div>\n\nAfter ^after\n`;
+  const widthAttribute = widths === undefined ? '' : ` data-widths="${widths}"`;
+  return `Before ^before\n\n<div data-columns${widthAttribute}>\n${columns.join('\n')}\n</div>\n\nAfter ^after\n`;
 }
 
 function makeEditor(content: unknown): Editor {
@@ -351,6 +352,247 @@ describe('published equal-width column layouts', () => {
       expect(session.protectedReasons.has(NOTE_ID)).toBe(false);
     } finally {
       await session.close();
+    }
+  });
+
+  it('edits, serializes, and reopens legacy weighted groups without normalizing their spelling', async () => {
+    const examples = [
+      { widths: '14.1,14.1,14.1,14.1,14.1,14.7,14.8', count: 7 },
+      { widths: '020.00, 080.00', count: 2 },
+      { widths: '\t020.00,\t080.00\t', count: 2 },
+      { widths: '50.05,49.95', count: 2 },
+    ];
+
+    for (const [index, { widths, count }] of examples.entries()) {
+      const path = `Weighted ${index + 1}.md`;
+      const body = markdownColumnLayout(count, count - 1, widths);
+      const source = `---\ntitle: Weighted ${index + 1}\ntags:\n  - fixture\ncustom:\n  keep: true\n---\n${body}`;
+      expect(findUnrepresentablePageContent(source), widths).toBeNull();
+
+      const vault = new ObservedMemoryVault({
+        [path]: source,
+        '.morrow/workspace.json': registryFor(path),
+        '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }),
+      });
+      let session = await open(vault);
+      let editor: Editor | null = null;
+      try {
+        expect(session.protectedReasons.has(NOTE_ID)).toBe(false);
+        expect(vault.applyCalls).toHaveLength(0);
+        editor = makeEditor(session.getState().docs[NOTE_ID]);
+        editor.state.doc.check();
+        const group = editor.state.doc.child(1);
+        expect(group.type.name).toBe('columns');
+        expect(group.childCount).toBe(count);
+        expect(group.attrs.widths).toBe(widths);
+        const renderedGroup = editor.view.dom.querySelector('.columns') as HTMLElement;
+        expect(renderedGroup.getAttribute('data-widths')).toBe(widths);
+        expect(renderedGroup.style.getPropertyValue('--column-grid-template')).toContain('fr');
+
+        editor.view.dispatch(editor.state.tr.insertText(' changed', textEnd(editor, 'Column 1')));
+        editor.view.dispatch(closeHistory(editor.state.tr));
+        editor.view.dispatch(editor.state.tr.insertText(' neighbor', textEnd(editor, 'After')));
+        expect(editor.commands.undo()).toBe(true);
+        expect(editor.commands.undo()).toBe(true);
+        expect(editor.commands.redo()).toBe(true);
+        expect(editor.commands.redo()).toBe(true);
+        editor.state.doc.check();
+
+        const savedDoc = editor.getJSON() as DocNode;
+        expect(savedDoc.content?.[1]?.attrs?.widths).toBe(widths);
+        const updated = session.execute({ type: 'page.setDoc', id: NOTE_ID, doc: savedDoc, now: index + 2 });
+        if (!updated.ok) throw new Error(updated.error);
+        expect(await session.flush()).toBe(true);
+      } finally {
+        editor?.destroy();
+        await session.close();
+      }
+
+      const saved = vault.text(path)!;
+      expect(saved).toContain(`<div data-columns data-widths="${widths}">`);
+      expect(saved).toContain('**Column 1 changed**');
+      expect(saved).toContain('After neighbor ^after');
+      expect(saved).toContain('custom:\n  keep: true');
+      expect((saved.match(/<div data-column>/g) ?? []).length).toBe(count);
+
+      session = await open(vault);
+      try {
+        const reopened = session.getState().docs[NOTE_ID]!;
+        expect(reopened.content?.[1]?.attrs?.widths).toBe(widths);
+        expect(reopened.content?.[0]?.attrs?.blockId).toBe('before');
+        expect(reopened.content?.at(-1)?.attrs?.blockId).toBe('after');
+        expect(session.protectedReasons.has(NOTE_ID)).toBe(false);
+        expect(readPageText(vault.text(path)!).extra.custom).toEqual({ keep: true });
+      } finally {
+        await session.close();
+      }
+    }
+  });
+
+  it('edits a weighted group with a legacy HEX background and protects a mismatched weighted group', async () => {
+    const widths = '020.00, 080.00';
+    const path = 'Weighted background.md';
+    const source = [
+      '---',
+      'title: Weighted background',
+      'tags:',
+      '  - fixture',
+      'custom:',
+      '  keep: true',
+      '---',
+      'Before ^before',
+      '',
+      `<div data-columns data-widths="${widths}">`,
+      '<div data-column>',
+      '',
+      '<!-- morrow:block-background:#1a2b3c -->',
+      '',
+      'First ^first',
+      '',
+      '</div>',
+      '<div data-column>',
+      '',
+      'Second ^second',
+      '',
+      '</div>',
+      '</div>',
+      '',
+      'After ^after',
+      '',
+    ].join('\n');
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const vault = new ObservedMemoryVault({
+      [path]: source,
+      '.morrow/workspace.json': registryFor(path),
+      '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }),
+    });
+    let session = await open(vault);
+    let editor: Editor | null = null;
+    try {
+      expect(session.protectedReasons.has(NOTE_ID)).toBe(false);
+      expect(vault.applyCalls).toHaveLength(0);
+      editor = makeEditor(session.getState().docs[NOTE_ID]);
+      editor.state.doc.check();
+      const group = editor.state.doc.child(1);
+      expect(group.type.name).toBe('columns');
+      expect(group.attrs.widths).toBe(widths);
+
+      const coloredParagraphs: Array<{ attrs: { backgroundColor?: string; blockId?: string } }> = [];
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === 'paragraph' && node.textContent.includes('First')) {
+          coloredParagraphs.push(node as unknown as { attrs: { backgroundColor?: string; blockId?: string } });
+        }
+      });
+      expect(coloredParagraphs[0]?.attrs.backgroundColor).toBe('#1a2b3c');
+      expect(coloredParagraphs[0]?.attrs.blockId).toBe('first');
+
+      editor.view.dispatch(editor.state.tr.insertText(' neighbor', textEnd(editor, 'After')));
+      editor.state.doc.check();
+      const updated = session.execute({
+        type: 'page.setDoc',
+        id: NOTE_ID,
+        doc: editor.getJSON() as DocNode,
+        now: 5,
+      });
+      if (!updated.ok) throw new Error(updated.error);
+      expect(await session.flush()).toBe(true);
+    } finally {
+      editor?.destroy();
+      await session.close();
+    }
+
+    const saved = vault.text(path)!;
+    expect(saved).toContain(`<div data-columns data-widths="${widths}">`);
+    expect(saved).toContain('<!-- morrow:block-background:#1a2b3c -->');
+    expect(saved).toContain('After neighbor ^after');
+    expect(saved).toContain('custom:\n  keep: true');
+    expect(JSON.parse(vault.text('.morrow/workspace.json')!).pages[path].order).toBe(0);
+
+    session = await open(vault);
+    try {
+      expect(session.protectedReasons.has(NOTE_ID)).toBe(false);
+      const reopened = session.getState().docs[NOTE_ID]!;
+      expect(reopened.content?.[1]?.attrs?.widths).toBe(widths);
+      expect(reopened.content?.[0]?.attrs?.blockId).toBe('before');
+      expect(reopened.content?.at(-1)?.attrs?.blockId).toBe('after');
+      const findColoredParagraph = (node: DocNode): DocNode | null => {
+        if (node.type === 'paragraph' && node.content?.some((child) => child.text?.includes('First'))) return node;
+        for (const child of node.content ?? []) {
+          const found = findColoredParagraph(child);
+          if (found) return found;
+        }
+        return null;
+      };
+      const reopenedParagraph = findColoredParagraph(reopened);
+      expect(reopenedParagraph?.attrs?.backgroundColor).toBe('#1a2b3c');
+      expect(reopenedParagraph?.attrs?.blockId).toBe('first');
+      expect(readPageText(vault.text(path)!).extra.custom).toEqual({ keep: true });
+      expect(readPageText(vault.text(path)!).tags).toEqual(['fixture']);
+    } finally {
+      await session.close();
+    }
+
+    const invalidPath = 'Weighted background invalid.md';
+    const invalidSource = source.replace(`data-widths="${widths}"`, 'data-widths="20,30,50"');
+    const invalidVault = new ObservedMemoryVault({
+      [invalidPath]: invalidSource,
+      '.morrow/workspace.json': registryFor(invalidPath),
+      '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }),
+    });
+    const protectedSession = await open(invalidVault);
+    try {
+      expect(protectedSession.protectedReasons.has(NOTE_ID)).toBe(true);
+      expect(protectedSession.getState().docs[NOTE_ID]).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: invalidSource } }],
+      });
+      expect(invalidVault.text(invalidPath)).toBe(invalidSource);
+      expect(invalidVault.applyCalls).toHaveLength(0);
+    } finally {
+      await protectedSession.close();
+    }
+  });
+
+  it('resets equal-width CSS tracks inside a weighted group', () => {
+    const nestedColumns = (first: string, second: string) => ({
+      type: 'columns',
+      content: [
+        { type: 'column', content: [{ type: 'paragraph', content: [{ type: 'text', text: first }] }] },
+        { type: 'column', content: [{ type: 'paragraph', content: [{ type: 'text', text: second }] }] },
+      ],
+    });
+    const editor = makeEditor({
+      type: 'doc',
+      content: [
+        {
+          type: 'columns',
+          attrs: { widths: '50.05,49.95' },
+          content: [
+            {
+              type: 'column',
+              content: [
+                { type: 'paragraph', content: [{ type: 'text', text: 'Outer one' }] },
+                nestedColumns('Inner one', 'Inner two'),
+              ],
+            },
+            { type: 'column', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Outer two' }] }] },
+          ],
+        },
+      ],
+    });
+    try {
+      editor.state.doc.check();
+      const groups = Array.from(editor.view.dom.querySelectorAll('.columns')) as HTMLElement[];
+      expect(groups).toHaveLength(2);
+      expect(groups[0]!.style.getPropertyValue('--column-grid-template')).toBe(
+        'minmax(0, 50.05fr) minmax(0, 49.95fr)',
+      );
+      expect(groups[1]!.style.getPropertyValue('--column-grid-template')).toBe(
+        'repeat(2, minmax(0, 1fr))',
+      );
+    } finally {
+      editor.destroy();
     }
   });
 });

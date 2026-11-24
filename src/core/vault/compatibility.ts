@@ -34,6 +34,7 @@ import {
   WIDGET_KINDS,
 } from '../model';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
+import { parseColumnLayoutTag, parseHtmlTag, parseLegacyColumnWidths } from '../columnWidths';
 import {
   isUnambiguousFrontmatter,
   MANAGED_KEYS,
@@ -686,8 +687,8 @@ function unsupportedMarkerIssue(
     if (remaining === 0) return 'The page contains a Morrow block marker this version cannot safely edit.';
     allowedViewMarkers.set(marker.comment, remaining - 1);
   }
-  const columnIssue = columnLayoutIssue(body);
-  if (columnIssue) return columnIssue;
+  const columnLayout = columnLayoutIssue(body);
+  if (columnLayout.issue) return columnLayout.issue;
   const parsedTokens = markerMarkdown.parse(body, {});
   const hasDetailsMarkup = /<\/?details\b/i.test(body);
   let detailsParse: ReturnType<typeof markdownToDocWithDetailsHtmlBlocks> | null = null;
@@ -739,7 +740,8 @@ function unsupportedMarkerIssue(
   }
   if (
     countAttribute(body, 'data-block-background') !== toggleIssue.blockBackgroundCount ||
-    /\bdata-(?:widths|block-id)\b/i.test(body)
+    countAttribute(body, 'data-widths') !== columnLayout.widthsAttributeCount ||
+    /\bdata-block-id\b/i.test(body)
   ) {
     return 'The page contains a layout or block identifier this version cannot safely edit.';
   }
@@ -788,22 +790,29 @@ function isSelfContainedOrdinaryDivTree(fragment: string): boolean {
   );
 }
 
-function columnLayoutIssue(body: string): string | null {
-  if (!/<div\b[^>]*\bdata-columns?\b/i.test(body)) return null;
+interface ColumnLayoutValidation {
+  issue: string | null;
+  widthsAttributeCount: number;
+}
 
-  const frames: Array<{ kind: 'columns'; count: number } | { kind: 'column' | 'other' }> = [];
+function columnLayoutIssue(body: string): ColumnLayoutValidation {
+  const invalid = (issue: string): ColumnLayoutValidation => ({ issue, widthsAttributeCount: 0 });
+  if (!/<div\b[^>]*\bdata-columns?\b/i.test(body)) return { issue: null, widthsAttributeCount: 0 };
+
+  type ColumnFrame = { kind: 'columns'; count: number; widths: string | null };
+  type Frame = ColumnFrame | { kind: 'column' | 'other' };
+  const frames: Frame[] = [];
   let groupCount = 0;
   let columnCount = 0;
+  const expectedWidths: string[] = [];
   const opaqueColumnFragments: string[] = [];
   const tokens = markerMarkdown.parse(body, {});
 
   for (const token of tokens) {
     if (token.type !== 'html_block' && token.type !== 'inline') continue;
     const inlineTags = token.type === 'inline' ? token.children?.filter((child) => child.type === 'html_inline') ?? [] : [];
-    if (
-      inlineTags.some((child) => /<div\b[^>]*\bdata-columns?\b/i.test(child.content))
-    ) {
-      return 'A column layout is embedded in inline HTML this version cannot preserve.';
+    if (inlineTags.some((child) => /<div\b[^>]*\bdata-columns?\b/i.test(child.content))) {
+      return invalid('A column layout is embedded in inline HTML this version cannot preserve.');
     }
     const fragments = token.type === 'inline' ? [] : [token.content];
 
@@ -818,55 +827,58 @@ function columnLayoutIssue(body: string): string | null {
 
       const html = fragment.replace(/<!--[\s\S]*?-->/g, '');
       const divTags = [...html.matchAll(/<\/?div\b[^>]*>/gi)];
-      const layoutTagPattern = /<div data-columns>|<div data-column>|<\/div>/gi;
-      const layoutTags = [...fragment.matchAll(layoutTagPattern)];
+      const consumedDivTags = [...fragment.matchAll(/<\/?div\b[^>]*>/gi)];
+      const parsedLayoutTags = consumedDivTags.map((match) => parseColumnLayoutTag(match[0]!.trim()));
       const codecConsumesLayoutTags =
-        layoutTags.length > 0 && fragment.replace(layoutTagPattern, '').trim() === '';
+        consumedDivTags.length > 0 &&
+        parsedLayoutTags.every((tag) => tag !== null) &&
+        fragment.replace(/<\/?div\b[^>]*>/gi, '').trim() === '';
       let closedLayoutGroupInToken = false;
 
-      for (let tagIndex = 0; tagIndex < divTags.length; tagIndex++) {
-        const match = divTags[tagIndex]!;
+      for (const match of divTags) {
         const tag = match[0]!.trim();
         if (/^<\//.test(tag)) {
           const frame = frames.pop();
           if (frame?.kind === 'columns') closedLayoutGroupInToken = true;
           if (!frame && closedLayoutGroupInToken && codecConsumesLayoutTags) {
-            return 'A column group has an extra closing wrapper this version cannot preserve.';
+            return invalid('A column group has an extra closing wrapper this version cannot preserve.');
           }
-          if (frame?.kind === 'columns' && (frame.count < 2 || frame.count > 7)) {
-            return 'A column group must contain between two and seven columns.';
+          if (frame?.kind === 'columns') {
+            if (frame.count < 2 || frame.count > 7) {
+              return invalid('A column group must contain between two and seven columns.');
+            }
+            if (frame.widths !== null && parseLegacyColumnWidths(frame.widths, frame.count) === null) {
+              return invalid('A column group has a number of widths that does not match its columns.');
+            }
           }
           continue;
         }
 
-        const attributeSource = /^<div\b([\s\S]*?)\/?\s*>$/i.exec(tag)?.[1] ?? '';
-        const attributes = new Set(
-          [
-            ...attributeSource.matchAll(
-              /\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
-            ),
-          ].map((attribute) => attribute[1]!.toLowerCase()),
-        );
-        const isColumns = attributes.has('data-columns');
-        const isColumn = attributes.has('data-column');
+        const parsedTag = parseHtmlTag(tag);
+        const attributes = parsedTag?.attributes ?? [];
+        const names = attributes.map((attribute) => attribute.name);
+        const isColumns = names.includes('data-columns');
+        const isColumn = names.includes('data-column');
+        if (!parsedTag && /\bdata-columns?\b/i.test(tag)) {
+          return invalid('A column layout uses wrapper attributes or markup this version cannot preserve.');
+        }
         if (isColumns || isColumn) {
-          const canonicalColumns = tag.toLowerCase() === '<div data-columns>';
-          const canonicalColumn = tag.toLowerCase() === '<div data-column>';
-          const selfClosing = /\/\s*>$/.test(tag);
-          if ((isColumns && !canonicalColumns) || (isColumn && !canonicalColumn) || selfClosing) {
-            return 'A column layout uses wrapper attributes or markup this version cannot preserve.';
+          const layoutTag = parseColumnLayoutTag(tag);
+          if (!layoutTag || layoutTag.kind === 'close') {
+            return invalid('A column layout uses wrapper attributes or markup this version cannot preserve.');
           }
-          if (isColumns) {
+          if (layoutTag.kind === 'columns') {
             const parent = frames.at(-1);
             if (parent && parent.kind !== 'column') {
-              return 'A column group is nested in an unsupported HTML wrapper.';
+              return invalid('A column group is nested in an unsupported HTML wrapper.');
             }
             groupCount++;
-            frames.push({ kind: 'columns', count: 0 });
+            if (layoutTag.widths !== null) expectedWidths.push(layoutTag.widths);
+            frames.push({ kind: 'columns', count: 0, widths: layoutTag.widths });
           } else {
             const parent = frames.at(-1);
             if (!parent || parent.kind !== 'columns') {
-              return 'A column wrapper is not a direct child of a column group.';
+              return invalid('A column wrapper is not a direct child of a column group.');
             }
             parent.count++;
             columnCount++;
@@ -876,7 +888,7 @@ function columnLayoutIssue(body: string): string | null {
         }
 
         if (frames.some((frame) => frame.kind === 'columns' || frame.kind === 'column')) {
-          return 'A column layout contains a nested div this version cannot preserve.';
+          return invalid('A column layout contains a nested div this version cannot preserve.');
         }
         frames.push({ kind: 'other' });
       }
@@ -884,18 +896,19 @@ function columnLayoutIssue(body: string): string | null {
   }
 
   if (frames.some((frame) => frame.kind === 'columns' || frame.kind === 'column')) {
-    return 'A column layout has unmatched wrappers this version cannot preserve.';
+    return invalid('A column layout has unmatched wrappers this version cannot preserve.');
   }
   if (groupCount > 0) {
     let parsed: DocNode;
     try {
       parsed = markdownToDoc(body);
     } catch {
-      return 'A column layout could not be represented by this version.';
+      return invalid('A column layout could not be represented by this version.');
     }
     let parsedGroups = 0;
     let parsedColumns = 0;
     let invalidParsedGroup = false;
+    const parsedWidths: string[] = [];
     const columnDescendants = new WeakSet<DocNode>();
     const rawBlockCountsInColumns = new Map<string, number>();
     walk(parsed, (node, parent) => {
@@ -912,6 +925,14 @@ function columnLayoutIssue(body: string): string | null {
           children.some((child) => child.type !== 'column')
         ) {
           invalidParsedGroup = true;
+        }
+        const widths = node.attrs?.widths;
+        if (widths !== undefined && widths !== null) {
+          if (typeof widths !== 'string' || parseLegacyColumnWidths(widths, children.length) === null) {
+            invalidParsedGroup = true;
+          } else {
+            parsedWidths.push(widths);
+          }
         }
       }
       if (node.type === 'column') parsedColumns++;
@@ -934,12 +955,13 @@ function columnLayoutIssue(body: string): string | null {
       invalidParsedGroup ||
       parsedGroups !== groupCount ||
       parsedColumns !== columnCount ||
+      JSON.stringify(parsedWidths) !== JSON.stringify(expectedWidths) ||
       !preservesOpaqueFragments
     ) {
-      return 'A column layout could not be represented by this version.';
+      return invalid('A column layout could not be represented by this version.');
     }
   }
-  return null;
+  return { issue: null, widthsAttributeCount: expectedWidths.length };
 }
 
 function mayResolveLocalAttachment(href: string): boolean {

@@ -1440,6 +1440,25 @@ describe('layout blocks', () => {
     expect(markdown).toContain('[[2026-10-20]]');
     expect(markdownToDoc(markdown)).toEqual(doc);
   });
+
+  it('keeps legacy column-width spelling through parsing and serialization', () => {
+    const examples = [
+      ['14.1,14.1,14.1,14.1,14.1,14.7,14.8', 7],
+      ['020.00, 080.00', 2],
+      ['50.05,49.95', 2],
+    ] as const;
+    for (const [widths, count] of examples) {
+      const columns = Array.from(
+        { length: count },
+        (_, index) => `<div data-column>\n\nColumn ${index + 1}\n\n</div>`,
+      );
+      const source = `<div data-columns data-widths="${widths}">\n${columns.join('\n')}\n</div>`;
+      const parsed = markdownToDoc(source);
+      expect(parsed.content?.[0]?.attrs?.widths).toBe(widths);
+      expect(docToMarkdown(parsed)).toContain(`<div data-columns data-widths="${widths}">`);
+      expect(markdownToDoc(docToMarkdown(parsed))).toEqual(parsed);
+    }
+  });
 });
 
 describe('block ids and anchors', () => {

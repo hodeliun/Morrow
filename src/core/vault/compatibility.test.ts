@@ -67,12 +67,13 @@ function databaseNote(database: unknown, options: { marker?: unknown; omitMarker
   return `---\n${yaml}---\nInventory body\n`;
 }
 
-function columnLayout(count: number, emptyColumn = -1): string {
+function columnLayout(count: number, emptyColumn = -1, widths?: string): string {
   const columns = Array.from({ length: count }, (_, index) => {
     const body = index === emptyColumn ? '' : `Column ${index + 1} ^column-${index + 1}`;
     return `<div data-column>\n\n${body}\n\n</div>`;
   });
-  return `<div data-columns>\n${columns.join('\n')}\n</div>`;
+  const widthAttribute = widths === undefined ? '' : ` data-widths="${widths}"`;
+  return `<div data-columns${widthAttribute}>\n${columns.join('\n')}\n</div>`;
 }
 
 function metadataDatabase(groupKeys: string[], widgetCount: number) {
@@ -137,6 +138,19 @@ describe('vault representability guard', () => {
     }
   });
 
+  it('accepts the published lexical proportions on groups with a matching column count', () => {
+    const examples = [
+      ['14.1,14.1,14.1,14.1,14.1,14.7,14.8', 7],
+      ['020.00, 080.00', 2],
+      ['50.05,49.95', 2],
+    ] as const;
+    for (const [widths, count] of examples) {
+      const source = columnLayout(count, -1, widths);
+      expect(findUnrepresentablePageContent(source), widths).toBeNull();
+      expect(markdownToDoc(source).content?.[0]?.attrs?.widths).toBe(widths);
+    }
+  });
+
   it('protects malformed or attributed column wrappers while keeping the bytes available', () => {
     const unsupported = [
       '<div data-columns class="future">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
@@ -150,7 +164,15 @@ describe('vault representability guard', () => {
       '<div data-columns>\n<div data-column>\n\nOne\n\n</div>\n',
       '<div data-column>\n\nOrphan\n\n</div>',
       '<div class="future">\n<div data-columns>\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>\n</div>',
-      '<div data-columns data-widths="50,50">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      columnLayout(2, -1, '50,50,10'),
+      columnLayout(2, -1, '50,0'),
+      columnLayout(2, -1, '50,1000.01'),
+      columnLayout(2, -1, '50,49.999'),
+      columnLayout(2, -1, `${'0'.repeat(95)}1,1`),
+      '<div data-columns data-widths="020.00,\r\n080.00">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns data-widths="50,50" data-widths="50,50">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns data-widths="50,50" class="future">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns data-widths="50,50" data-block-id="opaque">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
       '<div data-columns>\n<div data-column>\n\nOne ^recognized-id\n\n</div>\n<div data-column data-block-id="opaque">\n\nTwo\n\n</div>\n</div>',
     ];
 

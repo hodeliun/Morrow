@@ -177,6 +177,10 @@ Em Inventory, com Quantity em **2**, Rate mostra **25.0%** e RateRawCheck mostra
 
 Abra `Seven equal columns` em `PilotState\DemoVault`. A terceira coluna está vazia. Acrescente uma palavra na sétima coluna, mude de nota e reabra para confirmar a edição. Este fluxo está na base do Morrow e funciona com Polaris Documento desativado.
 
+### Conferir as proporções gravadas de uma nota
+
+Abra `Weighted columns`. Em uma janela larga, compare a quinta coluna, com peso 20, e a quarta, com peso 10. Edite o texto da sétima e reabra a nota para conferir. Com a janela estreita, as colunas aparecem empilhadas.
+
 ### Navegar na grade sem o mouse
 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.

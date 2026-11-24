@@ -8,6 +8,7 @@ import {
   supportsHexBlockBackgroundOwner,
 } from './blockBackground';
 import { scanMarkdownDestination } from './markdownLinkDestination';
+import { parseLegacyColumnWidths } from '../columnWidths';
 
 export interface SerializeOptions {
   // current title for a linked page, null keeps the stored label
@@ -179,11 +180,20 @@ function block(node: DocNode, options: SerializeOptions, ancestors: string[]): s
     }
     case 'columns': {
       // plain html wrappers, other markdown apps show the columns one after another
+      const sourceWidths = node.attrs?.widths;
+      const hasSourceWidths = sourceWidths !== undefined && sourceWidths !== null;
+      const widths = hasSourceWidths
+        ? parseLegacyColumnWidths(sourceWidths, node.content?.length ?? 0)
+        : null;
+      if (hasSourceWidths && (!widths || typeof sourceWidths !== 'string')) {
+        throw new TypeError('Invalid legacy column widths.');
+      }
+      const widthAttribute = widths ? ` data-widths="${sourceWidths as string}"` : '';
       const columns = (node.content ?? []).map(
         (column) =>
           `<div data-column>\n\n${blocks(column.content ?? [], options, [...ancestors, 'columns', 'column'])}\n\n</div>`,
       );
-      return `<div data-columns>\n${columns.join('\n')}\n</div>`;
+      return `<div data-columns${widthAttribute}>\n${columns.join('\n')}\n</div>`;
     }
     case 'details': {
       const [summary, content] = node.content ?? [];

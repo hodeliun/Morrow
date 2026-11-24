@@ -11,6 +11,7 @@ import { renderSuggestion } from './SuggestionMenu';
 import { dateLocale, t } from '../i18n';
 import { getPreferences } from '../platform/preferences';
 import type { DateFormat } from '../platform/preferences';
+import { legacyColumnGridTemplate, parseLegacyColumnWidths } from '../../core/columnWidths';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -28,17 +29,42 @@ export const Columns = Node.create({
   defining: true,
   isolating: true,
 
+  addAttributes() {
+    return {
+      widths: {
+        default: null,
+        parseHTML: (element: HTMLElement) => {
+          const value = element.getAttribute('data-widths');
+          if (value === null) return null;
+          const count = Array.from(element.children).filter((child) => child.matches('div[data-column]')).length;
+          return parseLegacyColumnWidths(value, count) ? value : null;
+        },
+        renderHTML: (attributes: { widths?: unknown }) => {
+          const value = attributes.widths;
+          return parseLegacyColumnWidths(value) ? { 'data-widths': value as string } : {};
+        },
+      },
+    };
+  },
+
   parseHTML() {
     return [{ tag: 'div[data-columns]' }];
   },
 
   renderHTML({ node, HTMLAttributes }) {
+    const gridTemplate =
+      legacyColumnGridTemplate(node.attrs.widths, node.childCount) ??
+      `repeat(${node.childCount}, minmax(0, 1fr))`;
+    const style = [
+      `--columns: ${node.childCount}`,
+      `--column-grid-template: ${gridTemplate}`,
+    ].join('; ');
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
         'data-columns': '',
         class: 'columns',
-        style: `--columns: ${node.childCount}`,
+        style,
       }),
       0,
     ];

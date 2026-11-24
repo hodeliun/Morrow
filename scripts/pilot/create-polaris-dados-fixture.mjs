@@ -17,6 +17,7 @@ const additionalDocumentDemoFiles = [
   { path: "Folder only.md/Child.md", text: "An ordinary file in a folder with an extension in its name.\n" },
   { path: "Container navigation.md", text: "Open [[Journal]] and [[Templates]] as documents.\n" },
   { path: "Seven equal columns.md", text: "# Seven equal columns\n\n<div data-columns>\n<div data-column>\n\nColumn 1 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 2 retains **formatted text**.\n\n</div>\n<div data-column>\n\n\n\n</div>\n<div data-column>\n\nColumn 4 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 5 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 6 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 7 retains **formatted text**.\n\n</div>\n</div>\n" },
+  { path: "Weighted columns.md", text: "# Weighted columns\n\n<div data-columns data-widths=\"10,15,15,10,20,15,15\">\n<div data-column>\n\nEdit text in column **1**.\n\n</div>\n<div data-column>\n\nEdit text in column **2**.\n\n</div>\n<div data-column>\n\nEdit text in column **3**.\n\n</div>\n<div data-column>\n\nEdit text in column **4**.\n\n</div>\n<div data-column>\n\nEdit text in column **5**.\n\n</div>\n<div data-column>\n\nEdit text in column **6**.\n\n</div>\n<div data-column>\n\nEdit text in column **7**.\n\n</div>\n</div>\n\nThis paragraph stays outside the grid. ^weighted-example\n" },
 ];
 const args = process.argv.slice(2);
 const usage =
