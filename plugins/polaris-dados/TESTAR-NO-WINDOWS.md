@@ -73,6 +73,10 @@ Abra `Links` e confira o fundo do parágrafo **Legacy HEX background**. O parág
 
 Em `Links`, **List item with native background** usa o amarelo nativo do item. O azul HEX aparece em **Legacy list paragraph**, **Legacy task paragraph** e **Old nested list paragraph**. **Legacy numbered paragraph** fica roxo. Edite **Plain neighbor**, salve e reabra a mesma nota para conferir os fundos e a tarefa marcada.
 
+### Escolher um fundo HEX de bloco
+
+Em `Links`, passe o cursor pela margem de um parágrafo ou do título **Legacy collapsible title** e abra o menu do bloco. Entre em **Cor** e digite `#336699` no campo HEX do fundo. Use **Fundo padrão** no mesmo menu para limpar a cor. Use **Ctrl+Z** para recuperar o fundo. Reabra a nota para conferir a cor salva. Ao desativar o Polaris Documento, o campo HEX desaparece e as cores salvas permanecem.
+
 ### Título colorido de um recolhimento antigo
 
 Em `Links`, localize **Legacy collapsible title**. Use a seta para recolher e expandir o texto abaixo. Edite o título, desfaça e refaça a alteração. Feche e reabra a nota para conferir o fundo azul e o negrito.
@@ -129,7 +133,7 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 
 ### Divisórias dos painéis
 
-No layout **Dois por dois**, arraste a divisória central e depois uma divisória horizontal. Pressione **Esc** durante outro arraste para cancelar. Com a divisória em foco, use as setas no eixo da divisão, **Home** para 20% e **End** para 80%. Com **Onde parei**, feche e reabra para conferir as proporções gravadas. Se a mesma nota estiver em dois painéis e tiver uma posição de leitura salva, o aplicativo pode ativar o primeiro ao reabrir. [Correção #304](https://github.com/hodeliun/Morrow/issues/304).
+No layout **Dois por dois**, arraste a divisória central e depois uma divisória horizontal. Pressione **Esc** durante outro arraste para cancelar. Com a divisória em foco, use as setas no eixo da divisão, **Home** para 20% e **End** para 80%. Com **Onde parei**, feche e reabra para conferir as proporções gravadas. Abra a mesma nota em dois painéis, deixe uma seleção de texto no painel que quer retomar e feche normalmente. Ao reabrir, confira a seleção e o painel ativo.
 
 ## Catálogo na barra lateral
 
