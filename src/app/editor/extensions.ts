@@ -689,9 +689,66 @@ const ToggleSummary = DetailsSummary.extend({
         },
         renderHTML: (attributes) => {
           const color = normalizeInlineColor(attributes.backgroundColor);
-          return isHexBlockBackground(color) ? { 'data-block-background': color } : {};
+          return isHexBlockBackground(color)
+            ? {
+                'data-block-background': color,
+                class: 'block-bg block-bg-custom',
+                style: `--block-bg: ${color}`,
+              }
+            : {};
         },
       },
+    };
+  },
+});
+
+// Unwrapping a toggle heading should produce the heading it represents, keeping its HEX
+// background as well as the inline title content. If the surrounding block cannot accept the
+// result, leave the toggle intact so an unsupported conversion cannot discard its title state.
+const ToggleDetails = Details.extend({
+  addCommands() {
+    return {
+      ...this.parent?.(),
+      unsetDetails:
+        () =>
+        ({ state, dispatch }) => {
+          const { $from } = state.selection;
+          let depth = $from.depth;
+          while (depth > 0 && $from.node(depth).type !== this.type) depth--;
+          if (depth === 0) return false;
+
+          const details = $from.node(depth);
+          const summary = details.firstChild;
+          const content = details.lastChild;
+          if (summary?.type.name !== 'detailsSummary' || content?.type.name !== 'detailsContent') return false;
+
+          const parent = $from.node(depth - 1);
+          const index = $from.index(depth - 1);
+          const position = $from.before(depth);
+          const level = Number(summary.attrs.level);
+          const heading = level >= 1 && level <= 6 ? state.schema.nodes.heading : null;
+          const titleType = heading ?? parent.contentMatchAt(index).defaultType;
+          if (!titleType?.isTextblock) return false;
+
+          const backgroundColor = normalizeInlineColor(summary.attrs.backgroundColor);
+          if (summary.attrs.backgroundColor != null && !isHexBlockBackground(backgroundColor)) return false;
+          const title = titleType.create(
+            {
+              ...(backgroundColor ? { backgroundColor } : {}),
+              ...(heading ? { level } : {}),
+            },
+            summary.content,
+            summary.marks,
+          );
+          const replacement = Fragment.fromArray([title, ...content.content.content]);
+          if (!parent.canReplace(index, index + 1, replacement)) return false;
+          if (!dispatch) return true;
+
+          const tr = state.tr.replaceWith(position, position + details.nodeSize, replacement);
+          tr.setSelection(TextSelection.near(tr.doc.resolve(position + 1), 1));
+          dispatch(tr.scrollIntoView());
+          return true;
+        },
     };
   },
 });
@@ -857,7 +914,7 @@ export function createExtensions(options: ExtensionOptions): AnyExtension[] {
       findPages: options.findPages,
       ...(options.dateMenu ? { dateMenu: options.dateMenu } : {}),
     }),
-    Details.configure({ persist: true, HTMLAttributes: { class: 'toggle' } }),
+    ToggleDetails.configure({ persist: true, HTMLAttributes: { class: 'toggle' } }),
     ToggleSummary,
     DetailsContent,
     FindReplace,

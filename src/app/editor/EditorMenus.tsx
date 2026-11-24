@@ -1037,10 +1037,21 @@ export function turnInto(editor: Editor, pos: number, target: TurnTarget): void 
     intoColumns(editor, pos, pos + node.nodeSize, target.count);
     return;
   }
-  const backgroundColor = BACKGROUND_OWNER_TYPES.has(node.type.name) ? node.attrs.backgroundColor : null;
+  const backgroundColor = BACKGROUND_OWNER_TYPES.has(node.type.name)
+    ? node.attrs.backgroundColor
+    : node.type.name === 'details' && node.firstChild?.type.name === 'detailsSummary'
+      ? node.firstChild.attrs.backgroundColor
+      : null;
   const normalizedBackground = normalizeInlineColor(backgroundColor);
   const customBackground = isHexBlockBackground(normalizedBackground);
-  if (customBackground && !BACKGROUND_SAFE_TURNS.has(target.kind)) return;
+  if (
+    customBackground &&
+    !(node.type.name === 'details' && target.kind === 'toggle') &&
+    !BACKGROUND_SAFE_TURNS.has(target.kind)
+  ) {
+    editor.commands.focus();
+    return;
+  }
   if (turnListItem(editor, pos, target)) return;
   if (node.type.name === 'details' && target.kind === 'toggle') {
     // a toggle stays a toggle with what it folds inside it, only its title's level changes
