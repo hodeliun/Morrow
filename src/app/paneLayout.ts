@@ -41,6 +41,13 @@ export interface PaneLayout<TTab extends PaneTabInstance = PaneTabInstance> {
   readonly tabs: readonly TTab[];
 }
 
+export interface PaneResizeSession {
+  readonly layoutId: string;
+  readonly splitId: string;
+  readonly topologyRevision: number;
+  readonly initialRatio: number;
+}
+
 export interface LegacyPaneHistory {
   readonly hash: string;
   readonly back: readonly string[];
@@ -136,6 +143,79 @@ export function clampSplitRatio(ratio: number): number {
   return Number.isFinite(ratio)
     ? Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio))
     : DEFAULT_SPLIT_RATIO;
+}
+
+export function findPaneSplit(node: PaneNode, splitId: string): PaneSplit | null {
+  if (node.kind === 'leaf') return null;
+  if (node.id === splitId) return node;
+  return findPaneSplit(node.first, splitId) ?? findPaneSplit(node.second, splitId);
+}
+
+export function updatePaneSplitRatio<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  splitId: string,
+  ratio: number,
+): PaneLayout<TTab> | null {
+  const clamped = clampSplitRatio(ratio);
+  let found = false;
+  const update = (node: PaneNode): PaneNode => {
+    if (node.kind === 'leaf') return node;
+    if (node.id === splitId) {
+      found = true;
+      return node.ratio === clamped ? node : { ...node, ratio: clamped };
+    }
+    const first = update(node.first);
+    const second = update(node.second);
+    return first === node.first && second === node.second ? node : { ...node, first, second };
+  };
+  const root = update(layout.root);
+  if (!found) return null;
+  return root === layout.root ? layout : { ...layout, root };
+}
+
+export function beginPaneResize(layout: PaneLayout, splitId: string): PaneResizeSession | null {
+  const split = findPaneSplit(layout.root, splitId);
+  return split
+    ? {
+        layoutId: layout.id,
+        splitId,
+        topologyRevision: layout.topologyRevision,
+        initialRatio: split.ratio,
+      }
+    : null;
+}
+
+function setPaneSplitRatio<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  splitId: string,
+  ratio: number,
+): PaneLayout<TTab> {
+  if (!Number.isFinite(ratio)) return layout;
+  return updatePaneSplitRatio(layout, splitId, ratio) ?? layout;
+}
+
+export function previewPaneResize<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  session: PaneResizeSession,
+  ratio: number,
+): PaneLayout<TTab> {
+  if (session.layoutId !== layout.id || session.topologyRevision !== layout.topologyRevision) return layout;
+  return setPaneSplitRatio(layout, session.splitId, ratio);
+}
+
+export function cancelPaneResize<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  session: PaneResizeSession,
+): PaneLayout<TTab> {
+  if (session.layoutId !== layout.id || session.topologyRevision !== layout.topologyRevision) return layout;
+  return setPaneSplitRatio(layout, session.splitId, session.initialRatio);
+}
+
+export function resetPaneSplit<TTab extends PaneTabInstance>(
+  layout: PaneLayout<TTab>,
+  splitId: string,
+): PaneLayout<TTab> {
+  return setPaneSplitRatio(layout, splitId, DEFAULT_SPLIT_RATIO);
 }
 
 function walkLeaves(node: PaneNode): PaneLeaf[] {

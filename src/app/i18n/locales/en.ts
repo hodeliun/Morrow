@@ -502,7 +502,7 @@ export const en = {
   },
   tabs: {
     secondPage: 'Second page',
-    resizeSplit: 'Drag to resize the two sides',
+    resizeSplit: 'Drag to resize. Use the arrow keys; Escape cancels a drag.',
     tabOptions: 'Tab options',
     openTabsAria: 'Open tabs',
     newTab: 'New tab',

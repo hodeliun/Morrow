@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, createElement, Fragment } from 'react';
 import { createRoot } from 'react-dom/client';
-import { allocateSideInstanceId, isSideInstanceIdFor, visiblePaneLeaves } from './paneLayout';
+import { allocateSideInstanceId, findPaneSplit, isSideInstanceIdFor, visiblePaneLeaves } from './paneLayout';
 import { PANE_TABS_STORAGE_KEY, readPaneTabsSnapshot } from './paneLayoutStorage';
 import type { CurrentTabsSnapshot } from './paneLayoutStorage';
 
@@ -325,10 +325,15 @@ function legacySideCollisionSnapshot(collisionCount: number, withSide: boolean):
   });
 }
 
-async function freshTabs(raw: string | null, initialHash = '') {
+async function freshTabs(
+  raw: string | null,
+  initialHash = '',
+  preferences?: { readonly splitShare: number },
+) {
   window.history.replaceState(null, '', `/${initialHash}`);
   window.localStorage.clear();
   if (raw !== null) window.localStorage.setItem(PANE_TABS_STORAGE_KEY, raw);
+  if (preferences) window.localStorage.setItem('morrow.preferences', JSON.stringify(preferences));
   const writes: string[] = [];
   const originalSetItem = window.localStorage.setItem.bind(window.localStorage);
   const originalGetItem = window.localStorage.getItem.bind(window.localStorage);
@@ -1958,6 +1963,86 @@ describe('legacy pinning and empty address anchors', () => {
 });
 
 describe('multi-pane presets', () => {
+  it('persists a v2 split resize without changing projection, focus, tabs or navigation history', async () => {
+    const { tabs, writes } = await freshTabs(latestForkSnapshot());
+    const before = tabs.getTabs();
+
+    expect(
+      tabs.setPaneSplitRatio('left', 0.94, {
+        layoutId: before.layout.id,
+        topologyRevision: before.layout.topologyRevision,
+      }),
+    ).toBe(true);
+
+    const after = tabs.getTabs();
+    expect(findPaneSplit(after.layout.root, 'root')?.ratio).toBe(0.63);
+    expect(findPaneSplit(after.layout.root, 'left')?.ratio).toBe(0.8);
+    expect(findPaneSplit(after.layout.root, 'right')?.ratio).toBe(0.52);
+    expect(after).toMatchObject({
+      active: before.active,
+      pane: before.pane,
+      closed: before.closed,
+      projectionKind: before.projectionKind,
+      explicitLayout: before.explicitLayout,
+    });
+    expect(after.layout).toMatchObject({
+      focusedPaneId: before.layout.focusedPaneId,
+      topologyRevision: before.layout.topologyRevision,
+      tabs: before.layout.tabs,
+    });
+    expect(currentSnapshot().layout.root).toMatchObject({
+      kind: 'split',
+      first: { kind: 'split', id: 'left', ratio: 0.8 },
+      second: { kind: 'split', id: 'right', ratio: 0.52 },
+    });
+    expect(writes).toHaveLength(1);
+  });
+
+  it('moves a 2.2 legacy split to the v2 writer only after the user changes its ratio', async () => {
+    const raw = legacyPinnedSplitSnapshot();
+    const { tabs, writes } = await freshTabs(raw, '', { splitShare: 0.64 });
+    const before = tabs.getTabs();
+    const split = before.layout.root;
+    expect(split.kind).toBe('split');
+    if (split.kind !== 'split') return;
+    expect(split.ratio).toBe(0.64);
+
+    expect(writes).toEqual([]);
+    expect(
+      tabs.setPaneSplitRatio(split.id, 0.73, {
+        layoutId: before.layout.id,
+        topologyRevision: before.layout.topologyRevision,
+      }),
+    ).toBe(true);
+
+    expect(writes).toHaveLength(1);
+    expect(currentSnapshot().layout.root).toMatchObject({ kind: 'split', ratio: 0.73 });
+    expect(tabs.getTabs().layout.tabs).toEqual(before.layout.tabs);
+    expect(tabs.getTabs().layout.focusedPaneId).toBe(before.layout.focusedPaneId);
+    const preferences = await import('./platform/preferences');
+    expect(preferences.getPreferences().splitShare).toBe(0.73);
+  });
+
+  it('keeps protected session bytes untouched while allowing an in-memory resize', async () => {
+    const raw = JSON.stringify({ schemaVersion: 999, opaque: 'preserve this session' });
+    const { tabs, writes, readFromStorage } = await freshTabs(raw);
+    tabs.setPanePreset('two-by-two');
+    const layout = tabs.getTabs().layout;
+    const root = findPaneSplit(layout.root, `${layout.id}:split:root`);
+    expect(root).not.toBeNull();
+
+    expect(
+      tabs.setPaneSplitRatio(root!.id, 0.72, {
+        layoutId: layout.id,
+        topologyRevision: layout.topologyRevision,
+      }),
+    ).toBe(true);
+
+    expect(findPaneSplit(tabs.getTabs().layout.root, root!.id)?.ratio).toBe(0.72);
+    expect(writes).toEqual([]);
+    expect(readFromStorage()).toBe(raw);
+  });
+
   it.each(['single', 'two-columns', 'one-left-two-right', 'two-by-two'] as const)(
     'opens beside the source tab by physical pane identity in the %s preset without adding a fifth pane',
     async (preset) => {

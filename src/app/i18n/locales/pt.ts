@@ -506,7 +506,7 @@ export const pt: TranslationSchema = {
   },
   tabs: {
     secondPage: 'Segunda página',
-    resizeSplit: 'Arraste para redimensionar os dois lados',
+    resizeSplit: 'Arraste para redimensionar. Use as setas; Esc cancela o arraste.',
     tabOptions: 'Opções da aba',
     openTabsAria: 'Abas abertas',
     newTab: 'Nova aba',

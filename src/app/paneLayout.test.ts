@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { applyPanePresetPreservingAssignments, panePresetOf } from './paneLayout';
+import {
+  applyPanePresetPreservingAssignments,
+  beginPaneResize,
+  cancelPaneResize,
+  findPaneSplit,
+  panePresetOf,
+  previewPaneResize,
+  resetPaneSplit,
+  updatePaneSplitRatio,
+} from './paneLayout';
 import type { PaneLayout, PanePreset, PaneTabInstance } from './paneLayout';
 
 function layoutWithTabs(tabIds: readonly string[]): PaneLayout<PaneTabInstance<string>> {
@@ -69,6 +78,50 @@ describe('pane layout presets', () => {
       ...Array.from({ length: expectedCount - 1 }, () => null),
     ]);
     expect(layout.tabs).toBe(start.tabs);
+  });
+
+  it('updates only the requested split and clamps its ratio to the published bounds', () => {
+    const layout = layoutWithTabs(['note-a', 'note-b', 'note-c', 'note-d']);
+    const root = findPaneSplit(layout.root, 'preset-layout:split:root');
+    const left = findPaneSplit(layout.root, 'preset-layout:split:left');
+    const right = findPaneSplit(layout.root, 'preset-layout:split:right');
+    expect(root).not.toBeNull();
+    expect(left).not.toBeNull();
+    expect(right).not.toBeNull();
+
+    const resized = updatePaneSplitRatio(layout, left!.id, 0.95);
+
+    expect(resized).not.toBeNull();
+    expect(findPaneSplit(resized!.root, root!.id)?.ratio).toBe(root!.ratio);
+    expect(findPaneSplit(resized!.root, left!.id)?.ratio).toBe(0.8);
+    expect(findPaneSplit(resized!.root, right!.id)?.ratio).toBe(right!.ratio);
+    expect(resized).toMatchObject({
+      focusedPaneId: layout.focusedPaneId,
+      topologyRevision: layout.topologyRevision,
+      tabs: layout.tabs,
+    });
+    expect(updatePaneSplitRatio(layout, left!.id, Number.NaN)?.root).toMatchObject({
+      first: { ratio: 0.5 },
+    });
+    expect(updatePaneSplitRatio(layout, 'missing-split', 0.6)).toBeNull();
+  });
+
+  it('previews, restores, resets, and invalidates only the selected split gesture', () => {
+    const layout = layoutWithTabs(['note-a', 'note-b', 'note-c', 'note-d']);
+    const left = findPaneSplit(layout.root, 'preset-layout:split:left')!;
+    const root = findPaneSplit(layout.root, 'preset-layout:split:root')!;
+    const session = beginPaneResize(layout, left.id)!;
+    const preview = previewPaneResize(layout, session, 0.72);
+
+    expect(findPaneSplit(layout.root, left.id)?.ratio).toBe(0.5);
+    expect(findPaneSplit(preview.root, left.id)?.ratio).toBe(0.72);
+    expect(findPaneSplit(preview.root, root.id)?.ratio).toBe(root.ratio);
+    expect(findPaneSplit(resetPaneSplit(preview, left.id).root, left.id)?.ratio).toBe(0.5);
+    expect(findPaneSplit(cancelPaneResize(preview, session).root, left.id)?.ratio).toBe(session.initialRatio);
+
+    const changedTopology = applyPanePresetPreservingAssignments(layout, 'two-columns');
+    expect(previewPaneResize(changedTopology, session, 0.65)).toBe(changedTopology);
+    expect(cancelPaneResize(changedTopology, session)).toBe(changedTopology);
   });
 
   it('keeps the focused instance and all registered histories when reducing a rich layout', () => {

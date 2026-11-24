@@ -14,6 +14,8 @@ import { allActions, matchesShortcut, runAction } from './actions';
 import { isExitInteractionBlocked } from './exitInteraction';
 import { CommandPalette } from './components/CommandPalette';
 import { Dialogs } from './components/Dialogs';
+import { PaneSplitResizer } from './PaneSplitResizer';
+import type { PaneSplitPreview, SplitResizeIdentity } from './PaneSplitResizer';
 import { ReviewView } from './components/ReviewView';
 import { TagsView, TagView } from './components/TagsView';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -36,7 +38,6 @@ import {
   applySpellcheck,
   getPreferences,
   resolvedTheme,
-  setPreferences,
   usePreferences,
 } from './platform/preferences';
 import type { Palette } from './platform/preferences';
@@ -48,6 +49,7 @@ import { loadTagColors } from './tagColors';
 import {
   activateTabAt,
   claimNavigation,
+  commitPaneResizeSession,
   getTabs,
   PaneContext,
   PaneTabContext,
@@ -61,8 +63,9 @@ import {
   useTabs,
 } from './tabs';
 import type { PaneId, PaneRole } from './tabs';
-import { panePresetOf } from './paneLayout';
+import { panePresetOf, updatePaneSplitRatio } from './paneLayout';
 import type { PanePreset } from './paneLayout';
+import { paneLayoutGeometry } from './paneGeometry';
 import {
   clearPropertyHistory,
   getSession,
@@ -92,24 +95,6 @@ export function paneHostInstances(
 
 export function cacheablePaneHostIds(tabs: readonly { id: string; target: string }[]): string[] {
   return tabs.filter((tab) => parseRoute(tab.target).name === 'page').map((tab) => tab.id);
-}
-
-export function paneGridPlacement(
-  preset: PanePreset,
-  index: number,
-): Pick<React.CSSProperties, 'gridColumn' | 'gridRow'> | undefined {
-  if (preset === 'one-left-two-right') {
-    return index === 0
-      ? { gridColumn: '1', gridRow: '1 / span 2' }
-      : { gridColumn: '2', gridRow: String(index) };
-  }
-  if (preset === 'two-by-two') {
-    return {
-      gridColumn: String(Math.floor(index / 2) + 1),
-      gridRow: String((index % 2) + 1),
-    };
-  }
-  return undefined;
 }
 
 interface PaneHostElement {
@@ -479,39 +464,6 @@ export function Pane({
   );
 }
 
-// dragging the line between the two sides of a split, the share is remembered
-function SplitResizer() {
-  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const handle = event.currentTarget;
-    const panes = handle.parentElement!.getBoundingClientRect();
-    handle.setPointerCapture(event.pointerId);
-    const move = (moved: PointerEvent) => {
-      const share = (moved.clientX - panes.left) / panes.width;
-      setPreferences({ splitShare: Math.min(0.8, Math.max(0.2, share)) });
-    };
-    const up = () => {
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      handle.removeEventListener('pointercancel', up);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-    handle.addEventListener('pointercancel', up);
-  };
-  return (
-    <div
-      className="split-resizer"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={t('tabs.resizeSplit')}
-      onPointerDown={onPointerDown}
-      onDoubleClick={() => setPreferences({ splitShare: 0.5 })}
-    />
-  );
-}
-
 // the first view after opening, once per window
 // the peeking sidebar goes once the pointer moves well clear of it, but not while one of its menus is open.
 // it waits a moment first, so a pointer that slips past its edge or over the window's title bar on the way
@@ -620,6 +572,7 @@ export function App() {
     getWorkspaceSessionGeneration,
   );
   const session = getSession();
+  const [splitPreview, setSplitPreview] = useState<PaneSplitPreview | null>(null);
   useTheme(prefs.theme, prefs.palette);
   useEffect(() => {
     const root = document.documentElement;
@@ -653,9 +606,31 @@ export function App() {
   useSidebarPeek(!prefs.sidebarOpen && prefs.sidebarPeek && ui.sidebarPeek);
   const sliding = useSidebarSlide(prefs.sidebarOpen);
 
+  const updateSplitPreview = (preview: PaneSplitPreview | null, identity: SplitResizeIdentity) => {
+    setSplitPreview((current) => {
+      const sameGesture =
+        current &&
+        current.splitId === identity.splitId &&
+        current.layoutId === identity.layoutId &&
+        current.topologyRevision === identity.topologyRevision &&
+        current.sessionGeneration === identity.sessionGeneration;
+      if (!preview) return sameGesture ? null : current;
+      return preview;
+    });
+  };
+
   const visibleAssignments = paneAssignments(tabs.layout);
   const visibleSlots = paneSlots(tabs.layout);
   const layoutPreset: PanePreset = panePresetOf(tabs.layout) ?? 'single';
+  const previewMatchesLayout =
+    splitPreview &&
+    splitPreview.layoutId === tabs.layout.id &&
+    splitPreview.topologyRevision === tabs.layout.topologyRevision &&
+    splitPreview.sessionGeneration === sessionGeneration;
+  const previewLayout = previewMatchesLayout
+    ? (updatePaneSplitRatio(tabs.layout, splitPreview.splitId, splitPreview.ratio) ?? tabs.layout)
+    : tabs.layout;
+  const layoutGeometry = paneLayoutGeometry(previewLayout.root);
   const cacheableIds = cacheablePaneHostIds(tabs.layout.tabs);
   const cacheableSet = new Set(cacheableIds);
   const instances = paneHostInstances(
@@ -668,20 +643,25 @@ export function App() {
   );
   const assignmentByTabId = new Map(visibleAssignments.map((assignment) => [assignment.tabId, assignment]));
   const mountedIds = new Set(instances);
-  const panes = visibleSlots.map((slot, paneIndex) => {
+  const panes = visibleSlots.map((slot) => {
     const assignment = visibleAssignments.find((candidate) => candidate.paneId === slot.paneId);
     const tab = assignment ? tabs.layout.tabs.find((candidate) => candidate.id === assignment.tabId)! : null;
+    const rect = layoutGeometry.panes.get(slot.paneId);
     return {
       ...slot,
       tab,
       route: tab ? parseRoute(tab.target) : null,
       active: tabs.layout.focusedPaneId === slot.paneId,
-      paneIndex,
       hostKey: tab?.id ?? `empty:${slot.paneId}`,
-      style:
-        layoutPreset === 'two-columns'
-          ? { flexGrow: paneIndex === 0 ? prefs.splitShare : 1 - prefs.splitShare }
-          : paneGridPlacement(layoutPreset, paneIndex),
+      style: rect
+        ? {
+            position: 'absolute' as const,
+            left: `${rect.left}%`,
+            top: `${rect.top}%`,
+            width: `${rect.width}%`,
+            height: `${rect.height}%`,
+          }
+        : undefined,
     };
   });
   const hiddenInstances = tabs.layout.tabs.filter(
@@ -722,8 +702,21 @@ export function App() {
       };
       return { tabId: tab.id, element: renderPane(assignment, true) };
     }),
-    <SplitResizer />,
-    layoutPreset === 'two-columns',
+    <>
+      {layoutGeometry.splits.map(({ split, rect }) => (
+        <PaneSplitResizer
+          key={`${sessionGeneration}:${tabs.layout.id}:${tabs.layout.topologyRevision}:${split.id}`}
+          split={split}
+          rect={rect}
+          layoutId={tabs.layout.id}
+          topologyRevision={tabs.layout.topologyRevision}
+          sessionGeneration={sessionGeneration}
+          onPreview={updateSplitPreview}
+          onCommit={commitPaneResizeSession}
+        />
+      ))}
+    </>,
+    layoutGeometry.splits.length > 0,
   );
 
   return (
@@ -741,10 +734,7 @@ export function App() {
       <div className="scrim" aria-hidden="true" onClick={() => setUi({ mobileSidebar: false })} />
       <main className="main">
         <TabBar />
-        <div
-          className={`panes${visibleSlots.length > 1 ? ' is-split' : ''}`}
-          data-layout={layoutPreset}
-        >
+        <div className={`panes${visibleSlots.length > 1 ? ' is-split' : ''}`} data-layout={layoutPreset}>
           {paneChildren}
         </div>
       </main>

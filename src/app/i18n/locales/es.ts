@@ -506,7 +506,7 @@ export const es: TranslationSchema = {
   },
   tabs: {
     secondPage: 'Segunda página',
-    resizeSplit: 'Arrastra para cambiar el tamaño de los dos lados',
+    resizeSplit: 'Arrastra para cambiar el tamaño. Usa las flechas; Esc cancela el arrastre.',
     tabOptions: 'Opciones de pestaña',
     openTabsAria: 'Pestañas abiertas',
     newTab: 'Nueva pestaña',

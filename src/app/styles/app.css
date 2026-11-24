@@ -174,27 +174,17 @@ kbd,
 /* the content of a tab, two sides when it is split */
 
 .panes {
+  position: relative;
   flex: 1;
   display: flex;
   min-height: 0;
   min-width: 0;
-}
-
-.panes[data-layout='one-left-two-right'],
-.panes[data-layout='two-by-two'] {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-}
-
-.panes[data-layout='one-left-two-right'] .pane,
-.panes[data-layout='two-by-two'] .pane {
-  min-height: 0;
-  min-width: 0;
+  overflow: hidden;
 }
 
 .pane {
   flex: 1 1 0;
+  position: absolute;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -217,23 +207,46 @@ kbd,
 }
 
 .split-resizer {
-  flex: none;
-  position: relative;
-  width: 1px;
-  background: var(--border);
-  cursor: col-resize;
+  position: absolute;
+  z-index: 2;
   touch-action: none;
+  background: var(--border);
+}
+
+.split-resizer[data-axis='columns'] {
+  width: 1px;
+  cursor: col-resize;
+  transform: translateX(-50%);
+}
+
+.split-resizer[data-axis='rows'] {
+  height: 1px;
+  cursor: row-resize;
+  transform: translateY(-50%);
 }
 
 .split-resizer::before {
   content: '';
   position: absolute;
+}
+
+.split-resizer[data-axis='columns']::before {
   inset: 0 -4px;
 }
 
+.split-resizer[data-axis='rows']::before {
+  inset: -4px 0;
+}
+
 .split-resizer:hover,
-.split-resizer:active {
+.split-resizer:active,
+.split-resizer:focus-visible {
   background: var(--accent);
+}
+
+.split-resizer:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* the side that takes navigation is marked under its top bar */

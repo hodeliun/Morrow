@@ -5,11 +5,13 @@ import {
   allocateSideInstanceId,
   applyPanePresetPreservingAssignments,
   DEFAULT_SPLIT_RATIO,
+  findPaneSplit,
   isSideInstanceIdFor,
   migrateLegacySplit,
+  updatePaneSplitRatio,
   visiblePaneLeaves,
 } from './paneLayout';
-import type { PaneLayout, PaneLeaf, PaneNode, PanePreset, PaneTabInstance } from './paneLayout';
+import type { PaneLayout, PaneLeaf, PaneNode, PanePreset, PaneResizeSession, PaneTabInstance } from './paneLayout';
 import {
   PANE_TABS_STORAGE_KEY,
   persistPaneTabsSnapshot,
@@ -18,7 +20,7 @@ import {
   writePaneTabsSnapshot,
 } from './paneLayoutStorage';
 import type { CurrentTabsSnapshot, LegacyTabsSnapshot } from './paneLayoutStorage';
-import { getPreferences } from './platform/preferences';
+import { getPreferences, setPreferences } from './platform/preferences';
 
 export type PaneId = string;
 export type PaneRole = 'main' | 'side' | 'third' | 'fourth';
@@ -1553,6 +1555,32 @@ export function setActivePane(pane: PaneId): void {
   const paneId = resolvePaneId(pane, now.layout);
   if (!paneId || paneId === now.layout.focusedPaneId) return;
   setLayout({ ...now.layout, focusedPaneId: paneId });
+}
+
+export function setPaneSplitRatio(
+  splitId: string,
+  ratio: number,
+  expected?: { readonly layoutId: string; readonly topologyRevision: number },
+): boolean {
+  const now = current();
+  if (
+    expected &&
+    (now.layout.id !== expected.layoutId || now.layout.topologyRevision !== expected.topologyRevision)
+  )
+    return false;
+  const layout = updatePaneSplitRatio(now.layout, splitId, ratio);
+  if (!layout) return false;
+  if (layout !== now.layout) {
+    const rootSplit = now.layout.root.kind === 'split' && now.layout.root.id === splitId;
+    const updatedSplit = findPaneSplit(layout.root, splitId);
+    setLayout(layout);
+    if (rootSplit && updatedSplit) setPreferences({ splitShare: updatedSplit.ratio });
+  }
+  return true;
+}
+
+export function commitPaneResizeSession(session: PaneResizeSession, ratio: number): boolean {
+  return setPaneSplitRatio(session.splitId, ratio, session);
 }
 
 export function setPanePreset(preset: PanePreset): void {

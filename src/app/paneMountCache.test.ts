@@ -3,27 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { act, createElement, Fragment, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { WorkspaceSession } from '../storage/session';
-import { cacheablePaneHostIds, paneGridPlacement, paneHostChildren, paneHostInstances } from './App';
+import { cacheablePaneHostIds, paneHostChildren, paneHostInstances } from './App';
 
 function session(): WorkspaceSession {
   return {} as WorkspaceSession;
 }
 
 describe('visible pane host cache', () => {
-  it('places each preset slot in the tree order supplied by the pane model', () => {
-    expect([0, 1, 2].map((index) => paneGridPlacement('one-left-two-right', index))).toEqual([
-      { gridColumn: '1', gridRow: '1 / span 2' },
-      { gridColumn: '2', gridRow: '1' },
-      { gridColumn: '2', gridRow: '2' },
-    ]);
-    expect([0, 1, 2, 3].map((index) => paneGridPlacement('two-by-two', index))).toEqual([
-      { gridColumn: '1', gridRow: '1' },
-      { gridColumn: '1', gridRow: '2' },
-      { gridColumn: '2', gridRow: '1' },
-      { gridColumn: '2', gridRow: '2' },
-    ]);
-  });
-
   it('mounts only the visible instances, retains them while registered, and prunes closed tabs', () => {
     const workspace = session();
     expect(paneHostInstances(workspace, ['main', 'side', 'background'], ['main', 'side'])).toEqual([
@@ -70,7 +56,13 @@ describe('visible pane host cache', () => {
         7,
         visible.map((id) => ({ tabId: id, element: createElement(PaneProbe, { id, hidden: false }) })),
         hidden.map((id) => ({ tabId: id, element: createElement(PaneProbe, { id, hidden: true }) })),
-        createElement('div', { 'data-split-resizer': true }),
+        createElement(
+          Fragment,
+          null,
+          ...['root', 'left', 'right'].map((id) =>
+            createElement('div', { key: id, 'data-split-resizer': id }),
+          ),
+        ),
       );
     const container = document.createElement('div');
     document.body.append(container);
@@ -80,7 +72,9 @@ describe('visible pane host cache', () => {
       await act(async () => root.render(createElement(Fragment, null, ...children(['main', 'side'], []))));
       expect(mounts.get('main')).toBe(1);
       expect(mounts.get('side')).toBe(1);
-      expect(container.querySelector('[data-split-resizer]')).not.toBeNull();
+      expect(container.querySelectorAll('[data-split-resizer]')).toHaveLength(3);
+      expect(container.querySelector('[data-pane-probe="main"]')?.parentElement).toBe(container);
+      expect(container.querySelector('[data-split-resizer="right"]')?.parentElement).toBe(container);
 
       await act(async () =>
         root.render(createElement(Fragment, null, ...children(['side', 'other'], ['main']))),
