@@ -47,6 +47,10 @@ O launcher cria `PilotState\DemoVault` na primeira execução. As próximas exec
 3. Mude outro valor no painel e use **Descartar alterações** para voltar ao último padrão salvo. Feche e reabra o piloto, crie outra nota e confirme que o padrão continuou disponível.
 4. Clique em **Restaurar padrão do perfil** para voltar à fonte e à largura gerais na criação de novas notas. Se criar uma nota a partir de um template com estilo próprio, confira que a nota herdou esse estilo.
 
+### Ver a prévia de estilo nas notas existentes
+
+Em **Configurações → Aparência**, salve um padrão e abra **Prévia das páginas existentes**. Escolha **Preservar estilos existentes** ou **Sobrescrever estilos representáveis** e clique em **Pré-visualizar páginas**. Confira a contagem e a amostra de até quatro títulos. Abra uma nota após a prévia para conferir o estilo anterior. Alterar o modo ou salvar outro padrão pede uma nova prévia.
+
 ### Cores HEX e estilos salvos
 
 1. Com **Polaris Documento** ativo, selecione algumas palavras no editor e abra a paleta **Cor**. Aplique `#225588` à linha de texto e `#eedc93` à linha de realce. Reabra a paleta para restaurar a cor padrão e use **Ctrl+Z** para recuperá-la.
