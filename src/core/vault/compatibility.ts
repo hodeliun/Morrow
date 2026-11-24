@@ -34,7 +34,13 @@ import {
   WIDGET_KINDS,
 } from '../model';
 import { decodePolarisDadosViewMarker } from '../polarisDadosView';
-import { MANAGED_KEYS, normalizeExtra, readTags, splitFrontmatter } from './frontmatter';
+import {
+  isUnambiguousFrontmatter,
+  MANAGED_KEYS,
+  normalizeExtra,
+  readTags,
+  splitFrontmatter,
+} from './frontmatter';
 
 const markerMarkdown = new MarkdownIt('commonmark', { html: true }).enable(['table', 'strikethrough']);
 markerMarkdown.inline.ruler.before('html_inline', LEGACY_FORMULA_NODE, legacyFormulaInlineRule);
@@ -60,6 +66,7 @@ const PROPERTY_KEYS = new Set([
   'options',
   'format',
   'formula',
+  'formulaResultType',
   'display',
   'max',
   'wrap',
@@ -122,6 +129,8 @@ export function findUnrepresentablePageContent(
   if (data) {
     const metadataIssue = pageMetadataIssue(data);
     if (metadataIssue) return metadataIssue;
+    const percentageFrontmatterIssue = typedPercentageFrontmatterIssue(split.yaml, data);
+    if (percentageFrontmatterIssue) return percentageFrontmatterIssue;
     const extraIssue = unknownFrontmatterIssue(data);
     if (extraIssue) return extraIssue;
   }
@@ -131,20 +140,22 @@ export function findUnrepresentablePageContent(
 }
 
 export function hasUnrepresentableDatabaseSchema(text: string): boolean {
-  const data = splitFrontmatter(text).data;
+  const split = splitFrontmatter(text);
+  const data = split.data;
   if (!data || data.kind !== 'database') return false;
-  if (Object.hasOwn(data, 'database') && databaseIssue(data.database)) return true;
-  if (!Object.hasOwn(data, 'polarisDados')) return false;
-  const extension = data.polarisDados;
-  return (
-    !Object.hasOwn(data, 'database') ||
-    !isRecord(data.database) ||
-    !!databaseIssue(data.database) ||
-    !isRecord(extension) ||
-    extension.version !== 1 ||
-    extension.provider !== 'polaris-dados' ||
-    Object.keys(extension).some((key) => key !== 'version' && key !== 'provider')
+  if (typedPercentageFrontmatterIssue(split.yaml, data)) return true;
+  return databaseMetadataIssue(data) !== null;
+}
+
+function typedPercentageFrontmatterIssue(yaml: string, data: Record<string, unknown>): string | null {
+  const database = data.database;
+  if (!isRecord(database) || !Array.isArray(database.properties)) return null;
+  const declaresPercent = database.properties.some(
+    (property) =>
+      isRecord(property) && property.type === 'formula' && property.formulaResultType === 'percent',
   );
+  if (!declaresPercent || isUnambiguousFrontmatter(yaml, data)) return null;
+  return 'The Polaris Dados percentage schema has ambiguous YAML frontmatter.';
 }
 
 /** The readers for these files keep only the fields listed below. */
@@ -271,32 +282,42 @@ function pageMetadataIssue(data: Record<string, unknown>): string | null {
     }
   }
 
+  const databaseReason = databaseMetadataIssue(data);
+  if (databaseReason) return databaseReason;
+
+  return null;
+}
+
+function databaseMetadataIssue(data: Record<string, unknown>): string | null {
   const hasDatabase = Object.hasOwn(data, 'database');
+  const hasMarker = Object.hasOwn(data, 'polarisDados');
+  const validMarker = hasMarker && isValidPolarisDadosMarker(data.polarisDados);
   const kind = data.kind;
+
   if (hasDatabase && kind !== 'database') {
     return 'Database metadata is attached to a page that is not a database.';
   }
   if (kind === 'database' && hasDatabase) {
-    const reason = databaseIssue(data.database);
+    const reason = databaseIssue(data.database, validMarker);
     if (reason) return reason;
   }
 
-  if (Object.hasOwn(data, 'polarisDados')) {
-    const extension = data.polarisDados;
-    if (
-      !isRecord(extension) ||
-      extension.version !== 1 ||
-      extension.provider !== 'polaris-dados' ||
-      Object.keys(extension).some((key) => key !== 'version' && key !== 'provider')
-    ) {
-      return 'The Polaris Dados page metadata is from an unsupported format.';
-    }
-    if (kind !== 'database' || !hasDatabase || !isRecord(data.database) || databaseIssue(data.database)) {
+  if (hasMarker) {
+    if (!validMarker) return 'The Polaris Dados page metadata is from an unsupported format.';
+    if (kind !== 'database' || !hasDatabase || !isRecord(data.database)) {
       return 'The Polaris Dados metadata needs a database schema this version can represent.';
     }
   }
-
   return null;
+}
+
+function isValidPolarisDadosMarker(raw: unknown): boolean {
+  return (
+    isRecord(raw) &&
+    raw.version === 1 &&
+    raw.provider === 'polaris-dados' &&
+    Object.keys(raw).every((key) => key === 'version' || key === 'provider')
+  );
 }
 
 function representableTags(raw: unknown): boolean {
@@ -326,7 +347,7 @@ function unknownFrontmatterIssue(data: Record<string, unknown>): string | null {
   return null;
 }
 
-function databaseIssue(raw: unknown): string | null {
+function databaseIssue(raw: unknown, polarisDadosOptIn = false): string | null {
   if (!isRecord(raw)) return 'The database schema is not a supported object.';
   if (unknownKey(raw, new Set(['properties', 'views']))) return 'The database schema has unsupported fields.';
   if (raw.properties !== undefined && !Array.isArray(raw.properties)) {
@@ -337,7 +358,7 @@ function databaseIssue(raw: unknown): string | null {
   }
 
   for (const property of raw.properties ?? []) {
-    const reason = propertyIssue(property);
+    const reason = propertyIssue(property, polarisDadosOptIn);
     if (reason) return reason;
   }
   for (const view of raw.views ?? []) {
@@ -347,7 +368,7 @@ function databaseIssue(raw: unknown): string | null {
   return null;
 }
 
-function propertyIssue(raw: unknown): string | null {
+function propertyIssue(raw: unknown, polarisDadosOptIn: boolean): string | null {
   if (!isRecord(raw)) return 'A database property is not a supported object.';
   if (unknownKey(raw, PROPERTY_KEYS)) return 'A database property has fields this version cannot preserve.';
   if (typeof raw.id !== 'string' || !ID.test(raw.id) || typeof raw.name !== 'string') {
@@ -356,6 +377,16 @@ function propertyIssue(raw: unknown): string | null {
   if (!PROP_TYPES.includes(raw.type as never))
     return 'A database property type is not supported by this version.';
   if (raw.name.length > 200) return 'A database property name is too long to preserve.';
+  if (
+    Object.hasOwn(raw, 'formulaResultType') &&
+    (!polarisDadosOptIn ||
+      raw.type !== 'formula' ||
+      raw.formulaResultType !== 'percent' ||
+      Object.hasOwn(raw, 'display') ||
+      Object.hasOwn(raw, 'max'))
+  ) {
+    return 'A database formula result type is not supported by this version.';
+  }
   if (Object.hasOwn(raw, 'format') && normalizeDatabasePropertyFormat(raw) === null) {
     return 'A number property format is not supported by this version.';
   }

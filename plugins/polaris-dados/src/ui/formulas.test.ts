@@ -73,6 +73,61 @@ describe('Polaris Dados formula row context', () => {
     expect(Object.hasOwn(rowProperties, 'total')).toBe(false);
   });
 
+  it('accepts only finite numbers or null for explicit percent results and forwards type errors', () => {
+    const properties = [
+      scalar('amount', 'Amount'),
+      checkbox('flag', 'Flag'),
+      scalar('label', 'Label', 'text'),
+      scalar('optional', 'Optional'),
+      { ...formula('valid', 'Valid percent', 'thisRow.Amount'), formulaResultType: 'percent' },
+      { ...formula('null', 'Null percent', 'thisRow.Optional'), formulaResultType: 'percent' },
+      { ...formula('boolean', 'Boolean percent', 'thisRow.Flag'), formulaResultType: 'percent' },
+      { ...formula('text', 'Text percent', 'thisRow.Label'), formulaResultType: 'percent' },
+      { ...formula('list', 'List percent', 'List(1, 2)'), formulaResultType: 'percent' },
+      { ...formula('division-zero', 'Division zero percent', '1 / 0'), formulaResultType: 'percent' },
+      { ...formula('broken', 'Broken percent', 'NoSuchFunction()'), formulaResultType: 'percent' },
+      { ...formula('missing', 'Missing percent', 'thisRow["Missing"]'), formulaResultType: 'percent' },
+      { ...formula('reference', 'Reference percent', 'thisRow'), formulaResultType: 'percent' },
+      formula('dependent', 'Dependent', 'prop("Boolean percent") + 1'),
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { amount: 0.375, flag: false, label: 'done', optional: null };
+
+    expect(evaluate(properties, rowProperties, 'valid')).toEqual({ kind: 'number', value: 0.375 });
+    expect(evaluate(properties, rowProperties, 'null')).toEqual({ kind: 'null' });
+    expect(evaluate(properties, rowProperties, 'boolean')).toEqual({
+      kind: 'error',
+      message: 'Formula “Boolean percent” declared as percent must return a finite number or null.',
+    });
+    expect(evaluate(properties, rowProperties, 'text')).toEqual({
+      kind: 'error',
+      message: 'Formula “Text percent” declared as percent must return a finite number or null.',
+    });
+    expect(evaluate(properties, rowProperties, 'list')).toEqual({
+      kind: 'error',
+      message: 'Formula “List percent” declared as percent must return a finite number or null.',
+    });
+    expect(evaluate(properties, rowProperties, 'division-zero')).toEqual({
+      kind: 'error',
+      message: 'Division by zero is not allowed',
+    });
+    expect(evaluate(properties, rowProperties, 'broken')).toEqual({
+      kind: 'error',
+      message: 'There is no function called NoSuchFunction()',
+    });
+    expect(evaluate(properties, rowProperties, 'missing')).toEqual({
+      kind: 'error',
+      message: 'There is no property called “Missing”.',
+    });
+    expect(evaluate(properties, rowProperties, 'reference')).toEqual({
+      kind: 'error',
+      message: 'This table does not display row references or tables.',
+    });
+    expect(evaluate(properties, rowProperties, 'dependent')).toEqual({
+      kind: 'error',
+      message: 'Formula “Boolean percent” declared as percent must return a finite number or null.',
+    });
+  });
+
   it('resolves an explicit property named thisRow and keeps the bare identifier contextual', () => {
     const properties = [
       scalar('legacy', 'thisRow', 'text'),

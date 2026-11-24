@@ -326,9 +326,20 @@ function evaluateFormulaProperty(
   });
 
   budget.visiting.delete(property.id);
-  const evaluated = result.error
+  let evaluated = result.error
     ? { kind: 'error' as const, message: result.error }
     : normalizeValue(result.value);
+  if (
+    property.formulaResultType === 'percent' &&
+    evaluated.kind !== 'number' &&
+    evaluated.kind !== 'null' &&
+    evaluated.kind !== 'error'
+  ) {
+    evaluated = {
+      kind: 'error',
+      message: `Formula “${property.name}” declared as percent must return a finite number or null.`,
+    };
+  }
   budget.cache.set(property.id, evaluated);
   return evaluated;
 }

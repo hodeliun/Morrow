@@ -410,6 +410,7 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
         ? normalizeDatabasePropertyFormat({
             type: prop.type,
             format: prop.format,
+            ...(prop.formulaResultType !== undefined ? { formulaResultType: prop.formulaResultType } : {}),
             ...(prop.display !== undefined ? { display: prop.display } : {}),
             ...(prop.max !== undefined ? { max: prop.max } : {}),
           })
@@ -421,6 +422,9 @@ function databaseToYaml(database: DatabaseDef): Record<string, unknown> {
         ...(prop.options.length ? { options: prop.options.map((option) => ({ ...option })) } : {}),
         ...(format !== null ? { format } : {}),
         ...(prop.type === 'formula' && prop.formula ? { formula: prop.formula } : {}),
+        ...(prop.type === 'formula' && prop.formulaResultType
+          ? { formulaResultType: prop.formulaResultType }
+          : {}),
         ...(prop.display === 'bar' ? { display: 'bar' } : {}),
         ...(prop.display === 'bar' && prop.max && prop.max !== 100 ? { max: prop.max } : {}),
         ...(prop.type === 'text' && prop.wrap ? { wrap: true } : {}),

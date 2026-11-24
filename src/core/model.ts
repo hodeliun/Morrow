@@ -99,14 +99,15 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
   const raw = value as Record<string, unknown>;
   if (!Object.hasOwn(raw, 'format')) return null;
 
-  if (raw.type === 'number') return normalizeNumberFormat(raw.format);
-  if (
-    raw.type !== 'formula' ||
-    Object.hasOwn(raw, 'formulaResultType') ||
-    Object.hasOwn(raw, 'display') ||
-    Object.hasOwn(raw, 'max')
-  ) {
-    return null;
+  if (raw.type === 'number') {
+    return Object.hasOwn(raw, 'formulaResultType') ? null : normalizeNumberFormat(raw.format);
+  }
+  if (raw.type !== 'formula' || Object.hasOwn(raw, 'display') || Object.hasOwn(raw, 'max')) return null;
+
+  if (Object.hasOwn(raw, 'formulaResultType')) {
+    // Explicit percentage formulas use the same narrow decimal options as numbers,
+    // but cannot also declare currency or progress-bar metadata.
+    return raw.formulaResultType === 'percent' ? normalizeNumberFormat(raw.format) : null;
   }
 
   const format = normalizeFormulaResultNumberFormat(raw.format);
@@ -167,6 +168,8 @@ export interface PropDef {
   format?: FormulaResultNumberFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
+  // an explicit numeric result whose display is a percentage; calculation remains unscaled
+  formulaResultType?: 'percent';
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;

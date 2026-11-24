@@ -52,10 +52,16 @@ database:
 ---
 `;
 
-function databaseNote(database: unknown): string {
+function databaseNote(database: unknown, options: { marker?: unknown; omitMarker?: boolean } = {}): string {
   const yaml = stringify({
     kind: 'database',
-    polarisDados: { version: 1, provider: 'polaris-dados' },
+    ...(!options.omitMarker
+      ? {
+          polarisDados: Object.hasOwn(options, 'marker')
+            ? options.marker
+            : { version: 1, provider: 'polaris-dados' },
+        }
+      : {}),
     database,
   });
   return `---\n${yaml}---\nInventory body\n`;
@@ -283,6 +289,253 @@ describe('vault representability guard', () => {
     expect(rowText).not.toMatch(/^Default total:/m);
     expect(rowText).not.toMatch(/^Configured total:/m);
     expect(rowText).not.toMatch(/^Fractional total:/m);
+  });
+
+  it('roundtrips explicit percentage declarations and their optional formats on opted-in databases', () => {
+    const databaseSchema = {
+      properties: [
+        { id: 'quantity', name: 'Quantity', type: 'number' },
+        {
+          id: 'ratio',
+          name: 'Ratio',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' },
+        },
+        {
+          id: 'ratio-without-precision',
+          name: 'Ratio without precision',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { locale: 'en-US', negativeFormat: 'minus' },
+        },
+        {
+          id: 'ratio-zero-precision',
+          name: 'Ratio zero precision',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { precision: 0 },
+        },
+        {
+          id: 'ratio-eight-precision',
+          name: 'Ratio eight precision',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: { precision: 8 },
+        },
+        {
+          id: 'ratio-empty-format',
+          name: 'Ratio empty format',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+          format: {},
+        },
+        {
+          id: 'ratio-default-format',
+          name: 'Ratio default format',
+          type: 'formula',
+          formula: 'Quantity / 8',
+          formulaResultType: 'percent',
+        },
+        {
+          id: 'ratio-raw-check',
+          name: 'Ratio raw check',
+          type: 'formula',
+          formula: 'If(Ratio > 0.374, 42, 17)',
+        },
+      ],
+      views: [],
+    };
+    const source = databaseNote(databaseSchema);
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.properties[1]).toMatchObject({
+      type: 'formula',
+      formulaResultType: 'percent',
+      format: { locale: 'de-DE', precision: 1.5, negativeFormat: 'parentheses' },
+    });
+    expect(loaded.database?.properties[2]).toMatchObject({
+      formulaResultType: 'percent',
+      format: { locale: 'en-US', negativeFormat: 'minus' },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-empty-format')).toMatchObject({
+      formulaResultType: 'percent',
+      format: {},
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-default-format')).toMatchObject({
+      formulaResultType: 'percent',
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'ratio-default-format')).not.toHaveProperty(
+      'format',
+    );
+
+    const editedDatabase = structuredClone(loaded.database!);
+    editedDatabase.properties[1]!.format = {
+      locale: 'pt-BR',
+      precision: 0.25,
+      negativeFormat: 'minus',
+    };
+    const page = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: editedDatabase,
+      extra: loaded.extra,
+    });
+    const edited = renderPageText(
+      composeFrontmatter(managedFrontmatter(page, 'Inventory', null), loaded.extra, loaded.source, page),
+      loaded.source,
+      'Edited database schema\n',
+    );
+
+    expect(edited).toContain('formulaResultType: percent');
+    expect(edited).toContain('precision: 0.25');
+    expect(edited).toContain('provider: polaris-dados');
+    expect(findUnrepresentablePageContent(edited)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(edited)).toBe(false);
+    expect(readPageText(edited).database).toEqual(editedDatabase);
+  });
+
+  it('requires the valid Polaris Dados marker and protects percent schemas the host cannot preserve', () => {
+    const formula = {
+      id: 'ratio',
+      name: 'Ratio',
+      type: 'formula',
+      formula: 'Quantity / 8',
+      formulaResultType: 'percent',
+      format: { locale: 'en-US' },
+    };
+    const schema = { properties: [formula], views: [] };
+    const protectedSources = [
+      databaseNote(schema, { omitMarker: true }),
+      databaseNote(schema, { marker: { version: 2, provider: 'polaris-dados' } }),
+      databaseNote(schema, { marker: { version: 1, provider: 'polaris-dados', future: true } }),
+      ...[
+        { ...formula, type: 'number' },
+        { ...formula, formulaResultType: 'number' },
+        { ...formula, display: 'bar' },
+        { ...formula, max: 50 },
+        { ...formula, format: { locale: 'en-US', currency: 'USD' } },
+        { ...formula, format: { locale: 'en-US', precision: -0.1 } },
+        { ...formula, format: { locale: 'en-US', precision: 8.1 } },
+        { ...formula, format: { locale: 'en-US', precision: Number.POSITIVE_INFINITY } },
+        { ...formula, format: { locale: 'not a locale' } },
+        { ...formula, format: { locale: 'en-US', display: 'percent' } },
+        { ...formula, type: 'percent', formulaResultType: undefined },
+      ].map((property) => databaseNote({ properties: [property], views: [] })),
+    ];
+
+    for (const protectedSource of protectedSources) {
+      expect(findUnrepresentablePageContent(protectedSource), protectedSource).not.toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(protectedSource), protectedSource).toBe(true);
+    }
+
+    const unmarkedNativeDatabase = databaseNote(
+      { properties: [{ id: 'amount', name: 'Amount', type: 'number' }], views: [] },
+      { omitMarker: true },
+    );
+    expect(findUnrepresentablePageContent(unmarkedNativeDatabase)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(unmarkedNativeDatabase)).toBe(false);
+
+    for (const protectedSource of [protectedSources[0]!, protectedSources[1]!]) {
+      const loaded = loadVault(
+        {
+          files: [{ path: 'Inventory.md', text: protectedSource, mtime: 1, birthtime: 1 }],
+          folders: [],
+          others: [],
+          registry: null,
+          recent: null,
+        },
+        () => 'inventory',
+        1,
+      );
+      expect(loaded.protectedPages.get('inventory')).toMatch(/formula result type|polaris dados/i);
+      expect(loaded.texts.get('inventory')).toBe(protectedSource);
+      expect(loaded.docs.inventory).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: protectedSource } }],
+      });
+    }
+  });
+
+  it('rejects ambiguous frontmatter only when a database declares a typed percentage formula', () => {
+    const validYaml = [
+      'kind: database',
+      'polarisDados:',
+      '  version: 1',
+      '  provider: polaris-dados',
+      'database:',
+      '  properties:',
+      '    - id: ratio',
+      '      name: Ratio',
+      '      type: formula',
+      '      formula: Quantity / 8',
+      '      formulaResultType: percent',
+      '      format:',
+      '        locale: en-US',
+      '        precision: 1.5',
+      '  views: []',
+      '',
+    ].join('\n');
+    const ambiguousYaml = [
+      validYaml.replace('  version: 1\n', '  version: 1\n  version: 1\n'),
+      validYaml.replace('  provider: polaris-dados\n', '  provider: polaris-dados\n  provider: polaris-dados\n'),
+      validYaml.replace(
+        'polarisDados:\n  version: 1\n  provider: polaris-dados\n',
+        'polarisDados:\n  version: 1\n  provider: polaris-dados\npolarisDados:\n  version: 1\n  provider: polaris-dados\n',
+      ),
+      validYaml.replace(
+        '      formulaResultType: percent\n',
+        '      formulaResultType: currency\n      formulaResultType: percent\n',
+      ),
+      validYaml.replace(
+        '      format:\n        locale: en-US\n        precision: 1.5\n',
+        '      format:\n        locale: en-US\n        precision: 1.5\n      format:\n        locale: en-US\n        precision: 1.5\n',
+      ),
+    ];
+
+    for (const yaml of ambiguousYaml) {
+      const source = `---\n${yaml}---\nOriginal database body\n`;
+      expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
+      expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+
+      const loaded = loadVault(
+        {
+          files: [{ path: 'Inventory.md', text: source, mtime: 1, birthtime: 1 }],
+          folders: [],
+          others: [],
+          registry: null,
+          recent: null,
+        },
+        () => 'inventory',
+        1,
+      );
+      expect(loaded.protectedPages.get('inventory')).toMatch(/ambiguous yaml frontmatter/i);
+      expect(loaded.texts.get('inventory')).toBe(source);
+      expect(loaded.docs.inventory).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: source } }],
+      });
+    }
+
+    const legacyYaml = validYaml
+      .replace('  provider: polaris-dados\n', '  provider: polaris-dados\n  provider: polaris-dados\n')
+      .replace(
+        '      type: formula\n      formula: Quantity / 8\n      formulaResultType: percent\n',
+        '      type: number\n',
+      );
+    const legacySource = `---\n${legacyYaml}---\nLegacy database body\n`;
+    expect(findUnrepresentablePageContent(legacySource)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(legacySource)).toBe(false);
   });
 
   it('protects formula formats with incompatible result settings and retains the exact source bytes', () => {

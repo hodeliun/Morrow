@@ -67,6 +67,18 @@ database:
       name: ProgressRawCheck
       type: formula
       formula: If(ProgressResult > 50, 17, 42)
+    - id: demo-percent-result
+      name: Rate
+      type: formula
+      formula: Quantity / 8
+      formulaResultType: percent
+      format:
+        locale: en-US
+        precision: 1
+    - id: demo-percent-raw
+      name: RateRawCheck
+      type: formula
+      formula: Rate * 4
   views:
     - id: inventory-table-v1
       name: Table

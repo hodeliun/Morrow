@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { VaultOp } from '../core/vault/plan';
 import { createDataApi } from '../app/plugins/dataApi';
 import type { DataApi, DataApiSnapshot } from '../app/plugins/dataApi';
+import { newPageMeta } from '../core/model';
+import { composeFrontmatter, managedFrontmatter, readPageText, renderPageText } from '../core/vault/pageFile';
+import { createFormulaEvaluationScope, evaluateCell } from '../../plugins/polaris-dados/src/ui/formulas';
 import { E003_POLARIS_DADOS_FIXTURE } from './fixtures/e003-polaris-dados';
 import { MemoryVault } from './memoryVault';
 import { WorkspaceSession } from './session';
@@ -74,6 +77,202 @@ function ready(snapshot: DataApiSnapshot) {
 }
 
 describe('Polaris Dados snapshot and cell API', () => {
+  it('roundtrips an opted-in percentage declaration, raw formulas, and edited input', async () => {
+    const files = fixture();
+    const percentageProperties = `    - id: optional
+      name: Optional
+      type: number
+    - id: completion
+      name: Completion
+      type: formula
+      formula: Quantity / 4
+      formulaResultType: percent
+      format:
+        locale: en-US
+        precision: 1.5
+        negativeFormat: parentheses
+    - id: completion-raw-check
+      name: Completion raw check
+      type: formula
+      formula: If(Completion > 0.74, 42, 17)
+    - id: optional-completion
+      name: Optional completion
+      type: formula
+      formula: thisRow.Optional
+      formulaResultType: percent
+      format:
+        locale: de-DE
+    - id: invalid-completion
+      name: Invalid completion
+      type: formula
+      formula: '"done"'
+      formulaResultType: percent
+    - id: invalid-dependent
+      name: Invalid dependent
+      type: formula
+      formula: prop("Invalid completion") + 1
+`;
+    files['Inventory.md'] = files['Inventory.md']!.replace('  views:', `${percentageProperties}  views:`);
+    files['Inventory/Widget.md'] = files['Inventory/Widget.md']!.replace('Price: null', 'Price: null\nOptional: null');
+
+    const parsed = readPageText(files['Inventory.md']!);
+    if (!parsed.database) throw new Error('Expected a parsed Polaris Dados database.');
+    const editedSchema = structuredClone(parsed.database);
+    const completion = editedSchema.properties.find((property) => property.id === 'completion');
+    if (!completion) throw new Error('Expected an explicit percentage formula.');
+    completion.format = { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' };
+    const databasePage = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: editedSchema,
+      extra: parsed.extra,
+    });
+    files['Inventory.md'] = renderPageText(
+      composeFrontmatter(
+        managedFrontmatter(databasePage, 'Inventory', null),
+        parsed.extra,
+        parsed.source,
+        databasePage,
+      ),
+      parsed.source,
+      parsed.body,
+    );
+    expect(files['Inventory.md']).toContain('formulaResultType: percent');
+    expect(files['Inventory.md']).toContain('precision: 2.25');
+    expect(files['Inventory.md']).toContain('negativeFormat: parentheses');
+
+    const vault = new MemoryVault(files);
+    const session = await open(vault);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const widgetId = idAt(session, 'Inventory/Widget.md');
+    const missingPriceId = idAt(session, 'Inventory/Missing price.md');
+    const initial = ready(api.snapshot(databaseId));
+    const widget = initial.rows.find((row) => row.id === widgetId)!;
+    const missingPrice = initial.rows.find((row) => row.id === missingPriceId)!;
+    const completionProperty = initial.schema.properties.find((property) => property.id === 'completion')!;
+    const rawCheckProperty = initial.schema.properties.find((property) => property.id === 'completion-raw-check')!;
+    const optionalProperty = initial.schema.properties.find((property) => property.id === 'optional-completion')!;
+    const invalidProperty = initial.schema.properties.find((property) => property.id === 'invalid-completion')!;
+    const dependentProperty = initial.schema.properties.find((property) => property.id === 'invalid-dependent')!;
+
+    expect(initial.readonly).toBe(false);
+    expect(completionProperty).toMatchObject({
+      type: 'formula',
+      formulaResultType: 'percent',
+      format: { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' },
+    });
+    expect(optionalProperty).toMatchObject({ formulaResultType: 'percent', format: { locale: 'de-DE' } });
+    expect(optionalProperty.format).not.toHaveProperty('precision');
+    expect(widget.properties.optional).toBeNull();
+    expect(Object.hasOwn(missingPrice.properties, 'optional')).toBe(false);
+
+    const evaluation = createFormulaEvaluationScope(initial);
+    expect(evaluateCell(widget, initial.schema.properties, completionProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 0.5,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, rawCheckProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 17,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, optionalProperty, evaluation)).toEqual({ kind: 'null' });
+    expect(evaluateCell(missingPrice, initial.schema.properties, optionalProperty, evaluation)).toEqual({ kind: 'null' });
+    expect(evaluateCell(widget, initial.schema.properties, invalidProperty, evaluation)).toMatchObject({
+      kind: 'error',
+      message: 'Formula “Invalid completion” declared as percent must return a finite number or null.',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, dependentProperty, evaluation)).toMatchObject({
+      kind: 'error',
+      message: 'Formula “Invalid completion” declared as percent must return a finite number or null.',
+    });
+    expect(widget.properties).not.toHaveProperty('completion');
+    expect(widget.properties).not.toHaveProperty('completion-raw-check');
+
+    expect(api.patchCell({
+      databaseId,
+      rowId: widgetId,
+      propertyId: 'quantity',
+      value: 3,
+      expectedRevision: initial.revision,
+    })).toMatchObject({ status: 'staged' });
+    const edited = ready(api.snapshot(databaseId));
+    const editedWidget = edited.rows.find((row) => row.id === widgetId)!;
+    const editedCompletion = edited.schema.properties.find((property) => property.id === 'completion')!;
+    const editedRawCheck = edited.schema.properties.find((property) => property.id === 'completion-raw-check')!;
+    const editedEvaluation = createFormulaEvaluationScope(edited);
+    expect(evaluateCell(editedWidget, edited.schema.properties, editedCompletion, editedEvaluation)).toEqual({
+      kind: 'number',
+      value: 0.75,
+    });
+    expect(evaluateCell(editedWidget, edited.schema.properties, editedRawCheck, editedEvaluation)).toEqual({
+      kind: 'number',
+      value: 42,
+    });
+    expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
+    expect(vault.text('Inventory/Widget.md')).toMatch(/^Quantity: 3$/m);
+    expect(vault.text('Inventory/Widget.md')).not.toMatch(/^(Completion|Optional completion|Invalid completion):/m);
+    expect(vault.text('Inventory.md')).toBe(files['Inventory.md']);
+
+    cleanup();
+    await session.close();
+    const reopened = await open(vault);
+    const reopenedApi = apiFor(reopened);
+    const afterRestart = ready(reopenedApi.api.snapshot(idAt(reopened, 'Inventory.md')));
+    const reopenedWidget = afterRestart.rows.find((row) => row.id === widgetId)!;
+    expect(reopenedWidget.properties.quantity).toBe(3);
+    expect(afterRestart.schema.properties.find((property) => property.id === 'completion')).toMatchObject({
+      formulaResultType: 'percent',
+      format: { locale: 'fr-FR', precision: 2.25, negativeFormat: 'parentheses' },
+    });
+    expect(reopenedWidget.properties).not.toHaveProperty('completion');
+    expect(reopenedWidget.properties).not.toHaveProperty('completion-raw-check');
+    reopenedApi.cleanup();
+    await reopened.close();
+  });
+
+  it('keeps a duplicated percentage declaration read only and refuses child row patches', async () => {
+    const files = fixture();
+    files['Inventory.md'] = files['Inventory.md']!.replace(
+      '      formula: Quantity * Price\n',
+      '      formula: Quantity * Price\n' +
+        '      formulaResultType: currency\n' +
+        '      formulaResultType: percent\n' +
+        '      format:\n' +
+        '        locale: de-DE\n' +
+        '        precision: 1.5\n' +
+        '        negativeFormat: parentheses\n',
+    );
+    const originalDatabase = files['Inventory.md']!;
+    const originalRow = files['Inventory/Widget.md']!;
+    const vault = new CountingMemoryVault(files);
+    const session = await open(vault, 60_000);
+    const { api, cleanup } = apiFor(session);
+    const databaseId = idAt(session, 'Inventory.md');
+    const rowId = idAt(session, 'Inventory/Widget.md');
+    const snapshot = api.snapshot(databaseId);
+
+    expect(snapshot).toMatchObject({ status: 'unsupported', diagnostic: { code: 'database-unreadable' } });
+    expect('rows' in snapshot).toBe(false);
+    expect(api.patchCell({
+      databaseId,
+      rowId,
+      propertyId: 'quantity',
+      value: 3,
+      expectedRevision: snapshot.revision,
+    })).toMatchObject({ status: 'error', code: 'unsupported' });
+    expect(session.queue.isDirty(rowId)).toBe(false);
+    expect(await api.flush(databaseId)).toMatchObject({ status: 'error', code: 'unsupported' });
+    expect(vault.applyCount).toBe(0);
+    expect(vault.text('Inventory.md')).toBe(originalDatabase);
+    expect(vault.text('Inventory/Widget.md')).toBe(originalRow);
+
+    cleanup();
+    await session.close();
+  });
+
   it('keeps snapshots immutable, distinguishes null from missing, and persists a staged 2-to-3 edit', async () => {
     const vault = new MemoryVault(fixture());
     const session = await open(vault);

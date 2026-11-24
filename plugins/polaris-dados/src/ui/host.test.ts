@@ -933,6 +933,116 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('formats explicit percent results while dependencies and edits keep raw formula values', async () => {
+    const properties: readonly TestProperty[] = [
+      ...DEFAULT_PROPERTIES.slice(0, 3),
+      { id: 'optional', name: 'Optional', type: 'number', options: [] },
+      {
+        id: 'percent',
+        name: 'Percent',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity / 8',
+        formulaResultType: 'percent',
+      },
+      { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Percent + 1' },
+      {
+        id: 'zero-percent',
+        name: 'Zero percent',
+        type: 'formula',
+        options: [],
+        formula: '0',
+        formulaResultType: 'percent',
+      },
+      {
+        id: 'negative-percent',
+        name: 'Negative percent',
+        type: 'formula',
+        options: [],
+        formula: '-Quantity / 8',
+        formulaResultType: 'percent',
+        format: { locale: 'en-US', precision: 1, negativeFormat: 'parentheses' },
+      },
+      {
+        id: 'above-100',
+        name: 'Above 100%',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity * 2',
+        formulaResultType: 'percent',
+      },
+      {
+        id: 'null-percent',
+        name: 'Null percent',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow["Optional"]',
+        formulaResultType: 'percent',
+      },
+      {
+        id: 'invalid-percent',
+        name: 'Invalid percent',
+        type: 'formula',
+        options: [],
+        formula: '"done"',
+        formulaResultType: 'percent',
+      },
+      {
+        id: 'invalid-dependent',
+        name: 'Invalid dependent',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Invalid percent") + 1',
+      },
+      { id: 'plain-text', name: 'Plain text', type: 'formula', options: [], formula: '"done"' },
+    ];
+    const initialValues = { name: 'Widget', quantity: 3, price: 10, optional: null };
+    const data = makeDataDouble({ properties, rowProperties: initialValues });
+    const mounted = mountPlugin(data.api);
+    const cell = (id: string) => mounted.element.querySelector<HTMLElement>(`[data-field="${id}"]`)!;
+    const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+
+    expect(cell('percent').querySelector('[data-value-kind="number"]')?.textContent).toBe(
+      new Intl.NumberFormat(defaultLocale, { style: 'percent', maximumFractionDigits: 2 }).format(0.375),
+    );
+    expect(cell('percent').textContent).toBe('37.5%');
+    expect(cell('dependent').querySelector('[data-value-kind="number"]')?.textContent).toBe('1.375');
+    expect(cell('zero-percent').textContent).toBe('0%');
+    expect(cell('negative-percent').textContent).toBe('(37.5%)');
+    expect(cell('above-100').textContent).toBe('600%');
+    expect(cell('null-percent').querySelector('[data-value-kind="null"]')?.textContent).toBe(
+      'Blank',
+    );
+    expect(cell('invalid-percent').querySelector('[data-value-kind="error"]')?.textContent).toBe(
+      'Formula error',
+    );
+    expect(cell('invalid-percent').querySelector('code')?.textContent).toBe(
+      'Formula “Invalid percent” declared as percent must return a finite number or null.',
+    );
+    expect(cell('invalid-dependent').querySelector('code')?.textContent).toBe(
+      'Formula “Invalid percent” declared as percent must return a finite number or null.',
+    );
+    expect(cell('plain-text').querySelector('[data-value-kind="text"]')?.textContent).toBe('done');
+    expect(data.current().rows[0]?.properties).toEqual(initialValues);
+
+    const input = editQuantity(mounted.element);
+    setInput(mounted.window, input, '4');
+    dispatch(
+      input,
+      new mounted.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await settle();
+
+    expect(cell('percent').textContent).toBe('50%');
+    expect(cell('dependent').textContent).toBe('1.5');
+    expect(cell('negative-percent').textContent).toBe('(50.0%)');
+    expect(cell('above-100').textContent).toBe('800%');
+    expect(data.current().rows[0]?.properties).toEqual({ ...initialValues, quantity: 4 });
+    expect(data.persisted()).toEqual({ ...initialValues, quantity: 4 });
+    expect(data.patchCalls).toHaveLength(1);
+    mounted.unmount();
+  });
+
   it('renders numeric formula progress bars without changing raw formula values or grid focus', async () => {
     const properties: readonly TestProperty[] = [
       ...DEFAULT_PROPERTIES.slice(0, 3),

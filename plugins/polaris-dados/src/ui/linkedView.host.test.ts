@@ -440,6 +440,107 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
+  it('renders explicit percentage results and raw dependency and error values in linked views', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'optional', name: 'Optional', type: 'number', options: [] },
+          {
+            id: 'percent',
+            name: 'Percent',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity / 8',
+            formulaResultType: 'percent',
+            format: { locale: 'de-DE', precision: 1 },
+          },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Percent + 1' },
+          {
+            id: 'above-100',
+            name: 'Above 100%',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * 2',
+            formulaResultType: 'percent',
+          },
+          {
+            id: 'null-percent',
+            name: 'Null percent',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow["Optional"]',
+            formulaResultType: 'percent',
+          },
+          {
+            id: 'invalid-percent',
+            name: 'Invalid percent',
+            type: 'formula',
+            options: [],
+            formula: '"done"',
+            formulaResultType: 'percent',
+          },
+          {
+            id: 'invalid-dependent',
+            name: 'Invalid dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Invalid percent") + 1',
+          },
+        ],
+      },
+      rows: original.rows.map((row) => ({ ...row, properties: { ...row.properties, optional: null } })),
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Percent view',
+        columnOrder: [
+          'percent',
+          'dependent',
+          'above-100',
+          'null-percent',
+          'invalid-percent',
+          'invalid-dependent',
+        ],
+        filter: null,
+      },
+      snapshot,
+    );
+    const rows = [...mounted.element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const cell = (row: HTMLTableRowElement, propertyId: string) =>
+      row.querySelector<HTMLElement>(`[data-field="${propertyId}"]`)!;
+    const localizedPercent = (value: number) =>
+      new Intl.NumberFormat('de-DE', {
+        style: 'percent',
+        maximumFractionDigits: 1,
+        minimumFractionDigits: 1,
+      }).format(value);
+    const typeError = 'Formula “Invalid percent” declared as percent must return a finite number or null.';
+
+    expect(rows.map((row) => row.dataset.rowId)).toEqual(['widget', 'gadget']);
+    expect(cell(rows[0]!, 'percent').textContent).toBe(localizedPercent(0.5));
+    expect(cell(rows[1]!, 'percent').textContent).toBe(localizedPercent(0.125));
+    expect(cell(rows[0]!, 'dependent').textContent).toBe('1.5');
+    expect(cell(rows[1]!, 'dependent').textContent).toBe('1.125');
+    expect(cell(rows[0]!, 'above-100').textContent).toBe('800%');
+    expect(cell(rows[1]!, 'above-100').textContent).toBe('200%');
+    expect(cell(rows[0]!, 'null-percent').querySelector('[data-value-kind="null"]')?.textContent).toBe(
+      'Blank',
+    );
+    expect(cell(rows[0]!, 'invalid-percent').querySelector('code')?.textContent).toBe(typeError);
+    expect(cell(rows[0]!, 'invalid-dependent').querySelector('code')?.textContent).toBe(typeError);
+    expect(snapshot.rows[0]?.properties).toEqual({
+      name: 'Catalog label',
+      quantity: 4,
+      price: 10,
+      optional: null,
+    });
+    mounted.cleanup();
+  });
+
   it('renders formula progress bars in linked views with the shared cell presentation', () => {
     const original = initialDataSnapshot();
     const snapshot: ReadySnapshot = {
