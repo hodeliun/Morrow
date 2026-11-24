@@ -424,6 +424,12 @@ export class SaveQueue {
 
   private setStatus(status: SaveStatus): void {
     this.current = status;
-    for (const listener of this.listeners) listener();
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch {
+        // Progress observers cannot change the result of the write represented by this status.
+      }
+    }
   }
 }

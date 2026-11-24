@@ -447,7 +447,7 @@ export class WorkspaceSession {
             };
             this.bumpNoteStyleRevisions([pageId]);
             this.refreshPilotDataRevisions(this.state);
-            for (const listener of this.listeners) listener();
+            this.notifyNoteStyleListeners();
           }
         }
         const confirmedPage = ownPage(this.state.pages, pageId);
@@ -634,7 +634,7 @@ export class WorkspaceSession {
         }
         this.bumpNoteStyleRevisions([pageId]);
         this.refreshPilotDataRevisions(this.state);
-        for (const listener of this.listeners) listener();
+        this.notifyNoteStyleListeners();
         const confirmedPage = ownPage(this.state.pages, pageId);
         return {
           ok: true as const,
@@ -1202,6 +1202,16 @@ export class WorkspaceSession {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
+
+  private notifyNoteStyleListeners(): void {
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch {
+        // A listener cannot revoke a note-style write already acknowledged by the source.
+      }
+    }
+  }
 
   onClose(listener: () => void): () => void {
     if (this.closed) {

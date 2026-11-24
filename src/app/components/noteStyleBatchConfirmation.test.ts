@@ -12,6 +12,7 @@ import {
   createNoteStyleBatchPreviewHost,
   disposeNoteStyleBatchPreviewHost,
   readLastNoteStyleBatchReceipt,
+  undoLastNoteStyleBatch,
 } from './noteStyleBatchPreview';
 import type { PluginNoteStyleBatchPreviewLease } from '../plugins/registry';
 
@@ -123,6 +124,7 @@ class ConflictAfterFirstStyleWriteVault extends ObservedVault {
 function makeRuntime(initialSession: WorkspaceSession) {
   let currentSession = initialSession;
   let generation = 1;
+  let sessionLookupUnavailable = false;
   let preferences: Preferences = {
     ...getPreferences(),
     font: DEFAULT_STYLE.font,
@@ -135,7 +137,10 @@ function makeRuntime(initialSession: WorkspaceSession) {
 
   return {
     runtime: {
-      getSession: () => currentSession,
+      getSession: () => {
+        if (sessionLookupUnavailable) throw new Error('Session lookup is temporarily unavailable.');
+        return currentSession;
+      },
       getSessionGeneration: () => generation,
       subscribeSession(listener: () => void) {
         sessionListeners.add(listener);
@@ -155,6 +160,9 @@ function makeRuntime(initialSession: WorkspaceSession) {
       currentSession = next;
       generation += 1;
       for (const listener of [...sessionListeners]) listener();
+    },
+    setSessionLookupUnavailable(value: boolean) {
+      sessionLookupUnavailable = value;
     },
     setPreferences(next: Preferences) {
       preferences = next;
@@ -275,6 +283,69 @@ describe('host-only note-style preview confirmation', () => {
       stop();
       stopThrowing();
       vault.release();
+      await session.close();
+    }
+  });
+
+  it('keeps a revoked same-scope confirmation reserved through a transient session lookup failure', async () => {
+    const vault = new HeldApplyVault({ 'One.md': noteSource('One') });
+    const session = await openSession(vault);
+    const runtime = makeRuntime(session);
+    const controls = createHost(runtime);
+
+    try {
+      const firstLease = controls.host.create('overwrite');
+      if (!firstLease) throw new Error('The initial preview lease was not created.');
+      await confirmNoteStyleBatchPreview(firstLease);
+
+      const nextStyle: NoteStyle = { ...DEFAULT_STYLE, font: 'mono' };
+      runtime.setPreferences({ ...runtime.preferences(), font: nextStyle.font, defaultNoteStyle: nextStyle });
+      const pendingLease = controls.host.create('overwrite');
+      if (!pendingLease) throw new Error('The next preview lease was not created.');
+      vault.holdWhen((ops) => ops.some((op) => op.op === 'write' && op.path === 'One.md'));
+      const confirmation = confirmNoteStyleBatchPreview(pendingLease);
+      await vault.held;
+
+      runtime.setSessionLookupUnavailable(true);
+      controls.host.invalidate();
+      runtime.setSessionLookupUnavailable(false);
+      expect(controls.host.create('overwrite')).toBeNull();
+      expect(await confirmNoteStyleBatchPreview(pendingLease)).toBeNull();
+
+      vault.release();
+      expect(await confirmation).toMatchObject({ confirmedCount: 1, refusedCount: 0, unattemptedCount: 0 });
+      expect(controls.host.create('overwrite')).not.toBeNull();
+    } finally {
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await session.close();
+    }
+  });
+
+  it('blocks a lease subscriber from reentering preview confirmation during host disposal', async () => {
+    const originalSource = noteSource('One');
+    const vault = new ObservedVault({ 'One.md': originalSource });
+    const session = await openSession(vault);
+    const controls = createHost(makeRuntime(session));
+    const lease = controls.host.create('overwrite');
+    if (!lease) throw new Error('The preview lease was not created.');
+    let reentrantLease: PluginNoteStyleBatchPreviewLease | null = null;
+    let reentrantConfirmation: Promise<unknown> | null = null;
+    const unsubscribe = lease.subscribe(() => {
+      reentrantLease = controls.host.create('overwrite');
+      if (reentrantLease) reentrantConfirmation = confirmNoteStyleBatchPreview(reentrantLease);
+    });
+
+    try {
+      disposeNoteStyleBatchPreviewHost(controls.host);
+
+      expect(reentrantLease).toBeNull();
+      expect(await reentrantConfirmation).toBeNull();
+      expect(vault.text('One.md')).toBe(originalSource);
+      expect(styleWrites(vault)).toEqual([]);
+      expect(await confirmNoteStyleBatchPreview(lease)).toBeNull();
+    } finally {
+      unsubscribe();
+      disposeNoteStyleBatchPreviewHost(controls.host);
       await session.close();
     }
   });
@@ -528,6 +599,71 @@ describe('host-only note-style preview confirmation', () => {
       expect(readLastNoteStyleBatchReceipt(controls.host)).toBeNull();
     } finally {
       vault.release();
+      disposeNoteStyleBatchPreviewHost(controls.host);
+      await sessionB.close();
+      await sessionA.close();
+    }
+  });
+
+  it('keeps an A confirmation reserved through an unavailable scope and A→B→A while allowing B', async () => {
+    const vaultA = new ObservedVault({ 'One.md': noteSource('One') });
+    const sessionA = await openSession(vaultA);
+    const sessionB = await openSession(new MemoryVault({ 'Two.md': noteSource('Two') }));
+    const runtime = makeRuntime(sessionA);
+    const controls = createHost(runtime);
+    const originalSetStyle = sessionA.setNoteStyleWithRestoreContext.bind(sessionA);
+    let releaseBeforeQueue!: () => void;
+    const beforeQueue = new Promise<void>((resolve) => {
+      releaseBeforeQueue = resolve;
+    });
+    let enteredBeforeQueue!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredBeforeQueue = resolve;
+    });
+    sessionA.setNoteStyleWithRestoreContext = async (input) => {
+      enteredBeforeQueue();
+      await beforeQueue;
+      return originalSetStyle(input);
+    };
+
+    try {
+      const leaseA = controls.host.create('preserve');
+      if (!leaseA) throw new Error('The first preview lease was not created.');
+      const confirmationA = confirmNoteStyleBatchPreview(leaseA);
+      await entered;
+      expect(sessionA.saveStatus.state).toBe('saved');
+
+      runtime.setSessionLookupUnavailable(true);
+      controls.host.invalidate();
+      expect(controls.host.create('overwrite')).toBeNull();
+      runtime.setSession(sessionB);
+      runtime.setSessionLookupUnavailable(false);
+
+      const leaseB = controls.host.create('preserve');
+      if (!leaseB) throw new Error('A distinct live session must be admitted while A awaits dispatch.');
+      expect(await confirmNoteStyleBatchPreview(leaseB)).toMatchObject({
+        confirmedCount: 1,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(await undoLastNoteStyleBatch(controls.host)).toMatchObject({
+        restoredCount: 1,
+        skippedCount: 0,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+
+      runtime.setSession(sessionA);
+      expect(sessionA.saveStatus.state).toBe('saved');
+      expect(controls.host.create('overwrite')).toBeNull();
+      runtime.setSession(sessionB);
+      expect(controls.host.create('overwrite')).not.toBeNull();
+
+      releaseBeforeQueue();
+      expect(await confirmationA).toMatchObject({ confirmedCount: 0, refusedCount: 0, unattemptedCount: 1 });
+      expect(vaultA.batches.flat().some((op) => op.op === 'write' && op.path === 'One.md')).toBe(false);
+    } finally {
+      releaseBeforeQueue();
       disposeNoteStyleBatchPreviewHost(controls.host);
       await sessionB.close();
       await sessionA.close();

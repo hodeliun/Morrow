@@ -45,6 +45,18 @@ database:
       name: DecimalRawCheck
       type: formula
       formula: If(DecimalResult > -1234.58, 42, 17)
+    - id: demo-currency-result
+      name: CurrencyResult
+      type: formula
+      formula: Quantity * Price * -61.7283
+      format:
+        currency: USD
+        locale: en-US
+        negativeFormat: parentheses
+    - id: demo-currency-raw
+      name: CurrencyRawCheck
+      type: formula
+      formula: If(CurrencyResult > -1234.568, 42, 17)
   views:
     - id: inventory-table-v1
       name: Table

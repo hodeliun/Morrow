@@ -856,6 +856,83 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('formats implicit formula currencies in the source grid without rounding dependent values', () => {
+    const properties: readonly TestProperty[] = [
+      ...DEFAULT_PROPERTIES.slice(0, 3),
+      {
+        id: 'usd',
+        name: 'USD',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity * Price * -6.1728',
+        format: { locale: 'en-US', currency: 'USD', precision: 0, negativeFormat: 'parentheses' },
+      },
+      {
+        id: 'jpy',
+        name: 'JPY total',
+        type: 'formula',
+        options: [],
+        formula: '12.5',
+        format: { currency: 'JPY' },
+      },
+      {
+        id: 'bhd',
+        name: 'BHD total',
+        type: 'formula',
+        options: [],
+        formula: '-12.5',
+        format: { currency: 'BHD', negativeFormat: 'parentheses' },
+      },
+      {
+        id: 'unknown-currency',
+        name: 'Unknown currency',
+        type: 'formula',
+        options: [],
+        formula: '12.5',
+        format: { currency: 'ZZZ' },
+      },
+      {
+        id: 'fractional-currency',
+        name: 'Fractional currency',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity * Price * -6.1728',
+        format: { locale: 'de-DE', currency: 'EUR', precision: 1.5, negativeFormat: 'parentheses' },
+      },
+      { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'USD + 5' },
+    ];
+    const values = { name: 'Widget', quantity: 2, price: 10 };
+    const data = makeDataDouble({ properties, rowProperties: values });
+    const mounted = mountPlugin(data.api, 'pt');
+    const cellText = (propertyId: string) =>
+      mounted.element.querySelector(`[data-field="${propertyId}"] [data-value-kind="number"]`)?.textContent;
+    const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+    const currencyText = (
+      value: number,
+      currency: string,
+      locale = browserLocale,
+      precision = 2,
+    ) => new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: precision,
+      minimumFractionDigits: precision,
+    }).format(value);
+
+    expect(cellText('usd')).toBe(`(${currencyText(123.456, 'USD', 'en-US', 0)})`);
+    expect(cellText('jpy')).toBe(currencyText(12.5, 'JPY'));
+    expect(cellText('bhd')).toBe(`(${currencyText(12.5, 'BHD')})`);
+    expect(cellText('unknown-currency')).toBe(currencyText(12.5, 'ZZZ'));
+    expect(cellText('fractional-currency')).toBe(`(${currencyText(123.456, 'EUR', 'de-DE', 1.5)})`);
+    expect(cellText('dependent')).toBe(
+      new Intl.NumberFormat('pt', { maximumFractionDigits: 10 }).format(-118.456),
+    );
+    expect(data.current().rows[0]?.properties).toEqual(values);
+    expect(data.persisted()).toEqual(values);
+    expect(data.patchCalls).toHaveLength(0);
+    mounted.unmount();
+  });
+
   it('limits formula dependency depth and work without changing the extracted engine', () => {
     const properties: TestProperty[] = [];
     for (let index = 0; index < 28; index += 1) {

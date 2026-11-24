@@ -56,6 +56,11 @@ export interface NumberPropertyFormat {
   negativeFormat?: 'minus' | 'parentheses';
 }
 
+/** Display-only number settings supported on an implicit numeric formula result. */
+export interface FormulaResultNumberFormat extends NumberPropertyFormat {
+  currency?: string;
+}
+
 /** Validates and copies the deliberately narrow number-format shape supported by this host. */
 export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
@@ -89,7 +94,7 @@ export function normalizeNumberFormat(value: unknown): NumberPropertyFormat | nu
 }
 
 /** Validates the narrow number format a database property can safely preserve. */
-export function normalizeDatabasePropertyFormat(value: unknown): NumberPropertyFormat | null {
+export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNumberFormat | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
   if (!Object.hasOwn(raw, 'format')) return null;
@@ -104,8 +109,44 @@ export function normalizeDatabasePropertyFormat(value: unknown): NumberPropertyF
     return null;
   }
 
-  const format = normalizeNumberFormat(raw.format);
-  return format !== null && Object.hasOwn(format, 'precision') ? format : null;
+  const format = normalizeFormulaResultNumberFormat(raw.format);
+  return format !== null && (Object.hasOwn(format, 'precision') || Object.hasOwn(format, 'currency'))
+    ? format
+    : null;
+}
+
+function normalizeFormulaResultNumberFormat(value: unknown): FormulaResultNumberFormat | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set(['locale', 'currency', 'precision', 'negativeFormat']);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
+
+  const hasCurrency = Object.hasOwn(raw, 'currency');
+  if (hasCurrency && !validFormulaCurrency(raw.currency)) return null;
+
+  const numberFormat = normalizeNumberFormat({
+    ...(Object.hasOwn(raw, 'locale') ? { locale: raw.locale } : {}),
+    ...(Object.hasOwn(raw, 'precision') ? { precision: raw.precision } : {}),
+    ...(Object.hasOwn(raw, 'negativeFormat') ? { negativeFormat: raw.negativeFormat } : {}),
+  });
+  if (numberFormat === null) return null;
+  return {
+    ...numberFormat,
+    ...(hasCurrency ? { currency: raw.currency as string } : {}),
+  };
+}
+
+function validFormulaCurrency(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^[A-Z]{3}$/.test(value)) return false;
+  try {
+    new Intl.NumberFormat('en', { style: 'currency', currency: value });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validNumberFormatLocale(value: unknown): value is string {
@@ -123,7 +164,7 @@ export interface PropDef {
   name: string;
   type: PropType;
   options: SelectOption[];
-  format?: NumberPropertyFormat;
+  format?: FormulaResultNumberFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set

@@ -779,6 +779,119 @@ describe('typed note style persistence', () => {
     await session.close();
   });
 
+  it('keeps an acknowledged style application successful when session and queue observers throw', async () => {
+    const vault = new ObservedMemoryVault({ 'Note.md': 'Body.\n' });
+    const session = await open(vault);
+    const pageId = pageIdAt(session, 'Note.md');
+    const initial = session.readNoteStyle(pageId);
+    if (!initial.ok) throw new Error(initial.message);
+    let notifiedAfterThrow = 0;
+    const unsubscribeThrowingSession = session.subscribe(() => {
+      throw new Error('session observer failed');
+    });
+    const unsubscribeFollowingSession = session.subscribe(() => {
+      notifiedAfterThrow++;
+    });
+    let savedQueueNotifications = 0;
+    const unsubscribeThrowingQueue = session.queue.subscribe(() => {
+      if (session.saveStatus.state === 'saved') throw new Error('queue observer failed');
+    });
+    const unsubscribeFollowingQueue = session.queue.subscribe(() => {
+      if (session.saveStatus.state === 'saved') savedQueueNotifications++;
+    });
+
+    const applied = await session.setNoteStyleWithRestoreContext({
+      pageId,
+      style: EDITED,
+      expectedRevision: initial.value.revision,
+    });
+    const current = session.readNoteStyle(pageId);
+    expect(applied).toMatchObject({ ok: true, op: 'write', value: { style: EDITED } });
+    expect(notifiedAfterThrow).toBe(1);
+    expect(savedQueueNotifications).toBe(1);
+    expect(current).toMatchObject({ ok: true, value: { style: EDITED } });
+    if (!current.ok) throw new Error(current.message);
+    expect(current.value.revision).not.toBe(initial.value.revision);
+    expect(session.saveStatus).toMatchObject({ state: 'saved', error: null, errorCode: null, failures: 0 });
+    expect(session.queue.hasPending()).toBe(false);
+    expect(await session.flush()).toBe(true);
+    const saved = vault.text('Note.md');
+    expect(saved).toContain('morrowNoteStyle:');
+
+    unsubscribeThrowingSession();
+    unsubscribeFollowingSession();
+    unsubscribeThrowingQueue();
+    unsubscribeFollowingQueue();
+    await session.close();
+    const reopened = await open(vault);
+    expect(reopened.readNoteStyle(pageId)).toMatchObject({ ok: true, value: { style: EDITED } });
+    expect(vault.text('Note.md')).toBe(saved);
+    await reopened.close();
+  });
+
+  it.each(RESTORE_VARIANTS)(
+    'keeps an acknowledged %s restoration successful when session and queue observers throw',
+    async (variant) => {
+      const source = restoreSource(variant);
+      const vault = new ObservedMemoryVault({ 'Note.md': source });
+      const session = await open(vault);
+      const pageId = pageIdAt(session, 'Note.md');
+      const expectedRevision = await applyStyleForRestore(session, pageId);
+      let notifiedAfterThrow = 0;
+      const unsubscribeThrowingSession = session.subscribe(() => {
+        throw new Error('session observer failed');
+      });
+      const unsubscribeFollowingSession = session.subscribe(() => {
+        notifiedAfterThrow++;
+      });
+      let savedQueueNotifications = 0;
+      const unsubscribeThrowingQueue = session.queue.subscribe(() => {
+        if (session.saveStatus.state === 'saved') throw new Error('queue observer failed');
+      });
+      const unsubscribeFollowingQueue = session.queue.subscribe(() => {
+        if (session.saveStatus.state === 'saved') savedQueueNotifications++;
+      });
+      let writeStarted = 0;
+
+      const restored = await restoreWithAuthorization(
+        session,
+        variant,
+        pageId,
+        expectedRevision,
+        source,
+        { isCurrent: () => true, onWriteStarted: () => writeStarted++ },
+      );
+      const current = session.readNoteStyle(pageId);
+      expect(restored).toMatchObject({ ok: true });
+      expect(notifiedAfterThrow).toBe(1);
+      expect(savedQueueNotifications).toBe(1);
+      expect(current).toMatchObject({
+        ok: true,
+        value: { style: variant === 'inherited' ? null : { font: 'sans', fontSize: 15 } },
+      });
+      if (!current.ok) throw new Error(current.message);
+      expect(current.value.revision).not.toBe(expectedRevision);
+      expect(writeStarted).toBe(1);
+      expect(vault.text('Note.md')).toBe(source);
+      expect(session.saveStatus).toMatchObject({ state: 'saved', error: null, errorCode: null, failures: 0 });
+      expect(session.queue.hasPending()).toBe(false);
+      expect(await session.flush()).toBe(true);
+
+      unsubscribeThrowingSession();
+      unsubscribeFollowingSession();
+      unsubscribeThrowingQueue();
+      unsubscribeFollowingQueue();
+      await session.close();
+      const reopened = await open(vault);
+      expect(reopened.readNoteStyle(pageId)).toMatchObject({
+        ok: true,
+        value: { style: variant === 'inherited' ? null : { font: 'sans', fontSize: 15 } },
+      });
+      expect(vault.text('Note.md')).toBe(source);
+      await reopened.close();
+    },
+  );
+
   it('rechecks revision and authorization before an opted-in style write dispatches', async () => {
     const revisionVault = new MemoryVault({ 'Note.md': 'Body.\n' });
     const revisionRepository = new GatedInitializeRepository(revisionVault, nextId);
@@ -1563,6 +1676,13 @@ describe('typed note style persistence', () => {
       const currentText = vault.text('Note.md')!;
       const externalBytes = currentText.replace('Original body', 'External bytes stay');
       vault.conflict = { path: 'Note.md', text: externalBytes };
+      let observedConflict = 0;
+      const unsubscribeThrowingQueue = session.queue.subscribe(() => {
+        if (session.saveStatus.state === 'error') throw new Error('queue observer failed');
+      });
+      const unsubscribeFollowingQueue = session.queue.subscribe(() => {
+        if (session.saveStatus.state === 'error') observedConflict++;
+      });
       const writeGate = repository.holdNextRestoreWrite();
       let authorized = true;
       let writeStarted = 0;
@@ -1590,6 +1710,9 @@ describe('typed note style persistence', () => {
       expect(vault.text('Note.md')).toBe(externalBytes);
       expect(session.saveStatus.errorCode).toBe('save-conflict');
       expect(session.queue.hasPending()).toBe(false);
+      expect(observedConflict).toBe(1);
+      unsubscribeThrowingQueue();
+      unsubscribeFollowingQueue();
       await session.close();
 
       const reopened = await open(vault);

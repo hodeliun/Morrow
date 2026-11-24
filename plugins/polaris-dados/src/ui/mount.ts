@@ -2532,9 +2532,14 @@ export function mountPolarisDados(
   };
 
   const formatNumberCell = (value: number, property: ProviderProperty): string => {
-    if (property.type === 'formula' && property.format && Object.hasOwn(property.format, 'precision')) {
+    if (
+      property.type === 'formula' &&
+      property.format &&
+      (property.format.currency !== undefined || Object.hasOwn(property.format, 'precision'))
+    ) {
       const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
-      return formatFormulaNumber(value, property.format, 'decimal', defaultLocale, 2);
+      const style = property.format.currency !== undefined ? 'currency' : 'decimal';
+      return formatFormulaNumber(value, property.format, style, defaultLocale, 2);
     }
     const format = property.type === 'number' ? property.format : undefined;
     const fallbackLocale = format

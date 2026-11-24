@@ -85,15 +85,40 @@ export interface NoteStyleBatchReceipt {
   readonly hasRestorableItems: boolean;
 }
 
+export type NoteStyleBatchUndoStatus = 'restored' | 'skipped' | 'refused' | 'unattempted';
+
+export interface NoteStyleBatchUndoOutcome {
+  readonly title: string;
+  readonly order: number;
+  readonly status: NoteStyleBatchUndoStatus;
+}
+
+/** Sanitized host-internal outcome; it contains no note identity, source, revision, or error text. */
+export interface NoteStyleBatchUndoResult {
+  readonly outcomes: readonly NoteStyleBatchUndoOutcome[];
+  readonly restoredCount: number;
+  readonly skippedCount: number;
+  readonly refusedCount: number;
+  readonly unattemptedCount: number;
+}
+
 interface NoteStyleBatchReceiptScope {
   readonly session: WorkspaceSession;
   readonly generation: number;
   readonly lifecycleGeneration: number;
 }
 
+type NoteStyleBatchExecution =
+  | { readonly kind: 'confirm'; readonly scope: NoteStyleBatchReceiptScope; invalidate(): void }
+  | { readonly kind: 'undo'; readonly scope: NoteStyleBatchReceiptScope; invalidate(): void };
+
 interface NoteStyleBatchReceiptSlot {
   scope: NoteStyleBatchReceiptScope | null;
   receipt: NoteStyleBatchReceipt | null;
+  readonly confirmationReservations: Map<WorkspaceSession, NoteStyleBatchExecution>;
+  activeUndo: NoteStyleBatchExecution | null;
+  invalidatePreview(): void;
+  readonly runtime: PreviewRuntime;
   readCurrentScope(): NoteStyleBatchReceiptScope | null;
   nextBatchId: number;
   committedBatchId: number;
@@ -126,14 +151,16 @@ export function readLastNoteStyleBatchReceipt(
 export function disposeNoteStyleBatchPreviewHost(host: PluginNoteStyleBatchPreviewHost): void {
   const slot = noteStyleBatchReceiptSlots.get(host);
   if (!slot || slot.disposed) return;
+  slot.disposed = true;
+  slot.receipt = null;
+  slot.scope = null;
   try {
     host.invalidate();
   } catch {
     // Revoking the receipt and subscriptions must still happen after lease cleanup errors.
   }
-  slot.disposed = true;
-  slot.receipt = null;
-  slot.scope = null;
+  for (const execution of slot.confirmationReservations.values()) execution.invalidate();
+  slot.activeUndo?.invalidate();
   for (const cleanup of slot.cleanup.splice(0)) {
     try {
       cleanup();
@@ -323,10 +350,13 @@ export function createNoteStyleBatchPreviewHost(
   runtime: PreviewRuntime = defaultRuntime,
 ): PluginNoteStyleBatchPreviewHost {
   let activeLease: { invalidate(): void } | null = null;
-  let activeExecution: { invalidate(): void } | null = null;
   const receiptSlot: NoteStyleBatchReceiptSlot = {
     scope: null,
     receipt: null,
+    confirmationReservations: new Map(),
+    activeUndo: null,
+    invalidatePreview: () => {},
+    runtime,
     readCurrentScope: () => null,
     nextBatchId: 0,
     committedBatchId: 0,
@@ -389,21 +419,35 @@ export function createNoteStyleBatchPreviewHost(
     activeLease = null;
     lease?.invalidate();
   };
+  receiptSlot.invalidatePreview = expireActiveLease;
   const invalidate = () => {
     expireActiveLease();
-    const execution = activeExecution;
-    activeExecution = null;
-    execution?.invalidate();
+    // Preview invalidation affects a pending apply. Undo has its own note/session guards and
+    // remains valid when the profile defaults or preview draft changes.
+    for (const execution of receiptSlot.confirmationReservations.values()) execution.invalidate();
   };
 
   const host: PluginNoteStyleBatchPreviewHost = Object.freeze({
     invalidate,
     create(mode: PluginNoteStyleBatchPreviewMode): PluginNoteStyleBatchPreviewLease | null {
+      if (receiptSlot.disposed) return null;
+      const admissionScope = receiptSlot.readCurrentScope();
+      if (
+        !admissionScope ||
+        receiptSlot.activeUndo ||
+        receiptSlot.confirmationReservations.has(admissionScope.session)
+      )
+        return null;
       expireActiveLease();
       clearReceiptWhenScopeChanges();
-      if (receiptSlot.disposed) return null;
-      if (activeExecution) return null;
-      if (!receiptSlot.readCurrentScope()) return null;
+      const currentScope = receiptSlot.readCurrentScope();
+      if (
+        receiptSlot.disposed ||
+        !currentScope ||
+        receiptSlot.activeUndo ||
+        receiptSlot.confirmationReservations.has(currentScope.session)
+      )
+        return null;
 
       let session: WorkspaceSession;
       let preferences: Preferences;
@@ -421,6 +465,19 @@ export function createNoteStyleBatchPreviewHost(
         return null;
 
       const generation = runtime.getSessionGeneration();
+      const leaseScope = receiptSlot.readCurrentScope();
+      if (
+        !leaseScope ||
+        leaseScope.session !== session ||
+        leaseScope.generation !== generation ||
+        receiptSlot.activeUndo ||
+        receiptSlot.confirmationReservations.has(leaseScope.session)
+      )
+        return null;
+      if (!sameReceiptScope(receiptSlot.scope, leaseScope)) {
+        receiptSlot.receipt = null;
+        receiptSlot.scope = leaseScope;
+      }
       const styleKey = stylePreferenceKey(preferences);
       const style = resolveDefaultNoteStyle(
         preferences.defaultNoteStyle,
@@ -437,7 +494,10 @@ export function createNoteStyleBatchPreviewHost(
 
       const isCapturedContextCurrent = () => {
         try {
+          const currentScope = receiptSlot.readCurrentScope();
           return (
+            !receiptSlot.disposed &&
+            sameReceiptScope(leaseScope, currentScope) &&
             isMounted() &&
             isRegistrationActive() &&
             !session.isClosed &&
@@ -536,24 +596,40 @@ export function createNoteStyleBatchPreviewHost(
       activeLease = activeRegistration;
 
       const consume = async (): Promise<NoteStyleBatchConfirmationResult | null> => {
-        if (consumed) return null;
-        if (!isCurrent()) {
+        if (receiptSlot.disposed || consumed) return null;
+        let admissionScope = receiptSlot.readCurrentScope();
+        if (
+          !admissionScope ||
+          receiptSlot.activeUndo ||
+          receiptSlot.confirmationReservations.has(admissionScope.session)
+        )
+          return null;
+        if (receiptSlot.disposed || !isCurrent()) {
           consumed = true;
           expire();
           return null;
         }
+        admissionScope = receiptSlot.readCurrentScope();
+        if (
+          !admissionScope ||
+          !sameReceiptScope(leaseScope, admissionScope) ||
+          receiptSlot.activeUndo ||
+          receiptSlot.confirmationReservations.has(admissionScope.session)
+        )
+          return null;
 
         // Reserve the execution before notifying preview subscribers; they can synchronously reenter.
         let executionInvalid = false;
         const executionCleanups: Array<() => void> = [];
         const invalidateExecution = () => {
-          if (executionInvalid) return;
-          executionInvalid = true;
-          for (const cleanup of executionCleanups.splice(0)) {
-            try {
-              cleanup();
-            } catch {
-              // A runtime subscriber cannot prevent other host guards from being released.
+          if (!executionInvalid) {
+            executionInvalid = true;
+            for (const cleanup of executionCleanups.splice(0)) {
+              try {
+                cleanup();
+              } catch {
+                // A runtime subscriber cannot prevent other host guards from being released.
+              }
             }
           }
         };
@@ -573,9 +649,15 @@ export function createNoteStyleBatchPreviewHost(
         const observeExecutionContext = () => {
           isExecutionContextCurrent();
         };
-        const execution = { invalidate: invalidateExecution };
+        const execution = {
+          kind: 'confirm' as const,
+          scope: leaseScope,
+          invalidate: invalidateExecution,
+        };
+        if (receiptSlot.activeUndo || receiptSlot.confirmationReservations.has(leaseScope.session))
+          return null;
         consumed = true;
-        activeExecution = execution;
+        receiptSlot.confirmationReservations.set(leaseScope.session, execution);
         const trackExecutionSubscription = (subscribe: (listener: () => void) => () => void) => {
           if (executionInvalid) return;
           try {
@@ -667,7 +749,8 @@ export function createNoteStyleBatchPreviewHost(
           }
         } finally {
           invalidateExecution();
-          if (activeExecution === execution) activeExecution = null;
+          if (receiptSlot.confirmationReservations.get(leaseScope.session) === execution)
+            receiptSlot.confirmationReservations.delete(leaseScope.session);
         }
 
         if (
@@ -711,4 +794,193 @@ export function createNoteStyleBatchPreviewHost(
     }
   }
   return host;
+}
+
+/** Consumes and restores the latest receipt through the host-only isolated session operations. */
+export function undoLastNoteStyleBatch(
+  host: PluginNoteStyleBatchPreviewHost,
+): Promise<NoteStyleBatchUndoResult | null> {
+  const slot = noteStyleBatchReceiptSlots.get(host);
+  if (!slot || slot.disposed) return Promise.resolve(null);
+
+  const scope = slot.readCurrentScope();
+  if (!scope || !sameReceiptScope(slot.scope, scope)) {
+    slot.receipt = null;
+    slot.scope = scope;
+    return Promise.resolve(null);
+  }
+  if (slot.activeUndo || slot.confirmationReservations.has(scope.session)) return Promise.resolve(null);
+  slot.scope = scope;
+  const receipt = slot.receipt;
+  const session = scope.session;
+  if (
+    !receipt?.hasRestorableItems ||
+    session.isClosed ||
+    session.isMutationFenced ||
+    hasUnconfirmedChanges(session)
+  )
+    return Promise.resolve(null);
+
+  let executionInvalid = false;
+  const executionCleanups: Array<() => void> = [];
+  const invalidateExecution = () => {
+    if (executionInvalid) return;
+    executionInvalid = true;
+    for (const cleanup of executionCleanups.splice(0)) {
+      try {
+        cleanup();
+      } catch {
+        // A runtime subscriber cannot prevent other host guards from being released.
+      }
+    }
+  };
+  const execution = { kind: 'undo' as const, scope, invalidate: invalidateExecution };
+  if (slot.activeUndo || slot.confirmationReservations.has(session)) return Promise.resolve(null);
+  slot.activeUndo = execution;
+  // Consume before the first await. A second undo can never reuse this receipt.
+  slot.receipt = null;
+
+  const isExecutionScopeCurrent = (): boolean => {
+    if (executionInvalid) return false;
+    try {
+      const current = slot.readCurrentScope();
+      if (!current || !sameReceiptScope(slot.scope, current)) {
+        slot.receipt = null;
+        slot.scope = current;
+        invalidateExecution();
+        return false;
+      }
+      slot.scope = current;
+      if (!sameReceiptScope(scope, current)) {
+        invalidateExecution();
+        return false;
+      }
+      if (session.isClosed || session.isMutationFenced) {
+        invalidateExecution();
+        return false;
+      }
+      return true;
+    } catch {
+      invalidateExecution();
+      return false;
+    }
+  };
+  const observeExecutionScope = () => {
+    isExecutionScopeCurrent();
+  };
+  const trackExecutionSubscription = (subscribe: (listener: () => void) => () => void) => {
+    if (executionInvalid) return;
+    try {
+      const cleanup = subscribe(observeExecutionScope);
+      if (executionInvalid) cleanup();
+      else executionCleanups.push(cleanup);
+    } catch {
+      invalidateExecution();
+    }
+  };
+  const orderedWrites = receipt.writes.slice().sort((a, b) => a.order - b.order);
+  const outcomes = orderedWrites
+    .map((item) => ({
+      title: item.title,
+      order: item.order,
+      status: 'unattempted' as NoteStyleBatchUndoStatus,
+    }));
+
+  return (async (): Promise<NoteStyleBatchUndoResult> => {
+    try {
+      slot.invalidatePreview();
+      trackExecutionSubscription(slot.runtime.subscribeSession);
+      trackExecutionSubscription(slot.runtime.subscribeRegistration ?? subscribePlugins);
+      trackExecutionSubscription(session.subscribeMutationFence.bind(session));
+      trackExecutionSubscription(session.onClose.bind(session));
+
+      for (let index = 0; index < outcomes.length; index++) {
+        const item = orderedWrites[index]!;
+        const outcome = outcomes[index]!;
+        if (!isExecutionScopeCurrent()) break;
+
+        let current;
+        let eligible = false;
+        try {
+          current = session.readNoteStyle(item.pageId);
+          eligible = current.ok &&
+            sameStyle(current.value.style, item.appliedStyle) &&
+            session.hasWritableNoteStyleSource(item.pageId);
+        } catch {
+          // An unreadable or newly protected target is a per-note skip.
+        }
+        if (!eligible || !current?.ok || !item.restoreContext) {
+          outcome.status = 'skipped';
+          continue;
+        }
+        if (!isExecutionScopeCurrent()) break;
+
+        let writeStarted = false;
+        const hostAuthorization = {
+          isCurrent: isExecutionScopeCurrent,
+          onWriteStarted: () => {
+            writeStarted = true;
+          },
+        };
+        let result;
+        try {
+          result = item.restoreContext.kind === 'inherited'
+            ? await session.restoreInheritedNoteStyle({
+                pageId: item.pageId,
+                expectedRevision: current.value.revision,
+                appliedStyle: item.appliedStyle,
+                context: item.restoreContext.context,
+                hostAuthorization,
+              })
+            : await session.restoreExplicitNoteStyle({
+                pageId: item.pageId,
+                expectedRevision: current.value.revision,
+                appliedStyle: item.appliedStyle,
+                context: item.restoreContext.context,
+                hostAuthorization,
+              });
+        } catch {
+          if (!writeStarted && !isExecutionScopeCurrent()) break;
+          outcome.status = 'refused';
+          break;
+        }
+
+        if (result.ok) outcome.status = 'restored';
+        else if (!writeStarted && !isExecutionScopeCurrent()) break;
+        else if (!writeStarted && isSkippableRestoreRefusal(result.code)) {
+          outcome.status = 'skipped';
+          continue;
+        } else {
+          outcome.status = 'refused';
+          break;
+        }
+
+        // If invalidated after dispatch, the current result is real, but no later target starts.
+        if (!isExecutionScopeCurrent()) break;
+      }
+    } finally {
+      invalidateExecution();
+      if (slot.activeUndo === execution) slot.activeUndo = null;
+    }
+
+    const frozenOutcomes = Object.freeze(outcomes.map((outcome) => Object.freeze(outcome)));
+    return Object.freeze({
+      outcomes: frozenOutcomes,
+      restoredCount: outcomes.filter((outcome) => outcome.status === 'restored').length,
+      skippedCount: outcomes.filter((outcome) => outcome.status === 'skipped').length,
+      refusedCount: outcomes.filter((outcome) => outcome.status === 'refused').length,
+      unattemptedCount: outcomes.filter((outcome) => outcome.status === 'unattempted').length,
+    });
+  })();
+}
+
+function isSkippableRestoreRefusal(code: string): boolean {
+  return (
+    code === 'stale-revision' ||
+    code === 'page-not-found' ||
+    code === 'unsupported' ||
+    code === 'inaccessible' ||
+    code === 'trashed' ||
+    code === 'read-only'
+  );
 }

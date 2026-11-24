@@ -215,6 +215,76 @@ describe('vault representability guard', () => {
     expect(rowText).not.toMatch(/^Total:/m);
   });
 
+  it('roundtrips explicit currency formats on implicit formula properties without persisting results', () => {
+    const defaultCurrencyFormat = { currency: 'ZZZ' } as const;
+    const configuredCurrencyFormat = {
+      locale: 'de-DE',
+      currency: 'JPY',
+      precision: 3,
+      negativeFormat: 'parentheses',
+    } as const;
+    const fractionalCurrencyFormat = {
+      locale: 'en-US',
+      currency: 'USD',
+      precision: 1.5,
+      negativeFormat: 'parentheses',
+    } as const;
+    const source = databaseNote({
+      properties: [
+        { id: 'quantity', name: 'Quantity', type: 'number' },
+        { id: 'default-total', name: 'Default total', type: 'formula', formula: 'Quantity * 2', format: defaultCurrencyFormat },
+        { id: 'configured-total', name: 'Configured total', type: 'formula', formula: 'Quantity * -2', format: configuredCurrencyFormat },
+        { id: 'fractional-total', name: 'Fractional total', type: 'formula', formula: 'Quantity * -2', format: fractionalCurrencyFormat },
+      ],
+      views: [],
+    });
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const read = readPageText(source);
+    expect(read.database?.properties[1]?.format).toEqual(defaultCurrencyFormat);
+    expect(read.database?.properties[2]?.format).toEqual(configuredCurrencyFormat);
+    expect(read.database?.properties[3]?.format).toEqual(fractionalCurrencyFormat);
+
+    const database = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: read.database,
+      extra: read.extra,
+    });
+    const saved = renderPageText(
+      composeFrontmatter(managedFrontmatter(database, 'Inventory', null), read.extra, null),
+      null,
+      read.body,
+    );
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+    expect(readPageText(saved).database?.properties[1]?.format).toEqual(defaultCurrencyFormat);
+    expect(readPageText(saved).database?.properties[2]?.format).toEqual(configuredCurrencyFormat);
+    expect(readPageText(saved).database?.properties[3]?.format).toEqual(fractionalCurrencyFormat);
+
+    const row = newPageMeta({
+      id: 'row-1',
+      parentId: 'inventory',
+      title: 'Widget',
+      kind: 'page',
+      properties: { quantity: 4, 'default-total': 8, 'configured-total': -8, 'fractional-total': -8 },
+    });
+    const rowText = renderPageText(
+      composeFrontmatter(managedFrontmatter(row, 'Widget', read.database), {}, null),
+      null,
+      'Row data\n',
+    );
+    expect(readPageText(rowText).data.Quantity).toBe(4);
+    expect(readPageText(rowText).data['Default total']).toBeUndefined();
+    expect(readPageText(rowText).data['Configured total']).toBeUndefined();
+    expect(readPageText(rowText).data['Fractional total']).toBeUndefined();
+    expect(rowText).not.toMatch(/^Default total:/m);
+    expect(rowText).not.toMatch(/^Configured total:/m);
+    expect(rowText).not.toMatch(/^Fractional total:/m);
+  });
+
   it('protects formula formats with incompatible result settings and retains the exact source bytes', () => {
     const formulaProperty = (extra: Record<string, unknown>) => ({
       id: 'total',
@@ -225,7 +295,12 @@ describe('vault representability guard', () => {
     });
     const protectedProperties = [
       formulaProperty({ format: { locale: 'de-DE' } }),
-      formulaProperty({ format: { precision: 2, currency: 'USD' } }),
+      formulaProperty({ format: { currency: 'US1' } }),
+      formulaProperty({ format: { currency: 'usd' } }),
+      formulaProperty({ format: { currency: 'USD', precision: -0.1 } }),
+      formulaProperty({ format: { currency: 'USD', precision: 8.1 } }),
+      formulaProperty({ format: { locale: 'not a locale', currency: 'USD' } }),
+      formulaProperty({ format: { currency: 'USD', unexpected: 'keep me' } }),
       formulaProperty({ format: { precision: 2, percent: true } }),
       formulaProperty({ format: { precision: 2, unexpected: 'keep me' } }),
       formulaProperty({ format: { precision: 2 }, display: 'bar' }),
@@ -241,7 +316,7 @@ describe('vault representability guard', () => {
     }
 
     const protectedSource = databaseNote({
-      properties: [formulaProperty({ format: { precision: 2, currency: 'USD' } })],
+      properties: [formulaProperty({ format: { currency: 'US1' } })],
       views: [],
     });
     const loaded = loadVault(

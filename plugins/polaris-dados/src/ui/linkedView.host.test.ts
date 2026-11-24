@@ -372,6 +372,74 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
+  it('renders implicit formula currencies in linked views with two default fraction digits and raw dependencies', () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          {
+            id: 'usd',
+            name: 'USD',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * Price * -1.23456',
+            format: { locale: 'en-US', currency: 'USD' },
+          },
+          {
+            id: 'jpy',
+            name: 'JPY',
+            type: 'formula',
+            options: [],
+            formula: '12.5',
+            format: { currency: 'JPY' },
+          },
+          {
+            id: 'rounded',
+            name: 'Rounded',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity * Price * -1.23456',
+            format: { currency: 'BHD', precision: 0, negativeFormat: 'parentheses' },
+          },
+          { id: 'dependent', name: 'Dependent', type: 'formula', options: [], formula: 'Rounded + 1' },
+        ],
+      },
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Currency view',
+        columnOrder: ['usd', 'jpy', 'rounded', 'dependent'],
+        filter: { propertyId: 'quantity', op: 'gte', value: 3 },
+      },
+      snapshot,
+    );
+    const rows = [...mounted.element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const cellText = (row: HTMLTableRowElement, propertyId: string) =>
+      row.querySelector(`[data-field="${propertyId}"] [data-value-kind="number"]`)?.textContent;
+    const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+    const currencyText = (value: number, currency: string, locale = browserLocale, precision = 2) =>
+      new Intl.NumberFormat(locale, {
+        style: 'currency',
+        currency,
+        maximumFractionDigits: precision,
+        minimumFractionDigits: precision,
+      }).format(value);
+    const rawTotal = 4 * 10 * -1.23456;
+
+    expect(rows).toHaveLength(1);
+    expect(cellText(rows[0]!, 'usd')).toBe(currencyText(rawTotal, 'USD', 'en-US'));
+    expect(cellText(rows[0]!, 'jpy')).toBe(currencyText(12.5, 'JPY'));
+    expect(cellText(rows[0]!, 'rounded')).toBe(`(${currencyText(Math.abs(rawTotal), 'BHD', browserLocale, 0)})`);
+    expect(cellText(rows[0]!, 'dependent')).toBe(
+      new Intl.NumberFormat('en', { maximumFractionDigits: 10 }).format(rawTotal + 1),
+    );
+    expect(snapshot.rows[0]?.properties).toEqual({ name: 'Catalog label', quantity: 4, price: 10 });
+    mounted.cleanup();
+  });
+
   it('preserves priority-control focus through toggle and reorder without stealing another root focus', () => {
     const mounted = mountLinked({
       title: 'Inventory view',

@@ -151,6 +151,10 @@ Abra `Inventory` no cofre de demonstração. Com `Quantity` em **2**, `DecimalRe
 
 Altere `Quantity` para **3** e salve. Os resultados passam a **(1.851,8)** e **17**. Abra `Views` e confira os mesmos valores na primeira visualização vinculada. Reabra o aplicativo para conferir que a edição permanece.
 
+### Conferir moeda em uma fórmula
+
+Na linha `Widget` de `Inventory`, com `Price` em **10** e `Quantity` em **2**, `CurrencyResult` mostra **($1,234.57)** e `CurrencyRawCheck` mostra **42**. O formato usa dólares, localidade dos Estados Unidos e duas casas decimais por padrão. Altere `Quantity` para **3** e confira **($1,851.85)** e **17** em `Inventory` e na primeira visualização de `Views`.
+
 ### Navegar na grade sem o mouse
 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.

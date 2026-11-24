@@ -10,7 +10,13 @@ import { VaultRepository } from '../../storage/vaultRepository';
 import type { VaultOp, VaultOpResult } from '../../core/vault/plan';
 import type { Preferences } from '../platform/preferences';
 import { getPreferences } from '../platform/preferences';
-import { createNoteStyleBatchPreviewHost } from './noteStyleBatchPreview';
+import {
+  confirmNoteStyleBatchPreview,
+  createNoteStyleBatchPreviewHost,
+  disposeNoteStyleBatchPreviewHost,
+  readLastNoteStyleBatchReceipt,
+  undoLastNoteStyleBatch,
+} from './noteStyleBatchPreview';
 
 const DEFAULT_STYLE: NoteStyle = {
   font: 'serif',
@@ -79,6 +85,37 @@ class FailOnceNoteWriteVault extends ObservedPreviewVault {
           ? { ok: false as const, code: 'error' as const, message: 'simulated write refusal' }
           : { ok: true as const },
       );
+    }
+    return super.apply(ops);
+  }
+}
+
+class HeldStyleWriteVault extends ObservedPreviewVault {
+  private heldPath: string | null = null;
+  private held = false;
+  private writeEntered: (() => void) | null = null;
+  private writeGate: Promise<void> | null = null;
+
+  holdNextWrite(path: string): { started: Promise<void>; release(): void } {
+    this.heldPath = path;
+    this.held = false;
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    this.writeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.writeEntered = entered;
+    return { started, release };
+  }
+
+  override async apply(ops: VaultOp[]): Promise<VaultOpResult[]> {
+    if (!this.held && this.heldPath && ops.some((op) => op.op === 'write' && op.path === this.heldPath)) {
+      this.held = true;
+      this.writeEntered?.();
+      await this.writeGate;
     }
     return super.apply(ops);
   }
@@ -723,6 +760,500 @@ describe('existing note-style preview', () => {
       expect(overwrite?.isCurrent()).toBe(false);
       expect(host.create('preserve')).toBeNull();
       expect(host.create('overwrite')).toBeNull();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('restores a mixed explicit and inherited batch byte-for-byte while preserving later body and YAML edits', async () => {
+    const explicitOriginal = [
+      '---',
+      'title: Explicit note',
+      'owner: original',
+      'morrowNoteStyle:',
+      "  font: 'sans' # original font spelling",
+      '  fontSize: 18.0',
+      '  lineHeight: 1.6',
+      '  blockSpacing: 9',
+      '  width: comfortable',
+      '  custom: retain',
+      '---',
+      'Original explicit body.  ',
+      '',
+    ].join('\r\n');
+    const inheritedOriginal = [
+      '---',
+      'title: Inherited note',
+      'owner: original',
+      '---',
+      'Original inherited body.',
+      '',
+    ].join('\n');
+    const vault = new ObservedPreviewVault({
+      'Explicit note.md': explicitOriginal,
+      'Inherited note.md': inheritedOriginal,
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-bytes-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({
+      ...runtime.runtime.getPreferences(),
+      defaultNoteStyle: DEFAULT_STYLE,
+    });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const preview = host.create('overwrite');
+      expect(preview?.summary.candidateCount).toBe(2);
+      const confirmed = await confirmNoteStyleBatchPreview(preview!);
+      expect(confirmed).toMatchObject({ confirmedCount: 2, refusedCount: 0, unattemptedCount: 0 });
+      const receipt = readLastNoteStyleBatchReceipt(host);
+      expect(receipt?.hasRestorableItems).toBe(true);
+      expect(receipt?.writes.map((write) => write.restoreContext?.kind).sort()).toEqual([
+        'explicit',
+        'inherited',
+      ]);
+
+      const explicitApplied = vault.text('Explicit note.md')!;
+      const inheritedApplied = vault.text('Inherited note.md')!;
+      const explicitEdited = explicitApplied
+        .replace('owner: original', 'owner: edited')
+        .replace('Original explicit body.', 'Edited explicit body.');
+      const inheritedEdited = inheritedApplied
+        .replace('owner: original', 'owner: edited')
+        .replace('Original inherited body.', 'Edited inherited body.');
+      vault.external({
+        'Explicit note.md': explicitEdited,
+        'Inherited note.md': inheritedEdited,
+      });
+
+      const operationsBeforeUndo = vault.operationBatches.length;
+      const undone = await undoLastNoteStyleBatch(host);
+      expect(undone).toMatchObject({
+        restoredCount: 2,
+        skippedCount: 0,
+        refusedCount: 0,
+        unattemptedCount: 0,
+      });
+      expect(vault.text('Explicit note.md')).toBe(
+        explicitOriginal
+          .replace('owner: original', 'owner: edited')
+          .replace('Original explicit body.', 'Edited explicit body.'),
+      );
+      expect(vault.text('Inherited note.md')).toBe(
+        inheritedOriginal
+          .replace('owner: original', 'owner: edited')
+          .replace('Original inherited body.', 'Edited inherited body.'),
+      );
+      const undoWrites = vault.operationBatches
+        .slice(operationsBeforeUndo)
+        .flat()
+        .filter((op) => op.op === 'write' && op.path.endsWith('.md'));
+      expect(undoWrites).toHaveLength(2);
+      const serialized = JSON.stringify(undone);
+      expect(serialized).not.toContain('undo-bytes-');
+      expect(serialized).not.toContain('revision');
+      expect(serialized).not.toContain('morrowNoteStyle');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('skips changed, ineligible, and contextless receipt items while restoring the remaining notes', async () => {
+    const sources = {
+      'Changed.md': '---\ntitle: Changed\n---\nBefore.\n',
+      'Missing source.md': '---\ntitle: Missing source\n---\nBefore.\n',
+      'Tagged.md': [
+        '---',
+        'title: Tagged',
+        'morrowNoteStyle:',
+        '  font: !!str sans',
+        '  fontSize: 18',
+        '  lineHeight: 1.6',
+        '  blockSpacing: 9',
+        '  width: comfortable',
+        '---',
+        'Before.',
+        '',
+      ].join('\n'),
+      'Restorable.md': '---\ntitle: Restorable\n---\nBefore.\n',
+    };
+    const vault = new ObservedPreviewVault(sources);
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-skips-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+    const pageIdFor = (path: string) =>
+      Object.keys(session.getState().pages).find((id) => session.pathOf(id) === path);
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      const confirmed = await confirmNoteStyleBatchPreview(preview);
+      expect(confirmed?.refusedCount).toBe(0);
+      const receipt = readLastNoteStyleBatchReceipt(host);
+      expect(receipt?.hasRestorableItems).toBe(true);
+      const taggedReceipt = receipt?.writes.find((write) => write.title === 'Tagged');
+      expect(taggedReceipt).toBeDefined();
+      expect(taggedReceipt?.restoreContext).toBeNull();
+
+      const changedId = pageIdFor('Changed.md');
+      if (!changedId) throw new Error('The changed-note page was not loaded.');
+      const changedSnapshot = session.readNoteStyle(changedId);
+      if (!changedSnapshot.ok) throw new Error(changedSnapshot.message);
+      const changed = await session.setNoteStyle({
+        pageId: changedId,
+        style: OTHER_STYLE,
+        expectedRevision: changedSnapshot.value.revision,
+      });
+      expect(changed.ok).toBe(true);
+      vault.external({ 'Missing source.md': null });
+
+      const beforeUndo = new Map(
+        ['Changed.md', 'Tagged.md', 'Restorable.md'].map((path) => [path, vault.text(path)]),
+      );
+      const operationsBeforeUndo = vault.operationBatches.length;
+      const undone = await undoLastNoteStyleBatch(host);
+      expect(undone).toMatchObject({ restoredCount: 1, skippedCount: 3, refusedCount: 0 });
+      expect(vault.text('Changed.md')).toBe(beforeUndo.get('Changed.md'));
+      expect(vault.text('Tagged.md')).toBe(beforeUndo.get('Tagged.md'));
+      expect(vault.text('Restorable.md')).toBe('---\ntitle: Restorable\n---\nBefore.\n');
+      const undoWrites = vault.operationBatches
+        .slice(operationsBeforeUndo)
+        .flat()
+        .filter((op) => op.op === 'write' && op.path.endsWith('.md'));
+      expect(undoWrites.map((op) => op.op === 'write' && op.path)).toEqual(['Restorable.md']);
+      expect(undone?.outcomes.map(({ title, status }) => [title, status])).toEqual([
+        ['Changed', 'skipped'],
+        ['Missing source', 'skipped'],
+        ['Restorable', 'restored'],
+        ['Tagged', 'skipped'],
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('reserves undo against confirm/create, waits for a dispatched ACK, and stops remaining notes on teardown', async () => {
+    const vault = new HeldStyleWriteVault({
+      'First.md': '---\ntitle: First\n---\nFirst body.\n',
+      'Second.md': '---\ntitle: Second\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-lock-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const apply = host.create('overwrite');
+      if (!apply) throw new Error('The first apply preview was not created.');
+      await confirmNoteStyleBatchPreview(apply);
+
+      const pendingPreview = host.create('overwrite');
+      if (!pendingPreview) throw new Error('The next preview was not created.');
+      const firstTarget = readLastNoteStyleBatchReceipt(host)?.writes[0];
+      if (!firstTarget) throw new Error('The confirmed receipt was empty.');
+      const firstPath = session.pathOf(firstTarget.pageId);
+      if (!firstPath) throw new Error('The first source path was unavailable.');
+      const held = vault.holdNextWrite(firstPath);
+      const undoPromise = undoLastNoteStyleBatch(host);
+      await held.started;
+
+      expect(host.create('overwrite')).toBeNull();
+      expect(await confirmNoteStyleBatchPreview(pendingPreview)).toBeNull();
+      expect(await undoLastNoteStyleBatch(host)).toBeNull();
+      expect(readLastNoteStyleBatchReceipt(host)).toBeNull();
+
+      disposeNoteStyleBatchPreviewHost(host);
+      expect(host.create('overwrite')).toBeNull();
+      held.release();
+      const undone = await undoPromise;
+      expect(undone).toMatchObject({ restoredCount: 1, skippedCount: 0, refusedCount: 0, unattemptedCount: 1 });
+      expect(undone?.outcomes.map(({ status }) => status)).toEqual(['restored', 'unattempted']);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('reserves confirmation against undo, duplicate confirmation, and a second preview', async () => {
+    const vault = new HeldStyleWriteVault({
+      'First confirm.md': '---\ntitle: First confirm\n---\nFirst body.\n',
+      'Second confirm.md': '---\ntitle: Second confirm\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `confirm-lock-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const firstPreview = host.create('overwrite');
+      if (!firstPreview) throw new Error('The initial preview was not created.');
+      await confirmNoteStyleBatchPreview(firstPreview);
+
+      runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: OTHER_STYLE });
+      const pendingPreview = host.create('overwrite');
+      if (!pendingPreview) throw new Error('The second preview was not created.');
+      const first = readLastNoteStyleBatchReceipt(host)?.writes[0];
+      if (!first) throw new Error('The previous receipt was empty.');
+      const path = session.pathOf(first.pageId);
+      if (!path) throw new Error('The first source path was unavailable.');
+      const held = vault.holdNextWrite(path);
+      const confirmPromise = confirmNoteStyleBatchPreview(pendingPreview);
+      await held.started;
+
+      expect(await undoLastNoteStyleBatch(host)).toBeNull();
+      expect(host.create('preserve')).toBeNull();
+      expect(await confirmNoteStyleBatchPreview(pendingPreview)).toBeNull();
+      held.release();
+
+      expect(await confirmPromise).toMatchObject({ confirmedCount: 2, refusedCount: 0, unattemptedCount: 0 });
+      expect(readLastNoteStyleBatchReceipt(host)?.hasRestorableItems).toBe(true);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('refuses a late source CAS conflict without retry and keeps later receipts unattempted', async () => {
+    const vault = new HeldStyleWriteVault({
+      'First conflict.md': '---\ntitle: First conflict\n---\nFirst body.\n',
+      'Second conflict.md': '---\ntitle: Second conflict\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-conflict-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      await confirmNoteStyleBatchPreview(preview);
+      const receipt = readLastNoteStyleBatchReceipt(host);
+      const first = receipt?.writes[0];
+      if (!first) throw new Error('The confirmed receipt was empty.');
+      const path = session.pathOf(first.pageId);
+      if (!path) throw new Error('The first source path was unavailable.');
+      const held = vault.holdNextWrite(path);
+      const before = vault.text(path)!;
+      const undoPromise = undoLastNoteStyleBatch(host);
+      await held.started;
+
+      vault.files.set(path, before.replace('First body.', 'External content is kept.'));
+      held.release();
+      const undone = await undoPromise;
+      expect(undone).toMatchObject({ restoredCount: 0, skippedCount: 0, refusedCount: 1, unattemptedCount: 1 });
+      expect(undone?.outcomes.map(({ status }) => status)).toEqual(['refused', 'unattempted']);
+      expect(vault.text(path)).toBe(before.replace('First body.', 'External content is kept.'));
+      const attemptedWrites = vault.operationBatches
+        .flat()
+        .filter((op) => op.op === 'write' && op.path === path);
+      expect(attemptedWrites).toHaveLength(2); // one apply and one refused undo CAS, with no retry
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('skips a revision that changes after the read and continues to the next restorable note', async () => {
+    const vault = new ObservedPreviewVault({
+      'First stale.md': '---\ntitle: First stale\n---\nFirst body.\n',
+      'Second stale.md': '---\ntitle: Second stale\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-stale-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      await confirmNoteStyleBatchPreview(preview);
+      const first = readLastNoteStyleBatchReceipt(host)?.writes[0];
+      if (!first) throw new Error('The confirmed receipt was empty.');
+      const path = session.pathOf(first.pageId);
+      if (!path) throw new Error('The first source path was unavailable.');
+
+      const originalHasWritable = session.hasWritableNoteStyleSource.bind(session);
+      let editedBetweenReadAndDispatch = false;
+      session.hasWritableNoteStyleSource = (pageId) => {
+        const writable = originalHasWritable(pageId);
+        if (pageId === first.pageId && !editedBetweenReadAndDispatch) {
+          editedBetweenReadAndDispatch = true;
+          const current = vault.text(path);
+          if (!current) throw new Error('The first source disappeared.');
+          vault.external({ [path]: current.replace('fontSize: 20', 'fontSize: 22') });
+        }
+        return writable;
+      };
+      const operationsBeforeUndo = vault.operationBatches.length;
+      const undone = await undoLastNoteStyleBatch(host);
+
+      expect(editedBetweenReadAndDispatch).toBe(true);
+      expect(undone).toMatchObject({ restoredCount: 1, skippedCount: 1, refusedCount: 0, unattemptedCount: 0 });
+      expect(undone?.outcomes.map(({ status }) => status)).toEqual(['skipped', 'restored']);
+      const undoWrites = vault.operationBatches
+        .slice(operationsBeforeUndo)
+        .flat()
+        .filter((op) => op.op === 'write' && op.path.endsWith('.md'));
+      expect(undoWrites.map((op) => op.op === 'write' && op.path)).toEqual(['Second stale.md']);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('revokes an undispatched undo on host teardown before any source write', async () => {
+    const vault = new HeldStyleWriteVault({
+      'First lifecycle.md': '---\ntitle: First lifecycle\n---\nFirst body.\n',
+      'Second lifecycle.md': '---\ntitle: Second lifecycle\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-lifecycle-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      await confirmNoteStyleBatchPreview(preview);
+      const receipt = readLastNoteStyleBatchReceipt(host);
+      const first = receipt?.writes[0];
+      if (!first) throw new Error('The confirmed receipt was empty.');
+      const firstPath = session.pathOf(first.pageId);
+      if (!firstPath) throw new Error('The first source path was unavailable.');
+
+      const beforeUndispatched = vault.operationBatches.length;
+      const notDispatched = undoLastNoteStyleBatch(host);
+      expect(readLastNoteStyleBatchReceipt(host)).toBeNull();
+      expect(await undoLastNoteStyleBatch(host)).toBeNull();
+      disposeNoteStyleBatchPreviewHost(host);
+      const revoked = await notDispatched;
+      expect(revoked?.unattemptedCount).toBe(2);
+      expect(vault.operationBatches.slice(beforeUndispatched).flat().filter((op) => op.op === 'write' && op.path.endsWith('.md'))).toEqual([]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('keeps a session A→B→A change sticky after the dispatched undo receives its ACK', async () => {
+    const vault = new HeldStyleWriteVault({
+      'First sticky.md': '---\ntitle: First sticky\n---\nFirst body.\n',
+      'Second sticky.md': '---\ntitle: Second sticky\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-sticky-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const sessionA = opened.value;
+    const runtime = makeRuntime(sessionA);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      await confirmNoteStyleBatchPreview(preview);
+      const first = readLastNoteStyleBatchReceipt(host)?.writes[0];
+      if (!first) throw new Error('The confirmed receipt was empty.');
+      const path = sessionA.pathOf(first.pageId);
+      if (!path) throw new Error('The first source path was unavailable.');
+      const held = vault.holdNextWrite(path);
+      const undoPromise = undoLastNoteStyleBatch(host);
+      await held.started;
+
+      runtime.setSession(makeFixture().session.session);
+      runtime.setSession(sessionA);
+      expect(host.create('overwrite')).toBeNull();
+      expect(await undoLastNoteStyleBatch(host)).toBeNull();
+      held.release();
+
+      const undone = await undoPromise;
+      expect(undone).toMatchObject({ restoredCount: 1, skippedCount: 0, refusedCount: 0, unattemptedCount: 1 });
+      expect(undone?.outcomes.map(({ status }) => status)).toEqual(['restored', 'unattempted']);
+    } finally {
+      await sessionA.close();
+    }
+  });
+
+  it('does not revoke undo when only profile defaults or a preview lease are invalidated', async () => {
+    const vault = new HeldStyleWriteVault({
+      'First defaults.md': '---\ntitle: First defaults\n---\nFirst body.\n',
+      'Second defaults.md': '---\ntitle: Second defaults\n---\nSecond body.\n',
+    });
+    let idCounter = 0;
+    const opened = await WorkspaceSession.open(
+      new VaultRepository(vault, () => `undo-defaults-${++idCounter}`),
+      { delayMs: 0 },
+    );
+    if (!opened.ok) throw new Error(opened.error);
+    const session = opened.value;
+    const runtime = makeRuntime(session);
+    runtime.setPreferences({ ...runtime.runtime.getPreferences(), defaultNoteStyle: DEFAULT_STYLE });
+    const { host } = createHost(runtime.runtime);
+
+    try {
+      const preview = host.create('overwrite');
+      if (!preview) throw new Error('The style preview was not created.');
+      await confirmNoteStyleBatchPreview(preview);
+      const first = readLastNoteStyleBatchReceipt(host)?.writes[0];
+      if (!first) throw new Error('The confirmed receipt was empty.');
+      const path = session.pathOf(first.pageId);
+      if (!path) throw new Error('The first source path was unavailable.');
+      const held = vault.holdNextWrite(path);
+      const undoPromise = undoLastNoteStyleBatch(host);
+      await held.started;
+
+      runtime.setPreferences({
+        ...runtime.runtime.getPreferences(),
+        defaultNoteStyle: OTHER_STYLE,
+        width: 'comfortable',
+      });
+      host.invalidate();
+      held.release();
+
+      const undone = await undoPromise;
+      expect(undone).toMatchObject({ restoredCount: 2, skippedCount: 0, refusedCount: 0, unattemptedCount: 0 });
+      expect(undone?.outcomes.map(({ status }) => status)).toEqual(['restored', 'restored']);
     } finally {
       await session.close();
     }
