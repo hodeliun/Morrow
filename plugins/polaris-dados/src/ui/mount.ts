@@ -21,6 +21,7 @@ import type {
 } from './formulas';
 import { createFormulaEvaluationScope, evaluateCell, resolveFormulaDatabaseTitle } from './formulas';
 import { mergePrioritizedColumnOrder, projectLinkedView, type PresentedProperty } from './linkedView';
+import { cellEditStartKey } from './cellEditing';
 import { providerMessages } from './locale';
 import { formatNumberCell as formatSharedNumberCell } from './numberFormatting';
 
@@ -1958,23 +1959,23 @@ export function mountPolarisDados(
     button.style.padding = '0';
     button.style.cursor = 'pointer';
     button.append(renderCellValue(property, value));
-    button.addEventListener('click', () => {
-      if (busy || pendingFlush || draft || disposed || signal.aborted || !editable || viewDraft) return;
+    const openEditor = (seedText: string | null): boolean => {
+      if (busy || pendingFlush || draft || disposed || signal.aborted || !editable || viewDraft) return false;
       let latest: DataApiSnapshot;
       try {
         latest = data.snapshot(databaseId);
       } catch {
-        return;
+        return false;
       }
       if (latest.status !== 'ready' || latest.readonly || latest.revision !== revision) {
         snapshotUpdated(latest);
-        return;
+        return false;
       }
       const latestRow = latest.rows.find((candidate) => candidate.id === row.id);
       const latestProperty = latest.schema.properties.find((candidate) => candidate.id === property.id);
       if (!latestRow || latestProperty?.type !== property.type) {
         snapshotUpdated(latest);
-        return;
+        return false;
       }
       const latestValue = latestRow.properties[property.id];
       const base = {
@@ -1986,25 +1987,26 @@ export function mountPolarisDados(
         errorDetail: null,
       } as const;
       if (property.type === 'text') {
-        if (typeof data.patchTextCell !== 'function') return;
-        const rawValue = typeof latestValue === 'string' ? latestValue : '';
+        if (typeof data.patchTextCell !== 'function') return false;
+        const originalRawValue = typeof latestValue === 'string' ? latestValue : '';
+        const rawValue = seedText ?? originalRawValue;
         draft = {
           ...base,
           kind: 'text',
-          initialRawValue: rawValue,
+          initialRawValue: originalRawValue,
           rawValue,
-          initialVisibleValue: normalizeTextAreaValue(rawValue),
+          initialVisibleValue: normalizeTextAreaValue(originalRawValue),
           schemaSignature: textSchemaSignature(latest),
           focused: false,
           composing: false,
-          selectionStart: 0,
-          selectionEnd: 0,
+          selectionStart: seedText === null ? 0 : rawValue.length,
+          selectionEnd: seedText === null ? 0 : rawValue.length,
         };
         checkpointDraft();
       } else if (property.type === 'checkbox') {
-        if (typeof data.patchCheckboxCell !== 'function') return;
+        if (typeof data.patchCheckboxCell !== 'function') return false;
         const initialValue = readCheckboxInitialValue(latestRow.properties, property.id);
-        if (!initialValue) return;
+        if (!initialValue) return false;
         draft = {
           ...base,
           kind: 'checkbox',
@@ -2016,15 +2018,59 @@ export function mountPolarisDados(
         };
         checkpointDraft();
       } else if (property.type === 'number') {
+        if (seedText !== null) return false;
         draft = {
           ...base,
           kind: 'number',
           rawValue: value.kind === 'number' ? String(value.value) : '',
         };
-      } else return;
+      } else return false;
       notice = null;
       render(false, focusKey('input', row.id, property.id));
+      if (seedText !== null && draft?.kind === 'text') {
+        const textarea = [...container.querySelectorAll<HTMLTextAreaElement>('textarea[data-field]')].find(
+          (candidate) => candidate.dataset.rowId === row.id && candidate.dataset.field === property.id,
+        );
+        if (textarea) {
+          const caret = textarea.value.length;
+          try {
+            textarea.setSelectionRange(caret, caret);
+          } catch {
+            // Keep the seeded draft usable when a host textarea cannot expose its selection.
+          }
+          draft.selectionStart = caret;
+          draft.selectionEnd = caret;
+          checkpointDraft();
+        }
+      }
+      return true;
+    };
+    button.addEventListener('click', () => {
+      openEditor(null);
     });
+    if (property.type === 'text') {
+      button.addEventListener('keydown', (event) => {
+        if (
+          event.defaultPrevented ||
+          !button.isConnected ||
+          event.target !== button ||
+          button.ownerDocument.activeElement !== button
+        )
+          return;
+        const startKey = cellEditStartKey({
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          altGraph: event.getModifierState('AltGraph'),
+          isComposing: event.isComposing,
+          keyCode: event.keyCode,
+        });
+        if (startKey.kind !== 'text' || !openEditor(startKey.text)) return;
+        event.preventDefault();
+        event.stopPropagation();
+      });
+    }
     return button;
   };
 

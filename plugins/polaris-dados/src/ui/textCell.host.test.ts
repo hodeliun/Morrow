@@ -523,6 +523,32 @@ function openEditor(root: HTMLElement, propertyId: string): HTMLTextAreaElement 
   return editor;
 }
 
+type CellKeydownOptions = Omit<KeyboardEventInit, 'view'> & {
+  readonly altGraph?: boolean;
+  readonly keyCode?: number;
+};
+
+function dispatchCellKeydown(
+  root: MountedRoot,
+  target: HTMLElement,
+  options: CellKeydownOptions,
+): KeyboardEvent {
+  const { altGraph, keyCode, ...keyboardOptions } = options;
+  const event = new root.window.KeyboardEvent('keydown', {
+    ...keyboardOptions,
+    bubbles: true,
+    cancelable: true,
+  });
+  if (altGraph !== undefined) {
+    Object.defineProperty(event, 'getModifierState', {
+      value: (key: string) => key === 'AltGraph' && altGraph,
+    });
+  }
+  if (keyCode !== undefined) Object.defineProperty(event, 'keyCode', { value: keyCode });
+  target.dispatchEvent(event as unknown as Event);
+  return event as unknown as KeyboardEvent;
+}
+
 function dispatchInput(root: MountedRoot, control: HTMLTextAreaElement | HTMLInputElement): void {
   control.dispatchEvent(new root.window.Event('input', { bubbles: true }) as unknown as Event);
 }
@@ -619,6 +645,238 @@ afterEach(async () => {
 });
 
 describe('Polaris Dados text-cell editor with real host APIs', () => {
+  it('requires the connected cell button to be the focused, unconsumed key target', async () => {
+    const fixture = await openFixture();
+    const root = mountRoot(fixture);
+    const button = editButton(root.element, 'message');
+    const otherButton = editButton(root.element, 'empty');
+
+    otherButton.focus();
+    const unfocused = dispatchCellKeydown(root, button, { key: 'u' });
+    expect(unfocused.defaultPrevented).toBe(false);
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBeNull();
+
+    button.focus();
+    const child = button.querySelector<HTMLElement>('[data-value-kind]');
+    if (!child) throw new Error('The text button did not render its cell value.');
+    const redirected = dispatchCellKeydown(root, child, { key: 'c' });
+    expect(redirected.defaultPrevented).toBe(false);
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBeNull();
+
+    const consumeInCapture = (event: KeyboardEvent) => event.preventDefault();
+    root.element.addEventListener('keydown', consumeInCapture, true);
+    const consumed = dispatchCellKeydown(root, button, { key: 'p' });
+    root.element.removeEventListener('keydown', consumeInCapture, true);
+    expect(consumed.defaultPrevented).toBe(true);
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBeNull();
+
+    button.remove();
+    const removed = dispatchCellKeydown(root, button, { key: 'r' });
+    expect(removed.defaultPrevented).toBe(false);
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBeNull();
+  });
+
+  it('starts the existing source and linked text drafts from one printable key and preserves CAS history', async () => {
+    const fixture = await openFixture();
+    const source = mountRoot(fixture);
+    const linked = mountRoot(fixture, { viewId: VIEW_ONE });
+    const roots = [source, linked];
+    const originalRowBytes = fixture.vault.text(ROW_PATH);
+    const originalLinkedHostBytes = fixture.vault.text(NOTE_PATH);
+    const initialWrites = fixture.vault.applyCount;
+
+    const sourceButton = editButton(source.element, 'message');
+    sourceButton.focus();
+    const sourceKey = dispatchCellKeydown(source, sourceButton, { key: 'A' });
+    const sourceEditor = source.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]');
+    expect(sourceKey.defaultPrevented).toBe(true);
+    expect(sourceEditor?.value).toBe('A');
+    expect(sourceEditor?.selectionStart).toBe(1);
+    expect(source.window.document.activeElement).toBe(sourceEditor);
+    cancelButton(source.element).click();
+
+    const clickButton = editButton(source.element, 'message');
+    clickButton.focus();
+    const enter = dispatchCellKeydown(source, clickButton, { key: 'Enter' });
+    expect(enter.defaultPrevented).toBe(false);
+    expect(source.element.querySelector('textarea[data-field="message"]')).toBeNull();
+    clickButton.click();
+    expect(source.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]')?.value).toBe(
+      '  opening 🌿\nsecond line\nlast  ',
+    );
+    cancelButton(source.element).click();
+
+    const spaceButton = editButton(source.element, 'empty');
+    spaceButton.focus();
+    const space = dispatchCellKeydown(source, spaceButton, { key: ' ' });
+    const spaceEditor = source.element.querySelector<HTMLTextAreaElement>('textarea[data-field="empty"]');
+    expect(space.defaultPrevented).toBe(true);
+    expect(spaceEditor?.value).toBe(' ');
+    expect(spaceEditor?.selectionStart).toBe(1);
+    cancelButton(source.element).click();
+
+    const unicodeButton = editButton(source.element, 'empty');
+    unicodeButton.focus();
+    const unicode = dispatchCellKeydown(source, unicodeButton, { key: '🌱' });
+    const unicodeEditor = source.element.querySelector<HTMLTextAreaElement>('textarea[data-field="empty"]');
+    expect(unicode.defaultPrevented).toBe(true);
+    expect(unicodeEditor?.value).toBe('🌱');
+    expect(unicodeEditor?.selectionStart).toBe(2);
+    cancelButton(source.element).click();
+
+    const linkedButton = editButton(linked.element, 'message');
+    linkedButton.focus();
+    const ctrlAlt = dispatchCellKeydown(linked, linkedButton, {
+      key: '@',
+      ctrlKey: true,
+      altKey: true,
+      altGraph: false,
+    });
+    expect(ctrlAlt.defaultPrevented).toBe(false);
+    expect(linked.element.querySelector('textarea[data-field="message"]')).toBeNull();
+
+    for (const options of [
+      { key: 'Dead' },
+      { key: 'Process' },
+      { key: 'a', keyCode: 229 },
+      { key: 'a', isComposing: true },
+    ]) {
+      const composing = dispatchCellKeydown(linked, linkedButton, options);
+      expect(composing.defaultPrevented).toBe(false);
+      expect(linked.element.querySelector('textarea[data-field="message"]')).toBeNull();
+    }
+
+    const altGraph = dispatchCellKeydown(linked, linkedButton, {
+      key: '@',
+      ctrlKey: true,
+      altKey: true,
+      altGraph: true,
+    });
+    const linkedEditor = linked.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]');
+    expect(altGraph.defaultPrevented).toBe(true);
+    expect(linkedEditor?.value).toBe('@');
+    expect(linkedEditor?.selectionStart).toBe(1);
+    expect(linked.window.document.activeElement).toBe(linkedEditor);
+    expect(rowProperties(fixture).message).toBe(INITIAL_MESSAGE);
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(initialWrites);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalRowBytes);
+    expect(fixture.vault.text(NOTE_PATH)).toBe(originalLinkedHostBytes);
+
+    saveButton(linked.element).click();
+    await until('the seeded linked-view text to update both surfaces', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === '@'),
+    );
+    await waitForSaved(linked.element);
+    expect(rowProperties(fixture).message).toBe('@');
+    expect(fixture.textPatchCalls).toBe(1);
+    expect(fixture.vault.applyCount).toBe(initialWrites + 1);
+    expect(fixture.vault.text(NOTE_PATH)).toBe(originalLinkedHostBytes);
+    expect(fixture.data.snapshot(DATABASE_ID as PageId)).toMatchObject({
+      status: 'ready',
+      history: { canUndo: true, canRedo: false },
+    });
+
+    const undo = new linked.window.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    linked.element.dispatchEvent(undo as unknown as Event);
+    expect(undo.defaultPrevented).toBe(true);
+    await until('one undo to restore the exact original text', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === INITIAL_MESSAGE),
+    );
+    await waitForSaved(linked.element);
+    expect(rowProperties(fixture).message).toBe(INITIAL_MESSAGE);
+    expect(fixture.vault.text(NOTE_PATH)).toBe(originalLinkedHostBytes);
+    expect(fixture.data.snapshot(DATABASE_ID as PageId)).toMatchObject({
+      status: 'ready',
+      history: { canUndo: false, canRedo: true },
+    });
+
+    const redo = new linked.window.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    linked.element.dispatchEvent(redo as unknown as Event);
+    expect(redo.defaultPrevented).toBe(true);
+    await until('redo to restore the seeded text in both surfaces', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === '@'),
+    );
+    await waitForSaved(linked.element);
+    const persistedBytes = fixture.vault.text(ROW_PATH);
+    expect(fixture.vault.text(NOTE_PATH)).toBe(originalLinkedHostBytes);
+    for (const root of roots) root.unmount();
+    await fixture.close();
+    fixtures.delete(fixture);
+
+    const reopened = await openFixture(fixture.vault);
+    expect(reopened.vault.text(ROW_PATH)).toBe(persistedBytes);
+    expect(reopened.vault.text(NOTE_PATH)).toBe(originalLinkedHostBytes);
+    expect(rowProperties(reopened).message).toBe('@');
+  });
+
+  it('does not consume a first key for a stale cell, a read-only cell, or another control', async () => {
+    const fixture = await openFixture();
+    const staleRoot = mountRoot(fixture);
+    const staleButton = editButton(staleRoot.element, 'message');
+    const beforeExternalPatch = fixture.data.snapshot(DATABASE_ID as PageId);
+    if (beforeExternalPatch.status !== 'ready') throw new Error('The test database was not ready.');
+    const externalPatch = fixture.data.patchTextCell?.({
+      databaseId: DATABASE_ID as PageId,
+      rowId: ROW_ID as PageId,
+      propertyId: 'message',
+      value: 'External update',
+      expectedRevision: beforeExternalPatch.revision,
+    });
+    expect(externalPatch?.status).toBe('staged');
+    await fixture.data.flush(DATABASE_ID as PageId);
+    const externalRowBytes = fixture.vault.text(ROW_PATH);
+    const writesAfterExternalPatch = fixture.vault.applyCount;
+
+    staleButton.focus();
+    const staleKey = dispatchCellKeydown(staleRoot, staleButton, { key: 's' });
+    expect(staleKey.defaultPrevented).toBe(false);
+    expect(staleRoot.element.querySelector('textarea[data-field="message"]')).toBeNull();
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(writesAfterExternalPatch);
+    expect(fixture.vault.text(ROW_PATH)).toBe(externalRowBytes);
+
+    let readonly = false;
+    const readonlyRoot = mountRoot(fixture, {
+      snapshotTransform(snapshot) {
+        return snapshot.status === 'ready' && readonly ? { ...snapshot, readonly: true } : snapshot;
+      },
+    });
+    const readonlyButton = editButton(readonlyRoot.element, 'message');
+    readonly = true;
+    readonlyButton.focus();
+    const readonlyKey = dispatchCellKeydown(readonlyRoot, readonlyButton, { key: 'r' });
+    expect(readonlyKey.defaultPrevented).toBe(false);
+    expect(readonlyRoot.element.querySelector('textarea[data-field="message"]')).toBeNull();
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(writesAfterExternalPatch);
+    expect(fixture.vault.text(ROW_PATH)).toBe(externalRowBytes);
+
+    const numberButton = editButton(staleRoot.element, 'quantity');
+    numberButton.focus();
+    const wrongTarget = dispatchCellKeydown(staleRoot, numberButton, { key: 'n' });
+    expect(wrongTarget.defaultPrevented).toBe(false);
+    expect(staleRoot.element.querySelector('textarea[data-field="message"]')).toBeNull();
+    expect(staleRoot.element.querySelector('input[data-field="quantity"]')).toBeNull();
+    const outsideKey = dispatchCellKeydown(staleRoot, staleRoot.element, { key: 'o' });
+    expect(outsideKey.defaultPrevented).toBe(false);
+    expect(staleRoot.element.querySelector('textarea[data-field="message"]')).toBeNull();
+
+    staleRoot.unmount();
+    readonlyRoot.unmount();
+  });
+
   it('restores isolated Source and Linked text drafts through their host mount slots', async () => {
     const fixture = await openFixture();
     const states = [createProviderMountState(), createProviderMountState(), createProviderMountState()];
