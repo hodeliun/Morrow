@@ -686,6 +686,8 @@ function unsupportedMarkerIssue(
     if (remaining === 0) return 'The page contains a Morrow block marker this version cannot safely edit.';
     allowedViewMarkers.set(marker.comment, remaining - 1);
   }
+  const columnIssue = columnLayoutIssue(body);
+  if (columnIssue) return columnIssue;
   const parsedTokens = markerMarkdown.parse(body, {});
   const hasDetailsMarkup = /<\/?details\b/i.test(body);
   let detailsParse: ReturnType<typeof markdownToDocWithDetailsHtmlBlocks> | null = null;
@@ -740,6 +742,202 @@ function unsupportedMarkerIssue(
     /\bdata-(?:widths|block-id)\b/i.test(body)
   ) {
     return 'The page contains a layout or block identifier this version cannot safely edit.';
+  }
+  return null;
+}
+
+function isSelfContainedOrdinaryDivTree(fragment: string): boolean {
+  const scanFragment = fragment.replace(/<!--[\s\S]*?-->/g, '');
+  if (/<!--|-->/.test(scanFragment)) return false;
+
+  const divTags = [...scanFragment.matchAll(/<\/?div\b[^>]*>/gi)];
+  if (divTags.length < 2) return false;
+
+  const attributePattern = /\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g;
+  let depth = 0;
+  let previousEnd = 0;
+
+  for (const match of divTags) {
+    const start = match.index!;
+    const tag = match[0]!.trim();
+    if (/^<\//.test(tag)) {
+      if (!/^<\/div\s*>$/i.test(tag) || depth === 0) return false;
+      depth--;
+    } else {
+      if (/\/\s*>$/.test(tag)) return false;
+      const attributeSource = /^<div\b([\s\S]*?)\s*>$/i.exec(tag)?.[1];
+      if (attributeSource === undefined) return false;
+      const attributes = [...attributeSource.matchAll(attributePattern)];
+      if (
+        attributeSource.replace(attributePattern, '').trim() !== '' ||
+        new Set(attributes.map((attribute) => attribute[1]!.toLowerCase())).size !== attributes.length ||
+        attributes.some((attribute) => ['data-columns', 'data-column'].includes(attribute[1]!.toLowerCase()))
+      ) {
+        return false;
+      }
+      depth++;
+    }
+
+    previousEnd = start + match[0]!.length;
+  }
+
+  return (
+    depth === 0 &&
+    scanFragment.slice(0, divTags[0]!.index!).trim() === '' &&
+    scanFragment.slice(previousEnd).trim() === ''
+  );
+}
+
+function columnLayoutIssue(body: string): string | null {
+  if (!/<div\b[^>]*\bdata-columns?\b/i.test(body)) return null;
+
+  const frames: Array<{ kind: 'columns'; count: number } | { kind: 'column' | 'other' }> = [];
+  let groupCount = 0;
+  let columnCount = 0;
+  const opaqueColumnFragments: string[] = [];
+  const tokens = markerMarkdown.parse(body, {});
+
+  for (const token of tokens) {
+    if (token.type !== 'html_block' && token.type !== 'inline') continue;
+    const inlineTags = token.type === 'inline' ? token.children?.filter((child) => child.type === 'html_inline') ?? [] : [];
+    if (
+      inlineTags.some((child) => /<div\b[^>]*\bdata-columns?\b/i.test(child.content))
+    ) {
+      return 'A column layout is embedded in inline HTML this version cannot preserve.';
+    }
+    const fragments = token.type === 'inline' ? [] : [token.content];
+
+    for (const fragment of fragments) {
+      if (
+        frames.some((frame) => frame.kind === 'columns' || frame.kind === 'column') &&
+        isSelfContainedOrdinaryDivTree(fragment)
+      ) {
+        opaqueColumnFragments.push(fragment.replace(/\n+$/, ''));
+        continue;
+      }
+
+      const html = fragment.replace(/<!--[\s\S]*?-->/g, '');
+      const divTags = [...html.matchAll(/<\/?div\b[^>]*>/gi)];
+      const layoutTagPattern = /<div data-columns>|<div data-column>|<\/div>/gi;
+      const layoutTags = [...fragment.matchAll(layoutTagPattern)];
+      const codecConsumesLayoutTags =
+        layoutTags.length > 0 && fragment.replace(layoutTagPattern, '').trim() === '';
+      let closedLayoutGroupInToken = false;
+
+      for (let tagIndex = 0; tagIndex < divTags.length; tagIndex++) {
+        const match = divTags[tagIndex]!;
+        const tag = match[0]!.trim();
+        if (/^<\//.test(tag)) {
+          const frame = frames.pop();
+          if (frame?.kind === 'columns') closedLayoutGroupInToken = true;
+          if (!frame && closedLayoutGroupInToken && codecConsumesLayoutTags) {
+            return 'A column group has an extra closing wrapper this version cannot preserve.';
+          }
+          if (frame?.kind === 'columns' && (frame.count < 2 || frame.count > 7)) {
+            return 'A column group must contain between two and seven columns.';
+          }
+          continue;
+        }
+
+        const attributeSource = /^<div\b([\s\S]*?)\/?\s*>$/i.exec(tag)?.[1] ?? '';
+        const attributes = new Set(
+          [
+            ...attributeSource.matchAll(
+              /\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
+            ),
+          ].map((attribute) => attribute[1]!.toLowerCase()),
+        );
+        const isColumns = attributes.has('data-columns');
+        const isColumn = attributes.has('data-column');
+        if (isColumns || isColumn) {
+          const canonicalColumns = tag.toLowerCase() === '<div data-columns>';
+          const canonicalColumn = tag.toLowerCase() === '<div data-column>';
+          const selfClosing = /\/\s*>$/.test(tag);
+          if ((isColumns && !canonicalColumns) || (isColumn && !canonicalColumn) || selfClosing) {
+            return 'A column layout uses wrapper attributes or markup this version cannot preserve.';
+          }
+          if (isColumns) {
+            const parent = frames.at(-1);
+            if (parent && parent.kind !== 'column') {
+              return 'A column group is nested in an unsupported HTML wrapper.';
+            }
+            groupCount++;
+            frames.push({ kind: 'columns', count: 0 });
+          } else {
+            const parent = frames.at(-1);
+            if (!parent || parent.kind !== 'columns') {
+              return 'A column wrapper is not a direct child of a column group.';
+            }
+            parent.count++;
+            columnCount++;
+            frames.push({ kind: 'column' });
+          }
+          continue;
+        }
+
+        if (frames.some((frame) => frame.kind === 'columns' || frame.kind === 'column')) {
+          return 'A column layout contains a nested div this version cannot preserve.';
+        }
+        frames.push({ kind: 'other' });
+      }
+    }
+  }
+
+  if (frames.some((frame) => frame.kind === 'columns' || frame.kind === 'column')) {
+    return 'A column layout has unmatched wrappers this version cannot preserve.';
+  }
+  if (groupCount > 0) {
+    let parsed: DocNode;
+    try {
+      parsed = markdownToDoc(body);
+    } catch {
+      return 'A column layout could not be represented by this version.';
+    }
+    let parsedGroups = 0;
+    let parsedColumns = 0;
+    let invalidParsedGroup = false;
+    const columnDescendants = new WeakSet<DocNode>();
+    const rawBlockCountsInColumns = new Map<string, number>();
+    walk(parsed, (node, parent) => {
+      const insideColumn =
+        node.type === 'column' || (parent !== null && columnDescendants.has(parent));
+      if (insideColumn) columnDescendants.add(node);
+
+      if (node.type === 'columns') {
+        parsedGroups++;
+        const children = node.content ?? [];
+        if (
+          children.length < 2 ||
+          children.length > 7 ||
+          children.some((child) => child.type !== 'column')
+        ) {
+          invalidParsedGroup = true;
+        }
+      }
+      if (node.type === 'column') parsedColumns++;
+      if (node.type === 'rawBlock' && insideColumn) {
+        const text = String(node.attrs?.text ?? '');
+        rawBlockCountsInColumns.set(text, (rawBlockCountsInColumns.get(text) ?? 0) + 1);
+      }
+    });
+    let preservesOpaqueFragments = true;
+    for (const fragment of opaqueColumnFragments) {
+      const count = rawBlockCountsInColumns.get(fragment) ?? 0;
+      if (count === 0) {
+        preservesOpaqueFragments = false;
+        break;
+      }
+      if (count === 1) rawBlockCountsInColumns.delete(fragment);
+      else rawBlockCountsInColumns.set(fragment, count - 1);
+    }
+    if (
+      invalidParsedGroup ||
+      parsedGroups !== groupCount ||
+      parsedColumns !== columnCount ||
+      !preservesOpaqueFragments
+    ) {
+      return 'A column layout could not be represented by this version.';
+    }
   }
   return null;
 }

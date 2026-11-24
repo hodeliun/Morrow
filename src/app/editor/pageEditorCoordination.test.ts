@@ -406,11 +406,14 @@ describe('page editor coordination', () => {
   });
 
   it('cleans unlinked block IDs in one no-undo update shared by every open editor', () => {
-    const session = openSession(pageWithBlockId('orphan'));
+    const session = openSession(page('initial'));
     const first = openPeer(session, [blockIdAttributes]);
     const second = openPeer(session, [blockIdAttributes]);
-    first.commands.setTextSelection(first.state.doc.content.size - 1);
-    first.view.dispatch(first.state.tr.insertText('!'));
+    first.view.dispatch(
+      first.state.tr
+        .setNodeAttribute(0, 'blockId', 'transient')
+        .insertText('!', first.state.doc.content.size - 1),
+    );
 
     expect(commitEditors()).toBe(true);
     expect((session.getState().docs[pageId]!.content?.[0]!.attrs as { blockId: string | null }).blockId).toBeNull();
@@ -426,8 +429,9 @@ describe('page editor coordination', () => {
   });
 
   it('keeps linked and just-copied block IDs when the shared editor draft is saved', () => {
-    const linkedSession = openSession(pageWithBlockId('linked'), ['linked']);
+    const linkedSession = openSession(page('initial'), ['linked']);
     const linkedEditor = openPeer(linkedSession, [blockIdAttributes]);
+    linkedEditor.view.dispatch(linkedEditor.state.tr.setNodeAttribute(0, 'blockId', 'linked'));
     linkedEditor.commands.setTextSelection(linkedEditor.state.doc.content.size - 1);
     linkedEditor.view.dispatch(linkedEditor.state.tr.insertText('!'));
     expect(commitEditors()).toBe(true);
@@ -435,8 +439,9 @@ describe('page editor coordination', () => {
       'linked',
     );
 
-    const copiedSession = openSession(pageWithBlockId('copied'));
+    const copiedSession = openSession(page('initial'));
     const copiedEditor = openPeer(copiedSession, [blockIdAttributes], () => {}, (id) => id === 'copied');
+    copiedEditor.view.dispatch(copiedEditor.state.tr.setNodeAttribute(0, 'blockId', 'copied'));
     copiedEditor.commands.setTextSelection(copiedEditor.state.doc.content.size - 1);
     copiedEditor.view.dispatch(copiedEditor.state.tr.insertText('!'));
     expect(commitEditors()).toBe(true);
@@ -447,7 +452,7 @@ describe('page editor coordination', () => {
 
   it('keeps an anchor used by another page editor draft until that draft is saved', () => {
     const referencePageId = 'coordinator-pending-reference' as PageId;
-    const session = openSession(pageWithBlockId('pending'));
+    const session = openSession(page('initial'));
     session.addPage(referencePageId, page(''));
     const source = openPeer(session, [blockIdAttributes]);
     const reference = openPeer(session, [pageLinkNode], () => {}, () => false, referencePageId);
@@ -457,6 +462,7 @@ describe('page editor coordination', () => {
       anchor: '^pending',
     });
     reference.view.dispatch(reference.state.tr.insert(reference.state.doc.content.size - 1, link));
+    source.view.dispatch(source.state.tr.setNodeAttribute(0, 'blockId', 'pending'));
     source.commands.setTextSelection(source.state.doc.content.size - 1);
     source.view.dispatch(source.state.tr.insertText('!'));
 
@@ -470,18 +476,109 @@ describe('page editor coordination', () => {
   });
 
   it('refuses block ID cleanup if any peer cannot accept it and keeps every draft', () => {
-    const session = openSession(pageWithBlockId('orphan'));
+    const session = openSession(page('initial'));
     const first = openPeer(session, [blockIdAttributes]);
     const second = openPeer(session, [blockIdAttributes, rejectBlockIdCleanup]);
-    first.commands.setTextSelection(first.state.doc.content.size - 1);
-    first.view.dispatch(first.state.tr.insertText('!'));
+    first.view.dispatch(
+      first.state.tr
+        .setNodeAttribute(0, 'blockId', 'transient')
+        .insertText('!', first.state.doc.content.size - 1),
+    );
 
     expect(commitEditors()).toBe(false);
     expect(session.executed).toHaveLength(0);
     expect(first.getText()).toBe('initial!');
     expect(second.getText()).toBe('initial!');
-    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('orphan');
-    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('orphan');
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('transient');
+    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('transient');
+  });
+
+  it('does not restore a baseline block ID after its block is removed from the draft', () => {
+    const session = openSession({
+      type: 'doc',
+      content: [
+        { ...paragraph('keep'), attrs: { blockId: 'keep-anchor' } },
+        { ...paragraph('remove'), attrs: { blockId: 'removed-anchor' } },
+      ],
+    });
+    const editor = openPeer(session, [blockIdAttributes]);
+    const firstBlockSize = editor.state.doc.child(0).nodeSize;
+    editor.view.dispatch(editor.state.tr.delete(firstBlockSize, editor.state.doc.content.size));
+
+    expect(commitEditors()).toBe(true);
+    expect(session.getState().docs[pageId]?.content).toHaveLength(1);
+    expect((session.getState().docs[pageId]?.content?.[0]?.attrs as { blockId: string | null }).blockId).toBe(
+      'keep-anchor',
+    );
+    expect(JSON.stringify(session.getState().docs[pageId])).not.toContain('removed-anchor');
+  });
+
+  it('preserves IDs from a clean external baseline when both peers save a later edit', () => {
+    const session = openSession(pageWithBlockId('old'));
+    const first = openPeer(session, [blockIdAttributes]);
+    const second = openPeer(session, [blockIdAttributes]);
+
+    session.execute({
+      type: 'page.setDoc',
+      id: pageId,
+      doc: pageWithBlockId('external'),
+      now: Date.now(),
+    });
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('external');
+    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('external');
+    first.commands.setTextSelection(first.state.doc.content.size - 1);
+    first.view.dispatch(first.state.tr.insertText('!'));
+
+    expect(commitEditors()).toBe(true);
+    expect((session.getState().docs[pageId]?.content?.[0]?.attrs as { blockId: string | null }).blockId).toBe(
+      'external',
+    );
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('external');
+    expect((second.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('external');
+    expect(JSON.stringify(session.getState().docs[pageId])).not.toContain('old');
+  });
+
+  it('keeps local baseline and transient IDs through an external conflict, then cleans the transient on retry', () => {
+    const baseline: DocNode = {
+      type: 'doc',
+      content: [
+        { ...paragraph('baseline'), attrs: { blockId: 'old' } },
+        paragraph('other'),
+      ],
+    };
+    const session = openSession(baseline);
+    const first = openPeer(session, [blockIdAttributes]);
+    const second = openPeer(session, [blockIdAttributes]);
+    const secondBlockPosition = first.state.doc.child(0).nodeSize;
+    first.view.dispatch(
+      first.state.tr
+        .setNodeAttribute(secondBlockPosition, 'blockId', 'transient')
+        .insertText(' local', first.state.doc.content.size - 1),
+    );
+    const localDraft = first.getJSON();
+
+    session.execute({
+      type: 'page.setDoc',
+      id: pageId,
+      doc: pageWithBlockId('external'),
+      now: Date.now(),
+    });
+    expect(commitPageEditorDraft(session as unknown as WorkspaceSession, pageId)).toBe(false);
+    expect(session.executed).toHaveLength(1);
+    expect(first.getJSON()).toEqual(localDraft);
+    expect(second.getJSON()).toEqual(localDraft);
+    expect((first.getJSON().content?.[0]?.attrs as { blockId: string | null }).blockId).toBe('old');
+    expect((first.getJSON().content?.[1]?.attrs as { blockId: string | null }).blockId).toBe('transient');
+
+    session.execute({ type: 'page.setDoc', id: pageId, doc: baseline, now: Date.now() });
+    expect(commitPageEditorDraft(session as unknown as WorkspaceSession, pageId)).toBe(true);
+    expect(session.executed).toHaveLength(3);
+    const saved = session.getState().docs[pageId]!;
+    expect(saved.content?.[0]?.attrs?.blockId).toBe('old');
+    expect(saved.content?.[1]?.attrs?.blockId).toBeNull();
+    expect(saved.content?.[1]?.content?.[0]?.text).toBe('other local');
+    expect(first.getJSON()).toEqual(saved);
+    expect(second.getJSON()).toEqual(saved);
   });
 
   it('notifies observers only after clean external changes reach every peer', () => {

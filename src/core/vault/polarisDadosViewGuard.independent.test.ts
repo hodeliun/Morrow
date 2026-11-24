@@ -107,6 +107,7 @@ describe('independent linked-view Markdown representability guard', () => {
           type: 'columns',
           content: [
             { type: 'column', content: [{ type: 'polarisDadosView', attrs: sample() }] },
+            { type: 'column', content: [{ type: 'paragraph', content: [] }] },
           ],
         },
       ],
@@ -119,6 +120,7 @@ describe('independent linked-view Markdown representability guard', () => {
           type: 'columns',
           content: [
             { type: 'column', content: [{ type: 'polarisDadosView', attrs: sample() }] },
+            { type: 'column', content: [{ type: 'paragraph', content: [] }] },
           ],
         },
       ],

@@ -67,6 +67,14 @@ function databaseNote(database: unknown, options: { marker?: unknown; omitMarker
   return `---\n${yaml}---\nInventory body\n`;
 }
 
+function columnLayout(count: number, emptyColumn = -1): string {
+  const columns = Array.from({ length: count }, (_, index) => {
+    const body = index === emptyColumn ? '' : `Column ${index + 1} ^column-${index + 1}`;
+    return `<div data-column>\n\n${body}\n\n</div>`;
+  });
+  return `<div data-columns>\n${columns.join('\n')}\n</div>`;
+}
+
 function metadataDatabase(groupKeys: string[], widgetCount: number) {
   const kinds = ['count', 'sum', 'average', 'min', 'max', 'bar', 'hbar', 'donut', 'line'];
   const widgets = Array.from({ length: widgetCount }, (_, index) => {
@@ -110,6 +118,142 @@ function metadataDatabase(groupKeys: string[], widgetCount: number) {
 }
 
 describe('vault representability guard', () => {
+  it('accepts only bare, representable column groups with two to seven columns', () => {
+    for (let count = 2; count <= 7; count++) {
+      const source = `Before ^before\n\n${columnLayout(count, count - 1)}\n\nAfter ^after`;
+      expect(findUnrepresentablePageContent(source), `column count ${count}`).toBeNull();
+      const parsed = markdownToDoc(source);
+      const columns = parsed.content?.find((node) => node.type === 'columns');
+      expect(columns?.content).toHaveLength(count);
+      expect(columns?.content?.at(-1)?.content).toEqual([{ type: 'paragraph', content: [] }]);
+      expect(parsed.content?.[0]?.attrs?.blockId).toBe('before');
+      expect(parsed.content?.at(-1)?.attrs?.blockId).toBe('after');
+    }
+
+    for (const count of [0, 1, 8]) {
+      expect(findUnrepresentablePageContent(columnLayout(count)), `column count ${count}`).toMatch(
+        /column/i,
+      );
+    }
+  });
+
+  it('protects malformed or attributed column wrappers while keeping the bytes available', () => {
+    const unsupported = [
+      '<div data-columns class="future">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div class="future" data-columns>\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns class="future">\n</div>',
+      '<div class="future" data-columns>\n</div>',
+      '<div data-columns>\n<div data-column data-block-id="opaque">\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns>\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\n<div class="nested">\n\nUnknown\n\n</div>\n\n</div>\n</div>',
+      `${columnLayout(2)}\n</div>\n\nAfter ^after`,
+      '<div data-columns>\nLoose wrapper content\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns>\n<div data-column>\n\nOne\n\n</div>\n',
+      '<div data-column>\n\nOrphan\n\n</div>',
+      '<div class="future">\n<div data-columns>\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>\n</div>',
+      '<div data-columns data-widths="50,50">\n<div data-column>\n\nOne\n\n</div>\n<div data-column>\n\nTwo\n\n</div>\n</div>',
+      '<div data-columns>\n<div data-column>\n\nOne ^recognized-id\n\n</div>\n<div data-column data-block-id="opaque">\n\nTwo\n\n</div>\n</div>',
+    ];
+
+    for (const [index, body] of unsupported.entries()) {
+      const source = `---\ntitle: Protected ${index}\ncustom: keep\n---\n${body}\n`;
+      expect(findUnrepresentablePageContent(source), source).not.toBeNull();
+      const loaded = loadVault(
+        {
+          files: [{ path: `Protected ${index}.md`, text: source, mtime: 1, birthtime: 1 }],
+          folders: [],
+          others: [],
+          registry: null,
+          recent: null,
+        },
+        () => `protected-${index}`,
+        1,
+      );
+      expect(loaded.protectedPages.has(`protected-${index}`)).toBe(true);
+      expect(loaded.texts.get(`protected-${index}`)).toBe(source);
+      expect(loaded.docs[`protected-${index}`]).toEqual({
+        type: 'doc',
+        content: [{ type: 'rawBlock', attrs: { text: source } }],
+      });
+    }
+
+    expect(findUnrepresentablePageContent('<div data-columns data-widths="50,50">')).not.toBeNull();
+    expect(findUnrepresentablePageContent('<div title="data-columns">A future attribute value</div>')).toBeNull();
+    expect(findUnrepresentablePageContent('<p data-block-id="opaque">Block</p>')).not.toBeNull();
+  });
+
+  it('preserves a standalone closing div after a valid column token', () => {
+    const source = `${columnLayout(2)}\n\n</div>\n\nAfter ^after`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    const roundTrip = docToMarkdown(markdownToDoc(source));
+    expect(roundTrip.match(/<\/div>/g)).toHaveLength(4);
+    expect(roundTrip).toContain('After ^after');
+  });
+
+  it('keeps a self-contained opaque div as a raw block inside an editable column', () => {
+    const opaque = '<div class="ordinary">\nOpaque raw content\n</div>';
+    const source = `<div data-columns>\n<div data-column>\n\nBefore\n\n${opaque}\n\nAfter\n\n</div>\n<div data-column>\n\nSecond column\n\n</div>\n</div>`;
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+
+    const parsed = markdownToDoc(source);
+    const columns = parsed.content?.[0];
+    expect(columns?.type).toBe('columns');
+    expect(columns?.content?.[0]?.content?.some((node) => node.type === 'rawBlock' && node.attrs?.text === opaque)).toBe(
+      true,
+    );
+
+    const fragmented = source.replace(opaque, '<div class="ordinary">\n\nOpaque raw content\n\n</div>');
+    expect(findUnrepresentablePageContent(fragmented)).not.toBeNull();
+
+    const fragmentedSingleColumn = '<div data-columns>\n<div data-column>\n\n<div class="ordinary">\n\nInner\n\n</div>\n\n</div>\n</div>';
+    expect(findUnrepresentablePageContent(fragmentedSingleColumn)).not.toBeNull();
+
+    const nestedOpaqueForms = [
+      '<div class="outer">\n<div class="inner">Opaque raw content</div>\n</div>',
+      '<div class="outer"><div class="inner">Opaque raw content</div></div>',
+      '<div class="one">One</div>\n<div class="two">Two</div>',
+      '<div id="notice" aria-label="Info">Raw note</div>',
+      '<div id="notice" aria-label="Info">Raw <strong>note</strong></div>',
+      '<div class="outer">\n<!-- keep this -->\n<div class="inner">Opaque raw content</div>\n</div>',
+    ];
+    for (const nestedOpaque of nestedOpaqueForms) {
+      const nestedSource = source.replace(opaque, nestedOpaque);
+      expect(findUnrepresentablePageContent(nestedSource)).toBeNull();
+      const nestedDoc = markdownToDoc(nestedSource);
+      const nestedRawBlock = nestedDoc.content?.[0]?.content?.[0]?.content?.find((node) => node.type === 'rawBlock');
+      expect(nestedRawBlock?.attrs?.text).toBe(nestedOpaque);
+      expect(docToMarkdown(nestedDoc)).toContain(nestedOpaque);
+    }
+
+    const withNestedLayoutMarker = source.replace(
+      opaque,
+      '<div class="ordinary" data-column>\nOpaque raw content\n</div>',
+    );
+    expect(findUnrepresentablePageContent(withNestedLayoutMarker)).not.toBeNull();
+  });
+
+  it('keeps rich Markdown blocks representable in two to five bare columns', () => {
+    const content = [
+      '**Bold** with [a link](https://example.org) ^rich-one',
+      '- First item\n- Second item',
+      '> A quoted block',
+      '# A heading',
+      'A paragraph with *emphasis* ^rich-five',
+    ];
+    for (let count = 2; count <= 5; count++) {
+      const wrappers = content
+        .slice(0, count)
+        .map((body) => `<div data-column>\n\n${body}\n\n</div>`)
+        .join('\n');
+      const source = `<div data-columns>\n${wrappers}\n</div>\n`;
+      expect(findUnrepresentablePageContent(source), `column count ${count}`).toBeNull();
+      const parsed = markdownToDoc(source);
+      expect(parsed.content?.[0]?.content).toHaveLength(count);
+      expect(parsed.content?.[0]?.content?.map((column) => column.content?.[0]?.type)).toEqual(
+        ['paragraph', 'bulletList', 'blockquote', 'heading', 'paragraph'].slice(0, count),
+      );
+    }
+  });
+
   it('allows upstream database fields and the reserved Polaris Dados v1 envelope', () => {
     expect(findUnrepresentablePageContent(basicDatabase)).toBeNull();
     expect(

@@ -441,6 +441,11 @@ Synthetic row.
       'Named column background.',
       '',
       '</div>',
+      '<div data-column>',
+      '',
+      'Second column.',
+      '',
+      '</div>',
       '</div>',
       '',
     ].join('\n');

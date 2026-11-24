@@ -140,7 +140,16 @@ describe('Polaris Dados linked-view codec', () => {
         ],
       }),
     ],
-    ['column', (child: DocNode): DocNode => ({ type: 'columns', content: [{ type: 'column', content: [child] }] })],
+    [
+      'column',
+      (child: DocNode): DocNode => ({
+        type: 'columns',
+        content: [
+          { type: 'column', content: [child] },
+          { type: 'column', content: [{ type: 'paragraph', content: [] }] },
+        ],
+      }),
+    ],
   ])('preserves a linked-view atom inside %s', (_name, wrap) => {
     const source: DocNode = { type: 'doc', content: [wrap(view(DATA))] };
     const markdown = docToMarkdown(source);

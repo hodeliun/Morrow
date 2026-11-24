@@ -822,7 +822,10 @@ function htmlBlock(
           const node: DocNode = { type: 'column', content: [] };
           b.push(node);
           b.stack.push(node);
-        } else if (b.top().type === 'column' || b.top().type === 'columns') b.close();
+        } else if (b.top().type === 'column') {
+          if ((b.top().content ?? []).length === 0) b.top().content = [{ type: 'paragraph', content: [] }];
+          b.close();
+        } else if (b.top().type === 'columns') b.close();
       }
       return;
     }

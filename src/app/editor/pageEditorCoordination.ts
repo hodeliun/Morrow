@@ -4,6 +4,7 @@ import type { Node as ProseNode } from '@tiptap/pm/model';
 import { Plugin } from '@tiptap/pm/state';
 import type { Transaction } from '@tiptap/pm/state';
 import { Step } from '@tiptap/pm/transform';
+import { walk } from '../../core/doc';
 import { linkedBlockIds } from '../../core/links';
 import type { DocNode, PageId } from '../../core/model';
 import { isEffectivelyTrashed } from '../../core/tree';
@@ -324,6 +325,15 @@ function dropUnlinkedBlockIds(doc: DocNode, linked: Set<string>, preserve: (id: 
   return visit(doc);
 }
 
+function blockIds(doc: DocNode): Set<string> {
+  const ids = new Set<string>();
+  walk(doc, (node) => {
+    const id = node.attrs?.blockId;
+    if (typeof id === 'string' && id.length > 0) ids.add(id);
+  });
+  return ids;
+}
+
 /** Removes obsolete block anchors in the shared draft without adding undo history. */
 function cleanUnlinkedBlockIds(entry: Entry): boolean {
   if (!entry.draftPMDoc) return false;
@@ -334,8 +344,10 @@ function cleanUnlinkedBlockIds(entry: Entry): boolean {
   const docs = Object.fromEntries(drafts);
   docs[entry.pageId] = entry.draftPMDoc;
   const linked = linkedBlockIds({ ...state, docs: { ...state.docs, ...docs } }, entry.pageId);
+  const baselineIds = blockIds(entry.baselineSessionDoc);
   const isPendingCopy = (id: string) => [...entry.peers].some((peer) => peer.preserveBlockId(id));
-  const cleaned = dropUnlinkedBlockIds(entry.draftPMDoc, linked, isPendingCopy);
+  const shouldPreserve = (id: string) => baselineIds.has(id) || isPendingCopy(id);
+  const cleaned = dropUnlinkedBlockIds(entry.draftPMDoc, linked, shouldPreserve);
   if (jsonEqual(cleaned, entry.draftPMDoc)) return true;
 
   const livePeers = [...entry.peers].filter(

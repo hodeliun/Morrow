@@ -173,6 +173,10 @@ Na linha Widget de Inventory, com Price em **10** e Quantity em **2**, ProgressR
 
 Em Inventory, com Quantity em **2**, Rate mostra **25.0%** e RateRawCheck mostra **1**. Altere Quantity para **3** e confira **37.5%** e **1.5** na origem e na primeira visualização de Views. A fórmula dependente recebe a fração antes da formatação.
 
+### Editar uma nota existente com sete colunas iguais
+
+Abra `Seven equal columns` em `PilotState\DemoVault`. A terceira coluna está vazia. Acrescente uma palavra na sétima coluna, mude de nota e reabra para confirmar a edição. Este fluxo está na base do Morrow e funciona com Polaris Documento desativado.
+
 ### Navegar na grade sem o mouse
 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.

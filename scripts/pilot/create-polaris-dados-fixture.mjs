@@ -9,13 +9,14 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, '../..');
 const pluginSource = resolve(repositoryRoot, 'plugins/polaris-dados');
 const bundleSource = resolve(repositoryRoot, 'dist/polaris-dados/main.js');
-const containerStyleDemoFiles = [
+const additionalDocumentDemoFiles = [
   { path: "Journal.md", text: "---\r\nkind: journal\r\nlabel: journal # preserve this comment\r\n---\r\nJournal container body.\r\n" },
   { path: "Templates.md", text: "---\nkind: templates\nlabel: templates\nmorrowNoteStyle:\n  font: 'serif'\n  fontSize: null\n  width: wide\n  extraStyle:\n    retained: true\n---\nTemplates container body.\n" },
   { path: "Journal/2026-11-20.md", text: "A dated journal note.\n" },
   { path: "Templates/Recipe.md", text: "An existing template child.\n" },
   { path: "Folder only.md/Child.md", text: "An ordinary file in a folder with an extension in its name.\n" },
   { path: "Container navigation.md", text: "Open [[Journal]] and [[Templates]] as documents.\n" },
+  { path: "Seven equal columns.md", text: "# Seven equal columns\n\n<div data-columns>\n<div data-column>\n\nColumn 1 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 2 retains **formatted text**.\n\n</div>\n<div data-column>\n\n\n\n</div>\n<div data-column>\n\nColumn 4 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 5 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 6 retains **formatted text**.\n\n</div>\n<div data-column>\n\nColumn 7 retains **formatted text**.\n\n</div>\n</div>\n" },
 ];
 const args = process.argv.slice(2);
 const usage =
@@ -99,7 +100,7 @@ let idSequence = 0n;
 const now = Date.now();
 const allocateId = (kind) => `${kind}-${firstId + idSequence++}`;
 const destinations = [];
-const pagesPerVault = 3 + (includeCheckboxDemo ? 5 : 0) + (includeDocumentoDemo ? 5 + containerStyleDemoFiles.length : 0);
+const pagesPerVault = 3 + (includeCheckboxDemo ? 5 : 0) + (includeDocumentoDemo ? 5 + additionalDocumentDemoFiles.length : 0);
 for (let index = 0; index < targets.length; index += 1) {
   const marker = index === 0 ? 'OPEN-OLD' : 'OPEN-DESTINATION';
   destinations.push(
@@ -419,7 +420,7 @@ async function createDocumentoDemo(target, pages, allocateId, createdAt, orderBa
       trashed: createdAt + 4,
       text: '# Gone target\n\nSynthetic trashed target for the Documento visual demo.\n',
     },
-    ...containerStyleDemoFiles.map((file, index) => ({
+    ...additionalDocumentDemoFiles.map((file, index) => ({
       ...file,
       id: allocateId('polaris-note'),
       order: file.path.includes('/') ? 0 : orderBase + 4 + index,

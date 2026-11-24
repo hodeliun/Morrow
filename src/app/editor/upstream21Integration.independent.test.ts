@@ -3,7 +3,9 @@ import type { Editor } from '@tiptap/core';
 import { act, createElement, Fragment } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { walk } from '../../core/doc';
 import type { DocNode, PageId } from '../../core/model';
+import { markdownToDoc } from '../../core/markdown/parse';
 import { docToMarkdown } from '../../core/markdown/serialize';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
@@ -70,6 +72,11 @@ async function openWorkspace(notes: NoteFixture[]) {
   for (const fixture of notes) files[fixture.path] = docToMarkdown(fixture.doc);
 
   const vault = new MemoryVault(files);
+  const session = await openVault(vault);
+  return { session, vault };
+}
+
+async function openVault(vault: MemoryVault): Promise<WorkspaceSession> {
   let generatedPageId = 0;
   const opened = await WorkspaceSession.open(
     new VaultRepository(vault, () => `unexpected-generated-page-${++generatedPageId}`),
@@ -79,7 +86,7 @@ async function openWorkspace(notes: NoteFixture[]) {
   const session = opened.value;
   setSession(session);
   sessions.add(session);
-  return { session, vault };
+  return session;
 }
 
 function mountPageEditors(session: WorkspaceSession, pageIds: PageId[]): PageEditorHarness {
@@ -157,6 +164,43 @@ async function appendText(editor: Editor, text: string): Promise<void> {
   await act(async () => {
     editor.view.dispatch(editor.state.tr.insertText(text, editor.state.doc.content.size - 1));
   });
+}
+
+function textEnd(editor: Editor, text: string): number {
+  let result: number | null = null;
+  editor.state.doc.descendants((node, position) => {
+    if (node.isText && node.text?.includes(text)) {
+      result = position + node.text.indexOf(text) + text.length;
+      return false;
+    }
+    return true;
+  });
+  if (result === null) throw new Error(`Could not find text: ${text}`);
+  return result;
+}
+
+async function appendTextAt(editor: Editor, text: string, after: string): Promise<void> {
+  await act(async () => {
+    editor.view.dispatch(editor.state.tr.insertText(text, textEnd(editor, after)));
+  });
+}
+
+function sevenColumnAnchorFixture(): DocNode {
+  const columns = Array.from({ length: 7 }, (_, index) => {
+    const content = index === 0 ? `**Column ${index + 1}**` : `Column ${index + 1}`;
+    return `<div data-column>\n\n${content} ^column-${index + 1}\n\n</div>`;
+  });
+  const markdown = `Before ^before\n\n<div data-columns>\n${columns.join('\n')}\n</div>\n\nAfter ^after\n`;
+  return markdownToDoc(markdown);
+}
+
+function blockIds(doc: DocNode): string[] {
+  const ids: string[] = [];
+  walk(doc, (node) => {
+    const id = node.attrs?.blockId;
+    if (typeof id === 'string' && id.length > 0) ids.push(id);
+  });
+  return ids;
 }
 
 async function appendPageAnchor(editor: Editor, targetId: PageId, blockId: string): Promise<void> {
@@ -254,7 +298,7 @@ afterEach(async () => {
 describe('Morrow 2.1 block anchor integration', () => {
   it('keeps an anchor linked from another page draft that has not been saved', async () => {
     const { session } = await openWorkspace([
-      { id: TARGET_ID, path: TARGET_PATH, doc: note('Target block', 'pending-reference') },
+      { id: TARGET_ID, path: TARGET_PATH, doc: note('Target block') },
       { id: REFERENCE_ID, path: REFERENCE_PATH, doc: note('Reference draft') },
     ]);
     vi.useFakeTimers();
@@ -267,6 +311,9 @@ describe('Morrow 2.1 block anchor integration', () => {
     expect(containsPageAnchor(reference.getJSON() as DocNode, TARGET_ID, 'pending-reference')).toBe(true);
     expect(containsPageAnchor(session.getState().docs[REFERENCE_ID]!, TARGET_ID, 'pending-reference')).toBe(false);
 
+    await act(async () => {
+      target.view.dispatch(target.state.tr.setNodeAttribute(0, 'blockId', 'pending-reference'));
+    });
     await appendText(target, ' updated');
     await act(async () => {
       expect(commitPageEditorDraft(session, TARGET_ID)).toBe(true);
@@ -324,7 +371,7 @@ describe('Morrow 2.1 block anchor integration', () => {
 
   it('cleans orphan anchors in both open peers without adding an undo step', async () => {
     const { session } = await openWorkspace([
-      { id: TARGET_ID, path: TARGET_PATH, doc: note('Original block', 'orphan-anchor') },
+      { id: TARGET_ID, path: TARGET_PATH, doc: note('Original block') },
     ]);
     vi.useFakeTimers();
     const mounted = mountPageEditors(session, [TARGET_ID, TARGET_ID]);
@@ -332,7 +379,13 @@ describe('Morrow 2.1 block anchor integration', () => {
     const first = editorOf(mounted, 0);
     const second = editorOf(mounted, 1);
 
-    await appendText(first, ' edited');
+    await act(async () => {
+      first.view.dispatch(
+        first.state.tr
+          .setNodeAttribute(0, 'blockId', 'orphan-anchor')
+          .insertText(' edited', first.state.doc.content.size - 1),
+      );
+    });
     expect(second.getText()).toBe('Original block edited');
     await act(async () => {
       expect(commitPageEditorDraft(session, TARGET_ID)).toBe(true);
@@ -355,5 +408,79 @@ describe('Morrow 2.1 block anchor integration', () => {
       expect(commitPageEditorDraft(session, TARGET_ID)).toBe(true);
     });
     expect(await session.flush()).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'fixture #334 seven-column note',
+      doc: sevenColumnAnchorFixture,
+      editText: 'Column 7',
+      expectedEditedText: 'Column 7 edited',
+      expectedIds: [
+        'before',
+        'column-1',
+        'column-2',
+        'column-3',
+        'column-4',
+        'column-5',
+        'column-6',
+        'column-7',
+        'after',
+      ],
+    },
+    {
+      name: 'simple note without columns',
+      doc: () => note('Simple neighbor', 'simple-anchor'),
+      editText: 'Simple neighbor',
+      expectedEditedText: 'Simple neighbor edited',
+      expectedIds: ['simple-anchor'],
+    },
+  ])('preserves baseline unlinked ^IDs through editing and reopening in $name', async (fixture) => {
+    const { session, vault } = await openWorkspace([
+      { id: TARGET_ID, path: TARGET_PATH, doc: fixture.doc() },
+    ]);
+    vi.useFakeTimers();
+    const mounted = mountPageEditors(session, [TARGET_ID, TARGET_ID]);
+    await mounted.render();
+    const editor = editorOf(mounted, 0);
+    const replica = editorOf(mounted, 1);
+
+    expect(blockIds(session.getState().docs[TARGET_ID]!)).toEqual(fixture.expectedIds);
+    expect(blockIds(editor.getJSON() as DocNode)).toEqual(fixture.expectedIds);
+    expect(blockIds(replica.getJSON() as DocNode)).toEqual(fixture.expectedIds);
+    const markdownBefore = vault.text(TARGET_PATH)!;
+    for (const id of fixture.expectedIds) expect(markdownBefore).toContain(`^${id}`);
+    await appendTextAt(editor, ' edited', fixture.editText);
+    expect(editor.getText()).toContain(fixture.expectedEditedText);
+    expect(replica.getText()).toContain(fixture.expectedEditedText);
+    await act(async () => {
+      expect(commitPageEditorDraft(session, TARGET_ID)).toBe(true);
+    });
+    expect(blockIds(editor.getJSON() as DocNode)).toEqual(fixture.expectedIds);
+    expect(blockIds(replica.getJSON() as DocNode)).toEqual(fixture.expectedIds);
+    expect(blockIds(session.getState().docs[TARGET_ID]!)).toEqual(fixture.expectedIds);
+    expect(await session.flush()).toBe(true);
+    const markdownAfter = vault.text(TARGET_PATH)!;
+    expect(markdownAfter).toContain(fixture.expectedEditedText);
+    for (const id of fixture.expectedIds) expect(markdownAfter).toContain(`^${id}`);
+
+    await mounted.unmount();
+    await session.close();
+    const reopened = await openVault(vault);
+    expect(docToMarkdown(reopened.getState().docs[TARGET_ID]!)).toContain(fixture.expectedEditedText);
+    expect(blockIds(reopened.getState().docs[TARGET_ID]!)).toEqual(fixture.expectedIds);
+    const reopenedMount = mountPageEditors(reopened, [TARGET_ID, TARGET_ID]);
+    await reopenedMount.render();
+    const reopenedEditor = editorOf(reopenedMount, 0);
+    const reopenedReplica = editorOf(reopenedMount, 1);
+    expect(reopenedEditor.getText()).toContain(fixture.expectedEditedText);
+    expect(reopenedReplica.getText()).toContain(fixture.expectedEditedText);
+    expect(blockIds(reopenedEditor.getJSON() as DocNode)).toEqual(fixture.expectedIds);
+    expect(blockIds(reopenedReplica.getJSON() as DocNode)).toEqual(fixture.expectedIds);
+    await act(async () => {
+      expect(commitPageEditorDraft(reopened, TARGET_ID)).toBe(true);
+    });
+    await reopenedMount.unmount();
+    await reopened.close();
   });
 });
