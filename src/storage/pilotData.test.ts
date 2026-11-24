@@ -138,6 +138,55 @@ describe('Polaris Dados snapshot and cell API', () => {
       name: Currency raw check
       type: formula
       formula: prop("Currency total") * 3
+    - id: bounded-currency
+      name: Bounded currency
+      type: formula
+      formula: "9.996"
+      formulaResultType: currency
+      format:
+        currency: BRL
+        locale: fr-FR
+        precision: 2
+        negativeFormat: parentheses
+        min: 0
+        max: 10
+        step: 0.002
+    - id: bounded-currency-raw-check
+      name: Bounded currency raw check
+      type: formula
+      formula: If(prop("Bounded currency") == 9.996, 1, 0)
+    - id: over-max-currency
+      name: Over max currency
+      type: formula
+      formula: "10.004"
+      formulaResultType: currency
+      format:
+        currency: BRL
+        min: 0
+        max: 10
+        step: 0.002
+    - id: over-max-currency-dependent
+      name: Over max currency dependent
+      type: formula
+      formula: prop("Over max currency") + 1
+    - id: negative-currency
+      name: Negative currency
+      type: formula
+      formula: "-1.996"
+      formulaResultType: currency
+      format:
+        min: -2
+        max: -1
+        step: 0.002
+    - id: null-bounded-currency
+      name: Null bounded currency
+      type: formula
+      formula: thisRow.Optional
+      formulaResultType: currency
+      format:
+        min: 5
+        max: 0
+        step: 0.002
     - id: currency-jpy
       name: JPY total
       type: formula
@@ -278,6 +327,18 @@ describe('Polaris Dados snapshot and cell API', () => {
     )!;
     const currencyTotalProperty = initial.schema.properties.find((property) => property.id === 'currency-total')!;
     const currencyRawCheckProperty = initial.schema.properties.find((property) => property.id === 'currency-raw-check')!;
+    const boundedCurrencyProperty = initial.schema.properties.find((property) => property.id === 'bounded-currency')!;
+    const boundedCurrencyRawCheckProperty = initial.schema.properties.find(
+      (property) => property.id === 'bounded-currency-raw-check',
+    )!;
+    const overMaxCurrencyProperty = initial.schema.properties.find((property) => property.id === 'over-max-currency')!;
+    const overMaxCurrencyDependentProperty = initial.schema.properties.find(
+      (property) => property.id === 'over-max-currency-dependent',
+    )!;
+    const negativeCurrencyProperty = initial.schema.properties.find((property) => property.id === 'negative-currency')!;
+    const nullBoundedCurrencyProperty = initial.schema.properties.find(
+      (property) => property.id === 'null-bounded-currency',
+    )!;
     const currencyJpyProperty = initial.schema.properties.find((property) => property.id === 'currency-jpy')!;
     const currencyLocaleProperty = initial.schema.properties.find((property) => property.id === 'currency-locale-only')!;
     const currencyZeroProperty = initial.schema.properties.find((property) => property.id === 'currency-zero-precision')!;
@@ -326,6 +387,18 @@ describe('Polaris Dados snapshot and cell API', () => {
     });
     expect(currencyTotalProperty).toMatchObject({ type: 'formula', formulaResultType: 'currency' });
     expect(currencyTotalProperty).not.toHaveProperty('format');
+    expect(boundedCurrencyProperty).toMatchObject({
+      formulaResultType: 'currency',
+      format: {
+        currency: 'BRL',
+        locale: 'fr-FR',
+        precision: 2,
+        negativeFormat: 'parentheses',
+        min: 0,
+        max: 10,
+        step: 0.002,
+      },
+    });
     expect(currencyJpyProperty).toMatchObject({ formulaResultType: 'currency', format: { currency: 'JPY' } });
     expect(currencyLocaleProperty).toMatchObject({ formulaResultType: 'currency', format: { locale: 'fr-FR' } });
     expect(currencyZeroProperty).toMatchObject({
@@ -356,6 +429,29 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(evaluateCell(widget, initial.schema.properties, currencyRawCheckProperty, evaluation)).toEqual({
       kind: 'number',
       value: 7,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, boundedCurrencyProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 9.996,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, boundedCurrencyRawCheckProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: 1,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, overMaxCurrencyProperty, evaluation)).toEqual({
+      kind: 'error',
+      message: 'Over max currency must be at most 10.',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, overMaxCurrencyDependentProperty, evaluation)).toEqual({
+      kind: 'error',
+      message: 'Over max currency must be at most 10.',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, negativeCurrencyProperty, evaluation)).toEqual({
+      kind: 'number',
+      value: -1.996,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, nullBoundedCurrencyProperty, evaluation)).toEqual({
+      kind: 'null',
     });
     expect(evaluateCell(widget, initial.schema.properties, boundedDecimal, evaluation)).toEqual({
       kind: 'number',
@@ -425,6 +521,8 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(widget.properties).not.toHaveProperty('completion-raw-check');
     expect(widget.properties).not.toHaveProperty('decimal-bounded');
     expect(widget.properties).not.toHaveProperty('decimal-bounded-raw-check');
+    expect(widget.properties).not.toHaveProperty('bounded-currency');
+    expect(widget.properties).not.toHaveProperty('bounded-currency-raw-check');
 
     expect(api.patchCell({
       databaseId,
@@ -497,6 +595,10 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(afterRestart.schema.properties.find((property) => property.id === 'currency-total')).not.toHaveProperty(
       'format',
     );
+    expect(afterRestart.schema.properties.find((property) => property.id === 'bounded-currency')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'BRL', min: 0, max: 10, step: 0.002 },
+    });
     expect(afterRestart.schema.properties.find((property) => property.id === 'currency-jpy')).toMatchObject({
       formulaResultType: 'currency',
       format: { currency: 'JPY' },
@@ -524,6 +626,8 @@ describe('Polaris Dados snapshot and cell API', () => {
     expect(reopenedWidget.properties).not.toHaveProperty('decimal-bounded-raw-check');
     expect(reopenedWidget.properties).not.toHaveProperty('currency-total');
     expect(reopenedWidget.properties).not.toHaveProperty('currency-raw-check');
+    expect(reopenedWidget.properties).not.toHaveProperty('bounded-currency');
+    expect(reopenedWidget.properties).not.toHaveProperty('bounded-currency-raw-check');
     expect(reopenedWidget.properties).not.toHaveProperty('text-result');
     expect(reopenedWidget.properties).not.toHaveProperty('text-raw-check');
     expect(reopenedWidget.properties).not.toHaveProperty('availability');

@@ -363,7 +363,9 @@ function evaluateFormulaProperty(
     };
   }
   if (
-    (property.formulaResultType === 'number' || property.formulaResultType === 'percent') &&
+    (property.formulaResultType === 'number' ||
+      property.formulaResultType === 'percent' ||
+      property.formulaResultType === 'currency') &&
     evaluated.kind === 'number'
   ) {
     const { min, max, step } = property.format ?? {};

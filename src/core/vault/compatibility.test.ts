@@ -758,6 +758,46 @@ describe('vault representability guard', () => {
           formulaResultType: 'currency',
           format: { currency: 'EUR', locale: 'de-DE', precision: 3, negativeFormat: 'parentheses' },
         },
+        {
+          id: 'bounded',
+          name: 'Bounded',
+          type: 'formula',
+          formula: '9.996',
+          formulaResultType: 'currency',
+          format: {
+            currency: 'BRL',
+            locale: 'fr-FR',
+            precision: 2,
+            negativeFormat: 'parentheses',
+            min: 0,
+            max: 10,
+            step: 0.002,
+          },
+        },
+        {
+          id: 'conflicting-bounds',
+          name: 'Conflicting bounds',
+          type: 'formula',
+          formula: '9.996',
+          formulaResultType: 'currency',
+          format: { min: 3, max: 2, step: 0.25 },
+        },
+        {
+          id: 'minimum-step-boundary',
+          name: 'Minimum step boundary',
+          type: 'formula',
+          formula: '0',
+          formulaResultType: 'currency',
+          format: { step: 1e-9 },
+        },
+        {
+          id: 'maximum-step-boundary',
+          name: 'Maximum step boundary',
+          type: 'formula',
+          formula: '0',
+          formulaResultType: 'currency',
+          format: { step: 1e12 },
+        },
       ],
       views: [],
     };
@@ -789,6 +829,30 @@ describe('vault representability guard', () => {
       formulaResultType: 'currency',
       format: { currency: 'USD', precision: 0 },
     });
+    expect(loaded.database?.properties.find((property) => property.id === 'bounded')).toMatchObject({
+      formulaResultType: 'currency',
+      format: {
+        currency: 'BRL',
+        locale: 'fr-FR',
+        precision: 2,
+        negativeFormat: 'parentheses',
+        min: 0,
+        max: 10,
+        step: 0.002,
+      },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'conflicting-bounds')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { min: 3, max: 2, step: 0.25 },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'minimum-step-boundary')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { step: 1e-9 },
+    });
+    expect(loaded.database?.properties.find((property) => property.id === 'maximum-step-boundary')).toMatchObject({
+      formulaResultType: 'currency',
+      format: { step: 1e12 },
+    });
 
     const databasePage = newPageMeta({
       id: 'inventory',
@@ -807,12 +871,28 @@ describe('vault representability guard', () => {
     expect(readPageText(saved).database).toEqual(loaded.database);
 
     const currency = databaseSchema.properties.find((property) => property.id === 'default-currency')!;
+    const implicitCurrency = {
+      id: 'implicit-currency',
+      name: 'Implicit currency',
+      type: 'formula',
+      formula: '7 / 3',
+      format: { currency: 'BRL', min: 0 },
+    };
     const invalidCurrencyProperties = [
       { ...currency, type: 'number' },
       { ...currency, format: { currency: 'US1' } },
       { ...currency, format: { locale: 'not a locale' } },
       { ...currency, format: { precision: 9 } },
       { ...currency, format: { currency: 'USD', unexpected: true } },
+      { ...currency, format: { currency: 'BRL', min: -1e12 - 1 } },
+      { ...currency, format: { currency: 'BRL', max: 1e12 + 1 } },
+      { ...currency, format: { currency: 'BRL', step: 0 } },
+      { ...currency, format: { currency: 'BRL', step: 1e-10 } },
+      { ...currency, format: { currency: 'BRL', step: 1e12 + 1 } },
+      { ...currency, format: { currency: 'BRL', step: '0.1' } },
+      { ...currency, format: { currency: 'BRL', min: 0, step: 0.1, unexpected: true } },
+      implicitCurrency,
+      { ...implicitCurrency, format: { precision: 2, step: 0.1 } },
       { ...currency, display: 'bar' },
       { ...currency, max: 50 },
       { ...currency, min: 0 },
@@ -843,6 +923,27 @@ describe('vault representability guard', () => {
     expect(protectedCurrency.docs.inventory).toEqual({
       type: 'doc',
       content: [{ type: 'rawBlock', attrs: { text: invalidCurrencySource } }],
+    });
+    const invalidCurrencyBoundsSource = databaseNote({
+      properties: [{ ...currency, format: { currency: 'BRL', min: 0, max: 10, step: 0 } }],
+      views: [],
+    });
+    const protectedCurrencyBounds = loadVault(
+      {
+        files: [{ path: 'Inventory.md', text: invalidCurrencyBoundsSource, mtime: 1, birthtime: 1 }],
+        folders: [],
+        others: [],
+        registry: null,
+        recent: null,
+      },
+      () => 'inventory',
+      1,
+    );
+    expect(protectedCurrencyBounds.protectedPages.get('inventory')).toMatch(/number property format/i);
+    expect(protectedCurrencyBounds.texts.get('inventory')).toBe(invalidCurrencyBoundsSource);
+    expect(protectedCurrencyBounds.docs.inventory).toEqual({
+      type: 'doc',
+      content: [{ type: 'rawBlock', attrs: { text: invalidCurrencyBoundsSource } }],
     });
     const unmarked = databaseNote({ properties: [currency], views: [] }, { omitMarker: true });
     expect(findUnrepresentablePageContent(unmarked)).not.toBeNull();
@@ -1318,6 +1419,7 @@ describe('vault representability guard', () => {
       '  version: 1',
       '  provider: polaris-dados',
       'bounds: &bounds {min: -1000000000000, max: 1000000000000, step: 0.1}',
+      'currencyBounds: &currencyBounds {currency: BRL, min: 0, max: 10, step: 0.002}',
       'hiddenDatabase: &typedDatabase',
       '  properties: &typedProperties',
       '    - id: formula-source',
@@ -1335,11 +1437,13 @@ describe('vault representability guard', () => {
       '      type: *formulaType',
       '      formula: Quantity / 8',
       '      formulaResultType: &currencyType currency',
+      '      format: *currencyBounds',
       '    - id: currency-alias',
       '      name: Currency alias',
       '      type: *formulaType',
       '      formula: Quantity / 8',
       '      formulaResultType: *currencyType',
+      '      format: *currencyBounds',
       '    - id: ratio-alias',
       '      name: Ratio alias',
       '      type: *formulaType',
@@ -1579,6 +1683,20 @@ describe('vault representability guard', () => {
       format: { min: -1, max: 1, step: 0.25 },
     });
     assertLocked(percentPrefix + database(typed) + database(legacy) + footer);
+
+    const currencyPrefix = [
+      '---',
+      'kind: database',
+      'polarisDados: { version: 1, provider: polaris-dados }',
+      'defaults: &result {type: formula, formulaResultType: currency, format: {currency: BRL, min: 0, max: 10, step: 0.002}}',
+    ].join('\n') + '\n';
+    const validCurrencyMerge = currencyPrefix + database(typed) + footer;
+    assertAllowed(validCurrencyMerge);
+    expect(readPageText(validCurrencyMerge).database?.properties[0]).toMatchObject({
+      formulaResultType: 'currency',
+      format: { currency: 'BRL', min: 0, max: 10, step: 0.002 },
+    });
+    assertLocked(currencyPrefix + database(typed) + database(legacy) + footer);
   });
 
   it('protects formula formats with incompatible result settings and retains the exact source bytes', () => {
@@ -1619,8 +1737,6 @@ describe('vault representability guard', () => {
       formulaProperty({ formulaResultType: 'percent', format: { step: 1e-10 } }),
       formulaProperty({ formulaResultType: 'percent', format: { step: '0.1' } }),
       formulaProperty({ formulaResultType: 'percent', format: { currency: 'USD' } }),
-      formulaProperty({ formulaResultType: 'currency', format: { max: 5 } }),
-      formulaProperty({ formulaResultType: 'currency', format: { step: 1 } }),
       formulaProperty({ formulaResultType: 'text', format: { min: 0 } }),
       formulaProperty({ formulaResultType: 'text', format: { step: 1 } }),
       formulaProperty({ formulaResultType: 'checkbox', format: { min: 0 } }),

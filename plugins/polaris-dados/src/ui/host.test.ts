@@ -1565,6 +1565,101 @@ describe('Polaris Dados provider module', () => {
     mounted.unmount();
   });
 
+  it('validates explicit currency bounds and steps before rendering and after input edits', async () => {
+    const properties: readonly TestProperty[] = [
+      ...DEFAULT_PROPERTIES.slice(0, 3),
+      { id: 'optional', name: 'Optional', type: 'number', options: [] },
+      {
+        id: 'bounded-currency',
+        name: 'Bounded currency',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity + 5.996',
+        formulaResultType: 'currency',
+        format: { currency: 'BRL', locale: 'en-US', precision: 2, min: 0, max: 10, step: 0.002 },
+      },
+      {
+        id: 'bounded-currency-raw-check',
+        name: 'Bounded currency raw check',
+        type: 'formula',
+        options: [],
+        formula: 'If(prop("Bounded currency") == 9.996, 1, 0)',
+      },
+      {
+        id: 'over-max-currency',
+        name: 'Over max currency',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity + 6.004',
+        formulaResultType: 'currency',
+        format: { currency: 'BRL', locale: 'en-US', precision: 2, min: 0, max: 10, step: 0.002 },
+      },
+      {
+        id: 'over-max-currency-dependent',
+        name: 'Over max currency dependent',
+        type: 'formula',
+        options: [],
+        formula: 'prop("Over max currency") + 1',
+      },
+      {
+        id: 'negative-currency',
+        name: 'Negative currency',
+        type: 'formula',
+        options: [],
+        formula: '-1.996',
+        formulaResultType: 'currency',
+        format: { currency: 'BRL', locale: 'en-US', precision: 2, min: -2, max: -1, step: 0.002 },
+      },
+      {
+        id: 'null-bounded-currency',
+        name: 'Null bounded currency',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow.Optional',
+        formulaResultType: 'currency',
+        format: { min: 5, max: 0, step: 0.002 },
+      },
+    ];
+    const data = makeDataDouble({
+      properties,
+      rowProperties: { name: 'Widget', quantity: 4, price: 10, optional: null },
+    });
+    const mounted = mountPlugin(data.api);
+    const cell = (id: string) => mounted.element.querySelector<HTMLElement>(`[data-field="${id}"]`)!;
+    const currency = (value: number) =>
+      new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'BRL',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(value);
+    const error = 'Over max currency must be at most 10.';
+
+    expect(currency(9.996)).toBe(currency(10.004));
+    expect(cell('bounded-currency').textContent).toBe(currency(9.996));
+    expect(cell('bounded-currency-raw-check').textContent).toBe('1');
+    expect(cell('over-max-currency').querySelector('code')?.textContent).toBe(error);
+    expect(cell('over-max-currency-dependent').querySelector('code')?.textContent).toBe(error);
+    expect(cell('negative-currency').textContent).toBe(currency(-1.996));
+    expect(cell('null-bounded-currency').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+
+    const quantity = editQuantity(mounted.element);
+    setInput(mounted.window, quantity, '4.008');
+    dispatch(
+      quantity,
+      new mounted.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await settle();
+
+    expect(cell('bounded-currency').querySelector('code')?.textContent).toBe('Bounded currency must be at most 10.');
+    expect(cell('bounded-currency-raw-check').querySelector('code')?.textContent).toBe(
+      'Bounded currency must be at most 10.',
+    );
+    expect(data.current().rows[0]?.properties).toEqual({ name: 'Widget', quantity: 4.008, price: 10, optional: null });
+    expect(data.patchCalls).toMatchObject([{ propertyId: 'quantity', value: 4.008 }]);
+    mounted.unmount();
+  });
+
   it('preserves tiny finite formula ranges in localized progress labels and accessibility text', () => {
     const tiny = 1e-110;
     const properties: readonly TestProperty[] = [

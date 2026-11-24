@@ -425,6 +425,78 @@ describe('Polaris Dados formula row context', () => {
     expect(evaluate(properties, rowProperties, 'null-percent-bounded')).toEqual({ kind: 'null' });
   });
 
+  it('checks explicit currency bounds and steps against the raw amount before caching', () => {
+    const properties = [
+      scalar('optional', 'Optional'),
+      {
+        ...formula('bounded-currency', 'Bounded currency', '9.996'),
+        formulaResultType: 'currency',
+        format: { currency: 'BRL', precision: 2, min: 0, max: 10, step: 0.002 },
+      },
+      {
+        ...formula('minimum-inclusive-currency', 'Minimum inclusive currency', '0'),
+        formulaResultType: 'currency',
+        format: { min: 0, max: 10, step: 0.002 },
+      },
+      {
+        ...formula('maximum-inclusive-currency', 'Maximum inclusive currency', '10'),
+        formulaResultType: 'currency',
+        format: { min: 0, max: 10, step: 0.002 },
+      },
+      formula('currency-raw-check', 'Currency raw check', 'prop("Bounded currency") * 1000'),
+      {
+        ...formula('over-max-currency', 'Over max currency', '10.004'),
+        formulaResultType: 'currency',
+        format: { currency: 'BRL', precision: 2, min: 0, max: 10, step: 0.002 },
+      },
+      formula('over-max-currency-dependent', 'Over max currency dependent', 'prop("Over max currency") + 1'),
+      {
+        ...formula('negative-currency', 'Negative currency', '-1.996'),
+        formulaResultType: 'currency',
+        format: { min: -2, max: -1, step: 0.002 },
+      },
+      {
+        ...formula('minimum-first-currency', 'Minimum first currency', '-1'),
+        formulaResultType: 'currency',
+        format: { min: 0, max: -2, step: 0.5 },
+      },
+      {
+        ...formula('off-step-currency', 'Off step currency', '9.997'),
+        formulaResultType: 'currency',
+        format: { min: 0, max: 10, step: 0.002 },
+      },
+      {
+        ...formula('null-bounded-currency', 'Null bounded currency', 'thisRow.Optional'),
+        formulaResultType: 'currency',
+        format: { min: 5, max: 0, step: 0.002 },
+      },
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { optional: null };
+
+    expect(evaluate(properties, rowProperties, 'bounded-currency')).toEqual({ kind: 'number', value: 9.996 });
+    expect(evaluate(properties, rowProperties, 'minimum-inclusive-currency')).toEqual({ kind: 'number', value: 0 });
+    expect(evaluate(properties, rowProperties, 'maximum-inclusive-currency')).toEqual({ kind: 'number', value: 10 });
+    expect(evaluate(properties, rowProperties, 'currency-raw-check')).toEqual({ kind: 'number', value: 9996 });
+    expect(evaluate(properties, rowProperties, 'over-max-currency')).toEqual({
+      kind: 'error',
+      message: 'Over max currency must be at most 10.',
+    });
+    expect(evaluate(properties, rowProperties, 'over-max-currency-dependent')).toEqual({
+      kind: 'error',
+      message: 'Over max currency must be at most 10.',
+    });
+    expect(evaluate(properties, rowProperties, 'negative-currency')).toEqual({ kind: 'number', value: -1.996 });
+    expect(evaluate(properties, rowProperties, 'minimum-first-currency')).toEqual({
+      kind: 'error',
+      message: 'Minimum first currency must be at least 0.',
+    });
+    expect(evaluate(properties, rowProperties, 'off-step-currency')).toEqual({
+      kind: 'error',
+      message: 'Off step currency must use steps of 0.002.',
+    });
+    expect(evaluate(properties, rowProperties, 'null-bounded-currency')).toEqual({ kind: 'null' });
+  });
+
   it('validates explicit currency results before caching while dependent formulas use the raw amount', () => {
     const properties = [
       scalar('amount', 'Amount'),

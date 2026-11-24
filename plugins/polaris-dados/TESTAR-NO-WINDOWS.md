@@ -221,6 +221,10 @@ Em Inventory, SteppedRatio aceita **0.1**, **0.3** e **0.5**, com âncora 0.1 e 
 
 Em Inventory, BoundedPercent aceita resultados de **20%** a **50%** a cada cinco pontos percentuais. Mude Quantity para **2.5**. A coluna mostra **25%** e RawPercent mostra **0.25**. Com **2.55**, o resultado cai fora do passo. Com **5.04**, o resultado original excede o máximo. Confira os mesmos resultados na primeira tabela de Views.
 
+### Conferir os limites e o passo de uma moeda
+
+Em Inventory, mude Quantity para **9.996**. BoundedCurrency exibe **$10.00** e RawBoundedCurrency mostra **42**, pois a fórmula ainda recebe 9.996. Em **10**, o dependente mostra **17**. Em **10.004**, as duas colunas dão erro pelo limite, embora a apresentação também arredondasse para $10.00. Em **9.997**, as duas mostram erro pelo passo de 0.002. Confira na primeira tabela de Views.
+
 ### Navegar na grade sem o mouse
 
 Em `Checklist`, use **Tab** até a região do Polaris Dados e pressione uma seta. A primeira seta coloca o foco na primeira célula. Use as quatro setas para percorrer as linhas e colunas. Nas bordas, o foco permanece na última célula alcançada. Em `Checklist Views`, repita em cada visualização e confira que o foco segue apenas as linhas e a ordem de colunas daquela tabela.

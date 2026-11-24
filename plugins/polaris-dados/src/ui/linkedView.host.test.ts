@@ -1002,6 +1002,130 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
+  it('validates explicit currency constraints in linked views and after row edits', async () => {
+    const original = initialDataSnapshot();
+    const snapshot: ReadySnapshot = {
+      ...original,
+      schema: {
+        ...original.schema,
+        properties: [
+          ...original.schema.properties,
+          { id: 'optional', name: 'Optional', type: 'number', options: [] },
+          {
+            id: 'bounded-currency',
+            name: 'Bounded currency',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity + 5.996',
+            formulaResultType: 'currency',
+            format: { currency: 'BRL', locale: 'en-US', precision: 2, min: 0, max: 10, step: 0.002 },
+          },
+          {
+            id: 'bounded-currency-raw-check',
+            name: 'Bounded currency raw check',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Bounded currency") == 9.996, 1, 0)',
+          },
+          {
+            id: 'over-max-currency',
+            name: 'Over max currency',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity + 6.004',
+            formulaResultType: 'currency',
+            format: { currency: 'BRL', locale: 'en-US', precision: 2, min: 0, max: 10, step: 0.002 },
+          },
+          {
+            id: 'over-max-currency-dependent',
+            name: 'Over max currency dependent',
+            type: 'formula',
+            options: [],
+            formula: 'prop("Over max currency") + 1',
+          },
+          {
+            id: 'negative-currency',
+            name: 'Negative currency',
+            type: 'formula',
+            options: [],
+            formula: '-1.996',
+            formulaResultType: 'currency',
+            format: { currency: 'BRL', locale: 'en-US', precision: 2, min: -2, max: -1, step: 0.002 },
+          },
+          {
+            id: 'null-bounded-currency',
+            name: 'Null bounded currency',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow.Optional',
+            formulaResultType: 'currency',
+            format: { min: 5, max: 0, step: 0.002 },
+          },
+        ],
+      },
+      rows: original.rows.map((row) => ({ ...row, properties: { ...row.properties, optional: null } })),
+    };
+    const mounted = mountLinked(
+      {
+        title: 'Currency bounds view',
+        columnOrder: [
+          'quantity',
+          'bounded-currency',
+          'bounded-currency-raw-check',
+          'over-max-currency',
+          'over-max-currency-dependent',
+          'negative-currency',
+          'null-bounded-currency',
+        ],
+        filter: null,
+      },
+      snapshot,
+    );
+    const { element, window } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const cell = (row: HTMLTableRowElement, propertyId: string) =>
+      row.querySelector<HTMLElement>(`[data-field="${propertyId}"]`)!;
+    const currency = (value: number) =>
+      new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'BRL',
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }).format(value);
+    const error = 'Over max currency must be at most 10.';
+
+    expect(currency(9.996)).toBe(currency(10.004));
+    expect(cell(rows[0]!, 'bounded-currency').textContent).toBe(currency(9.996));
+    expect(cell(rows[0]!, 'bounded-currency-raw-check').textContent).toBe('1');
+    expect(cell(rows[1]!, 'bounded-currency-raw-check').textContent).toBe('0');
+    expect(cell(rows[0]!, 'over-max-currency').querySelector('code')?.textContent).toBe(error);
+    expect(cell(rows[0]!, 'over-max-currency-dependent').querySelector('code')?.textContent).toBe(error);
+    expect(cell(rows[1]!, 'over-max-currency').textContent).toBe(currency(7.004));
+    expect(cell(rows[0]!, 'negative-currency').textContent).toBe(currency(-1.996));
+    expect(cell(rows[0]!, 'null-bounded-currency').querySelector('[data-value-kind="null"]')?.textContent).toBe(
+      'Blank',
+    );
+
+    click(window, cell(rows[0]!, 'quantity').querySelector('button[data-action="edit"]'));
+    const quantity = element.querySelector<HTMLInputElement>('input[data-field="quantity"]');
+    if (!quantity) throw new Error('Expected the linked quantity editor.');
+    input(window, quantity, '4.008');
+    click(window, element.querySelector('button[data-action="save"]'));
+    await flushMicrotasks();
+    const updatedRows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+
+    expect(cell(updatedRows[0]!, 'bounded-currency').querySelector('code')?.textContent).toBe(
+      'Bounded currency must be at most 10.',
+    );
+    expect(cell(updatedRows[0]!, 'bounded-currency-raw-check').querySelector('code')?.textContent).toBe(
+      'Bounded currency must be at most 10.',
+    );
+    expect(mounted.data.patchCalls).toMatchObject([
+      { databaseId: DATABASE_ID, rowId: 'widget', propertyId: 'quantity', value: 4.008 },
+    ]);
+    mounted.cleanup();
+  });
+
   it('renders formula progress bars in linked views with the shared cell presentation', () => {
     const original = initialDataSnapshot();
     const snapshot: ReadySnapshot = {

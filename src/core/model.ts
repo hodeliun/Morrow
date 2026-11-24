@@ -144,7 +144,9 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
       // Percentage constraints use the same raw decimal values as number formulas.
       return normalizeNumberFormulaFormat(raw.format);
     }
-    return raw.formulaResultType === 'currency' ? normalizeFormulaResultNumberFormat(raw.format) : null;
+    return raw.formulaResultType === 'currency'
+      ? normalizeFormulaResultNumberFormat(raw.format, true)
+      : null;
   }
 
   const format = normalizeFormulaResultNumberFormat(raw.format);
@@ -153,13 +155,22 @@ export function normalizeDatabasePropertyFormat(value: unknown): FormulaResultNu
     : null;
 }
 
-function normalizeFormulaResultNumberFormat(value: unknown): FormulaResultNumberFormat | null {
+function normalizeFormulaResultNumberFormat(
+  value: unknown,
+  allowFormulaNumberConstraints = false,
+): FormulaResultNumberFormat | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return null;
 
   const raw = value as Record<string, unknown>;
-  const allowedKeys = new Set(['locale', 'currency', 'precision', 'negativeFormat']);
+  const allowedKeys = new Set([
+    'locale',
+    'currency',
+    'precision',
+    'negativeFormat',
+    ...(allowFormulaNumberConstraints ? ['min', 'max', 'step'] : []),
+  ]);
   if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
 
   const hasCurrency = Object.hasOwn(raw, 'currency');
@@ -171,10 +182,24 @@ function normalizeFormulaResultNumberFormat(value: unknown): FormulaResultNumber
     ...(Object.hasOwn(raw, 'negativeFormat') ? { negativeFormat: raw.negativeFormat } : {}),
   });
   if (numberFormat === null) return null;
-  return {
+  const format: FormulaResultNumberFormat = {
     ...numberFormat,
     ...(hasCurrency ? { currency: raw.currency as string } : {}),
   };
+  if (allowFormulaNumberConstraints) {
+    for (const key of ['min', 'max'] as const) {
+      if (!Object.hasOwn(raw, key)) continue;
+      const bound = raw[key];
+      if (typeof bound !== 'number' || !Number.isFinite(bound) || bound < -1e12 || bound > 1e12) return null;
+      format[key] = bound;
+    }
+    if (Object.hasOwn(raw, 'step')) {
+      const step = raw.step;
+      if (typeof step !== 'number' || !Number.isFinite(step) || step < 1e-9 || step > 1e12) return null;
+      format.step = step;
+    }
+  }
+  return format;
 }
 
 function validFormulaCurrency(value: unknown): value is string {

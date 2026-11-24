@@ -178,6 +178,20 @@ database:
       name: RawPercent
       type: formula
       formula: BoundedPercent
+    - id: demo-explicit-currency-step
+      name: BoundedCurrency
+      type: formula
+      formula: Quantity
+      formulaResultType: currency
+      format:
+        currency: USD
+        locale: en-US
+        max: 10
+        step: 0.002
+    - id: demo-explicit-currency-step-dependent
+      name: RawBoundedCurrency
+      type: formula
+      formula: If(BoundedCurrency < 10, 42, 17)
   views:
     - id: inventory-table-v1
       name: Table
