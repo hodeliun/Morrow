@@ -3,15 +3,17 @@ import { isValidNoteStyleInput, resolveDefaultNoteStyle } from '../../core/noteS
 import type { NoteStyle } from '../../core/noteStyle';
 import { SettingsGroup } from './SettingsRows';
 import { t } from '../i18n';
-import { createNoteStyleBatchPreviewHost } from './noteStyleBatchPreview';
+import { confirmNoteStyleBatchPreview, createNoteStyleBatchPreviewHost } from './noteStyleBatchPreview';
 import { documentoNoteStyleDefaultsPanel, subscribePlugins } from '../plugins/registry';
 import type {
   PluginNoteStyleDefaultsPanelHost,
   PluginNoteStyleBatchPreviewLabels,
+  PluginNoteStyleBatchPreviewConfirmationLabels,
+  PluginNoteStyleBatchPreviewLease,
   PluginNoteStylePanelLabels,
   PluginNoteStylePanelResult,
 } from '../plugins/registry';
-import { getPreferences, setPreferences, usePreferences } from '../platform/preferences';
+import { getPreferences, setPreferences, subscribePreferences, usePreferences } from '../platform/preferences';
 
 function copyStyle(style: Readonly<NoteStyle>): NoteStyle {
   return {
@@ -65,6 +67,9 @@ export function DocumentoNoteStyleDefaultsSettings() {
     documentoNoteStyleDefaultsPanel,
   );
   const labels = useMemo(() => labelsFor(preferences.locale), [preferences.locale]);
+  const defaultProfileRefreshKey = registration?.supportsLiveProfileDefaults
+    ? null
+    : JSON.stringify([preferences.font, preferences.width]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -98,10 +103,59 @@ export function DocumentoNoteStyleDefaultsSettings() {
       unsupportedContainerCount: translate('pageStyle.batchPreview.unsupportedContainerCount'),
       noCandidates: translate('pageStyle.batchPreview.noCandidates'),
     });
-    const batchPreview = createNoteStyleBatchPreviewHost(
+    const confirmationLabels: PluginNoteStyleBatchPreviewConfirmationLabels = Object.freeze({
+      beginApply: translate('pageStyle.batchPreview.confirmation.beginApply'),
+      confirmPreserve: translate('pageStyle.batchPreview.confirmation.confirmPreserve'),
+      confirmOverwrite: translate('pageStyle.batchPreview.confirmation.confirmOverwrite'),
+      confirm: translate('pageStyle.batchPreview.confirmation.confirm'),
+      cancel: translate('pageStyle.batchPreview.confirmation.cancel'),
+      applying: translate('pageStyle.batchPreview.confirmation.applying'),
+      applyFailed: translate('pageStyle.batchPreview.confirmation.applyFailed'),
+      resultTitle: translate('pageStyle.batchPreview.confirmation.resultTitle'),
+      confirmedCount: translate('pageStyle.batchPreview.confirmation.confirmedCount'),
+      refusedCount: translate('pageStyle.batchPreview.confirmation.refusedCount'),
+      unattemptedCount: translate('pageStyle.batchPreview.confirmation.unattemptedCount'),
+      noteConfirmed: translate('pageStyle.batchPreview.confirmation.noteConfirmed'),
+      noteRefused: translate('pageStyle.batchPreview.confirmation.noteRefused'),
+      noteUnattempted: translate('pageStyle.batchPreview.confirmation.noteUnattempted'),
+      complete: translate('pageStyle.batchPreview.confirmation.complete'),
+      partial: translate('pageStyle.batchPreview.confirmation.partial'),
+    });
+    const previewHost = createNoteStyleBatchPreviewHost(
       () => mountState.active,
       () => registration.isActive(),
     );
+    let activePreviewLease: PluginNoteStyleBatchPreviewLease | null = null;
+    let stopActivePreviewLease: (() => void) | null = null;
+    const detachActivePreviewLease = () => {
+      stopActivePreviewLease?.();
+      stopActivePreviewLease = null;
+      activePreviewLease = null;
+    };
+    const batchPreview = Object.freeze({
+      create(mode: Parameters<typeof previewHost.create>[0]) {
+        if (!mountState.active || !registration.isActive()) return null;
+        const lease = previewHost.create(mode);
+        activePreviewLease = lease;
+        stopActivePreviewLease = lease?.subscribe(() => {
+          if (!lease.isCurrent() && activePreviewLease === lease) detachActivePreviewLease();
+        }) ?? null;
+        return lease;
+      },
+      invalidate() {
+        detachActivePreviewLease();
+        previewHost.invalidate();
+      },
+    });
+    const batchPreviewConfirmation = Object.freeze({
+      labels: confirmationLabels,
+      confirm(lease: PluginNoteStyleBatchPreviewLease) {
+        if (!mountState.active || !registration.isActive() || activePreviewLease !== lease)
+          return Promise.resolve(null);
+        detachActivePreviewLease();
+        return confirmNoteStyleBatchPreview(lease);
+      },
+    });
     const unavailable = (): PluginNoteStylePanelResult => ({
       ok: false as const,
       code: 'save-failed',
@@ -110,8 +164,29 @@ export function DocumentoNoteStyleDefaultsSettings() {
     const host: PluginNoteStyleDefaultsPanelHost = Object.freeze({
       initial: Object.freeze(copyStyle(initialStyle)),
       labels,
+      readInitial() {
+        const current = getPreferences();
+        return Object.freeze(copyStyle(
+          resolveDefaultNoteStyle(current.defaultNoteStyle, current.font, current.width),
+        ));
+      },
+      subscribeInitial(listener: () => void) {
+        let lastKey = JSON.stringify([
+          initialPreferences.font,
+          initialPreferences.width,
+          initialPreferences.defaultNoteStyle,
+        ]);
+        return subscribePreferences(() => {
+          const current = getPreferences();
+          const key = JSON.stringify([current.font, current.width, current.defaultNoteStyle]);
+          if (key === lastKey) return;
+          lastKey = key;
+          listener();
+        });
+      },
       batchPreview,
       batchPreviewLabels,
+      batchPreviewConfirmation,
       async save(style: NoteStyle) {
         if (!mountState.active || !registration.isActive() || !isValidNoteStyleInput(style))
           return unavailable();
@@ -163,7 +238,7 @@ export function DocumentoNoteStyleDefaultsSettings() {
         container.replaceChildren();
       }
     };
-  }, [labels, preferences.font, preferences.width, preferences.locale, registration]);
+  }, [defaultProfileRefreshKey, labels, preferences.locale, registration]);
 
   if (!registration) return null;
   return (

@@ -374,4 +374,41 @@ describe('Polaris Documento per-note style panel', () => {
     expect(second.container.querySelector('.note-style-preview')).not.toBeNull();
     second.cleanup();
   });
+
+  it('refreshes clean profile defaults live and keeps a dirty draft for cancellation', () => {
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    let currentInitial = { ...INITIAL_STYLE };
+    const initialListeners = new Set<() => void>();
+    const host = panelHost('en', {
+      readInitial: () => ({ ...currentInitial }),
+      subscribeInitial(listener) {
+        initialListeners.add(listener);
+        return () => initialListeners.delete(listener);
+      },
+    });
+    const { container, cleanup } = mount(window, host);
+    const font = container.querySelector('select[data-note-style-field="font"]') as unknown as HTMLSelectElement;
+    const width = container.querySelector('select[data-note-style-field="width"]') as unknown as HTMLSelectElement;
+    const cancel = container.querySelector('button[data-note-style-action="cancel"]') as unknown as HTMLButtonElement;
+
+    font.focus();
+    currentInitial = { ...CHANGED_STYLE };
+    for (const listener of [...initialListeners]) listener();
+    expect(font.value).toBe(CHANGED_STYLE.font);
+    expect(width.value).toBe(CHANGED_STYLE.width);
+    expect(window.document.activeElement).toBe(font);
+
+    input(window, font, 'sans');
+    currentInitial = { ...RESTORED_STYLE };
+    for (const listener of [...initialListeners]) listener();
+    expect(font.value).toBe('sans');
+    expect(width.value).toBe(CHANGED_STYLE.width);
+
+    cancel.click();
+    expect(font.value).toBe(RESTORED_STYLE.font);
+    expect(width.value).toBe(RESTORED_STYLE.width);
+    cleanup();
+    expect(initialListeners.size).toBe(0);
+  });
 });

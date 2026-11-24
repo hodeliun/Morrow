@@ -60,12 +60,50 @@ export const noteStylePanelStyles = String.raw`
   font-weight: 600;
 }
 
+.note-style-batch-confirmation {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sidebar);
+}
+
+.note-style-batch-confirmation-prompt {
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.note-style-batch-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.note-style-batch-result-title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
 .note-style-batch-titles,
-.note-style-batch-diagnostics {
+.note-style-batch-diagnostics,
+.note-style-batch-result-counts,
+.note-style-batch-outcomes {
   display: grid;
   gap: 3px;
   margin: 0;
   padding-inline-start: 18px;
+}
+
+.note-style-batch-outcomes {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.note-style-batch-preview[data-busy='true'] button {
+  cursor: progress;
 }
 
 .note-style-controls {

@@ -22,6 +22,16 @@ function copyStyle(style: Readonly<NoteStyle>): NoteStyle {
   };
 }
 
+function sameStyle(a: Readonly<NoteStyle>, b: Readonly<NoteStyle>): boolean {
+  return (
+    a.font === b.font &&
+    a.fontSize === b.fontSize &&
+    a.lineHeight === b.lineHeight &&
+    a.blockSpacing === b.blockSpacing &&
+    a.width === b.width
+  );
+}
+
 /** Mounts the Documento-owned controls and a local-only sample into the host dialog. */
 export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) => {
   const document = container.ownerDocument;
@@ -30,8 +40,9 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
   root.noValidate = true;
   root.setAttribute('aria-label', host.labels.title);
 
-  let draft = copyStyle(host.initial);
-  let savedBaseline = copyStyle(host.initial);
+  const initial = copyStyle(host.readInitial?.() ?? host.initial);
+  let draft = copyStyle(initial);
+  let savedBaseline = copyStyle(initial);
   let active = true;
   let inFlight = false;
 
@@ -176,6 +187,17 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
     preview.style.setProperty('--note-block-spacing', `${draft.blockSpacing}px`);
   };
 
+  const refreshInitial = () => {
+    const next = copyStyle(host.readInitial?.() ?? host.initial);
+    if (sameStyle(next, savedBaseline)) return;
+    const draftWasPristine = sameStyle(draft, savedBaseline);
+    savedBaseline = copyStyle(next);
+    if (!draftWasPristine) return;
+    draft = copyStyle(next);
+    render();
+    setStatus('');
+  };
+
   const update = (fieldName: string, value: string) => {
     switch (fieldName) {
       case 'font':
@@ -273,6 +295,7 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
   root.addEventListener('submit', onSubmit);
   root.addEventListener('click', onClick);
   render();
+  const stopInitialUpdates = host.subscribeInitial?.(refreshInitial);
 
   return () => {
     if (!active) return;
@@ -281,6 +304,7 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
     root.removeEventListener('change', onChange);
     root.removeEventListener('submit', onSubmit);
     root.removeEventListener('click', onClick);
+    stopInitialUpdates?.();
     root.remove();
   };
 };

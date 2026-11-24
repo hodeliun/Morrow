@@ -78,6 +78,9 @@ export type PluginNoteStylePanelResult =
 export interface PluginNoteStylePanelHost {
   readonly initial: Readonly<NoteStyle>;
   readonly labels: PluginNoteStylePanelLabels;
+  /** Optional live refresh for profile defaults; older hosts keep using the captured initial value. */
+  readInitial?(): Readonly<NoteStyle>;
+  subscribeInitial?(listener: () => void): () => void;
   save(style: NoteStyle): Promise<PluginNoteStylePanelResult>;
   restore(): Promise<PluginNoteStylePanelResult>;
   cancel(): void;
@@ -145,20 +148,67 @@ export interface PluginNoteStyleBatchPreviewLabels {
   readonly noCandidates: string;
 }
 
+export type PluginNoteStyleBatchConfirmationStatus = 'confirmed' | 'refused' | 'unattempted';
+
+export interface PluginNoteStyleBatchConfirmationOutcome {
+  readonly title: string;
+  readonly order: number;
+  readonly status: PluginNoteStyleBatchConfirmationStatus;
+}
+
+/** Result summary contains display titles and order only; page identities remain host-private. */
+export interface PluginNoteStyleBatchConfirmationResult {
+  readonly mode: PluginNoteStyleBatchPreviewMode;
+  readonly outcomes: readonly PluginNoteStyleBatchConfirmationOutcome[];
+  readonly confirmedCount: number;
+  readonly refusedCount: number;
+  readonly unattemptedCount: number;
+}
+
+export interface PluginNoteStyleBatchPreviewConfirmationLabels {
+  readonly beginApply: string;
+  readonly confirmPreserve: string;
+  readonly confirmOverwrite: string;
+  readonly confirm: string;
+  readonly cancel: string;
+  readonly applying: string;
+  readonly applyFailed: string;
+  readonly resultTitle: string;
+  readonly confirmedCount: string;
+  readonly refusedCount: string;
+  readonly unattemptedCount: string;
+  readonly noteConfirmed: string;
+  readonly noteRefused: string;
+  readonly noteUnattempted: string;
+  readonly complete: string;
+  readonly partial: string;
+}
+
+/** Optional, mount-scoped confirmation capability added after the read-only preview API. */
+export interface PluginNoteStyleBatchPreviewConfirmation {
+  readonly labels: PluginNoteStyleBatchPreviewConfirmationLabels;
+  confirm(
+    lease: PluginNoteStyleBatchPreviewLease,
+  ): Promise<PluginNoteStyleBatchConfirmationResult | null>;
+}
+
 export interface PluginNoteStyleDefaultsPanelHost extends PluginNoteStylePanelHost {
   readonly batchPreview: PluginNoteStyleBatchPreviewHost;
   readonly batchPreviewLabels: PluginNoteStyleBatchPreviewLabels;
+  readonly batchPreviewConfirmation?: PluginNoteStyleBatchPreviewConfirmation;
 }
 
-export type PluginNoteStyleDefaultsPanelMount = (
-  container: HTMLElement,
-  host: PluginNoteStyleDefaultsPanelHost,
-) => void | (() => void);
+export interface PluginNoteStyleDefaultsPanelMount {
+  (container: HTMLElement, host: PluginNoteStyleDefaultsPanelHost): void | (() => void);
+  /** True when only the defaults subpanel responds to readInitial/subscribeInitial updates. */
+  readonly supportsLiveProfileDefaults?: true;
+}
 
 export interface PluginNoteStyleDefaultsPanelEntry {
   readonly owner: 'polaris-documento';
   readonly generation: number;
   readonly mount: PluginNoteStyleDefaultsPanelMount;
+  readonly supportsLiveProfileDefaults?: true;
   isActive(): boolean;
 }
 
@@ -362,6 +412,7 @@ export function addPluginNoteStyleDefaultsPanel(
     owner,
     generation: ++noteStyleDefaultsPanelGeneration,
     mount,
+    ...(mount.supportsLiveProfileDefaults ? { supportsLiveProfileDefaults: true as const } : {}),
     isActive: () => active,
     deactivate: () => {
       active = false;
