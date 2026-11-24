@@ -124,7 +124,7 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 
 ## Catálogo na barra lateral
 
-Em pacotes com o Polaris Arquivos, procure **Polaris Arquivos** abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e `LEIAME` e abra **Subpasta** para ver `Planilha.csv`. Navegue para outra nota e confira se as pastas continuam expandidas. O catálogo permite consultar os nomes. A página **Arquivos** do Morrow continua exibindo os anexos e as notas que os usam.
+Em pacotes com o Polaris Arquivos, procure a seção **Arquivos** (**Files** em inglês) logo abaixo da árvore de notas. Expanda **Material** para encontrar `Inventario.txt` e `LEIAME` e abra **Subpasta** para ver `Planilha.csv`. Navegue para outra nota e confira se as pastas continuam expandidas. O botão **Arquivos** no menu principal abre a página de anexos e das notas que os usam.
 
 ## Verificações opcionais da base 2.2
 
