@@ -38,11 +38,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const DATABASE_ID = 'text-source';
 const ROW_ID = 'text-widget';
+const SECOND_ROW_ID = 'text-gadget';
 const NOTE_ID = 'text-views';
 const VIEW_ONE = 'text-view-one';
 const VIEW_TWO = 'text-view-two';
 const DATABASE_PATH = 'Inventory.md';
 const ROW_PATH = 'Inventory/Widget.md';
+const SECOND_ROW_PATH = 'Inventory/Gadget.md';
 const NOTE_PATH = 'Views.md';
 const INITIAL_MESSAGE = '  opening 🌿\r\nsecond line\nlast  ';
 
@@ -134,6 +136,25 @@ function markdownForViews(includeCheckbox = false): string {
   ].join('\n');
 }
 
+function markdownForGridNavigationViews(
+  firstColumnOrder: string[] = ['total', 'message'],
+  firstFilterValue = 3,
+): string {
+  const [first, second] = views;
+  return [
+    '# Grid navigation views',
+    '',
+    encodePolarisDadosViewMarker({
+      ...first,
+      columnOrder: firstColumnOrder,
+      filter: { propertyId: 'quantity', op: 'gte', value: firstFilterValue },
+    }),
+    '',
+    encodePolarisDadosViewMarker({ ...second, columnOrder: ['price', 'message'], filter: null }),
+    '',
+  ].join('\n');
+}
+
 class CountingMemoryVault extends MemoryVault {
   applyCount = 0;
   failNextApply: string | null = null;
@@ -197,6 +218,7 @@ let preferencesBeforeTest = getPreferences();
 function fixtureFiles(
   includeCheckbox = false,
   checkboxValue: CheckboxFixtureValue = false,
+  includeGridNavigation = false,
 ): Record<string, string> {
   const database = includeCheckbox
     ? DATABASE.replace(
@@ -211,13 +233,30 @@ function fixtureFiles(
   return {
     [DATABASE_PATH]: database,
     [ROW_PATH]: row,
-    [NOTE_PATH]: markdownForViews(includeCheckbox),
+    ...(includeGridNavigation
+      ? {
+          [SECOND_ROW_PATH]: [
+            '---',
+            'Message: second row',
+            "Empty: ''",
+            'Nullable: null',
+            'Optional: present',
+            'Quantity: 5',
+            'Price: 4',
+            '---',
+            'Second synthetic row.',
+            '',
+          ].join('\n'),
+        }
+      : {}),
+    [NOTE_PATH]: includeGridNavigation ? markdownForGridNavigationViews() : markdownForViews(includeCheckbox),
     '.morrow/workspace.json': JSON.stringify({
       version: 1,
       pages: {
         [DATABASE_PATH]: { id: DATABASE_ID, created: 1, order: 0 },
         [ROW_PATH]: { id: ROW_ID, created: 2, order: 0 },
         [NOTE_PATH]: { id: NOTE_ID, created: 3, order: 1 },
+        ...(includeGridNavigation ? { [SECOND_ROW_PATH]: { id: SECOND_ROW_ID, created: 4, order: 1 } } : {}),
       },
     }),
     '.morrow/recent.json': JSON.stringify({ version: 1, opened: {}, activity: {} }),
@@ -266,6 +305,10 @@ async function openCheckboxFixture(initial: CheckboxFixtureValue): Promise<Fixtu
   return openFixture(new CountingMemoryVault(fixtureFiles(true, initial)));
 }
 
+async function openGridNavigationFixture(): Promise<Fixture> {
+  return openFixture(new CountingMemoryVault(fixtureFiles(false, false, true)));
+}
+
 function makeViewHandle(fixture: Fixture, viewId: string, active: () => boolean): ViewHandle {
   const generation = Symbol(viewId);
   let cleanup = () => {};
@@ -288,6 +331,7 @@ function makeViewHandle(fixture: Fixture, viewId: string, active: () => boolean)
 function mountRoot(
   fixture: Fixture,
   options: {
+    readonly window?: Window;
     readonly viewId?: string;
     readonly locale?: DatabaseProviderContext['locale'];
     readonly editable?: boolean;
@@ -295,8 +339,8 @@ function mountRoot(
     readonly snapshotTransform?: (snapshot: DataApiSnapshot) => DataApiSnapshot;
   } = {},
 ): MountedRoot {
-  const window = new Window({ url: 'http://morrow.test/' });
-  windows.push(window);
+  const window = options.window ?? new Window({ url: 'http://morrow.test/' });
+  if (!options.window) windows.push(window);
   const node = window.document.createElement('div');
   window.document.body.append(node);
   const element = node as unknown as HTMLElement;
@@ -547,6 +591,16 @@ function dispatchCellKeydown(
   if (keyCode !== undefined) Object.defineProperty(event, 'keyCode', { value: keyCode });
   target.dispatchEvent(event as unknown as Event);
   return event as unknown as KeyboardEvent;
+}
+
+function dispatchFocusedCellKeydown(root: MountedRoot, options: CellKeydownOptions): KeyboardEvent {
+  const target = root.window.document.activeElement;
+  if (!(target instanceof root.window.HTMLElement)) throw new Error('Expected a focused grid target.');
+  return dispatchCellKeydown(root, target as unknown as HTMLElement, options);
+}
+
+function focusedElement(window: Window): HTMLElement | null {
+  return window.document.activeElement as unknown as HTMLElement | null;
 }
 
 function dispatchInput(root: MountedRoot, control: HTMLTextAreaElement | HTMLInputElement): void {
@@ -2573,5 +2627,394 @@ describe('Polaris Dados text-cell editor with real host APIs', () => {
     expect(root.querySelector('input[data-field="quantity"]')).not.toBeNull();
     controller.abort();
     cleanup();
+  });
+});
+
+describe('Polaris Dados four-arrow grid navigation', () => {
+  it('keeps linked navigation moving inside a noneditable embed under an editor', async () => {
+    const fixture = await openGridNavigationFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const linkedView = mountRoot(fixture, { viewId: VIEW_ONE, window });
+    const editor = window.document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    const embed = window.document.createElement('div');
+    embed.setAttribute('contenteditable', 'false');
+    window.document.body.append(editor);
+    editor.append(embed);
+    embed.append(linkedView.element as never);
+
+    linkedView.element.focus();
+    const enter = dispatchFocusedCellKeydown(linkedView, { key: 'ArrowLeft' });
+    const titleCell = linkedView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    expect(enter.defaultPrevented).toBe(true);
+    expect(focusedElement(window)).toBe(titleCell);
+
+    const move = dispatchFocusedCellKeydown(linkedView, { key: 'ArrowRight' });
+    expect(move.defaultPrevented).toBe(true);
+    expect(focusedElement(window)).toBe(
+      linkedView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`),
+    );
+  });
+
+  it('restores source and linked formula or title focus after external Markdown updates', async () => {
+    const fixture = await openGridNavigationFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const source = mountRoot(fixture, { window });
+    const filteredView = mountRoot(fixture, { viewId: VIEW_ONE, window });
+    const orderedView = mountRoot(fixture, { viewId: VIEW_TWO, window });
+
+    const firstRow = fixture.vault.text(ROW_PATH);
+    if (!firstRow) throw new Error('The source row is missing from the navigation fixture.');
+    const sourceTotal = source.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!sourceTotal) throw new Error('The source formula cell did not render.');
+    sourceTotal.focus();
+    fixture.vault.external({ [ROW_PATH]: firstRow.replace('Price: 10', 'Price: 19') });
+    await until('the externally changed source formula to keep focus', () => {
+      const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+      return (
+        snapshot.status === 'ready' &&
+        snapshot.rows.find((row) => row.id === ROW_ID)?.properties.price === 19 &&
+        focusedElement(window) ===
+          source.element.querySelector(`tr[data-row-id="${ROW_ID}"] td[data-field="total"]`)
+      );
+    });
+
+    const secondRow = fixture.vault.text(SECOND_ROW_PATH);
+    if (!secondRow) throw new Error('The filtered row is missing from the navigation fixture.');
+    const linkedTotal = filteredView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!linkedTotal) throw new Error('The linked formula cell did not render.');
+    linkedTotal.focus();
+    fixture.vault.external({ [SECOND_ROW_PATH]: secondRow.replace('Price: 4', 'Price: 7') });
+    await until('the externally changed linked formula to keep focus', () => {
+      const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+      return (
+        snapshot.status === 'ready' &&
+        snapshot.rows.find((row) => row.id === SECOND_ROW_ID)?.properties.price === 7 &&
+        focusedElement(window) ===
+          filteredView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`)
+      );
+    });
+    const next = dispatchFocusedCellKeydown(filteredView, { key: 'ArrowRight' });
+    expect(next.defaultPrevented).toBe(true);
+    expect(focusedElement(window)).toBe(
+      filteredView.element.querySelector(
+        `button[data-action="edit"][data-row-id="${SECOND_ROW_ID}"][data-field="message"]`,
+      ),
+    );
+
+    const updatedSecondRow = fixture.vault.text(SECOND_ROW_PATH);
+    if (!updatedSecondRow) throw new Error('The updated row is missing from the navigation fixture.');
+    const linkedTitle = filteredView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!linkedTitle) throw new Error('The linked title cell did not render.');
+    linkedTitle.focus();
+    fixture.vault.external({ [SECOND_ROW_PATH]: updatedSecondRow.replace('Price: 7', 'Price: 8') });
+    await until('the externally changed linked title to keep focus', () => {
+      const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+      return (
+        snapshot.status === 'ready' &&
+        snapshot.rows.find((row) => row.id === SECOND_ROW_ID)?.properties.price === 8 &&
+        focusedElement(window) ===
+          filteredView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`)
+      );
+    });
+    expect(orderedView.element.querySelector('table')).not.toBeNull();
+  });
+
+  it('restores formula and title focus across a full linked refilter, then returns to the region when rows vanish', async () => {
+    const fixture = await openGridNavigationFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const linkedView = mountRoot(fixture, { viewId: VIEW_ONE, window });
+    const otherView = mountRoot(fixture, { viewId: VIEW_TWO, window });
+
+    const otherFormula = otherView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!otherFormula) throw new Error('The other linked formula cell did not render.');
+    otherFormula.focus();
+    const initialTable = linkedView.element.querySelector('table');
+    const originalNote = fixture.vault.text(NOTE_PATH);
+    if (!originalNote) throw new Error('The linked view note is missing from the navigation fixture.');
+    fixture.vault.external({ [NOTE_PATH]: markdownForGridNavigationViews(['message', 'total']) });
+    await until('a full refilter to leave focus in the other linked view', () => {
+      const snapshot = linkedView.viewApi?.snapshot();
+      return (
+        snapshot?.status === 'ready' &&
+        snapshot.config.columnOrder.join(',') === 'message,total' &&
+        linkedView.element.querySelector('table') !== initialTable &&
+        focusedElement(window) ===
+          otherView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`)
+      );
+    });
+
+    const titleCell = linkedView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!titleCell) throw new Error('The linked title cell did not render.');
+    titleCell.focus();
+    const reorderedTable = linkedView.element.querySelector('table');
+    fixture.vault.external({ [NOTE_PATH]: originalNote });
+    await until('the externally reordered view to restore title focus', () => {
+      const snapshot = linkedView.viewApi?.snapshot();
+      return (
+        snapshot?.status === 'ready' &&
+        snapshot.config.columnOrder.join(',') === 'total,message' &&
+        linkedView.element.querySelector('table') !== reorderedTable &&
+        focusedElement(window) ===
+          linkedView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`)
+      );
+    });
+
+    const formulaCell = linkedView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!formulaCell) throw new Error('The reordered linked formula cell did not render.');
+    formulaCell.focus();
+    const formulaTable = linkedView.element.querySelector('table');
+    fixture.vault.external({ [NOTE_PATH]: markdownForGridNavigationViews(['message', 'total']) });
+    await until('the externally restored view order to restore formula focus', () => {
+      const snapshot = linkedView.viewApi?.snapshot();
+      return (
+        snapshot?.status === 'ready' &&
+        snapshot.config.columnOrder.join(',') === 'message,total' &&
+        linkedView.element.querySelector('table') !== formulaTable &&
+        focusedElement(window) ===
+          linkedView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`)
+      );
+    });
+
+    const focusedFormula = linkedView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`,
+    );
+    if (!focusedFormula) throw new Error('The linked formula cell did not render before refiltering.');
+    focusedFormula.focus();
+    fixture.vault.external({ [NOTE_PATH]: markdownForGridNavigationViews(['total', 'message'], 6) });
+    await until('the full refilter to send missing formula focus to its region', () => {
+      const snapshot = linkedView.viewApi?.snapshot();
+      return (
+        snapshot?.status === 'ready' &&
+        snapshot.config.filter?.value === 6 &&
+        linkedView.element.querySelectorAll('tbody tr').length === 0 &&
+        focusedElement(window) === linkedView.element
+      );
+    });
+
+    fixture.vault.external({ [NOTE_PATH]: markdownForGridNavigationViews(['total', 'message'], 3) });
+    await until(
+      'the row to return after restoring the filter',
+      () => linkedView.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"]`) !== null,
+    );
+    const restoredTitle = linkedView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    if (!restoredTitle) throw new Error('The restored linked title cell did not render.');
+    restoredTitle.focus();
+    fixture.vault.external({ [NOTE_PATH]: markdownForGridNavigationViews(['total', 'message'], 6) });
+    await until('the full refilter to send missing title focus to its region', () => {
+      const snapshot = linkedView.viewApi?.snapshot();
+      return (
+        snapshot?.status === 'ready' &&
+        snapshot.config.filter?.value === 6 &&
+        linkedView.element.querySelectorAll('tbody tr').length === 0 &&
+        focusedElement(window) === linkedView.element
+      );
+    });
+  });
+
+  it('uses the source and each linked view order, reaches readonly cells, and preserves seeded text confirmation', async () => {
+    const fixture = await openGridNavigationFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const source = mountRoot(fixture, { window });
+    const filteredView = mountRoot(fixture, { viewId: VIEW_ONE, window });
+    const orderedView = mountRoot(fixture, { viewId: VIEW_TWO, window });
+    const rowBytes = fixture.vault.text(SECOND_ROW_PATH);
+    const viewBytes = fixture.vault.text(NOTE_PATH);
+    if (rowBytes === undefined || viewBytes === undefined)
+      throw new Error('The navigation fixture is incomplete.');
+    const initialApplyCount = fixture.vault.applyCount;
+
+    const rowIds = (root: MountedRoot) =>
+      [...root.element.querySelectorAll<HTMLTableRowElement>('tbody tr')].map((row) => row.dataset.rowId);
+    expect(rowIds(source)).toEqual([ROW_ID, SECOND_ROW_ID]);
+    expect(rowIds(filteredView)).toEqual([SECOND_ROW_ID]);
+    expect(rowIds(orderedView)).toEqual([ROW_ID, SECOND_ROW_ID]);
+    expect(filteredView.element.querySelector('thead th[data-column-id="total"]')).not.toBeNull();
+    expect(orderedView.element.querySelector('thead th[data-column-id="price"]')).not.toBeNull();
+    expect(source.element.tabIndex).toBe(0);
+    expect(
+      [...source.element.querySelectorAll('td')].every((cell) => (cell as HTMLElement).tabIndex === -1),
+    ).toBe(true);
+
+    const sourceMessage = source.element.querySelector<HTMLButtonElement>(
+      `button[data-action="edit"][data-row-id="${ROW_ID}"][data-field="message"]`,
+    );
+    const sourceEmpty = source.element.querySelector<HTMLButtonElement>(
+      `button[data-action="edit"][data-row-id="${ROW_ID}"][data-field="empty"]`,
+    );
+    if (!sourceMessage || !sourceEmpty) throw new Error('The source text cells did not render edit buttons.');
+
+    source.element.focus();
+    const unfocusedTarget = dispatchCellKeydown(source, sourceMessage, { key: 'ArrowRight' });
+    expect(unfocusedTarget.defaultPrevented).toBe(false);
+    expect(window.document.activeElement).toBe(source.element);
+    const legacyComposition = dispatchFocusedCellKeydown(source, { key: 'ArrowRight', keyCode: 229 });
+    expect(legacyComposition.defaultPrevented).toBe(false);
+    expect(window.document.activeElement).toBe(source.element);
+    const firstSourceArrow = dispatchFocusedCellKeydown(source, { key: 'ArrowLeft' });
+    expect(firstSourceArrow.defaultPrevented).toBe(true);
+    expect(window.document.activeElement).toBe(sourceMessage);
+
+    const modifiedArrow = dispatchFocusedCellKeydown(source, { key: 'ArrowRight', shiftKey: true });
+    expect(modifiedArrow.defaultPrevented).toBe(false);
+    expect(window.document.activeElement).toBe(sourceMessage);
+    const nextSourceCell = dispatchFocusedCellKeydown(source, { key: 'ArrowRight' });
+    expect(nextSourceCell.defaultPrevented).toBe(true);
+    expect(window.document.activeElement).toBe(sourceEmpty);
+    dispatchFocusedCellKeydown(source, { key: 'ArrowLeft' });
+    expect(window.document.activeElement).toBe(sourceMessage);
+    dispatchFocusedCellKeydown(source, { key: 'ArrowUp' });
+    expect(window.document.activeElement).toBe(sourceMessage);
+    dispatchFocusedCellKeydown(source, { key: 'ArrowDown' });
+    expect(window.document.activeElement).toBe(
+      source.element.querySelector(
+        `button[data-action="edit"][data-row-id="${SECOND_ROW_ID}"][data-field="message"]`,
+      ),
+    );
+    dispatchFocusedCellKeydown(source, { key: 'ArrowUp' });
+    expect(window.document.activeElement).toBe(sourceMessage);
+    for (let column = 0; column < 6; column += 1) {
+      dispatchFocusedCellKeydown(source, { key: 'ArrowRight' });
+    }
+    const sourceFormulaCell = source.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${ROW_ID}"] td[data-field="total"]`,
+    );
+    expect(sourceFormulaCell).not.toBeNull();
+    expect(sourceFormulaCell?.tabIndex).toBe(-1);
+    expect(window.document.activeElement).toBe(sourceFormulaCell);
+    dispatchFocusedCellKeydown(source, { key: 'ArrowDown' });
+    expect(window.document.activeElement).toBe(
+      source.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`),
+    );
+    const bottomBoundary = dispatchFocusedCellKeydown(source, { key: 'ArrowDown' });
+    expect(bottomBoundary.defaultPrevented).toBe(true);
+    expect(window.document.activeElement).toBe(
+      source.element.querySelector(`tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`),
+    );
+
+    filteredView.element.focus();
+    dispatchFocusedCellKeydown(filteredView, { key: 'ArrowDown' });
+    const filteredTitleCell = filteredView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-row-title]`,
+    );
+    expect(window.document.activeElement).toBe(filteredTitleCell);
+    dispatchFocusedCellKeydown(filteredView, { key: 'ArrowRight' });
+    const filteredTotalCell = filteredView.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${SECOND_ROW_ID}"] td[data-field="total"]`,
+    );
+    expect(window.document.activeElement).toBe(filteredTotalCell);
+    dispatchFocusedCellKeydown(filteredView, { key: 'ArrowRight' });
+    expect(window.document.activeElement).toBe(
+      filteredView.element.querySelector(
+        `button[data-action="edit"][data-row-id="${SECOND_ROW_ID}"][data-field="message"]`,
+      ),
+    );
+    expect(source.element.querySelector('table')).not.toBeNull();
+    expect(orderedView.element.querySelector('table')).not.toBeNull();
+
+    orderedView.element.focus();
+    dispatchFocusedCellKeydown(orderedView, { key: 'ArrowUp' });
+    expect(window.document.activeElement).toBe(
+      orderedView.element.querySelector(`tr[data-row-id="${ROW_ID}"] td[data-row-title]`),
+    );
+    dispatchFocusedCellKeydown(orderedView, { key: 'ArrowRight' });
+    expect(window.document.activeElement).toBe(
+      orderedView.element.querySelector(
+        `button[data-action="edit"][data-row-id="${ROW_ID}"][data-field="price"]`,
+      ),
+    );
+    dispatchFocusedCellKeydown(orderedView, { key: 'ArrowRight' });
+    dispatchFocusedCellKeydown(orderedView, { key: 'ArrowDown' });
+    const secondRowMessage = orderedView.element.querySelector<HTMLButtonElement>(
+      `button[data-action="edit"][data-row-id="${SECOND_ROW_ID}"][data-field="message"]`,
+    );
+    expect(window.document.activeElement).toBe(secondRowMessage);
+
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(initialApplyCount);
+    expect(fixture.vault.text(SECOND_ROW_PATH)).toBe(rowBytes);
+    expect(fixture.vault.text(NOTE_PATH)).toBe(viewBytes);
+    const seeded = dispatchFocusedCellKeydown(orderedView, { key: 'X' });
+    const editor = orderedView.element.querySelector<HTMLTextAreaElement>(
+      `textarea[data-row-id="${SECOND_ROW_ID}"][data-field="message"]`,
+    );
+    expect(seeded.defaultPrevented).toBe(true);
+    expect(editor?.value).toBe('X');
+    expect(editor?.selectionStart).toBe(1);
+    expect(window.document.activeElement).toBe(editor);
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(initialApplyCount);
+
+    const caretArrow = dispatchFocusedCellKeydown(orderedView, { key: 'ArrowLeft' });
+    expect(caretArrow.defaultPrevented).toBe(false);
+    expect(window.document.activeElement).toBe(editor);
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(initialApplyCount);
+
+    const confirm = dispatchFocusedCellKeydown(orderedView, { key: 'Enter', ctrlKey: true });
+    expect(confirm.defaultPrevented).toBe(true);
+    await until('the arrow-reached text cell to save through Ctrl+Enter', () => {
+      const snapshot = fixture.data.snapshot(DATABASE_ID as PageId);
+      return (
+        snapshot.status === 'ready' &&
+        snapshot.rows.find((row) => row.id === SECOND_ROW_ID)?.properties.message === 'X'
+      );
+    });
+    await waitForSaved(orderedView.element);
+    expect(fixture.textPatchCalls).toBe(1);
+    expect(fixture.vault.applyCount).toBe(initialApplyCount + 1);
+    expect(fixture.vault.text(NOTE_PATH)).toBe(viewBytes);
+  });
+
+  it('enters a fully readonly or empty grid from its existing region tab stop', async () => {
+    const fixture = await openFixture();
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const readonly = mountRoot(fixture, { editable: false, window });
+    const cell = readonly.element.querySelector<HTMLTableCellElement>(
+      `tr[data-row-id="${ROW_ID}"] td[data-field="message"]`,
+    );
+    if (!cell) throw new Error('The readonly message cell did not render.');
+    const disabledEdit = window.document.createElement('button');
+    disabledEdit.type = 'button';
+    disabledEdit.dataset.action = 'edit';
+    disabledEdit.disabled = true;
+    cell.append(disabledEdit as unknown as Node);
+    readonly.element.focus();
+    const readonlyEntry = dispatchFocusedCellKeydown(readonly, { key: 'ArrowDown' });
+    expect(readonlyEntry.defaultPrevented).toBe(true);
+    expect(window.document.activeElement).toBe(cell);
+    expect(cell.tabIndex).toBe(-1);
+    expect(readonly.element.tabIndex).toBe(0);
+
+    const empty = mountRoot(fixture, {
+      window,
+      snapshotTransform: (snapshot) => (snapshot.status === 'ready' ? { ...snapshot, rows: [] } : snapshot),
+    });
+    empty.element.focus();
+    const emptyGridArrow = dispatchFocusedCellKeydown(empty, { key: 'ArrowRight' });
+    expect(emptyGridArrow.defaultPrevented).toBe(true);
+    expect(empty.element.querySelectorAll('tbody tr')).toHaveLength(0);
+    expect(window.document.activeElement).toBe(empty.element);
   });
 });

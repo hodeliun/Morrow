@@ -290,6 +290,11 @@ interface FocusSnapshot {
   readonly selectionEnd: number | null;
 }
 
+interface GridFocusSnapshot {
+  readonly key: string | null;
+  readonly cellKey: string;
+}
+
 interface LinkedViewDraft {
   readonly expectedRevision: string;
   title: string;
@@ -689,9 +694,90 @@ export function mountPolarisDados(
     };
   };
 
+  const focusGridCell = (cell: HTMLTableCellElement, preventScroll = false): void => {
+    const editButton = [...cell.querySelectorAll<HTMLButtonElement>('button[data-action="edit"]')].find(
+      (button) => !button.disabled && button.getAttribute('aria-disabled') !== 'true' && button.tabIndex >= 0,
+    );
+    const target = editButton ?? cell;
+    if (preventScroll) target.focus({ preventScroll: true });
+    else target.focus();
+  };
+
+  const captureGridFocus = (table: HTMLTableElement | null): GridFocusSnapshot | null => {
+    const active = document.activeElement;
+    if (!table || !(active instanceof document.defaultView!.HTMLElement) || !table.contains(active))
+      return null;
+    const cell = active.closest<HTMLTableCellElement>('td[data-focus-key]');
+    if (!cell || cell.closest('table') !== table) return null;
+    if (active !== cell && !active.matches('button[data-action="edit"]')) return null;
+    return { key: active.getAttribute('data-focus-key'), cellKey: cell.getAttribute('data-focus-key')! };
+  };
+
+  const focusGridTarget = (target: HTMLElement): HTMLElement | null => {
+    if (target.matches('td[data-focus-key]')) focusGridCell(target as HTMLTableCellElement, true);
+    else if (
+      target instanceof document.defaultView!.HTMLButtonElement &&
+      target.matches('button[data-action="edit"]') &&
+      (target.disabled || target.getAttribute('aria-disabled') === 'true' || target.tabIndex < 0)
+    ) {
+      return null;
+    } else target.focus({ preventScroll: true });
+    const active = document.activeElement;
+    return active instanceof document.defaultView!.HTMLElement &&
+      (target === active || target.contains(active))
+      ? active
+      : null;
+  };
+
+  const restoreGridFocus = (
+    snapshot: GridFocusSnapshot,
+    table = container.querySelector<HTMLTableElement>('table.polaris-dados-grid'),
+  ): HTMLElement | null => {
+    const target =
+      table && snapshot.key
+        ? [...table.querySelectorAll<HTMLElement>('[data-focus-key]')].find(
+            (candidate) => candidate.getAttribute('data-focus-key') === snapshot.key,
+          )
+        : undefined;
+    if (target) {
+      const focused = focusGridTarget(target);
+      if (focused) return focused;
+    }
+    const cell = table
+      ? [...table.querySelectorAll<HTMLTableCellElement>('td[data-focus-key]')].find(
+          (candidate) => candidate.getAttribute('data-focus-key') === snapshot.cellKey,
+        )
+      : undefined;
+    if (cell) {
+      const focused = focusGridTarget(cell);
+      if (focused) return focused;
+    }
+    element.focus({ preventScroll: true });
+    return document.activeElement === element ? element : null;
+  };
+
+  const restoreFocusSelection = (target: HTMLElement, focus: FocusSnapshot): void => {
+    if (
+      (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA') ||
+      focus.selectionStart === null ||
+      focus.selectionEnd === null
+    ) {
+      return;
+    }
+    try {
+      const control = target as HTMLInputElement | HTMLTextAreaElement;
+      const start = Math.max(0, Math.min(focus.selectionStart, control.value.length));
+      const end = Math.max(start, Math.min(focus.selectionEnd, control.value.length));
+      control.setSelectionRange(start, end);
+    } catch {
+      // Number inputs do not expose selection ranges in every WebView.
+    }
+  };
+
   const render = (focusRoot = false, focusOverride: string | null = null, preserveUnkeyedFocus = false) => {
     if (disposed) return;
     const focus = captureFocus();
+    const gridFocus = captureGridFocus(container.querySelector<HTMLTableElement>('table.polaris-dados-grid'));
     const restoreDraft =
       restoreDraftFocusPending &&
       (draft?.kind === 'text' || draft?.kind === 'checkbox') &&
@@ -772,24 +858,20 @@ export function mountPolarisDados(
       const target = [...container.querySelectorAll<HTMLElement>('[data-focus-key]')].find(
         (candidate) => candidate.getAttribute('data-focus-key') === key,
       );
-      if (!target) return;
-      target.focus({ preventScroll: true });
-      if (
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') &&
-        focus.selectionStart !== null &&
-        focus.selectionEnd !== null
-      ) {
-        try {
-          const control = target as HTMLInputElement | HTMLTextAreaElement;
-          const selectionStart = focus.selectionStart;
-          const selectionEnd = focus.selectionEnd;
-          const start = Math.max(0, Math.min(selectionStart, control.value.length));
-          const end = Math.max(start, Math.min(selectionEnd, control.value.length));
-          control.setSelectionRange(start, end);
-        } catch {
-          // Number inputs do not expose selection ranges in every WebView.
-        }
+      const focusedTarget = target ? focusGridTarget(target) : null;
+      if (focusedTarget) {
+        restoreFocusSelection(focusedTarget, focus);
+        return;
       }
+      if (!focusOverride && gridFocus) {
+        const restored = restoreGridFocus(gridFocus);
+        if (restored) restoreFocusSelection(restored, focus);
+      }
+      return;
+    }
+    if (gridFocus) {
+      const restored = restoreGridFocus(gridFocus);
+      if (restored) restoreFocusSelection(restored, focus);
       return;
     }
     if (preserveUnkeyedFocus) return;
@@ -1738,6 +1820,8 @@ export function mountPolarisDados(
     const cell = document.createElement('td');
     cell.dataset.columnKey = column.key;
     cell.dataset.rowTitle = 'true';
+    cell.dataset.focusKey = gridCellFocusKey(row.id, '@row-title');
+    cell.tabIndex = -1;
     cell.style.padding = '0.45rem 0.65rem';
     cell.style.borderBottom = '1px solid currentColor';
     const title = document.createElement('span');
@@ -1768,6 +1852,8 @@ export function mountPolarisDados(
   ): HTMLTableCellElement => {
     const cell = document.createElement('td');
     cell.dataset.field = property.id;
+    cell.dataset.focusKey = gridCellFocusKey(row.id, `property:${property.id}`);
+    cell.tabIndex = -1;
     cell.style.padding = '0.45rem 0.65rem';
     cell.style.borderBottom = '1px solid currentColor';
 
@@ -1810,6 +1896,7 @@ export function mountPolarisDados(
     if (renderedRows.some((row) => row.querySelectorAll('td').length !== snapshot.schema.properties.length))
       return false;
 
+    const gridFocus = captureGridFocus(table);
     const formulaScope = formulaScopeForRender(snapshot);
     for (let column = 0; column < snapshot.schema.properties.length; column += 1) {
       const property = snapshot.schema.properties[column]!;
@@ -1847,6 +1934,7 @@ export function mountPolarisDados(
       }
     }
     refreshNotices(snapshot);
+    if (gridFocus) restoreGridFocus(gridFocus, table);
     return true;
   };
 
@@ -1878,6 +1966,7 @@ export function mountPolarisDados(
     )
       return false;
 
+    const gridFocus = captureGridFocus(table);
     const formulaScope = formulaScopeForRender(snapshot);
     table.setAttribute('aria-label', projection.title);
     const caption = table.querySelector('caption');
@@ -1920,6 +2009,7 @@ export function mountPolarisDados(
       }
     }
     refreshNotices(snapshot);
+    if (gridFocus) restoreGridFocus(gridFocus, table);
     return true;
   };
 
@@ -1927,6 +2017,7 @@ export function mountPolarisDados(
     if (!view || currentViewSnapshot?.status !== 'ready' || currentSnapshot?.status !== 'ready') return;
     const replacement = renderLinkedGrid(currentSnapshot, currentViewSnapshot.config);
     const previous = container.querySelector<HTMLTableElement>('table');
+    const gridFocus = captureGridFocus(previous);
     if (previous) previous.replaceWith(replacement);
     else {
       const anchor =
@@ -1937,6 +2028,7 @@ export function mountPolarisDados(
     const toolbarTitle = container.querySelector<HTMLElement>('[data-view-toolbar] [data-view-title]');
     if (toolbarTitle) toolbarTitle.textContent = currentViewSnapshot.config.title;
     refreshNotices(currentSnapshot);
+    if (gridFocus) restoreGridFocus(gridFocus, replacement);
   };
 
   const renderEditButton = (
@@ -3226,7 +3318,79 @@ export function mountPolarisDados(
     await flushPending();
   }
 
+  const navigateGridArrow = (event: KeyboardEvent): boolean => {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      event.shiftKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key) ||
+      viewPanelOpen ||
+      viewDraft ||
+      draft
+    ) {
+      return false;
+    }
+
+    const target = event.target;
+    if (!(target instanceof document.defaultView!.HTMLElement)) return false;
+    if (document.activeElement !== target) return false;
+    const enteringFromRegion = target === element && document.activeElement === element;
+    if (!enteringFromRegion) {
+      if (!element.contains(target)) return false;
+      const excluded = target.closest<HTMLElement>(
+        'input, textarea, select, [contenteditable="true"], [data-view-settings], [data-view-toolbar], [role="dialog"], [role="menu"], button:not([data-action="edit"]), summary',
+      );
+      if (excluded && element.contains(excluded)) {
+        return false;
+      }
+    }
+
+    const table = enteringFromRegion
+      ? container.querySelector<HTMLTableElement>('table.polaris-dados-grid')
+      : target.closest<HTMLTableElement>('table.polaris-dados-grid');
+    if (!table || !container.contains(table)) {
+      if (!enteringFromRegion) return false;
+      event.preventDefault();
+      return true;
+    }
+
+    const rows = [...table.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    if (enteringFromRegion) {
+      event.preventDefault();
+      const firstCell = rows[0]?.cells[0];
+      if (firstCell) focusGridCell(firstCell);
+      return true;
+    }
+
+    const currentCell = target.closest<HTMLTableCellElement>('td');
+    if (!currentCell || currentCell.closest('table') !== table) return false;
+    const currentRow = currentCell.parentElement;
+    if (!(currentRow instanceof document.defaultView!.HTMLTableRowElement)) return false;
+    const currentRowIndex = rows.indexOf(currentRow);
+    const currentColumnIndex = [...currentRow.cells].indexOf(currentCell);
+    if (currentRowIndex < 0 || currentColumnIndex < 0) return false;
+
+    let nextRowIndex = currentRowIndex;
+    let nextColumnIndex = currentColumnIndex;
+    if (event.key === 'ArrowUp') nextRowIndex = Math.max(0, currentRowIndex - 1);
+    else if (event.key === 'ArrowDown') nextRowIndex = Math.min(rows.length - 1, currentRowIndex + 1);
+    else if (event.key === 'ArrowLeft') nextColumnIndex = Math.max(0, currentColumnIndex - 1);
+    else if (event.key === 'ArrowRight') {
+      nextColumnIndex = Math.min(rows[currentRowIndex]!.cells.length - 1, currentColumnIndex + 1);
+    }
+
+    event.preventDefault();
+    const nextCell = rows[nextRowIndex]?.cells[nextColumnIndex];
+    if (nextCell) focusGridCell(nextCell);
+    return true;
+  };
+
   const onRootKeyDown = (event: KeyboardEvent) => {
+    if (navigateGridArrow(event)) return;
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
     const activeElement = document.activeElement;
     if (isTextEditingTarget(activeElement, document) || isTextEditingTarget(event.target, document)) {
@@ -3327,6 +3491,10 @@ export function parseFiniteNumber(
 
 function focusKey(action: string, rowId: string, propertyId: string): string {
   return `${action}:${rowId}:${propertyId}`;
+}
+
+function gridCellFocusKey(rowId: string, columnKey: string): string {
+  return focusKey('grid-cell', rowId, columnKey);
 }
 
 function normalizeTextAreaValue(value: string): string {
