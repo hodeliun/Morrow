@@ -49,6 +49,7 @@ interface TextDraft extends DraftBase {
   readonly initialVisibleValue: string;
   readonly schemaSignature: string;
   focused: boolean;
+  composing: boolean;
   selectionStart: number | null;
   selectionEnd: number | null;
 }
@@ -73,6 +74,18 @@ interface PendingFlush {
   readonly kind: 'cell' | 'history';
   errorDetail: string | null;
   retryAvailable: boolean;
+}
+
+interface TextFocusReturnIntent {
+  readonly sourceKey: string;
+  readonly targetKey: string;
+  canceled: boolean;
+  cleanup: () => void;
+}
+
+interface PointerGesture {
+  released: boolean;
+  readonly afterClick: Array<() => void>;
 }
 
 interface StoredTextDraft {
@@ -198,6 +211,7 @@ function restoreTextDraft(serialized: string, databaseId: string): RestoredTextD
         errorCode: blocked === 'stale' ? 'stale-revision' : blocked === 'readonly' ? 'host-readonly' : null,
         errorDetail: stored.errorDetail,
         focused: stored.focused,
+        composing: false,
         selectionStart,
         selectionEnd,
       },
@@ -358,7 +372,80 @@ export function mountPolarisDados(
   let restoreDraftFocusPending = false;
   let patchIntentPending = false;
   let restoreFocusScheduled = false;
+  let textFocusReturnIntent: TextFocusReturnIntent | null = null;
+  let pointerGesture: PointerGesture | null = null;
   const restoreFocusGeneration = Symbol('restore-text-focus');
+
+  const clearTextFocusReturnIntent = (intent = textFocusReturnIntent) => {
+    if (!intent || textFocusReturnIntent !== intent) return;
+    intent.cleanup();
+    textFocusReturnIntent = null;
+  };
+
+  const cancelTextFocusReturnIntent = (intent = textFocusReturnIntent) => {
+    if (!intent || textFocusReturnIntent !== intent) return;
+    intent.canceled = true;
+    clearTextFocusReturnIntent(intent);
+  };
+
+  const createTextFocusReturnIntent = (sourceKey: string, targetKey: string): TextFocusReturnIntent => {
+    cancelTextFocusReturnIntent();
+    const intent: TextFocusReturnIntent = {
+      sourceKey,
+      targetKey,
+      canceled: false,
+      cleanup: () => {},
+    };
+    const cancel = () => cancelTextFocusReturnIntent(intent);
+    const onFocusIn = (event: FocusEvent) => {
+      const focusWindow = document.defaultView;
+      const target = event.target;
+      if (!focusWindow || !(target instanceof focusWindow.HTMLElement) || !element.contains(target)) {
+        cancel();
+        return;
+      }
+      const key = target.getAttribute('data-focus-key');
+      if (key === intent.sourceKey) return;
+      if (key === intent.targetKey) {
+        clearTextFocusReturnIntent(intent);
+        return;
+      }
+      cancel();
+    };
+    const onPointerDown = () => cancel();
+    const onKeyDown = () => cancel();
+    intent.cleanup = () => {
+      document.removeEventListener('focusin', onFocusIn, true);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+    textFocusReturnIntent = intent;
+    document.addEventListener('focusin', onFocusIn, true);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return intent;
+  };
+
+  const onDocumentPointerDown = () => {
+    pointerGesture = { released: false, afterClick: [] };
+  };
+  const onDocumentPointerUp = () => {
+    const completedGesture = pointerGesture;
+    if (!completedGesture) return;
+    completedGesture.released = true;
+    document.defaultView?.setTimeout(() => {
+      if (pointerGesture === completedGesture) pointerGesture = null;
+    }, 0);
+  };
+  const onDocumentPointerCancel = () => {
+    pointerGesture = null;
+  };
+  const onDocumentClick = () => {
+    const completedGesture = pointerGesture;
+    if (!completedGesture?.released) return;
+    pointerGesture = null;
+    for (const afterClick of completedGesture.afterClick) afterClick();
+  };
 
   try {
     const serialized = transientState?.read();
@@ -601,7 +688,7 @@ export function mountPolarisDados(
     };
   };
 
-  const render = (focusRoot = false, focusOverride: string | null = null) => {
+  const render = (focusRoot = false, focusOverride: string | null = null, preserveUnkeyedFocus = false) => {
     if (disposed) return;
     const focus = captureFocus();
     const restoreDraft =
@@ -704,6 +791,7 @@ export function mountPolarisDados(
       }
       return;
     }
+    if (preserveUnkeyedFocus) return;
     if (document.activeElement !== element) element.focus({ preventScroll: true });
   };
 
@@ -1908,6 +1996,7 @@ export function mountPolarisDados(
           initialVisibleValue: normalizeTextAreaValue(rawValue),
           schemaSignature: textSchemaSignature(latest),
           focused: false,
+          composing: false,
           selectionStart: 0,
           selectionEnd: 0,
         };
@@ -2163,17 +2252,89 @@ export function mountPolarisDados(
       draft.selectionEnd = textarea.selectionEnd;
       checkpointDraft();
     };
+    const saveAfterLeavingEditor = (event: FocusEvent) => {
+      checkpointTextSelection();
+      const next = event.relatedTarget;
+      const focusWindow = document.defaultView;
+      if (
+        activeDraft.composing ||
+        !focusWindow ||
+        !(next instanceof focusWindow.HTMLElement) ||
+        next === document.body ||
+        next === document.documentElement ||
+        editor.contains(next) ||
+        (next.hasAttribute('data-row-id') && next.hasAttribute('data-field')) ||
+        next.closest('[role="tab"], .brand, .history-buttons, a[href]')
+      )
+        return;
+
+      const generation = ++blurSaveGeneration;
+      const saveIfStillOutside = () => {
+        if (generation !== blurSaveGeneration) return;
+        if (pointerGesture) {
+          pointerGesture.afterClick.push(saveIfStillOutside);
+          return;
+        }
+        blurSaveTimer = focusWindow.setTimeout(() => {
+          blurSaveTimer = null;
+          const hostPane = element.closest<HTMLElement>('.pane');
+          if (
+            generation !== blurSaveGeneration ||
+            disposed ||
+            signal.aborted ||
+            !element.isConnected ||
+            !editor.isConnected ||
+            !container.contains(textarea) ||
+            (hostPane &&
+              (hostPane.classList.contains('is-cached') ||
+                hostPane.inert ||
+                hostPane.getAttribute('aria-hidden') === 'true' ||
+                hostPane.style.display === 'none')) ||
+            draft !== activeDraft ||
+            activeDraft.composing ||
+            busy ||
+            pendingFlush ||
+            !editable ||
+            document.activeElement !== next
+          )
+            return;
+          void saveDraft({ preserveFocus: true });
+        }, 0);
+      };
+      // A pointerdown may blur the editor well before click activates navigation. Wait for that
+      // click, then revalidate this exact draft and mount before committing.
+      saveIfStillOutside();
+    };
+    let blurSaveGeneration = 0;
+    let blurSaveTimer: number | null = null;
+    const cancelDeferredBlurSave = () => {
+      blurSaveGeneration += 1;
+      if (blurSaveTimer !== null) document.defaultView?.clearTimeout(blurSaveTimer);
+      blurSaveTimer = null;
+    };
     textarea.addEventListener('focus', checkpointTextSelection);
     textarea.addEventListener('blur', checkpointTextSelection);
+    editor.addEventListener('focusin', cancelDeferredBlurSave);
+    editor.addEventListener('focusout', saveAfterLeavingEditor);
+    textarea.addEventListener('compositionstart', () => {
+      if (draft === activeDraft) activeDraft.composing = true;
+    });
+    textarea.addEventListener('compositionend', () => {
+      if (draft === activeDraft) activeDraft.composing = false;
+    });
     textarea.addEventListener('select', checkpointTextSelection);
     textarea.addEventListener('keyup', checkpointTextSelection);
     textarea.addEventListener('click', checkpointTextSelection);
     textarea.addEventListener('keydown', (event) => {
-      if (event.isComposing) {
+      if (event.isComposing || activeDraft.composing) {
         event.stopPropagation();
         return;
       }
-      if (event.key === 'Enter') {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        void saveDraft({ preserveFocus: true, returnFocusToCell: true });
+      } else if (event.key === 'Enter') {
         // Enter and Shift+Enter insert a newline; saving is always explicit.
         event.stopPropagation();
       } else if (event.key === 'Escape') {
@@ -2231,7 +2392,9 @@ export function mountPolarisDados(
   const formatNumberCell = (value: number, property: ProviderProperty): string => {
     const format = property.type === 'number' ? property.format : undefined;
     const fallbackLocale = format
-      ? (typeof navigator !== 'undefined' ? navigator.language : 'en-US')
+      ? typeof navigator !== 'undefined'
+        ? navigator.language
+        : 'en-US'
       : locale;
     return formatSharedNumberCell(value, format, fallbackLocale);
   };
@@ -2712,9 +2875,17 @@ export function mountPolarisDados(
     render(true);
   }
 
-  async function saveDraft(): Promise<void> {
+  async function saveDraft(
+    options: { readonly preserveFocus?: boolean; readonly returnFocusToCell?: boolean } = {},
+  ): Promise<void> {
     if (!draft || draft.blocked === 'stale' || busy || pendingFlush || disposed || signal.aborted) return;
     const activeDraft = draft;
+    const returnFocusKey =
+      options.returnFocusToCell &&
+      activeDraft.kind === 'text' &&
+      captureFocus().key === focusKey('input', activeDraft.rowId, activeDraft.propertyId)
+        ? focusKey('edit', activeDraft.rowId, activeDraft.propertyId)
+        : null;
     if (activeDraft.kind === 'checkbox' && checkboxDraftIndeterminate(activeDraft)) return;
     const refreshDraftUi = () => {
       if (view) {
@@ -2868,8 +3039,14 @@ export function mountPolarisDados(
       draft = null;
     }
     notice = { kind: 'status', message: messages.saving };
-    render(true);
-    await flushPending();
+    const returnFocusIntent =
+      returnFocusKey && activeDraft.kind === 'text'
+        ? createTextFocusReturnIntent(
+            focusKey('input', activeDraft.rowId, activeDraft.propertyId),
+            returnFocusKey,
+          )
+        : null;
+    await flushPending({ preserveFocus: options.preserveFocus, returnFocusKey, returnFocusIntent });
   }
 
   async function applyHistory(direction: 'undo' | 'redo'): Promise<void> {
@@ -2931,13 +3108,22 @@ export function mountPolarisDados(
     await flushPending();
   }
 
-  async function flushPending(): Promise<void> {
-    if (!pendingFlush || disposed || signal.aborted) return;
+  async function flushPending(
+    options: {
+      readonly preserveFocus?: boolean;
+      readonly returnFocusKey?: string | null;
+      readonly returnFocusIntent?: TextFocusReturnIntent | null;
+    } = {},
+  ): Promise<void> {
+    if (!pendingFlush || disposed || signal.aborted) {
+      clearTextFocusReturnIntent(options.returnFocusIntent);
+      return;
+    }
     busy = true;
     pendingFlush.errorDetail = null;
     pendingFlush.retryAvailable = false;
     notice = { kind: 'status', message: messages.saving };
-    render(true);
+    render(!options.preserveFocus, null, options.preserveFocus);
     let result;
     try {
       result = await data.flush(databaseId);
@@ -2948,14 +3134,18 @@ export function mountPolarisDados(
         message: error instanceof Error ? error.message : String(error),
       };
     }
-    if (signal.aborted || disposed) return;
+    if (signal.aborted || disposed) {
+      clearTextFocusReturnIntent(options.returnFocusIntent);
+      return;
+    }
     busy = false;
     if (result.status === 'error') {
       pendingFlush.errorDetail = result.message;
       pendingFlush.retryAvailable = true;
       notice = { kind: 'error', message: messages.saveError(result.message), detail: result.message };
       checkpointDraft();
-      render();
+      render(false, null, options.preserveFocus);
+      clearTextFocusReturnIntent(options.returnFocusIntent);
       return;
     }
 
@@ -2971,7 +3161,18 @@ export function mountPolarisDados(
     } catch {
       // The subscription remains the source of display updates; a snapshot failure must not hide success.
     }
-    render();
+    const focusCell =
+      options.returnFocusKey &&
+      options.returnFocusIntent &&
+      textFocusReturnIntent === options.returnFocusIntent &&
+      !options.returnFocusIntent.canceled &&
+      (document.activeElement === document.body || document.activeElement === document.documentElement) &&
+      element.isConnected &&
+      container.isConnected
+        ? options.returnFocusKey
+        : null;
+    render(false, focusCell, options.preserveFocus);
+    clearTextFocusReturnIntent(options.returnFocusIntent);
   }
 
   async function retryFlush(): Promise<void> {
@@ -3007,12 +3208,18 @@ export function mountPolarisDados(
   const cleanup = () => {
     if (disposed) return;
     disposed = true;
+    cancelTextFocusReturnIntent();
+    pointerGesture = null;
     unsubscribeData();
     unsubscribeView();
     element.removeEventListener('keydown', onRootKeyDown);
     element.removeEventListener('pointerdown', onUserInteraction, true);
     element.removeEventListener('focusin', onUserInteraction, true);
     element.removeEventListener('keydown', onUserInteraction, true);
+    document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+    document.removeEventListener('pointerup', onDocumentPointerUp, true);
+    document.removeEventListener('pointercancel', onDocumentPointerCancel, true);
+    document.removeEventListener('click', onDocumentClick, true);
     signal.removeEventListener('abort', onAbort);
     container.replaceChildren();
     element.replaceChildren();
@@ -3026,6 +3233,10 @@ export function mountPolarisDados(
   element.addEventListener('pointerdown', onUserInteraction, true);
   element.addEventListener('focusin', onUserInteraction, true);
   element.addEventListener('keydown', onUserInteraction, true);
+  document.addEventListener('pointerdown', onDocumentPointerDown, true);
+  document.addEventListener('pointerup', onDocumentPointerUp, true);
+  document.addEventListener('pointercancel', onDocumentPointerCancel, true);
+  document.addEventListener('click', onDocumentClick, true);
   signal.addEventListener('abort', onAbort, { once: true });
   if (unsupportedViewApi) render();
   else {

@@ -927,6 +927,421 @@ describe('Polaris Dados text-cell editor with real host APIs', () => {
     expect(rowProperties(reopened).quantity).toBe(0);
   });
 
+  it('confirms source and linked text drafts with Ctrl/Meta+Enter and returns shortcut focus to the cell', async () => {
+    const fixture = await openFixture();
+    const source = mountRoot(fixture);
+    const firstView = mountRoot(fixture, { viewId: VIEW_ONE });
+    const secondView = mountRoot(fixture, { viewId: VIEW_TWO });
+    const roots = [source, firstView, secondView];
+    const ctrlValue = 'committed by Ctrl+Enter';
+    const ctrlEditor = openEditor(source.element, 'message') as HTMLTextAreaElement;
+    ctrlEditor.value = ctrlValue;
+    dispatchInput(source, ctrlEditor);
+    const ctrlEnter = new source.window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    ctrlEditor.dispatchEvent(ctrlEnter as unknown as Event);
+    expect(ctrlEnter.defaultPrevented).toBe(true);
+    await waitForSaved(source.element);
+    await until('the Ctrl+Enter text to reach each source and linked view', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === ctrlValue),
+    );
+    expect(rowProperties(fixture).message).toBe(ctrlValue);
+    expect(fixture.textPatchCalls).toBe(1);
+    expect(source.window.document.activeElement).toBe(editButton(source.element, 'message'));
+
+    const undo = new source.window.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    source.element.dispatchEvent(undo as unknown as Event);
+    expect(undo.defaultPrevented).toBe(true);
+    await until('undo to restore the value before Ctrl+Enter', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === INITIAL_MESSAGE),
+    );
+    await waitForSaved(source.element);
+
+    const redo = new source.window.KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    source.element.dispatchEvent(redo as unknown as Event);
+    expect(redo.defaultPrevented).toBe(true);
+    await until('redo to restore the Ctrl+Enter text', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === ctrlValue),
+    );
+    await waitForSaved(source.element);
+
+    const metaValue = 'committed by Meta+Enter';
+    const metaEditor = openEditor(firstView.element, 'message') as HTMLTextAreaElement;
+    metaEditor.value = metaValue;
+    dispatchInput(firstView, metaEditor);
+    const metaEnter = new firstView.window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    metaEditor.dispatchEvent(metaEnter as unknown as Event);
+    expect(metaEnter.defaultPrevented).toBe(true);
+    await waitForSaved(firstView.element);
+    await until('the Meta+Enter text to reach each source and linked view', () =>
+      roots.every((root) => fieldValue(root.element, 'message').text === metaValue),
+    );
+    expect(rowProperties(fixture).message).toBe(metaValue);
+    expect(fixture.textPatchCalls).toBe(2);
+    expect(firstView.window.document.activeElement).toBe(editButton(firstView.element, 'message'));
+
+    const persistedBytes = fixture.vault.text(ROW_PATH);
+    if (persistedBytes === undefined) throw new Error('The shortcut edit was not persisted.');
+    for (const root of roots) root.unmount();
+    await fixture.close();
+    fixtures.delete(fixture);
+
+    const reopened = await openFixture(fixture.vault);
+    expect(reopened.vault.text(ROW_PATH)).toBe(persistedBytes);
+    expect(rowProperties(reopened).message).toBe(metaValue);
+  });
+
+  it('revokes shortcut focus return after a later pointer or keyboard interaction during flush', async () => {
+    const runHeldShortcut = async (interaction: 'pointer' | 'keyboard') => {
+      const fixture = await openFixture();
+      let releaseFlush!: () => void;
+      const flushGate = new Promise<void>((resolve) => {
+        releaseFlush = resolve;
+      });
+      const realFlush = fixture.data.flush.bind(fixture.data);
+      fixture.data = {
+        ...fixture.data,
+        async flush(databaseId) {
+          await flushGate;
+          return realFlush(databaseId);
+        },
+      };
+      const root = mountRoot(fixture);
+      const editor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+      editor.value = 'saved without delayed focus theft';
+      dispatchInput(root, editor);
+      const confirm = new root.window.KeyboardEvent('keydown', {
+        key: 'Enter',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      editor.dispatchEvent(confirm as unknown as Event);
+      expect(confirm.defaultPrevented).toBe(true);
+      await until('the Ctrl+Enter flush to wait on its gate', () =>
+        /saving/i.test(root.element.querySelector('[data-current-notice]')?.textContent ?? ''),
+      );
+
+      if (interaction === 'pointer') {
+        const panel = root.window.document.createElement('div');
+        root.window.document.body.append(panel);
+        panel.dispatchEvent(new root.window.Event('pointerdown', { bubbles: true }));
+      } else {
+        root.window.document.body.dispatchEvent(
+          new root.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+        );
+      }
+      root.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]')?.blur();
+      expect(root.window.document.activeElement).toBe(root.window.document.body);
+      releaseFlush();
+      await waitForSaved(root.element);
+      expect(rowProperties(fixture).message).toBe('saved without delayed focus theft');
+      expect(root.window.document.activeElement).toBe(root.window.document.body);
+      if (interaction === 'pointer') {
+        root.window.document.dispatchEvent(new root.window.Event('pointerup', { bubbles: true }));
+        root.window.document.dispatchEvent(new root.window.Event('click', { bubbles: true }));
+      }
+    };
+
+    await runHeldShortcut('pointer');
+    await runHeldShortcut('keyboard');
+  });
+
+  it('commits only a valid external blur and preserves Cancel, tab, composition, and unmount boundaries', async () => {
+    const fixture = await openFixture();
+    const root = mountRoot(fixture);
+    const originalBytes = fixture.vault.text(ROW_PATH);
+    const initialWrites = fixture.vault.applyCount;
+
+    const canceledEditor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    canceledEditor.value = 'cancelled by button';
+    dispatchInput(root, canceledEditor);
+    const cancel = cancelButton(root.element);
+    cancel.focus();
+    expect(fixture.textPatchCalls).toBe(0);
+    cancel.click();
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBeNull();
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+
+    const outside = root.window.document.createElement('button');
+    outside.textContent = 'Outside editor';
+    root.window.document.body.append(outside);
+    const beforeCancelEditor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    beforeCancelEditor.value = 'cancel wins before deferred blur';
+    dispatchInput(root, beforeCancelEditor);
+    outside.focus();
+    cancelButton(root.element).click();
+    await settle();
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+
+    const tab = root.window.document.createElement('div');
+    tab.setAttribute('role', 'tab');
+    tab.tabIndex = 0;
+    root.window.document.body.append(tab);
+    const tabDraft = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    tabDraft.value = 'not saved while changing tabs';
+    dispatchInput(root, tabDraft);
+    tab.focus();
+    await settle();
+    expect(root.window.document.activeElement).toBe(tab);
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBe(tabDraft);
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+    cancelButton(root.element).click();
+
+    const composingEditor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    composingEditor.value = 'draft during composition';
+    dispatchInput(root, composingEditor);
+    composingEditor.dispatchEvent(
+      new root.window.CompositionEvent('compositionstart', { bubbles: true }) as unknown as Event,
+    );
+    const composingEnter = new root.window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      ctrlKey: true,
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    composingEditor.dispatchEvent(composingEnter as unknown as Event);
+    expect(composingEnter.defaultPrevented).toBe(false);
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(root.element.querySelector('textarea[data-field="message"]')).toBe(composingEditor);
+    composingEditor.dispatchEvent(
+      new root.window.CompositionEvent('compositionend', { bubbles: true }) as unknown as Event,
+    );
+    cancelButton(root.element).click();
+
+    const teardownEditor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    teardownEditor.value = 'draft during teardown';
+    dispatchInput(root, teardownEditor);
+    root.unmount();
+    await settle();
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.applyCount).toBe(initialWrites);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+
+    const blurFixture = await openFixture();
+    const blurRoot = mountRoot(blurFixture);
+    const externalControl = blurRoot.window.document.createElement('button');
+    externalControl.textContent = 'Outside editor';
+    blurRoot.window.document.body.append(externalControl);
+    const blurEditor = openEditor(blurRoot.element, 'message') as HTMLTextAreaElement;
+    const blurValue = 'committed after real blur';
+    blurEditor.value = blurValue;
+    dispatchInput(blurRoot, blurEditor);
+    externalControl.focus();
+    expect(blurRoot.window.document.activeElement).toBe(externalControl);
+    await waitForSaved(blurRoot.element);
+    await until('the blurred text to persist', () => rowProperties(blurFixture).message === blurValue);
+    expect(blurFixture.textPatchCalls).toBe(1);
+    expect(blurRoot.window.document.activeElement).toBe(externalControl);
+  });
+
+  it('waits for pointer activation before blur commit and preserves a focusable favorite toggle', async () => {
+    const favoriteFixture = await openFixture();
+    const favoriteRoot = mountRoot(favoriteFixture);
+    const favorite = favoriteRoot.window.document.createElement('button');
+    favorite.setAttribute('aria-pressed', 'false');
+    favorite.textContent = 'Favorite';
+    favoriteRoot.window.document.body.append(favorite);
+    favorite.addEventListener('click', () => favorite.setAttribute('aria-pressed', 'true'));
+    const favoriteEditor = openEditor(favoriteRoot.element, 'message') as HTMLTextAreaElement;
+    favoriteEditor.value = 'saved after favorite activation';
+    dispatchInput(favoriteRoot, favoriteEditor);
+    favorite.dispatchEvent(new favoriteRoot.window.Event('pointerdown', { bubbles: true }));
+    favorite.focus();
+    await settle();
+    expect(favoriteFixture.textPatchCalls).toBe(0);
+    favorite.dispatchEvent(new favoriteRoot.window.Event('pointerup', { bubbles: true }));
+    favorite.click();
+    await waitForSaved(favoriteRoot.element);
+    expect(favoriteFixture.textPatchCalls).toBe(1);
+    expect(favorite.getAttribute('aria-pressed')).toBe('true');
+    expect(favoriteRoot.window.document.activeElement).toBe(favorite);
+
+    const navigationFixture = await openFixture();
+    const navigationRoot = mountRoot(navigationFixture);
+    const originalBytes = navigationFixture.vault.text(ROW_PATH);
+    const historyControls = navigationRoot.window.document.createElement('span');
+    historyControls.className = 'history-buttons';
+    const navigationButton = navigationRoot.window.document.createElement('button');
+    navigationButton.textContent = 'Navigate';
+    historyControls.append(navigationButton);
+    navigationRoot.window.document.body.append(historyControls);
+    const navigationEditor = openEditor(navigationRoot.element, 'message') as HTMLTextAreaElement;
+    navigationEditor.value = 'must not save before navigation';
+    dispatchInput(navigationRoot, navigationEditor);
+    navigationButton.focus();
+    await settle();
+    expect(navigationFixture.textPatchCalls).toBe(0);
+    navigationRoot.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]')?.focus();
+    navigationButton.dispatchEvent(new navigationRoot.window.Event('pointerdown', { bubbles: true }));
+    navigationButton.focus();
+    await settle();
+    expect(navigationFixture.textPatchCalls).toBe(0);
+    expect(navigationFixture.vault.text(ROW_PATH)).toBe(originalBytes);
+    navigationButton.dispatchEvent(new navigationRoot.window.Event('pointerup', { bubbles: true }));
+    navigationButton.addEventListener('click', navigationRoot.unmount);
+    navigationButton.click();
+    await settle();
+    expect(navigationFixture.textPatchCalls).toBe(0);
+    expect(navigationFixture.vault.text(ROW_PATH)).toBe(originalBytes);
+  });
+
+  it('retains the draft when a treeitem opens another tab and the connected host becomes cached', async () => {
+    const fixture = await openFixture();
+    const root = mountRoot(fixture);
+    const document = root.window.document;
+    const originalBytes = fixture.vault.text(ROW_PATH);
+    if (!root.element.parentElement) throw new Error('The provider host needs its fixture container.');
+
+    const pane = document.createElement('section');
+    pane.className = 'pane is-active';
+    pane.dataset.pane = 'main';
+    pane.dataset.paneId = 'tab-a';
+    pane.dataset.tabInstance = 'tab-a';
+    root.element.remove();
+    pane.append(root.element as unknown as typeof pane);
+    document.body.append(pane);
+
+    const tree = document.createElement('div');
+    tree.setAttribute('role', 'tree');
+    const treeItem = document.createElement('div');
+    treeItem.className = 'tree-row';
+    treeItem.setAttribute('role', 'treeitem');
+    treeItem.setAttribute('aria-selected', 'false');
+    treeItem.setAttribute('data-page-id', 'other-note');
+    treeItem.tabIndex = 0;
+    tree.append(treeItem);
+    document.body.append(tree);
+
+    const nextPane = document.createElement('section');
+    nextPane.className = 'pane is-active';
+    nextPane.dataset.pane = 'main';
+    nextPane.dataset.paneId = 'tab-b';
+    nextPane.dataset.tabInstance = 'tab-b';
+    treeItem.addEventListener('click', () => {
+      pane.classList.remove('is-active');
+      pane.classList.add('is-cached');
+      pane.style.display = 'none';
+      pane.setAttribute('aria-hidden', 'true');
+      pane.inert = true;
+      pane.removeAttribute('data-pane');
+      pane.removeAttribute('data-pane-id');
+      document.body.append(nextPane);
+    });
+
+    const editor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    editor.value = 'retain this draft in the cached tab';
+    dispatchInput(root, editor);
+    treeItem.dispatchEvent(new root.window.Event('pointerdown', { bubbles: true }));
+    treeItem.focus();
+    await settle();
+    expect(fixture.textPatchCalls).toBe(0);
+    treeItem.dispatchEvent(new root.window.Event('pointerup', { bubbles: true }));
+    treeItem.click();
+    await settle();
+
+    expect(pane.isConnected).toBe(true);
+    expect(root.element.isConnected).toBe(true);
+    expect(pane.classList.contains('is-cached')).toBe(true);
+    expect(pane.inert).toBe(true);
+    expect(document.activeElement).toBe(treeItem);
+    expect(root.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]')?.value).toBe(
+      'retain this draft in the cached tab',
+    );
+    expect(fixture.textPatchCalls).toBe(0);
+    expect(fixture.vault.text(ROW_PATH)).toBe(originalBytes);
+
+    nextPane.remove();
+    pane.classList.remove('is-cached');
+    pane.classList.add('is-active');
+    pane.style.display = '';
+    pane.removeAttribute('aria-hidden');
+    pane.inert = false;
+    pane.dataset.pane = 'main';
+    pane.dataset.paneId = 'tab-a';
+    const resumedEditor = root.element.querySelector<HTMLTextAreaElement>('textarea[data-field="message"]');
+    expect(resumedEditor?.value).toBe('retain this draft in the cached tab');
+    expect(fixture.textPatchCalls).toBe(0);
+    resumedEditor?.focus();
+    saveButton(root.element).click();
+    await waitForSaved(root.element);
+    expect(fixture.textPatchCalls).toBe(1);
+    expect(rowProperties(fixture).message).toBe('retain this draft in the cached tab');
+  });
+
+  it('commits when focus leaves the whole text editor after tabbing through Save and Cancel', async () => {
+    const fixture = await openFixture();
+    const root = mountRoot(fixture);
+    const outside = root.window.document.createElement('button');
+    root.window.document.body.append(outside);
+    const editor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    editor.value = 'saved after leaving the editor group';
+    dispatchInput(root, editor);
+
+    saveButton(root.element).focus();
+    cancelButton(root.element).focus();
+    outside.focus();
+    await waitForSaved(root.element);
+    expect(fixture.textPatchCalls).toBe(1);
+    expect(rowProperties(fixture).message).toBe('saved after leaving the editor group');
+    expect(root.window.document.activeElement).toBe(outside);
+  });
+
+  it('does not confirm during IME composition and saves after composition ends on an external focus target', async () => {
+    const fixture = await openFixture();
+    const root = mountRoot(fixture);
+    const outside = root.window.document.createElement('button');
+    root.window.document.body.append(outside);
+    const editor = openEditor(root.element, 'message') as HTMLTextAreaElement;
+    editor.value = 'saved after composition ended';
+    dispatchInput(root, editor);
+    editor.dispatchEvent(
+      new root.window.CompositionEvent('compositionstart', { bubbles: true }) as unknown as Event,
+    );
+    const composingEnter = new root.window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      metaKey: true,
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    editor.dispatchEvent(composingEnter as unknown as Event);
+    expect(composingEnter.defaultPrevented).toBe(false);
+    expect(fixture.textPatchCalls).toBe(0);
+    editor.dispatchEvent(
+      new root.window.CompositionEvent('compositionend', { bubbles: true }) as unknown as Event,
+    );
+    outside.focus();
+    await waitForSaved(root.element);
+    expect(fixture.textPatchCalls).toBe(1);
+    expect(rowProperties(fixture).message).toBe('saved after composition ended');
+    expect(root.window.document.activeElement).toBe(outside);
+  });
+
   it('does not switch to another cell while a draft is open', async () => {
     const fixture = await openFixture();
     const root = mountRoot(fixture);
