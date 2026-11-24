@@ -127,6 +127,14 @@ Em `Inventory`, desmarque `Included` e salve. `Included quantity` deve cair para
 
 Em `Inventory`, edite **Name**, use **Enter** para inserir uma quebra de linha e **Ctrl+Enter** para salvar. O foco deve voltar à mesma célula. Em `Views`, edite **Name** na view vinculada e clique no título da nota para confirmar sem voltar o foco à grade. Abra outro rascunho e clique em **Cancelar** para descartar. Reabra o cofre e verifique o valor salvo na origem.
 
+### Começar pelo primeiro caractere
+
+Com o foco no botão de edição de **Name** em `Inventory` ou `Views`, digite `Q`. O campo abre com esse caractere e o cursor depois dele. Digite mais texto e confirme com **Ctrl+Enter**, ou pressione **Escape** para preservar o valor anterior.
+
+### Somar preços com filtro de texto
+
+Em `Inventory`, abra o cofre de demonstração em uma pasta nova e role a grade até **Widget price subtotal**. Com **Name** igual a `Widget` e **Price** igual a `10`, o subtotal mostra **10**. A fórmula é `Inventory.Filter(CurrentValue.Name = "Widget").Price.Sum()`. Troque **Name** para `widget` e confirme com **Ctrl+Enter**. O subtotal fica em **0**. Use **Ctrl+Z** na grade para voltar a **10**. Se já alterou **Price**, o subtotal mostra o preço atual da linha. O filtro de texto compara maiúsculas e minúsculas.
+
 ## Edição de caixas de seleção
 
 1. Abra `Checklist` e edite **Reviewed** na linha `Unchecked`, identificada pela coluna **Sample**. Pressione **Espaço** com o foco na caixa, confirme em **Salvar** e confira **Verdadeiro** (**True**).

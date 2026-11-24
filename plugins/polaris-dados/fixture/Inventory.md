@@ -29,6 +29,10 @@ database:
       name: Included quantity
       type: formula
       formula: Inventory.Filter(CurrentValue.Included).Quantity.Sum()
+    - id: demo-widget-price
+      name: Widget price subtotal
+      type: formula
+      formula: Inventory.Filter(CurrentValue.Name = "Widget").Price.Sum()
   views:
     - id: inventory-table-v1
       name: Table
