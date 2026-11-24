@@ -8,6 +8,9 @@ import { docToMarkdown } from '../../core/markdown/serialize';
 import { MemoryVault } from '../../storage/memoryVault';
 import { WorkspaceSession } from '../../storage/session';
 import { VaultRepository } from '../../storage/vaultRepository';
+import { routeHashForPane, showInPane, startTabs, targetPane } from '../tabs';
+import { PANE_TABS_STORAGE_KEY } from '../paneLayoutStorage';
+import { openPage } from '../router';
 import { setSession } from '../workspace';
 import { PageEditor } from './PageEditor';
 import { commitPageEditorDraft } from './pageEditorCoordination';
@@ -35,6 +38,10 @@ interface PageEditorHarness {
 
 const harnesses = new Set<PageEditorHarness>();
 const sessions = new Set<WorkspaceSession>();
+let stopTabs: (() => void) | null = null;
+let tabsStorageBefore: string | null | undefined;
+let routeBefore: { paneId: string; hash: string } | null = null;
+let browserHashBefore: string | undefined;
 let clipboardDescriptor: PropertyDescriptor | undefined;
 let rangeRectsDescriptor: PropertyDescriptor | undefined;
 let rangeRectsWasAdded = false;
@@ -211,6 +218,25 @@ afterEach(async () => {
     sessions.delete(session);
   }
   document.body.replaceChildren();
+  if (routeBefore) {
+    showInPane(routeBefore.hash, routeBefore.paneId, true);
+    routeBefore = null;
+  }
+  stopTabs?.();
+  stopTabs = null;
+  if (tabsStorageBefore !== undefined) {
+    if (tabsStorageBefore === null) window.localStorage.removeItem(PANE_TABS_STORAGE_KEY);
+    else window.localStorage.setItem(PANE_TABS_STORAGE_KEY, tabsStorageBefore);
+    tabsStorageBefore = undefined;
+  }
+  if (browserHashBefore !== undefined) {
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${window.location.search}${browserHashBefore}`,
+    );
+    browserHashBefore = undefined;
+  }
   if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
   else Reflect.deleteProperty(navigator, 'clipboard');
   clipboardDescriptor = undefined;
@@ -267,6 +293,12 @@ describe('Morrow 2.1 block anchor integration', () => {
       },
     });
     const { session } = await openWorkspace([{ id: TARGET_ID, path: TARGET_PATH, doc: note('Copy this block') }]);
+    tabsStorageBefore = window.localStorage.getItem(PANE_TABS_STORAGE_KEY);
+    browserHashBefore = window.location.hash;
+    stopTabs = startTabs();
+    routeBefore = { paneId: targetPane(), hash: routeHashForPane(targetPane()) };
+    openPage(TARGET_ID);
+    expect(routeHashForPane(targetPane())).toBe(`#/page/${encodeURIComponent(TARGET_ID)}`);
     vi.useFakeTimers();
     const mounted = mountPageEditors(session, [TARGET_ID]);
     await mounted.render();
