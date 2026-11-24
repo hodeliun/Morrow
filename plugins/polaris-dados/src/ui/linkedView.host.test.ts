@@ -46,20 +46,32 @@ function initialDataSnapshot(): ReadySnapshot {
 }
 
 function makeDataApi(snapshot = initialDataSnapshot()) {
+  let current = snapshot;
+  let revision = 1;
   const patchCalls: Parameters<DataApi['patchCell']>[0][] = [];
   const historyCalls: Parameters<DataApi['history']>[0][] = [];
   const listeners = new Set<(snapshot: DataApiSnapshot) => void>();
   const api: DataApi = {
     version: 1,
-    snapshot: () => snapshot,
+    snapshot: () => current,
     patchCell(input): DataApiPatchResult {
       patchCalls.push(input);
+      current = {
+        ...current,
+        revision: `data-${++revision}`,
+        rows: current.rows.map((row) =>
+          row.id === input.rowId
+            ? { ...row, properties: { ...row.properties, [input.propertyId]: input.value } }
+            : row,
+        ),
+      };
+      for (const listener of [...listeners]) listener(current);
       return {
         status: 'staged',
         databaseId: DATABASE_ID,
         rowId: input.rowId,
         propertyId: input.propertyId,
-        revision: snapshot.revision,
+        revision: current.revision,
       };
     },
     history(input): DataApiHistoryResult {
@@ -67,20 +79,20 @@ function makeDataApi(snapshot = initialDataSnapshot()) {
       return {
         status: 'no-op',
         databaseId: DATABASE_ID,
-        revision: snapshot.revision,
+        revision: current.revision,
         direction: input.direction,
       };
     },
     subscribe(_databaseId, listener) {
       listeners.add(listener);
-      listener(snapshot);
+      listener(current);
       return () => listeners.delete(listener);
     },
     async flush(): Promise<DataApiFlushResult> {
-      return { status: 'persisted', databaseId: DATABASE_ID, revision: snapshot.revision };
+      return { status: 'persisted', databaseId: DATABASE_ID, revision: current.revision };
     },
   };
-  return { api, patchCalls, historyCalls, subscriberCount: () => listeners.size };
+  return { api, patchCalls, historyCalls, subscriberCount: () => listeners.size, current: () => current };
 }
 
 function makeViewApi(config: LinkedViewConfig) {
@@ -416,7 +428,8 @@ describe('Polaris Dados linked view UI', () => {
       },
       snapshot,
     );
-    const rows = [...mounted.element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const { element } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
     const cellText = (row: HTMLTableRowElement, propertyId: string) =>
       row.querySelector(`[data-field="${propertyId}"] [data-value-kind="number"]`)?.textContent;
     const browserLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
@@ -440,7 +453,7 @@ describe('Polaris Dados linked view UI', () => {
     mounted.cleanup();
   });
 
-  it('renders typed number and percentage results with raw dependencies in linked views', () => {
+  it('renders typed number and percentage results with raw dependencies in linked views', async () => {
     const original = initialDataSnapshot();
     const snapshot: ReadySnapshot = {
       ...original,
@@ -449,6 +462,96 @@ describe('Polaris Dados linked view UI', () => {
         properties: [
           ...original.schema.properties,
           { id: 'optional', name: 'Optional', type: 'number', options: [] },
+          {
+            id: 'typed-checkbox',
+            name: 'Typed checkbox',
+            type: 'formula',
+            options: [],
+            formula: 'Quantity > 3',
+            formulaResultType: 'checkbox',
+          },
+          {
+            id: 'typed-checkbox-copy',
+            name: 'Typed checkbox copy',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox"), "Yes", "No")',
+          },
+          {
+            id: 'typed-checkbox-false-check',
+            name: 'Typed checkbox false check',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox") == false, "false", "not false")',
+          },
+          {
+            id: 'typed-checkbox-null',
+            name: 'Typed checkbox null',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow.Optional',
+            formulaResultType: 'checkbox',
+          },
+          {
+            id: 'typed-null-false-check',
+            name: 'Typed null false check',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox null") == false, "false", "not false")',
+          },
+          {
+            id: 'typed-checkbox-invalid',
+            name: 'Typed checkbox invalid',
+            type: 'formula',
+            options: [],
+            formula: '1',
+            formulaResultType: 'checkbox',
+          },
+          {
+            id: 'typed-checkbox-invalid-dependent',
+            name: 'Typed checkbox invalid dependent',
+            type: 'formula',
+            options: [],
+            formula: 'If(prop("Typed checkbox invalid"), "Yes", "No")',
+          },
+          {
+            id: 'typed-text',
+            name: 'Typed text',
+            type: 'formula',
+            options: [],
+            formula: 'Concat(" Qty ", If(Quantity > 3, "three", "two"), " ")',
+            formulaResultType: 'text',
+          },
+          {
+            id: 'typed-text-copy',
+            name: 'Typed text copy',
+            type: 'formula',
+            options: [],
+            formula: 'Concat(prop("Typed text"), "!")',
+          },
+          {
+            id: 'typed-text-length',
+            name: 'Typed text length',
+            type: 'formula',
+            options: [],
+            formula: 'Length(prop("Typed text"))',
+          },
+          {
+            id: 'typed-text-empty',
+            name: 'Typed text empty',
+            type: 'formula',
+            options: [],
+            formula: '""',
+            formulaResultType: 'text',
+          },
+          {
+            id: 'typed-text-null',
+            name: 'Typed text null',
+            type: 'formula',
+            options: [],
+            formula: 'thisRow["Optional"]',
+            formulaResultType: 'text',
+          },
           {
             id: 'percent',
             name: 'Percent',
@@ -573,6 +676,19 @@ describe('Polaris Dados linked view UI', () => {
       {
         title: 'Percent view',
         columnOrder: [
+          'quantity',
+          'typed-checkbox',
+          'typed-checkbox-copy',
+          'typed-checkbox-false-check',
+          'typed-checkbox-null',
+          'typed-null-false-check',
+          'typed-checkbox-invalid',
+          'typed-checkbox-invalid-dependent',
+          'typed-text',
+          'typed-text-copy',
+          'typed-text-length',
+          'typed-text-empty',
+          'typed-text-null',
           'percent',
           'decimal',
           'decimal-times-three',
@@ -594,7 +710,8 @@ describe('Polaris Dados linked view UI', () => {
       },
       snapshot,
     );
-    const rows = [...mounted.element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    const { element } = mounted;
+    const rows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
     const cell = (row: HTMLTableRowElement, propertyId: string) =>
       row.querySelector<HTMLElement>(`[data-field="${propertyId}"]`)!;
     const localizedPercent = (value: number) =>
@@ -609,6 +726,30 @@ describe('Polaris Dados linked view UI', () => {
     const defaultLocale = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
 
     expect(rows.map((row) => row.dataset.rowId)).toEqual(['widget', 'gadget']);
+    expect(cell(rows[0]!, 'typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('True');
+    expect(cell(rows[1]!, 'typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('False');
+    expect(cell(rows[0]!, 'typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('Yes');
+    expect(cell(rows[1]!, 'typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('No');
+    expect(cell(rows[0]!, 'typed-checkbox-false-check').textContent).toBe('not false');
+    expect(cell(rows[1]!, 'typed-checkbox-false-check').textContent).toBe('false');
+    expect(cell(rows[0]!, 'typed-checkbox-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell(rows[0]!, 'typed-null-false-check').textContent).toBe('not false');
+    expect(cell(rows[0]!, 'typed-checkbox').querySelector('input[type="checkbox"], button[data-action="edit"]')).toBeNull();
+    const checkboxTypeError =
+      'Formula “Typed checkbox invalid” declared as checkbox must return true, false, or null.';
+    expect(cell(rows[0]!, 'typed-checkbox-invalid').querySelector('code')?.textContent).toBe(checkboxTypeError);
+    expect(cell(rows[0]!, 'typed-checkbox-invalid-dependent').querySelector('code')?.textContent).toBe(
+      checkboxTypeError,
+    );
+    expect(cell(rows[0]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty three ');
+    expect(cell(rows[1]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two ');
+    expect(cell(rows[0]!, 'typed-text-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty three !');
+    expect(cell(rows[1]!, 'typed-text-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two !');
+    expect(cell(rows[0]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('11');
+    expect(cell(rows[1]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('9');
+    expect(cell(rows[0]!, 'typed-text-empty').querySelector('[data-value-kind="text"]')).not.toBeNull();
+    expect(cell(rows[0]!, 'typed-text-empty').textContent).toBe('');
+    expect(cell(rows[0]!, 'typed-text-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
     expect(cell(rows[0]!, 'percent').textContent).toBe(localizedPercent(0.5));
     expect(cell(rows[1]!, 'percent').textContent).toBe(localizedPercent(0.125));
     expect(cell(rows[0]!, 'decimal').textContent).toBe('2,33');
@@ -648,6 +789,22 @@ describe('Polaris Dados linked view UI', () => {
     );
     expect(cell(rows[0]!, 'invalid-percent').querySelector('code')?.textContent).toBe(typeError);
     expect(cell(rows[0]!, 'invalid-dependent').querySelector('code')?.textContent).toBe(typeError);
+    click(mounted.window, cell(rows[0]!, 'quantity').querySelector('button[data-action="edit"]'));
+    const quantityInput = element.querySelector<HTMLInputElement>('input[data-field="quantity"]');
+    if (!quantityInput) throw new Error('Expected the linked quantity editor.');
+    input(mounted.window, quantityInput, '2');
+    click(mounted.window, element.querySelector('button[data-action="save"]'));
+    await flushMicrotasks();
+    const updatedRows = [...element.querySelectorAll<HTMLTableRowElement>('tbody tr')];
+    expect(cell(updatedRows[0]!, 'typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('False');
+    expect(cell(updatedRows[0]!, 'typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('No');
+    expect(cell(updatedRows[0]!, 'typed-checkbox-false-check').textContent).toBe('false');
+    expect(cell(updatedRows[0]!, 'typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two ');
+    expect(cell(updatedRows[0]!, 'typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('9');
+    expect(mounted.data.patchCalls).toMatchObject([
+      { databaseId: DATABASE_ID, rowId: 'widget', propertyId: 'quantity', value: 2 },
+    ]);
+    expect(mounted.data.current().rows[0]?.properties).toEqual({ name: 'Catalog label', quantity: 2, price: 10, optional: null });
     expect(snapshot.rows[0]?.properties).toEqual({
       name: 'Catalog label',
       quantity: 4,

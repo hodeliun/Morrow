@@ -185,6 +185,10 @@ Em uma nota de teste, coloque o cursor em um parágrafo vazio no corpo da págin
 
 Abra `Weighted columns`. Em uma janela larga, compare a quinta coluna, com peso 20, e a quarta, com peso 10. Edite o texto da sétima e reabra a nota para conferir. Com a janela estreita, as colunas aparecem empilhadas.
 
+### Redimensionar colunas de conteúdo
+
+Abra Weighted columns em uma janela larga. Passe o cursor pela divisória entre a quarta e a quinta colunas e arraste para a direita. As duas colunas mudam de largura durante o gesto. Pressione Escape antes de soltar para cancelar. Arraste de novo e solte para gravar. Use **Ctrl+Z** para restaurar as proporções anteriores e **Ctrl+Shift+Z** para refazer. Feche e reabra a nota. O texto das sete colunas permanece.
+
 ### Conferir o resultado numérico declarado em uma fórmula
 
 Em Inventory, Thirds divide Quantity por 3 e exibe duas casas. Com Quantity em **2**, confira **0.67** e a fórmula dependente ThirdsRawCheck em **2**. Altere Quantity para **3** e confira **1.00** e **3** na origem e na primeira tabela de Views.
@@ -192,6 +196,14 @@ Em Inventory, Thirds divide Quantity por 3 e exibe duas casas. Com Quantity em *
 ### Conferir a moeda declarada como tipo de uma fórmula
 
 Em Inventory, CurrencyTyped usa BRL e duas casas fixas. Mude Quantity de **2** para **3**. CurrencyTyped passa de **(R$2.47)** para **(R$3.70)**. CurrencyTypedRawCheck vai de **42** para **17**, comparando o valor original. CurrencyTypedJPY mantém duas casas, de **¥2.00** para **¥3.00**. Confira também na primeira tabela de Views.
+
+### Conferir resultado de texto declarado
+
+Em Inventory, mude Quantity de **2** para **3**. QuantityText passa de **Qty two** para **Qty three**. QuantityTextLength passa de **9** para **11**, pois conta também os espaços originais. Confira na primeira tabela de Views.
+
+### Conferir resultado booleano declarado
+
+Em Inventory, verifique IsHeavy como **False** e IsHeavyOrBlank como **Blank** com Quantity em 2. Ao mudar Quantity para **3**, os dois mostram **True**. IsHeavyRawCheck passa de **17** para **42** usando os valores originais. Em português, os rótulos correspondentes são **Falso**, **Vazio** e **Verdadeiro**. Confira na primeira tabela de Views.
 
 ### Navegar na grade sem o mouse
 

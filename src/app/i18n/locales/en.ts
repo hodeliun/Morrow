@@ -809,6 +809,7 @@ export const en = {
     dragColumn: 'Drag to move this column',
     moveColumnLeft: 'Move column left',
     moveColumnRight: 'Move column right',
+    resizeColumnPair: 'Resize columns {left} and {right}',
     replaceMatches: 'Matches',
     replaceTo: 'to',
     replaceFrom: 'First match to replace',

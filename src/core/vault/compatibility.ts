@@ -172,9 +172,11 @@ function isTypedFormulaResultProperty(property: unknown): boolean {
   return (
     isRecord(property) &&
     property.type === 'formula' &&
-    (property.formulaResultType === 'number' ||
+    (property.formulaResultType === 'text' ||
+      property.formulaResultType === 'number' ||
       property.formulaResultType === 'percent' ||
-      property.formulaResultType === 'currency')
+      property.formulaResultType === 'currency' ||
+      property.formulaResultType === 'checkbox')
   );
 }
 
@@ -204,9 +206,11 @@ function inspectTypedFormulaResultYaml(yaml: string, effectiveDeclaration: boole
         if (!hasFormulaType) continue;
         const hasTypedResult = yamlValuesForKey(property, 'formulaResultType', document).some(
           (value) =>
+            isYamlString(value, 'text', document) ||
             isYamlString(value, 'number', document) ||
             isYamlString(value, 'percent', document) ||
-            isYamlString(value, 'currency', document),
+            isYamlString(value, 'currency', document) ||
+            isYamlString(value, 'checkbox', document),
         );
         if (hasTypedResult) declaresTypedFormula = true;
       }
@@ -556,9 +560,11 @@ function propertyIssue(raw: unknown, polarisDadosOptIn: boolean): string | null 
     Object.hasOwn(raw, 'formulaResultType') &&
     (!polarisDadosOptIn ||
       raw.type !== 'formula' ||
-      (raw.formulaResultType !== 'number' &&
+      (raw.formulaResultType !== 'text' &&
+        raw.formulaResultType !== 'number' &&
         raw.formulaResultType !== 'percent' &&
-        raw.formulaResultType !== 'currency') ||
+        raw.formulaResultType !== 'currency' &&
+        raw.formulaResultType !== 'checkbox') ||
       Object.hasOwn(raw, 'display') ||
       Object.hasOwn(raw, 'max'))
   ) {

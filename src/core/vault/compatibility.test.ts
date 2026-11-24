@@ -733,6 +733,192 @@ describe('vault representability guard', () => {
     expect(hasUnrepresentableDatabaseSchema(unmarked)).toBe(true);
   });
 
+  it('roundtrips explicit text formula results and protects unsupported metadata', () => {
+    const textFormula = {
+      id: 'label-result',
+      name: 'Label result',
+      type: 'formula',
+      formula: 'Concat(thisRow.Label, " ", "ready")',
+      formulaResultType: 'text',
+    };
+    const source = databaseNote({
+      properties: [
+        { id: 'label', name: 'Label', type: 'text' },
+        textFormula,
+        {
+          id: 'label-copy',
+          name: 'Label copy',
+          type: 'formula',
+          formula: 'Concat(prop("Label result"), "!")',
+        },
+      ],
+      views: [],
+    });
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.properties[1]).toMatchObject({
+      type: 'formula',
+      formulaResultType: 'text',
+      formula: 'Concat(thisRow.Label, " ", "ready")',
+    });
+    expect(loaded.database?.properties[1]).not.toHaveProperty('format');
+
+    const databasePage = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: loaded.database!,
+      extra: loaded.extra,
+    });
+    const saved = renderPageText(
+      composeFrontmatter(managedFrontmatter(databasePage, 'Inventory', null), loaded.extra, loaded.source, databasePage),
+      loaded.source,
+      loaded.body,
+    );
+    expect(saved).toContain('formulaResultType: text');
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+    expect(readPageText(saved).database).toEqual(loaded.database);
+
+    const unsupportedProperties = [
+      { ...textFormula, type: 'number' },
+      { ...textFormula, format: {} },
+      { ...textFormula, format: { precision: 2 } },
+      { ...textFormula, format: { currency: 'USD' } },
+      { ...textFormula, display: 'bar' },
+      { ...textFormula, max: 10 },
+      { ...textFormula, wrap: true },
+      { ...textFormula, min: 0 },
+      { ...textFormula, step: 1 },
+    ];
+    for (const property of unsupportedProperties) {
+      const invalid = databaseNote({ properties: [property], views: [] });
+      expect(findUnrepresentablePageContent(invalid), invalid).not.toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(invalid), invalid).toBe(true);
+    }
+    const unmarked = databaseNote({ properties: [textFormula], views: [] }, { omitMarker: true });
+    expect(findUnrepresentablePageContent(unmarked)).not.toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(unmarked)).toBe(true);
+
+    const protectedSource = databaseNote({
+      properties: [{ ...textFormula, format: { precision: 2 } }],
+      views: [],
+    });
+    const protectedPage = loadVault(
+      {
+        files: [{ path: 'Inventory.md', text: protectedSource, mtime: 1, birthtime: 1 }],
+        folders: [],
+        others: [],
+        registry: null,
+        recent: null,
+      },
+      () => 'inventory',
+      1,
+    );
+    expect(protectedPage.protectedPages.get('inventory')).toMatch(/number property format/i);
+    expect(protectedPage.texts.get('inventory')).toBe(protectedSource);
+    expect(protectedPage.docs.inventory).toEqual({
+      type: 'doc',
+      content: [{ type: 'rawBlock', attrs: { text: protectedSource } }],
+    });
+  });
+
+  it('roundtrips explicit checkbox formula results and protects incompatible metadata', () => {
+    const checkboxFormula = {
+      id: 'available',
+      name: 'Available',
+      type: 'formula',
+      formula: 'Quantity > 2',
+      formulaResultType: 'checkbox',
+    };
+    const source = databaseNote({
+      properties: [
+        { id: 'quantity', name: 'Quantity', type: 'number' },
+        checkboxFormula,
+        {
+          id: 'availability-label',
+          name: 'Availability label',
+          type: 'formula',
+          formula: 'If(prop("Available"), "Available", "Unavailable")',
+        },
+      ],
+      views: [],
+    });
+
+    expect(findUnrepresentablePageContent(source)).toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(source)).toBe(false);
+    const loaded = readPageText(source);
+    expect(loaded.error).toBeNull();
+    expect(loaded.database?.properties[1]).toMatchObject({
+      type: 'formula',
+      formulaResultType: 'checkbox',
+      formula: 'Quantity > 2',
+    });
+    expect(loaded.database?.properties[1]).not.toHaveProperty('format');
+
+    const databasePage = newPageMeta({
+      id: 'inventory',
+      parentId: null,
+      title: 'Inventory',
+      kind: 'database',
+      database: loaded.database!,
+      extra: loaded.extra,
+    });
+    const saved = renderPageText(
+      composeFrontmatter(managedFrontmatter(databasePage, 'Inventory', null), loaded.extra, loaded.source, databasePage),
+      loaded.source,
+      loaded.body,
+    );
+    expect(saved).toContain('formulaResultType: checkbox');
+    expect(findUnrepresentablePageContent(saved)).toBeNull();
+    expect(readPageText(saved).database).toEqual(loaded.database);
+
+    const unsupportedProperties = [
+      { ...checkboxFormula, type: 'number' },
+      { ...checkboxFormula, format: {} },
+      { ...checkboxFormula, format: { locale: 'en-US' } },
+      { ...checkboxFormula, format: { currency: 'USD' } },
+      { ...checkboxFormula, display: 'bar' },
+      { ...checkboxFormula, max: 10 },
+      { ...checkboxFormula, wrap: true },
+      { ...checkboxFormula, min: 0 },
+      { ...checkboxFormula, step: 1 },
+    ];
+    for (const property of unsupportedProperties) {
+      const invalid = databaseNote({ properties: [property], views: [] });
+      expect(findUnrepresentablePageContent(invalid), invalid).not.toBeNull();
+      expect(hasUnrepresentableDatabaseSchema(invalid), invalid).toBe(true);
+    }
+    const unmarked = databaseNote({ properties: [checkboxFormula], views: [] }, { omitMarker: true });
+    expect(findUnrepresentablePageContent(unmarked)).not.toBeNull();
+    expect(hasUnrepresentableDatabaseSchema(unmarked)).toBe(true);
+
+    const protectedSource = databaseNote({
+      properties: [{ ...checkboxFormula, format: { locale: 'en-US' } }],
+      views: [],
+    });
+    const protectedPage = loadVault(
+      {
+        files: [{ path: 'Inventory.md', text: protectedSource, mtime: 1, birthtime: 1 }],
+        folders: [],
+        others: [],
+        registry: null,
+        recent: null,
+      },
+      () => 'inventory',
+      1,
+    );
+    expect(protectedPage.protectedPages.get('inventory')).toMatch(/number property format/i);
+    expect(protectedPage.texts.get('inventory')).toBe(protectedSource);
+    expect(protectedPage.docs.inventory).toEqual({
+      type: 'doc',
+      content: [{ type: 'rawBlock', attrs: { text: protectedSource } }],
+    });
+  });
+
   it('requires the valid Polaris Dados marker and protects typed schemas the host cannot preserve', () => {
     const formula = {
       id: 'ratio',
@@ -749,7 +935,7 @@ describe('vault representability guard', () => {
       databaseNote(schema, { marker: { version: 1, provider: 'polaris-dados', future: true } }),
       ...[
         { ...formula, type: 'number' },
-        { ...formula, formulaResultType: 'text' },
+        { ...formula, formulaResultType: 'date' },
         { ...formula, display: 'bar' },
         { ...formula, max: 50 },
         { ...formula, format: { locale: 'en-US', currency: 'USD' } },
@@ -899,7 +1085,10 @@ describe('vault representability guard', () => {
       '  version: 1',
       '  provider: polaris-dados',
     ].join('\n');
-    const property = (resultType: 'number' | 'percent' | 'currency', includeMarker = true) =>
+    const property = (
+      resultType: 'text' | 'number' | 'percent' | 'currency' | 'checkbox',
+      includeMarker = true,
+    ) =>
       [
         '    - id: ratio',
         '      name: Ratio',
@@ -909,18 +1098,85 @@ describe('vault representability guard', () => {
       ].join('\n');
     const database = (properties: string) => `database:\n  properties:\n${properties}\n  views: []\n`;
     const legacyProperties = property('number', false);
-    const typedOrders = (resultType: 'number' | 'percent' | 'currency') => [
+    const typedOrders = (resultType: 'text' | 'number' | 'percent' | 'currency' | 'checkbox') => [
       `${database(property(resultType))}${database(legacyProperties)}`,
       `${database(legacyProperties)}${database(property(resultType))}`,
       `database:\n  properties:\n${property(resultType)}\n  properties:\n${legacyProperties}\n  views: []\n`,
       `database:\n  properties:\n${legacyProperties}\n  properties:\n${property(resultType)}\n  views: []\n`,
     ];
 
-    for (const resultType of ['number', 'percent', 'currency'] as const) {
+    for (const resultType of ['text', 'number', 'percent', 'currency', 'checkbox'] as const) {
       for (const yaml of typedOrders(resultType)) {
         const source = `---\n${prefix}\n${yaml}---\nOriginal database body\n`;
         expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
         expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+      }
+    }
+  });
+
+  it('protects hidden text and checkbox result declarations supplied by YAML merges or aliased keys', () => {
+    const prefix = [
+      '---',
+      'kind: database',
+      'polarisDados: { version: 1, provider: polaris-dados }',
+    ].join('\n') + '\n';
+    const legacyDatabase = [
+      'database:',
+      '  properties:',
+      '    - id: legacy',
+      '      name: Legacy',
+      '      type: formula',
+      '      formula: Concat("old")',
+      '  views: []',
+    ].join('\n') + '\n';
+    const footer = '---\nOriginal database body\n';
+    const sourcesFor = (resultType: 'text' | 'checkbox') => [
+      prefix +
+        `defaults: &result {type: formula, formulaResultType: ${resultType}}\n` +
+        'database:\n' +
+        '  properties:\n' +
+        '    - {!!merge <<: *result, id: typed, name: Typed, formula: \'Concat("new")\'}\n' +
+        '  views: []\n' +
+        legacyDatabase +
+        footer,
+      prefix +
+        'resultKey: &resultKey formulaResultType\n' +
+        'database:\n' +
+        '  properties:\n' +
+        '    - id: typed\n' +
+        '      name: Typed\n' +
+        '      type: formula\n' +
+        '      formula: Concat("new")\n' +
+        '      ? *resultKey\n' +
+        `      : ${resultType}\n` +
+        '  views: []\n' +
+        legacyDatabase +
+        footer,
+    ];
+
+    for (const resultType of ['text', 'checkbox'] as const) {
+      for (const source of sourcesFor(resultType)) {
+        expect(findUnrepresentablePageContent(source), source).toMatch(/ambiguous yaml frontmatter/i);
+        expect(hasUnrepresentableDatabaseSchema(source), source).toBe(true);
+        let nextId = 0;
+        const loaded = loadVault(
+          {
+            files: [{ path: 'Inventory.md', text: source, mtime: 1, birthtime: 1 }],
+            folders: [],
+            others: [],
+            registry: null,
+            recent: null,
+          },
+          () => `text-hidden-${++nextId}`,
+          1,
+        );
+        const databaseId = loaded.pages.find((page) => page.kind === 'database')!.id;
+        expect(loaded.protectedPages.get(databaseId)).toMatch(/ambiguous yaml frontmatter/i);
+        expect(loaded.texts.get(databaseId)).toBe(source);
+        expect(loaded.docs[databaseId]).toEqual({
+          type: 'doc',
+          content: [{ type: 'rawBlock', attrs: { text: source } }],
+        });
       }
     }
   });
@@ -958,6 +1214,26 @@ describe('vault representability guard', () => {
       '      type: *formulaType',
       '      formula: Quantity / 8',
       '      formulaResultType: *numberType',
+      '    - id: text-source',
+      '      name: Text source',
+      '      type: *formulaType',
+      '      formula: Concat("text")',
+      '      formulaResultType: &textType text',
+      '    - id: text-alias',
+      '      name: Text alias',
+      '      type: *formulaType',
+      '      formula: Concat("alias")',
+      '      formulaResultType: *textType',
+      '    - id: checkbox-source',
+      '      name: Checkbox source',
+      '      type: *formulaType',
+      '      formula: Quantity > 2',
+      '      formulaResultType: &checkboxType checkbox',
+      '    - id: checkbox-alias',
+      '      name: Checkbox alias',
+      '      type: *formulaType',
+      '      formula: Quantity > 2',
+      '      formulaResultType: *checkboxType',
       '  views: []',
       'database: *typedDatabase',
       'database:',

@@ -6,6 +6,48 @@
   gap: 28px;
   margin: 8px 0;
 }
+.prose .columns-editor {
+  position: relative;
+}
+.prose .column-layout-resize-handle {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  transform: translateX(-50%);
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.prose .column-layout-resize-handle::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 50%;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  content: '';
+  transform: translateX(-50%);
+}
+.prose .columns-editor:hover .column-layout-resize-handle,
+.prose .columns-editor.is-resizing .column-layout-resize-handle {
+  opacity: 1;
+}
+.prose .columns-editor .column-layout-resize-handle:hover::before,
+.prose .columns-editor.is-resizing .column-layout-resize-handle::before {
+  background: var(--accent);
+}
+.prose .column-layout-resize-handle[hidden] {
+  display: none;
+}
+.prose .columns-editor.is-resizing {
+  user-select: none;
+}
 .prose .column {
   min-width: 0;
   position: relative;
@@ -26,6 +68,10 @@
 @media (max-width: 720px) {
   .prose .columns {
     grid-template-columns: 1fr;
+  }
+
+  .prose .column-layout-resize-handle {
+    display: none;
   }
 }
 

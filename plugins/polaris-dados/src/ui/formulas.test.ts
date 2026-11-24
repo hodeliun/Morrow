@@ -210,6 +210,109 @@ describe('Polaris Dados formula row context', () => {
     });
   });
 
+  it('validates explicit text results before caching while dependents keep raw text', () => {
+    const properties = [
+      scalar('label', 'Label', 'text'),
+      scalar('optional', 'Optional', 'text'),
+      scalar('boundary', 'Boundary', 'text'),
+      { ...formula('copied', 'Copied', 'Concat(thisRow.Label, " ", "MiXeD")'), formulaResultType: 'text' },
+      formula('raw-check', 'Raw check', 'Concat(prop("Copied"), "!")'),
+      { ...formula('empty', 'Empty', '""'), formulaResultType: 'text' },
+      { ...formula('null', 'Null', 'thisRow.Optional'), formulaResultType: 'text' },
+      { ...formula('exact-limit', 'Exact limit', 'thisRow.Boundary'), formulaResultType: 'text' },
+      { ...formula('over-limit', 'Over limit', 'Concat(thisRow.Boundary, "x")'), formulaResultType: 'text' },
+      { ...formula('number', 'Number', '42'), formulaResultType: 'text' },
+      { ...formula('boolean', 'Boolean', 'false'), formulaResultType: 'text' },
+      { ...formula('list', 'List', 'List(1, 2)'), formulaResultType: 'text' },
+      { ...formula('reference', 'Reference', 'thisRow'), formulaResultType: 'text' },
+      formula('invalid-dependent', 'Invalid dependent', 'Concat(prop("Number"), "!")'),
+      { ...formula('broken', 'Broken', 'NoSuchFunction()'), formulaResultType: 'text' },
+    ] satisfies readonly ProviderProperty[];
+    const original = { label: '  Keep MiXeD <tag>  ', optional: null, boundary: '🙂'.repeat(5_000) };
+    const rowProperties = { ...original };
+    const typeError = (name: string) =>
+      `Formula “${name}” declared as text must return a string of at most 10000 UTF-16 code units or null.`;
+
+    expect(evaluate(properties, rowProperties, 'copied')).toEqual({
+      kind: 'text',
+      value: '  Keep MiXeD <tag>   MiXeD',
+    });
+    expect(evaluate(properties, rowProperties, 'raw-check')).toEqual({
+      kind: 'text',
+      value: '  Keep MiXeD <tag>   MiXeD!',
+    });
+    expect(evaluate(properties, rowProperties, 'empty')).toEqual({ kind: 'text', value: '' });
+    expect(evaluate(properties, rowProperties, 'null')).toEqual({ kind: 'null' });
+    expect(evaluate(properties, rowProperties, 'exact-limit')).toEqual({
+      kind: 'text',
+      value: '🙂'.repeat(5_000),
+    });
+    for (const [formulaId, name] of [
+      ['over-limit', 'Over limit'],
+      ['number', 'Number'],
+      ['boolean', 'Boolean'],
+      ['list', 'List'],
+      ['reference', 'Reference'],
+    ] as const) {
+      expect(evaluate(properties, rowProperties, formulaId)).toEqual({ kind: 'error', message: typeError(name) });
+    }
+    expect(evaluate(properties, rowProperties, 'invalid-dependent')).toEqual({
+      kind: 'error',
+      message: typeError('Number'),
+    });
+    expect(evaluate(properties, rowProperties, 'broken')).toEqual({
+      kind: 'error',
+      message: 'There is no function called NoSuchFunction()',
+    });
+    expect(rowProperties).toEqual(original);
+  });
+
+  it('validates explicit checkbox results while preserving false separately from null', () => {
+    const properties = [
+      scalar('quantity', 'Quantity'),
+      scalar('optional', 'Optional'),
+      scalar('label', 'Label', 'text'),
+      { ...formula('enabled', 'Enabled', 'Quantity > 2'), formulaResultType: 'checkbox' },
+      { ...formula('false-result', 'False result', 'false'), formulaResultType: 'checkbox' },
+      { ...formula('null-result', 'Null result', 'thisRow.Optional'), formulaResultType: 'checkbox' },
+      formula('false-check', 'False check', 'If(prop("False result") == false, "false", "not false")'),
+      formula('null-check', 'Null check', 'If(prop("Null result") == false, "false", "not false")'),
+      { ...formula('number-zero', 'Number zero', '0'), formulaResultType: 'checkbox' },
+      { ...formula('number-one', 'Number one', '1'), formulaResultType: 'checkbox' },
+      { ...formula('text', 'Text', 'thisRow.Label'), formulaResultType: 'checkbox' },
+      { ...formula('list', 'List', 'List(1, 2)'), formulaResultType: 'checkbox' },
+      { ...formula('reference', 'Reference', 'thisRow'), formulaResultType: 'checkbox' },
+      formula('invalid-dependent', 'Invalid dependent', 'prop("Number zero")'),
+      { ...formula('broken', 'Broken', 'NoSuchFunction()'), formulaResultType: 'checkbox' },
+    ] satisfies readonly ProviderProperty[];
+    const rowProperties = { quantity: 3, optional: null, label: 'Ready' };
+    const typeError = (name: string) =>
+      `Formula “${name}” declared as checkbox must return true, false, or null.`;
+
+    expect(evaluate(properties, rowProperties, 'enabled')).toEqual({ kind: 'boolean', value: true });
+    expect(evaluate(properties, rowProperties, 'false-result')).toEqual({ kind: 'boolean', value: false });
+    expect(evaluate(properties, rowProperties, 'null-result')).toEqual({ kind: 'null' });
+    expect(evaluate(properties, rowProperties, 'false-check')).toEqual({ kind: 'text', value: 'false' });
+    expect(evaluate(properties, rowProperties, 'null-check')).toEqual({ kind: 'text', value: 'not false' });
+    for (const [formulaId, name] of [
+      ['number-zero', 'Number zero'],
+      ['number-one', 'Number one'],
+      ['text', 'Text'],
+      ['list', 'List'],
+      ['reference', 'Reference'],
+    ] as const) {
+      expect(evaluate(properties, rowProperties, formulaId)).toEqual({ kind: 'error', message: typeError(name) });
+    }
+    expect(evaluate(properties, rowProperties, 'invalid-dependent')).toEqual({
+      kind: 'error',
+      message: typeError('Number zero'),
+    });
+    expect(evaluate(properties, rowProperties, 'broken')).toEqual({
+      kind: 'error',
+      message: 'There is no function called NoSuchFunction()',
+    });
+  });
+
   it('resolves an explicit property named thisRow and keeps the bare identifier contextual', () => {
     const properties = [
       scalar('legacy', 'thisRow', 'text'),

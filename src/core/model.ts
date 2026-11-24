@@ -170,8 +170,8 @@ export interface PropDef {
   format?: FormulaResultNumberFormat;
   // the expression a formula property computes, see core/formula
   formula?: string;
-  // an explicit numeric or currency result; calculation remains unscaled
-  formulaResultType?: 'number' | 'percent' | 'currency';
+  // an explicit formula result type; the raw calculation value remains unchanged
+  formulaResultType?: 'text' | 'number' | 'percent' | 'currency' | 'checkbox';
   // a number or formula shown as a progress bar filled to value out of max, 100 when not set
   display?: 'bar';
   max?: number;

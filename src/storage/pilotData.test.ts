@@ -172,9 +172,42 @@ describe('Polaris Dados snapshot and cell API', () => {
       name: Invalid dependent
       type: formula
       formula: prop("Invalid completion") + 1
+    - id: message
+      name: Message
+      type: text
+    - id: text-result
+      name: Text result
+      type: formula
+      formula: Concat(thisRow.Message, "!")
+      formulaResultType: text
+    - id: text-raw-check
+      name: Text raw check
+      type: formula
+      formula: Concat(prop("Text result"), "?")
+    - id: availability
+      name: Availability
+      type: formula
+      formula: Quantity > 2
+      formulaResultType: checkbox
+    - id: availability-label
+      name: Availability label
+      type: formula
+      formula: If(prop("Availability"), "Available", "Unavailable")
+    - id: optional-availability
+      name: Optional availability
+      type: formula
+      formula: thisRow.Optional
+      formulaResultType: checkbox
+    - id: optional-availability-is-false
+      name: Optional availability is false
+      type: formula
+      formula: If(prop("Optional availability") == false, "false", "not false")
 `;
     files['Inventory.md'] = files['Inventory.md']!.replace('  views:', `${typedFormulaProperties}  views:`);
-    files['Inventory/Widget.md'] = files['Inventory/Widget.md']!.replace('Price: null', 'Price: null\nOptional: null');
+    files['Inventory/Widget.md'] = files['Inventory/Widget.md']!.replace(
+      'Price: null',
+      'Price: null\nOptional: null\nMessage: "  Keep Case  "',
+    );
 
     const parsed = readPageText(files['Inventory.md']!);
     if (!parsed.database) throw new Error('Expected a parsed Polaris Dados database.');
@@ -228,6 +261,16 @@ describe('Polaris Dados snapshot and cell API', () => {
     const invalidCurrencyDependentProperty = initial.schema.properties.find(
       (property) => property.id === 'invalid-currency-dependent',
     )!;
+    const textResultProperty = initial.schema.properties.find((property) => property.id === 'text-result')!;
+    const textRawCheckProperty = initial.schema.properties.find((property) => property.id === 'text-raw-check')!;
+    const availabilityProperty = initial.schema.properties.find((property) => property.id === 'availability')!;
+    const availabilityLabelProperty = initial.schema.properties.find((property) => property.id === 'availability-label')!;
+    const optionalAvailabilityProperty = initial.schema.properties.find(
+      (property) => property.id === 'optional-availability',
+    )!;
+    const optionalAvailabilityFalseCheckProperty = initial.schema.properties.find(
+      (property) => property.id === 'optional-availability-is-false',
+    )!;
     const invalidProperty = initial.schema.properties.find((property) => property.id === 'invalid-completion')!;
     const dependentProperty = initial.schema.properties.find((property) => property.id === 'invalid-dependent')!;
 
@@ -253,6 +296,10 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: 'currency',
       format: { currency: 'USD', precision: 0 },
     });
+    expect(textResultProperty).toMatchObject({ type: 'formula', formulaResultType: 'text' });
+    expect(textResultProperty).not.toHaveProperty('format');
+    expect(availabilityProperty).toMatchObject({ type: 'formula', formulaResultType: 'checkbox' });
+    expect(availabilityProperty).not.toHaveProperty('format');
     expect(widget.properties.optional).toBeNull();
     expect(Object.hasOwn(missingPrice.properties, 'optional')).toBe(false);
 
@@ -286,6 +333,28 @@ describe('Polaris Dados snapshot and cell API', () => {
       kind: 'number',
       value: 7 / 3,
     });
+    expect(evaluateCell(widget, initial.schema.properties, textResultProperty, evaluation)).toEqual({
+      kind: 'text',
+      value: '  Keep Case  !',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, textRawCheckProperty, evaluation)).toEqual({
+      kind: 'text',
+      value: '  Keep Case  !?',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, availabilityProperty, evaluation)).toEqual({
+      kind: 'boolean',
+      value: false,
+    });
+    expect(evaluateCell(widget, initial.schema.properties, availabilityLabelProperty, evaluation)).toEqual({
+      kind: 'text',
+      value: 'Unavailable',
+    });
+    expect(evaluateCell(widget, initial.schema.properties, optionalAvailabilityProperty, evaluation)).toEqual({
+      kind: 'null',
+    });
+    expect(
+      evaluateCell(widget, initial.schema.properties, optionalAvailabilityFalseCheckProperty, evaluation),
+    ).toEqual({ kind: 'text', value: 'not false' });
     expect(evaluateCell(widget, initial.schema.properties, optionalCurrencyProperty, evaluation)).toEqual({
       kind: 'null',
     });
@@ -322,6 +391,8 @@ describe('Polaris Dados snapshot and cell API', () => {
     const editedWidget = edited.rows.find((row) => row.id === widgetId)!;
     const editedCompletion = edited.schema.properties.find((property) => property.id === 'completion')!;
     const editedRawCheck = edited.schema.properties.find((property) => property.id === 'completion-raw-check')!;
+    const editedAvailability = edited.schema.properties.find((property) => property.id === 'availability')!;
+    const editedAvailabilityLabel = edited.schema.properties.find((property) => property.id === 'availability-label')!;
     const editedEvaluation = createFormulaEvaluationScope(edited);
     expect(evaluateCell(editedWidget, edited.schema.properties, editedCompletion, editedEvaluation)).toEqual({
       kind: 'number',
@@ -331,9 +402,19 @@ describe('Polaris Dados snapshot and cell API', () => {
       kind: 'number',
       value: 42,
     });
+    expect(evaluateCell(editedWidget, edited.schema.properties, editedAvailability, editedEvaluation)).toEqual({
+      kind: 'boolean',
+      value: true,
+    });
+    expect(evaluateCell(editedWidget, edited.schema.properties, editedAvailabilityLabel, editedEvaluation)).toEqual({
+      kind: 'text',
+      value: 'Available',
+    });
     expect(await api.flush(databaseId)).toMatchObject({ status: 'persisted' });
     expect(vault.text('Inventory/Widget.md')).toMatch(/^Quantity: 3$/m);
     expect(vault.text('Inventory/Widget.md')).not.toMatch(/^(Completion|Optional completion|Invalid completion):/m);
+    expect(vault.text('Inventory/Widget.md')).not.toMatch(/^Text result:/m);
+    expect(vault.text('Inventory/Widget.md')).not.toMatch(/^Text raw check:/m);
     expect(vault.text('Inventory.md')).toBe(files['Inventory.md']);
 
     cleanup();
@@ -378,10 +459,23 @@ describe('Polaris Dados snapshot and cell API', () => {
       formulaResultType: 'currency',
       format: { currency: 'USD', precision: 0 },
     });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'text-result')).toMatchObject({
+      formulaResultType: 'text',
+    });
+    expect(afterRestart.schema.properties.find((property) => property.id === 'text-result')).not.toHaveProperty(
+      'format',
+    );
+    expect(afterRestart.schema.properties.find((property) => property.id === 'availability')).toMatchObject({
+      formulaResultType: 'checkbox',
+    });
     expect(reopenedWidget.properties).not.toHaveProperty('completion');
     expect(reopenedWidget.properties).not.toHaveProperty('completion-raw-check');
     expect(reopenedWidget.properties).not.toHaveProperty('currency-total');
     expect(reopenedWidget.properties).not.toHaveProperty('currency-raw-check');
+    expect(reopenedWidget.properties).not.toHaveProperty('text-result');
+    expect(reopenedWidget.properties).not.toHaveProperty('text-raw-check');
+    expect(reopenedWidget.properties).not.toHaveProperty('availability');
+    expect(reopenedWidget.properties).not.toHaveProperty('availability-label');
     reopenedApi.cleanup();
     await reopened.close();
   });

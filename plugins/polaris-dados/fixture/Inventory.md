@@ -111,6 +111,29 @@ database:
       format:
         currency: JPY
         locale: en-US
+    - id: demo-explicit-text-result
+      name: QuantityText
+      type: formula
+      formula: Concat(" Qty ", If(Quantity > 2, "three", "two"), " ")
+      formulaResultType: text
+    - id: demo-explicit-text-raw
+      name: QuantityTextLength
+      type: formula
+      formula: Length(QuantityText)
+    - id: demo-explicit-checkbox-result
+      name: IsHeavy
+      type: formula
+      formula: Quantity > 2
+      formulaResultType: checkbox
+    - id: demo-explicit-checkbox-null
+      name: IsHeavyOrBlank
+      type: formula
+      formula: If(Quantity > 2, true, null)
+      formulaResultType: checkbox
+    - id: demo-explicit-checkbox-raw
+      name: IsHeavyRawCheck
+      type: formula
+      formula: If(IsHeavy = false, If(Empty(IsHeavyOrBlank), 17, 23), 42)
   views:
     - id: inventory-table-v1
       name: Table

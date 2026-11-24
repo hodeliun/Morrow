@@ -816,6 +816,7 @@ export const pt: TranslationSchema = {
     dragColumn: 'Arraste para mover esta coluna',
     moveColumnLeft: 'Mover coluna para a esquerda',
     moveColumnRight: 'Mover coluna para a direita',
+    resizeColumnPair: 'Redimensionar colunas {left} e {right}',
     replaceMatches: 'Ocorrências',
     replaceTo: 'a',
     replaceFrom: 'Primeira ocorrência a substituir',

@@ -100,6 +100,14 @@ function contains(element: Element, y: number): boolean {
 // the way notion has it, so the handle picks the innermost one under the pointer rather than the whole
 // list, toggle or row of columns
 function innerBlock(element: HTMLElement, y: number, x: number): HTMLElement {
+  if (element.classList.contains('columns-editor')) {
+    const grid = Array.from(element.children).find(
+      (child): child is HTMLElement => child instanceof HTMLElement && child.hasAttribute('data-columns'),
+    );
+    if (!grid) return element;
+    const target = innerBlock(grid, y, x);
+    return target === grid ? element : target;
+  }
   if (element.hasAttribute('data-columns')) {
     const column = Array.from(element.children).find((child): child is HTMLElement => {
       if (!(child instanceof HTMLElement) || !child.hasAttribute('data-column')) return false;

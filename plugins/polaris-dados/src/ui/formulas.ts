@@ -326,9 +326,29 @@ function evaluateFormulaProperty(
   });
 
   budget.visiting.delete(property.id);
+  const invalidTypedTextResult =
+    property.formulaResultType === 'text' &&
+    !result.error &&
+    result.value !== null &&
+    (typeof result.value !== 'string' || result.value.length > 10_000);
+  const invalidTypedCheckboxResult =
+    property.formulaResultType === 'checkbox' &&
+    !result.error &&
+    result.value !== null &&
+    typeof result.value !== 'boolean';
   let evaluated = result.error
     ? { kind: 'error' as const, message: result.error }
-    : normalizeValue(result.value);
+    : invalidTypedTextResult
+      ? {
+          kind: 'error' as const,
+          message: `Formula “${property.name}” declared as text must return a string of at most 10000 UTF-16 code units or null.`,
+        }
+      : invalidTypedCheckboxResult
+        ? {
+            kind: 'error' as const,
+            message: `Formula “${property.name}” declared as checkbox must return true, false, or null.`,
+          }
+      : normalizeValue(result.value);
   if (
     (property.formulaResultType === 'number' ||
       property.formulaResultType === 'percent' ||

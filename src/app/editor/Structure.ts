@@ -12,6 +12,22 @@ import { dateLocale, t } from '../i18n';
 import { getPreferences } from '../platform/preferences';
 import type { DateFormat } from '../platform/preferences';
 import { legacyColumnGridTemplate, parseLegacyColumnWidths } from '../../core/columnWidths';
+import {
+  closeColumnWidthResizeHistory,
+  createColumnWidthsTransaction,
+  hasColumnWidthChange,
+  resizeColumnPairByPointer,
+  serializeColumnWidthResize,
+  startingColumnWidths,
+} from './columnResize';
+
+const COLUMN_GAP = 28;
+
+function minColumnWidthFor(count: number): number {
+  if (count >= 6) return 50;
+  if (count >= 4) return 80;
+  return 120;
+}
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -68,6 +84,372 @@ export const Columns = Node.create({
       }),
       0,
     ];
+  },
+
+  addNodeView() {
+    return ({ node, view, getPos }) => {
+      let currentNode = node;
+      let previewWidths: number[] | null = null;
+      let drag: {
+        pointerId: number;
+        pairIndex: number;
+        startX: number;
+        startWidths: number[];
+        sourceWidths: string | null;
+        availableWidth: number;
+        position: number;
+        sourceNode: typeof node;
+        sourceDoc: typeof view.state.doc;
+        handle: HTMLDivElement;
+      } | null = null;
+      const dom = document.createElement('div');
+      dom.className = 'columns-editor';
+      const contentDOM = document.createElement('div');
+      contentDOM.className = 'columns';
+      contentDOM.setAttribute('data-columns', '');
+      dom.append(contentDOM);
+
+      const handles: HTMLDivElement[] = [];
+      let observedPane: HTMLElement | null = null;
+      let paneObserver: MutationObserver | null = null;
+
+      const positionOfCurrentNode = (): number | null => {
+        try {
+          const position = getPos();
+          return typeof position === 'number' ? position : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const committedWidthsAttribute = (): string | null => {
+        const value = currentNode.attrs.widths;
+        return typeof value === 'string' && parseLegacyColumnWidths(value, currentNode.childCount) ? value : null;
+      };
+
+      const availableWidth = (): number | null => {
+        const width = contentDOM.getBoundingClientRect().width;
+        const available = width - COLUMN_GAP * (currentNode.childCount - 1);
+        return Number.isFinite(available) && available > 0 ? available : null;
+      };
+
+      const viewportIsNarrow = (): boolean => {
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+        const mediaNarrow =
+          typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 720px)').matches;
+        return mediaNarrow || (viewportWidth > 0 && viewportWidth <= 720);
+      };
+
+      const canResize = (): boolean => {
+        if (!view.editable || viewportIsNarrow() || dom.closest<HTMLElement>('.pane')?.dataset.size === 'narrow')
+          return false;
+        const widths = startingColumnWidths(currentNode.attrs.widths, currentNode.childCount);
+        const position = positionOfCurrentNode();
+        return (
+          widths !== null &&
+          currentNode.childCount >= 2 &&
+          currentNode.childCount <= 7 &&
+          position !== null &&
+          view.state.doc.nodeAt(position) === currentNode &&
+          availableWidth() !== null
+        );
+      };
+
+      const trackTemplate = (widths: readonly number[]): string =>
+        widths.map((width) => `minmax(0, ${width}fr)`).join(' ');
+
+      const paint = () => {
+        observeCurrentPane();
+        const count = currentNode.childCount;
+        const committedWidths = committedWidthsAttribute();
+        if (committedWidths === null) {
+          contentDOM.removeAttribute('data-widths');
+        } else if (contentDOM.getAttribute('data-widths') !== committedWidths) {
+          contentDOM.setAttribute('data-widths', committedWidths);
+        }
+        const widths = previewWidths ?? startingColumnWidths(currentNode.attrs.widths, count);
+        const visualWidths = widths ?? Array.from({ length: count }, () => 100);
+        const template =
+          previewWidths !== null
+            ? trackTemplate(previewWidths)
+            : legacyColumnGridTemplate(currentNode.attrs.widths, count) ??
+              `repeat(${count}, minmax(0, 1fr))`;
+        contentDOM.style.setProperty('--columns', String(count));
+        contentDOM.style.setProperty('--column-grid-template', template);
+
+        const active = canResize();
+        const contentRect = contentDOM.getBoundingClientRect();
+        const rootRect = dom.getBoundingClientRect();
+        const total = visualWidths.reduce((sum, width) => sum + width, 0);
+        const available = Math.max(0, contentRect.width - COLUMN_GAP * (count - 1));
+        let leftShare = 0;
+        for (let index = 0; index < handles.length; index++) {
+          leftShare += visualWidths[index]!;
+          const handle = handles[index]!;
+          const boundary =
+            total > 0
+              ? (leftShare / total) * available + COLUMN_GAP * index + COLUMN_GAP / 2
+              : 0;
+          const offset = contentRect.width > 0 ? contentRect.left - rootRect.left + boundary : 0;
+          handle.style.left = contentRect.width > 0 ? `${offset}px` : `${(leftShare / total) * 100}%`;
+          handle.hidden = !active;
+          handle.setAttribute('aria-label', t('editor.resizeColumnPair', { left: index + 1, right: index + 2 }));
+          handle.setAttribute('aria-valuenow', String(Number(visualWidths[index]!.toFixed(2))));
+        }
+        dom.classList.toggle('is-resizing', drag !== null);
+      };
+
+      const removeWindowListeners = () => {
+        window.removeEventListener('pointermove', moveDrag, true);
+        window.removeEventListener('pointerup', endDrag, true);
+        window.removeEventListener('pointercancel', onPointerCancel, true);
+      };
+
+      const releasePointerCapture = (state: NonNullable<typeof drag>) => {
+        try {
+          if (
+            typeof state.handle.hasPointerCapture === 'function' &&
+            state.handle.hasPointerCapture(state.pointerId)
+          ) {
+            state.handle.releasePointerCapture(state.pointerId);
+          }
+        } catch {
+          // Pointer capture may be unavailable in synthetic or embedded browsers.
+        }
+      };
+
+      const cancelDrag = (pointerId?: number, repaint = true) => {
+        if (!drag || (pointerId !== undefined && drag.pointerId !== pointerId)) return;
+        const state = drag;
+        drag = null;
+        previewWidths = null;
+        removeWindowListeners();
+        releasePointerCapture(state);
+        dom.classList.remove('is-resizing');
+        if (repaint) paint();
+      };
+
+      const dragIsCurrent = (state: NonNullable<typeof drag>): boolean => {
+        const position = positionOfCurrentNode();
+        const width = availableWidth();
+        return (
+          drag === state &&
+          view.editable &&
+          !viewportIsNarrow() &&
+          dom.closest<HTMLElement>('.pane')?.dataset.size !== 'narrow' &&
+          view.state.doc === state.sourceDoc &&
+          currentNode === state.sourceNode &&
+          position === state.position &&
+          position !== null &&
+          view.state.doc.nodeAt(position) === state.sourceNode &&
+          width !== null &&
+          Math.abs(width - state.availableWidth) < 0.5
+        );
+      };
+
+      const updatePreview = (event: PointerEvent) => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const state = drag;
+        if (!dragIsCurrent(state)) {
+          cancelDrag();
+          return;
+        }
+        const next = resizeColumnPairByPointer(
+          state.startWidths,
+          state.pairIndex,
+          event.clientX - state.startX,
+          state.availableWidth,
+          minColumnWidthFor(currentNode.childCount),
+        );
+        if (next === null) {
+          cancelDrag();
+          return;
+        }
+        previewWidths = next;
+        paint();
+      };
+
+      function moveDrag(event: PointerEvent): void {
+        updatePreview(event);
+      }
+
+      function endDrag(event: PointerEvent): void {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        updatePreview(event);
+        if (!drag) return;
+        const state = drag;
+        const after = previewWidths;
+        const changed = after !== null && hasColumnWidthChange(state.startWidths, after);
+        cancelDrag(undefined, false);
+        if (!changed || after === null) {
+          paint();
+          return;
+        }
+        const encoded = serializeColumnWidthResize(
+          state.sourceWidths,
+          state.sourceNode.childCount,
+          state.startWidths,
+          after,
+          state.pairIndex,
+        );
+        if (encoded === null) {
+          paint();
+          return;
+        }
+        const transaction = createColumnWidthsTransaction(
+          view.state.tr,
+          state.position,
+          state.sourceNode,
+          encoded,
+        );
+        if (transaction) {
+          view.dispatch(transaction);
+          view.dispatch(closeColumnWidthResizeHistory(view.state.tr));
+          if (!view.isDestroyed) view.focus();
+        } else paint();
+      }
+
+      function onPointerCancel(event: PointerEvent): void {
+        cancelDrag(event.pointerId);
+      }
+
+      const startDrag = (pairIndex: number, handle: HTMLDivElement, event: PointerEvent) => {
+        if (
+          drag ||
+          event.button !== 0 ||
+          event.isPrimary === false ||
+          !canResize()
+        ) {
+          return;
+        }
+        const position = positionOfCurrentNode();
+        const startWidths = startingColumnWidths(currentNode.attrs.widths, currentNode.childCount);
+        const width = availableWidth();
+        if (
+          position === null ||
+          startWidths === null ||
+          width === null ||
+          view.state.doc.nodeAt(position) !== currentNode
+        ) {
+          return;
+        }
+        event.preventDefault();
+        try {
+          handle.focus({ preventScroll: true });
+        } catch {
+          handle.focus();
+        }
+        drag = {
+          pointerId: event.pointerId,
+          pairIndex,
+          startX: event.clientX,
+          startWidths,
+          sourceWidths: typeof currentNode.attrs.widths === 'string' ? currentNode.attrs.widths : null,
+          availableWidth: width,
+          position,
+          sourceNode: currentNode,
+          sourceDoc: view.state.doc,
+          handle,
+        };
+        try {
+          handle.setPointerCapture(event.pointerId);
+        } catch {
+          // Window listeners still follow the pointer if capture is unsupported.
+        }
+        window.addEventListener('pointermove', moveDrag, true);
+        window.addEventListener('pointerup', endDrag, true);
+        window.addEventListener('pointercancel', onPointerCancel, true);
+        paint();
+      };
+
+      const onLayoutChange = () => {
+        if (drag && !dragIsCurrent(drag)) cancelDrag();
+        paint();
+      };
+
+      function observeCurrentPane(): void {
+        const pane = dom.closest<HTMLElement>('.pane');
+        if (pane === observedPane) return;
+        paneObserver?.disconnect();
+        paneObserver = null;
+        observedPane = pane;
+        if (pane && typeof MutationObserver !== 'undefined') {
+          paneObserver = new MutationObserver(onLayoutChange);
+          paneObserver.observe(pane, { attributes: true, attributeFilter: ['data-size'] });
+        }
+      }
+
+      for (let index = 0; index < node.childCount - 1; index++) {
+        const handle = document.createElement('div');
+        handle.className = 'column-layout-resize-handle';
+        handle.dataset.columnPair = `${index + 1}-${index + 2}`;
+        handle.setAttribute('role', 'separator');
+        handle.setAttribute('aria-orientation', 'vertical');
+        handle.tabIndex = -1;
+        handle.contentEditable = 'false';
+        handle.hidden = true;
+        handle.addEventListener('pointerdown', (event) => startDrag(index, handle, event));
+        handle.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape' || drag?.handle !== handle) return;
+          event.preventDefault();
+          event.stopPropagation();
+          cancelDrag(drag.pointerId);
+        });
+        handle.addEventListener('lostpointercapture', (event) => {
+          cancelDrag((event as PointerEvent).pointerId);
+        });
+        handles.push(handle);
+      }
+      dom.append(...handles);
+
+      paint();
+      const resizeObserver =
+        typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(onLayoutChange);
+      resizeObserver?.observe(contentDOM);
+      const editabilityObserver =
+        typeof MutationObserver === 'undefined' ? null : new MutationObserver(onLayoutChange);
+      editabilityObserver?.observe(view.dom, {
+        attributes: true,
+        attributeFilter: ['contenteditable'],
+        subtree: true,
+      });
+      window.addEventListener('resize', onLayoutChange);
+
+      return {
+        dom,
+        contentDOM,
+        update(updated) {
+          if (updated.type !== currentNode.type || updated.childCount !== handles.length + 1) return false;
+          if (updated !== currentNode) cancelDrag();
+          currentNode = updated;
+          previewWidths = null;
+          paint();
+          return true;
+        },
+        stopEvent: (event) => !(event.target instanceof HTMLElement && contentDOM.contains(event.target)),
+        ignoreMutation: (mutation) => {
+          if (mutation.type === 'selection') return false;
+          if (
+            mutation.type === 'attributes' &&
+            mutation.target === contentDOM &&
+            (mutation.attributeName === 'style' ||
+              (mutation.attributeName === 'data-widths' &&
+                contentDOM.getAttribute('data-widths') === committedWidthsAttribute()))
+          ) {
+            return true;
+          }
+          return !(mutation.target instanceof HTMLElement && contentDOM.contains(mutation.target));
+        },
+        destroy() {
+          cancelDrag(undefined, false);
+          resizeObserver?.disconnect();
+          editabilityObserver?.disconnect();
+          paneObserver?.disconnect();
+          window.removeEventListener('resize', onLayoutChange);
+          previewWidths = null;
+        },
+      };
+    };
   },
 
   addCommands() {

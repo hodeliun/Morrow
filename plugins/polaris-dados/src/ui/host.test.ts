@@ -937,6 +937,97 @@ describe('Polaris Dados provider module', () => {
     const properties: readonly TestProperty[] = [
       ...DEFAULT_PROPERTIES.slice(0, 3),
       { id: 'optional', name: 'Optional', type: 'number', options: [] },
+      { id: 'optional-text', name: 'Optional text', type: 'text', options: [] },
+      {
+        id: 'typed-checkbox',
+        name: 'Typed checkbox',
+        type: 'formula',
+        options: [],
+        formula: 'Quantity > 3',
+        formulaResultType: 'checkbox',
+      },
+      {
+        id: 'typed-checkbox-copy',
+        name: 'Typed checkbox copy',
+        type: 'formula',
+        options: [],
+        formula: 'If(prop("Typed checkbox"), "Yes", "No")',
+      },
+      {
+        id: 'typed-checkbox-false-check',
+        name: 'Typed checkbox false check',
+        type: 'formula',
+        options: [],
+        formula: 'If(prop("Typed checkbox") == false, "false", "not false")',
+      },
+      {
+        id: 'typed-checkbox-null',
+        name: 'Typed checkbox null',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow.Optional',
+        formulaResultType: 'checkbox',
+      },
+      {
+        id: 'typed-null-false-check',
+        name: 'Typed null false check',
+        type: 'formula',
+        options: [],
+        formula: 'If(prop("Typed checkbox null") == false, "false", "not false")',
+      },
+      {
+        id: 'typed-checkbox-invalid',
+        name: 'Typed checkbox invalid',
+        type: 'formula',
+        options: [],
+        formula: '1',
+        formulaResultType: 'checkbox',
+      },
+      {
+        id: 'typed-checkbox-invalid-dependent',
+        name: 'Typed checkbox invalid dependent',
+        type: 'formula',
+        options: [],
+        formula: 'If(prop("Typed checkbox invalid"), "Yes", "No")',
+      },
+      {
+        id: 'typed-text',
+        name: 'Typed text',
+        type: 'formula',
+        options: [],
+        formula: 'Concat(" Qty ", If(Quantity > 3, "three", "two"), " ")',
+        formulaResultType: 'text',
+      },
+      {
+        id: 'typed-text-copy',
+        name: 'Typed text copy',
+        type: 'formula',
+        options: [],
+        formula: 'Concat(prop("Typed text"), "!")',
+      },
+      {
+        id: 'typed-text-length',
+        name: 'Typed text length',
+        type: 'formula',
+        options: [],
+        formula: 'Length(prop("Typed text"))',
+      },
+      {
+        id: 'typed-text-empty',
+        name: 'Typed text empty',
+        type: 'formula',
+        options: [],
+        formula: '""',
+        formulaResultType: 'text',
+      },
+      {
+        id: 'typed-text-null',
+        name: 'Typed text null',
+        type: 'formula',
+        options: [],
+        formula: 'thisRow["Optional text"]',
+        formulaResultType: 'text',
+      },
       {
         id: 'percent',
         name: 'Percent',
@@ -1119,7 +1210,7 @@ describe('Polaris Dados provider module', () => {
       },
       { id: 'plain-text', name: 'Plain text', type: 'formula', options: [], formula: '"done"' },
     ];
-    const initialValues = { name: 'Widget', quantity: 3, price: 10, optional: null };
+    const initialValues = { name: 'Widget', quantity: 3, price: 10, optional: null, 'optional-text': null };
     const data = makeDataDouble({ properties, rowProperties: initialValues });
     const mounted = mountPlugin(data.api);
     const cell = (id: string) => mounted.element.querySelector<HTMLElement>(`[data-field="${id}"]`)!;
@@ -1130,6 +1221,25 @@ describe('Polaris Dados provider module', () => {
     );
     expect(cell('percent').textContent).toBe('37.5%');
     expect(cell('dependent').querySelector('[data-value-kind="number"]')?.textContent).toBe('1.375');
+    expect(cell('typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('False');
+    expect(cell('typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('No');
+    expect(cell('typed-checkbox-false-check').textContent).toBe('false');
+    expect(cell('typed-checkbox-null').querySelector('[data-value-kind="null"]')?.textContent).toBe('Blank');
+    expect(cell('typed-null-false-check').textContent).toBe('not false');
+    expect(cell('typed-checkbox').querySelector('input[type="checkbox"], button[data-action="edit"]')).toBeNull();
+    expect(cell('typed-checkbox-invalid').querySelector('code')?.textContent).toBe(
+      'Formula “Typed checkbox invalid” declared as checkbox must return true, false, or null.',
+    );
+    expect(cell('typed-checkbox-invalid-dependent').querySelector('code')?.textContent).toBe(
+      'Formula “Typed checkbox invalid” declared as checkbox must return true, false, or null.',
+    );
+    expect(cell('typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two ');
+    expect(cell('typed-text-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty two !');
+    expect(cell('typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('9');
+    expect(cell('typed-text-empty').querySelector('[data-value-kind="text"]')).not.toBeNull();
+    expect(cell('typed-text-empty').textContent).toBe('');
+    expect(cell('typed-text-null').querySelector('[data-value-kind="null"]')).not.toBeNull();
+    expect(cell('typed-text-null').textContent).toBe('Blank');
     expect(cell('decimal').textContent).toBe(
       new Intl.NumberFormat(defaultLocale, { maximumFractionDigits: 2 }).format(7 / 3),
     );
@@ -1198,6 +1308,12 @@ describe('Polaris Dados provider module', () => {
     await settle();
 
     expect(cell('percent').textContent).toBe('50%');
+    expect(cell('typed-checkbox').querySelector('[data-value-kind="boolean"]')?.textContent).toBe('True');
+    expect(cell('typed-checkbox-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe('Yes');
+    expect(cell('typed-checkbox-false-check').textContent).toBe('not false');
+    expect(cell('typed-text').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty three ');
+    expect(cell('typed-text-copy').querySelector('[data-value-kind="text"]')?.textContent).toBe(' Qty three !');
+    expect(cell('typed-text-length').querySelector('[data-value-kind="number"]')?.textContent).toBe('11');
     expect(cell('currency-jpy').textContent).toBe(
       new Intl.NumberFormat(defaultLocale, {
         style: 'currency',
