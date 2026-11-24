@@ -23,6 +23,7 @@ import {
   addPluginInlineColorControl,
   addPluginInlineFormulaPresentation,
   addPluginNoteStylePanel,
+  addPluginNoteStyleDefaultsPanel,
   addPluginSidebarFileCatalog,
   pluginActions,
   pluginBlocks,
@@ -31,6 +32,7 @@ import type {
   PluginInlineColorControlMount,
   PluginInlineFormulaPresentationMount,
   PluginNoteStylePanelMount,
+  PluginNoteStyleDefaultsPanelMount,
   PluginSidebarFileCatalogMount,
 } from './registry';
 import { createDataApi } from './dataApi';
@@ -609,6 +611,16 @@ function pluginApi(id: string, state: Running) {
             throw new Error('Only Polaris Documento can add a note-style panel.');
           if (typeof mount !== 'function') throw new Error('A note-style panel needs a mount function.');
           return keep(addPluginNoteStylePanel(id, mount));
+        },
+      },
+      noteStyleDefaults: {
+        add(mount: PluginNoteStyleDefaultsPanelMount) {
+          assertActive();
+          if (id !== 'polaris-documento')
+            throw new Error('Only Polaris Documento can add note-style defaults to Appearance.');
+          if (typeof mount !== 'function')
+            throw new Error('A note-style defaults panel needs a mount function.');
+          return keep(addPluginNoteStyleDefaultsPanel(id, mount));
         },
       },
     },

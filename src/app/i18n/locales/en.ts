@@ -715,6 +715,15 @@ export const en = {
   pageStyle: {
     trigger: 'Page style',
     title: 'Page style',
+    defaultsTitle: 'Default for new pages',
+    defaultsHelp:
+      'This style is saved to your profile and applies only to pages created after you save it. Existing pages keep their own style.',
+    saveDefault: 'Save default',
+    resetDefault: 'Restore profile default',
+    discardDefault: 'Discard changes',
+    defaultSaved: 'Default style for new pages saved.',
+    defaultReset: 'New pages now use the profile font and width.',
+    defaultSaveFailed: 'Could not save the default style. Your draft is still here.',
     font: 'Font',
     fontSize: 'Text size',
     lineHeight: 'Line height',

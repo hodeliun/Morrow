@@ -11,9 +11,13 @@ size, line height, and block spacing. The sample previews comfortable, wide, and
 84%, and 100% of its frame. Save confirms the style for that note; Restore applies the current profile
 default. A save conflict keeps the draft open so it can be adjusted and retried.
 
-The plugin registers its theme-aware styles and page-style panel with the host APIs. The host removes
-the panel and its styles when the plugin is disabled or reloaded. The panel edits only the style field;
-it does not create pages or change note body text.
+Set the profile default in **Settings → Appearance → Default for new pages**. **Save default** updates
+the profile without saving the open note; **Restore profile default** returns to the profile's general
+font and width. The default applies to pages created afterwards. Existing notes keep their saved styles.
+
+The plugin registers its theme-aware styles, per-note page-style panel, and Appearance defaults with
+the host APIs. The host removes these contributions and their styles when the plugin is disabled or
+reloaded. The per-note panel edits only the style field; it does not create pages or change note body text.
 
 ## Build
 

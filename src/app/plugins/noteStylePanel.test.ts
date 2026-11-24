@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addPluginNoteStylePanel, documentoNoteStylePanel, subscribePlugins } from './registry';
+import {
+  addPluginNoteStyleDefaultsPanel,
+  addPluginNoteStylePanel,
+  documentoNoteStyleDefaultsPanel,
+  documentoNoteStylePanel,
+  subscribePlugins,
+} from './registry';
 
 describe('Documento note-style panel registration', () => {
   let dispose: (() => void) | null = null;
@@ -48,5 +54,42 @@ describe('Documento note-style panel registration', () => {
     dispose = null;
     expect(listener).toHaveBeenCalledTimes(2);
     unsubscribe();
+  });
+});
+
+describe('Documento note-style defaults registration', () => {
+  let dispose: (() => void) | null = null;
+
+  afterEach(() => {
+    dispose?.();
+    dispose = null;
+  });
+
+  it('is Documento-only and invalidates replacements without removing the successor', () => {
+    expect(() => addPluginNoteStyleDefaultsPanel('polaris-dados', () => {})).toThrow(
+      /only polaris documento/i,
+    );
+    expect(() => addPluginNoteStyleDefaultsPanel('polaris-documento', null as never)).toThrow(
+      /mount function/i,
+    );
+
+    const firstMount = vi.fn();
+    const removeFirst = addPluginNoteStyleDefaultsPanel('polaris-documento', firstMount);
+    const first = documentoNoteStyleDefaultsPanel();
+    expect(first?.isActive()).toBe(true);
+
+    const secondMount = vi.fn();
+    dispose = addPluginNoteStyleDefaultsPanel('polaris-documento', secondMount);
+    const second = documentoNoteStyleDefaultsPanel();
+    expect(first?.isActive()).toBe(false);
+    expect(second?.mount).toBe(secondMount);
+    expect(second?.generation).toBeGreaterThan(first?.generation ?? 0);
+
+    removeFirst();
+    expect(documentoNoteStyleDefaultsPanel()).toBe(second);
+
+    dispose();
+    dispose = null;
+    expect(documentoNoteStyleDefaultsPanel()).toBeNull();
   });
 });

@@ -26,6 +26,14 @@ const CHANGED_STYLE: NoteStyle = {
   width: 'wide',
 };
 
+const RESTORED_STYLE: NoteStyle = {
+  font: 'mono',
+  fontSize: 15,
+  lineHeight: 1.5,
+  blockSpacing: 6,
+  width: 'full',
+};
+
 const windows: Window[] = [];
 
 afterEach(async () => {
@@ -311,6 +319,39 @@ describe('Polaris Documento per-note style panel', () => {
         .value,
     ).toBe(String(INITIAL_STYLE.fontSize));
     reopened.cleanup();
+  });
+
+  it('discards to the latest successful save or restore within the same mount', async () => {
+    const window = new Window({ url: 'http://morrow.test/' });
+    windows.push(window);
+    const host = panelHost('en', {
+      restore: vi.fn(async () => ({ ok: true as const, style: { ...RESTORED_STYLE } })),
+    });
+    const { container, cleanup } = mount(window, host);
+    const font = container.querySelector('select[data-note-style-field="font"]') as unknown as HTMLSelectElement;
+    const form = container.querySelector('form') as unknown as HTMLFormElement;
+    const action = (name: string) =>
+      container.querySelector(`button[data-note-style-action="${name}"]`) as unknown as HTMLButtonElement;
+
+    input(window, font, CHANGED_STYLE.font);
+    submit(window, form);
+    await settle();
+    expect(font.value).toBe(CHANGED_STYLE.font);
+
+    input(window, font, 'mono');
+    action('cancel').click();
+    expect(font.value).toBe(CHANGED_STYLE.font);
+
+    action('restore').click();
+    await settle();
+    expect(font.value).toBe(RESTORED_STYLE.font);
+    input(window, font, 'sans');
+    action('cancel').click();
+    expect(font.value).toBe(RESTORED_STYLE.font);
+
+    expect(host.save).toHaveBeenCalledOnce();
+    expect(host.restore).toHaveBeenCalledOnce();
+    cleanup();
   });
 
   it('keeps two mounts isolated from each other', () => {

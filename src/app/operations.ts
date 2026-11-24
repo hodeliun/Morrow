@@ -205,7 +205,8 @@ export function ensureToday(date = new Date()): PageId | null {
     ...(templateDoc ? { doc: applyTemplate(templateDoc, { title, date }) } : {}),
   });
   if (!result.ok) return null;
-  if (template) carryTemplateFields(id, template.id, { title, date });
+  if (template)
+    carryTemplateFields(id, template.id, { title, date }, { preserveNoteStyle: true });
   expandPage(journal.id);
   return id;
 }
@@ -311,6 +312,7 @@ function carryTemplateFields(
   pageId: PageId,
   templateId: PageId,
   values: { title: string; date: Date },
+  options: { preserveNoteStyle?: boolean } = {},
 ): void {
   const state = getState();
   const page = state.pages[pageId];
@@ -323,6 +325,11 @@ function carryTemplateFields(
     ...Object.fromEntries(Object.entries(template.extra).map(([key, value]) => [key, fill(value)])),
     ...page.extra,
   };
+  // A new page has already received the profile default. Its template's style is more specific and
+  // must be copied as stored, including fields this version does not interpret. Applying a template
+  // to an existing page keeps the existing page's values, as it did before profile defaults existed.
+  if (options.preserveNoteStyle && Object.hasOwn(template.extra, 'morrowNoteStyle'))
+    extra.morrowNoteStyle = template.extra.morrowNoteStyle;
   // database values only mean something in the same database, a template kept beside its rows
   const parent = page.parentId ? state.pages[page.parentId] : null;
   const known = new Set(parent?.database?.properties.map((property) => property.id) ?? []);
@@ -332,7 +339,12 @@ function carryTemplateFields(
     ),
   );
   const properties = { ...carried, ...page.properties };
-  const extraChanged = Object.keys(extra).length !== Object.keys(page.extra).length;
+  const preservedNoteStyleChanged =
+    options.preserveNoteStyle &&
+    Object.hasOwn(template.extra, 'morrowNoteStyle') &&
+    JSON.stringify(extra.morrowNoteStyle) !== JSON.stringify(page.extra.morrowNoteStyle);
+  const extraChanged =
+    Object.keys(extra).length !== Object.keys(page.extra).length || preservedNoteStyleChanged;
   const propertiesChanged = Object.keys(carried).length > 0;
   if (extraChanged || propertiesChanged)
     run({
@@ -396,7 +408,12 @@ export function createFromTemplate(templateId: PageId, parentId: PageId | null):
       : {}),
   });
   if (!result.ok) return null;
-  carryTemplateFields(id, templateId, { title: displayTitle({ title }), date: now });
+  carryTemplateFields(
+    id,
+    templateId,
+    { title: displayTitle({ title }), date: now },
+    { preserveNoteStyle: true },
+  );
   expandPage(parentId);
   setUi({ focusTitle: id, mobileSidebar: false });
   openPage(id);
@@ -424,7 +441,14 @@ export function saveAsTemplate(id: PageId): void {
   // the template keeps the page's other properties and cover as they are, filled in when it's used
   if (result.ok) {
     const now = Date.now();
-    if (Object.keys(page.extra).length) run({ type: 'page.setFields', id: copy, extra: page.extra, now });
+    if (Object.keys(page.extra).length) {
+      // Keep source metadata first; at the extra-field limit this lets normalization drop only the fallback.
+      const extra = { ...page.extra };
+      const createdExtra = result.value.pages[copy]!.extra;
+      if (!Object.hasOwn(extra, 'morrowNoteStyle') && Object.hasOwn(createdExtra, 'morrowNoteStyle'))
+        extra.morrowNoteStyle = createdExtra.morrowNoteStyle;
+      run({ type: 'page.setFields', id: copy, extra, now });
+    }
     if (page.cover) run({ type: 'page.setCover', id: copy, cover: page.cover, now });
   }
   if (result.ok)

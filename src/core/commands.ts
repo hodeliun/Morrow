@@ -26,6 +26,7 @@ export type Command =
       tags?: string[];
       properties?: Record<string, PropValue>;
       database?: DatabaseDef | null;
+      noteStyle?: NoteStyle;
     }
   | { type: 'page.rename'; id: PageId; title: string; now: number }
   | { type: 'page.setIcon'; id: PageId; icon: string | null; now: number }
@@ -297,6 +298,13 @@ function createPage(
   if (command.dailyDate != null && !DATE_PATTERN.test(command.dailyDate)) return fail('Invalid daily date.');
   const doc = validateDoc(command.doc ?? emptyDoc());
   if (!doc.ok) return doc;
+  let extra: Record<string, unknown> = {};
+  if (command.noteStyle !== undefined) {
+    if (!isValidNoteStyleInput(command.noteStyle)) return fail('Invalid note style.');
+    const merged = mergeNoteStyleExtra(extra, command.noteStyle);
+    if (!merged) return fail('This note style uses an unsupported format and was left unchanged.');
+    extra = merged;
+  }
   const kind = command.kind && PAGE_KINDS.includes(command.kind) ? command.kind : 'page';
   const page = newPageMeta({
     id: command.id,
@@ -308,6 +316,7 @@ function createPage(
     dailyDate: command.dailyDate ?? null,
     tags: normalizeTags(command.tags ?? []),
     properties: { ...(command.properties ?? {}) },
+    extra,
     database:
       kind === 'database' ? (normalizeDatabase(command.database) ?? { properties: [], views: [] }) : null,
   });

@@ -722,6 +722,15 @@ export const pt: TranslationSchema = {
   pageStyle: {
     trigger: 'Estilo da página',
     title: 'Estilo da página',
+    defaultsTitle: 'Padrão para novas páginas',
+    defaultsHelp:
+      'Este estilo é salvo no perfil e se aplica somente às páginas criadas depois de salvá-lo. As páginas existentes mantêm seu próprio estilo.',
+    saveDefault: 'Salvar padrão',
+    resetDefault: 'Restaurar padrão do perfil',
+    discardDefault: 'Descartar alterações',
+    defaultSaved: 'Estilo padrão das novas páginas salvo.',
+    defaultReset: 'Novas páginas usarão a fonte e a largura do perfil.',
+    defaultSaveFailed: 'Não foi possível salvar o estilo padrão. O rascunho continua aberto.',
     font: 'Fonte',
     fontSize: 'Tamanho do texto',
     lineHeight: 'Entrelinha',

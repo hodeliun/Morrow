@@ -67,7 +67,7 @@ export interface PluginNoteStylePanelLabels {
 
 /** Result deliberately omits the host's stable page id and revision token. */
 export type PluginNoteStylePanelResult =
-  | { readonly ok: true; readonly style: NoteStyle }
+  | { readonly ok: true; readonly style: NoteStyle; readonly message?: string }
   | {
       readonly ok: false;
       readonly code: NoteStyleFailureCode;
@@ -92,6 +92,16 @@ export interface PluginNoteStylePanelEntry {
   readonly owner: 'polaris-documento';
   readonly generation: number;
   readonly mount: PluginNoteStylePanelMount;
+  isActive(): boolean;
+}
+
+/** Documento-owned Appearance controls for the profile default used by future page creation. */
+export type PluginNoteStyleDefaultsPanelMount = PluginNoteStylePanelMount;
+
+export interface PluginNoteStyleDefaultsPanelEntry {
+  readonly owner: 'polaris-documento';
+  readonly generation: number;
+  readonly mount: PluginNoteStyleDefaultsPanelMount;
   isActive(): boolean;
 }
 
@@ -149,6 +159,10 @@ interface PluginNoteStylePanelRegistration extends PluginNoteStylePanelEntry {
   deactivate(): void;
 }
 
+interface PluginNoteStyleDefaultsPanelRegistration extends PluginNoteStyleDefaultsPanelEntry {
+  deactivate(): void;
+}
+
 interface PluginInlineFormulaPresentationRegistration extends PluginInlineFormulaPresentationEntry {
   deactivate(): void;
 }
@@ -175,6 +189,8 @@ const blocks = new Map<string, { owner: string; block: PluginBlock }>();
 const inlineColorControls = new Map<string, PluginInlineColorControlRegistration>();
 let noteStylePanel: PluginNoteStylePanelRegistration | null = null;
 let noteStylePanelGeneration = 0;
+let noteStyleDefaultsPanel: PluginNoteStyleDefaultsPanelRegistration | null = null;
+let noteStyleDefaultsPanelGeneration = 0;
 let inlineFormulaPresentation: PluginInlineFormulaPresentationRegistration | null = null;
 let inlineFormulaPresentationGeneration = 0;
 let sidebarFileCatalog: PluginSidebarFileCatalogRegistration | null = null;
@@ -273,6 +289,40 @@ export function addPluginNoteStylePanel(owner: string, mount: PluginNoteStylePan
 
 export function documentoNoteStylePanel(): PluginNoteStylePanelEntry | null {
   return noteStylePanel?.isActive() ? noteStylePanel : null;
+}
+
+export function addPluginNoteStyleDefaultsPanel(
+  owner: string,
+  mount: PluginNoteStyleDefaultsPanelMount,
+): () => void {
+  if (owner !== 'polaris-documento')
+    throw new Error('Only Polaris Documento can add note-style defaults to Appearance.');
+  if (typeof mount !== 'function') throw new Error('A note-style defaults panel needs a mount function.');
+
+  noteStyleDefaultsPanel?.deactivate();
+  let active = true;
+  const registration: PluginNoteStyleDefaultsPanelRegistration = {
+    owner,
+    generation: ++noteStyleDefaultsPanelGeneration,
+    mount,
+    isActive: () => active,
+    deactivate: () => {
+      active = false;
+    },
+  };
+  noteStyleDefaultsPanel = registration;
+  changed();
+
+  return () => {
+    if (!registration.isActive()) return;
+    registration.deactivate();
+    if (noteStyleDefaultsPanel === registration) noteStyleDefaultsPanel = null;
+    changed();
+  };
+}
+
+export function documentoNoteStyleDefaultsPanel(): PluginNoteStyleDefaultsPanelEntry | null {
+  return noteStyleDefaultsPanel?.isActive() ? noteStyleDefaultsPanel : null;
 }
 
 export function addPluginInlineFormulaPresentation(

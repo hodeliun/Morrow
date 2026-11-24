@@ -66,6 +66,7 @@ import { checkForUpdate, installUpdate, useUpdateState } from '../updates';
 import { getSession } from '../workspace';
 import { Dialog, Logo, Switch } from './primitives';
 import { PluginSettings } from './PluginSettings';
+import { DocumentoNoteStyleDefaultsSettings } from './DocumentoNoteStyleDefaultsSettings';
 import { Select } from './Select';
 import { Segmented, SettingRow, SettingsGroup } from './SettingsRows';
 import { LanguageSettings } from './LanguageSettings';
@@ -344,6 +345,7 @@ function AppearanceSettings() {
           />
         </SettingRow>
       </SettingsGroup>
+      <DocumentoNoteStyleDefaultsSettings />
       <PageParts />
       <SidebarSettings />
       <CustomCss />

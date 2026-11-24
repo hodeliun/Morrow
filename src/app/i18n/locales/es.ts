@@ -722,6 +722,15 @@ export const es: TranslationSchema = {
   pageStyle: {
     trigger: 'Estilo de página',
     title: 'Estilo de página',
+    defaultsTitle: 'Estilo predeterminado para páginas nuevas',
+    defaultsHelp:
+      'Este estilo se guarda en tu perfil y solo se aplica a las páginas que crees después de guardarlo. Las páginas existentes conservan su propio estilo.',
+    saveDefault: 'Guardar predeterminado',
+    resetDefault: 'Restaurar el predeterminado del perfil',
+    discardDefault: 'Descartar cambios',
+    defaultSaved: 'Se guardó el estilo predeterminado para páginas nuevas.',
+    defaultReset: 'Las páginas nuevas usarán la fuente y el ancho del perfil.',
+    defaultSaveFailed: 'No se pudo guardar el estilo predeterminado. El borrador sigue aquí.',
     font: 'Fuente',
     fontSize: 'Tamaño del texto',
     lineHeight: 'Interlineado',

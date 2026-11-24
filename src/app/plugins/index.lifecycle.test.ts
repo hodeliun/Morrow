@@ -322,6 +322,10 @@ describe('plugin loader lifecycle', () => {
           container.textContent = 'Documento panel';
           return () => { container.textContent = ''; };
         });
+        morrow.pages.noteStyleDefaults.add((container) => {
+          container.textContent = 'Documento defaults';
+          return () => { container.textContent = ''; };
+        });
       };`,
     });
     await h.loader.startPlugins();
@@ -330,10 +334,16 @@ describe('plugin loader lifecycle', () => {
     expect(registration?.owner).toBe('polaris-documento');
     expect(registration?.isActive()).toBe(true);
     expect(registration?.mount).toBeTypeOf('function');
+    const defaults = h.registry.documentoNoteStyleDefaultsPanel();
+    expect(defaults?.owner).toBe('polaris-documento');
+    expect(defaults?.isActive()).toBe(true);
+    expect(defaults?.mount).toBeTypeOf('function');
 
     await h.loader.setPluginEnabled('polaris-documento', false);
     expect(registration?.isActive()).toBe(false);
     expect(h.registry.documentoNoteStylePanel()).toBeNull();
+    expect(defaults?.isActive()).toBe(false);
+    expect(h.registry.documentoNoteStyleDefaultsPanel()).toBeNull();
   });
 
   it('revokes pending file pages on reload and binds the same relative path to the next workspace session', async () => {

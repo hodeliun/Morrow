@@ -31,6 +31,7 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
   root.setAttribute('aria-label', host.labels.title);
 
   let draft = copyStyle(host.initial);
+  let savedBaseline = copyStyle(host.initial);
   let active = true;
   let inFlight = false;
 
@@ -212,7 +213,12 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
       const result = await operation();
       if (!active) return;
       if (!result.ok) setStatus(result.message, true);
-      else setStatus('');
+      else {
+        draft = copyStyle(result.style);
+        savedBaseline = copyStyle(result.style);
+        render();
+        setStatus(result.message ?? '');
+      }
     } catch {
       if (active) setStatus(host.labels.saveFailed, true);
     } finally {
@@ -251,7 +257,12 @@ export const mountNoteStylePanel: PluginNoteStylePanelMount = (container, host) 
     const button = target?.closest<HTMLButtonElement>('button[data-note-style-action]');
     if (!button || !root.contains(button)) return;
     if (button.dataset.noteStyleAction === 'cancel') {
-      if (active && !inFlight) host.cancel();
+      if (active && !inFlight) {
+        draft = copyStyle(savedBaseline);
+        render();
+        setStatus('');
+        host.cancel();
+      }
       return;
     }
     if (button.dataset.noteStyleAction === 'restore') void run(() => host.restore());

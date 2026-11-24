@@ -8,6 +8,7 @@ import type {
   PluginInlineColorControlMount,
   PluginNoteStylePanelMount,
   PluginNoteStylePanelHost,
+  PluginNoteStyleDefaultsPanelMount,
 } from '../../../src/app/plugins/registry';
 
 const windows: Window[] = [];
@@ -31,6 +32,7 @@ function stylesHarness(window: Window) {
   });
   let activeControl: PluginInlineColorControlMount | null = null;
   let activePanel: PluginNoteStylePanelMount | null = null;
+  let activeDefaults: PluginNoteStyleDefaultsPanelMount | null = null;
   let mountedPanelCleanup: (() => void) | null = null;
   const addControl = vi.fn((mount: PluginInlineColorControlMount) => {
     activeControl = mount;
@@ -54,17 +56,31 @@ function stylesHarness(window: Window) {
       }
     };
   });
+  const addDefaults = vi.fn((mount: PluginNoteStyleDefaultsPanelMount) => {
+    activeDefaults = mount;
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      if (activeDefaults === mount) activeDefaults = null;
+    };
+  });
   return {
     api: {
       editor: { inlineColorControl: { add: addControl } },
-      pages: { noteStylePanel: { add: addPanel } },
+      pages: {
+        noteStylePanel: { add: addPanel },
+        noteStyleDefaults: { add: addDefaults },
+      },
       styles: { add },
     } as PolarisDocumentoApi,
     add,
     addControl,
     addPanel,
+    addDefaults,
     activeControl: () => activeControl,
     activePanel: () => activePanel,
+    activeDefaults: () => activeDefaults,
     mountActivePanel(container: HTMLElement, host: PluginNoteStylePanelHost) {
       if (!activePanel) throw new Error('The Documento note-style panel is not registered.');
       mountedPanelCleanup?.();
@@ -77,7 +93,8 @@ describe('Polaris Documento note-style panel activation', () => {
   it('registers and mounts through the host pages API, then unregisters and cleans up on disable', () => {
     const window = new Window({ url: 'http://morrow.test/' });
     windows.push(window);
-    const { api, addPanel, activePanel, mountActivePanel } = stylesHarness(window);
+    const { api, addPanel, addDefaults, activePanel, activeDefaults, mountActivePanel } =
+      stylesHarness(window);
     const initial = {
       font: 'sans',
       fontSize: 16,
@@ -98,7 +115,9 @@ describe('Polaris Documento note-style panel activation', () => {
     const disable = activate(api);
 
     expect(addPanel).toHaveBeenCalledOnce();
+    expect(addDefaults).toHaveBeenCalledOnce();
     expect(activePanel()).toBeTypeOf('function');
+    expect(activeDefaults()).toBeTypeOf('function');
     mountActivePanel(container as unknown as HTMLElement, host);
     expect(container.querySelector('[data-note-style-field="font"]')).not.toBeNull();
     expect(container.querySelector('.note-style-preview strong')?.textContent).toBe(
@@ -108,6 +127,7 @@ describe('Polaris Documento note-style panel activation', () => {
     disable();
 
     expect(activePanel()).toBeNull();
+    expect(activeDefaults()).toBeNull();
     expect(container.querySelector('.note-style-panel')).toBeNull();
     expect(window.document.querySelectorAll('style[data-plugin="polaris-documento"]')).toHaveLength(0);
   });
